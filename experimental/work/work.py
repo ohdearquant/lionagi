@@ -37,7 +37,7 @@ class WorkLog(BaseModel):
     """Model to store and manage work logs."""
     logs: Dict[str, Work] = Field(default={}, description="Logs of work items")
     pending: deque = Field(
-        default_factory=deque, description="Priority queue of pending work items"
+        default_factory=de, description="Priority queue of pending work items"
     )
     errored: deque = Field(
         default_factory=deque, description="Queue of errored work items"

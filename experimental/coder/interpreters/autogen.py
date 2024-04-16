@@ -3,7 +3,7 @@ from typing import Dict, Union
 def get_ipython_user_proxy():
     
     try:
-        import autogen
+        import experimental.coder.interpreters.autogen as autogen
         from IPython import get_ipython
     except Exception as e:
         raise ImportError(f"Please install autogen and IPython. {e}")
@@ -47,7 +47,7 @@ def get_autogen_coder(
 ):
     assistant = ''
     try:
-        import autogen
+        import experimental.coder.interpreters.autogen as autogen
         from autogen.agentchat.contrib.gpt_assistant_agent import GPTAssistantAgent
     except Exception as e:
         raise ImportError(f"Please install autogen. {e}")
