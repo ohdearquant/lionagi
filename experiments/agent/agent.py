@@ -2,6 +2,7 @@ import asyncio
 from typing import Callable, Dict, Any, Optional, Union
 from lionagi.core.branch.branch import Branch
 
+
 class Agent:
     def __init__(self, name: Optional[str] = None):
         self.name = name
@@ -104,10 +105,10 @@ class ConversationalAgent(Agent):
 
 class TaskAgent(ConversationalAgent):
     def __init__(
-            self,
-            name: Optional[str] = None,
-            task_handlers: Optional[Dict[str, Callable]] = None,
-            fallback_handler: Optional[Callable] = None,
+        self,
+        name: Optional[str] = None,
+        task_handlers: Optional[Dict[str, Callable]] = None,
+        fallback_handler: Optional[Callable] = None,
     ):
         super().__init__(name)
         self.task_handlers = task_handlers or {}
@@ -149,7 +150,7 @@ class TaskAgent(ConversationalAgent):
 
 class LearningAgent(TaskAgent):
     def __init__(
-            self, name: Optional[str] = None, learning_model: Optional[Any] = None
+        self, name: Optional[str] = None, learning_model: Optional[Any] = None
     ):
         super().__init__(name)
         self.learning_model = learning_model
@@ -191,7 +192,7 @@ from typing import Any, Dict
 class AgentInterface(ABC):
     @abstractmethod
     async def receive_instruction(
-            self, instruction: Dict[str, Any], context: Dict[str, Any]
+        self, instruction: Dict[str, Any], context: Dict[str, Any]
     ) -> None:
         """
         Process a received instruction along with its context.

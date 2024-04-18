@@ -2,6 +2,7 @@ import asyncio
 from typing import Any, Callable
 from lionagi.libs.ln_func_call import tcall
 
+
 class AsyncQueue:
     """
     A queue class that handles asynchronous operations using asyncio.
@@ -114,7 +115,7 @@ class AsyncQueue:
     #     """
     #     Asynchronously process items from the queue using the provided function.
 
-    #     Continuously dequeues items and applies the given function to each. 
+    #     Continuously dequeues items and applies the given function to each.
     #     The processing stops when the queue is signaled to stop or a sentinel value (`None`) is dequeued.
 
     #     Parameters:
@@ -142,7 +143,9 @@ class AsyncQueue:
         tasks = set()
         while not self.stopped():
             if len(tasks) >= self.max_concurrent_tasks:
-                done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                done, tasks = await asyncio.wait(
+                    tasks, return_when=asyncio.FIRST_COMPLETED
+                )
 
             input_ = await self.dequeue()
             if input_ is None:

@@ -4,6 +4,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
+
 class AuthManager:
     def __init__(self, client_secrets_file, scopes, user_id=None):
         self.client_secrets_file = client_secrets_file
@@ -47,7 +48,9 @@ class AuthManager:
             token_file.write(creds.to_json())
 
     def run_authentication_flow(self):
-        flow = InstalledAppFlow.from_client_secrets_file(self.client_secrets_file, self.scopes)
+        flow = InstalledAppFlow.from_client_secrets_file(
+            self.client_secrets_file, self.scopes
+        )
         creds = flow.run_local_server(port=0)
         return creds
 

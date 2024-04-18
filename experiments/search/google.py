@@ -1,10 +1,11 @@
 import os
 
-google_key_scheme = 'GOOGLE_API_KEY'
-google_engine_scheme = 'GOOGLE_CSE_ID'
+google_key_scheme = "GOOGLE_API_KEY"
+google_engine_scheme = "GOOGLE_CSE_ID"
 
 google_api_key = os.getenv(google_key_scheme)
 google_engine = os.getenv(google_engine_scheme)
+
 
 class GoogleSearch:
     """
@@ -24,13 +25,12 @@ class GoogleSearch:
         search(title: str = None, url: str = None):
             Perform a Google search for a given title or URL and retrieve relevant content.
     """
+
     api_key = google_api_key
     search_engine = google_engine
-    search_url = (
-        """
+    search_url = """
         https://www.googleapis.com/customsearch/v1?key={key}&cx={engine}&q={query}&start={start}
         """
-        )
 
     @classmethod
     def create_agent_engine(cls, api_key=None, search_engine=None, verbose=False):
@@ -50,7 +50,9 @@ class GoogleSearch:
         """
         try:
             from llama_index.agent import OpenAIAgent
-            from llama_index.tools.tool_spec.load_and_search.base import LoadAndSearchToolSpec
+            from llama_index.tools.tool_spec.load_and_search.base import (
+                LoadAndSearchToolSpec,
+            )
             from llama_hub.tools.google_search.base import GoogleSearchToolSpec
 
             api_key = api_key if api_key else cls.api_key
@@ -65,7 +67,7 @@ class GoogleSearch:
             # Create the Agent with our tools
             agent = OpenAIAgent.from_tools(tools, verbose=verbose)
             return agent
-        
+
         except Exception as e:
             raise ImportError(f"Error in importing OpenAIAgent from llama_index: {e}")
 
@@ -85,13 +87,14 @@ class GoogleSearch:
             ValueError: If there is an issue during the search or content retrieval.
         """
         if not title and not url:
-            raise 'No search input.'
+            raise "No search input."
         from ..utils.url_util import get_url_content
 
         if url:
             return get_url_content(url)
         else:
             from googlesearch import search
+
             search_result = search(title)
 
             for url in search_result:
@@ -100,9 +103,7 @@ class GoogleSearch:
 
                 except:
                     continue
-            return 'No matched or valid source'
-
-
+            return "No matched or valid source"
 
     # get fields of a google search item
     # @classmethod

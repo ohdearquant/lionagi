@@ -2,7 +2,7 @@ from enum import Enum
 
 from lionagi.libs import nested, convert
 from lionagi.core.generic import Node
-from lionagi.core.form.form import Form
+from working.form import Form
 
 _message_fields = ["node_id", "timestamp", "role", "sender", "recipient", "content"]
 

@@ -33,12 +33,18 @@ class EncrytionUtil:
             >>> password_strength_checker("Strongpass1")
             True
         """
-        if len(password) < 8 or not any(char.isdigit() for char in password) or not any(char.isupper() for char in password):
+        if (
+            len(password) < 8
+            or not any(char.isdigit() for char in password)
+            or not any(char.isupper() for char in password)
+        ):
             return False
         return True
 
     @staticmethod
-    def generate_encryption_key(password: Optional[str] = None, salt: Optional[bytes] = None) -> str:
+    def generate_encryption_key(
+        password: Optional[str] = None, salt: Optional[bytes] = None
+    ) -> str:
         """
         Generate an encryption key from a password and salt.
 
@@ -67,7 +73,7 @@ class EncrytionUtil:
                 length=32,
                 salt=salt,
                 iterations=100000,
-                backend=default_backend()
+                backend=default_backend(),
             )
             key = kdf.derive(password.encode())
             return urlsafe_b64encode(key).decode()
@@ -126,10 +132,10 @@ class EncrytionUtil:
             >>> encrypt_file("test_file.txt", "esvCExTuhddRb8kSobU_gnNRYObyTRTI2LJF4nYai5I=")
         """
         if not output_path:
-            output_path = file_path + '.enc'
-        with open(file_path, 'rb') as file_to_encrypt:
+            output_path = file_path + ".enc"
+        with open(file_path, "rb") as file_to_encrypt:
             encrypted_data = EncrytionUtil.encrypt(file_to_encrypt.read().decode(), key)
-        with open(output_path, 'wb') as encrypted_file:
+        with open(output_path, "wb") as encrypted_file:
             encrypted_file.write(encrypted_data.encode())
 
     @staticmethod
@@ -146,10 +152,10 @@ class EncrytionUtil:
             >>> decrypt_file("test_file.txt.enc", "esvCExTuhddRb8kSobU_gnNRYObyTRTI2LJF4nYai5I=")
         """
         if not output_path:
-            output_path = encrypted_file_path.replace('.enc', '')
-        with open(encrypted_file_path, 'rb') as encrypted_file:
+            output_path = encrypted_file_path.replace(".enc", "")
+        with open(encrypted_file_path, "rb") as encrypted_file:
             decrypted_data = EncrytionUtil.decrypt(encrypted_file.read().decode(), key)
-        with open(output_path, 'wb') as decrypted_file:
+        with open(output_path, "wb") as decrypted_file:
             decrypted_file.write(decrypted_data.encode())
 
     @staticmethod
@@ -189,7 +195,7 @@ class EncrytionUtil:
         """
         if not output_path:
             output_path = os.path.dirname(file_path)
-        with zipfile.ZipFile(file_path, 'r') as zipf:
+        with zipfile.ZipFile(file_path, "r") as zipf:
             zipf.extractall(output_path)
 
     @staticmethod
@@ -205,15 +211,15 @@ class EncrytionUtil:
             >>> compress_file("test_file.txt")
         """
         if not output_path:
-            output_path = file_path + '.zip'
-        with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            output_path = file_path + ".zip"
+        with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zipf:
             zipf.write(file_path)
 
     @staticmethod
     def binary_to_hex(data: bytes) -> str:
         """
         Convert binary data to a hexadecimal string representation.
-        
+
         Args:
             data: A bytes object containing binary data.
 
@@ -229,7 +235,7 @@ class EncrytionUtil:
         return binascii.hexlify(data).decode()
 
     @staticmethod
-    def create_hash(data: str, algorithm: str = 'sha256') -> str:
+    def create_hash(data: str, algorithm: str = "sha256") -> str:
         """
         Create a hash of the given data using the specified algorithm.
 

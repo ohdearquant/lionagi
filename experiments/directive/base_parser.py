@@ -4,7 +4,6 @@ from experiments.directive.base_tokenizer import BaseToken
 from experiments.directive.schema import IfNode, TryNode, ForNode
 
 
-
 class BaseParser:
     """A base parser with lookahead, error recovery, and backtracking support.
 
@@ -209,6 +208,7 @@ class BaseParser:
                 self.next_token()
 
         return block
+
 
 # "IF condition1 && condition2; DO action2; ELSE; DO action3; ENDIF;"
 # "FOR input_ IN collections; DO action(input_); ENDFOR;"

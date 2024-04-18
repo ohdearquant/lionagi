@@ -1,4 +1,3 @@
-
 """
 Prompts for the coder
 mostly from rUv: https://gist.github.com/ruvnet/4b41ee8eaabd6e72cf18b6352437c738
@@ -7,7 +6,7 @@ mostly from rUv: https://gist.github.com/ruvnet/4b41ee8eaabd6e72cf18b6352437c738
 - review_codes
 - modify_codes
 - debug_codes
-""";
+"""
 
 guidance_response_ = """
     Guidance from super intelligent code bot:
@@ -45,5 +44,5 @@ coder_prompts = {
     "write_code": _write_prompt,
     "review_code": _review_prompt,
     "modify_code": _modify_prompt,
-    "debug_code": _debug_prompt
+    "debug_code": _debug_prompt,
 }

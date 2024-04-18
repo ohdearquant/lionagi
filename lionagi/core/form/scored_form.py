@@ -1,6 +1,6 @@
 from lionagi.integrations.bridge.pydantic_.pydantic_bridge import Field
 
-from lionagi.core.form.form import Form
+from working.form import Form
 
 
 class ScoredForm(Form):

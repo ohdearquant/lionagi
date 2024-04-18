@@ -5,6 +5,7 @@ import arxiv
 from bibtexparser import loads
 from datetime import datetime
 
+
 class ArxivPaper:
     def __init__(self, arxiv_id):
         """Initialize the ArxivPaper object with an arXiv ID.
@@ -34,7 +35,7 @@ class ArxivPaper:
         self.summary = paper.summary
         self.tags = [tag.term for tag in paper.tags]
 
-    def download_source(self, dirpath='downloads', filename=None):
+    def download_source(self, dirpath="downloads", filename=None):
         """Download the source files of the paper from arXiv.
 
         Args:
@@ -50,7 +51,7 @@ class ArxivPaper:
     def analyze_source_structure(self):
         """Analyze the source structure of the downloaded paper."""
         if self.source_file_path:
-            with zipfile.ZipFile(self.source_file_path, 'r') as zip_ref:
+            with zipfile.ZipFile(self.source_file_path, "r") as zip_ref:
                 zip_ref.extractall(os.path.dirname(self.source_file_path))
             output_dir = os.path.dirname(self.source_file_path)
             files = os.listdir(output_dir)
@@ -69,9 +70,9 @@ class ArxivPaper:
         Args:
             metadata (dict): A dictionary containing metadata extracted from LaTeX.
         """
-        self.title = metadata.get('title', self.title)
-        self.authors = metadata.get('authors', self.authors)
-        self.summary = metadata.get('abstract', self.summary)
+        self.title = metadata.get("title", self.title)
+        self.authors = metadata.get("authors", self.authors)
+        self.summary = metadata.get("abstract", self.summary)
 
     def add_label(self, label):
         """Add a label to the paper.
@@ -97,9 +98,9 @@ class ArxivPaper:
             str: The path to the main .tex file, or None if not found.
         """
         for file in files:
-            if file.endswith('.tex'):
+            if file.endswith(".tex"):
                 file_path = os.path.join(output_dir, file)
-                with open(file_path, 'r') as tex_file:
+                with open(file_path, "r") as tex_file:
                     if "\\documentclass{" in tex_file.read():
                         return file_path
         return None
@@ -115,16 +116,18 @@ class ArxivPaper:
             dict: A dictionary containing extracted metadata.
         """
         metadata = {"title": None, "authors": [], "abstract": None}
-        with open(main_tex_path, 'r') as file:
+        with open(main_tex_path, "r") as file:
             content = file.read()
-            title_match = re.search(r'\\title\{(.+?)\}', content, re.DOTALL)
+            title_match = re.search(r"\\title\{(.+?)\}", content, re.DOTALL)
             if title_match:
-                metadata['title'] = title_match.group(1).strip()
-            authors_matches = re.finditer(r'\\author\{(.+?)\}', content, re.DOTALL)
-            metadata['authors'] = [match.group(1).strip() for match in authors_matches]
-            abstract_match = re.search(r'\\begin\{abstract\}(.+?)\\end\{abstract\}', content, re.DOTALL)
+                metadata["title"] = title_match.group(1).strip()
+            authors_matches = re.finditer(r"\\author\{(.+?)\}", content, re.DOTALL)
+            metadata["authors"] = [match.group(1).strip() for match in authors_matches]
+            abstract_match = re.search(
+                r"\\begin\{abstract\}(.+?)\\end\{abstract\}", content, re.DOTALL
+            )
             if abstract_match:
-                metadata['abstract'] = abstract_match.group(1).strip()
+                metadata["abstract"] = abstract_match.group(1).strip()
         return metadata
 
     @staticmethod
@@ -137,7 +140,7 @@ class ArxivPaper:
         Returns:
             list: A list of bibliography entries.
         """
-        with open(bib_file_path, 'r') as bibtex_file:
+        with open(bib_file_path, "r") as bibtex_file:
             bib_database = loads(bibtex_file.read())
         return bib_database.entries
 
@@ -152,9 +155,10 @@ class ArxivPaper:
             str: The path to the .bib file, or None if not found.
         """
         for file in files:
-            if file.lower().endswith('.bib'):
+            if file.lower().endswith(".bib"):
                 return os.path.join(output_dir, file)
         return None
+
 
 class ArxivPaperCollection:
     def __init__(self):
@@ -198,12 +202,15 @@ class ArxivPaperCollection:
         Returns:
             ArxivPaperCollection: A new collection of papers matching the keyword.
         """
-        return ArxivPaperCollection({
-            arxiv_id: paper for arxiv_id, paper in self.papers.items()
-            if keyword.lower() in paper.title.lower() or 
-               keyword.lower() in paper.summary.lower() or
-               any(keyword.lower() in tag.lower() for tag in paper.tags)
-        })
+        return ArxivPaperCollection(
+            {
+                arxiv_id: paper
+                for arxiv_id, paper in self.papers.items()
+                if keyword.lower() in paper.title.lower()
+                or keyword.lower() in paper.summary.lower()
+                or any(keyword.lower() in tag.lower() for tag in paper.tags)
+            }
+        )
 
     def filter_by_author(self, author):
         """Filter the collection by author name.
@@ -214,10 +221,13 @@ class ArxivPaperCollection:
         Returns:
             ArxivPaperCollection: A new collection of papers by the specified author.
         """
-        return ArxivPaperCollection({
-            arxiv_id: paper for arxiv_id, paper in self.papers.items()
-            if author in paper.authors
-        })
+        return ArxivPaperCollection(
+            {
+                arxiv_id: paper
+                for arxiv_id, paper in self.papers.items()
+                if author in paper.authors
+            }
+        )
 
     def filter_by_date(self, start_date, end_date):
         """Filter the collection by submission date range.
@@ -229,12 +239,15 @@ class ArxivPaperCollection:
         Returns:
             ArxivPaperCollection: A new collection of papers within the date range.
         """
-        start_date = datetime.strptime(start_date, '%Y-%m-%d')
-        end_date = datetime.strptime(end_date, '%Y-%m-%d')
-        return ArxivPaperCollection({
-            arxiv_id: paper for arxiv_id, paper in self.papers.items()
-            if start_date <= paper.submitted_date <= end_date
-        })
+        start_date = datetime.strptime(start_date, "%Y-%m-%d")
+        end_date = datetime.strptime(end_date, "%Y-%m-%d")
+        return ArxivPaperCollection(
+            {
+                arxiv_id: paper
+                for arxiv_id, paper in self.papers.items()
+                if start_date <= paper.submitted_date <= end_date
+            }
+        )
 
     def apply_label(self, arxiv_id, label):
         """Apply a label to a paper in the collection.
@@ -245,7 +258,7 @@ class ArxivPaperCollection:
         """
         if arxiv_id in self.papers:
             self.papers[arxiv_id].add_label(label)
-            
+
 
 import os
 import zipfile
@@ -254,10 +267,11 @@ import arxiv
 from bibtexparser import loads
 from datetime import datetime
 
+
 class PaperDownloader:
     """Base class for downloading papers from different APIs."""
-    
-    def download_paper(self, paper_id, dirpath='downloads', filename=None):
+
+    def download_paper(self, paper_id, dirpath="downloads", filename=None):
         """Download paper by ID.
 
         Args:
@@ -267,10 +281,11 @@ class PaperDownloader:
         """
         raise NotImplementedError("This method should be implemented by subclasses.")
 
+
 class ArxivDownloader(PaperDownloader):
     """Class for downloading papers from arXiv."""
-    
-    def download_paper(self, paper_id, dirpath='downloads', filename=None):
+
+    def download_paper(self, paper_id, dirpath="downloads", filename=None):
         """Download paper by ID from arXiv.
 
         Args:
@@ -284,12 +299,11 @@ class ArxivDownloader(PaperDownloader):
         paper = next(arxiv.Client().results(arxiv.Search(id_list=[paper_id])))
         paper.download_source(dirpath=dirpath, filename=filename)
         return source_file_path
-    
-    
+
 
 class PaperParser:
     """Base class for parsing papers."""
-    
+
     def parse(self, source_file_path):
         """Parse the paper source files.
 
@@ -301,9 +315,10 @@ class PaperParser:
         """
         raise NotImplementedError("This method should be implemented by subclasses.")
 
+
 class LatexParser(PaperParser):
     """Class for parsing LaTeX source files."""
-    
+
     def parse(self, source_file_path):
         """Parse LaTeX source files for metadata and content.
 
@@ -314,7 +329,7 @@ class LatexParser(PaperParser):
             dict: Parsed metadata and content from the paper.
         """
         metadata = {"title": None, "authors": [], "abstract": None, "bib_info": None}
-        with zipfile.ZipFile(source_file_path, 'r') as zip_ref:
+        with zipfile.ZipFile(source_file_path, "r") as zip_ref:
             zip_ref.extractall(os.path.dirname(source_file_path))
         output_dir = os.path.dirname(source_file_path)
         files = os.listdir(output_dir)
@@ -323,15 +338,15 @@ class LatexParser(PaperParser):
             metadata.update(self._parse_latex_metadata(main_tex_path))
         bib_file_path = self._find_bib_file(files, output_dir)
         if bib_file_path:
-            metadata['bib_info'] = self._parse_bib_file(bib_file_path)
+            metadata["bib_info"] = self._parse_bib_file(bib_file_path)
         return metadata
 
     @staticmethod
     def _find_main_tex_file(files, output_dir):
         for file in files:
-            if file.endswith('.tex'):
+            if file.endswith(".tex"):
                 file_path = os.path.join(output_dir, file)
-                with open(file_path, 'r') as tex_file:
+                with open(file_path, "r") as tex_file:
                     if "\\documentclass{" in tex_file.read():
                         return file_path
         return None
@@ -339,30 +354,33 @@ class LatexParser(PaperParser):
     @staticmethod
     def _parse_latex_metadata(main_tex_path):
         metadata = {"title": None, "authors": [], "abstract": None}
-        with open(main_tex_path, 'r') as file:
+        with open(main_tex_path, "r") as file:
             content = file.read()
-            title_match = re.search(r'\\title\{(.+?)\}', content, re.DOTALL)
+            title_match = re.search(r"\\title\{(.+?)\}", content, re.DOTALL)
             if title_match:
-                metadata['title'] = title_match.group(1).strip()
-            authors_matches = re.finditer(r'\\author\{(.+?)\}', content, re.DOTALL)
-            metadata['authors'] = [match.group(1).strip() for match in authors_matches]
-            abstract_match = re.search(r'\\begin\{abstract\}(.+?)\\end\{abstract\}', content, re.DOTALL)
+                metadata["title"] = title_match.group(1).strip()
+            authors_matches = re.finditer(r"\\author\{(.+?)\}", content, re.DOTALL)
+            metadata["authors"] = [match.group(1).strip() for match in authors_matches]
+            abstract_match = re.search(
+                r"\\begin\{abstract\}(.+?)\\end\{abstract\}", content, re.DOTALL
+            )
             if abstract_match:
-                metadata['abstract'] = abstract_match.group(1).strip()
+                metadata["abstract"] = abstract_match.group(1).strip()
         return metadata
 
     @staticmethod
     def _parse_bib_file(bib_file_path):
-        with open(bib_file_path, 'r') as bibtex_file:
+        with open(bib_file_path, "r") as bibtex_file:
             bib_database = loads(bibtex_file.read())
         return bib_database.entries
 
     @staticmethod
     def _find_bib_file(files, output_dir):
         for file in files:
-            if file.lower().endswith('.bib'):
+            if file.lower().endswith(".bib"):
                 return os.path.join(output_dir, file)
         return None
+
 
 class Paper:
     def __init__(self, paper_id, downloader, parser):
@@ -387,6 +405,7 @@ class Paper:
     def __str__(self):
         """Return a string representation of the paper."""
         return f"{self.paper_id}: {self.metadata.get('title', 'Unknown title')}"
+
 
 class PaperCollection:
     def __init__(self):

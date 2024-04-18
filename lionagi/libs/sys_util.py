@@ -460,7 +460,7 @@ class SysUtil:
 
     @staticmethod
     def save_to_file(
-        text, 
+        text,
         directory: Path | str,
         filename: str,
         timestamp: bool = True,
@@ -479,11 +479,11 @@ class SysUtil:
             custom_timestamp_format=custom_timestamp_format,
             random_hash_digits=random_hash_digits,
         )
-        
-        with open(file_path, 'w') as file:
+
+        with open(file_path, "w") as file:
             file.write(text)
 
         if verbose:
             print(f"Text saved to: {file_path}")
-        
+
         return True

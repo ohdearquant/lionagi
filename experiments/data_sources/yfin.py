@@ -15,7 +15,7 @@ def get_stock_prices(symbol, **kwargs):
         - For a full list of available keyword arguments, refer to the Yahoo Finance API documentation.
     """
     from yfinance import Ticker
-    
+
     stock = Ticker(symbol)
     hist = stock.history(**kwargs)
     return hist

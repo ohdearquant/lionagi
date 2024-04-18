@@ -76,8 +76,8 @@ class Tool(Node):
         if self.pre_processor:
             kwargs = await self.pre_processor(kwargs)
 
-        func_call: FunctionCalling = FunctionCalling.create(tuple(self.func, kwargs))
-        result = await func_call.invoke()
+        func_call_: FunctionCalling = FunctionCalling.create(tuple(self.func, kwargs))
+        result = await func_call_.invoke()
 
         if self.post_processor:
             if func_call.is_coroutine_func(self.post_processor):

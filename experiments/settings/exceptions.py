@@ -1,8 +1,11 @@
 import logging
 
 # Configure logging
-logging.basicConfig(filename='lionagi_tool_manager.log', level=logging.INFO,
-                    format='%(asctime)s:%(levelname)s:%(message)s')
+logging.basicConfig(
+    filename="lionagi_tool_manager.log",
+    level=logging.INFO,
+    format="%(asctime)s:%(levelname)s:%(message)s",
+)
 
 
 # Custom exception classes
@@ -36,13 +39,14 @@ class ServiceException(LionAGIBaseException):
             msg += f" for {service.__class__.__name__}"
         return cls(msg)
 
+
 # class ActionException(LionAGIBaseException):
 #     """Exception raised for errors in action invocation."""
 #     def __init__(self, message, errors=None):
 #         super().__init__(message, errors)
 
 #     @classmethod
-#     def 
+#     def
 
 
 # class InferenceException(LionAGIBaseException):

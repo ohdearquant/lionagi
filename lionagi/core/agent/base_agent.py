@@ -87,4 +87,3 @@ class BaseAgent(Node):
 
         if self.output_parser:
             return self.output_parser(self)
-        

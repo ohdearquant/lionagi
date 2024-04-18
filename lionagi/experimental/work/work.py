@@ -9,8 +9,10 @@ from lionagi.core.generic import BaseComponent
 from lionagi.libs import func_call
 import asyncio
 
+
 class WorkStatus(str, Enum):
     """Enum to represent different statuses of work."""
+
     PENDING = "PENDING"
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
@@ -20,6 +22,7 @@ class WorkStatus(str, Enum):
 
 class Work(BaseComponent):
     """Base component for handling individual units of work."""
+
     form_id: str = Field(..., description="ID of the form for this work")
     priority: int = Field(default=0, description="Priority of the work")
     status: WorkStatus = Field(
@@ -28,21 +31,22 @@ class Work(BaseComponent):
     deliverables: Dict[str, Any] | list = Field(
         default={}, description="Deliverables produced by the work"
     )
-    dependencies: List['Work'] = Field(
+    dependencies: List["Work"] = Field(
         default_factory=list, description="List of work items this work depends on"
     )
 
 
 class WorkLog(BaseModel):
     """Model to store and manage work logs."""
+
     logs: Dict[str, Work] = Field(default={}, description="Logs of work items")
     pending: deque = Field(
-        default_factory=de, description="Priority queue of pending work items"
+        default_factory=deque, description="Priority queue of pending work items"
     )
     errored: deque = Field(
         default_factory=deque, description="Queue of errored work items"
     )
-    
+
     def append(self, work: Work):
         """Append a work item to the logs and pending queue."""
         self.logs[str(work.form_id)] = work
@@ -50,13 +54,12 @@ class WorkLog(BaseModel):
 
     def get_by_status(self, status: WorkStatus) -> Dict[str, Work]:
         """Get work items by their status."""
-        return {
-            wid: work for wid, work in self.logs.items() if work.status == status
-        }
+        return {wid: work for wid, work in self.logs.items() if work.status == status}
 
 
-class WorkFunction(BaseComponent):
+class WorkFunction(BaseModel):
     """Work function management and execution."""
+
     function: Callable
     args: List[Any] = Field(default_factory=list)
     kwargs: Dict[str, Any] = Field(default_factory=dict)
@@ -78,7 +81,7 @@ class WorkFunction(BaseComponent):
             work = self.worklog.logs[work_id]
             if work.status == WorkStatus.PENDING:
                 try:
-                    await func_call.rcall(self._execute, work, **work.retry_kwargs)
+                    await func_call.rcall(self._execute, work, **self.retry_kwargs)
                 except Exception as e:
                     work.status = WorkStatus.FAILED
                     _logging.error(f"Work {work.id_} failed with error: {e}")
@@ -89,7 +92,7 @@ class WorkFunction(BaseComponent):
                     "and cannot be executed."
                 )
             await asyncio.sleep(self.refresh_time)
-            
+
     async def _execute(self, work: Work):
         """Execute a single work item."""
         work.status = WorkStatus.IN_PROGRESS
@@ -97,8 +100,7 @@ class WorkFunction(BaseComponent):
         work.deliverables = result
         work.status = WorkStatus.COMPLETED
         return result
-    
-    
+
 
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -151,7 +153,7 @@ class TestWorkFunction(unittest.TestCase):
     @patch("asyncio.sleep", new_callable=AsyncMock)
     async def test_execute(self, mocked_sleep):
         """Test executing work changes its status and handles results."""
-        with patch.object(func_call, 'rcall', new_callable=AsyncMock) as mock_rcall:
+        with patch.object(func_call, "rcall", new_callable=AsyncMock) as mock_rcall:
             mock_rcall.return_value = "completed"
             await self.work_function.execute()
             self.assertEqual(self.work.status, WorkStatus.COMPLETED)
@@ -160,7 +162,7 @@ class TestWorkFunction(unittest.TestCase):
     @patch("asyncio.sleep", new_callable=AsyncMock)
     async def test_execute_failure(self, mocked_sleep):
         """Test handling failure during work execution."""
-        with patch.object(func_call, 'rcall', side_effect=Exception("Error")):
+        with patch.object(func_call, "rcall", side_effect=Exception("Error")):
             await self.work_function.execute()
             self.assertEqual(self.work.status, WorkStatus.FAILED)
             self.assertIn("123", self.work_function.worklog.errored)

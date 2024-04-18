@@ -10,7 +10,7 @@ class KGraph:
                         article_publish_date=None, verbose=False):
             Extract relations from input text and create a Knowledge Base (KB) containing entities and relations.
     """
-    
+
     @staticmethod
     def text_to_wiki_kb(text, **kwargs):
         """
@@ -24,4 +24,3 @@ class KGraph:
             KnowledgeBase: A Knowledge Base (KB) containing entities and relations extracted from the input text.
         """
         return KGTripletExtractor.text_to_wiki_kb(text, **kwargs)
-    

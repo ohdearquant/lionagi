@@ -1,5 +1,4 @@
-
-class KnowledgeBase():
+class KnowledgeBase:
     """
     A class to represent a Knowledge Base (KB) containing entities, relations, and sources.
 
@@ -23,14 +22,15 @@ class KnowledgeBase():
         extract_relations_from_model_output(text): Extract relations from the model output text.
 
     """
+
     def __init__(self):
         """
         Initialize an empty Knowledge Base (KB) with empty dictionaries for entities, relations, and sources.
         """
-        self.entities = {} # { entity_title: {...} }
-        self.relations = [] # [ head: entity_title, type: ..., tail: entity_title,
-          # meta: { article_url: { spans: [...] } } ]
-        self.sources = {} # { article_url: {...} }
+        self.entities = {}  # { entity_title: {...} }
+        self.relations = []  # [ head: entity_title, type: ..., tail: entity_title,
+        # meta: { article_url: { spans: [...] } } ]
+        self.sources = {}  # { article_url: {...} }
 
     def merge_with_kb(self, kb2):
         """
@@ -42,8 +42,9 @@ class KnowledgeBase():
         for r in kb2.relations:
             article_url = list(r["meta"].keys())[0]
             source_data = kb2.sources[article_url]
-            self.add_relation(r, source_data["article_title"],
-                              source_data["article_publish_date"])
+            self.add_relation(
+                r, source_data["article_title"], source_data["article_publish_date"]
+            )
 
     def are_relations_equal(self, r1, r2):
         """
@@ -77,8 +78,7 @@ class KnowledgeBase():
         Args:
             r2 (dict): The relation to merge into an existing relation in the KB.
         """
-        r1 = [r for r in self.relations
-              if self.are_relations_equal(r2, r)][0]
+        r1 = [r for r in self.relations if self.are_relations_equal(r2, r)][0]
 
         # if different article
         article_url = list(r2["meta"].keys())[0]
@@ -87,8 +87,11 @@ class KnowledgeBase():
 
         # if existing article
         else:
-            spans_to_add = [span for span in r2["meta"][article_url]["spans"]
-                            if span not in r1["meta"][article_url]["spans"]]
+            spans_to_add = [
+                span
+                for span in r2["meta"][article_url]["spans"]
+                if span not in r1["meta"][article_url]["spans"]
+            ]
             r1["meta"][article_url]["spans"] += spans_to_add
 
     def get_wikipedia_data(self, candidate_entity):
@@ -102,13 +105,13 @@ class KnowledgeBase():
             dict: A dictionary containing information about the candidate entity (title, url, summary).
                   None if the entity does not exist in Wikipedia.
         """
-        
+
         try:
             page = wikipedia.page(candidate_entity, auto_suggest=False)
             entity_data = {
                 "title": page.title,
                 "url": page.url,
-                "summary": page.summary
+                "summary": page.summary,
             }
             return entity_data
         except:
@@ -121,7 +124,7 @@ class KnowledgeBase():
         Args:
             e (dict): A dictionary containing information about the entity (title and additional attributes).
         """
-        self.entities[e["title"]] = {k:v for k,v in e.items() if k != "title"}
+        self.entities[e["title"]] = {k: v for k, v in e.items() if k != "title"}
 
     def add_relation(self, r, article_title, article_publish_date):
         """
@@ -153,7 +156,7 @@ class KnowledgeBase():
         if article_url not in self.sources:
             self.sources[article_url] = {
                 "article_title": article_title,
-                "article_publish_date": article_publish_date
+                "article_publish_date": article_publish_date,
             }
 
         # manage new relation
@@ -191,44 +194,50 @@ class KnowledgeBase():
             list: A list of dictionaries, where each dictionary represents a relation (head, type, tail).
         """
         relations = []
-        relation, subject, relation, object_ = '', '', '', ''
+        relation, subject, relation, object_ = "", "", "", ""
         text = text.strip()
-        current = 'x'
+        current = "x"
         text_replaced = text.replace("<s>", "").replace("<pad>", "").replace("</s>", "")
         for token in text_replaced.split():
             if token == "<triplet>":
-                current = 't'
-                if relation != '':
-                    relations.append({
-                        'head': subject.strip(),
-                        'type': relation.strip(),
-                        'tail': object_.strip()
-                    })
-                    relation = ''
-                subject = ''
+                current = "t"
+                if relation != "":
+                    relations.append(
+                        {
+                            "head": subject.strip(),
+                            "type": relation.strip(),
+                            "tail": object_.strip(),
+                        }
+                    )
+                    relation = ""
+                subject = ""
             elif token == "<subj>":
-                current = 's'
-                if relation != '':
-                    relations.append({
-                        'head': subject.strip(),
-                        'type': relation.strip(),
-                        'tail': object_.strip()
-                    })
-                object_ = ''
+                current = "s"
+                if relation != "":
+                    relations.append(
+                        {
+                            "head": subject.strip(),
+                            "type": relation.strip(),
+                            "tail": object_.strip(),
+                        }
+                    )
+                object_ = ""
             elif token == "<obj>":
-                current = 'o'
-                relation = ''
+                current = "o"
+                relation = ""
             else:
-                if current == 't':
-                    subject += ' ' + token
-                elif current == 's':
-                    object_ += ' ' + token
-                elif current == 'o':
-                    relation += ' ' + token
-        if subject != '' and relation != '' and object_ != '':
-            relations.append({
-                'head': subject.strip(),
-                'type': relation.strip(),
-                'tail': object_.strip()
-            })
+                if current == "t":
+                    subject += " " + token
+                elif current == "s":
+                    object_ += " " + token
+                elif current == "o":
+                    relation += " " + token
+        if subject != "" and relation != "" and object_ != "":
+            relations.append(
+                {
+                    "head": subject.strip(),
+                    "type": relation.strip(),
+                    "tail": object_.strip(),
+                }
+            )
         return relations

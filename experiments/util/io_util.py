@@ -6,11 +6,12 @@ import tarfile
 from collections.abc import Iterable
 from typing import Any, Dict, List
 
+
 class IOUtil:
     """
     Utility class for reading and writing data from/to files in various formats.
     """
-    
+
     @staticmethod
     def read_csv(filepath: str) -> List[Dict[str, Any]]:
         """
@@ -22,7 +23,7 @@ class IOUtil:
         Returns:
             List[Dict[str, Any]]: A list of dictionaries, each representing a row in the CSV file.
         """
-        with open(filepath, 'r', newline='') as csv_file:
+        with open(filepath, "r", newline="") as csv_file:
             reader = csv.DictReader(csv_file)
             return list(reader)
 
@@ -37,7 +38,7 @@ class IOUtil:
         Returns:
             List[Any]: A list where each element is a JSON object from a line in the file.
         """
-        with open(filepath, 'r') as f:
+        with open(filepath, "r") as f:
             return [json.loads(line) for line in f]
 
     @staticmethod
@@ -52,7 +53,7 @@ class IOUtil:
         Returns:
             None: This function does not return anything.
         """
-        with open(filepath, 'w') as json_file:
+        with open(filepath, "w") as json_file:
             json.dump(data, json_file, indent=4)
 
     @staticmethod
@@ -66,7 +67,7 @@ class IOUtil:
         Returns:
             Any: The content of the JSON file.
         """
-        with open(filepath, 'r') as json_file:
+        with open(filepath, "r") as json_file:
             return json.load(json_file)
 
     @staticmethod
@@ -84,22 +85,22 @@ class IOUtil:
         merged_data = []
         fieldnames = set()
         for filepath in filepaths:
-            with open(filepath, 'r', newline='') as csv_file:
+            with open(filepath, "r", newline="") as csv_file:
                 reader = csv.DictReader(csv_file)
                 if reader.fieldnames is not None:
                     fieldnames.update(reader.fieldnames)
                     for row in reader:
                         merged_data.append(row)
         fieldnames = list(fieldnames)
-        with open(output_filepath, 'w', newline='') as csv_file:
+        with open(output_filepath, "w", newline="") as csv_file:
             writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(merged_data)
 
     @staticmethod
-    def to_csv(input: List[Dict[str, Any]],
-            filepath: str,
-            file_exist_ok: bool = False) -> None:
+    def to_csv(
+        input: List[Dict[str, Any]], filepath: str, file_exist_ok: bool = False
+    ) -> None:
         """
         Writes a list of dictionaries to a CSV file.
 
@@ -117,13 +118,18 @@ class IOUtil:
         """
         if not input:
             return
-        if not os.path.exists(os.path.dirname(filepath)) and os.path.dirname(filepath) != '':
+        if (
+            not os.path.exists(os.path.dirname(filepath))
+            and os.path.dirname(filepath) != ""
+        ):
             if file_exist_ok:
                 os.makedirs(os.path.dirname(filepath), exist_ok=True)
             else:
-                raise FileNotFoundError(f"The directory {os.path.dirname(filepath)} does not exist.")
+                raise FileNotFoundError(
+                    f"The directory {os.path.dirname(filepath)} does not exist."
+                )
 
-        with open(filepath, 'w', newline='') as csv_file:
+        with open(filepath, "w", newline="") as csv_file:
             writer = csv.DictWriter(csv_file, fieldnames=input[0].keys())
             writer.writeheader()
             for row in input:
@@ -144,7 +150,7 @@ class IOUtil:
         json_string = json.dumps(data)
         with open(filepath, "a") as f:
             f.write(json_string + "\n")
-            
+
     @staticmethod
     def to_temp(input: Any) -> tempfile.NamedTemporaryFile:
         """
@@ -177,7 +183,7 @@ class IOUtil:
         elif isinstance(input, Iterable):
             input = [item for item in input if item is not None]
 
-        temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False)
+        temp_file = tempfile.NamedTemporaryFile(mode="w", delete=False)
         try:
             json.dump(input, temp_file)
         except TypeError as e:
@@ -187,7 +193,7 @@ class IOUtil:
         return temp_file
 
     @staticmethod
-    def decompress_tar_gz(file_path, extract_path='.'):
+    def decompress_tar_gz(file_path, extract_path="."):
         """
         Decompresses a .tar.gz file to a specified directory.
 
@@ -195,6 +201,6 @@ class IOUtil:
         :param extract_path: Directory where the contents will be extracted
         """
         # Open the tar.gz file
-        with tarfile.open(file_path, 'r:gz') as tar:
+        with tarfile.open(file_path, "r:gz") as tar:
             # Extract all the contents into the specified directory
             tar.extractall(path=extract_path)
