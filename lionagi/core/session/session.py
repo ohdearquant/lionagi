@@ -512,10 +512,11 @@ class Session:
 
     async def chat(
         self,
-        instruction: dict | list | Instruction | str,
+        instruction: dict | list | Instruction | str=None,
         branch: Branch | str | None = None,
         context: dict | list | str = None,
         sender: str | None = None,
+        form=None,
         system: dict | list | System | None = None,
         tools: TOOL_TYPE = False,
         out: bool = True,
@@ -548,6 +549,7 @@ class Session:
             sender=sender,
             system=system,
             tools=tools,
+            form=form,
             out=out,
             invoke=invoke,
             output_fields=output_fields,

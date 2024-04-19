@@ -22,7 +22,10 @@ def check_dict_field(x, keys: list[str] | dict, fix_=True, **kwargs):
     raise ValueError(f"Default value for DICT must be a dict, got {type(x).__name__}")
 
 
-def check_action_field(x, fix_=True, **kwargs):
+def check_action_field(x, fix_=True, codes=False, **kwargs):
+    if codes:
+        return x
+    
     if (
         isinstance(x, list)
         and is_same_dtype(x, dict)
@@ -30,7 +33,7 @@ def check_action_field(x, fix_=True, **kwargs):
     ):
         return x
     try:
-        x = _fix_action_field(x, fix_)
+        x = _fix_action_field(x, fix_, **kwargs)
         return x
     except Exception as e:
         raise ValueError("Invalid action field type.") from e

@@ -1,6 +1,5 @@
 from pathlib import Path
 from lionagi.libs import SysUtil, ParseUtil
-from typing import Any
 from pydantic import Field
 from lionagi.core import Session
 from lionagi.core.form.action_form import ActionForm
@@ -108,14 +107,6 @@ class Coder:
             if execution.error:
                 setattr(form, "execution_error", execution.error)
                 setattr(form, "execution", None)
-
-                print(f"Error: {execution.error}")
-                print(
-                    "Please check the error message and modify your code accordingly."
-                )
-                print(
-                    "You can re-execute the updated code or provide additional instructions."
-                )
 
             elif execution.text:
                 self.save_code_file(form)
