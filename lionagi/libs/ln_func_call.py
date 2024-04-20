@@ -1237,6 +1237,12 @@ async def call_handler(
             logging.error(f"Error in call_handler: {e}")
         raise
 
+async def unified_call(func, *args, **kwargs):
+    if is_coroutine_func(func):
+        tasks = [call_handler(func, *args, **kwargs)]
+        return await AsyncUtil.execute_tasks(*tasks)[0]
+    else:
+        return func(*args, **kwargs)
 
 @functools.lru_cache(maxsize=None)
 def is_coroutine_func(func: Callable) -> bool:
