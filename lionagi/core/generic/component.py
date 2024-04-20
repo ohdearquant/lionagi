@@ -150,7 +150,6 @@ class BaseComponent(BaseModel, ABC):
             dict_.update(self._get_field_annotation(i))
         return dict_
 
-
     @_get_field_annotation.register(tuple)
     def _(self, field_name) -> dict[str, Any]:
         """
@@ -167,7 +166,6 @@ class BaseComponent(BaseModel, ABC):
         for i in field_name:
             dict_.update(self._get_field_annotation(i))
         return dict_
-
 
     def _field_has_attr(self, k: str, attr: str) -> bool:
         """

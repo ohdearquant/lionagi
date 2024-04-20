@@ -9,12 +9,13 @@ class BaseManual:
     def _evaluate_condition(self, match, context):
         condition, text = match.groups()
         # Future implementations might parse and evaluate the condition more thoroughly
-        return text if condition in context and context[condition] else ''
+        return text if condition in context and context[condition] else ""
 
     def _render_conditionals(self, context: Dict[str, Union[str, int, float]]) -> str:
-        conditional_pattern = re.compile(r'\{if (.*?)\}(.*?)\{endif\}', re.DOTALL)
+        conditional_pattern = re.compile(r"\{if (.*?)\}(.*?)\{endif\}", re.DOTALL)
         return conditional_pattern.sub(
-            lambda match: self._evaluate_condition(match, context), self.template_str)
+            lambda match: self._evaluate_condition(match, context), self.template_str
+        )
 
     def _replace_callable(self, match, context):
         key = match.group(1)
@@ -23,10 +24,16 @@ class BaseManual:
             return str(value() if callable(value) else value)
         return match.group(0)  # Unmatched placeholders remain unchanged.
 
-    def _render_placeholders(self, rendered_template: str,
-                             context: Dict[str, Union[str, int, float, Callable]]) -> str:
-        return re.sub(r'\{(\w+)\}', lambda match: self._replace_callable(match, context),
-                      rendered_template)
+    def _render_placeholders(
+        self,
+        rendered_template: str,
+        context: Dict[str, Union[str, int, float, Callable]],
+    ) -> str:
+        return re.sub(
+            r"\{(\w+)\}",
+            lambda match: self._replace_callable(match, context),
+            rendered_template,
+        )
 
     def generate(self, context: Dict[str, Union[str, int, float, Callable]]) -> str:
         """

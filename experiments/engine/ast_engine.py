@@ -9,9 +9,12 @@ class ASTEvaluator:
 
     def __init__(self):
         self.allowed_operators = {
-            ast.Eq: operator.eq, ast.NotEq: operator.ne,
-            ast.Lt: operator.lt, ast.LtE: operator.le,
-            ast.Gt: operator.gt, ast.GtE: operator.ge,
+            ast.Eq: operator.eq,
+            ast.NotEq: operator.ne,
+            ast.Lt: operator.lt,
+            ast.LtE: operator.le,
+            ast.Gt: operator.gt,
+            ast.GtE: operator.ge,
             # Additional operators can be added here as needed
         }
 
@@ -20,7 +23,7 @@ class ASTEvaluator:
         Evaluate a condition expression within a given context using AST parsing.
         """
         try:
-            tree = ast.parse(expression, mode='eval')
+            tree = ast.parse(expression, mode="eval")
             return self._evaluate_node(tree.body, context)
         except Exception as e:
             raise ValueError(f"Failed to evaluate expression: {expression}. Error: {e}")
@@ -32,7 +35,8 @@ class ASTEvaluator:
                 op_func = self.allowed_operators.get(type(operation))
                 if not op_func:
                     raise ValueError(
-                        f"Operation {type(operation).__name__} is not allowed.")
+                        f"Operation {type(operation).__name__} is not allowed."
+                    )
                 right = self._evaluate_node(comparator, context)
                 if not op_func(left, right):
                     return False
@@ -43,7 +47,8 @@ class ASTEvaluator:
             return node.n
         else:
             raise ValueError(
-                "Unsupported AST node type encountered in condition evaluation.")
+                "Unsupported AST node type encountered in condition evaluation."
+            )
 
 
 class ASTEngine:
@@ -55,7 +60,7 @@ class ASTEngine:
         self.variables = {}
         self.safe_evaluator = ASTEvaluator()
         self.functions = {
-            'processData': self.process_data,
+            "processData": self.process_data,
         }
 
     def process_data(self, data):
@@ -89,11 +94,12 @@ class ASTEngine:
         """
         Parses and executes a script, handling variable assignments and function calls.
         """
-        tree = ast.parse(script, mode='exec')
+        tree = ast.parse(script, mode="exec")
         for stmt in tree.body:
             if isinstance(stmt, ast.Assign):
                 var_name = stmt.targets[
-                    0].id  # Assumes single target assignment for simplicity
+                    0
+                ].id  # Assumes single target assignment for simplicity
                 # Convert the AST node back to a string for evaluation
                 value_expr = ast.unparse(stmt.value)
                 value = self._evaluate_expression(value_expr)
@@ -105,4 +111,5 @@ class ASTEngine:
                 self._execute_function(func_name, arg)
             else:
                 raise ValueError(
-                    "Unsupported statement type encountered in script execution.")
+                    "Unsupported statement type encountered in script execution."
+                )

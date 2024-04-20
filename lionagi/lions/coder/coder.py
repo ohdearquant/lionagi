@@ -4,8 +4,11 @@ from lionagi.core import Session
 from .routines.base_prompts import CODER_PROMPTS
 from .util import extract_code_blocks, install_missing_dependencies, set_up_interpreter
 
+
 class Coder:
-    def __init__(self, prompts=None, session=None, session_kwargs=None, required_libraries=None):
+    def __init__(
+        self, prompts=None, session=None, session_kwargs=None, required_libraries=None
+    ):
         print("Initializing Coder...")
         self.prompts = prompts or CODER_PROMPTS
         self.session = session or self._create_session(session_kwargs)
@@ -15,7 +18,7 @@ class Coder:
     def _create_session(self, session_kwargs=None):
         print("Creating session...")
         session_kwargs = session_kwargs or {}
-        session = Session(system=self.prompts['system'], **session_kwargs)
+        session = Session(system=self.prompts["system"], **session_kwargs)
         print("Session created.")
         return session
 
@@ -51,7 +54,7 @@ class Coder:
 
     def _handle_execution_error(self, execution, required_libraries=None):
         print("Handling execution error...")
-        if execution.error and execution.error.name == 'ModuleNotFoundError':
+        if execution.error and execution.error.name == "ModuleNotFoundError":
             print("ModuleNotFoundError detected. Installing missing dependencies...")
             install_missing_dependencies(required_libraries)
             print("Dependencies installed. Retrying execution.")
@@ -66,20 +69,23 @@ class Coder:
         with interpreter as sandbox:
             print("Running code in sandbox...")
             execution = sandbox.notebook.exec_cell(code, **kwargs)
-            error = self._handle_execution_error(execution, required_libraries=kwargs.get('required_libraries'))
+            error = self._handle_execution_error(
+                execution, required_libraries=kwargs.get("required_libraries")
+            )
             if error == "try again":
                 print("Retrying code execution...")
                 execution = sandbox.notebook.exec_cell(code, **kwargs)
             print("Code execution completed.")
             return execution
 
+
 async def main():
     print("Starting main function...")
     coder = Coder()
 
-    code_prompt = '''
+    code_prompt = """
     write a pure python function that takes a list of integers and returns the sum of all the integers in the list. write a couple tests as well
-    '''
+    """
 
     print(f"Code prompt: {code_prompt}")
 
@@ -107,6 +113,7 @@ async def main():
     print(execution_result)
 
     print("Main function completed.")
+
 
 if __name__ == "__main__":
     print("Running script...")

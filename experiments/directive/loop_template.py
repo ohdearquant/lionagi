@@ -22,7 +22,8 @@ class LoopTemplate(BaseDirectiveTemplate):
 
             if not isinstance(collection, (list, range)):
                 raise ValueError(
-                    f"Expected list or range for '{collection_name}', got {type(collection).__name__}.")
+                    f"Expected list or range for '{collection_name}', got {type(collection).__name__}."
+                )
 
             loop_result = ""
             for item in collection:

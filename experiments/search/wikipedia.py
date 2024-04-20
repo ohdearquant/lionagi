@@ -18,7 +18,7 @@ class WikipediaSearch:
     #     return agent
 
     @staticmethod
-    def query(query: str, lang: str = 'en'):
+    def query(query: str, lang: str = "en"):
         """
         Search for a query on Wikipedia and retrieve relevant information.
 

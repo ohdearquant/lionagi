@@ -138,11 +138,11 @@ class BaseEvaluator:
     def _validate_node(self, node):
         """Validates an AST node."""
         if isinstance(
-                node, (ast.BinOp, ast.Compare, ast.BoolOp, ast.Name, ast.Constant)
+            node, (ast.BinOp, ast.Compare, ast.BoolOp, ast.Name, ast.Constant)
         ):
             if (
-                    isinstance(node, ast.BinOp)
-                    and type(node.op) not in self.allowed_operators
+                isinstance(node, ast.BinOp)
+                and type(node.op) not in self.allowed_operators
             ):
                 raise ValueError(
                     f"Operation {type(node.op).__name__} is not supported."
