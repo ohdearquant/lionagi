@@ -3,6 +3,9 @@ from typing import Dict, Union
 def get_ipython_user_proxy():
     
     try:
+        from lionagi.libs import SysUtil
+        SysUtil.check_import("autogen", pip_name="pyautogen")
+        
         import autogen
         from IPython import get_ipython
     except Exception as e:
@@ -47,6 +50,9 @@ def get_autogen_coder(
 ):
     assistant = ''
     try:
+        from lionagi.libs import SysUtil
+        SysUtil.check_import("autogen", pip_name="pyautogen")
+        
         import autogen
         from autogen.agentchat.contrib.gpt_assistant_agent import GPTAssistantAgent
     except Exception as e:
@@ -94,3 +100,12 @@ def get_autogen_coder(
         )
         return user_proxy, assistant
     
+    
+    # # Sample Usage Pattern
+    # context = "def my_function():\n    pass\n"
+    # task1 = "I need help with the following code:\n"
+    # task2 = "Please write a function that returns the sum of two numbers."
+    
+    # user_proxy, assistant = get_autogen_coder()
+    # user_proxy.initiate_chat(assistant, message=task1+context)
+    # user_proxy.send(recipient=assistant, message=task2)
