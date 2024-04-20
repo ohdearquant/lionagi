@@ -1,8 +1,7 @@
 from typing import Union, Dict, Any
-import subprocess
 
-from lionagi.libs.sys_util import SysUtil
 from lionagi.libs.ln_api import BaseService
+from lionagi.integrations.bridge.transformers_._install import install_transformers
 
 allowed_kwargs = [
     "model",
@@ -18,25 +17,6 @@ allowed_kwargs = [
     "min_length_for_response",
     "minimum_tokens",
 ]
-
-
-def get_pytorch_install_command():
-    cpu_arch = SysUtil.get_cpu_architecture()
-
-    if cpu_arch == "apple_silicon":
-        return "pip install --pre torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/nightly/cpu"
-    else:
-        # Default CPU installation
-        return "pip install torch torchvision torchaudio"
-
-
-def install_pytorch():
-    command = get_pytorch_install_command()
-    try:
-        subprocess.run(command.split(), check=True)
-        print("PyTorch installed successfully.")
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to install PyTorch: {e}")
 
 
 class TransformersService(BaseService):
@@ -58,23 +38,10 @@ class TransformersService(BaseService):
             self.pipeline = pipeline
         except ImportError:
             try:
-                if not SysUtil.is_package_installed("torch"):
-                    in_ = input(
-                        "PyTorch is required for transformers. Would you like to install it now? (y/n): "
-                    )
-                    if in_ == "y":
-                        install_pytorch()
-                if not SysUtil.is_package_installed("transformers"):
-                    in_ = input(
-                        "transformers is required. Would you like to install it now? (y/n): "
-                    )
-                    if in_ == "y":
-                        SysUtil.install_import(
-                            package_name="transformers", import_name="pipeline"
-                        )
-                    from transformers import pipeline
+                install_transformers()
+                from transformers import pipeline
 
-                    self.pipeline = pipeline
+                self.pipeline = pipeline
             except Exception as e:
                 raise ImportError(
                     f"Unable to import required module from transformers. Please make sure that transformers is installed. Error: {e}"

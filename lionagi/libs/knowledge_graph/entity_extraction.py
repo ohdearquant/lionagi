@@ -1,7 +1,5 @@
 import math
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-import torch
-from lionagi import CallDecorator as cd
+from lionagi.libs import CallDecorator as cd
 
 
 class KnowledgeBase:
@@ -113,6 +111,8 @@ class KnowledgeBase:
                   None if the entity does not exist in Wikipedia.
         """
         try:
+            from lionagi.libs import SysUtil
+            SysUtil.check_import("wikipedia")
             import wikipedia
         except Exception as e:
             raise Exception("wikipedia package is not installed {e}")
@@ -276,6 +276,13 @@ class KGTripletExtractor:
         article_publish_date=None,
         verbose=False,
     ):
+        from lionagi.integrations.bridge.transformers_._install import install_transformers
+        try:
+            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+        except ImportError:
+            install_transformers()
+        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+        import torch
         """
         Extract knowledge graph triplets from text and create a KnowledgeBase (KB) containing entities and relations.
 
