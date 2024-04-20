@@ -1,6 +1,7 @@
 from typing import Any, Dict
 import re
-from experiments.evaluator.base_evaluator import BaseEvaluator
+
+from ..evaluator.base_evaluator import BaseEvaluator
 
 
 class BaseDirectiveTemplate:
@@ -60,61 +61,3 @@ class BaseDirectiveTemplate:
         except KeyError as e:
             print(f"Missing key in context: {e}")
             return template_with_loops
-
-
-class BaseDirectiveTemplate:
-    """Processes templates with conditionals and loops."""
-
-    def __init__(self, template_str: str):
-        self.template_str = template_str
-        self.evaluator = BaseEvaluator()
-
-    def _render_conditionals(self, context: Dict[str, Any]) -> str:
-        """Renders conditionals in the template."""
-        # Method implementation remains the same
-
-    def _render_loops(self, template: str, context: Dict[str, Any]) -> str:
-        """Renders loops in the template."""
-        loop_pattern = re.compile(r"\{for (\w+) in (\w+)\}(.*?)\{endfor\}", re.DOTALL)
-
-        def render_loop(match):
-            iterator_var, collection_name, loop_body = match.groups()
-            collection = context.get(collection_name, [])
-            if not isinstance(collection, (list, range)):
-                raise ValueError(
-                    f"Expected list or range for '{collection_name}', got {type(collection).__name__}."
-                )
-
-            loop_result = ""
-            for item in collection:
-                loop_context = context.copy()
-                loop_context[iterator_var] = item
-                processed_loop_body = self.fill(loop_body.strip(), loop_context)
-                loop_result += processed_loop_body + ", "
-            return loop_result.strip(", ")
-
-        return loop_pattern.sub(render_loop, template).strip()
-
-    def fill(self, template_str: str = "", context: Dict[str, Any] = {}) -> str:
-        """Fills the template with values from context."""
-        # Method implementation remains the same
-
-
-class DirectiveGroup:
-    def __init__(self):
-        self.directives = []
-
-    def add_directive(self, directive):
-        self.directives.append(directive)
-
-    def validate_all(self):
-        print("Validating all directives in the group...")
-        return all(directive.validate() for directive in self.directives)
-
-    def execute_all(self):
-        if self.validate_all():
-            print("Executing all validated directives...")
-            for directive in self.directives:
-                directive.execute()
-        else:
-            print("One or more directives failed validation.")

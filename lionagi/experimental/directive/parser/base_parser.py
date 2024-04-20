@@ -1,10 +1,10 @@
 from typing import List, Optional
 
-from experiments.directive.base_tokenizer import BaseToken
-from experiments.directive.schema import IfNode, TryNode, ForNode
+from lionagi.libs.tokenizer.token import BaseToken
+from ..schema import IfNode, TryNode, ForNode
 
 
-class BaseParser:
+class BaseDirectiveParser:
     """A base parser with lookahead, error recovery, and backtracking support.
 
     Attributes:
