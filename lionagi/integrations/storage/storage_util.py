@@ -4,9 +4,8 @@ import re
 
 from lionagi.core import System, Instruction
 from lionagi.core.tool import Tool
-from lionagi.core.generic.action import ActionSelection
-from lionagi.core.agent.base_agent import BaseAgent
-from lionagi.core.generic.condition import Condition
+from lionagi.core.action.action import ActionSelection
+from lionagi.core.agent.base.schema import BaseAgent
 
 from lionagi.core import func_to_tool
 

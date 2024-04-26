@@ -186,7 +186,7 @@ class BranchExecutor(Branch, BaseExecutor):
             result = ParseUtil.fuzzy_parse_json(result)
             if "response" in result.keys():
                 result = result["response"]
-        if verbose and len(self.assistant_responses) != 0:
+        if verbose and len(self._assistant_responses) != 0:
             display(
                 Markdown(
                     f"{self.last_assistant_response.sender}: {convert.to_str(result)}"
@@ -236,7 +236,7 @@ class BranchExecutor(Branch, BaseExecutor):
                 action.instruction.content, tools=action.tools, **action.action_kwargs
             )
 
-        if verbose and len(self.assistant_responses) != 0:
+        if verbose and len(self._assistant_responses) != 0:
             display(
                 Markdown(
                     f"{self.last_assistant_response.sender}: {convert.to_str(result)}"

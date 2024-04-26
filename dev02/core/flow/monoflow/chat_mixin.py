@@ -119,7 +119,7 @@ class MonoChatInvokeMixin(ABC):
             return_template (bool): Flag indicating whether to return the prompt template (default: True).
         """
 
-        content_ = self.branch.last_message_content
+        content_ = self.branch._last_message_content
 
         if invoke:
             try:
@@ -235,9 +235,9 @@ class MonoChatInvokeMixin(ABC):
             **kwargs: Additional keyword arguments for the chat completion API.
         """
         messages = (
-            self.branch.chat_messages_with_sender
+            self.branch._chat_messages_with_sender
             if with_sender
-            else self.branch.chat_messages
+            else self.branch._chat_messages
         )
         payload, completion = await self.branch.service.serve_chat(
             messages=messages, **kwargs

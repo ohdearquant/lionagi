@@ -137,7 +137,7 @@ class Session:
         Returns:
                 pd.Series: The first system message as a pandas Series.
         """
-        return self.default_branch.first_system
+        return self.default_branch._first_system
 
     @property
     def last_response(self) -> dataframe.ln_DataFrame:
@@ -157,7 +157,7 @@ class Session:
         Returns:
                 dict: The content of the last response message as a dictionary
         """
-        return self.default_branch.last_response_content
+        return self.default_branch._last_response_content
 
     @property
     def tool_request(self) -> dataframe.ln_DataFrame:
@@ -197,28 +197,7 @@ class Session:
         Returns:
                 dataframe.ln_DataFrame: A DataFrame containing assistant responses excluding tool requests and responses.
         """
-        return self.default_branch.assistant_responses
-
-    @property
-    def info(self) -> dict[str, int]:
-        """
-        Get a summary of the conversation messages categorized by role.
-
-        Returns:
-                dict[str, int]: A dictionary with keys as message roles and values as counts.
-        """
-
-        return self.default_branch.info
-
-    @property
-    def sender_info(self) -> dict[str, int]:
-        """
-        Provides a descriptive summary of the conversation, including total message count and summary by sender.
-
-        Returns:
-                dict[str, Any]: A dictionary containing the total number of messages and a summary categorized by sender.
-        """
-        return self.default_branch.sender_info
+        return self.default_branch._assistant_responses
 
     def register_tools(self, tools):
         self.default_branch.register_tools(tools)
@@ -983,3 +962,26 @@ class Session:
             self.default_branch.add_message(system=system, sender=sender)
 
         self.llmconfig = self.default_branch.llmconfig
+
+    # for backward compatibility
+    # will be removed in future versions
+    @property
+    def info(self) -> dict[str, int]:
+        """
+        Get a summary of the conversation messages categorized by role.
+
+        Returns:
+                dict[str, int]: A dictionary with keys as message roles and values as counts.
+        """
+
+        return self.default_branch.info
+
+    @property
+    def sender_info(self) -> dict[str, int]:
+        """
+        Provides a descriptive summary of the conversation, including total message count and summary by sender.
+
+        Returns:
+                dict[str, Any]: A dictionary containing the total number of messages and a summary categorized by sender.
+        """
+        return self.default_branch.sender_info

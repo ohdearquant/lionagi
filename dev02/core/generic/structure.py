@@ -12,10 +12,10 @@ from typing import Any
 from pydantic import Field
 
 from lionagi.libs import convert, func_call
-from .condition import Condition
+from lionagi.core.generic.abstract.condition import Condition
 from .edge import Edge
 from .node import Node
-from .action import ActionSelection
+from lionagi.core.action.action import ActionSelection
 from lionagi.core.tool import Tool
 
 

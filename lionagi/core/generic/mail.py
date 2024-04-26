@@ -1,38 +1,16 @@
-"""
-This module defines classes for representing mail packages and mailboxes
-in a messaging system.
+from collections import deque
+from pydantic import Field
+from pydantic.dataclasses import dataclass
 
-The module includes the following classes:
-- MailPackageCategory: An enumeration of categories for mail packages.
-- Mail: Represents a mail message sent from one component to another.
-- MailBox: Represents a mailbox that stores pending incoming and outgoing mails.
-"""
+from lionagi.core.generic.mail import Mail
 
-from typing import Any
+from collections import deque
 from enum import Enum
 
-from pydantic import Field, field_validator
-
-from lionagi.core.generic.component import BaseComponent
+from lionagi.core.generic import Node
 
 
-class MailPackageCategory(str, Enum):
-    """
-    Defines categories for mail packages in a messaging system.
-
-    Attributes:
-        MESSAGES: Represents general messages.
-        TOOL: Represents tools.
-        SERVICE: Represents services.
-        MODEL: Represents models.
-        NODE: Represents nodes.
-        NODE_LIST: Represents a list of nodes.
-        NODE_ID: Represents a node's ID.
-        START: Represents a start signal or value.
-        END: Represents an end signal or value.
-        CONDITION: Represents a condition.
-    """
-
+class MailCategory(str, Enum):
     MESSAGES = "messages"
     TOOL = "tool"
     SERVICE = "service"
@@ -45,46 +23,78 @@ class MailPackageCategory(str, Enum):
     CONDITION = "condition"
 
 
-class Package(BaseComponent):
-    category: MailPackageCategory = Field(
-        ..., title="Category", description="The category of the mail package."
+class BaseMail:
+
+    def __init__(self, sender_id, recipient_id, category, package):
+        self.sender_id = sender_id
+        self.recipient_id = recipient_id
+        try:
+            if isinstance(category, str):
+                category = MailCategory(category)
+            if isinstance(category, MailCategory):
+                self.category = category
+            else:
+                raise ValueError(
+                    f"Invalid request title. Valid titles are" f" {list(MailCategory)}"
+                )
+        except Exception as e:
+            raise ValueError(
+                f"Invalid request title. Valid titles are "
+                f"{list(MailCategory)}, Error: {e}"
+            ) from e
+        self.package = package
+
+
+class StartMail(Node):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.pending_outs = deque()
+
+    def trigger(self, context, structure_id, executable_id):
+        start_mail_content = {"context": context, "structure_id": structure_id}
+        start_mail = BaseMail(
+            sender_id=self.id_,
+            recipient_id=executable_id,
+            category="start",
+            package=start_mail_content,
+        )
+        self.pending_outs.append(start_mail)
+
+
+class MailTransfer(Node):
+    def __init__(self):
+        super().__init__()
+        self.pending_ins = {}
+        self.pending_outs = deque()
+
+
+@dataclass
+class MailBox:
+
+    pile: dict[str, Mail] = Field(
+        default_factory=dict, description="The pile of all mails - {mail_id: Mail}"
     )
 
-    package: Any = Field(
-        ..., title="Package", description="The package to send in the mail."
-    )
-
-
-class Mail(BaseComponent):
-    """
-    Represents a mail message sent from one component to another within
-    the system.
-
-    Attributes:
-        sender (str): The ID of the sender node.
-        recipient (str): The ID of the recipient node.
-        category (MailPackageCategory): The category of the mail package.
-        package (Any): The content of the mail package.
-    """
-
-    sender: str = Field(
-        title="Sender",
-        description="The id of the sender node.",
-    )
-
-    recipient: str = Field(
-        title="Recipient",
-        description="The id of the recipient node.",
-    )
-
-    packages: dict[str, Package] = Field(
-        title="Packages",
+    sequence_in: dict[str, deque] = Field(
         default_factory=dict,
-        description="The packages to send in the mail.",
+        description="The sequence of all incoming mails - {sender_id: deque[mail_id]}",
     )
 
-    @field_validator("sender", "recipient", mode="before")
-    def _validate_sender_recipient(cls, value):
-        if isinstance(value, BaseComponent):
-            return value.id_
-        return value
+    sequence_out: deque = Field(
+        default_factory=deque,
+        description="The sequence of all outgoing mails - deque[mail_id]",
+    )
+
+    def __str__(self) -> str:
+        """
+        Returns a string representation of the MailBox instance.
+
+        Returns:
+            str: A string describing the number of pending incoming and
+                outgoing mails in the MailBox.
+        """
+        return (
+            f"MailBox with {len(self.receieving)} pending incoming mails and "
+            f"{len(self.sending)} pending outgoing mails."
+        )

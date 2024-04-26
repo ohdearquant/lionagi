@@ -110,7 +110,7 @@ async def chain_of_react(
         reasons.append(_out.reason)
         actions.append(_out.actions)
         if _out.action_needed:
-            action_responses.append(_out.action_response)
+            action_responses.append(_out._action_response)
 
     setattr(out_, "chain_output", convert.to_list(outs))
     setattr(out_, "chain_reason", convert.to_list(reasons))

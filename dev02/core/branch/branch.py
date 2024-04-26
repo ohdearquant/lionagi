@@ -14,7 +14,7 @@ from lionagi.core.messages.schema import System
 from lionagi.core.mail.schema import BaseMail
 
 from lionagi.core.branch.util import MessageUtil
-from lionagi.core.branch.base import BaseBranch
+from lionagi.core.branch.base.base import BaseBranch
 from lionagi.core.branch.flow_mixin import BranchFlowMixin
 
 from dotenv import load_dotenv

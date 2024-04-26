@@ -12,10 +12,6 @@ from lionagi.libs.ln_convert import to_list
 from lionagi.libs.ln_async import AsyncUtil
 
 
-def lru_cache(*args, **kwargs):
-    return functools.lru_cache(*args, **kwargs)
-
-
 def lcall(
     input_: Any,
     /,
@@ -279,11 +275,11 @@ async def tcall(
 
     def handle_error(e: Exception):
         _msg = f"{err_msg} Error: {e}" if err_msg else f"An error occurred: {e}"
-        print(_msg)
+        logging.error(_msg)
         if not ignore_err:
             raise
 
-    return await async_call() if AsyncUtil.is_coroutine_func(func) else sync_call()
+    return await async_call() if is_coroutine_func(func) else sync_call()
 
 
 async def rcall(
@@ -294,6 +290,7 @@ async def rcall(
     backoff_factor: float = 2.0,
     default: Any = None,
     timeout: float | None = None,
+    timing: bool = False,
     **kwargs,
 ) -> Any:
     """
@@ -338,10 +335,13 @@ async def rcall(
     """
     last_exception = None
     result = None
-
+    start_time = SysUtil.get_now(datetime_=False)
     for attempt in range(retries + 1) if retries == 0 else range(retries):
         try:
-            return await _tcall(func, *args, timeout=timeout, **kwargs)
+            result = await _tcall(func, *args, timeout=timeout, **kwargs)
+            if timing:
+                return (result, SysUtil.get_now(datetime_=False) - start_time)
+            return result
         except Exception as e:
             last_exception = e
             if attempt < retries:
@@ -439,7 +439,7 @@ async def _tcall(
         # Apply timeout to the function call
         if timeout is not None:
             coro = ""
-            if AsyncUtil.is_coroutine_func(func):
+            if is_coroutine_func(func):
                 coro = func(*args, **kwargs)
             else:
 
@@ -451,14 +451,14 @@ async def _tcall(
             result = await asyncio.wait_for(coro, timeout)
 
         else:
-            if AsyncUtil.is_coroutine_func(func):
+            if is_coroutine_func(func):
                 return await func(*args, **kwargs)
             return func(*args, **kwargs)
         duration = SysUtil.get_now(datetime_=False) - start_time
         return (result, duration) if timing else result
     except asyncio.TimeoutError as e:
         err_msg = f"{err_msg} Error: {e}" if err_msg else f"An error occurred: {e}"
-        print(err_msg)
+        logging.error(err_msg)
         if ignore_err:
             return (
                 (default, SysUtil.get_now(datetime_=False) - start_time)
@@ -469,7 +469,7 @@ async def _tcall(
             raise e  # Re-raise the timeout exception
     except Exception as e:
         err_msg = f"{err_msg} Error: {e}" if err_msg else f"An error occurred: {e}"
-        print(err_msg)
+        logging.error(err_msg)
         if ignore_err:
             return (
                 (default, SysUtil.get_now(datetime_=False) - start_time)
@@ -690,7 +690,7 @@ class CallDecorator:
         """
 
         def decorator(func: Callable[..., list[Any]]) -> Callable:
-            if AsyncUtil.is_coroutine_func(func):
+            if is_coroutine_func(func):
 
                 @functools.wraps(func)
                 async def async_wrapper(*args, **kwargs) -> list[Any]:
@@ -748,7 +748,7 @@ class CallDecorator:
         """
 
         def decorator(func: Callable) -> Callable:
-            if not any(AsyncUtil.is_coroutine_func(f) for f in functions):
+            if not any(is_coroutine_func(f) for f in functions):
 
                 @functools.wraps(func)
                 def sync_wrapper(*args, **kwargs):
@@ -763,7 +763,7 @@ class CallDecorator:
                     return value
 
                 return sync_wrapper
-            elif all(AsyncUtil.is_coroutine_func(f) for f in functions):
+            elif all(is_coroutine_func(f) for f in functions):
 
                 @functools.wraps(func)
                 async def async_wrapper(*args, **kwargs):
@@ -827,7 +827,7 @@ class CallDecorator:
         """
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-            if AsyncUtil.is_coroutine_func(func):
+            if is_coroutine_func(func):
 
                 @functools.wraps(func)
                 async def async_wrapper(*args, **kwargs) -> Any:
@@ -889,7 +889,7 @@ class CallDecorator:
                 ... # will return the cached result without re-executing the function body.
         """
 
-        if AsyncUtil.is_coroutine_func(func):
+        if is_coroutine_func(func):
             # Asynchronous function handling
             @AsyncUtil.cached(ttl=ttl)
             async def cached_async(*args, **kwargs) -> Any:
@@ -940,7 +940,7 @@ class CallDecorator:
         """
 
         def decorator(func: Callable[..., list[Any]]) -> Callable:
-            if AsyncUtil.is_coroutine_func(func):
+            if is_coroutine_func(func):
 
                 @functools.wraps(func)
                 async def wrapper(*args, **kwargs) -> list[Any]:
@@ -993,7 +993,7 @@ class CallDecorator:
         """
 
         def decorator(func: Callable[..., list[Any]]) -> Callable:
-            if AsyncUtil.is_coroutine_func(func):
+            if is_coroutine_func(func):
 
                 @functools.wraps(func)
                 async def async_wrapper(*args, **kwargs) -> Any:
@@ -1039,7 +1039,7 @@ class CallDecorator:
         """
 
         def decorator(func: Callable) -> Callable:
-            if not AsyncUtil.is_coroutine_func(func):
+            if not is_coroutine_func(func):
                 raise TypeError(
                     "max_concurrency decorator can only be used with async functions."
                 )
@@ -1091,6 +1091,15 @@ class CallDecorator:
             future = pool.submit(fn, *args, **kwargs)
             return AsyncUtil.wrap_future(future)  # make it awaitable
 
+        return wrapper
+
+    @staticmethod
+    def count_calls(func):
+        async def wrapper(*args, **kwargs):
+            wrapper.calls += 1
+            return await func(*args, **kwargs)
+
+        wrapper.calls = 0
         return wrapper
 
 
@@ -1238,7 +1247,7 @@ async def call_handler(
         raise
 
 
-@functools.lru_cache(maxsize=None)
+# consistent naming and using AsyncUtil function
 def is_coroutine_func(func: Callable) -> bool:
     """
     checks if the specified function is an asyncio coroutine function.
@@ -1266,4 +1275,9 @@ def is_coroutine_func(func: Callable) -> bool:
             >>> is_coroutine_func(sync_func)
             False
     """
-    return asyncio.iscoroutinefunction(func)
+    return AsyncUtil.is_coroutine_func(func)
+
+
+# for backward compatibility
+def lru_cache(*args, **kwargs):
+    return functools.lru_cache(*args, **kwargs)

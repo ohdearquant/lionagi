@@ -92,72 +92,12 @@ class BaseBranch(BaseNode, ABC):
                     _msg.recipient = self.name
                 if recipient is not None and self.name is None:
                     _msg.recipient = recipient
-            if "response" in _msg.content.keys():
-                if self.name is not None:
-                    _msg.sender = self.name
+            if "response" in _msg.content.keys() and self.name is not None:
+                _msg.sender = self.name
 
         setattr(_msg, "node_id", _msg.id_)
         _msg.content = _msg.msg_content
         self.messages.loc[len(self.messages)] = _msg.to_pd_series()
-
-    def _to_chatcompletion_message(
-        self, with_sender: bool = False
-    ) -> list[dict[str, Any]]:
-        """
-        Converts messages to a list of dictionaries formatted for chat completion,
-        optionally including sender information.
-
-        Args:
-                with_sender: Flag to include sender information in the output.
-
-        Returns:
-                A list of message dictionaries, each with 'role' and 'content' keys,
-                and optionally prefixed by 'Sender' if with_sender is True.
-        """
-
-        message = []
-
-        for _, row in self.messages.iterrows():
-            content_ = row["content"]
-            if content_.startswith("Sender"):
-                content_ = content_.split(":", 1)[1]
-
-            # if isinstance(content_, str):
-            #     try:
-            #         content_ = json.dumps(to_dict(content_))
-            #     except Exception as e:
-            #         raise ValueError(
-            #             f"Error in serializing, {row['node_id']} {content_}: {e}"
-            #         )
-
-            out = {"role": row["role"], "content": content_}
-            if with_sender:
-                out["content"] = f"Sender {row['sender']}: {content_}"
-
-            message.append(out)
-        return message
-
-    @property
-    def chat_messages(self) -> list[dict[str, Any]]:
-        """
-        Retrieves all chat messages without sender information.
-
-        Returns:
-                A list of dictionaries representing chat messages.
-        """
-
-        return self._to_chatcompletion_message()
-
-    @property
-    def chat_messages_with_sender(self) -> list[dict[str, Any]]:
-        """
-        Retrieves all chat messages, including sender information.
-
-        Returns:
-                A list of dictionaries representing chat messages, each prefixed with its sender.
-        """
-
-        return self._to_chatcompletion_message(with_sender=True)
 
     @property
     def last_message(self) -> dataframe.ln_DataFrame:
@@ -169,30 +109,6 @@ class BaseBranch(BaseNode, ABC):
         """
 
         return MessageUtil.get_message_rows(self.messages, n=1, from_="last")
-
-    @property
-    def last_message_content(self) -> dict[str, Any]:
-        """
-        Extracts the content of the last message in the branch.
-
-        Returns:
-                A dictionary representing the content of the last message.
-        """
-
-        return convert.to_dict(self.messages.content.iloc[-1])
-
-    @property
-    def first_system(self) -> dataframe.ln_DataFrame:
-        """
-        Retrieves the first message marked with the 'system' role.
-
-        Returns:
-                A pandas Series representing the first 'system' message in the branch.
-        """
-
-        return MessageUtil.get_message_rows(
-            self.messages, role="system", n=1, from_="front"
-        )
 
     @property
     def last_response(self) -> dataframe.ln_DataFrame:
@@ -208,7 +124,7 @@ class BaseBranch(BaseNode, ABC):
         )
 
     @property
-    def last_response_content(self) -> dict[str, Any]:
+    def _last_response_content(self) -> dict[str, Any]:
         """
         Extracts the content of the last 'assistant' (response) message.
 
@@ -219,7 +135,7 @@ class BaseBranch(BaseNode, ABC):
         return convert.to_dict(self.last_response.content.iloc[-1])
 
     @property
-    def action_request(self) -> dataframe.ln_DataFrame:
+    def _action_request(self) -> dataframe.ln_DataFrame:
         """
         Filters and retrieves all messages sent by 'action_request'.
 
@@ -230,7 +146,7 @@ class BaseBranch(BaseNode, ABC):
         return convert.to_df(self.messages[self.messages.sender == "action_request"])
 
     @property
-    def action_response(self) -> dataframe.ln_DataFrame:
+    def _action_response(self) -> dataframe.ln_DataFrame:
         """
         Filters and retrieves all messages sent by 'action_response'.
 
@@ -252,7 +168,7 @@ class BaseBranch(BaseNode, ABC):
         return convert.to_df(self.messages[self.messages.role == "assistant"])
 
     @property
-    def assistant_responses(self) -> dataframe.ln_DataFrame:
+    def _assistant_responses(self) -> dataframe.ln_DataFrame:
         """
         Filters 'assistant' role messages excluding 'action_request' and 'action_response'.
 
@@ -266,29 +182,7 @@ class BaseBranch(BaseNode, ABC):
 
     @property
     def last_assistant_response(self):
-        return self.assistant_responses.iloc[-1]
-
-    @property
-    def info(self) -> dict[str, Any]:
-        """
-        Summarizes branch information, including message counts by role.
-
-        Returns:
-                A dictionary containing counts of messages categorized by their role.
-        """
-
-        return self._info()
-
-    @property
-    def sender_info(self) -> dict[str, int]:
-        """
-        Provides a summary of message counts categorized by sender.
-
-        Returns:
-                A dictionary with senders as keys and counts of their messages as values.
-        """
-
-        return self._info(use_sender=True)
+        return self._assistant_responses.iloc[-1]
 
     @property
     def describe(self) -> dict[str, Any]:
@@ -651,3 +545,110 @@ class BaseBranch(BaseNode, ABC):
         result = messages.value_counts().to_dict()
         result["total"] = len(self.messages)
         return result
+
+    @property
+    def _chat_messages(self) -> list[dict[str, Any]]:
+        """
+        Retrieves all chat messages without sender information.
+
+        Returns:
+                A list of dictionaries representing chat messages.
+        """
+
+        return self._to_chatcompletion_message()
+
+    @property
+    def _chat_messages_with_sender(self) -> list[dict[str, Any]]:
+        """
+        Retrieves all chat messages, including sender information.
+
+        Returns:
+                A list of dictionaries representing chat messages, each prefixed with its sender.
+        """
+
+        return self._to_chatcompletion_message(with_sender=True)
+
+    def _to_chatcompletion_message(
+        self, with_sender: bool = False
+    ) -> list[dict[str, Any]]:
+        """
+        Converts messages to a list of dictionaries formatted for chat completion,
+        optionally including sender information.
+
+        Args:
+                with_sender: Flag to include sender information in the output.
+
+        Returns:
+                A list of message dictionaries, each with 'role' and 'content' keys,
+                and optionally prefixed by 'Sender' if with_sender is True.
+        """
+
+        message = []
+
+        for _, row in self.messages.iterrows():
+            content_ = row["content"]
+            if content_.startswith("Sender"):
+                content_ = content_.split(":", 1)[1]
+
+            # if isinstance(content_, str):
+            #     try:
+            #         content_ = json.dumps(to_dict(content_))
+            #     except Exception as e:
+            #         raise ValueError(
+            #             f"Error in serializing, {row['node_id']} {content_}: {e}"
+            #         )
+
+            out = {"role": row["role"], "content": content_}
+            if with_sender:
+                out["content"] = f"Sender {row['sender']}: {content_}"
+
+            message.append(out)
+        return message
+
+    @property
+    def _last_message_content(self) -> dict[str, Any]:
+        """
+        Extracts the content of the last message in the branch.
+
+        Returns:
+                A dictionary representing the content of the last message.
+        """
+
+        return convert.to_dict(self.messages.content.iloc[-1])
+
+    # for backward compatibility
+    # will be deprecated in future versions
+    @property
+    def info(self) -> dict[str, Any]:
+        """
+        Summarizes branch information, including message counts by role.
+
+        Returns:
+                A dictionary containing counts of messages categorized by their role.
+        """
+
+        return self._info()
+
+    @property
+    def sender_info(self) -> dict[str, int]:
+        """
+        Provides a summary of message counts categorized by sender.
+
+        Returns:
+                A dictionary with senders as keys and counts of their messages as values.
+        """
+
+        return self._info(use_sender=True)
+
+    @property
+    def _first_system(self) -> dataframe.ln_DataFrame:
+        """
+        Retrieves the first message marked with the 'system' role.
+
+        Returns:
+                A pandas Series representing the first 'system' message in the branch.
+        """
+
+        return MessageUtil.get_message_rows(
+            self.messages, role="system", n=1, from_="front"
+        )

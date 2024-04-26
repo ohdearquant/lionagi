@@ -90,6 +90,23 @@ class SysUtil:
             dict_[new_key] = dict_.pop(old_key)
 
     @staticmethod
+    def get_duration(timestamp1, timestamp2):
+
+        a = []
+        for t_ in [timestamp1, timestamp2]:
+
+            if isinstance(t_, (int, float)):
+                t_ = datetime.fromtimestamp(t_)
+            elif isinstance(t_, str):
+                t_ = datetime.fromisoformat(t_)
+            if not isinstance(t_, datetime):
+                raise ValueError("Invalid timestamp1 type")
+            a.append(t_)
+
+        # Calculate the difference in seconds
+        return (a[1] - a[0]).total_seconds()
+
+    @staticmethod
     def get_timestamp(tz: timezone = timezone.utc, sep: str = "_") -> str:
         """Returns a timestamp string with optional custom separators and timezone.
 

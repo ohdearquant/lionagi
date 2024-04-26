@@ -225,7 +225,6 @@ class MonoReAct(MonoChat):
 
             i += 1
 
-
         if not self.branch._is_invoked():
             return _out if out else None
 
