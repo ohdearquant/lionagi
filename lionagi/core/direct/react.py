@@ -2,7 +2,7 @@ from lionagi.libs import func_call, AsyncUtil
 
 from lionagi.integrations.bridge.pydantic_.pydantic_bridge import Field
 from lionagi.core.form.action_form import ActionForm
-from lionagi.core.branch.branch import Branch
+from lionagi.core.session.branch import Branch
 from lionagi.core.direct.utils import _process_tools
 
 

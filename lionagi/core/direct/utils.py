@@ -1,5 +1,5 @@
 from typing import Callable
-from lionagi.core.tool import func_to_tool, Tool
+from ..action.tool_manager import func_to_tool, Tool
 
 # import contextlib
 # from lionagi.libs import ParseUtil, StringMatch, convert, func_call

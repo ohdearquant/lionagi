@@ -1,21 +1,14 @@
-from typing import overload
-
-from abc import ABC
 from collections import deque
 
 from lionagi.libs import AsyncUtil, convert
 
-from lionagi.core.generic import BaseNode, ActionNode, ActionSelection, Edge
-from lionagi.core.tool import Tool
-from lionagi.core.mail.schema import BaseMail
-from lionagi.core.execute.base_executor import BaseExecutor
+from ..generic import BaseNode, Node, Edge
+from ..action.tool import Tool
+from ..action.node import ActionNode, ActionSelection
+from ..graph.graph import Graph
 
-from lionagi.libs import AsyncUtil
-from lionagi.core.generic import Node, ActionSelection, Edge
-from lionagi.core.tool import Tool
-
-from lionagi.core.mail.schema import BaseMail
-from lionagi.core.graph.graph import Graph
+from .execution_mails import BaseMail
+from .base_executor import BaseExecutor
 
 
 class StructureExecutor(BaseExecutor, Graph):

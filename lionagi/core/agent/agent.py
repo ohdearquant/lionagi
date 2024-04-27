@@ -1,6 +1,6 @@
 import asyncio
 from typing import Callable, Dict, Any, Optional, Union
-from lionagi.core.branch.branch import Branch
+from lionagi.core.session.branch import Branch
 
 
 class Agent:

@@ -2,12 +2,12 @@ import json
 import inspect
 import re
 
-from lionagi.core import System, Instruction
-from lionagi.core.tool import Tool
-from lionagi.core.action.action import ActionSelection
-from lionagi.core.agent.base.schema import BaseAgent
+from lionagi.core.message import System, Instruction
+from lionagi.core.action.tool import Tool
+from lionagi.core.action.node import ActionSelection
+from lionagi.core.agent.schema import BaseAgent
 
-from lionagi.core import func_to_tool
+from lionagi.core.action.tool_manager import func_to_tool
 
 
 def output_node_list(structure):

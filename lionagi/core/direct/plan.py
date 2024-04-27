@@ -3,7 +3,7 @@
 from lionagi.libs import func_call, ParseUtil
 from lionagi.integrations.bridge.pydantic_.pydantic_bridge import Field
 from lionagi.core.form.scored_form import ScoredForm
-from lionagi.core.branch.branch import Branch
+from lionagi.core.session.branch import Branch
 
 
 class PlanTemplate(ScoredForm):

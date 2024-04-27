@@ -4,14 +4,15 @@ from typing import Any
 
 from lionagi.libs import convert, nested, func_call, dataframe
 
-from lionagi.core.messages.schema import (
+from lionagi.core.message import (
     System,
     Instruction,
     Response,
     BaseMessage,
-    BranchColumns,
 )
+from ..message.base import MessageField
 
+BRANCH_COLUMNS = [i.value for i in MessageField]
 CUSTOM_TYPE = dict[str, Any] | str | list[Any] | None
 
 

@@ -13,7 +13,7 @@ from pydantic import Field
 import numpy as np
 from lionagi.libs import func_call, convert
 from lionagi.core.form.scored_form import ScoredForm
-from lionagi.core.branch.branch import Branch
+from lionagi.core.session.branch import Branch
 
 
 class ScoreTemplate(ScoredForm):

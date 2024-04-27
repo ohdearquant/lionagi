@@ -1,11 +1,12 @@
 import contextlib
 from lionagi.libs import convert, AsyncUtil, ParseUtil
-from lionagi.core.generic import ActionNode, Edge
-from lionagi.core.mail.schema import BaseMail
-from lionagi.core.messages.schema import System, Instruction
+from ..generic import Edge
+from ..action.node import ActionNode
+from ..session.branch import Branch
+from ..message import System, Instruction
 
-from lionagi.core.branch.branch import Branch
-from lionagi.core.execute.base_executor import BaseExecutor
+from .execution_mails import BaseMail
+from .base_executor import BaseExecutor
 
 
 class BranchExecutor(Branch, BaseExecutor):

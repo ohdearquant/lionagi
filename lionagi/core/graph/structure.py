@@ -12,11 +12,11 @@ from typing import Any
 from pydantic import Field
 
 from lionagi.libs import convert, func_call
-from lionagi.core.generic.abstract.condition import Condition
-from ....dev02.core.generic.edge import Edge
-from ....dev02.core.generic.node import Node
-from lionagi.core.action.action import ActionSelection
-from lionagi.core.tool import Tool
+
+from ..generic.abc import Condition
+from ..generic import Edge, Node
+from ..action.node import ActionSelection
+from ..action.tool import Tool
 
 
 class BaseStructure(Node):

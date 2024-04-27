@@ -5,10 +5,10 @@ from pathlib import Path
 from lionagi.libs import BaseService, convert, dataframe
 
 from lionagi.core.generic import DataLogger
-from lionagi.core.tool import ToolManager, Tool, TOOL_TYPE
-from lionagi.core.mail.mail_manager import MailManager
-from lionagi.core.messages.schema import System, Instruction
-from lionagi.core.branch.branch import Branch
+from lionagi.core.action.tool import ToolManager, Tool, TOOL_TYPE
+from lionagi.core.execute.execution_mails import MailManager
+from lionagi.core.message import System, Instruction
+from .branch import Branch
 from lionagi.core.flow.polyflow import PolyChat
 
 

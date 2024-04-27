@@ -12,17 +12,18 @@ from dotenv import load_dotenv
 from lionagi.libs import BaseService, StatusTracker, SysUtil, convert, dataframe
 from lionagi.core.generic import BaseNode, DataLogger, DLog
 from ..generic import Mail
-from ..tool import TOOL_TYPE, Tool, ToolManager, func_to_tool
+from ..action.tool import TOOL_TYPE, Tool
+from ..action.tool_manager import ToolManager, func_to_tool
 from ..message import BaseMessage, Instruction, Response, System
-from ..message.base import MessageField
-from .util import MessageUtil
+
+from .util import MessageUtil, BRANCH_COLUMNS
 from .mixin import BranchFlowMixin
 
 load_dotenv()
 
 
 T = TypeVar("T", bound=Tool)
-BRANCH_COLUMNS = [i.value for i in MessageField]
+
 
 
 class BaseBranch(BaseNode, ABC):

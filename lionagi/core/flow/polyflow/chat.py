@@ -9,8 +9,8 @@ created branches within the session.
 from typing import Any
 
 from lionagi.libs import convert, AsyncUtil
-from lionagi.core.messages.schema import Instruction
-from lionagi.core.branch.branch import Branch
+from lionagi.core.message import Instruction
+from lionagi.core.session.branch import Branch
 from lionagi.core.flow.baseflow import BasePolyFlow
 
 

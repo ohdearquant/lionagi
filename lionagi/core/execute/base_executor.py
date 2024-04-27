@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import Field
 
 from lionagi.core.generic import BaseComponent
-from lionagi.core.mail.schema import BaseMail
+from .execution_mails import BaseMail
 
 
 class BaseExecutor(BaseComponent, ABC):

@@ -7,8 +7,8 @@ from typing import Any
 
 import re
 from lionagi.libs import nested, func_call, convert, StringMatch, ParseUtil
-from lionagi.core.tool.tool import TOOL_TYPE
-from lionagi.core.messages.schema import Instruction
+from lionagi.core.action.tool import TOOL_TYPE
+from lionagi.core.message import Instruction
 
 
 class MonoChatConfigMixin(ABC):

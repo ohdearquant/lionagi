@@ -14,7 +14,7 @@ from pydantic import Field
 
 from lionagi.libs import func_call, StringMatch
 from lionagi.core.form.scored_form import ScoredForm
-from lionagi.core.branch.branch import Branch
+from lionagi.core.session.branch import Branch
 
 
 class SelectTemplate(ScoredForm):

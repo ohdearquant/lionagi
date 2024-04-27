@@ -2,8 +2,8 @@ from typing import Any, Type
 from pydantic import Field
 
 from lionagi.core.generic import BaseComponent
-from lionagi.experimental.report.form import Form
-from lionagi.experimental.report.util import get_input_output_fields
+from .form import Form
+from .util import get_input_output_fields
 from ..work.schema import WorkStatus
 
 

@@ -1,10 +1,7 @@
 import asyncio
 from pydantic import Field
 
-from lionagi.libs import AsyncUtil
-
-from lionagi.core.mail.schema import BaseMail, MailTransfer
-from lionagi.core.mail.mail_manager import MailManager
+from .execution_mails import BaseMail, MailManager, MailTransfer
 from lionagi.core.execute.base_executor import BaseExecutor
 from lionagi.core.execute.branch_executor import BranchExecutor
 

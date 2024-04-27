@@ -1,8 +1,8 @@
 from abc import ABC
 from typing import Any, Optional, Union, TypeVar
 
-from lionagi.core.tool import Tool, TOOL_TYPE
-from lionagi.core.messages.schema import Instruction, System
+from ..action.tool import Tool, TOOL_TYPE
+from lionagi.core.message import Instruction, System
 from lionagi.core.flow.monoflow import MonoChat, MonoFollowup, MonoReAct
 
 T = TypeVar("T", bound=Tool)

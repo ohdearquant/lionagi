@@ -12,8 +12,10 @@ The module includes the following classes:
 from enum import Enum
 from pydantic import Field
 
-from lionagi.core.generic import Node, Condition
-from lionagi.core.graph.graph import Graph
+from ..generic.abc import Condition
+from ..generic.node import Node
+
+from .graph import Graph
 
 
 class TreeLabel(str, Enum):
