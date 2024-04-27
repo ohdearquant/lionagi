@@ -1,7 +1,7 @@
 from pydantic import Field
 
 from ..generic import Node
-from ..tool.tool import Tool
+from .tool import Tool
 
 
 class ActionSelection(Node):
