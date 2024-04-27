@@ -8,8 +8,7 @@ the dynamic evaluation of connections based on custom logic.
 
 from typing import Any
 from pydantic import Field, field_validator
-from .component import BaseComponent
-from .condition import Condition
+from .abc import BaseComponent, Condition
 
 
 class Edge(BaseComponent):

@@ -1,32 +1,31 @@
+"""
+This module contains the Branch class, which represents a branch in a conversation tree.
+"""
+
 from abc import ABC
-from typing import Any
-
+from collections import deque
 from pathlib import Path
-from lionagi.libs import convert, dataframe, SysUtil
+from typing import Any, Callable, TypeVar, Union
 
+from dotenv import load_dotenv
+
+from lionagi.libs import BaseService, StatusTracker, SysUtil, convert, dataframe
 from lionagi.core.generic import BaseNode, DataLogger, DLog
-from lionagi.core.messages.schema import (
-    BranchColumns,
-    System,
-    Response,
-    Instruction,
-    BaseMessage,
-)
-from lionagi.core.branch.util import MessageUtil
+from ..generic import Mail
+from ..tool import TOOL_TYPE, Tool, ToolManager, func_to_tool
+from ..message import BaseMessage, Instruction, Response, System
+from ..message.base import MessageField
+from .util import MessageUtil
+from .mixin import BranchFlowMixin
+
+load_dotenv()
+
+
+T = TypeVar("T", bound=Tool)
+BRANCH_COLUMNS = [i.value for i in MessageField]
 
 
 class BaseBranch(BaseNode, ABC):
-    """
-    Base class for managing branches of conversation, incorporating messages
-    and logging functionality.
-
-    Attributes:
-            messages (dataframe.ln_DataFrame): Holds the messages in the branch.
-            datalogger (DataLogger): Logs data related to the branch's operation.
-            persist_path (str | Path): Filesystem path for data persistence.
-    """
-
-    _columns: list[str] = BranchColumns.COLUMNS.value
 
     def __init__(
         self,
@@ -43,7 +42,7 @@ class BaseBranch(BaseNode, ABC):
             else:
                 raise ValueError("Invalid messages format")
         else:
-            self.messages = dataframe.ln_DataFrame(columns=self._columns)
+            self.messages = dataframe.ln_DataFrame(columns=BRANCH_COLUMNS)
 
         self.datalogger = datalogger or DataLogger(persist_path=persist_path)
         self.name = name
@@ -58,16 +57,6 @@ class BaseBranch(BaseNode, ABC):
         recipient=None,
         **kwargs,
     ) -> None:
-        """
-        Adds a message to the branch.
-
-        Args:
-                system: Information for creating a System message.
-                instruction: Information for creating an Instruction message.
-                context: Context information for the message.
-                response: Response data for creating a message.
-                **kwargs: Additional keyword arguments for message creation.
-        """
         _msg = MessageUtil.create_message(
             system=system,
             instruction=instruction,
@@ -101,98 +90,14 @@ class BaseBranch(BaseNode, ABC):
 
     @property
     def last_message(self) -> dataframe.ln_DataFrame:
-        """
-        Retrieves the last message from the branch as a pandas Series.
-
-        Returns:
-                A pandas Series representing the last message in the branch.
-        """
-
         return MessageUtil.get_message_rows(self.messages, n=1, from_="last")
 
     @property
-    def last_response(self) -> dataframe.ln_DataFrame:
-        """
-        Retrieves the last message marked with the 'assistant' role.
-
-        Returns:
-                A pandas Series representing the last 'assistant' (response) message in the branch.
-        """
-
-        return MessageUtil.get_message_rows(
-            self.messages, role="assistant", n=1, from_="last"
-        )
-
-    @property
-    def _last_response_content(self) -> dict[str, Any]:
-        """
-        Extracts the content of the last 'assistant' (response) message.
-
-        Returns:
-                A dictionary representing the content of the last 'assistant' message.
-        """
-
-        return convert.to_dict(self.last_response.content.iloc[-1])
-
-    @property
-    def _action_request(self) -> dataframe.ln_DataFrame:
-        """
-        Filters and retrieves all messages sent by 'action_request'.
-
-        Returns:
-                A pandas DataFrame containing all 'action_request' messages.
-        """
-
-        return convert.to_df(self.messages[self.messages.sender == "action_request"])
-
-    @property
-    def _action_response(self) -> dataframe.ln_DataFrame:
-        """
-        Filters and retrieves all messages sent by 'action_response'.
-
-        Returns:
-                A pandas DataFrame containing all 'action_response' messages.
-        """
-
-        return convert.to_df(self.messages[self.messages.sender == "action_response"])
-
-    @property
     def responses(self) -> dataframe.ln_DataFrame:
-        """
-        Retrieves all messages marked with the 'assistant' role.
-
-        Returns:
-                A pandas DataFrame containing all messages with an 'assistant' role.
-        """
-
         return convert.to_df(self.messages[self.messages.role == "assistant"])
 
     @property
-    def _assistant_responses(self) -> dataframe.ln_DataFrame:
-        """
-        Filters 'assistant' role messages excluding 'action_request' and 'action_response'.
-
-        Returns:
-                A pandas DataFrame of 'assistant' messages excluding action requests/responses.
-        """
-
-        a_responses = self.responses[self.responses.sender != "action_response"]
-        a_responses = a_responses[a_responses.sender != "action_request"]
-        return convert.to_df(a_responses)
-
-    @property
-    def last_assistant_response(self):
-        return self._assistant_responses.iloc[-1]
-
-    @property
     def describe(self) -> dict[str, Any]:
-        """
-        Provides a detailed description of the branch, including a summary of messages.
-
-        Returns:
-                A dictionary with a summary of total messages, a breakdown by role, and
-                a preview of the first five messages.
-        """
 
         return {
             "total_messages": len(self.messages),
@@ -210,12 +115,10 @@ class BaseBranch(BaseNode, ABC):
 
     @classmethod
     def from_csv(cls, **kwargs) -> "BaseBranch":
-
         return cls._from_csv(**kwargs)
 
     @classmethod
     def from_json_string(cls, **kwargs) -> "BaseBranch":
-
         return cls._from_json(**kwargs)
 
     @classmethod
@@ -234,18 +137,6 @@ class BaseBranch(BaseNode, ABC):
         clear: bool = True,
         **kwargs,
     ) -> None:
-        """
-        Exports the branch messages to a CSV file.
-
-        Args:
-                filepath: Destination path for the CSV file. Defaults to 'messages.csv'.
-                dir_exist_ok: If False, an error is raised if the directory exists. Defaults to True.
-                timestamp: If True, appends a timestamp to the filename. Defaults to True.
-                time_prefix: If True, prefixes the filename with a timestamp. Defaults to False.
-                verbose: If True, prints a message upon successful export. Defaults to True.
-                clear: If True, clears the messages after exporting. Defaults to True.
-                **kwargs: Additional keyword arguments for pandas.DataFrame.to_csv().
-        """
 
         if not filename.endswith(".csv"):
             filename += ".csv"
@@ -277,19 +168,6 @@ class BaseBranch(BaseNode, ABC):
         clear: bool = True,
         **kwargs,
     ) -> None:
-        """
-        Exports the branch messages to a JSON file.
-
-        Args:
-                filename: Destination path for the JSON file. Defaults to 'messages.json'.
-                dir_exist_ok: If False, an error is raised if the dirctory exists. Defaults to True.
-                timestamp: If True, appends a timestamp to the filename. Defaults to True.
-                time_prefix: If True, prefixes the filename with a timestamp. Defaults to False.
-                verbose: If True, prints a message upon successful export. Defaults to True.
-                clear: If True, clears the messages after exporting. Defaults to True.
-                **kwargs: Additional keyword arguments for pandas.DataFrame.to_json().
-        """
-
         if not filename.endswith(".json"):
             filename += ".json"
 
@@ -324,18 +202,6 @@ class BaseBranch(BaseNode, ABC):
         sep="[^_^]",
         **kwargs,
     ) -> None:
-        """
-        Exports the data logger contents to a CSV file.
-
-        Args:
-                filename: Destination path for the CSV file. Defaults to 'log.csv'.
-                dir_exist_ok: If False, an error is raised if the directory exists. Defaults to True.
-                timestamp: If True, appends a timestamp to the filename. Defaults to True.
-                time_prefix: If True, prefixes the filename with a timestamp. Defaults to False.
-                verbose: If True, prints a message upon successful export. Defaults to True.
-                clear: If True, clears the logger after exporting. Defaults to True.
-                **kwargs: Additional keyword arguments for pandas.DataFrame.to_csv().
-        """
         self.datalogger.to_csv_file(
             filename=filename,
             dir_exist_ok=dir_exist_ok,
@@ -360,19 +226,6 @@ class BaseBranch(BaseNode, ABC):
         sep="[^_^]",
         **kwargs,
     ) -> None:
-        """
-        Exports the data logger contents to a JSON file.
-
-        Args:
-                filename: Destination path for the JSON file. Defaults to 'log.json'.
-                dir_exist_ok: If False, an error is raised if the directory exists. Defaults to True.
-                timestamp: If True, appends a timestamp to the filename. Defaults to True.
-                time_prefix: If True, prefixes the filename with a timestamp. Defaults to False.
-                verbose: If True, prints a message upon successful export. Defaults to True.
-                clear: If True, clears the logger after exporting. Defaults to True.
-                **kwargs: Additional keyword arguments for pandas.DataFrame.to_json().
-        """
-
         self.datalogger.to_json_file(
             filename=filename,
             dir_exist_ok=dir_exist_ok,
@@ -410,23 +263,9 @@ class BaseBranch(BaseNode, ABC):
             raise ValueError(f"Error in loading log: {e}") from e
 
     def remove_message(self, node_id: str) -> None:
-        """
-        Removes a message from the branch based on its node ID.
-
-        Args:
-                node_id: The unique identifier of the message to be removed.
-        """
         MessageUtil.remove_message(self.messages, node_id)
 
     def update_message(self, node_id: str, column: str, value: Any) -> bool:
-        """
-        Updates a specific column of a message identified by node_id with a new value.
-
-        Args:
-                value: The new value to update the message with.
-                node_id: The unique identifier of the message to update.
-                column: The column of the message to update.
-        """
 
         index = self.messages[self.messages["node_id"] == node_id].index[0]
 
@@ -437,13 +276,6 @@ class BaseBranch(BaseNode, ABC):
     def change_first_system_message(
         self, system: str | dict[str, Any] | System, sender: str | None = None
     ) -> None:
-        """
-        Updates the first system message with new content and/or sender.
-
-        Args:
-                system: The new system message content or a System object.
-                sender: The identifier of the sender for the system message.
-        """
 
         if len(self.messages[self.messages["role"] == "system"]) == 0:
             raise ValueError("There is no system message in the messages.")
@@ -460,19 +292,10 @@ class BaseBranch(BaseNode, ABC):
             self.messages.loc[sys_index[0]] = system.to_pd_series()
 
     def rollback(self, steps: int) -> None:
-        """
-        Removes the last 'n' messages from the branch.
-
-        Args:
-                steps: The number of messages to remove from the end.
-        """
 
         self.messages = dataframe.remove_last_n_rows(self.messages, steps)
 
     def clear_messages(self) -> None:
-        """
-        Clears all messages from the branch.
-        """
         self.messages = dataframe.ln_DataFrame(columns=self._columns)
 
     def replace_keyword(
@@ -531,73 +354,22 @@ class BaseBranch(BaseNode, ABC):
         )
 
     def _info(self, use_sender: bool = False) -> dict[str, int]:
-        """
-        Helper method to generate summaries of messages either by role or sender.
-
-        Args:
-                use_sender: If True, summary is categorized by sender. Otherwise, by role.
-
-        Returns:
-                A dictionary summarizing the count of messages either by role or sender.
-        """
 
         messages = self.messages["sender"] if use_sender else self.messages["role"]
         result = messages.value_counts().to_dict()
         result["total"] = len(self.messages)
         return result
 
-    @property
-    def _chat_messages(self) -> list[dict[str, Any]]:
-        """
-        Retrieves all chat messages without sender information.
-
-        Returns:
-                A list of dictionaries representing chat messages.
-        """
-
-        return self._to_chatcompletion_message()
-
-    @property
-    def _chat_messages_with_sender(self) -> list[dict[str, Any]]:
-        """
-        Retrieves all chat messages, including sender information.
-
-        Returns:
-                A list of dictionaries representing chat messages, each prefixed with its sender.
-        """
-
-        return self._to_chatcompletion_message(with_sender=True)
-
     def _to_chatcompletion_message(
         self, with_sender: bool = False
     ) -> list[dict[str, Any]]:
-        """
-        Converts messages to a list of dictionaries formatted for chat completion,
-        optionally including sender information.
-
-        Args:
-                with_sender: Flag to include sender information in the output.
-
-        Returns:
-                A list of message dictionaries, each with 'role' and 'content' keys,
-                and optionally prefixed by 'Sender' if with_sender is True.
-        """
-
         message = []
 
         for _, row in self.messages.iterrows():
             content_ = row["content"]
             if content_.startswith("Sender"):
                 content_ = content_.split(":", 1)[1]
-
-            # if isinstance(content_, str):
-            #     try:
-            #         content_ = json.dumps(to_dict(content_))
-            #     except Exception as e:
-            #         raise ValueError(
-            #             f"Error in serializing, {row['node_id']} {content_}: {e}"
-            #         )
-
+                
             out = {"role": row["role"], "content": content_}
             if with_sender:
                 out["content"] = f"Sender {row['sender']}: {content_}"
@@ -605,16 +377,6 @@ class BaseBranch(BaseNode, ABC):
             message.append(out)
         return message
 
-    @property
-    def _last_message_content(self) -> dict[str, Any]:
-        """
-        Extracts the content of the last message in the branch.
-
-        Returns:
-                A dictionary representing the content of the last message.
-        """
-
-        return convert.to_dict(self.messages.content.iloc[-1])
 
     # for backward compatibility
     # will be deprecated in future versions
@@ -629,26 +391,278 @@ class BaseBranch(BaseNode, ABC):
 
         return self._info()
 
-    @property
-    def sender_info(self) -> dict[str, int]:
-        """
-        Provides a summary of message counts categorized by sender.
 
-        Returns:
-                A dictionary with senders as keys and counts of their messages as values.
-        """
+class Branch(BaseBranch, BranchFlowMixin):
+    def __init__(
+        self,
+        name: str | None = None,
+        system: dict | list | System | None = None,
+        messages: dataframe.ln_DataFrame | None = None,
+        service: BaseService | None = None,
+        sender: str | None = None,
+        llmconfig: dict[str, str | int | dict] | None = None,
+        tools: list[Callable | Tool] | None = None,
+        datalogger: None | DataLogger = None,
+        persist_path: str | Path | None = None,  # instruction_sets=None,
+        tool_manager: ToolManager | None = None,
+        **kwargs,
+    ):
 
-        return self._info(use_sender=True)
-
-    @property
-    def _first_system(self) -> dataframe.ln_DataFrame:
-        """
-        Retrieves the first message marked with the 'system' role.
-
-        Returns:
-                A pandas Series representing the first 'system' message in the branch.
-        """
-
-        return MessageUtil.get_message_rows(
-            self.messages, role="system", n=1, from_="front"
+        super().__init__(
+            messages=messages,
+            datalogger=datalogger,
+            persist_path=persist_path,
+            name=name,
+            **kwargs,
         )
+
+        self.sender = sender or "system"
+        self.tool_manager = tool_manager or ToolManager()
+
+        if tools:
+            try:
+                tools_ = []
+                _tools = convert.to_list(tools)
+                for i in _tools:
+                    if isinstance(i, Tool):
+                        tools_.append(i)
+                    else:
+                        tools_.append(func_to_tool(i))
+
+                self.register_tools(tools_)
+            except Exception as e:
+                raise TypeError(f"Error in registering tools: {e}") from e
+
+        self.service, self.llmconfig = self._add_service(service, llmconfig)
+        self.status_tracker = StatusTracker()
+
+        # add instruction sets
+        # self.instruction_sets = instruction_sets
+
+        self.pending_ins = {}
+        self.pending_outs = deque()
+
+        if system is not None:
+            self.add_message(system=system)
+
+    @classmethod
+    def from_csv(
+        cls,
+        filepath,
+        name: str | None = None,
+        service: BaseService | None = None,
+        llmconfig: dict[str, str | int | dict] | None = None,
+        tools: TOOL_TYPE | None = None,
+        datalogger: None | DataLogger = None,
+        persist_path: str | Path | None = None,  # instruction_sets=None,
+        tool_manager: ToolManager | None = None,
+        read_kwargs=None,
+        **kwargs,
+    ) -> "Branch":
+        return cls._from_csv(
+            filepath=filepath,
+            read_kwargs=read_kwargs,
+            name=name,
+            service=service,
+            llmconfig=llmconfig,
+            tools=tools,
+            datalogger=datalogger,
+            persist_path=persist_path,
+            # instruction_sets=instruction_sets,
+            tool_manager=tool_manager,
+            **kwargs,
+        )
+
+    @classmethod
+    def from_json_string(
+        cls,
+        filepath,
+        name: str | None = None,
+        service: BaseService | None = None,
+        llmconfig: dict[str, str | int | dict] | None = None,
+        tools: TOOL_TYPE | None = None,
+        datalogger: None | DataLogger = None,
+        persist_path: str | Path | None = None,  # instruction_sets=None,
+        tool_manager: ToolManager | None = None,
+        read_kwargs=None,
+        **kwargs,
+    ) -> "Branch":
+        return cls._from_json(
+            filepath=filepath,
+            read_kwargs=read_kwargs,
+            name=name,
+            service=service,
+            llmconfig=llmconfig,
+            tools=tools,
+            datalogger=datalogger,
+            persist_path=persist_path,
+            # instruction_sets=instruction_sets,
+            tool_manager=tool_manager,
+            **kwargs,
+        )
+
+    def messages_describe(self) -> dict[str, Any]:
+        return dict(
+            total_messages=len(self.messages),
+            summary_by_role=self._info(),
+            summary_by_sender=self._info(use_sender=True),
+            # instruction_sets=self.instruction_sets,
+            registered_tools=self.tool_manager.registry,
+            messages=[msg.to_dict() for _, msg in self.messages.iterrows()],
+        )
+
+    @property
+    def has_tools(self) -> bool:
+        return self.tool_manager.registry != {}
+
+    # todo: also update other attributes
+    def merge_branch(self, branch: "Branch", update: bool = True) -> None:
+        message_copy = branch.messages.copy()
+        self.messages = self.messages.merge(message_copy, how="outer")
+        self.datalogger.extend(branch.datalogger.log)
+
+        if update:
+            # self.instruction_sets.update(branch.instruction_sets)
+            self.tool_manager.registry.update(branch.tool_manager.registry)
+        else:
+            for key, value in branch.instruction_sets.items():
+                if key not in self.instruction_sets:
+                    self.instruction_sets[key] = value
+
+            for key, value in branch.tool_manager.registry.items():
+                if key not in self.tool_manager.registry:
+                    self.tool_manager.registry[key] = value
+
+    # ----- tool manager methods ----- #
+    def register_tools(
+        self, tools: Union[Tool, list[Tool | Callable], Callable]
+    ) -> None:
+        if not isinstance(tools, list):
+            tools = [tools]
+        self.tool_manager.register_tools(tools=tools)
+
+    def delete_tools(
+        self,
+        tools: Union[T, list[T], str, list[str]],
+        verbose: bool = True,
+    ) -> bool:
+        if not isinstance(tools, list):
+            tools = [tools]
+        if convert.is_same_dtype(tools, str):
+            for act_ in tools:
+                if act_ in self.tool_manager.registry:
+                    self.tool_manager.registry.pop(act_)
+            if verbose:
+                print("tools successfully deleted")
+            return True
+        elif convert.is_same_dtype(tools, Tool):
+            for act_ in tools:
+                if act_.schema_["function"]["name"] in self.tool_manager.registry:
+                    self.tool_manager.registry.pop(act_.schema_["function"]["name"])
+            if verbose:
+                print("tools successfully deleted")
+            return True
+        if verbose:
+            print("tools deletion failed")
+        return False
+
+    def send(self, recipient_id: str, category: str, package: Any) -> None:
+        mail = Mail(
+            sender_id=self.id_,
+            recipient_id=recipient_id,
+            category=category,
+            package=package,
+        )
+        self.pending_outs.append(mail)
+
+    def receive(
+        self,
+        sender: str,
+        messages: bool = True,
+        tools: bool = True,
+        service: bool = True,
+        llmconfig: bool = True,
+    ) -> None:
+        skipped_requests = deque()
+        if sender not in self.pending_ins:
+            raise ValueError(f"No package from {sender}")
+        while self.pending_ins[sender]:
+            mail_ = self.pending_ins[sender].popleft()
+
+            if mail_.category == "messages" and messages:
+                if not isinstance(mail_.package, dataframe.ln_DataFrame):
+                    raise ValueError("Invalid messages format")
+                MessageUtil.validate_messages(mail_.package)
+                self.messages = self.messages.merge(mail_.package, how="outer")
+
+            elif mail_.category == "tools" and tools:
+                if not isinstance(mail_.package, Tool):
+                    raise ValueError("Invalid tools format")
+                self.tool_manager.register_tools([mail_.package])
+
+            elif mail_.category == "provider" and service:
+                from lionagi.libs.ln_api import BaseService
+
+                if not isinstance(mail_.package, BaseService):
+                    raise ValueError("Invalid provider format")
+                self.service = mail_.package
+
+            elif mail_.category == "llmconfig" and llmconfig:
+                if not isinstance(mail_.package, dict):
+                    raise ValueError("Invalid llmconfig format")
+                self.llmconfig.update(mail_.package)
+
+            else:
+                skipped_requests.append(mail_)
+
+        self.pending_ins[sender] = skipped_requests
+        if self.pending_ins[sender] == deque():
+            self.pending_ins.pop(sender)
+
+    def receive_all(self) -> None:
+        """
+        Receives all pending mails and updates the branch accordingly.
+        """
+        for key in list(self.pending_ins.keys()):
+            self.receive(key)
+
+    @staticmethod
+    def _add_service(service, llmconfig):
+        from lionagi.integrations.provider.oai import OpenAIService
+
+        if service is None:
+            try:
+                from lionagi.integrations.provider import Services
+
+                service = Services.OpenAI()
+
+            except:
+                raise ValueError("No available service")
+        if llmconfig is None:
+            if isinstance(service, OpenAIService):
+                from lionagi.integrations.config import oai_schema
+
+                llmconfig = oai_schema["chat/completions"]["config"]
+            else:
+                llmconfig = {}
+        return service, llmconfig
+
+    def _is_invoked(self) -> bool:
+        """
+        Check if the conversation has been invoked with an action response.
+
+        Returns:
+                bool: True if the conversation has been invoked, False otherwise.
+
+        """
+        content = self.messages.iloc[-1]["content"]
+        try:
+            if convert.to_dict(content)["action_response"].keys() >= {
+                "function",
+                "arguments",
+                "output",
+            }:
+                return True
+        except Exception:
+            return False
+        return False

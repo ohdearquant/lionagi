@@ -3,7 +3,7 @@ from pydantic import field_serializer
 from functools import singledispatchmethod
 from lionagi import logging as _logging
 from lionagi.libs import func_call, AsyncUtil
-from lionagi.core.generic.node import Node
+from lionagi.core.generic.node.node import Node
 from .function_calling import FunctionCalling
 
 

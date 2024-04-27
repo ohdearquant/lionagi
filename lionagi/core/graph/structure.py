@@ -13,8 +13,8 @@ from pydantic import Field
 
 from lionagi.libs import convert, func_call
 from lionagi.core.generic.abstract.condition import Condition
-from .edge import Edge
-from .node import Node
+from ....dev02.core.generic.edge import Edge
+from ....dev02.core.generic.node import Node
 from lionagi.core.action.action import ActionSelection
 from lionagi.core.tool import Tool
 

@@ -1,7 +1,7 @@
 from pydantic import Field
 
-from lionagi.core.generic import Node
-from lionagi.core.tool.tool import Tool
+from ..generic import Node
+from ..tool.tool import Tool
 
 
 class ActionSelection(Node):

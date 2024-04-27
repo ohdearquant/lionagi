@@ -2,7 +2,7 @@ import unittest
 from pydantic import BaseModel
 from pandas import Series
 import pandas as pd
-from lionagi.core.generic.node import BaseNode
+from lionagi.core.generic.node.node import BaseNode
 
 class TestBaseNode(unittest.TestCase):
 
