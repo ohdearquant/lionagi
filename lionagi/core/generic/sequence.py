@@ -1,4 +1,4 @@
-from .abc import Sequence
+from .abc import Sequence, BaseComponent
 from collections import deque
 
 
@@ -15,9 +15,11 @@ class CategorizedSequence(Sequence):
     def __len__(self):
         return sum([len(v) for v in self.sequence.values()])
     
-    def append(self, category: str=None, item: any=None):
-        self.sequence[category] = self.sequence.get(category, deque())
-        self.sequence[category].append(item)
+    def append(self, category: str=None, item: str | BaseComponent=None):
+        if category not in self.sequence:
+            self.sequence[category] = deque()
+            
+        self.sequence[category].append(item if isinstance(item, str) else item.id_)
         
     def popleft(self, category: str):
         try:

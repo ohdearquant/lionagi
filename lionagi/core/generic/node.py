@@ -4,8 +4,8 @@ from pydantic import Field
 from lionagi.integrations.bridge import LlamaIndexBridge, LangchainBridge
 from .abc import BaseNode, Condition
 from .edge import Edge
-from ._relations import Relations
-from ._mailbox import MailBox
+from .relations import Relations
+from .mail import MailBox
 
 
 class Node(BaseNode):
@@ -39,7 +39,7 @@ class Node(BaseNode):
         """Categorizes preceding and succeeding relations to this node."""
         
         out_nodes: dict[str, list[str]] = {}
-        for edge in self.relations.out.values():
+        for edge in self.relations.right.pile.values():
             for i in self.related_nodes:
                 if edge.tail == i:
                     if i in out_nodes:
@@ -48,7 +48,7 @@ class Node(BaseNode):
                         out_nodes[i] = [edge]
 
         in_nodes: dict[str, list[str]] = {}
-        for edge in self.relations.in_.values():
+        for edge in self.relations.left.pile.values():
             for i in self.related_nodes:
                 if edge.head == i:
                     if i in in_nodes:
@@ -80,15 +80,15 @@ class Node(BaseNode):
             edge = Edge(
                 head=self, tail=node, condition=condition, bundle=bundle, label=label
             )
-            self.relations.append(out=edge)
-            node.relations.append(in_=edge)
+            self.relations.append(edge, direction)
+            node.relations.append(edge, "in")
 
         elif direction == "in":
             edge = Edge(
                 head=node, tail=self, condition=condition, label=label, bundle=bundle
             )
-            self.relations.append(in_=edge)
-            node.relations.append(out=edge)
+            self.relations.append(edge, direction)
+            node.relations.append(edge, "out")
 
         else:
             raise ValueError(
