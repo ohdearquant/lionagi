@@ -1,6 +1,6 @@
 from .component import BaseComponent, BaseNode
 from .condition import Condition
-from .data_logger import DataLogger, DLog
+from ._log import DataLogger, DLog
 from .signal import Signal, Start
 from .mail import Mail, Package
 from .mailbox import MailBox
