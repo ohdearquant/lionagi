@@ -4,11 +4,11 @@ from typing import Any
 
 from pydantic import Field
 
-from lionagi.core.generic import BaseComponent
+from lionagi.core.generic import Component
 from lionagi.core.mail.schema import BaseMail
 
 
-class BaseExecutor(BaseComponent, ABC):
+class BaseExecutor(Component, ABC):
     pending_ins: dict = Field(
         default_factory=dict, description="The pending incoming mails."
     )

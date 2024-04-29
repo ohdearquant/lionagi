@@ -14,33 +14,11 @@ from lionagi.libs import SysUtil, convert, nested
 
 @dataclass
 class DLog:
-    """
-    Defines a log entry structure for data processing operations.
-
-    This class encapsulates both the input to and output from a data processing operation,
-    along with an automatically generated timestamp indicating when the log entry was
-    created. It aims to standardize logging across applications for easier analysis
-    and debugging.
-
-    Attributes:
-        input_data: The data input to the operation. Can be of any type.
-        output_data: The data output by the operation. Can be of any type.
-    """
 
     input_data: Any
     output_data: Any
 
     def serialize(self, *, flatten_: bool = True, sep: str = "[^_^]") -> dict[str, Any]:
-        """Serializes the DLog instance into a dictionary with an added timestamp.
-
-        Args:
-            flatten_ (bool): If True, flattens dictionary inputs for serialization.
-            sep (str): Separator used in flattening nested dictionaries.
-
-        Returns:
-            A dictionary representation of the DLog instance, including 'input_data',
-            'output_data', and 'timestamp'.
-        """
         log_dict = {}
 
         def _process_data(data, field):
@@ -79,32 +57,6 @@ class DLog:
         unflatten_: bool = True,
         sep: str = "[^_^]",
     ) -> "DLog":
-        """Deserializes log entries from string representations of input and output data.
-
-        This method reconstructs a DLog instance from serialized string data, optionally
-        unflattening nested dictionary structures if they were flattened during the
-        serialization process. The method is particularly useful for reading logs from
-        storage formats like JSON or CSV where data is represented as strings.
-
-        Note:
-            The separator '[^_^]' is reserved and should not be used within dictionary
-            keys to ensure proper structure preservation during unflattening.
-
-        Args:
-            input_str: String representation of the input data.
-            output_str: String representation of the output data.
-            unflatten_ (bool): Indicates whether to unflatten the string data back into
-                               nested dictionaries.
-            sep (str): Separator used if unflattening is performed.
-
-        Returns:
-            An instance of DLog reconstructed from the provided string data.
-
-        Raises:
-            ValueError: If deserialization or unflattening fails due to incorrect data
-                        format or separator issues.
-        """
-
         def _process_data(data):
             if unflatten_:
                 try:
@@ -121,35 +73,12 @@ class DLog:
 
 
 class DataLogger:
-    """
-    Manages logging for data processing activities within an application.
-
-    This class handles the accumulation,
-    structuring, and persistence of log entries.
-    It supports exporting logs to disk in both CSV and JSON formats,
-    with features for
-    automatic log saving at program exit and customizable file naming.
-
-    Attributes:
-        persist_path: Path to the directory for saving log files.
-        log: Container for log entries.
-        filename: Base name for log files.
-    """
-
     def __init__(
         self,
         persist_path: str | Path | None = None,
         log: List[Dict] | None = None,
         filename: str | None = None,
     ) -> None:
-        """
-        Initializes the DataLogger with optional custom settings for log storage.
-
-        Args:
-            persist_path: The file system path for storing log files. Defaults to 'data/logs/'.
-            log: Initial log entries.
-            filename: Base name for exported log files.
-        """
         self.persist_path = Path(persist_path) if persist_path else Path("data/logs/")
         self.log = deque(log) if log else deque()
         self.filename = filename or "log"

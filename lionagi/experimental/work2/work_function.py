@@ -4,14 +4,14 @@ from pydantic import Field
 from functools import wraps
 from lionagi import logging as _logging
 from lionagi.libs import func_call
-from lionagi.core.generic import BaseComponent
+from lionagi.core.generic import Component
 
 from .schema import Work, WorkStatus
 from ..work.worklog import WorkLog
 from .worker import Worker
 
 
-class WorkFunction(BaseComponent):
+class WorkFunction(Component):
     """Work function management and execution."""
 
     function: Callable

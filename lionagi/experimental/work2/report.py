@@ -1,7 +1,7 @@
 from typing import Any
 from pydantic import Field
 from lionagi.experimental.report.form import Form
-from lionagi.core.generic import BaseComponent
+from lionagi.core.generic import Component
 from lionagi.experimental.report.util import get_input_output_fields
 
 """
@@ -82,7 +82,7 @@ once all forms are filled and all fields transfered to reports, the report is co
 """
 
 
-class Report(BaseComponent):
+class Report(Component):
 
     report_name: str = Field(
         default="default_report",
@@ -197,7 +197,7 @@ class Report(BaseComponent):
 # from pydantic import Field
 # from lionagi import logging as _logging
 # from lionagi.experimental.form.form import Form
-# from lionagi.core.generic import BaseComponent
+# from lionagi.core.generic import Component
 # from lionagi.experimental.form.util import get_input_output_fields
 
 

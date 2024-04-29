@@ -8,11 +8,10 @@ evaluation of connections based on custom logic.
 
 from typing import Any
 from pydantic import Field, field_validator
-from lionagi.core.generic.component import BaseComponent, BaseNode
-from lionagi.core.generic.condition import Condition
+from .abc import Component, BaseNode, Condition
 
 
-class Edge(BaseComponent):
+class Edge(Component):
     """
     Represents an edge between two nodes, potentially with a condition.
 

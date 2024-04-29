@@ -5,7 +5,7 @@
 
 > Child class of [[Base Component]]
 
-`BaseNode` extends `BaseComponent`, focusing on nodes in graph or tree structures. It includes content management capabilities alongside the features inherited from `BaseComponent`.
+`BaseNode` extends `Component`, focusing on nodes in graph or tree structures. It includes content management capabilities alongside the features inherited from `Component`.
 
 ### Attributes
 

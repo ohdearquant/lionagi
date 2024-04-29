@@ -1,70 +1,35 @@
-"""
-A module for representing relationships between nodes in a graph structure, 
-encapsulating incoming and outgoing edges.
-"""
-
-from pydantic import Field
-from pydantic.dataclasses import dataclass
 from lionagi.libs import convert
-from lionagi.core.generic.edge import Edge
+from .edge import Edge
+from .pile import BiDirectionalPile
 
+class Relations(BiDirectionalPile):
+    
+    def __init__(self):
+        super().__init__(Edge)
 
-@dataclass
-class Relations:
-    """
-    Represents the relationships of a node via its incoming and outgoing edges.
-
-    This class stores edges in two dictionaries: `preceding` for outgoing edges
-    and `succeeding` for incoming edges. It provides properties to access all
-    edges together and to get a unique set of all connected node IDs.
-
-    Attributes:
-        preceding (dict[str, Edge]): A dictionary of outgoing edges from the
-            node, with the edge ID as the key and the `Edge` object as the
-            value. Represents edges leading from this node to other nodes.
-        succeeding (dict[str, Edge]): A dictionary of incoming edges to the
-            node, with the edge ID as the key and the `Edge` object as the
-            value. Represents edges from other nodes leading to this node.
-    """
-
-    points_to: dict[str, Edge] = Field(
-        title="Outgoing edges",
-        default_factory=dict,
-        description="The Outgoing edges of the node, reads self precedes other, \
-            {edge_id: Edge}",
-    )
-
-    pointed_by: dict[str, Edge] = Field(
-        title="Incoming edges",
-        default_factory=dict,
-        description="The Incoming edges of the node, reads self succeeds other, \
-            {edge_id: Edge}",
-    )
+    def append(self, edge: Edge, direction="out"):
+        if direction == "out": 
+            self._append(edge, left=False) # out is right
+        else:          
+            self._append(edge, left=True) # in is left    
 
     @property
-    def all_edges(self) -> dict[str, Edge]:
-        """
-        Combines and returns all incoming and outgoing edges of the node.
-
-        Returns:
-            dict[str, Edge]: A dictionary of all edges connected to the node,
-                including both preceding (outgoing) and succeeding (incoming)
-                edges, indexed by edge IDs.
-        """
-        return {**self.points_to, **self.pointed_by}
+    def edges(self) -> dict[str, Edge]:
+        return {**self.left.pile, **self.right.pile}
 
     @property
-    def all_nodes(self) -> set[str]:
-        """
-        Extracts and returns a unique set of all node IDs connected to this
-        node through its edges.
-
-        It processes both heads and tails of each edge in `all_edges`, flattens
-        the list to a one-dimensional list, and then converts it to a set to
-        ensure uniqueness.
-
-        Returns:
-            set[str]: A set of unique node IDs connected to this node, derived
-                from both incoming and outgoing edges.
-        """
-        return set(convert.to_list([[i.head, i.tail] for i in self.all_edges.values()]))
+    def relevant_nodes(self) -> set[str]:
+        return set(convert.to_list(
+            [[i.head, i.tail] for i in self.edges.values()], flatten=True, dropna=True
+        ))
+    
+    @property
+    def node_edges(self):
+        dict_ = {i: [] for i in self.relevant_nodes}
+        for edge in self.edges.values():
+            dict_[edge.head].append(edge)
+            dict_[edge.tail].append(edge)
+        
+        return {
+            k: list(set(v)) for k, v in dict_.items() 
+        }

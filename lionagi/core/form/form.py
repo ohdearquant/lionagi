@@ -3,7 +3,7 @@ from pydantic import Field
 
 from lionagi.libs import convert, func_call
 
-from lionagi.core.generic import BaseComponent
+from lionagi.core.generic import Component
 from lionagi.core.form.field_validator import validation_funcs
 
 
@@ -43,7 +43,7 @@ non_prompt_words = [
 ]
 
 
-class Form(BaseComponent):
+class Form(Component):
     template_name: str = Field(
         default="default_form",
         description="The name of the prompt template.",

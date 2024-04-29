@@ -1,11 +1,11 @@
 from typing import Any
 from pydantic import Field
-from lionagi.core.generic import BaseComponent
+from lionagi.core.generic import Component
 from lionagi.libs import validation_funcs, convert
 from lionagi.experimental.report.util import get_input_output_fields
 
 
-class Form(BaseComponent):
+class Form(Component):
 
     form_name: str = Field(
         default="default_form",

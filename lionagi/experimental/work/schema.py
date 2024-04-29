@@ -4,7 +4,7 @@ import asyncio
 from typing import Any
 
 from lionagi.libs import SysUtil
-from lionagi.core.generic import BaseComponent
+from lionagi.core.generic import Component
 
 from .async_queue import WorkQueue
 
@@ -17,7 +17,7 @@ class WorkStatus(str, Enum):
     FAILED = "FAILED"
     
     
-class Work(BaseComponent):
+class Work(Component):
     status: WorkStatus = WorkStatus.PENDING
     result: Any = None
     error: Any = None

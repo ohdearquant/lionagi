@@ -1,11 +1,11 @@
 from pydantic import Field
 
 # from lionagi import logging as _logging
-from lionagi.core.generic import BaseComponent
+from lionagi.core.generic import Component
 from lionagi.experimental.report.util import get_input_output_fields, system_fields
 
 
-class Form(BaseComponent):
+class Form(Component):
 
     assignment: str = Field(..., examples=["input1, input2 -> output"])
 

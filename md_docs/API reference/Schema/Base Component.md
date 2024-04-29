@@ -7,11 +7,11 @@ created: 2024-02-26
 completed: true
 ---
 
-# BaseComponent
+# Component
 
 > Child class of [`pydantic.BaseModel`](https://docs.pydantic.dev/latest/) [^1]and [`abc.ABC`](https://docs.python.org/3/library/abc.html)[^2]
 
-The `BaseComponent` class serves as an abstract base class providing common attributes and utility methods for metadata management across different components within the Lionagi framework.
+The `Component` class serves as an abstract base class providing common attributes and utility methods for metadata management across different components within the Lionagi framework.
 
 ### Attributes
 

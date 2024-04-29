@@ -4,7 +4,7 @@ from lionagi.libs import func_call
 from functools import wraps
 from pydantic import Field
 
-from lionagi.core.generic import BaseComponent
+from lionagi.core.generic import Component
 
 from .schema import Work, WorkLog
 

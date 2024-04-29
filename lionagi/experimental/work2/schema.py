@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any, Dict, List
 from pydantic import Field
-from lionagi.core.generic import BaseComponent
+from lionagi.core.generic import Component
 
 
 class WorkStatus(str, Enum):
@@ -14,7 +14,7 @@ class WorkStatus(str, Enum):
     CANCELLED = "CANCELLED"
 
 
-class Work(BaseComponent):
+class Work(Component):
     """Base component for handling individual units of work."""
 
     form_id: str = Field(..., description="ID of the form for this work")

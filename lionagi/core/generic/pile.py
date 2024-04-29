@@ -3,21 +3,13 @@ from collections import deque
 from typing import TypeVar
 
 from pydantic import Field, field_validator
-from .abc import BaseComponent
+from .abc import Component, BaseRecord
 
 
-T = TypeVar("T", bound=BaseComponent)
+T = TypeVar("T", bound=Component)
 
 
-class Pile(BaseComponent):
-    """
-    Represents a collection of items of lionagi kind in a dictionary.
-
-    Attributes:
-        pile (dict[str, T]): A dictionary of items in the pile {item.id_: item}.
-        item_type (set[str] | None): The type of items that can be added to the pile.
-            If None, any type is allowed.
-    """
+class Pile(Component, BaseRecord):
 
     pile: dict[str, T] = Field(
         default_factory=dict,
@@ -32,18 +24,9 @@ class Pile(BaseComponent):
     )
    
     def append(self, item: T):
-        """
-        Appends an item to the pile.
-
-        Args:
-            item (T): The item to append.
-
-        Raises:
-            ValueError: If the item type is invalid.
-        """
-        if not isinstance(item, BaseComponent):
+        if not isinstance(item, Component):
             raise ValueError("Invalid item type.")
-        self.update(item)
+        self.update({item.id_: item})
     
     def items(self):
         """
@@ -65,7 +48,7 @@ class Pile(BaseComponent):
         Returns:
             T: The retrieved item, or the default value if not found.
         """
-        item_id = self._check_item_id(item)
+        item_id = self._get_item_id(item)
         if default is not False:
             return self.pile.get(item_id, default)
         return self.pile.get(item_id)
@@ -91,7 +74,7 @@ class Pile(BaseComponent):
         Returns:
             T: The removed item, or the default value if not found.
         """
-        item_id = self._check_item_id(item)
+        item_id = self._get_item_id(item)
         if default is not False:
             return self.pile.pop(item_id, default)
         return self.pile.pop(item_id)
@@ -125,11 +108,11 @@ class Pile(BaseComponent):
             value = list(value.values())
         
         if not isinstance(value, list):
-            if isinstance(value, type(BaseComponent)):
+            if isinstance(value, type(Component)):
                 return {value.class_name()}
         
         for i in value:
-            if not isinstance(i, type(BaseComponent)):
+            if not isinstance(i, type(Component)):
                 raise TypeError("Invalid item type.")
 
         if len(value) != len(set(value)):
@@ -153,7 +136,7 @@ class Pile(BaseComponent):
         Raises:
             ValueError: If the pile value is invalid or contains an invalid item type.
         """
-        if isinstance(value, BaseComponent):
+        if isinstance(value, Component):
             value = [value]
         elif isinstance(value, (tuple, list, set, Generator, deque)):
             value = list(value)
@@ -172,7 +155,7 @@ class Pile(BaseComponent):
         
         raise ValueError("Invalid pile value")
 
-    def _check_item_id(self, item: T | str) -> str:
+    def _get_item_id(self, item: T | str) -> str:
         """
         Checks if the item or item ID exists in the pile.
 
@@ -185,7 +168,7 @@ class Pile(BaseComponent):
         Raises:
             ValueError: If the item is not found in the pile.
         """
-        item_id = item.id_ if isinstance(item, BaseComponent) else item
+        item_id = item.id_ if isinstance(item, Component) else item
         if item_id not in self.pile:
             raise ValueError(f"Item {item_id} not found in pile.")
         return item_id
@@ -221,7 +204,7 @@ class Pile(BaseComponent):
         Returns:
             bool: True if the item or item ID is present in the pile, False otherwise.
         """
-        if isinstance(x, BaseComponent):
+        if isinstance(x, Component):
             return x in self.pile.values()
         return x in self.pile
     
@@ -279,7 +262,7 @@ class SequentialPile(Pile):
         Returns:
             T: The removed item, or the default value if not found.
         """
-        item_id = self._check_item_id(item)
+        item_id = self._get_item_id(item)
         self.sequence.remove(item_id)
         return super().pop(item_id, default)
     
@@ -303,12 +286,12 @@ class BiDirectionalPile(Pile):
         title="Right side of the pile"
     )
 
-    def append(self, item: BaseComponent, to_left: bool = False):
+    def append(self, item: Component, to_left: bool = False):
         """
         Appends an item to the pile, either to the left or right side.
 
         Args:
-            item (BaseComponent): The item to append.
+            item (Component): The item to append.
             to_left (bool): If True, appends the item to the left side of the pile.
                 If False (default), appends the item to the right side of the pile.
         """
@@ -318,20 +301,20 @@ class BiDirectionalPile(Pile):
         else:
             self.right.append(item.id_)
     
-    def pop(self, item: str | BaseComponent, default=False):
+    def pop(self, item: str | Component, default=False):
         """
         Removes and returns an item from the pile by its ID or item instance.
 
         Args:
-            item (str | BaseComponent): The item ID or item instance to remove and return.
+            item (str | Component): The item ID or item instance to remove and return.
             default (Any): The default value to return if the item is not found.
 
         Returns:
-            BaseComponent: The removed item, or the default value if not found.
+            Component: The removed item, or the default value if not found.
         """
         item = super().pop(item, default)
         if item is not False and item != default:
-            item_id = item.id_ if isinstance(item, BaseComponent) else item
+            item_id = item.id_ if isinstance(item, Component) else item
             if item_id in self.left:
                 self.left.remove(item_id)
             elif item_id in self.right:
@@ -340,7 +323,7 @@ class BiDirectionalPile(Pile):
 
 
 
-class MultiSequence(BaseComponent):
+class MultiSequence(Component):
     """
     Represents a multi-sequence of items.
 
@@ -368,7 +351,7 @@ class MultiSequence(BaseComponent):
             key (str): The category key.
             item (Any): The item to append.
         """
-        item_id = item.id_ if isinstance(item, BaseComponent) else item
+        item_id = item.id_ if isinstance(item, Component) else item
         if not key in self.sequence:
             self.sequence[key] = deque()
         self.sequence[key].append(item_id)
