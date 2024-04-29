@@ -3,11 +3,11 @@ from abc import ABC, abstractmethod
 from functools import singledispatchmethod
 from typing import Any, TypeVar, Type
 
-from pydantic import AliasChoices, BaseModel, Field, ValidationError
+from pydantic import AliasChoices, BaseModel, Field, ValidationError, field_validator
 from pandas import DataFrame, Series
 
 from lionagi.libs import SysUtil, func_call, convert, ParseUtil, nested
-
+from lionagi.libs.ln_validate import validate_keys
 
 T = TypeVar("T")
 
@@ -26,10 +26,12 @@ class BaseComponent(BaseModel, ABC):
         default_factory=SysUtil.create_id,
         validation_alias=AliasChoices("node_id", "ID", "id"),
         description="A 32-char unique hash identifier for the node.",
+        frozen=True,
     )
     timestamp: str = Field(
         default_factory=lambda: SysUtil.get_timestamp(sep=None),
         description="The timestamp of when the node was created.",
+        frozen=True,
     )
 
     extra_fields: dict[str, Any] = Field(
@@ -47,25 +49,16 @@ class BaseComponent(BaseModel, ABC):
         arbitrary_types_allowed = True
         populate_by_name = True
 
-    @property
-    def class_name(self) -> str:
-        """
-        Retrieve the name of the class.
-
-        Returns:
-            str: The name of the class.
-        """
-        return self._class_name()
 
     @classmethod
-    def _class_name(cls) -> str:
+    def class_name(cls) -> str:
         """
         Retrieve the name of the class.
 
         Returns:
             str: The name of the class.
         """
-        return cls.__name__
+        return "lionagi."+cls.__name__
 
     def to_json_str(self, *args, **kwargs) -> str:
         """
@@ -538,6 +531,58 @@ class Log(ABC):
 
 class Record(BaseComponent, ABC):
     """represents a storable object for an item"""
+
+
+class Rule(BaseComponent, ABC):
+    """represents a rule for an item"""
+
+    fields: list = Field(
+        default_factory=list, description="Fields that the rule applies to", 
+        validation_alias="work_fields"
+    )
+    validation_kwargs: dict = Field(
+        default_factory=dict, description="Dictionary of validation arguments"
+    )
+    fix: bool = Field(
+        False, description="If True, tries to auto-correct the field if validation fails"
+    )
+    strict: bool = Field(
+        True, description="If True, raises an error if the field is not in the fields list"
+    )
+    
+    @field_validator("fields", mode="before")
+    def _validate_fields(cls, fields):
+        if not fields:
+            if not 'fields' in cls.validation_kwargs:
+                raise ValueError(f"fields not provided")
+            fields = cls.validation_kwargs['fields']
+            
+        try:
+            fields = validate_keys(fields)
+        except Exception as e:
+            raise ValueError(f"failed to get fields") from e
+                 
+    def applies_to(self, field):
+        if field not in self.fields:
+            return False
+        return True
+
+    async def _apply(self, value, types=()):
+        if not isinstance(value, types):
+            if not self.fix:
+                raise ValueError(
+                    f"NUMERIC field must be an int or float, got {type(value).__name__}"
+                )
+        if self.fix:
+            return await self.fix_field(value)
+        return value
+    
+    async def fix_field(self, value):
+        return value
+
+    @abstractmethod
+    async def apply(self, value, strict, **kwargs):
+        pass
 
 
 class Condition(BaseModel, ABC):
