@@ -400,7 +400,7 @@ def to_num(
     *,
     upper_bound: int | float | None = None,
     lower_bound: int | float | None = None,
-    num_type: Type[int | float] = int,
+    num_type: Type[int | float] = float,
     precision: int | None = None,
 ) -> int | float:
     """

@@ -634,7 +634,7 @@ class StringMatch:
         # Calculate Jaro-Winkler similarity scores for each potential match
         scores = np.array(
             [
-                score_func(convert.to_str(word), correct_word)
+                score_func(convert.to_str(word), convert.to_str(correct_word))
                 for correct_word in correct_words_list
             ]
         )

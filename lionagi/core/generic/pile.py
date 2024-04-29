@@ -1,205 +1,130 @@
-from typing import TypeVar, Type
 from collections import deque
-from ._abc import BaseComponent
-from .sequence import CategorizedSequence
+from typing import TypeVar, Type
+from .abc import BaseComponent
 
 T = TypeVar("T", bound=BaseComponent)
 
+
 class Pile:
-    """
-    Represents a buffer that records the IDs of BaseComponent items. 
-    Only instances of BaseComponent or its subclasses are allowed.
-    """
+    """represents a collection of items of lionagi kind in a dictionary"""
     
-    def __init__(self, item_type: Type[BaseComponent] = BaseComponent) -> None:
-        """
-        Initializes the Pile with a specific item type.
-
-        Args:
-            item_type (Type[BaseComponent]): Type of the items to be stored. 
-                Defaults to BaseComponent.
-        """
-        self.pile = {}
-        self.item_type = item_type
-        
-    def _append(self, item: T) -> None:
-        """
-        Appends an item to the pile, ensuring it matches the specified item type.
-
-        Args:
-            item (T): Item to be appended, must be an instance of item_type.
-
-        Raises:
-            ValueError: If the item is not an instance of item_type.
-        """
-        if not isinstance(item, self.item_type):
-            raise ValueError(f"Item must be a {self.item_type.__name__} instance.")
+    def __init__(self, items = []):
+        self.pile = {item.id_: item for item in items} if items else {}
+    
+    def items(self):
+        return self.pile.items()
+    
+    def get(self, item: T | str) -> T:
+        item_id = item.id_ if isinstance(item, BaseComponent) else item
+        return self.pile.get(item_id, None)
+    
+    def append(self, item: T) -> None:
         self.pile[item.id_] = item
 
     def pop(self, item: T | str) -> T:
-        """
-        Removes and returns the item identified by its ID from the pile.
-
-        Args:
-            item (T | str): Item or item ID to be removed.
-
-        Returns:
-            T: The removed item, or None if not found.
-        """
         item_id = item.id_ if isinstance(item, BaseComponent) else item
         return self.pile.pop(item_id, None)
-
+    
+    def __getitem__(self, item: str) -> T:
+        return self.pile.get(item, None)
+    
+    def __setitem__(self, item: str, value: T):
+        self.pile[item] = value
+    
+    def __iter__(self):
+        return iter(self.pile.values())
+    
+    def __contains__(self, x):
+        return x in self.pile or x in self.pile.values()
+    
     def __len__(self) -> int:
-        """
-        Returns the number of items in the pile.
-
-        Returns:
-            int: Total count of items.
-        """
         return len(self.pile)
     
 
-class SequencedPile:
-    """
-    Manages a collection of items, supporting categorization and sequence tracking.
-    Items are instances of BaseComponent or its subclasses.
-    """
-    
-    def __init__(self, item_type: Type[T] = BaseComponent):
-        """
-        Initializes the SequencedPile with an item type for validation and storage.
+class BiDirectionalPile(Pile):
 
-        Args:
-            item_type (Type[T]): The type of the items to be managed.
-        """
-        self.pile = Pile(item_type)
-        self.sequence = deque()
-        self.item_type = item_type
-        self.categorized_sequence = CategorizedSequence()
-
-    def _append(self, item: T, category: str = None):
-        """
-        Adds an item to the appropriate sequence or categorized sequence.
-
-        Args:
-            item (T): Item to be added.
-            category (str, optional): Category for the item if specified.
-
-        Raises:
-            ValueError: If the item is not an instance of the specified item_type.
-        """
-        if not isinstance(item, self.item_type):
-            raise ValueError(f"Item must be a {self.item_type.__name__} instance.")
-        
-        self.pile._append(item)
-        if category:
-            self.categorized_sequence.append(category, item.id_)
-        else:
-            self.sequence.append(item.id_)
-        
-    def popleft(self, category: str = None) -> T:
-        """
-        Removes and returns the first item from the specified category or sequence.
-
-        Args:
-            category (str, optional): Category from which to remove the item.
-
-        Returns:
-            T: The removed item.
-        """
-        item_id = self.categorized_sequence.popleft(category) if category else self.sequence.popleft()
-        return self.pile.pop(item_id)
-        
-    def __len__(self) -> int:
-        """
-        Returns the total count of items across all sequences and categories.
-
-        Returns:
-            int: Total item count.
-        """
-        return len(self.sequence) + len(self.categorized_sequence)
-        
-    def __str__(self) -> str:
-        """
-        Returns a string representation of the current state of the buffer.
-
-        Returns:
-            str: Descriptive text about the buffer contents.
-        """
-        return (
-            f"Buffer with {len(self.pile)} items, "
-            f"{len(self.categorized_sequence)} categorized, and "
-            f"{len(self.sequence)} uncategorized."
-        )
-
-
-class BiDirectionalPile:
-    """
-    Manages two collections of items using Pile instances, one for the left and one for the right.
-    Allows items to be added to either side and uniquely identified across both piles.
-    """
-
-    def __init__(self, item_type: Type[BaseComponent] = BaseComponent):
-        """
-        Initializes the BiDirectionalPile with two separate piles.
-
-        Args:
-            item_type (Type[BaseComponent]): The type of the items stored in both piles.
-                Defaults to BaseComponent.
-        """
-        self.left = Pile(item_type)
-        self.right = Pile(item_type)
+    def __init__(self, items = []):
+        super().__init__(items)
+        self.left = []
+        self.right = []
 
     def append(self, item: BaseComponent, to_left: bool = False):
-        """
-        Appends an item to the left or right pile based on the `to_left` flag.
-
-        Args:
-            item (BaseComponent): The item to be added to the pile.
-            to_left (bool): Determines whether to add to the left pile (True) or
-                the right pile (False). Defaults to False.
-        """
+        super().append(item)
         if to_left:
-            self.left._append(item)
+            self.left.append(item.id_)
         else:
-            self.right._append(item)
-    
-    @property
-    def pile(self) -> dict:
-        """
-        Returns a combined dictionary of items from both left and right piles.
-
-        Returns:
-            dict: A dictionary containing all items from both piles.
-        """
-        return {**self.left.pile, **self.right.pile}
+            self.right.append(item.id_)
     
     def pop(self, item: str | BaseComponent):
-        """
-        Removes and returns the item from the left or right pile, based on its presence.
+        item = super().pop(item)
+        if item.id_ in self.left:
+            self.left.remove(item.id_)
+        elif item.id_ in self.right:
+            self.right.remove(item.id_)
+        return item
 
-        Args:
-            item (Union[str, BaseComponent]): The identifier or the item instance to be removed.
 
-        Returns:
-            BaseComponent: The removed item.
-
-        Raises:
-            ValueError: If the item identifier is not found in either pile.
-        """
-        item_id = item.id_ if isinstance(item, BaseComponent) else item
-        if item_id not in self.pile:
-            raise ValueError(f"Item with id {item_id} not found in the pile.")
-
-        if item_id in self.left.pile:
-            return self.left.pop(item_id)
-        return self.right.pop(item_id)
+class SequentialPile(Pile):
     
-    def __len__(self) -> int:
-        """
-        Returns the total number of items in both the left and right piles.
+    def __init__(self, items = []):
+        super().__init__(items)
+        self.sequence: deque = deque()
 
-        Returns:
-            int: Combined count of items in both piles.
-        """
-        return len(self.left) + len(self.right)
+    def append(self, item: T):
+        super().append(item)
+        self.sequence.append(item.id_)
+    
+    def popleft(self) -> T:
+        item_id = self.sequence.popleft()
+        return self.pop(item_id)
+    
+    def pop(self, item: T | str) -> T:
+        item_id = item.id_ if isinstance(item, BaseComponent) else item
+        self.sequence.remove(item_id)
+        return super().pop(item_id)
+
+
+class MultiSequence:
+    
+    def __init__(self, sequence: dict[str, deque] = None) -> None:
+        self.sequence = sequence or {}
+        
+    def items(self):
+        return self.sequence.items()
+    
+    def append(self, key: str, item):
+        item_id = item.id_ if isinstance(item, BaseComponent) else item
+        if not key in self.sequence:
+            self.sequence[key] = deque()
+        self.sequence[key].append(item_id)
+        
+    def __iter__(self):
+        return iter(self.sequence.keys())
+
+    def __getitem__(self, key: str) -> deque | None:
+        return self.sequence.get(key, None)
+
+    def __setitem__(self, category: str, items: deque):
+        self.sequence[category] = items
+
+    def __len__(self) -> int:
+        return sum(len(items) for items in self.sequence.values())
+        
+        
+class MultiSequencialPile(Pile):
+
+    def __init__(self, items = [], sequence=None):
+        super().__init__(items)
+        self.mseq = sequence or MultiSequence()
+    
+    def append(self, key: str, item: T):
+        super().append(item)
+        self.mseq.append(key, item)
+    
+    def pop(self, item: T | str):
+        item = super().pop(item)
+        for key, seq in self.mseq.items():
+            if item.id_ in seq:
+                seq.remove(item.id_)
+                self.mseq[key] = seq
+        return item

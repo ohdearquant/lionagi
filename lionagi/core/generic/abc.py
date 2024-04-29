@@ -536,7 +536,6 @@ class Log(ABC):
     """represents a log of items"""
 
 
-
 class Record(BaseComponent, ABC):
     """represents a storable object for an item"""
 
