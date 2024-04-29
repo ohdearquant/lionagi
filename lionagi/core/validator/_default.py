@@ -89,7 +89,6 @@ class MappingRule(Rule):
         
         return keys
     
-    
     async def apply(self, value, keys=None, fix=None, **kwargs):
         if not keys and not self.keys:
             raise ValueError("Correct mapping keys must be provided.")
@@ -184,7 +183,7 @@ class StringRule(Rule):
         if not isinstance(value, str):
             if fix or self.fix:
                 try:
-                    return self.fix_field(value)
+                    return await self.fix_field(value)
                 except Exception as e:
                     raise e
 
@@ -212,7 +211,7 @@ class ActionRequestRule(MappingRule):
     def __init__(self, fields=[], validation_kwargs={"discard": False}, fix=False, strict=True):
         super().__init__(fields, validation_kwargs, fix, strict, keys=ActionRequestKeys)
 
-    def fix_field(self, value):
+    async def fix_field(self, value):
         corrected = []
         if isinstance(value, str):
             value = ParseUtil.fuzzy_parse_json(value)
