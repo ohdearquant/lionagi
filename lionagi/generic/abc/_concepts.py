@@ -26,7 +26,7 @@ class Record(ABC):
         
         
 class Ordering(ABC):
-    """represents sequence of specific order"""
+    """represents a sequence of certain order"""
     
     @abstractmethod
     def __len__(self):
@@ -54,25 +54,16 @@ class Condition(ABC):
     
 
 class Action(ABC):
-    """represents a process"""
+    """represents a purposed process"""
 
     @abstractmethod
-    async def perform(self, /, *args, **kwargs) -> any:
+    async def invoke(self, /, *args, **kwargs) -> any:
         pass
     
     
 class Workable(ABC):
-    """represents an entity that can be processed on"""
+    """represents a processable entity"""
 
     @abstractmethod
-    @property
-    def is_workable(self) -> bool:
+    async def perform(self, /, *args, **kwargs) -> any:
         ...
-
-
-class Executor(ABC):
-    """represents an entity that can carry through situations"""
-
-    @abstractmethod
-    async def execute(self, /, *args, **kwargs) -> any:
-        pass
