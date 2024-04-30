@@ -39,9 +39,18 @@ class Component(BaseModel, Record, ABC):
         arbitrary_types_allowed = True
         populate_by_name = True
 
+    @property
+    def class_name(self) -> str:
+        """
+        Retrieve the name of the class.
+
+        Returns:
+            str: The name of the class.
+        """
+        return self._class_name()
 
     @classmethod
-    def class_name(cls) -> str:
+    def _class_name(cls) -> str:
         """
         Retrieve the name of the class.
 

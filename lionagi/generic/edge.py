@@ -3,12 +3,6 @@ from pydantic import Field, field_validator
 from .abc import Component, Condition, Ordering
 
 
-
-
-
-
-
-
 class Edge(Component, Ordering):
     head: str = Field(
         title="Head",

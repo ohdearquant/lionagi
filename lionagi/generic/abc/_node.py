@@ -4,7 +4,7 @@ from functools import singledispatchmethod
 from typing import Any, TypeVar
 from pydantic import AliasChoices, BaseModel, Field, ValidationError
 from pandas import DataFrame, Series
-from lionagi.libs import SysUtil, convert, ParseUtil, nested
+from lionagi.libs import convert, ParseUtil
 from ._component import Component
 
 T = TypeVar("T")
@@ -185,70 +185,3 @@ class BaseNode(Component, ABC):
             raise ValueError(f"Invalid Pydantic model for deserialization: {e}") from e
 
         return cls.from_obj(config_ | kwargs)
-
-    def meta_get(
-        self, key: str, indices: list[str | int] | None = None, default: Any = None
-    ) -> Any:
-        """
-        Get a value from the metadata dictionary.
-
-        Args:
-            key (str): The key to retrieve the value for.
-            indices (list[str | int] | None): Optional list of indices for nested retrieval.
-            default (Any): The default value to return if the key is not found.
-
-        Returns:
-            Any: The retrieved value or the default value if not found.
-        """
-        if indices:
-            return nested.nget(self.metadata, indices, default)
-        return self.metadata.get(key, default)
-
-    def meta_change_key(self, old_key: str, new_key: str) -> bool:
-        """
-        Change a key in the metadata dictionary.
-
-        Args:
-            old_key (str): The old key to be changed.
-            new_key (str): The new key to replace the old key.
-
-        Returns:
-            bool: True if the key was changed successfully, False otherwise.
-        """
-        if old_key in self.metadata:
-            SysUtil.change_dict_key(self.metadata, old_key, new_key)
-            return True
-        return False
-
-    def meta_insert(self, indices: str | list, value: Any, **kwargs) -> bool:
-        """
-        Insert a value into the metadata dictionary at the specified indices.
-
-        Args:
-            indices (str | list): The indices to insert the value at.
-            value (Any): The value to be inserted.
-            **kwargs: Additional keyword arguments for the `nested.ninsert`
-                function.
-
-        Returns:
-            bool: True if the value was inserted successfully, False otherwise.
-        """
-        return nested.ninsert(self.metadata, indices, value, **kwargs)
-
-    def meta_merge(
-        self, additional_metadata: dict[str, Any], overwrite: bool = False, **kwargs
-    ) -> None:
-        """
-        Merge additional metadata into the existing metadata dictionary.
-
-        Args:
-            additional_metadata (dict[str, Any]): The additional metadata to be
-                merged.
-            overwrite (bool): Whether to overwrite existing keys with the new
-                values.
-            **kwargs: Additional keyword arguments for the `nested.nmerge`
-                function.
-        """
-        self.metadata = nested.nmerge(
-            [self.metadata, additional_metadata], overwrite=overwrite, **kwargs
-        )

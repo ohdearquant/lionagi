@@ -8,22 +8,6 @@ class Record(ABC):
     def items(self):
         ...
         
-    @abstractmethod
-    def __len__(self):
-        ...
-    
-    @abstractmethod
-    def __getitem__(self, key):
-        ...
-        
-    @abstractmethod
-    def __setitem__(self, key, value):
-        ...
-        
-    @abstractmethod
-    def __contains__(self, key):
-        ...
-        
         
 class Ordering(ABC):
     """represents a sequence of certain order"""
@@ -49,8 +33,8 @@ class Condition(ABC):
     """represents a situation"""
 
     @abstractmethod
-    async def apply(self, value, /, *args, **kwargs) -> any:
-        pass
+    async def applies(self, value, /, *args, **kwargs) -> any:
+        ...
     
 
 class Action(ABC):
@@ -58,7 +42,7 @@ class Action(ABC):
 
     @abstractmethod
     async def invoke(self, /, *args, **kwargs) -> any:
-        pass
+        ...
     
     
 class Workable(ABC):

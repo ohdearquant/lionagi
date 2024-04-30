@@ -4,13 +4,13 @@ from typing import TypeVar
 import contextlib
 
 from pydantic import Field, field_validator
-from .abc import Component, BaseRecord
+from .abc import Component, Record
 
 
 T = TypeVar("T", bound=Component)
 
 
-class Pile(Component, BaseRecord):
+class Pile(Component, Record):
 
     pile: dict[str, T] = Field(
         default_factory=dict,
@@ -98,7 +98,7 @@ class Pile(Component, BaseRecord):
         if isinstance(value, (tuple, list, set, Generator)):
             value = list(value)
         
-        if isinstance(value, (Mapping, BaseRecord)):
+        if isinstance(value, (Mapping, Record)):
             value = list(value.values())
         
         if not isinstance(value, list):
