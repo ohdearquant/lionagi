@@ -8,8 +8,8 @@ NetworkX for visualization.
 from collections import deque
 from typing import Any
 
-from lionagi.core.generic import Node
-from lionagi.core.generic import BaseStructure
+from ..generic import Node
+from .structure import BaseStructure
 
 
 class Graph(BaseStructure):

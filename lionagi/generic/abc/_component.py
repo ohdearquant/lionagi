@@ -6,9 +6,9 @@ from pydantic import AliasChoices, BaseModel, Field
 from pandas import Series
 
 from lionagi.libs import SysUtil, func_call, convert
+from ._concepts import Record
 
-
-class Component(BaseModel, ABC):
+class Component(BaseModel, Record, ABC):
     """a distuinguishable temporal entity in lionagi"""
 
     id_: str = Field(

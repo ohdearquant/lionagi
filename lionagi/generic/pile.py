@@ -1,6 +1,7 @@
 from collections.abc import Mapping, Generator
 from collections import deque
 from typing import TypeVar
+import contextlib
 
 from pydantic import Field, field_validator
 from .abc import Component, BaseRecord
@@ -24,22 +25,20 @@ class Pile(Component, BaseRecord):
     )
    
     def append(self, item: T):
-        if not isinstance(item, Component):
-            raise ValueError("Invalid item type.")
-        self.update({item.id_: item})
+        self.update(item)
     
     def items(self):
         """
-        Returns an iterator over the items in the pile.
+        Returns an iterator over the items in the pile. yields (item.id_, item)
 
         Returns:
             iterator: An iterator over the items in the pile.
         """
         return self.pile.items()
     
-    def get(self, item: T | str, default=False) -> T:
+    def get(self, item: T | str) -> T:
         """
-        Retrieves an item from the pile by its ID or item instance.
+        Retrieves an item from the pile by its ID or item instance. If the item is not found, returns a None.
 
         Args:
             item (T | str): The item or item ID to retrieve.
@@ -48,24 +47,19 @@ class Pile(Component, BaseRecord):
         Returns:
             T: The retrieved item, or the default value if not found.
         """
-        item_id = self._get_item_id(item)
-        if default is not False:
-            return self.pile.get(item_id, default)
-        return self.pile.get(item_id)
-
-    def update(self, other: dict[str, T]):
+        with contextlib.suppress(KeyError):
+            return self.pile.get(self._get_item_id(item), None)
+        
+    def update(self, other: any):
         """
-        Updates the pile with items from another dictionary.
-
-        Args:
-            other (dict[str, T]): The dictionary of items to update the pile with.
+        Updates the pile with items, can be any 
         """
         _pile = self.validate_pile(other)
         self.pile.update(_pile)
 
-    def pop(self, item: T | str, default=False) -> T:
+    def pop(self, item: T | str) -> T:
         """
-        Removes and returns an item from the pile by its ID or item instance.
+        Removes and returns an item from the pile by its ID or item instance. If the item is not found, raises a KeyError.
 
         Args:
             item (T | str): The item or item ID to remove and return.
@@ -74,10 +68,10 @@ class Pile(Component, BaseRecord):
         Returns:
             T: The removed item, or the default value if not found.
         """
-        item_id = self._get_item_id(item)
-        if default is not False:
-            return self.pile.pop(item_id, default)
-        return self.pile.pop(item_id)
+        try:
+            return self.pile.pop(self._get_item_id(item))
+        except KeyError:
+            raise KeyError(f"Item {item} not found in pile.")
 
     @field_validator("item_type", mode="before")
     def validate_item_type(cls, value):
@@ -104,7 +98,7 @@ class Pile(Component, BaseRecord):
         if isinstance(value, (tuple, list, set, Generator)):
             value = list(value)
         
-        if isinstance(value, Mapping):
+        if isinstance(value, (Mapping, BaseRecord)):
             value = list(value.values())
         
         if not isinstance(value, list):
@@ -136,13 +130,12 @@ class Pile(Component, BaseRecord):
         Raises:
             ValueError: If the pile value is invalid or contains an invalid item type.
         """
-        if isinstance(value, Component):
-            value = [value]
-        elif isinstance(value, (tuple, list, set, Generator, deque)):
-            value = list(value)
-        elif isinstance(value, Mapping):
-            value = list(value.values())
 
+
+
+
+    
+    
         if getattr(cls, "item_type", None) is not None:
             for i in value:
                 if type(i) in cls.item_type:
@@ -170,7 +163,7 @@ class Pile(Component, BaseRecord):
         """
         item_id = item.id_ if isinstance(item, Component) else item
         if item_id not in self.pile:
-            raise ValueError(f"Item {item_id} not found in pile.")
+            raise KeyError(f"Item {item_id} not found in pile.")
         return item_id
 
     def __getitem__(self, item: str) -> T:        
@@ -218,7 +211,7 @@ class Pile(Component, BaseRecord):
         return len(self.pile)
     
 
-class SequentialPile(Pile):
+class SequencedPile(Pile):
     """
     Represents a sequential pile of items.
 

@@ -2,6 +2,7 @@ from lionagi.libs import convert
 from .edge import Edge
 from .pile import BiDirectionalPile
 
+
 class Relations(BiDirectionalPile):
     
     def __init__(self):

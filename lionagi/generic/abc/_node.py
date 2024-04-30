@@ -33,7 +33,7 @@ class BaseNode(Component, ABC):
 
     @singledispatchmethod
     @classmethod
-    def from_obj(cls, obj: Any, *args, **kwargs) -> T:
+    def from_obj(cls, obj: Any, /, *args, **kwargs) -> T:
         """
         Create a node instance from an object.
 
@@ -61,7 +61,7 @@ class BaseNode(Component, ABC):
 
     @from_obj.register(dict)
     @classmethod
-    def _from_dict(cls, obj: dict, *args, **kwargs) -> T:
+    def _from_dict(cls, obj: dict, /, *args, **kwargs) -> T:
         """
         Create a node instance from a dictionary.
 
@@ -77,7 +77,7 @@ class BaseNode(Component, ABC):
 
     @from_obj.register(str)
     @classmethod
-    def _from_str(cls, obj: str, *args, fuzzy_parse: bool = False, **kwargs) -> T:
+    def _from_str(cls, obj: str, /, *args, fuzzy_parse: bool = False, **kwargs) -> T:
         """
         Create a node instance from a JSON string.
 
@@ -98,7 +98,7 @@ class BaseNode(Component, ABC):
 
     @from_obj.register(list)
     @classmethod
-    def _from_list(cls, obj: list, *args, **kwargs) -> list[T]:
+    def _from_list(cls, obj: list, /, *args, **kwargs) -> list[T]:
         """
         Create a list of node instances from a list of objects.
 
@@ -115,7 +115,7 @@ class BaseNode(Component, ABC):
     @from_obj.register(Series)
     @classmethod
     def _from_pd_series(
-        cls, obj: Series, *args, pd_kwargs: dict | None = None, **kwargs
+        cls, obj: Series, /, *args, pd_kwargs: dict | None = None, **kwargs
     ) -> T:
         """
         Create a node instance from a Pandas Series.
@@ -135,7 +135,7 @@ class BaseNode(Component, ABC):
     @from_obj.register(DataFrame)
     @classmethod
     def _from_pd_dataframe(
-        cls, obj: DataFrame, *args, pd_kwargs: dict | None = None, **kwargs
+        cls, obj: DataFrame, /, *args, pd_kwargs: dict | None = None, **kwargs
     ) -> list[T]:
         """
         Create a list of node instances from a Pandas DataFrame.
@@ -162,7 +162,7 @@ class BaseNode(Component, ABC):
 
     @from_obj.register(BaseModel)
     @classmethod
-    def _from_base_model(cls, obj, pydantic_kwargs=None, **kwargs) -> T:
+    def _from_base_model(cls, obj, /, pydantic_kwargs=None, **kwargs) -> T:
         """
         Create a node instance from a Pydantic BaseModel.
 
