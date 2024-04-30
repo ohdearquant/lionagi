@@ -1,30 +1,41 @@
 """base components in lionagi"""
 from abc import ABC
 from functools import singledispatchmethod
-from typing import Any, Type
 from pydantic import AliasChoices, BaseModel, Field
 from pandas import Series
 
-from lionagi.libs import SysUtil, func_call, convert
+from lionagi.libs.ln_convert import to_str, strip_lower
+from lionagi.libs.ln_func_call import lcall
+from lionagi.libs import SysUtil
+
 from ._concepts import Record
+
 
 class Component(BaseModel, Record, ABC):
     """a distuinguishable temporal entity in lionagi"""
 
-    id_: str = Field(
+    ln_id: str = Field(
         title="ID",
         default_factory=SysUtil.create_id,
-        validation_alias=AliasChoices("node_id", "ID", "id"),
-        description="A 32-char unique hash identifier for the node.",
+        validation_alias=AliasChoices("node_id", "ID", "id", "id_"),
+        description="A 32-char unique hash identifier.",
         frozen=True,
     )
+    
     timestamp: str = Field(
         default_factory=lambda: SysUtil.get_timestamp(sep=None)[:-6],
-        description="The utc timestamp of when the node was created.",
+        title="Creation Timestamp",
+        description="The utc timestamp of when the component was created.",
         frozen=True,
     )
 
-    extra_fields: dict[str, Any] = Field(
+    metadata: dict[str, any] = Field(
+        default_factory=dict,
+        validation_alias="meta",
+        description="Additional metadata for the component.",
+    )
+
+    extra_fields: dict[str, any] = Field(
         default_factory=dict,
         validation_alias=AliasChoices(
             "extra", "additional_fields", "schema_extra", "extra_schema"
@@ -39,25 +50,15 @@ class Component(BaseModel, Record, ABC):
         arbitrary_types_allowed = True
         populate_by_name = True
 
-    @property
-    def class_name(self) -> str:
-        """
-        Retrieve the name of the class.
-
-        Returns:
-            str: The name of the class.
-        """
-        return self._class_name()
-
     @classmethod
-    def _class_name(cls) -> str:
+    def class_name(cls) -> str:
         """
         Retrieve the name of the class.
 
         Returns:
             str: The name of the class.
         """
-        return "lionagi."+cls.__name__
+        return cls.__name__
 
     def to_json_str(self, *args, **kwargs) -> str:
         """
@@ -67,14 +68,14 @@ class Component(BaseModel, Record, ABC):
             str: The JSON string representation of the component.
         """
         dict_ = self.to_dict(*args, **kwargs)
-        return convert.to_str(dict_)
+        return to_str(dict_)
 
-    def to_dict(self, *args, **kwargs) -> dict[str, Any]:
+    def to_dict(self, *args, **kwargs) -> dict[str, any]:
         """
         Convert the component to a dictionary.
 
         Returns:
-            dict[str, Any]: The dictionary representation of the component.
+            dict[str, any]: The dictionary representation of the component.
         """
         dict_ = self.model_dump(*args, by_alias=True, **kwargs)
         for field_name in list(self.extra_fields.keys()):
@@ -122,11 +123,11 @@ class Component(BaseModel, Record, ABC):
 
     def _add_field(
         self,
-        field_name: str,
-        annotation: Any | Type | None = Any,
-        default: Any | None = None,
-        value: Any | None = None,
-        field: Any = None,
+        field: str,
+        annotation: any = None,
+        default: any | None = None,
+        value: any | None = None,
+        field_obj: any = None,
         **kwargs,
     ) -> None:
         """
@@ -134,21 +135,20 @@ class Component(BaseModel, Record, ABC):
 
         Args:
             field_name (str): The name of the field.
-            annotation (Any | Type | None): The type annotation for the field.
-            default (Any | None): The default value for the field.
-            value (Any | None): The initial value for the field.
-            field (Any): The Field object for the field.
+            annotation (any | Type | None): The type annotation for the field.
+            default (any | None): The default value for the field.
+            value (any | None): The initial value for the field.
+            field (any): The Field object for the field.
             **kwargs: Additional keyword arguments for the Field object.
         """
-        field = field or Field(default=default, **kwargs)
-        self.extra_fields[field_name] = field
+        self.extra_fields[field] = field_obj or Field(default=default, **kwargs)
         if annotation:
-            self.extra_fields[field_name].annotation = annotation
+            self.extra_fields[field].annotation = annotation
 
-        if not value and (a := self._get_field_attr(field_name, "default", None)):
+        if not value and (a := self._get_field_attr(field, "default", None)):
             value = a
 
-        self.__setattr__(field_name, value)
+        self.__setattr__(field, value)
 
     @property
     def _all_fields(self):
@@ -165,17 +165,17 @@ class Component(BaseModel, Record, ABC):
 
         return self._get_field_annotation(list(self._all_fields.keys()))
 
-    def _get_field_attr(self, k: str, attr: str, default: Any = False) -> Any:
+    def _get_field_attr(self, k: str, attr: str, default: any = False) -> any:
         """
         Get the value of a field attribute.
 
         Args:
             k (str): The field name.
             attr (str): The attribute name.
-            default (Any): Default value to return if the attribute is not found.
+            default (any): Default value to return if the attribute is not found.
 
         Returns:
-            Any: The value of the field attribute, or the default value if not found.
+            any: The value of the field attribute, or the default value if not found.
 
         Raises:
             ValueError: If the field does not have the specified attribute.
@@ -185,11 +185,9 @@ class Component(BaseModel, Record, ABC):
                 raise ValueError(f"field {k} has no attribute {attr}")
 
             field = self._all_fields[k]
-            a = getattr(field, attr, None)
-            if not a:
+            if not (a := getattr(field, attr, None)):
                 try:
-                    a = field.json_schema_extra[attr]
-                    return a
+                    return field.json_schema_extra[attr]
                 except Exception:
                     return None
             return a
@@ -199,7 +197,7 @@ class Component(BaseModel, Record, ABC):
             raise e
 
     @singledispatchmethod
-    def _get_field_annotation(self, field_name: Any) -> Any:
+    def _get_field_annotation(self, field_name: any) -> any:
         """
         Get the annotation for a field.
 
@@ -209,10 +207,10 @@ class Component(BaseModel, Record, ABC):
         Raises:
             TypeError: If the field_name is of an unsupported type.
         """
-        raise TypeError(f"Unsupported type {type(field_name)}")
+        raise NotImplementedError
 
     @_get_field_annotation.register(str)
-    def _(self, field_name: str) -> dict[str, Any]:
+    def _(self, field_name: str) -> dict[str, any]:
         """
         Get the annotation for a field as a dictionary.
 
@@ -220,21 +218,21 @@ class Component(BaseModel, Record, ABC):
             field_name (str): The name of the field.
 
         Returns:
-            dict[str, Any]: A dictionary mapping the field name to its annotation.
+            dict[str, any]: A dictionary mapping the field name to its annotation.
         """
         dict_ = {field_name: self._all_fields[field_name].annotation}
         for k, v in dict_.items():
             if "|" in str(v):
                 v = str(v)
                 v = v.split("|")
-                dict_[k] = func_call.lcall(v, convert.strip_lower)
+                dict_[k] = lcall(v, strip_lower)
             else:
                 dict_[k] = [v.__name__]
         return dict_
 
     @_get_field_annotation.register(list)
     @_get_field_annotation.register(tuple)
-    def _(self, field_names: list | tuple) -> dict[str, Any]:
+    def _(self, field_names: list | tuple) -> dict[str, any]:
         """
         Get the annotations for multiple fields as a dictionary.
 
@@ -242,7 +240,7 @@ class Component(BaseModel, Record, ABC):
             field_names (list | tuple): A list or tuple of field names.
 
         Returns:
-            dict[str, Any]: A dictionary mapping field names to their annotations.
+            dict[str, any]: A dictionary mapping field names to their annotations.
         """
         dict_ = {}
         for field_name in field_names:
@@ -260,12 +258,11 @@ class Component(BaseModel, Record, ABC):
         Returns:
             bool: True if the field has the attribute, False otherwise.
         """
-        field = self._all_fields.get(k, None)
-        if field is None:
-            raise ValueError(f"Field {k} not found in model fields.")
+        
+        if not (field := self._all_fields.get(k, None)):
+            raise KeyError(f"Field {k} not found in model fields.")
 
-        a = attr in str(field)
-        if not a:
+        if not attr in str(field):
             try:
                 a = (
                     self._all_fields[k].json_schema_extra[attr] is not None

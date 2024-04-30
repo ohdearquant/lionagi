@@ -4,7 +4,8 @@ from functools import singledispatchmethod
 from typing import Any, TypeVar
 from pydantic import AliasChoices, BaseModel, Field, ValidationError
 from pandas import DataFrame, Series
-from lionagi.libs import convert, ParseUtil
+from lionagi.libs.ln_convert import to_dict
+from lionagi.libs import ParseUtil
 from ._component import Component
 
 T = TypeVar("T")
@@ -25,11 +26,6 @@ class BaseNode(Component, ABC):
         description="The optional content of the node.",
     )
 
-    metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        validation_alias="meta",
-        description="Additional metadata for the node.",
-    )
 
     @singledispatchmethod
     @classmethod
@@ -90,7 +86,7 @@ class BaseNode(Component, ABC):
         Returns:
             T: The created node instance.
         """
-        obj = ParseUtil.fuzzy_parse_json(obj) if fuzzy_parse else convert.to_dict(obj)
+        obj = ParseUtil.fuzzy_parse_json(obj) if fuzzy_parse else to_dict(obj)
         try:
             return cls.from_obj(obj, *args, **kwargs)
         except ValidationError as e:
