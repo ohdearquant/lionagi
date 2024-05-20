@@ -11,7 +11,7 @@ class BooleanRule(Rule):
         apply_type (str): The type of data to which the rule applies.
     """
 
-    fields: list[str] = ["action_required"]
+    fields: list[str] = ["action_required", "extension_required"]
 
     def __init__(self, apply_type="bool", **kwargs):
         super().__init__(apply_type=apply_type, **kwargs)

@@ -27,15 +27,15 @@ First, let's build a Vector Index with `LlamaIndex <https://www.llamaindex.ai/>`
 
 .. code-block:: python
 
-   # get llamaindex textnodes, if to_datanode is True, you will get Lion DataNode
+   # get llamaindex textnodes, if to_lion is True, you will get Lion DataNode
    text_nodes = li.load(
        'SimpleDirectoryReader', reader_type='llama_index', reader_args=['papers/'],
-       to_datanode=False, #reader_kwargs = {...}
+       to_lion=False, #reader_kwargs = {...}
    )
 
    chunks = li.chunk(
        documents=text_nodes, chunker_type = 'llama_index', chunker='SentenceSplitter',
-       chunker_kwargs={'chunk_size': 512, 'chunk_overlap':20}, to_datanode=False,
+       chunker_kwargs={'chunk_size': 512, 'chunk_overlap':20}, to_lion=False,
    )
 
 .. code-block:: python

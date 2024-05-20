@@ -37,7 +37,7 @@ def load(
     reader_kwargs=None,
     load_args=None,
     load_kwargs=None,
-    to_datanode: bool | Callable = True,
+    to_lion: bool | Callable = True,
 ):
 
     if reader_args is None:
@@ -54,7 +54,7 @@ def load(
 
     if reader_type == ReaderType.LANGCHAIN:
         return read_funcs[ReaderType.LANGCHAIN](
-            reader, reader_args, reader_kwargs, to_datanode
+            reader, reader_args, reader_kwargs, to_lion
         )
 
     elif reader_type == ReaderType.LLAMAINDEX:
@@ -68,12 +68,12 @@ def load(
             reader_kwargs["required_exts"] = required_exts
 
         return read_funcs[ReaderType.LLAMAINDEX](
-            reader, reader_args, reader_kwargs, load_args, load_kwargs, to_datanode
+            reader, reader_args, reader_kwargs, load_args, load_kwargs, to_lion
         )
 
     elif reader_type == ReaderType.SELFDEFINED:
         return read_funcs[ReaderType.SELFDEFINED](
-            reader, reader_args, reader_kwargs, load_args, load_kwargs, to_datanode
+            reader, reader_args, reader_kwargs, load_args, load_kwargs, to_lion
         )
 
     else:
@@ -93,13 +93,13 @@ def _plain_reader(reader, reader_args, reader_kwargs):
         ) from e
 
 
-def _langchain_reader(reader, reader_args, reader_kwargs, to_datanode: bool | Callable):
+def _langchain_reader(reader, reader_args, reader_kwargs, to_lion: bool | Callable):
     nodes = LangchainBridge.langchain_loader(reader, reader_args, reader_kwargs)
-    if isinstance(to_datanode, bool) and to_datanode is True:
+    if isinstance(to_lion, bool) and to_lion is True:
         nodes = [Node.from_langchain(i) for i in nodes]
 
-    elif isinstance(to_datanode, Callable):
-        nodes = _datanode_parser(nodes, to_datanode)
+    elif isinstance(to_lion, Callable):
+        nodes = _datanode_parser(nodes, to_lion)
     return nodes
 
 
@@ -109,15 +109,15 @@ def _llama_index_reader(
     reader_kwargs,
     load_args,
     load_kwargs,
-    to_datanode: bool | Callable,
+    to_lion: bool | Callable,
 ):
     nodes = LlamaIndexBridge.llama_index_read_data(
         reader, reader_args, reader_kwargs, load_args, load_kwargs
     )
-    if isinstance(to_datanode, bool) and to_datanode is True:
+    if isinstance(to_lion, bool) and to_lion is True:
         nodes = [Node.from_llama_index(i) for i in nodes]
-    elif isinstance(to_datanode, Callable):
-        nodes = _datanode_parser(nodes, to_datanode)
+    elif isinstance(to_lion, Callable):
+        nodes = _datanode_parser(nodes, to_lion)
     return nodes
 
 
@@ -127,7 +127,7 @@ def _self_defined_reader(
     reader_kwargs,
     load_args,
     load_kwargs,
-    to_datanode: bool | Callable,
+    to_lion: bool | Callable,
 ):
     try:
         loader = reader(*reader_args, **reader_kwargs)
@@ -137,10 +137,10 @@ def _self_defined_reader(
             f"Self defined reader {reader} is not valid. Error: {e}"
         ) from e
 
-    if isinstance(to_datanode, bool) and to_datanode is True:
+    if isinstance(to_lion, bool) and to_lion is True:
         raise ValueError("Please define a valid parser to Node.")
-    elif isinstance(to_datanode, Callable):
-        nodes = _datanode_parser(nodes, to_datanode)
+    elif isinstance(to_lion, Callable):
+        nodes = _datanode_parser(nodes, to_lion)
     return nodes
 
 

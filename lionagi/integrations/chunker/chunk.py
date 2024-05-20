@@ -38,7 +38,7 @@ def chunk(
     chunker_kwargs=None,
     chunking_kwargs=None,
     documents_convert_func=None,
-    to_datanode: bool | Callable = True,
+    to_lion: bool | Callable = True,
 ):
 
     if chunker_args is None:
@@ -60,7 +60,7 @@ def chunk(
             chunker,
             chunker_args,
             chunker_kwargs,
-            to_datanode,
+            to_lion,
         )
 
     elif chunker_type == ChunkerType.LLAMAINDEX:
@@ -70,7 +70,7 @@ def chunk(
             chunker,
             chunker_args,
             chunker_kwargs,
-            to_datanode,
+            to_lion,
         )
 
     elif chunker_type == ChunkerType.SELFDEFINED:
@@ -80,7 +80,7 @@ def chunk(
             chunker_args,
             chunker_kwargs,
             chunking_kwargs,
-            to_datanode,
+            to_lion,
         )
 
     else:
@@ -95,7 +95,7 @@ def _self_defined_chunker(
     chunker_args,
     chunker_kwargs,
     chunking_kwargs,
-    to_datanode: bool | Callable,
+    to_lion: bool | Callable,
 ):
     try:
         splitter = chunker(*chunker_args, **chunker_kwargs)
@@ -105,10 +105,10 @@ def _self_defined_chunker(
             f"Self defined chunker {chunker} is not valid. Error: {e}"
         ) from e
 
-    if isinstance(to_datanode, bool) and to_datanode is True:
+    if isinstance(to_lion, bool) and to_lion is True:
         raise ValueError("Please define a valid parser to Node.")
-    elif isinstance(to_datanode, Callable):
-        nodes = _datanode_parser(nodes, to_datanode)
+    elif isinstance(to_lion, Callable):
+        nodes = _datanode_parser(nodes, to_lion)
     return nodes
 
 
@@ -118,7 +118,7 @@ def _llama_index_chunker(
     chunker,
     chunker_args,
     chunker_kwargs,
-    to_datanode: bool | Callable,
+    to_lion: bool | Callable,
 ):
     if documents_convert_func:
         documents = documents_convert_func(documents, "llama_index")
@@ -126,10 +126,10 @@ def _llama_index_chunker(
         documents, chunker, chunker_args, chunker_kwargs
     )
 
-    if isinstance(to_datanode, bool) and to_datanode is True:
+    if isinstance(to_lion, bool) and to_lion is True:
         nodes = [Node.from_llama_index(i) for i in nodes]
-    elif isinstance(to_datanode, Callable):
-        nodes = _datanode_parser(nodes, to_datanode)
+    elif isinstance(to_lion, Callable):
+        nodes = _datanode_parser(nodes, to_lion)
     return nodes
 
 
@@ -139,20 +139,20 @@ def _langchain_chunker(
     chunker,
     chunker_args,
     chunker_kwargs,
-    to_datanode: bool | Callable,
+    to_lion: bool | Callable,
 ):
     if documents_convert_func:
         documents = documents_convert_func(documents, "langchain")
     nodes = LangchainBridge.langchain_text_splitter(
         documents, chunker, chunker_args, chunker_kwargs
     )
-    if isinstance(to_datanode, bool) and to_datanode is True:
+    if isinstance(to_lion, bool) and to_lion is True:
         if isinstance(documents, str):
             nodes = [Node(content=i) for i in nodes]
         else:
             nodes = [Node.from_langchain(i) for i in nodes]
-    elif isinstance(to_datanode, Callable):
-        nodes = _datanode_parser(nodes, to_datanode)
+    elif isinstance(to_lion, Callable):
+        nodes = _datanode_parser(nodes, to_lion)
     return nodes
 
 

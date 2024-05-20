@@ -34,12 +34,12 @@ Load your documents and split them into manageable chunks:
 ```python
 text_nodes = li.load(
     'SimpleDirectoryReader', reader_type='llama_index', reader_args=['papers/'],
-    to_datanode=False,
+    to_lion=False,
 )
 
 chunks = li.chunk(
     documents=text_nodes, chunker_type='llama_index', chunker='SentenceSplitter',
-    chunker_kwargs={'chunk_size': 512, 'chunk_overlap':20}, to_datanode=False,
+    chunker_kwargs={'chunk_size': 512, 'chunk_overlap':20}, to_lion=False,
 )
 ```
 

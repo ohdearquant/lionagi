@@ -171,7 +171,7 @@ class Form(BaseForm):
             str: A brief summary of the form's context.
         """
         ccc = f"""
-        0. Your in is {self.task},
+        0. Your task is {self.task},
         1. provided: {self.input_fields}, 
         2. requested: {self.requested_fields}
         ----------

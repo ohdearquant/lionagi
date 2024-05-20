@@ -26,7 +26,10 @@ from lionagi.core.work.worker import work, Worker
 from lionagi.core.session.branch import Branch
 from lionagi.core.report import Form, Report
 from lionagi.integrations.provider.services import Services
+from lionagi.integrations.chunker.chunk import chunk
+from lionagi.integrations.loader.load import load
 import lionagi.core.director.direct as direct
+
 
 
 
@@ -47,6 +50,8 @@ __all__ = [
     "Graph",
     "Tree",
     "Edge",
+    "chunk", 
+    "load"
 ]
 
 

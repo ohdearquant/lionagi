@@ -30,6 +30,7 @@ def process_tools(tool_obj, branch):
     if isinstance(tool_obj, Callable):
         _process_tool(tool_obj, branch)
     else:
+        tool_obj = [tool_obj] if not isinstance(tool_obj, list) else tool_obj
         for i in tool_obj:
             _process_tool(i, branch)
 

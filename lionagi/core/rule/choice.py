@@ -10,6 +10,7 @@ class ChoiceRule(Rule):
         apply_type (str): The type of data to which the rule applies.
         keys (list): The list of valid choices.
     """
+    fields: list[str] = ["selection"]
 
     def __init__(self, apply_type="enum", **kwargs):
         super().__init__(apply_type=apply_type, **kwargs)
