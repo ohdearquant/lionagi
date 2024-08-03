@@ -1,84 +1,33 @@
-"""
-Copyright 2024 HaiyangLi
+async def plan(
+    instruction=None,
+    context=None,
+    system=None,
+    sender=None,
+    recipient=None,
+    branch=None,
+    form=None,
+    image: str | list[str] | None = None,
+    allow_extension=False,
+    num_step=3,
+    verbose=True,
+    reflect=None,
+    **kwargs,
+):
+    from lionagi.os.operator.processor.unit.unit import UnitProcessor
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-"""
-
-from lionagi.libs.ln_convert import to_str
-from ...operator.processor._unit.base import BaseUnitForm, Field
-
-
-class PlanTemplate(BaseUnitForm):
-    """
-    A template for generating a step-by-step plan based on given instructions and context.
-
-    Inherits from `BaseUnitForm` and adds fields and methods specific to plan generation.
-
-    Attributes:
-        template_name (str): The name of the template.
-        plan (dict | str): The generated step-by-step plan in the format {step_n: {plan: ..., reason: ...}}.
-        signature (str): A string representing the task signature for the plan.
-    """
-
-    template_name: str = "plan_template"
-
-    plan: dict | str = Field(
-        default_factory=dict,
-        description="the generated step by step plan, return as a dictionary following {step_n: {plan: ..., reason: ...}} format",
-    )
-
-    assignment: str = "task -> plan"
-
-    @property
-    def answer(self):
-        """
-        Gets the plan attribute.
-
-        Returns:
-            dict | str: The generated plan.
-        """
-        return getattr(self, "plan", None)
-
-    def __init__(
-        self,
-        *,
-        instruction=None,
-        context=None,
-        confidence_score=False,
-        reason=False,
-        num_step=3,
+    unit = UnitProcessor(branch)
+    return await unit.direct(
+        instruction=instruction,
+        context=context,
+        system=system,
+        sender=sender,
+        recipient=recipient,
+        form=form,
+        plan=True,
+        image=image,
+        verbose_direct=verbose,
+        reflect=reflect,
+        allow_extension=allow_extension,
+        plan_num_steps=num_step,
         **kwargs,
-    ):
-        """
-        Initializes a new instance of the PlanTemplate class.
-
-        Args:
-            instruction (str, optional): Additional instructions for the plan.
-            context (str, optional): Additional context for the plan.
-            confidence_score (bool, optional): Whether to include a confidence score.
-            reason (bool, optional): Whether to include a reasoning field.
-            num_step (int, optional): The number of steps in the plan. Defaults to 3.
-            **kwargs: Additional keyword arguments.
-        """
-        super().__init__(**kwargs)
-
-        self.task = f"""
-Generate a {num_step}_step plan based on the given context
-1. additional instruction, {to_str(instruction or "N/A")}
-2. additional context, {to_str(context or "N/A")}
-"""
-        if reason:
-            self.append_to_request("reason")
-
-        if confidence_score:
-            self.append_to_request("confidence_score")
+    )

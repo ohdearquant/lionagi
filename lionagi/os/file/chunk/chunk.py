@@ -2,8 +2,8 @@ from typing import Union, Callable
 
 from lion_core.libs import to_list
 
-from lionagi.os.generic.node import Node
-from lionagi.os.generic.container.pile import pile
+from lionagi.os.primitives.node import Node
+from lionagi.os.primitives.container.pile import pile
 
 
 # def datanodes_convert(documents, chunker_type):

@@ -1,7 +1,7 @@
 from typing import Callable
 
-from lionagi.os.generic.node import Node
-from lionagi.os.generic.container.pile import pile
+from lionagi.os.primitives.node import Node
+from lionagi.os.primitives.container.pile import pile
 
 
 from .utils import dir_to_nodes, ReaderType, _datanode_parser

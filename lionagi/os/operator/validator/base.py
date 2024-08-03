@@ -1,68 +1,33 @@
-from lion_core.abc import BaseExecutor, BaseProcessor
+from lion_core.abc import BaseExecutor, Temporal, Observable
+from lion_core.rule.default_rules._default import DEFAULT_RULES
 
 
-class BaseValidator(BaseExecutor, BaseProcessor):
+from lionagi.os.sys_util import SysUtil
+from lionagi.os.operator.validator.rule import Rule
+from lionagi.os.operator.validator.rulebook import RuleBook
+
+
+class BaseValidator(BaseExecutor, Temporal, Observable):
+
     def __init__(
         self,
         *,
         rulebook: RuleBook = None,
-        rules: Dict[str, Rule] = None,
-        order: List[str] = None,
-        init_config: Dict[str, Dict] = None,
-        active_rules: Dict[str, Rule] = None,
+        rules: dict[str, Rule] = None,
+        order: list[str] = None,
+        init_config: dict[str, dict] = None,
+        active_rules: dict[str, Rule] = None,
     ):
-        """
-        Initialize the Validator.
 
-        Args:
-            rulebook (RuleBook, optional): The RuleBook containing validation rules.
-            rules (Dict[str, Rule], optional): Dictionary of validation rules.
-            order (List[str], optional): List defining the order of rule application.
-            init_config (Dict[str, Dict], optional): Configuration for initializing rules.
-            active_rules (Dict[str, Rule], optional): Dictionary of currently active rules.
-        """
-
-        self.ln_id: str = SysUtil.create_id()
-        self.timestamp: str = SysUtil.get_timestamp(sep=None)[:-6]
+        self.ln_id: str = SysUtil.id()
+        self.timestamp: str = SysUtil.time(type_="timestamp")
         self.rulebook = rulebook or RuleBook(
-            rules or _DEFAULT_RULES, order or _DEFAULT_RULEORDER, init_config
+            rules=rules or DEFAULT_RULES,
+            ruleorder=order or _DEFAULT_RULEORDER,
+            rule_config=init_config,
         )
-        self.active_rules: Dict[str, Rule] = active_rules or self._initiate_rules()
+        self.active_rules: dict[str, Rule] = active_rules or self._initiate_rules()
         self.validation_log = []
-
-    def _initiate_rules(self) -> Dict[str, Rule]:
-        """
-        Initialize rules from the rulebook.
-
-        Returns:
-            dict: A dictionary of active rules.
-        """
-
-        def _init_rule(rule_name: str) -> Rule:
-
-            if not issubclass(self.rulebook[rule_name], Rule):
-                raise FieldError(
-                    f"Invalid rule class for {rule_name}, must be a subclass of Rule"
-                )
-
-            _config = self.rulebook.rule_config[rule_name] or {}
-            if not isinstance(_config, dict):
-                raise FieldError(
-                    f"Invalid config for {rule_name}, must be a dictionary"
-                )
-
-            _rule = self.rulebook.rules[rule_name](**_config.get("config", {}))
-            _rule.fields = _config.get("fields", [])
-            _rule._is_init = True
-            return _rule
-
-        _rules = lcall(self.rulebook.ruleorder, _init_rule)
-
-        return {
-            rule_name: _rules[idx]
-            for idx, rule_name in enumerate(self.rulebook.ruleorder)
-            if getattr(_rules[idx], "_is_init", None)
-        }
 
     async def validate_field(
         self,

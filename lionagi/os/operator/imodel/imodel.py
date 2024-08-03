@@ -9,7 +9,7 @@ from lion_core.communication.message import RoledMessage
 from lion_core.generic.util import to_list_type
 
 from lionagi.os.sys_util import SysUtil
-from lionagi.os.generic.container.pile import pile
+from lionagi.os.primitives.container.pile import pile
 from lionagi.os.service.endpoint.endpoint import EndPoint
 from lionagi.os.service.service.base_service import BaseService
 

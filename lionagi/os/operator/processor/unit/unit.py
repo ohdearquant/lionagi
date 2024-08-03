@@ -1,107 +1,163 @@
+from typing import Any, Literal
+
+from lion_core.setting import LN_UNDEFINED
 from lion_core.abc import BaseProcessor
 from lion_core.libs import rcall
-from lion_core.imodel.imodel import iModel
-from lion_core.validator.validator import Validator
-from .chat_mixin import UnitChatMixin
-from .act_mixin import UnitActMixin
-from .direct_mixin import UnitDirectMixin
-from .unit_form import UnitForm
-from .utils import retry_kwargs
+
+from lionagi.os.primitives import Instruction, ActionRequest, System, Form
+from lionagi.os.session.branch.branch import Branch
+from lionagi.os.operator.imodel.imodel import iModel
+from lionagi.os.operator.validator.validator import Validator
+from lionagi.os.operator.validator.rulebook import RuleBook
+from lionagi.os.operator.processor.unit.utils import retry_kwargs
+from lionagi.os.operator.processor.unit.process_chat import process_chat
+from lionagi.os.operator.processor.unit.process_direct import process_direct
 
 
-class UnitProcessor(BaseProcessor, UnitChatMixin, UnitActMixin, UnitDirectMixin):
+class UnitProcessor(BaseProcessor):
     """
-    Unit is a class that extends Directive and DirectiveMixin to provide
-    advanced operations like chat, direct actions, and predictions using a
-    specific branch and model.
+    A processor for handling unit operations in the Lion framework.
 
-    Attributes:
-        branch (Branch): The branch instance associated with the Unit.
-        imodel (iModel): The model instance used for the Unit.
-        form_template (Type[Form]): The form template to use for operations.
-        validator (Validator): The validator instance for response validation.
+    This class provides methods for chatting and direct processing,
+    with support for various configurations and retry mechanisms.
     """
-
-    default_template = UnitForm
 
     def __init__(
-        self, branch, imodel: iModel = None, template=None, rulebook=None, verbose=False
-    ) -> None:
+        self,
+        branch: Branch,
+        imodel: iModel = None,
+        rulebook: RuleBook = None,
+        verbose: bool = True,
+        **kwargs,
+    ):
         self.branch = branch
-        if imodel and isinstance(imodel, iModel):
-            branch.imodel = imodel
-            self.imodel = imodel
-        else:
-            self.imodel = branch.imodel
-        self.form_template = template or self.default_template
+        self.imodel = imodel or branch.imodel
         self.validator = Validator(rulebook=rulebook) if rulebook else Validator()
         self.verbose = verbose
+        self.retry_kwargs = kwargs or retry_kwargs
 
     async def chat(
         self,
-        instruction=None,
-        context=None,
-        system=None,
-        sender=None,
-        recipient=None,
-        branch=None,
-        requested_fields=None,
-        form=None,
-        tools=False,
-        invoke_tool=True,
-        return_form=True,
-        strict=False,
-        rulebook=None,
-        imodel=None,
-        clear_messages=False,
-        use_annotation=True,
-        return_branch=False,
-        **kwargs,
-    ):
+        branch: Branch | None = None,
+        form: Form | None = None,
+        clear_messages: bool = False,
+        system: System | Any = None,
+        system_metadata: dict[str, Any] | None = None,
+        system_datetime: bool | str | None = None,
+        delete_previous_system: bool = False,
+        instruction: Instruction | None = None,
+        context: dict[str, Any] | str | None = None,
+        action_request: ActionRequest | None = None,
+        image: str | list[str] | None = None,
+        image_path: str | None = None,
+        sender: Any = None,
+        recipient: Any = None,
+        requested_fields: dict[str, str] | None = None,
+        metadata: Any = None,
+        tools: bool = False,
+        invoke_tool: bool = True,
+        model_config: dict[str, Any] | None = None,
+        imodel: iModel | None = None,
+        handle_unmatched: Literal["ignore", "raise", "remove", "force"] = "force",
+        fill_value: Any = None,
+        fill_mapping: dict[str, Any] | None = None,
+        validator: Validator | None = None,
+        rulebook: RuleBook | None = None,
+        strict_validation: bool = False,
+        use_annotation: bool = True,
+        return_branch: bool = False,
+        retries: int = 0,
+        delay: float = 0,
+        backoff_factor: float = 1,
+        default: Any = LN_UNDEFINED,
+        timeout: float | None = None,
+        timing: bool = False,
+        **kwargs: Any,
+    ) -> Any:
         """
-        Asynchronously performs a chat operation.
+        Perform a chat operation with retry capabilities.
 
         Args:
-            instruction (str, optional): Instruction message.
-            context (str, optional): Context message.
-            system (str, optional): System message.
-            sender (str, optional): Sender identifier.
-            recipient (str, optional): Recipient identifier.
-            branch (Branch, optional): Branch instance.
-            requested_fields (list, optional): Fields requested in the response.
-            form (Form, optional): Form data.
-            tools (bool, optional): Flag indicating if tools should be used.
-            invoke_tool (bool, optional): Flag indicating if tools should be invoked.
-            return_form (bool, optional): Flag indicating if form should be returned.
-            strict (bool, optional): Flag indicating if strict validation should be applied.
-            rulebook (Rulebook, optional): Rulebook instance for validation.
-            imodel (iModel, optional): Model instance.
-            clear_messages (bool, optional): Flag indicating if messages should be cleared.
-            use_annotation (bool, optional): Flag indicating if annotations should be used.
-            return_branch (bool, optional): Flag indicating if branch should be returned.
-            kwargs: Additional keyword arguments.
+            branch: The branch to use for the chat. If None, uses the processor's branch.
+            form: The form to process in the chat.
+            clear_messages: Whether to clear existing messages before chatting.
+            system: System message or configuration.
+            system_metadata: Additional metadata for the system message.
+            system_datetime: Datetime for the system message.
+            delete_previous_system: Whether to delete the previous system message.
+            instruction: Instruction for the chat.
+            context: Additional context for the chat.
+            action_request: Action request for the chat.
+            image: Image data for the chat.
+            image_path: Path to an image file.
+            sender: Sender of the message.
+            recipient: Recipient of the message.
+            requested_fields: Fields requested in the response.
+            metadata: Additional metadata for the instruction.
+            tools: Whether to include tools in the configuration.
+            invoke_tool: Whether to invoke tools for action requests.
+            model_config: Additional model configuration.
+            imodel: The iModel to use for chat completion.
+            handle_unmatched: Strategy for handling unmatched fields.
+            fill_value: Value to use for filling unmatched fields.
+            fill_mapping: Mapping for filling unmatched fields.
+            validator: The validator to use for form validation.
+            rulebook: Optional rulebook for validation.
+            strict_validation: Whether to use strict validation.
+            use_annotation: Whether to use annotation for validation.
+            return_branch: Whether to return the branch along with the result.
+            retries: Number of retries for the operation.
+            delay: Delay between retries.
+            backoff_factor: Factor to increase delay between retries.
+            default: Default value to return if all retries fail.
+            timeout: Timeout for the operation.
+            timing: Whether to time the operation.
+            **kwargs: Additional keyword arguments for the chat process.
 
         Returns:
-            Any: The processed response.
+            The result of the chat operation.
         """
-        kwargs = {**retry_kwargs, **kwargs}
+        kwargs = {
+            **retry_kwargs,
+            **{
+                "retries": retries,
+                "delay": delay,
+                "backoff_factor": backoff_factor,
+                "default": default,
+                "timeout": timeout,
+                "timing": timing,
+            },
+        }
+
+        kwargs = {**self.retry_kwargs, **kwargs}
         return await rcall(
-            self._chat,
+            process_chat,
+            branch=branch or self.branch,
+            form=form,
+            clear_messages=clear_messages,
+            system=system,
+            system_metadata=system_metadata,
+            system_datetime=system_datetime,
+            delete_previous_system=delete_previous_system,
             instruction=instruction,
             context=context,
-            system=system,
+            action_request=action_request,
+            image=image,
+            image_path=image_path,
             sender=sender,
             recipient=recipient,
-            branch=branch,
             requested_fields=requested_fields,
-            form=form,
+            metadata=metadata,
             tools=tools,
             invoke_tool=invoke_tool,
-            return_form=return_form,
-            strict=strict,
+            model_config=model_config,
+            imodel=imodel or self.imodel or branch.imodel,
+            handle_unmatched=handle_unmatched,
+            fill_value=fill_value,
+            fill_mapping=fill_mapping,
+            validator=validator or self.validator,
             rulebook=rulebook,
-            imodel=imodel,
-            clear_messages=clear_messages,
+            strict_validation=strict_validation,
             use_annotation=use_annotation,
             return_branch=return_branch,
             **kwargs,
@@ -109,113 +165,126 @@ class UnitProcessor(BaseProcessor, UnitChatMixin, UnitActMixin, UnitDirectMixin)
 
     async def direct(
         self,
-        instruction=None,
-        *,
-        context=None,
-        form=None,
-        branch=None,
-        tools=None,
-        return_branch=False,
+        branch: Branch = None,
+        form: Form = None,
+        instruction: str | None = None,
+        context: dict[str, Any] | None = None,
+        tools: Any = None,
         reason: bool = False,
         predict: bool = False,
-        score=None,
-        select=None,
-        plan=None,
+        score: bool = False,
+        select: Any = None,
+        plan: Any = None,
+        brainstorm: Any = None,
+        reflect: Any = None,
+        tool_schema: Any = None,
         allow_action: bool = False,
         allow_extension: bool = False,
-        max_extension: int = None,
-        confidence=None,
-        score_num_digits=None,
-        score_range=None,
-        select_choices=None,
-        plan_num_step=None,
-        predict_num_sentences=None,
-        directive: str = None,
-        verbose=None,
-        **kwargs,
-    ):
+        max_extension: int | None = None,
+        confidence: Any = None,
+        score_num_digits: int | None = None,
+        score_range: tuple[float, float] | None = None,
+        select_choices: list[str] | None = None,
+        plan_num_step: int | None = None,
+        predict_num_sentences: int | None = None,
+        clear_messages: bool = False,
+        verbose_direct: bool = True,
+        image: str | list[str] | None = None,
+        image_path: str | None = None,
+        return_branch: bool = False,
+        retries: int = 0,
+        delay: float = 0,
+        backoff_factor: float = 1,
+        default: Any = LN_UNDEFINED,
+        timeout: float | None = None,
+        timing: bool = False,
+        verbose=True,
+        **kwargs: Any,
+    ) -> Any:
         """
-        Asynchronously directs the operation based on the provided parameters.
+        Perform a direct processing operation with retry capabilities.
 
         Args:
-            instruction (str, optional): Instruction message.
-            context (str, optional): Context message.
-            form (Form, optional): Form data.
-            branch (Branch, optional): Branch instance.
-            tools (Any, optional): Tools to be used.
-            return_branch (bool, optional): Flag indicating if branch should be returned.
-            reason (bool, optional): Flag indicating if reason should be included.
-            predict (bool, optional): Flag indicating if prediction should be included.
-            score (Any, optional): Score parameters.
-            select (Any, optional): Select parameters.
-            plan (Any, optional): Plan parameters.
-            allow_action (bool, optional): Flag indicating if action should be allowed.
-            allow_extension (bool, optional): Flag indicating if extension should be allowed.
-            max_extension (int, optional): Maximum extension value.
-            confidence (Any, optional): Confidence parameters.
-            score_num_digits (int, optional): Number of digits for score.
-            score_range (tuple, optional): Range for score.
-            select_choices (list, optional): Choices for selection.
-            plan_num_step (int, optional): Number of steps for plan.
-            predict_num_sentences (int, optional): Number of sentences for prediction.
-            directive (str, optional): Directive for the operation.
-            kwargs: Additional keyword arguments.
+            branch: The branch to use for processing.
+            form: The form to process.
+            instruction: The instruction for processing.
+            context: Additional context for processing.
+            tools: Tools to use in processing.
+            reason: Whether to include reasoning.
+            predict: Whether to include prediction.
+            score: Whether to include scoring.
+            select: Selection criteria.
+            plan: Planning information.
+            brainstorm: Brainstorming information.
+            reflect: Reflection information.
+            tool_schema: Schema for the tools.
+            allow_action: Whether to allow actions.
+            allow_extension: Whether to allow extensions.
+            max_extension: Maximum number of extensions allowed.
+            confidence: Confidence level.
+            score_num_digits: Number of digits for scoring.
+            score_range: Range for scoring.
+            select_choices: Choices for selection.
+            plan_num_step: Number of steps in the plan.
+            predict_num_sentences: Number of sentences for prediction.
+            clear_messages: Whether to clear messages before processing.
+            verbose: Whether to enable verbose output.
+            image: Image data for processing.
+            image_path: Path to an image file.
+            return_branch: Whether to return the branch along with the result.
+            retries: Number of retries for the operation.
+            delay: Delay between retries.
+            backoff_factor: Factor to increase delay between retries.
+            default: Default value to return if all retries fail.
+            timeout: Timeout for the operation.
+            timing: Whether to time the operation.
+            **kwargs: Additional keyword arguments for processing.
 
         Returns:
-            Any: The processed response.
+            The result of the direct processing operation.
         """
-        kwargs = {**retry_kwargs, **kwargs}
-        verbose = verbose if verbose is not None else self.verbose
+        kwargs = {
+            **retry_kwargs,
+            **{
+                "retries": retries,
+                "delay": delay,
+                "backoff_factor": backoff_factor,
+                "default": default,
+                "timeout": timeout,
+                "timing": timing,
+            },
+        }
 
-        if not directive:
-
-            out = await rcall(
-                self._direct,
-                instruction=instruction,
-                context=context,
-                form=form,
-                branch=branch,
-                tools=tools,
-                return_branch=return_branch,
-                reason=reason,
-                predict=predict,
-                score=score,
-                select=select,
-                plan=plan,
-                allow_action=allow_action,
-                allow_extension=allow_extension,
-                max_extension=max_extension,
-                confidence=confidence,
-                score_num_digits=score_num_digits,
-                score_range=score_range,
-                select_choices=select_choices,
-                plan_num_step=plan_num_step,
-                predict_num_sentences=predict_num_sentences,
-                verbose=verbose,
-                **kwargs,
-            )
-
-            if verbose:
-                print(
-                    "\n--------------------------------------------------------------"
-                )
-                print(f"Directive successfully completed!")
-
-            return out
-
-        out = await rcall(
-            self._mono_direct,
-            directive=directive,
+        kwargs = {**self.retry_kwargs, **kwargs}
+        return await rcall(
+            process_direct,
+            branch=branch or self.branch,
+            form=form,
             instruction=instruction,
             context=context,
-            branch=branch,
             tools=tools,
+            reason=reason,
+            predict=predict,
+            score=score,
+            select=select,
+            plan=plan,
+            brainstorm=brainstorm,
+            reflect=reflect,
+            tool_schema=tool_schema,
+            allow_action=allow_action,
+            allow_extension=allow_extension,
+            max_extension=max_extension,
+            confidence=confidence,
+            score_num_digits=score_num_digits,
+            score_range=score_range,
+            select_choices=select_choices,
+            plan_num_step=plan_num_step,
+            predict_num_sentences=predict_num_sentences,
+            clear_messages=clear_messages,
+            verbose_direct=verbose_direct,
+            image=image,
+            image_path=image_path,
+            return_branch=return_branch,
             verbose=verbose,
             **kwargs,
         )
-
-        if verbose:
-            print("--------------------------------------------------------------")
-            print(f"Directive successfully completed!")
-
-        return out

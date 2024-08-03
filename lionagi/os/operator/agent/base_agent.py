@@ -17,18 +17,15 @@ limitations under the License.
 """
 This module contains the BaseAgent class, which serves as a base class for agents.
 """
+import asyncio
 
-from pydantic import Field
 from typing import Any, Callable
 
-from lionagi.libs import func_call, AsyncUtil
+from lion_core.abc import BaseExecutor
+from lion_core.libs import pcall
+from lion_core.communication import MailManager
 
-
-from lionagi.core.mail.start_mail import StartMail
-from lionagi.core.generic.node import Node
-from lionagi.core.mail.mail_manager import MailManager
-from lionagi.core.executor.base_executor import BaseExecutor
-from lionagi.core.executor.graph_executor import GraphExecutor
+from lionagi.os.primitives import StartMail, Node
 
 
 class BaseAgent(Node):
@@ -66,7 +63,7 @@ class BaseAgent(Node):
             refresh_time: The time interval (in seconds) for checking the execution states (default: 1).
         """
         while not self.structure.execute_stop or not self.executable.execute_stop:
-            await AsyncUtil.sleep(refresh_time)
+            await asyncio.sleep(refresh_time)
         self.mail_manager.execute_stop = True
 
     async def execute(self, context=None):
@@ -85,14 +82,13 @@ class BaseAgent(Node):
             structure_id=self.structure.ln_id,
             executable_id=self.executable.ln_id,
         )
-        await func_call.mcall(
-            [0.1, 0.1, 0.1, 0.1],
+        await pcall(
             [
                 self.structure.execute,
                 self.executable.execute,
                 self.mail_manager.execute,
                 self.mail_manager_control,
-            ],
+            ]
         )
 
         self.structure.execute_stop = False

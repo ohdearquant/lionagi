@@ -1,19 +1,22 @@
+from functools import singledispatch
 import re
-import contextlib
-import asyncio
-from typing import Any, Optional, Callable
+from lion_core.setting import LN_UNDEFINED
+from typing import Any, Callable, Literal
 from lion_core.action.tool import Tool
-from lion_core.action.tool_manager import func_to_tool
-from lion_core.exceptions import ItemNotFoundError
-from lion_core.libs import validate_mapping, fuzzy_parse_json, extract_json_block
-from lion_core.communication.utils import parse_action_request
+from lion_core.libs import (
+    validate_mapping,
+    fuzzy_parse_json,
+    extract_json_block,
+    md_to_json,
+    to_dict,
+)
 
 
 retry_kwargs = {
     "retries": 0,  # kwargs for rcall, number of retries if failed
     "delay": 0,  # number of seconds to delay before retrying
     "backoff_factor": 1,  # exponential backoff factor, default 1 (no backoff)
-    "default": None,  # default value to return if all retries failed
+    "default": LN_UNDEFINED,  # default value to return if all retries failed
     "timeout": None,  # timeout for the rcall, default None (no timeout)
     "timing": False,  # if timing will return a tuple (output, duration)
 }
@@ -33,106 +36,100 @@ choices_fields = ["index", "message", "logprobs", "finish_reason"]
 usage_fields = ["prompt_tokens", "completion_tokens", "total_tokens"]
 
 
-async def process_action_request(
-    _msg: Optional[dict] = None,
-    branch: Optional[Any] = None,
-    invoke_tool: bool = True,
-    action_request: Optional[Any] = None,
-) -> Any:
-    """
-    Processes an action request from the assistant response.
-
-    Args:
-        _msg: The message data.
-        branch: The branch instance.
-        invoke_tool: Flag indicating if tools should be invoked.
-        action_request: The action request instance.
-
-    Returns:
-        Any: The processed result.
-    """
-    action_request = action_request or parse_action_request(_msg)
-    if action_request is None:
-        return _msg if _msg else False
-
-    if action_request:
-        for i in action_request:
-            if i.function in branch.tool_manager.registry:
-                i.recipient = branch.tool_manager.registry[i.function].ln_id
-            else:
-                raise ItemNotFoundError(f"Tool {i.function} not found in registry")
-            branch.add_message(action_request=i, recipient=i.recipient)
-
-    if invoke_tool:
-        tasks = []
-        for i in action_request:
-            tool = branch.tool_manager.registry[i.function]
-            tasks.append(asyncio.create_task(tool.invoke(i.arguments)))
-        results = await asyncio.gather(*tasks)
-
-        for idx, item in enumerate(results):
-            if item is not None:
-                branch.add_message(
-                    action_request=action_request[idx],
-                    func_outputs=item,
-                    sender=action_request[idx].recipient,
-                    recipient=action_request[idx].sender,
-                )
-
-    return None
+@singledispatch
+def check_tool(tool_obj: Any, branch):
+    raise NotImplementedError(f"Tool processing not implemented for {tool_obj}")
 
 
-def process_model_response(content_, requested_fields):
-    """
-    Processes the model response content.
+@check_tool.register(Tool)
+def _(tool_obj: Tool, branch):
+    if tool_obj.function_name not in branch.tool_manager:
+        branch.register_tools(tool_obj)
 
-    Args:
-        content_: The content data.
-        requested_fields: Fields requested in the response.
 
-    Returns:
-        Any: The processed response.
-    """
+@check_tool.register(Callable)
+def _(tool_obj: Callable, branch):
+    if tool_obj.__name__ not in branch.tool_manager:
+        branch.register_tools(tool_obj)
+
+
+@check_tool.register(bool)
+def _(tool_obj: bool, branch):
+    return
+
+
+@check_tool.register(list)
+def _(tool_obj: list, branch):
+    [check_tool(i, branch) for i in tool_obj]
+
+
+# parse the response directly from the AI model into dictionary format if possible
+def parse_model_response(
+    content_: dict | str,
+    requested_fields: dict,
+    handle_unmatched: Literal["ignore", "raise", "remove", "force"] = "force",
+    fill_value: Any = None,
+    fill_mapping: dict[str, Any] | None = None,
+    strict: bool = False,
+) -> dict | str:
+
     out_ = content_.get("content", "")
-    if out_ == "":
-        out_ = content_
-
-    if requested_fields:
-        with contextlib.suppress(Exception):
-            return validate_mapping(out_, requested_fields, handle_unmatched="force")
 
     if isinstance(out_, str):
-        with contextlib.suppress(Exception):
-            return fuzzy_parse_json(out_)
 
-        with contextlib.suppress(Exception):
-            return extract_json_block(out_)
+        # we will start with three different json parsers
+        a_ = to_dict(out_, str_type="json", parser=md_to_json, surpress=True)
+        if a_ is None:
+            a_ = to_dict(out_, str_type="json", parser=fuzzy_parse_json, surpress=True)
+        if a_ is None:
+            a_ = to_dict(
+                out_, str_type="json", parser=extract_json_block, surpress=True
+            )
 
-        with contextlib.suppress(Exception):
+        # if still failed, we try with xml parser
+        if a_ is None:
+            try:
+                a_ = to_dict(out_, str_type="xml")
+            except ValueError:
+                a_ = None
+
+        # if still failed, we try with using regex to extract json block
+        if a_ is None:
             match = re.search(r"```json\n({.*?})\n```", out_, re.DOTALL)
             if match:
-                return fuzzy_parse_json(match.group(1))
+                a_ = match.group(1)
+                a_ = fuzzy_parse_json(a_, surpress=True)
+
+        # if still failed, we try with using regex to extract xml block
+        if a_ is None:
+            match = re.search(r"```xml\n({.*?})\n```", out_, re.DOTALL)
+            if match:
+                a_ = match.group(1)
+                try:
+                    a_ = to_dict(out_, str_type="xml")
+                except ValueError:
+                    a_ = None
+
+        # we try replacing single quotes with double quotes
+        if a_ is None:
+            a_ = fuzzy_parse_json(out_.replace("'", '"'), surpress=True)
+
+        # we give up here if still not succesfully parsed into a dictionary
+        if a_:
+            out_ = a_
+
+    # we will forcefully correct the format of the dictionary
+    # with all missing fields filled with fill_value or fill_mapping
+    if isinstance(out_, dict) and requested_fields:
+        return validate_mapping(
+            a_,
+            requested_fields,
+            score_func=None,
+            fuzzy_match=True,
+            handle_unmatched=handle_unmatched,
+            fill_value=fill_value,
+            fill_mapping=fill_mapping,
+            strict=strict,
+        )
 
     return out_
-
-
-def process_tools(tool_obj, branch):
-    if isinstance(tool_obj, Callable):
-        _process_tool(tool_obj, branch)
-    else:
-        if isinstance(tool_obj, bool):
-            return
-        for i in tool_obj:
-            _process_tool(i, branch)
-
-
-def _process_tool(tool_obj, branch):
-    if (
-        isinstance(tool_obj, Tool)
-        and tool_obj.schema_["function"]["name"] not in branch.tool_manager.registry
-    ):
-        branch.register_tools(tool_obj)
-    if isinstance(tool_obj, Callable):
-        tool = func_to_tool(tool_obj)[0]
-        if tool.schema_["function"]["name"] not in branch.tool_manager.registry:
-            branch.register_tools(tool)

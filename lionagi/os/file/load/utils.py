@@ -7,7 +7,7 @@ from lion_core.libs import to_list, to_str
 
 
 from lionagi.os.file.chunk.utils import chunk_by_chars
-from lionagi.os.generic.node import Node
+from lionagi.os.primitives.node import Node
 
 
 class ReaderType(str, Enum):

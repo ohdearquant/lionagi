@@ -1,7 +1,7 @@
 from enum import Enum
 from pydantic import Field
 from lion_core.libs import to_dict
-from lion_core.record.form import Form
+from lionagi.os.primitives import Form
 
 
 class UnitForm(Form):
@@ -197,7 +197,9 @@ class UnitForm(Form):
             self.append_to_request("reason")
 
         if allow_action:
-            self.append_to_request("actions, action_required, reason")
+            self.append_to_request("actions")
+            self.append_to_request("action_required")
+            self.append_to_request("reason")
             self.task += "- Reason and prepare actions with GIVEN TOOLS ONLY.\n"
 
         if allow_extension:
@@ -211,14 +213,16 @@ class UnitForm(Form):
             self.tool_schema = tool_schema
 
         if brainstorm:
-            self.append_to_request("next_steps, extension_required")
+            self.append_to_request("next_steps")
+            self.append_to_request("extension_required")
             self.task += "- Explore ideas on next actions to take.\n"
 
         if plan:
             plan_num_step = plan_num_step or 3
             max_extension = max_extension or plan_num_step
             allow_extension = True
-            self.append_to_request("plan, extension_required")
+            self.append_to_request("plan")
+            self.append_to_request("extension_required")
             self.task += (
                 f"- Generate a {plan_num_step}-step plan based on the context.\n"
             )

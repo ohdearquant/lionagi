@@ -1,13 +1,14 @@
-import contextlib
-from lionagi.libs import convert, AsyncUtil, ParseUtil
-from lionagi.core.generic.edge import Edge
-from lionagi.core.action import ActionNode
-from lionagi.core.mail.mail import Mail
-from lionagi.core.message import System, Instruction
-from lionagi.core.collections import Pile, Progression
+import asyncio
 
-from lionagi.core.session.branch import Branch
-from lionagi.core.executor.base_executor import BaseExecutor
+import contextlib
+
+from lion_core.abc import BaseExecutor, Action
+from lion_core.libs import fuzzy_parse_json, to_str
+from lion_core.graph.edge import Edge
+from lion_core.communication import Mail
+
+from lionagi.os.primitives import System, Instruction, pile
+from lionagi.os.session.branch.branch import Branch
 
 
 class BranchEngine(Branch, BaseExecutor):
@@ -44,7 +45,7 @@ class BranchEngine(Branch, BaseExecutor):
         it processes starts, nodes, node lists, conditions, or ends, accordingly executing different functions.
         """
         for key in list(self.mailbox.pending_ins.keys()):
-            while self.mailbox.pending_ins.get(key, Pile()).size() > 0:
+            while self.mailbox.pending_ins.get(key, pile()).size() > 0:
                 mail_id = self.mailbox.pending_ins[key].popleft()
                 mail = self.mailbox.pile.pop(mail_id)
                 if mail.category == "start":
@@ -59,7 +60,7 @@ class BranchEngine(Branch, BaseExecutor):
                     self._process_end(mail)
             if (
                 key in self.mailbox.pending_ins
-                and self.mailbox.pending_ins.get(key, Pile()).size() == 0
+                and self.mailbox.pending_ins.get(key, pile()).size() == 0
             ):
                 self.mailbox.pending_ins.pop(key)
 
@@ -72,7 +73,7 @@ class BranchEngine(Branch, BaseExecutor):
         """
         while not self.execute_stop:
             await self.forward()
-            await AsyncUtil.sleep(refresh_time)
+            await asyncio.sleep(refresh_time)
 
     async def _process_node(self, mail: Mail):
         """
@@ -104,7 +105,7 @@ class BranchEngine(Branch, BaseExecutor):
                 request_source=self.ln_id,
             )
 
-        elif isinstance(node, ActionNode):
+        elif isinstance(node, Action):
             await self._action_process(node, verbose=self.verbose)
             self.send(
                 recipient=mail.sender,
@@ -168,18 +169,15 @@ class BranchEngine(Branch, BaseExecutor):
             verbose (bool): Flag to enable verbose output.
             context_verbose (bool): Flag to enable verbose output specifically for context.
         """
-        from lionagi.libs import SysUtil
-
-        SysUtil.check_import("IPython")
         from IPython.display import Markdown, display
 
         if verbose:
             print(f"------------------Welcome: {system.sender}--------------------")
             with contextlib.suppress(Exception):
-                system.content = ParseUtil.fuzzy_parse_json(system.content)
-            display(Markdown(f"system: {convert.to_str(system.system_info)}"))
+                system.content = fuzzy_parse_json(system.content)
+            display(Markdown(f"system: {to_str(system.system_info)}"))
             if self.context and context_verbose:
-                display(Markdown(f"context: {convert.to_str(self.context)}"))
+                display(Markdown(f"context: {to_str(self.context)}"))
 
         self.add_message(system=system)
 
@@ -194,19 +192,12 @@ class BranchEngine(Branch, BaseExecutor):
             verbose (bool): Flag to enable verbose output.
             **kwargs: Additional keyword arguments that might affect how instructions are processed.
         """
-        from lionagi.libs import SysUtil
-
-        SysUtil.check_import("IPython")
         from IPython.display import Markdown, display
 
         if verbose:
             with contextlib.suppress(Exception):
-                instruction.content = ParseUtil.fuzzy_parse_json(instruction.content)
-            display(
-                Markdown(
-                    f"{instruction.sender}: {convert.to_str(instruction.instruct)}"
-                )
-            )
+                instruction.content = fuzzy_parse_json(instruction.content)
+            display(Markdown(f"{instruction.sender}: {to_str(instruction.instruct)}"))
 
         if self.context:
             result = await self.chat(
@@ -220,16 +211,16 @@ class BranchEngine(Branch, BaseExecutor):
             # self.context = None
 
         with contextlib.suppress(Exception):
-            result = ParseUtil.fuzzy_parse_json(result)
+            result = fuzzy_parse_json(result)
             if "assistant_response" in result.keys():
                 result = result["assistant_response"]
         if verbose:
-            display(Markdown(f"assistant {self.ln_id}: {convert.to_str(result)}"))
+            display(Markdown(f"assistant {self.ln_id}: {to_str(result)}"))
             print("-----------------------------------------------------")
 
         self.execution_responses.append(result)
 
-    async def _action_process(self, action: ActionNode, verbose=True):
+    async def _action_process(self, action: Action, verbose=True):
         """
         Processes an action node, executing the defined action along with any tools specified within the node.
 
@@ -237,9 +228,6 @@ class BranchEngine(Branch, BaseExecutor):
             action (ActionNode): The action node to process.
             verbose (bool): Flag to enable verbose output of the action results.
         """
-        from lionagi.libs import SysUtil
-
-        SysUtil.check_import("IPython")
         from IPython.display import Markdown, display
 
         # try:
@@ -250,7 +238,7 @@ class BranchEngine(Branch, BaseExecutor):
         if verbose:
             display(
                 Markdown(
-                    f"{action.instruction.sender}: {convert.to_str(action.instruction.instruct)}"
+                    f"{action.instruction.sender}: {to_str(action.instruction.instruct)}"
                 )
             )
 
@@ -276,7 +264,7 @@ class BranchEngine(Branch, BaseExecutor):
 
         if verbose:
             if action.directive == "chat":
-                display(Markdown(f"assistant {self.ln_id}: {convert.to_str(result)}"))
+                display(Markdown(f"assistant {self.ln_id}: {to_str(result)}"))
             else:
                 display(Markdown(f"assistant {self.ln_id}:\n"))
                 for k, v in result.work_fields.items():
