@@ -1,7 +1,7 @@
 from typing import Any, Literal
 
 from lion_core.setting import LN_UNDEFINED
-from lion_core.abc import BaseProcessor
+from lion_core.unit.unit import UnitProcessor as CoreProcessor
 from lion_core.libs import rcall
 
 from lionagi.os.primitives import Instruction, ActionRequest, System, Form
@@ -14,7 +14,7 @@ from lionagi.os.operator.processor.unit.process_chat import process_chat
 from lionagi.os.operator.processor.unit.process_direct import process_direct
 
 
-class UnitProcessor(BaseProcessor):
+class UnitProcessor(CoreProcessor):
     """
     A processor for handling unit operations in the Lion framework.
 
@@ -38,31 +38,31 @@ class UnitProcessor(BaseProcessor):
 
     async def chat(
         self,
-        branch: Branch | None = None,
-        form: Form | None = None,
-        clear_messages: bool = False,
-        system: System | Any = None,
-        system_metadata: dict[str, Any] | None = None,
-        system_datetime: bool | str | None = None,
-        delete_previous_system: bool = False,
-        instruction: Instruction | None = None,
-        context: dict[str, Any] | str | None = None,
+        branch: Branch,
+        *,
+        form=None,
+        sender=None,
+        recipient=None,
+        instruction: Any = None,
+        context: Any = None,
+        request_fields=None,
+        system: Any = None,
         action_request: ActionRequest | None = None,
-        image: str | list[str] | None = None,
-        image_path: str | None = None,
-        sender: Any = None,
-        recipient: Any = None,
-        requested_fields: dict[str, str] | None = None,
+        imodel=None,
+        images=None,
+        image_path=None,
+        image_detail: Literal["low", "high", "auto"] = None,
+        system_datetime: bool | str | None = None,
         metadata: Any = None,
-        tools: bool = False,
-        invoke_tool: bool = True,
-        model_config: dict[str, Any] | None = None,
-        imodel: iModel | None = None,
-        handle_unmatched: Literal["ignore", "raise", "remove", "force"] = "force",
+        delete_previous_system: bool = False,
+        tools: bool | None = None,
+        system_metadata: Any = None,
+        model_config: dict | None = None,
+        clear_messages: bool = False,
         fill_value: Any = None,
         fill_mapping: dict[str, Any] | None = None,
         validator: Validator | None = None,
-        rulebook: RuleBook | None = None,
+        rulebook=None,
         strict_validation: bool = False,
         use_annotation: bool = True,
         return_branch: bool = False,
@@ -142,17 +142,16 @@ class UnitProcessor(BaseProcessor):
             instruction=instruction,
             context=context,
             action_request=action_request,
-            image=image,
+            images=images,
             image_path=image_path,
+            image_detail=image_detail,
             sender=sender,
             recipient=recipient,
-            requested_fields=requested_fields,
+            request_fields=request_fields,
             metadata=metadata,
             tools=tools,
-            invoke_tool=invoke_tool,
             model_config=model_config,
             imodel=imodel or self.imodel or branch.imodel,
-            handle_unmatched=handle_unmatched,
             fill_value=fill_value,
             fill_mapping=fill_mapping,
             validator=validator or self.validator,

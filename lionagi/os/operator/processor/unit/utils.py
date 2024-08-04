@@ -66,8 +66,7 @@ def _(tool_obj: list, branch):
 # parse the response directly from the AI model into dictionary format if possible
 def parse_model_response(
     content_: dict | str,
-    requested_fields: dict,
-    handle_unmatched: Literal["ignore", "raise", "remove", "force"] = "force",
+    request_fields: dict,
     fill_value: Any = None,
     fill_mapping: dict[str, Any] | None = None,
     strict: bool = False,
@@ -120,13 +119,13 @@ def parse_model_response(
 
     # we will forcefully correct the format of the dictionary
     # with all missing fields filled with fill_value or fill_mapping
-    if isinstance(out_, dict) and requested_fields:
+    if isinstance(out_, dict) and request_fields:
         return validate_mapping(
             a_,
-            requested_fields,
+            request_fields,
             score_func=None,
             fuzzy_match=True,
-            handle_unmatched=handle_unmatched,
+            handle_unmatched="force",
             fill_value=fill_value,
             fill_mapping=fill_mapping,
             strict=strict,
