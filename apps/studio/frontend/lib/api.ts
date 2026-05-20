@@ -415,3 +415,118 @@ export function streamSession(
   source.onerror = () => source.close();
   return () => source.close();
 }
+
+// ─── Definitions (versioned md files via SQLite) ──────────────────────────────
+
+export interface DefinitionSummary {
+  kind: string;
+  name: string;
+  path: string;
+  disk_path: string;
+  has_versions: boolean;
+  version: number;
+  updated_at: number;
+}
+
+export interface DefinitionVersion {
+  id: string;
+  version: number;
+  created_at: number;
+  message: string | null;
+}
+
+export interface DefinitionDetail {
+  kind: string;
+  name: string;
+  path: string;
+  content: string;
+  version: number;
+  versions: DefinitionVersion[];
+}
+
+export async function listDefinitions(
+  kind?: string,
+): Promise<{ definitions: DefinitionSummary[] }> {
+  const query = kind ? `?kind=${encodeURIComponent(kind)}` : "";
+  return fetchJson<{ definitions: DefinitionSummary[] }>(`/api/definitions${query}`);
+}
+
+export async function getDefinition(
+  kind: string,
+  name: string,
+): Promise<DefinitionDetail> {
+  return fetchJson<DefinitionDetail>(
+    `/api/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`,
+  );
+}
+
+export async function getDefinitionVersion(
+  kind: string,
+  name: string,
+  version: number,
+): Promise<DefinitionDetail> {
+  return fetchJson<DefinitionDetail>(
+    `/api/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}/versions/${version}`,
+  );
+}
+
+export async function saveDefinition(
+  kind: string,
+  name: string,
+  content: string,
+  message?: string,
+): Promise<{ version: number }> {
+  return fetchJson<{ version: number }>(
+    `/api/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content, message }),
+    },
+  );
+}
+
+export async function rollbackDefinition(
+  kind: string,
+  name: string,
+  version: number,
+): Promise<{ version: number }> {
+  return fetchJson<{ version: number }>(
+    `/api/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}/rollback/${version}`,
+    { method: "POST" },
+  );
+}
+
+export async function snapshotDefinitions(
+  kind?: string,
+): Promise<{ snapshots_created: number }> {
+  const query = kind ? `?kind=${encodeURIComponent(kind)}` : "";
+  return fetchJson<{ snapshots_created: number }>(`/api/definitions/snapshot${query}`, {
+    method: "POST",
+  });
+}
+
+// ─── Skills ─────────────────────────────────────────────────────────────────
+
+export interface SkillSummary {
+  name: string;
+  description: string;
+  path: string;
+  allowed_tools: string[];
+}
+
+export interface SkillDetail {
+  name: string;
+  description: string;
+  path: string;
+  content: string;
+  allowed_tools: string[];
+}
+
+export async function listSkills(): Promise<{ skills: SkillSummary[] }> {
+  return fetchJson<{ skills: SkillSummary[] }>("/api/skills");
+}
+
+export async function getSkill(name: string): Promise<SkillDetail> {
+  return fetchJson<SkillDetail>(`/api/skills/${encodeURIComponent(name)}`);
+}

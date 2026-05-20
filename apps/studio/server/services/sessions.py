@@ -37,6 +37,7 @@ async def list_sessions() -> list[dict[str, Any]]:
 
     now = time.time()
     async with aiosqlite.connect(_DB) as db:
+        await db.execute("PRAGMA journal_mode = WAL")
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
@@ -45,59 +46,31 @@ async def list_sessions() -> list[dict[str, Any]]:
                 s.name,
                 s.created_at,
                 s.updated_at,
-                COUNT(DISTINCT b.id) AS branch_count
+                COUNT(DISTINCT b.id) AS branch_count,
+                COALESCE(SUM(
+                    json_array_length(p.collection)
+                ), 0) AS message_count
             FROM sessions s
             LEFT JOIN branches b ON b.session_id = s.id
+            LEFT JOIN progressions p ON p.id = b.progression_id
             GROUP BY s.id
             ORDER BY s.updated_at DESC
             """
         )
         rows = await cur.fetchall()
 
-        result = []
-        for row in rows:
-            session_id = row["id"]
-
-            # Count messages across all branches for this session by resolving
-            # each branch's progression and summing the collection lengths.
-            branch_cur = await db.execute(
-                "SELECT progression_id FROM branches WHERE session_id = ?",
-                (session_id,),
-            )
-            branch_rows = await branch_cur.fetchall()
-
-            msg_count = 0
-            for br in branch_rows:
-                prog_id = br["progression_id"]
-                if not prog_id:
-                    continue
-                prog_cur = await db.execute(
-                    "SELECT collection FROM progressions WHERE id = ?",
-                    (prog_id,),
-                )
-                prog_row = await prog_cur.fetchone()
-                if prog_row and prog_row["collection"]:
-                    try:
-                        msg_count += len(json.loads(prog_row["collection"]))
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-
-            updated_at = row["updated_at"] or 0.0
-            status = "running" if (now - updated_at) <= 60 else "completed"
-
-            result.append(
-                {
-                    "id": session_id,
-                    "name": row["name"],
-                    "created_at": row["created_at"],
-                    "updated_at": updated_at,
-                    "branch_count": row["branch_count"],
-                    "message_count": msg_count,
-                    "status": status,
-                }
-            )
-
-    return result
+    return [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"] or 0.0,
+            "branch_count": row["branch_count"],
+            "message_count": row["message_count"],
+            "status": "running" if (now - (row["updated_at"] or 0)) <= 60 else "completed",
+        }
+        for row in rows
+    ]
 
 
 async def get_session(session_id: str) -> dict[str, Any] | None:

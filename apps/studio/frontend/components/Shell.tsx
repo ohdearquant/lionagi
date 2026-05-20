@@ -13,6 +13,7 @@ type NavItem = {
 const navItems: NavItem[] = [
   { label: "Playbooks", href: "/playbooks" },
   { label: "Agents", href: "/agents" },
+  { label: "Skills", href: "/skills" },
   { label: "Runs", href: "/runs" },
   { label: "Shows", href: "/shows" },
 ];

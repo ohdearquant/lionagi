@@ -43,10 +43,24 @@ async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
         if not base or not base.exists():
             continue
 
-        for f in sorted(base.glob("*.md")) + sorted(base.glob("*/*.md")):
-            name = f.stem
+        seen_names: set[str] = set()
+        all_files: list[Path] = []
+        for ext in ("*.md", "*.playbook.yaml", "*.yaml"):
+            all_files.extend(sorted(base.glob(ext)))
+            all_files.extend(sorted(base.glob(f"*/{ext}")))
+        for f in all_files:
+            fname = f.name
+            if fname.endswith(".playbook.yaml"):
+                name = fname.removesuffix(".playbook.yaml")
+            elif fname.endswith(".yaml"):
+                name = fname.removesuffix(".yaml")
+            else:
+                name = f.stem
             if f.parent != base:
                 name = f.parent.name
+            if name in seen_names:
+                continue
+            seen_names.add(name)
 
             entry = {
                 "kind": k,
@@ -229,16 +243,22 @@ async def snapshot_current(kind: str | None = None) -> int:
     return count
 
 
+_EXTENSIONS = (".md", ".playbook.yaml", ".yaml")
+
+
 def _find_definition_file(base: Path, name: str) -> Path | None:
-    direct = base / f"{name}.md"
-    if direct.exists():
-        return direct
+    for ext in _EXTENSIONS:
+        direct = base / f"{name}{ext}"
+        if direct.exists():
+            return direct
 
-    nested = base / name / f"{name}.md"
-    if nested.exists():
-        return nested
+    for ext in _EXTENSIONS:
+        nested = base / name / f"{name}{ext}"
+        if nested.exists():
+            return nested
 
-    for f in base.glob(f"**/{name}.md"):
-        return f
+    for ext in _EXTENSIONS:
+        for f in base.glob(f"**/{name}{ext}"):
+            return f
 
     return None

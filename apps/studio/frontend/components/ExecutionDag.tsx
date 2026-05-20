@@ -83,7 +83,7 @@ function buildLayers(
 
     const next: string[] = [];
     for (const id of frontier) {
-      for (const child of adj[id] ?? []) {
+      for (const child of Array.from(adj[id] ?? [])) {
         if (!placed.has(child) && !next.includes(child)) {
           const ready = nodes.every(
             (n) => !adj[n.id]?.has(child) || placed.has(n.id) || frontier.includes(n.id),

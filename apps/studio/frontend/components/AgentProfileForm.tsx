@@ -237,7 +237,7 @@ export default function AgentProfileForm({
           <p className={SECTION_DESC}>Base identity and role instructions for this agent</p>
         </div>
         <textarea
-          value={form.system_prompt}
+          value={form.system_prompt ?? ""}
           onChange={(e) => setForm((prev) => ({ ...prev, system_prompt: e.target.value }))}
           placeholder="You are a specialized agent that..."
           rows={6}
@@ -252,7 +252,7 @@ export default function AgentProfileForm({
           <p className={SECTION_DESC}>Task-specific instructions and constraints</p>
         </div>
         <textarea
-          value={form.guidance}
+          value={form.guidance ?? ""}
           onChange={(e) => setForm((prev) => ({ ...prev, guidance: e.target.value }))}
           placeholder="When working on this task, always..."
           rows={4}
