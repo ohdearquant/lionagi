@@ -14,7 +14,6 @@ const navItems: NavItem[] = [
   { label: "Playbooks", href: "/playbooks" },
   { label: "Agents", href: "/agents" },
   { label: "Runs", href: "/runs" },
-  { label: "Sessions", href: "/sessions" },
   { label: "Shows", href: "/shows" },
 ];
 
