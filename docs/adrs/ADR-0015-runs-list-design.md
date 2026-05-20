@@ -67,7 +67,7 @@ Dense two-row filter bar above the table:
 
 ```
 [ Search name, id, show, play, playbook, agent... ]      [Columns ▾]
-Status: [All] [Running] [Completed] [Failed] [Awaiting gate]
+Status: [All] [Running] [Completed] [Failed] [Aborted]
 Kind:   [All] [Agent] [Play] [Flow] [Fanout] [Show play]
 Source: [All] [Live] [Imported fs] [With show] [With playbook]   Rows: [100 ▾]
 ```

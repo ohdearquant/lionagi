@@ -27,14 +27,24 @@ to inconsistent status computation across the runs list, dashboard, and detail p
 ### Add lifecycle columns to sessions
 
 ```sql
-ALTER TABLE sessions ADD COLUMN status     TEXT DEFAULT 'running';
+ALTER TABLE sessions ADD COLUMN status     TEXT;  -- NULL for existing rows
   -- running|completed|failed|aborted
 ALTER TABLE sessions ADD COLUMN started_at REAL;
 ALTER TABLE sessions ADD COLUMN ended_at   REAL;
+
+-- Backfill: existing sessions are historical (all completed or imported).
+-- New sessions get status='running' at INSERT time from the CLI.
+UPDATE sessions SET status = 'completed'
+  WHERE status IS NULL AND source_kind = 'imported_fs';
+UPDATE sessions SET status = 'completed'
+  WHERE status IS NULL;
 ```
 
 Migration: v3→v4, same idempotent `ALTER TABLE ADD COLUMN` pattern as prior
-migrations (ADR-0009 migration protocol).
+migrations (ADR-0009 migration protocol). The backfill conservatively marks all
+existing sessions as `completed` — the 376 historical sessions are all finished
+runs. New sessions get `status='running'` at INSERT time from the CLI, not from
+a column DEFAULT.
 
 ### Status vocabulary (sessions)
 

@@ -20,6 +20,7 @@ Decision: Display actual marketplace directory name (e.g., `Anthropic Official`,
 Why: Multiple third-party sources exist; generic label hides provenance.
 Display mapping: `marketplace` → `Lion Marketplace`, `claude-plugins-official` →
 `Anthropic Official`, others → title-cased directory name.
+See also ADR-0010 §5.
 
 ## 2026-05-20 — _show.md always collapsed on shows detail
 
@@ -28,6 +29,7 @@ imported). No auto-open.
 Why: Plays table + DAG + accordion are the primary surfaces. Two-column layout
 with open _show.md cramps the play accordion.
 Previous: auto-opened for active/running shows. Reverted after design review.
+See also ADR-0012 §8.
 
 ## 2026-05-20 — Toast system is custom, not library
 
