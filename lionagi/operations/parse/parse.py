@@ -20,6 +20,7 @@ from lionagi.protocols.types import AssistantResponse
 from ..types import HandleValidation, ParseParam
 
 if TYPE_CHECKING:
+    from lionagi.ln.types import Operable
     from lionagi.session.branch import Branch
 
 
@@ -54,9 +55,7 @@ def prepare_parse_kws(
             stacklevel=2,
         )
 
-    response_format = (
-        operative.request_type if operative else response_format or request_type
-    )
+    response_format = operative.request_type if operative else response_format or request_type
     _alcall_params = get_default_call()
     max_retries = operative.max_retries if operative else max_retries or 3
 
@@ -149,11 +148,48 @@ async def parse(
     return (*result[0],) if return_res_message else result[0][0]
 
 
+def _is_lndl_operable(response_format: Any) -> bool:
+    """Return True when the caller opted into LNDL by passing an Operable."""
+    try:
+        from lionagi.ln.types import Operable
+
+        return isinstance(response_format, Operable)
+    except ImportError:
+        return False
+
+
+def _extract_lndl(text: str, operable: "Operable") -> Any:
+    """Route text through the LNDL Phase 1 extract path.
+
+    Extracts the first ```lndl fenced block from *text* and returns it as a
+    raw string.  Full structured resolution (via ``parse_lndl_fuzzy``) requires
+    Phase 2 modules and raises ``NotImplementedError`` until they land.
+
+    Phase 1 contract: if the text contains an ```lndl block, return its
+    content; otherwise return the raw text so the caller can decide how to
+    handle it.
+    """
+    from lionagi.lndl.extract import extract_lndl_blocks
+
+    blocks = extract_lndl_blocks(text)
+    if blocks:
+        # Return the first block's raw content.
+        # TODO(lndl-phase-2): replace with parse_lndl_fuzzy(blocks[0], operable)
+        # once lexer/parser/ast/resolver are ported from beta.
+        return blocks[0]
+    return text
+
+
 def _validate_dict_or_model(
     text: str,
-    response_format: type[BaseModel] | dict,
+    response_format: type[BaseModel] | dict | Any,
     fuzzy_match_params: FuzzyMatchKeysParams | dict = None,
 ):
+    # LNDL opt-in path: only activates when caller passes an Operable schema.
+    # No change in behaviour for BaseModel or dict response_format callers.
+    if _is_lndl_operable(response_format):
+        return _extract_lndl(text, response_format)
+
     try:
         if isinstance(fuzzy_match_params, dict):
             fuzzy_match_params = FuzzyMatchKeysParams(**fuzzy_match_params)
