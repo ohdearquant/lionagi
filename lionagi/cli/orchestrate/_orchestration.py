@@ -570,6 +570,7 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
             node_meta = json.loads(node_meta)
         if "chat_model" in branch_dict:
             node_meta["chat_model"] = branch_dict["chat_model"]
+        node_meta = json.loads(json.dumps(node_meta, default=str))
 
         system_msg_id = None
         if branch.system:
