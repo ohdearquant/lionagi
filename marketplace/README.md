@@ -29,12 +29,12 @@ claude /plugin install devx@lionagi
 | `memory` | Memory recall, MEMORY.md hygiene, auto-memory bootstrap |
 | `kg-bridge` | Bridge lionagi runs/agents to khive knowledge graph |
 | `devx` | Conventional commit, formatting, CI, PR, summarize, session-start/-summarize |
-| `studio` | Lion Studio dashboard — runs/agents/playbooks/shows monitoring UI with FastAPI backend MCP |
-| `mcp-bundle` | Lionagi canonical MCP server access for agents |
+| `studio` (stub) | Lion Studio dashboard — runs/agents/playbooks/shows monitoring UI with FastAPI backend MCP |
+| `mcp-bundle` (stub) | Lionagi canonical MCP server access for agents |
 
 ## Decision record
 
-See [ADR-0003: Claude Code Marketplace](../docs/adrs/ADR-0003-claude-code-marketplace.md) for the architectural rationale behind this structure.
+See ADR-0003 (docs/adrs/ADR-0003-claude-code-marketplace.md) for the architectural rationale behind this structure.
 
 ## Plugin content
 

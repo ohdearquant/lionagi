@@ -31,4 +31,4 @@ agent on a specific sub-question.
 
 ## See also
 
-- [ADR-0003](../../docs/adrs/ADR-0003-claude-code-marketplace.md) — marketplace pattern
+- ADR-0003 (docs/adrs/ADR-0003-claude-code-marketplace.md) — marketplace pattern

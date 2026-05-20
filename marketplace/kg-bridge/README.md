@@ -27,6 +27,6 @@ replace this one: `/bridge-emit` (post-run, writes to KG) and `/bridge-recall`
 
 ## See also
 
-- [ADR-0003](../../docs/adrs/ADR-0003-claude-code-marketplace.md) — marketplace pattern
+- ADR-0003 (docs/adrs/ADR-0003-claude-code-marketplace.md) — marketplace pattern
 - [khive kg plugin](https://github.com/ohdearquant/khive/tree/main/khive/marketplace/kg)
   — the actual KG backend this bridge will emit to

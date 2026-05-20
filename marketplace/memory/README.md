@@ -30,4 +30,4 @@ periodically (or when MEMORY.md exceeds 200 lines) to prune and condense.
 
 ## See also
 
-- [ADR-0003](../../docs/adrs/ADR-0003-claude-code-marketplace.md) — marketplace pattern
+- ADR-0003 (docs/adrs/ADR-0003-claude-code-marketplace.md) — marketplace pattern
