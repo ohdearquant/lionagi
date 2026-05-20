@@ -37,10 +37,7 @@ simultaneously**, adopting a headless primitive library becomes justified:
 4. Multi-select / autocomplete inputs
 5. Accessible disclosure (tabs, accordions) with ARIA state management
 
-Currently the app needs 0 of these. The toast system and collapsible sections
-are simple enough to build correctly without a library. The command palette
-(deferred to a later phase in ADR-0012) would be the trigger — when it ships,
-evaluate whether adopting Radix or similar is warranted.
+Currently the app uses custom tabs (plugin detail) and collapsible accordions (play details, branch sections) that work without library-grade ARIA state management. These existing components do not count toward the threshold because they are simple show/hide toggles without focus-trap, arrow-key navigation, or roving tabindex requirements. The threshold counts complex primitives that genuinely need a headless library's accessibility infrastructure. The command palette (deferred to a later phase in ADR-0012) would be the trigger — when it ships, evaluate whether adopting Radix or similar is warranted.
 
 ### What "custom" means in practice
 

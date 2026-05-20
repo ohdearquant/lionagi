@@ -2,7 +2,7 @@
 
 **Status**: Accepted
 **Date**: 2026-05-20
-**Extends**: ADR-0009 (SQLite state layer), ADR-0010 (plugins), ADR-0011 (shows data model)
+**Extends**: ADR-0009 (SQLite state layer), ADR-0010 (plugins), ADR-0011 (shows data model), ADR-0017 (session lifecycle)
 
 ## Context
 
@@ -81,7 +81,7 @@ resume). Add a display mapping for the UI only.
 |---------------|-------------|-------|----------|
 | `pending` | pending, prepared | Amber | Lifecycle |
 | `running` | running | Blue | Lifecycle |
-| `awaiting_gate` | running_complete, gated | Purple | Lifecycle |
+| `awaiting_gate` | running_complete, gated | Amber | Lifecycle |
 | `completed` | completed, done, success, finished | Green | Lifecycle |
 | `failed` | failed, error, gate_failed | Red | Lifecycle |
 | `aborted` | aborted, aborted_after_finish, cancelled | Gray | Lifecycle |
@@ -93,7 +93,7 @@ resume). Add a display mapping for the UI only.
 **Gate badges** (plays only): `passed` (green), `failed` (red), `skipped` (gray).
 **Integration badges** (plays only): `merged` (green), `local` (gray).
 
-The shows detail page splits status into three columns: lifecycle | gate | integration.
+The shows detail page uses a single State column with a primary lifecycle pill plus optional secondary gate and integration badges (see ADR-0011 for the badge spec).
 List views show the lifecycle pill as primary, with gate/integration as secondary badges.
 Detail views show the raw status in a metadata section.
 
@@ -337,8 +337,9 @@ Other improvements:
   identified _show.md layout regression, error labeling gap)
 - ADR-0009: SQLite state layer
 - ADR-0010: Plugin-aware Studio (updated: cross-links, source badges)
-- ADR-0011: Shows data model (updated: play accordion, status split, provenance)
+- ADR-0011: Shows data model (updated: play accordion, status badges, provenance)
 - ADR-0013: Zero-dependency UI components
 - ADR-0014: CLI-primary, Studio-secondary
 - ADR-0015: Runs list design (identity, filters, pagination)
+- ADR-0017: Session lifecycle and status derivation (status column, dashboard queries)
 - `apps/studio/frontend/components/ExecutionDag.tsx` (disconnected, to restore)

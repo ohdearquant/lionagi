@@ -83,6 +83,12 @@ session-level message pool) and zero or more branches.  Maps 1:1 to
 | `last_msg_id` | TEXT FK | convenience bookmark |
 | `updated_at` | REAL | |
 
+> **Provenance columns (migration v2→v3):** `playbook_name`, `agent_name`,
+> `invocation_kind`, `show_topic`, `show_play_name`, `artifacts_path`, and
+> `source_kind` are added to the sessions table by the v2→v3 migration. See
+> ADR-0012 for the enrichment decision. These columns are nullable lightweight
+> hints for display and filtering — they are not authoritative execution state.
+
 Session is the **substrate**, not the invocation. Heavy run-level concerns
 (full manifest, cwd, provider, model, detailed lifecycle) are NOT on the
 session table. However, minimal provenance columns (`playbook_name`,
@@ -105,6 +111,11 @@ Branch config (provider, model, system_prompt, tools, effort) lives in
 | `name` | TEXT | |
 | `session_id` | TEXT FK | owning session |
 | `progression_id` | TEXT FK | branch's message ordering |
+
+> **Fork columns:** `parent_branch_id` (TEXT) and `forked_at_ord` (INTEGER) are
+> stored in `node_metadata` JSON on the branch row, not as top-level columns. A
+> dedicated branch fork protocol may promote these to first-class columns in a
+> future migration if query patterns require it.
 
 ### Key design decisions
 
@@ -179,7 +190,12 @@ grep, git, symlinks).  ADR-0004 remains valid for these.
 - New dependency path: `lionagi[sqlite]` required for the state layer.
 - JSON array for progression ordering limits query-side operations (no
   `WHERE message_id IN progression` without JSON parsing).
-- Schema migrations will be needed as the model evolves.
+- Schema migrations will be needed as the model evolves. **Migration protocol:**
+  a `schema_meta` table tracks the current version number. Migrations run
+  sequentially on database open (v1→v2, v2→v3, etc.). Each migration step is
+  idempotent — uses the `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` / try-except
+  pattern so re-runs are safe. The `db.py _migrate()` method is the canonical
+  migration runner.
 
 ## Alternatives Considered
 

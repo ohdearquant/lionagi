@@ -11,6 +11,7 @@ boundary, plugin/editability semantics, transport/runtime, major UX architecture
 Decision: Use 100/page for runs list.
 Why: 376 sessions currently; 100 keeps render cost low without excessive paging.
 Revisit when: sessions exceed 2,000 or list render exceeds noticeable latency.
+See also ADR-0015 §4.
 
 ## 2026-05-20 — Plugin source badges show marketplace name, not "third-party"
 
@@ -35,6 +36,7 @@ react-hot-toast, sonner, or similar.
 Why: Zero component-library pattern (ADR-0013). Toast is simple enough that
 a custom implementation is cleaner than adding a dependency.
 Revisit when: ADR-0013's threshold (3+ complex primitives needed) is met.
+See also ADR-0013.
 
 ## 2026-05-20 — Errors section renamed to "Tool errors"
 
@@ -42,3 +44,4 @@ Decision: Run detail section labeled "Tool errors", not "Errors".
 Why: "Errors" implies session failure. "Tool errors" communicates that these are
 intermediate tool-level failures, not session-level outcomes. Paired with
 "intermediate tool errors" labeling on the Overview.
+See also ADR-0012 §3.

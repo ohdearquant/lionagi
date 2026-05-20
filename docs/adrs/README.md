@@ -52,11 +52,22 @@ Example: `_Supersedes [ADR-0001](ADR-0001-lion-studio-internal-app.md)._`
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [ADR-0001](ADR-0001-lion-studio-internal-app.md) | lion-studio as internal monorepo app | Accepted |
+| [ADR-0001](ADR-0001-lion-studio-internal-app.md) | Lion Studio as internal monorepo app | Accepted |
 | [ADR-0002](ADR-0002-studio-tech-stack.md) | Lion Studio tech stack | Accepted |
 | [ADR-0003](ADR-0003-claude-code-marketplace.md) | Claude Code marketplace | Accepted |
-| [ADR-0004](ADR-0004-filesystem-data-layer.md) | Filesystem-backed data layer | Accepted |
-| [ADR-0005](ADR-0005-workers-playbooks-rename.md) | Workers-to-playbooks rename strategy | Accepted |
-| [ADR-0006](ADR-0006-sse-live-streaming.md) | SSE for live streaming | Accepted |
+| [ADR-0004](ADR-0004-filesystem-data-layer.md) | Data layer — filesystem + SQLite hybrid | Accepted |
+| [ADR-0005](ADR-0005-workers-playbooks-rename.md) | Playbooks naming convention | Accepted |
+| [ADR-0006](ADR-0006-sse-live-streaming.md) | Live update transport — SSE + interval refresh | Accepted |
 | [ADR-0007](ADR-0007-plugin-auto-discovery.md) | Plugin manifest auto-discovery convention | Accepted |
-| [ADR-0008](ADR-0008-studio-v1-scope.md) | Lion Studio v1 scope | Accepted |
+| [ADR-0008](ADR-0008-studio-v1-scope.md) | Studio scope — CLI-primary, definition-editable, localhost | Accepted |
+| [ADR-0009](ADR-0009-sqlite-state-layer.md) | SQLite state layer for core data model | Accepted |
+| [ADR-0010](ADR-0010-plugin-aware-studio.md) | Plugin-aware Studio UI | Accepted |
+| [ADR-0011](ADR-0011-shows-data-model.md) | Shows data model — hybrid SQLite + filesystem | Accepted |
+| [ADR-0012](ADR-0012-studio-execution-lineage.md) | Studio execution lineage and UX redesign | Accepted |
+| [ADR-0013](ADR-0013-zero-dependency-ui.md) | Zero component-library UI | Accepted |
+| [ADR-0014](ADR-0014-cli-primary-studio-secondary.md) | CLI-primary, Studio-secondary | Accepted |
+| [ADR-0015](ADR-0015-runs-list-design.md) | Runs list design — identity, filters, pagination | Accepted |
+| [ADR-0016](ADR-0016-definitions-write-path.md) | Definition write path and versioning | Accepted |
+| [ADR-0017](ADR-0017-session-lifecycle-status.md) | Session lifecycle and status derivation | Accepted |
+
+See also [Decision Log](DECISION_LOG.md) for lightweight decisions that don't warrant a full ADR.

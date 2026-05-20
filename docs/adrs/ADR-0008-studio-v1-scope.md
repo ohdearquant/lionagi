@@ -30,7 +30,7 @@ definitions, and debugging.
 | Capability | Why not | Where instead |
 |-----------|---------|---------------|
 | Run playbooks with parameters | CLI handles input binding, worktree setup, team coordination | `li play` |
-| Create agents from scratch | Primary authoring is text editor + CLI | `$EDITOR` + `li agent` |
+| Create agents from scratch (full authoring) | Full definition authoring is text editor + CLI; Studio scaffolding creates a skeleton file and opens it in the editor — see note below | `$EDITOR` + `li agent` |
 | Install/remove plugins | Claude Code manages plugin lifecycle | `claude plugin add/remove` |
 | Orchestrate shows | Show skill is a Claude Code agent skill | `/show topic` in Claude Code |
 | Authentication/RBAC | Localhost-only, single-user | Not needed |
@@ -43,6 +43,15 @@ The playbook detail page has a "Run" button — a convenience shortcut that shel
 out to the CLI with defaults. It is explicitly de-emphasized and does not support
 input binding, execution modes, or team configuration.
 
+### The "New Agent / New Playbook" scaffolding exception
+
+ADR-0014 introduces New Agent and New Playbook pages. These write a minimal
+skeleton file to `~/.lionagi/agents/` or `~/.lionagi/playbooks/` and immediately
+redirect to the editor view for that file. This is a convenience shortcut, not a
+full creation wizard. The scaffolding does not set provider, model, tools, or any
+runtime configuration — those are the user's responsibility in the editor. Full
+authoring from scratch remains the domain of `$EDITOR` + `li agent`.
+
 ### Write policy
 
 - **Writable**: agent definitions, playbook definitions (through definitions API
@@ -50,6 +59,17 @@ input binding, execution modes, or team configuration.
 - **Read-only**: plugin components (marketplace and third-party), skills, session
   data, show data, run data
 - **Import-only**: filesystem runs → SQLite sessions (via `li state import`)
+
+### Security posture
+
+- Binds to `127.0.0.1` only — never exposed to the network.
+- No CORS policy needed (same-origin: browser and server share localhost).
+- Definition writes are restricted to known config directories
+  (`~/.lionagi/agents/`, `~/.lionagi/playbooks/`); paths outside these roots
+  are rejected by the definitions API.
+- The Run button executes via `li play` — the same trust boundary as a terminal
+  command; no privilege escalation.
+- No authentication or RBAC: single-user, localhost workload.
 
 ## Consequences
 

@@ -46,6 +46,8 @@ content, SQLite for operational/query state.
 | `/api/shows/{topic}` | SQLite + filesystem (`_show.md`, `_intent.md`) |
 | `/api/stats` | Mixed — sessions from SQLite, definitions from filesystem |
 
+Note: the browser route is `/runs/{id}` (user-facing 'Runs' label per ADR-0012), while the API route is `/api/sessions/{id}` (matching the SQLite table). The frontend API client translates between these.
+
 ### Sync and drift
 
 SQLite and filesystem can drift if a write to one fails before the other completes.

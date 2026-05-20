@@ -13,8 +13,8 @@ skills and agents by capability domain (devx, show, orchestrate, etc.).
 
 The Skills page (62 skills) has no grouping — users see `commit`, `fmt`, `ci` next
 to `flow-it`, `reprompt`, `write-playbook` with no indication they belong to
-different plugins. Agent and skill definitions are versioned through the definitions
-API (ADR-0009) but not associated with their parent plugin.
+different plugins. Agent and playbook definitions are versioned through the definitions
+API (ADR-0016) but not associated with their parent plugin.
 
 Claude Code's plugin format provides a standard packaging unit: `plugin.json`
 manifest + `skills/`, `agents/`, `hooks/`, `.mcp.json`, `output-styles/`,
@@ -101,8 +101,8 @@ clear source/editability indicators:
 **Source badges on plugin list and detail**:
 | Badge | Meaning |
 |-------|---------|
-| `Marketplace` | From `marketplace/`, writable |
-| `Third-party` | From `~/.claude/plugins/cache/`, read-only |
+| `Lion Marketplace` | From `marketplace/`, writable |
+| `{marketplace name}` | From third-party cache, title-cased directory name (e.g., `Anthropic Official`, `khive`). Read-only |
 | `Versioned` | Definition tracked in definitions API (agents, playbooks) |
 | `Read-only` | Filesystem artifact, not version-tracked |
 
