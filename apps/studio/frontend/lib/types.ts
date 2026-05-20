@@ -99,6 +99,30 @@ export interface WorkerRaw {
   raw?: string;
 }
 
+// ─── Declarative playbook (agent + prompt format) ─────────────────────────────
+
+export type PlaybookFormat = "declarative" | "graph";
+
+export interface DeclarativeArgSpec {
+  name: string;
+  type: string;
+  default: string;
+  help: string;
+}
+
+export interface DeclarativePlaybookData {
+  name: string;
+  description: string;
+  agent: string;
+  effort: string;
+  maxOps: number | null;
+  prompt: string;
+  args: DeclarativeArgSpec[];
+  yolo: boolean;
+  showGraph: boolean;
+  argumentHint: string;
+}
+
 export interface WorkerFormData {
   name: string;
   description: string;

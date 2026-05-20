@@ -1,6 +1,9 @@
 import type {
   AgentProfile,
   AgentProfileSummary,
+  DeclarativeArgSpec,
+  DeclarativePlaybookData,
+  PlaybookFormat,
   RunDetail,
   RunSummary,
   ShowDetail,
@@ -186,6 +189,98 @@ export async function validateWorker(
       body: JSON.stringify(data),
     },
   );
+}
+
+// ─── Declarative playbook format helpers ──────────────────────────────────────
+
+/**
+ * Inspect a raw playbook payload and decide which editor to render.
+ *
+ * - ``graph``: has ``steps`` or ``links`` keys with content
+ * - ``declarative``: has ``agent`` and/or ``prompt`` and no steps/links
+ * - default for empty/new playbooks: ``declarative`` (fewer required fields)
+ */
+export function detectPlaybookFormat(data: Record<string, unknown>): PlaybookFormat {
+  const steps = data?.steps;
+  const links = data?.links;
+  const hasSteps =
+    steps != null && typeof steps === "object" && Object.keys(steps as object).length > 0;
+  const hasLinks = Array.isArray(links) && links.length > 0;
+  if (hasSteps || hasLinks) return "graph";
+  return "declarative";
+}
+
+/**
+ * Map raw YAML payload → DeclarativePlaybookData shape the form binds to.
+ */
+export function rawToDeclarative(
+  name: string,
+  data: Record<string, unknown>,
+): DeclarativePlaybookData {
+  const argsRaw = (data.args as Record<string, Record<string, unknown>>) ?? {};
+  const args: DeclarativeArgSpec[] = Object.entries(argsRaw).map(([argName, spec]) => ({
+    name: argName,
+    type: String(spec?.type ?? "str"),
+    default: spec?.default != null ? String(spec.default) : "",
+    help: String(spec?.help ?? ""),
+  }));
+
+  return {
+    name,
+    description: String(data.description ?? ""),
+    agent: String(data.agent ?? ""),
+    effort: String(data.effort ?? ""),
+    maxOps: data["max-ops"] != null ? Number(data["max-ops"]) : null,
+    prompt: String(data.prompt ?? ""),
+    args,
+    yolo: Boolean(data.yolo ?? false),
+    showGraph: Boolean(data["show-graph"] ?? false),
+    argumentHint: String(data["argument-hint"] ?? ""),
+  };
+}
+
+/**
+ * Convert DeclarativePlaybookData → wire payload for PUT /api/playbooks/{name}.
+ * Uses the YAML key names (with hyphens) the backend expects.
+ */
+export function declarativeToPayload(data: DeclarativePlaybookData): Record<string, unknown> {
+  const argsOut: Record<string, Record<string, unknown>> = {};
+  for (const a of data.args) {
+    const trimmed = a.name.trim();
+    if (!trimmed) continue;
+    const spec: Record<string, unknown> = { type: a.type || "str" };
+    if (a.default !== "") spec.default = a.default;
+    if (a.help) spec.help = a.help;
+    argsOut[trimmed] = spec;
+  }
+
+  return {
+    description: data.description,
+    agent: data.agent || null,
+    effort: data.effort || null,
+    "max-ops": data.maxOps != null && Number.isFinite(data.maxOps) ? data.maxOps : null,
+    prompt: data.prompt || null,
+    args: Object.keys(argsOut).length > 0 ? argsOut : null,
+    yolo: data.yolo,
+    "show-graph": data.showGraph,
+    "argument-hint": data.argumentHint || null,
+  };
+}
+
+/**
+ * Generic playbook update — accepts any partial dict, lets the backend merge.
+ * Use this for declarative-format saves; graph saves continue to use
+ * ``updateWorker`` since the wire shape is fully typed.
+ */
+export async function updatePlaybook(
+  name: string,
+  payload: Record<string, unknown>,
+): Promise<unknown> {
+  return fetchJson<unknown>(`/api/playbooks/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function startRun(

@@ -11,6 +11,21 @@ from ._path_safety import safe_path_join
 _PLAYBOOKS_ROOT = LIONAGI_HOME / "playbooks"
 
 
+class _PlaybookDumper(yaml.SafeDumper):
+    """SafeDumper with two ergonomic overrides for hand-edited playbook YAML."""
+
+
+def _str_representer(dumper: yaml.SafeDumper, data: str) -> yaml.ScalarNode:
+    # Multi-line strings (prompt, long descriptions) → literal block scalar so
+    # diffs stay readable and round-trips don't reformat them into quoted scalars.
+    if "\n" in data:
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+
+_PlaybookDumper.add_representer(str, _str_representer)
+
+
 def list_playbooks() -> list[dict[str, Any]]:
     if not _PLAYBOOKS_ROOT.exists():
         return []
@@ -60,15 +75,34 @@ def get_playbook(name: str) -> dict[str, Any] | None:
     return result
 
 
+# Declarative-format keys we will write through from the editor. Anything not
+# in this list is preserved as-is from the existing YAML so handcrafted keys
+# (or future additions) don't get clobbered.
+_DECLARATIVE_KEYS: tuple[str, ...] = (
+    "agent",
+    "effort",
+    "max-ops",
+    "prompt",
+    "args",
+    "yolo",
+    "show-graph",
+    "argument-hint",
+)
+
+
 def update_playbook(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     """Write a playbook YAML back to disk.
 
-    Conservative merge: top-level keys from the request (``description``,
-    ``use``, ``steps``, ``links``) overwrite the corresponding keys in the
-    file, but every other key (``agent``, ``effort``, ``prompt``, ``args``,
-    ``argument-hint``, etc.) is preserved. Empty ``use``/``steps``/``links``
-    are skipped so the canvas-default empty graph doesn't pollute clean files
-    that simply edited description.
+    Conservative merge:
+
+    - ``description`` always overwrites if present in the payload.
+    - Graph-format keys (``use``, ``steps``, ``links``) overwrite only when
+      they carry content, so a declarative playbook opened in the graph
+      editor doesn't get stamped with empty ``steps: {}``.
+    - Declarative keys (``agent``, ``effort``, ``max-ops``, ``prompt``,
+      ``args``, ``yolo``, ``show-graph``, ``argument-hint``) overwrite when
+      present in the payload; ``None`` / empty-string removes the key.
+    - Every other key already on disk is preserved untouched.
 
     Symlinks: ``~/.lionagi/playbooks/*`` may be symlinks; ``write_text`` on
     a symlinked path writes through to the target.
@@ -92,9 +126,7 @@ def update_playbook(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     if "description" in data:
         merged["description"] = data["description"] or ""
 
-    # Only set use/steps/links if the request actually carried content. This
-    # avoids stamping empty ``steps: {}`` onto playbooks authored in the
-    # declarative (agent + prompt + args) format.
+    # Graph-format keys: only write when non-empty.
     use = data.get("use")
     if isinstance(use, dict) and use.get("models"):
         merged["use"] = use
@@ -107,7 +139,24 @@ def update_playbook(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(links, list) and len(links) > 0:
         merged["links"] = links
 
-    new_text = yaml.safe_dump(merged, sort_keys=False, allow_unicode=True)
+    # Declarative-format keys: drop on explicit None/"" so the editor can
+    # clear an optional field; otherwise overwrite.
+    for key in _DECLARATIVE_KEYS:
+        if key not in data:
+            continue
+        value = data[key]
+        if value is None or value == "":
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+
+    new_text = yaml.dump(
+        merged,
+        Dumper=_PlaybookDumper,
+        sort_keys=False,
+        allow_unicode=True,
+        width=120,
+    )
     path.write_text(new_text)
 
     return get_playbook(stem)
