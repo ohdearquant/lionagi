@@ -1,7 +1,7 @@
 ---
 name: flow-it
 description: >
-  Orchestrate complex multi-phase tasks via kdev flow YAML specs. Use when
+  Orchestrate complex multi-phase tasks via li o flow YAML specs. Use when
   task has multiple independent subtasks (C(τ) ≥ 0.5), would benefit from
   parallel agents, or when the user says "flow it", "write a flow for X",
   "let's flow this", "fan out", "let agents do it", "empaco", "codex sweep",
@@ -11,15 +11,15 @@ description: >
 allowed-tools: [Bash, Read, Write, Glob, Grep]
 ---
 
-# flow-it — Multi-Agent Orchestration via kdev flow
+# flow-it — Multi-Agent Orchestration via li o flow
 
-Package a complex task as a kdev flow YAML spec, validate it, fire it, and
+Package a complex task as a lionagi flow YAML spec, validate it, fire it, and
 monitor execution. Covers two DAG shapes:
 
 - **Feature flows**: multi-agent DAG for one complex task (architect → implementers → tester → critic)
 - **Sweep flows**: embarrassingly parallel per-module audit (N agents, one module each, then consolidate)
 
-Both use the same kdev flow engine. The orchestrator decides which DAG shape
+Both use the same lionagi flow engine. The orchestrator decides which DAG shape
 to use based on your intent. Your job: describe WHAT exhaustively, not HOW.
 
 ## When to Use
@@ -161,7 +161,7 @@ cp tools/flows/{name}.yaml ../{project}-{name}/tools/flows/
 ### 5. Validate
 
 ```bash
-uv run --project /Users/lion/projects/libs/kdev kdev flow validate -f {path}
+li o flow validate -f {path}
 ```
 
 ### 6. Fire
@@ -171,8 +171,7 @@ writes to the launcher's CWD.
 
 ```bash
 cd /path/to/{worktree} && \
-  nohup uv run --project /Users/lion/projects/libs/kdev \
-  kdev flow run -f tools/flows/{name}.yaml \
+  nohup li o flow run -f tools/flows/{name}.yaml \
   > /tmp/flow_{name}.log 2>&1 &
 echo "Flow PID: $!"
 ```
@@ -180,18 +179,15 @@ echo "Flow PID: $!"
 ### 7. Monitor + Diagnose
 
 ```bash
-# Preferred: open http://localhost:3000/flows/{id} in the kdev monitor for live
-# agent state, branch timelines, and per-agent output. Start: kdev monitor
+# Preferred: open http://localhost:3000/flows/{id} in the lionagi flow monitor
+# for live agent state, branch timelines, and per-agent output.
 tail -20 /tmp/flow_{name}.log
-# Silent failure diagnosis:
-sqlite3 {worktree}/.khive/kdev.db \
-  "SELECT b.name, substr(sc.content,1,200) FROM stream_chunks sc \
-   JOIN branches b ON b.id=sc.branch_id WHERE sc.flow_id='{id}' LIMIT 20"
+# Silent failure diagnosis: check .khive/flows/{name}/ for checkpoint artifacts.
 ```
 
 #### When Flow Fails
 
-- **Checkpoint-resume**: kdev persists completed branches to `.khive/flows/{name}/`.
+- **Checkpoint-resume**: lionagi persists completed branches to `.khive/flows/{name}/`.
   Check what committed successfully before deciding what to re-fire.
 - **Salvage partial results**: Read `.khive/flows/{name}/` artifacts before abandoning.
   Completed agents' work is still usable even if later phases failed.
@@ -324,7 +320,6 @@ already ported, partially ported, or genuinely unported and valuable?
 
 ## Reference Specs
 
-- `/Users/lion/projects/libs/kdev/examples/monitor_full_build.yaml` — greenfield build
-- `/Users/lion/projects/libs/kdev/examples/monitor_polish.yaml` — targeted polish
-- `/Users/lion/projects/khive/tools/flows/ws_*.yaml` — workstation features (intent-heavy)
-- `/Users/lion/projects/khive/tools/flows/ws_audit_*.yaml` — audit flows
+- `tools/flows/` in any lionagi checkout — start here for real-world examples
+- Feature flows: multi-agent DAG for complex tasks (architect → implementers → tester → critic)
+- Audit flows: per-module sweep patterns for monorepo-wide quality gates

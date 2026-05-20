@@ -1,6 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "lionagi",
+  "version": "0.1.0",
   "description": "Daily-driver agent runtime with Lion Studio dashboard and curated skill plugins",
   "owner": {
     "name": "Ocean (HaiyangLi)",
@@ -41,16 +42,10 @@
       "name": "devx",
       "source": "./marketplace/devx",
       "description": "Conventional commit, formatting, CI, PR, summarize, session-start/-summarize"
-    },
-    {
-      "name": "studio",
-      "source": "./marketplace/studio",
-      "description": "Lion Studio dashboard — runs/agents/playbooks/shows monitoring UI with FastAPI backend MCP"
-    },
-    {
-      "name": "mcp-bundle",
-      "source": "./marketplace/mcp-bundle",
-      "description": "Lionagi canonical MCP server access for agents"
     }
+  ],
+  "_deferred_bundles": [
+    "studio (TODO: li studio mcp not yet implemented; re-list when MCP server ships)",
+    "mcp-bundle (TODO: skeleton only; re-list when agent skills land)"
   ]
 }

@@ -1,6 +1,6 @@
 # devx
 
-Developer-experience skill bundle for lionagi — conventional commits, CI, formatting, PRs, session management, and project health.
+Developer-experience skill bundle for lionagi — conventional commits, CI, formatting, PRs, mid-session summarize, and project health. Note: `session-start` and `session-summarize` are not shipped in this bundle; see `skills/TODO.md`.
 
 ## Skills
 

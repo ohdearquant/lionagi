@@ -40,7 +40,7 @@ uv run li studio start
 ## Architecture References
 
 - **ADR-0001**: Internal monorepo structure
-- **ADR-0002**: Lift krons dependency
+- **ADR-0002**: Lift heavy runtime dependencies
 - **ADR-0003**: Marketplace plugin registry
 
 ## Install
