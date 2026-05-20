@@ -491,18 +491,24 @@ class iModel:  # noqa: N801
             **self.executor.config,
         )
 
-    def to_dict(self, include_request_options: bool = False) -> dict:
+    def to_dict(
+        self,
+        include_request_options: bool = False,
+        include_processor_config: bool = False,
+    ) -> dict:
         endpoint = self.endpoint.to_dict()
         if not include_request_options:
             endpoint["config"].pop("request_options", None)
 
-        return {
+        data = {
             "id": str(self.id) if self.id else None,
             "created_at": self.created_at,
-            "endpoint": endpoint,
-            "processor_config": self.executor.config,
             "provider_metadata": self.provider_metadata,
+            "endpoint": endpoint,
         }
+        if include_processor_config:
+            data["processor_config"] = self.executor.config
+        return data
 
     @classmethod
     def from_dict(cls, data: dict):

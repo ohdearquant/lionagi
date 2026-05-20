@@ -522,20 +522,27 @@ class Branch(Element, Relational):
         mode: Literal["python", "json", "db"] = "python",
         db_meta_key: str | None = None,
         include_request_options: bool = False,
+        include_logs: bool = True,
+        include_log_config: bool = False,
+        include_processor_config: bool = False,
         **kw,
     ) -> dict:
         dict_ = super().to_dict(mode=mode, db_meta_key=db_meta_key, **kw)
-        dict_["messages"] = self.messages.to_dict(mode=mode)
-        dict_["logs"] = self.logs.to_dict(mode=mode)
-        dict_["chat_model"] = self.chat_model.to_dict(
-            include_request_options=include_request_options
-        )
-        dict_["parse_model"] = self.parse_model.to_dict(
-            include_request_options=include_request_options
-        )
+        if self.messages:
+            dict_["messages"] = self.messages.to_dict(mode=mode)
+        if include_logs and self.logs:
+            dict_["logs"] = self.logs.to_dict(mode=mode)
         if self.system:
             dict_["system"] = self.system.to_dict(mode=mode)
-        dict_["log_config"] = self._log_manager._config.model_dump()
+        if include_log_config:
+            dict_["log_config"] = self._log_manager._config.model_dump()
+        dict_["chat_model"] = self.chat_model.to_dict(
+            include_request_options, include_processor_config
+        )
+        if self.parse_model is not self.chat_model:
+            dict_["parse_model"] = self.parse_model.to_dict(
+                include_request_options, include_processor_config
+            )
         return dict_
 
     @classmethod
