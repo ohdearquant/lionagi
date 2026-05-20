@@ -52,8 +52,22 @@ function emptyForm(): AgentProfile {
 }
 
 function normalizeForm(profile: AgentProfile): AgentProfile {
+  // Many on-disk agent files predate the provider/model split (model carries
+  // the prefix, e.g. "claude/claude-opus-4-6"). Infer provider from the model
+  // string when frontmatter doesn't supply one, so the form is immediately
+  // valid for save without forcing the user to pick a value that wasn't
+  // missing in their data.
+  let provider = profile.provider;
+  if (!provider) {
+    const model = profile.model ?? "";
+    if (model.startsWith("claude") || model.includes("claude/")) provider = "claude_code";
+    else if (model.startsWith("gpt") || model.startsWith("o3") || model.startsWith("o4")) provider = "codex";
+    else if (model.startsWith("gemini")) provider = "gemini_code";
+    else provider = "claude_code";
+  }
   return {
     ...profile,
+    provider,
     description: profile.description ?? "",
     system_prompt: profile.system_prompt ?? "",
     guidance: profile.guidance ?? "",
