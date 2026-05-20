@@ -87,7 +87,9 @@ class TestRunBetaAgentRouting:
         from lionagi.providers.ag2.agent.models import run_beta_agent
 
         with pytest.raises(ValueError, match="requires either a pre-built"):
-            async for _ in run_beta_agent(config=None, message="hi", llm_config=None, agent=None):
+            async for _ in run_beta_agent(
+                config=None, message="hi", llm_config=None, agent=None
+            ):
                 pass
 
     @pytest.mark.asyncio
@@ -139,7 +141,9 @@ class TestRunBetaAgentRouting:
             te_mod.ToolCallsEvent = MagicMock
             te_mod.ToolResultEvent = MagicMock
 
-            with caplog.at_level(logging.INFO, logger="lionagi.providers.ag2.agent.models"):
+            with caplog.at_level(
+                logging.INFO, logger="lionagi.providers.ag2.agent.models"
+            ):
                 results = []
                 async for ev in agent_models.run_beta_agent(
                     config=cfg,
@@ -149,9 +153,9 @@ class TestRunBetaAgentRouting:
                 ):
                     results.append(ev)
 
-        assert any("agent_config is ignored" in r.message for r in caplog.records), (
-            "Expected log message about agent_config being ignored"
-        )
+        assert any(
+            "agent_config is ignored" in r.message for r in caplog.records
+        ), "Expected log message about agent_config being ignored"
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +180,11 @@ class TestAG2BetaEndpointStream:
         )
         ep = AG2BetaEndpoint(config=cfg)
         if with_llm_config:
-            ep._llm_config = {"api_type": "openai", "model": "gpt-4o-mini", "api_key": "test"}
+            ep._llm_config = {
+                "api_type": "openai",
+                "model": "gpt-4o-mini",
+                "api_key": "test",
+            }
         return ep
 
     @pytest.mark.asyncio
@@ -188,16 +196,27 @@ class TestAG2BetaEndpointStream:
 
         async def mock_run(config, message, llm_config, tool_registry=None, agent=None):
             captured_agents.append(agent)
-            yield {"type": "response", "text": "ok", "content": None, "typed_result": None}
+            yield {
+                "type": "response",
+                "text": "ok",
+                "content": None,
+                "typed_result": None,
+            }
 
-        with patch("lionagi.providers.ag2.agent.models.run_beta_agent", side_effect=mock_run):
+        with patch(
+            "lionagi.providers.ag2.agent.models.run_beta_agent", side_effect=mock_run
+        ):
             endpoint = self._make_endpoint()
             chunks = []
-            async for chunk in endpoint.stream({"prompt": "hello", "agent": fake_agent}):
+            async for chunk in endpoint.stream(
+                {"prompt": "hello", "agent": fake_agent}
+            ):
                 chunks.append(chunk)
 
         assert len(captured_agents) == 1
-        assert captured_agents[0] is fake_agent, "Pre-built agent must be passed through as-is"
+        assert (
+            captured_agents[0] is fake_agent
+        ), "Pre-built agent must be passed through as-is"
 
     @pytest.mark.asyncio
     async def test_same_agent_instance_reused_across_two_calls(self):
@@ -215,7 +234,9 @@ class TestAG2BetaEndpointStream:
                 "typed_result": None,
             }
 
-        with patch("lionagi.providers.ag2.agent.models.run_beta_agent", side_effect=mock_run):
+        with patch(
+            "lionagi.providers.ag2.agent.models.run_beta_agent", side_effect=mock_run
+        ):
             endpoint = self._make_endpoint()
 
             # First call
@@ -226,10 +247,12 @@ class TestAG2BetaEndpointStream:
             async for _ in endpoint.stream({"prompt": "second", "agent": fake_agent}):
                 pass
 
-        assert len(captured_ids) == 2, "run_beta_agent should be called once per stream() call"
-        assert captured_ids[0] == captured_ids[1], (
-            f"Agent id must be identical across calls: {captured_ids[0]} != {captured_ids[1]}"
-        )
+        assert (
+            len(captured_ids) == 2
+        ), "run_beta_agent should be called once per stream() call"
+        assert (
+            captured_ids[0] == captured_ids[1]
+        ), f"Agent id must be identical across calls: {captured_ids[0]} != {captured_ids[1]}"
 
     @pytest.mark.asyncio
     async def test_agent_wins_over_agent_config(self):
@@ -241,9 +264,16 @@ class TestAG2BetaEndpointStream:
 
         async def mock_run(config, message, llm_config, tool_registry=None, agent=None):
             captured.append({"config": config, "agent": agent})
-            yield {"type": "response", "text": "ok", "content": None, "typed_result": None}
+            yield {
+                "type": "response",
+                "text": "ok",
+                "content": None,
+                "typed_result": None,
+            }
 
-        with patch("lionagi.providers.ag2.agent.models.run_beta_agent", side_effect=mock_run):
+        with patch(
+            "lionagi.providers.ag2.agent.models.run_beta_agent", side_effect=mock_run
+        ):
             endpoint = self._make_endpoint()
             async for _ in endpoint.stream(
                 {"prompt": "test", "agent": fake_agent, "agent_config": cfg}
@@ -251,7 +281,9 @@ class TestAG2BetaEndpointStream:
                 pass
 
         assert len(captured) == 1
-        assert captured[0]["agent"] is fake_agent, "Pre-built agent must win over agent_config"
+        assert (
+            captured[0]["agent"] is fake_agent
+        ), "Pre-built agent must win over agent_config"
 
     @pytest.mark.asyncio
     async def test_no_agent_no_config_raises(self):
@@ -259,10 +291,19 @@ class TestAG2BetaEndpointStream:
 
         async def mock_run(config, message, llm_config, tool_registry=None, agent=None):
             if agent is None and config is None:
-                raise ValueError("requires either a pre-built 'agent' or a non-None 'config'.")
-            yield {"type": "response", "text": "ok", "content": None, "typed_result": None}
+                raise ValueError(
+                    "requires either a pre-built 'agent' or a non-None 'config'."
+                )
+            yield {
+                "type": "response",
+                "text": "ok",
+                "content": None,
+                "typed_result": None,
+            }
 
-        with patch("lionagi.providers.ag2.agent.models.run_beta_agent", side_effect=mock_run):
+        with patch(
+            "lionagi.providers.ag2.agent.models.run_beta_agent", side_effect=mock_run
+        ):
             endpoint = self._make_endpoint()
             # Override _agent_config so create_payload yields no config either
             endpoint._agent_config = {}
@@ -278,12 +319,20 @@ class TestAG2BetaEndpointStream:
 
         async def mock_run(config, message, llm_config, tool_registry=None, agent=None):
             captured.append({"config": config, "agent": agent})
-            yield {"type": "response", "text": "from config", "content": None, "typed_result": None}
+            yield {
+                "type": "response",
+                "text": "from config",
+                "content": None,
+                "typed_result": None,
+            }
 
         mock_model_cfg = MagicMock()
 
         with (
-            patch("lionagi.providers.ag2.agent.models.run_beta_agent", side_effect=mock_run),
+            patch(
+                "lionagi.providers.ag2.agent.models.run_beta_agent",
+                side_effect=mock_run,
+            ),
             patch(
                 "lionagi.providers.ag2.agent.endpoint._resolve_model_config",
                 return_value=mock_model_cfg,
@@ -296,7 +345,9 @@ class TestAG2BetaEndpointStream:
                 chunks.append(chunk)
 
         assert len(captured) == 1
-        assert captured[0]["agent"] is None, "Config path must not pass a pre-built agent"
+        assert (
+            captured[0]["agent"] is None
+        ), "Config path must not pass a pre-built agent"
         assert captured[0]["config"] is not None, "Config path must have a config"
 
     @pytest.mark.asyncio
@@ -306,9 +357,16 @@ class TestAG2BetaEndpointStream:
         fake_agent = _make_fake_agent("named-agent")
 
         async def mock_run(config, message, llm_config, tool_registry=None, agent=None):
-            yield {"type": "response", "text": "ok", "content": None, "typed_result": None}
+            yield {
+                "type": "response",
+                "text": "ok",
+                "content": None,
+                "typed_result": None,
+            }
 
-        with patch("lionagi.providers.ag2.agent.models.run_beta_agent", side_effect=mock_run):
+        with patch(
+            "lionagi.providers.ag2.agent.models.run_beta_agent", side_effect=mock_run
+        ):
             endpoint = self._make_endpoint()
             chunks = []
             async for chunk in endpoint.stream({"prompt": "hi", "agent": fake_agent}):

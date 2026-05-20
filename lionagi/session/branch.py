@@ -236,6 +236,10 @@ class Branch(Element, Relational):
         return self._message_manager.system
 
     @property
+    def on_message_added(self) -> list:
+        return self._message_manager._on_message_added
+
+    @property
     def msgs(self) -> MessageManager:
         """Returns the associated MessageManager."""
         return self._message_manager
@@ -506,44 +510,43 @@ class Branch(Element, Relational):
         )
         self._action_manager.register_tools(tool, update=update)
 
-    # -------------------------------------------------------------------------
-    # Dictionary Conversion
-    # -------------------------------------------------------------------------
-    def to_dict(self):
-        """
-        Serializes the branch to a Python dictionary, including:
-            - Messages
-            - Logs
-            - Chat/Parse models
-            - System message
-            - LogManager config
-            - Metadata
-
-        Returns:
-            dict: A dictionary representing the branch's internal state.
-        """
-        meta = {}
-        if "clone_from" in self.metadata:
-            # Provide some reference info about the source from which we cloned
-            meta["clone_from"] = {
-                "id": str(self.metadata["clone_from"].id),
-                "user": str(self.metadata["clone_from"].user),
-                "created_at": self.metadata["clone_from"].created_at,
-                "progression": [
-                    str(i) for i in self.metadata["clone_from"].msgs.progression
-                ],
+    @field_serializer("metadata")
+    def _serialize_metadata_if_clone(self, v):
+        if "clone_from" in v:
+            v["clone_from"] = {
+                "id": str(v["clone_from"].id),
+                "user": str(v["clone_from"].user),
+                "created_at": v["clone_from"].created_at,
+                "progression": [str(i) for i in v["clone_from"].msgs.progression],
             }
-        meta.update(copy({k: v for k, v in self.metadata.items() if k != "clone_from"}))
+        return v
 
-        dict_ = super().to_dict()
-        dict_["messages"] = self.messages.to_dict()
-        dict_["logs"] = self.logs.to_dict()
-        dict_["chat_model"] = self.chat_model.to_dict()
-        dict_["parse_model"] = self.parse_model.to_dict()
+    def to_dict(
+        self,
+        mode: Literal["python", "json", "db"] = "python",
+        db_meta_key: str | None = None,
+        include_request_options: bool = False,
+        include_logs: bool = True,
+        include_log_config: bool = False,
+        include_processor_config: bool = False,
+        **kw,
+    ) -> dict:
+        dict_ = super().to_dict(mode=mode, db_meta_key=db_meta_key, **kw)
+        if self.messages:
+            dict_["messages"] = self.messages.to_dict(mode=mode)
+        if include_logs and self.logs:
+            dict_["logs"] = self.logs.to_dict(mode=mode)
         if self.system:
-            dict_["system"] = self.system.to_dict()
-        dict_["log_config"] = self._log_manager._config.model_dump()
-        dict_["metadata"] = meta
+            dict_["system"] = self.system.to_dict(mode=mode)
+        if include_log_config:
+            dict_["log_config"] = self._log_manager._config.model_dump()
+        dict_["chat_model"] = self.chat_model.to_dict(
+            include_request_options, include_processor_config
+        )
+        if self.parse_model is not self.chat_model:
+            dict_["parse_model"] = self.parse_model.to_dict(
+                include_request_options, include_processor_config
+            )
         return dict_
 
     @classmethod

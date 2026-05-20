@@ -20,7 +20,11 @@ import argparse
 import pytest
 
 from lionagi.cli._agents import _parse_profile
-from lionagi.cli._providers import PROVIDER_FAST_KWARGS, add_common_cli_args, build_imodel_from_spec
+from lionagi.cli._providers import (
+    PROVIDER_FAST_KWARGS,
+    add_common_cli_args,
+    build_imodel_from_spec,
+)
 from lionagi.providers.openai.codex.models import CodexCodeRequest
 
 # ── 1. Default: no service_tier ─────────────────────────────────────────

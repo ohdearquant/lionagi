@@ -138,8 +138,8 @@ async def communicate(
 
     ins, res = await chat(branch, instruction, chat_param, return_ins_res_message=True)
 
-    branch.msgs.add_message(instruction=ins)
-    branch.msgs.add_message(assistant_response=res)
+    await branch.msgs.a_add_message(instruction=ins)
+    await branch.msgs.a_add_message(assistant_response=res)
 
     if skip_validation:
         return res.response
