@@ -75,22 +75,19 @@ play resolves the conflict. Every `npm install` in CI and local setup MUST inclu
 
 Source: `_show.md:148-149`
 
-## Appendix B — TypeScript Symbol Names Retained (`WorkerFormData`, `listWorkers`)
+## Appendix B — TypeScript Symbol Names
 
-The workers → playbooks rename is URL/API/path-level only for v1. Internal TypeScript identifiers
-(`WorkerFormData`, `listWorkers`, `WorkersPage`, etc.) are intentionally left unchanged as
-accepted tech debt. A future sweeper must not perform a mechanical symbol rename without
-understanding all call sites. See [ADR-0005](ADR-0005-workers-playbooks-rename.md) for full
-scope documentation.
+Some internal TypeScript types retain `Worker` prefix (`WorkerStepNode`, `WorkerLinkEdge`,
+`WorkerCanvas`) where they refer to graph-format playbook step/link data models. These are
+technical type names for the graph editing canvas, not user-facing labels. All user-facing
+surfaces use "playbooks." See [ADR-0005](ADR-0005-workers-playbooks-rename.md).
 
-Source: `_show.md:151`
+## Appendix C — Run Detail: Execution Graph from Playbook Context
 
-## Appendix C — Run Detail API Shape (`run.steps` absent, F4 defensive default)
-
-The backend run manifest shape is `{run_id, state_root, artifact_root, manifest, branches}`;
-there is no top-level `steps` field. The frontend makes `steps` optional in `lib/types.ts` and
-defaults all read sites to `[]`. Deriving `steps` from `branches[]` was evaluated but rejected:
-branch snapshots are opaque JSON blobs with no documented `steps` sub-field. The defensive
-frontend default is the smallest correct fix; backend derivation is deferred.
+The backend session API does not include a `steps` field. Execution graph visualization
+(`ExecutionDag.tsx`) derives its structure from the playbook's graph metadata (steps + links),
+not from the session. The graph is rendered only when playbook context is known — either by
+navigating from the playbook detail page or when the session's `playbook_name` field matches
+a graph-format playbook. See ADR-0012.
 
 Source: `frontend-finalize/impl1/summary.md:88-97`; `visual-walkthrough/walkthrough_findings.md:98-103`
