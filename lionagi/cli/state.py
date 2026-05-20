@@ -345,29 +345,41 @@ async def _import_one_run(
 # ── async ls logic ────────────────────────────────────────────────────────────
 
 
-async def _list_sessions() -> None:
-    """Print a simple table of sessions in state.db."""
+async def _list_sessions(*, limit: int = 50, status: str | None = None) -> None:
+    """Print a simple table of sessions in state.db, paginated."""
     import time
 
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
-        cur = await db.db.execute(
-            "SELECT id, name, updated_at FROM sessions ORDER BY updated_at DESC"
-        )
+        if status:
+            cur = await db.db.execute(
+                "SELECT id, name, status, updated_at FROM sessions "
+                "WHERE status = ? ORDER BY updated_at DESC LIMIT ?",
+                (status, limit),
+            )
+        else:
+            cur = await db.db.execute(
+                "SELECT id, name, status, updated_at FROM sessions "
+                "ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            )
         rows = await cur.fetchall()
 
         if not rows:
             print("(no sessions in state.db)")
             return
 
-        # Gather branch / message counts per session using the same connection.
-        header = f"{'ID':<36}  {'NAME':<16}  {'BRANCHES':>8}  {'MESSAGES':>8}  {'UPDATED':<20}"
+        header = (
+            f"{'ID':<36}  {'NAME':<16}  {'STATUS':<10}  "
+            f"{'BRANCHES':>8}  {'MESSAGES':>8}  {'UPDATED':<20}"
+        )
         print(header)
         print("-" * len(header))
         for row in rows:
             sid = row["id"]
-            name = row["name"] or ""
+            name = (row["name"] or "")[:16]
+            sstat = (row["status"] or "")[:10]
             updated = row["updated_at"]
             updated_str = (
                 time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(updated))
@@ -389,8 +401,173 @@ async def _list_sessions() -> None:
                 msg_count = len(prog_data)
 
             print(
-                f"{sid:<36}  {name:<16}  {bc:>8}  {msg_count:>8}  {updated_str:<20}"
+                f"{sid:<36}  {name:<16}  {sstat:<10}  "
+                f"{bc:>8}  {msg_count:>8}  {updated_str:<20}"
             )
+
+
+# ── Maintenance commands: stats / checkpoint / vacuum / prune ───────────────
+
+
+async def _print_stats() -> None:
+    """Print DB/WAL size, row counts, and SQLite pragma settings."""
+    from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+
+    db_path = DEFAULT_DB_PATH
+    db_size = db_path.stat().st_size if db_path.exists() else 0
+    wal_path = db_path.with_name(db_path.name + "-wal")
+    wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+
+    print(f"state.db path:   {db_path}")
+    print(f"state.db size:   {_format_bytes(db_size)}")
+    print(f"state.db-wal:    {_format_bytes(wal_size)}")
+    print()
+
+    if not db_path.exists():
+        print("(no state.db yet — first run will create it)")
+        return
+
+    async with StateDB() as db:
+        # Row counts per table.
+        print("Row counts:")
+        for table in (
+            "messages", "progressions", "sessions", "branches",
+            "definitions", "shows", "plays",
+        ):
+            cur = await db.db.execute(f"SELECT COUNT(*) AS n FROM {table}")  # noqa: S608
+            row = await cur.fetchone()
+            print(f"  {table:<14} {row['n']:>10}")
+        print()
+
+        # Session status distribution.
+        cur = await db.db.execute(
+            "SELECT COALESCE(status, '(null)') AS s, COUNT(*) AS n "
+            "FROM sessions GROUP BY status ORDER BY n DESC"
+        )
+        print("Sessions by status:")
+        for row in await cur.fetchall():
+            print(f"  {row['s']:<14} {row['n']:>10}")
+        print()
+
+        # PRAGMAs that affect operational behavior.
+        print("PRAGMAs:")
+        for pragma in ("journal_mode", "wal_autocheckpoint", "busy_timeout",
+                       "synchronous", "foreign_keys"):
+            cur = await db.db.execute(f"PRAGMA {pragma}")
+            row = await cur.fetchone()
+            val = row[0] if row else "?"
+            print(f"  {pragma:<22} {val}")
+
+
+async def _checkpoint(mode: str) -> str:
+    """Run wal_checkpoint and return a summary string."""
+    from lionagi.state.db import StateDB
+
+    async with StateDB() as db:
+        cur = await db.db.execute(f"PRAGMA wal_checkpoint({mode})")
+        row = await cur.fetchone()
+        if not row:
+            return "(no result)"
+        # SQLite returns (busy, log_pages, checkpointed_pages)
+        return f"busy={row[0]}, log_pages={row[1]}, checkpointed={row[2]}"
+
+
+async def _vacuum() -> None:
+    """Run VACUUM. Holds exclusive lock for the duration."""
+    from lionagi.state.db import StateDB
+
+    async with StateDB() as db:
+        await db.db.execute("VACUUM")
+        await db.db.commit()
+
+
+async def _prune(
+    *,
+    keep_days: int,
+    keep_n: int,
+    dry_run: bool,
+) -> dict[str, int]:
+    """Delete sessions older than ``keep_days``, preserving the most
+    recent ``keep_n``. Returns counts of what was (or would be) deleted.
+    """
+    import time as _time
+
+    from lionagi.state.db import StateDB
+
+    cutoff = _time.time() - (keep_days * 86400)
+
+    async with StateDB() as db:
+        # Sessions to keep: top N most recent OR newer than cutoff.
+        cur = await db.db.execute(
+            """SELECT id FROM sessions
+               WHERE id NOT IN (
+                 SELECT id FROM sessions
+                 ORDER BY updated_at DESC LIMIT ?
+               )
+               AND (updated_at < ? OR updated_at IS NULL)""",
+            (keep_n, cutoff),
+        )
+        rows = await cur.fetchall()
+        victim_ids = [r["id"] for r in rows]
+
+        if not victim_ids:
+            return {"sessions": 0, "branches": 0, "messages": 0}
+
+        # Count cascaded branches up front.
+        placeholders = ",".join("?" * len(victim_ids))
+        cur = await db.db.execute(
+            f"SELECT COUNT(*) AS n FROM branches "  # noqa: S608
+            f"WHERE session_id IN ({placeholders})",
+            victim_ids,
+        )
+        branch_count = (await cur.fetchone())["n"]
+
+        # Orphan messages: ones whose id isn't in any surviving progression.
+        # Cheap estimate via message count delta — not exact, but useful.
+        cur = await db.db.execute("SELECT COUNT(*) AS n FROM messages")
+        msgs_before = (await cur.fetchone())["n"]
+
+        if dry_run:
+            return {
+                "sessions": len(victim_ids),
+                "branches": branch_count,
+                "messages": 0,  # can't preview without doing the delete
+            }
+
+        # Delete sessions — branches cascade via FK ON DELETE CASCADE.
+        # Messages are NOT cascaded (they're referenced by progression
+        # JSON arrays, not FK columns), so we sweep orphans below.
+        await db.db.execute(
+            f"DELETE FROM sessions WHERE id IN ({placeholders})",  # noqa: S608
+            victim_ids,
+        )
+        await db.db.commit()
+
+        # Sweep messages no longer referenced by any progression.
+        await db.db.execute(
+            """DELETE FROM messages
+               WHERE id NOT IN (
+                 SELECT value FROM progressions, json_each(progressions.collection)
+               )"""
+        )
+        await db.db.commit()
+
+        cur = await db.db.execute("SELECT COUNT(*) AS n FROM messages")
+        msgs_after = (await cur.fetchone())["n"]
+
+        return {
+            "sessions": len(victim_ids),
+            "branches": branch_count,
+            "messages": msgs_before - msgs_after,
+        }
+
+
+def _format_bytes(n: int) -> str:
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TiB"
 
 
 # ── CLI wiring ────────────────────────────────────────────────────────────────
@@ -417,10 +594,81 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
 
     # li state ls
-    state_sub.add_parser(
+    ls = state_sub.add_parser(
         "ls",
         help="List sessions in state.db.",
         description="Print a table of sessions stored in state.db.",
+    )
+    ls.add_argument(
+        "--limit", type=int, default=50,
+        help="Max sessions to list (default 50).",
+    )
+    ls.add_argument(
+        "--status", default=None,
+        help="Filter by session status (running|completed|failed|aborted).",
+    )
+
+    # li state stats
+    state_sub.add_parser(
+        "stats",
+        help="Print DB/WAL size, row counts, and lifecycle health.",
+        description=(
+            "Report state.db + state.db-wal sizes, per-table row counts, "
+            "session status distribution, and SQLite PRAGMAs (journal_mode, "
+            "wal_autocheckpoint, busy_timeout). Use to spot growth and "
+            "lock contention."
+        ),
+    )
+
+    # li state checkpoint
+    cp = state_sub.add_parser(
+        "checkpoint",
+        help="Force a WAL checkpoint (frees disk if no readers active).",
+        description=(
+            "Run PRAGMA wal_checkpoint(TRUNCATE|PASSIVE|RESTART|FULL). "
+            "Default is TRUNCATE — most aggressive, frees the WAL file if "
+            "no readers are active."
+        ),
+    )
+    cp.add_argument(
+        "--mode", default="TRUNCATE",
+        choices=["PASSIVE", "FULL", "RESTART", "TRUNCATE"],
+        help="Checkpoint mode (default TRUNCATE).",
+    )
+
+    # li state vacuum
+    state_sub.add_parser(
+        "vacuum",
+        help="Rebuild the DB file to reclaim free pages.",
+        description=(
+            "Run VACUUM — rebuilds the entire DB file, reclaiming pages "
+            "freed by previous deletes. Holds an exclusive lock for the "
+            "duration. Run after `li state prune`."
+        ),
+    )
+
+    # li state prune
+    prune = state_sub.add_parser(
+        "prune",
+        help="Delete old sessions (and their branches/messages).",
+        description=(
+            "Delete sessions older than --keep-days (default 30), keeping "
+            "the most recent --keep-n (default 100). Foreign key cascades "
+            "drop branches; messages are dropped if no other session "
+            "references them via progression. Use --dry-run to preview."
+        ),
+    )
+    prune.add_argument(
+        "--keep-days", type=int, default=30,
+        help="Keep sessions updated within the last N days (default 30).",
+    )
+    prune.add_argument(
+        "--keep-n", type=int, default=100,
+        help="Always keep the N most recent sessions (default 100).",
+    )
+    prune.add_argument(
+        "--dry-run", action="store_true",
+        help="Print what WOULD be deleted, but don't actually delete.",
     )
 
 
@@ -439,7 +687,37 @@ def run_state(args: argparse.Namespace) -> int:
         return 0 if counts["errors"] == 0 else 1
 
     if args.state_command == "ls":
-        run_async(_list_sessions())
+        run_async(_list_sessions(
+            limit=args.limit, status=args.status,
+        ))
+        return 0
+
+    if args.state_command == "stats":
+        run_async(_print_stats())
+        return 0
+
+    if args.state_command == "checkpoint":
+        freed = run_async(_checkpoint(args.mode))
+        print(f"checkpoint({args.mode}) → {freed}")
+        return 0
+
+    if args.state_command == "vacuum":
+        run_async(_vacuum())
+        print("vacuum complete")
+        return 0
+
+    if args.state_command == "prune":
+        result = run_async(_prune(
+            keep_days=args.keep_days,
+            keep_n=args.keep_n,
+            dry_run=args.dry_run,
+        ))
+        prefix = "(dry-run) would delete" if args.dry_run else "deleted"
+        print(
+            f"{prefix} {result['sessions']} session(s), "
+            f"{result['branches']} branch(es), "
+            f"{result['messages']} orphan message(s)"
+        )
         return 0
 
     return 1

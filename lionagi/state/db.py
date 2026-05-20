@@ -162,6 +162,11 @@ class StateDB:
         await self.db.execute("PRAGMA foreign_keys = ON")
         await self.db.execute("PRAGMA busy_timeout = 5000")
         await self.db.execute("PRAGMA cache_size = -64000")
+        # Explicit policy (matches SQLite default) so the intent is
+        # visible: auto-checkpoint every 1000 frames. Long-lived
+        # readers can still prevent WAL truncation; users should run
+        # ``li state checkpoint --mode TRUNCATE`` to force it.
+        await self.db.execute("PRAGMA wal_autocheckpoint = 1000")
 
     async def _apply_schema(self) -> None:
         # Older state.db files from earlier iterations of the schema lack
