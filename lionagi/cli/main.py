@@ -26,6 +26,7 @@ from .orchestrate import (
     run_orchestrate,
 )
 from .skill import run_skill
+from .studio import add_studio_subparser, run_studio
 from .team import add_team_subparser, run_team
 
 
@@ -146,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     orch_parsers = add_orchestrate_subparser(sub)
     add_agent_subparser(sub)
     add_team_subparser(sub)
+    add_studio_subparser(sub)
 
     # If the user is invoking `li o flow -p NAME`, inject the playbook's
     # declared args as flags on the flow sub-parser BEFORE argparse runs,
@@ -162,6 +164,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "team":
         return run_team(args)
+
+    if args.command == "studio":
+        return run_studio(args)
 
     parser.print_help()
     return 1

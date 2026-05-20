@@ -67,6 +67,7 @@ dev = [
     "pytest-xdist>=3.8.0",
     "pytest-timeout>=2.4.0",
     "pytest-benchmark>=5.1.0",
+    "httpx>=0.28.1",
 ]
 
 [project.scripts]
@@ -124,6 +125,13 @@ sandbox = [
     "ag2[nlip,openai]>=0.12.0",
     "daytona>=0.171.0",
     "uvicorn>=0.34.0",
+]
+
+studio = [
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "pyyaml>=6.0",
+    "starlette>=0.46.2",
 ]
 
 all = [
