@@ -92,7 +92,7 @@ class StateDB:
         type_id = await self._resolve_lion_class(lion_class_str)
 
         await self.db.execute(
-            """INSERT INTO messages (id, created_at, node_metadata, content,
+            """INSERT OR IGNORE INTO messages (id, created_at, node_metadata, content,
                embedding, sender, recipient, channel, role, lion_class)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
@@ -142,7 +142,7 @@ class StateDB:
 
     async def create_progression(self, progression_id: str, collection: list[str] | None = None) -> None:
         await self.db.execute(
-            "INSERT INTO progressions (id, created_at, collection) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO progressions (id, created_at, collection) VALUES (?, ?, ?)",
             (progression_id, time.time(), json.dumps(collection or [])),
         )
         await self.db.commit()
@@ -171,7 +171,7 @@ class StateDB:
     async def create_session(self, session: dict[str, Any]) -> None:
         now = time.time()
         await self.db.execute(
-            """INSERT INTO sessions (id, created_at, node_metadata, name, user,
+            """INSERT OR IGNORE INTO sessions (id, created_at, node_metadata, name, user,
                progression_id, first_msg_id, last_msg_id, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
@@ -208,7 +208,7 @@ class StateDB:
 
     async def create_branch(self, branch: dict[str, Any]) -> None:
         await self.db.execute(
-            """INSERT INTO branches (id, created_at, node_metadata, user, name,
+            """INSERT OR REPLACE INTO branches (id, created_at, node_metadata, user, name,
                session_id, progression_id, system_msg_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (

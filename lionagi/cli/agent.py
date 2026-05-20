@@ -161,8 +161,7 @@ async def _persist_to_state_db(branch: Branch, task: str) -> None:
         from lionagi.state.db import StateDB
         from lionagi.state.persist import persist_session
 
-        session = Session(name="agent")
-        session.include_branches(branch)
+        session = Session(name="agent", default_branch=branch)
 
         async with StateDB() as db:
             await persist_session(db, session)
