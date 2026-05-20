@@ -126,6 +126,9 @@ async def _run_agent(
     run = allocate_run()
     branch_id = str(branch.id)
 
+    # Set up live SQLite persist (messages stream into DB as they're added)
+    live = await _setup_live_persist(branch)
+
     res = await branch.operate(
         instruction=prompt,
         stream_persist=True,
@@ -133,6 +136,9 @@ async def _run_agent(
         timeout=timeout,
         **({"repo": cwd} if cwd else {}),
     )
+
+    # Finalize: update session bookmarks + close DB
+    await _teardown_live_persist(live)
 
     # Final branch snapshot + run manifest (filesystem — legacy)
     run.branch_path(branch_id).write_text(json.dumps(branch.to_dict()))
@@ -147,26 +153,129 @@ async def _run_agent(
     )
     save_last_branch_pointer(run.run_id, branch_id)
 
-    # Persist to SQLite state layer (if aiosqlite available)
-    await _persist_to_state_db(branch, prompt)
-
     return res or "", provider, branch_id
 
 
-async def _persist_to_state_db(branch: Branch, task: str) -> None:
-    """Best-effort persist to ~/.lionagi/state.db."""
+async def _setup_live_persist(branch: Branch) -> dict | None:
+    """Open DB, create session/branch rows, register live message hook.
+
+    Returns context dict for _teardown_live_persist, or None if unavailable.
+    """
     try:
         from lionagi.session.session import Session
-
         from lionagi.state.db import StateDB
-        from lionagi.state.persist import persist_session
+    except ImportError:
+        return None
+
+    try:
+        db = StateDB()
+        await db.open()
 
         session = Session(name="agent", default_branch=branch)
+        session_id = str(session.id)
+        branch_id = str(branch.id)
 
-        async with StateDB() as db:
-            await persist_session(db, session)
-    except ImportError:
-        pass
+        # Check for existing branch (resume case)
+        existing_branch = await db.get_branch(branch_id)
+        if existing_branch:
+            session_id = existing_branch["session_id"]
+            existing_session = await db.get_session(session_id)
+            session_prog_id = existing_session["progression_id"]
+            branch_prog_id = existing_branch["progression_id"]
+            existing_msg_ids = set(await db.get_progression(branch_prog_id))
+        else:
+            import time
+            import uuid
+
+            session_prog_id = str(uuid.uuid4())
+            branch_prog_id = str(uuid.uuid4())
+            existing_msg_ids = set()
+
+            await db.create_progression(session_prog_id)
+            await db.create_progression(branch_prog_id)
+
+            session_dict = session.to_dict(mode="db")
+            await db.create_session({
+                "id": session_id,
+                "created_at": session_dict["created_at"],
+                "node_metadata": session_dict.get("node_metadata"),
+                "name": session_dict.get("name"),
+                "user": session_dict.get("user"),
+                "progression_id": session_prog_id,
+                "first_msg_id": None,
+                "last_msg_id": None,
+            })
+
+            # Persist system message if present
+            system_msg_id = None
+            if branch.system:
+                sys_dict = branch.system.to_dict(mode="db")
+                system_msg_id = sys_dict["id"]
+                await db.insert_message(sys_dict)
+
+            branch_dict = branch.to_dict(mode="db")
+            node_meta = branch_dict.get("node_metadata") or {}
+            if isinstance(node_meta, str):
+                node_meta = json.loads(node_meta)
+            if "chat_model" in branch_dict:
+                node_meta["chat_model"] = branch_dict["chat_model"]
+
+            await db.create_branch({
+                "id": branch_id,
+                "created_at": branch_dict["created_at"],
+                "node_metadata": node_meta,
+                "user": branch_dict.get("user"),
+                "name": branch_dict.get("name"),
+                "session_id": session_id,
+                "progression_id": branch_prog_id,
+                "system_msg_id": system_msg_id,
+            })
+
+        ctx = {
+            "db": db,
+            "branch": branch,
+            "session_id": session_id,
+            "session_prog_id": session_prog_id,
+            "branch_prog_id": branch_prog_id,
+            "existing_msg_ids": existing_msg_ids,
+            "new_msg_ids": [],
+        }
+
+        async def _on_message(msg):
+            msg_dict = msg.to_dict(mode="db")
+            msg_id = msg_dict["id"]
+            await db.insert_message(msg_dict)
+            if msg_id not in ctx["existing_msg_ids"]:
+                await db.append_to_progression(branch_prog_id, msg_id)
+                await db.append_to_progression(session_prog_id, msg_id)
+                ctx["new_msg_ids"].append(msg_id)
+
+        ctx["hook"] = _on_message
+        branch.on_message_added.append(_on_message)
+        return ctx
+    except Exception:
+        return None
+
+
+async def _teardown_live_persist(ctx: dict | None) -> None:
+    """Update session bookmarks and close DB."""
+    if ctx is None:
+        return
+    try:
+        db = ctx["db"]
+        session_id = ctx["session_id"]
+        session_prog_id = ctx["session_prog_id"]
+
+        all_msgs = await db.get_progression(session_prog_id)
+        if all_msgs:
+            await db.update_session(
+                session_id,
+                first_msg_id=all_msgs[0],
+                last_msg_id=all_msgs[-1],
+            )
+
+        ctx["branch"].on_message_added.remove(ctx["hook"])
+        await db.close()
     except Exception:
         pass
 

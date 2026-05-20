@@ -41,7 +41,7 @@ async def run(
         raise ValueError("run operation only supports CLI endpoints")
 
     ins, kw = _prepare_run_kwargs(branch, instruction, param)
-    branch.msgs.add_message(instruction=ins)
+    await branch.msgs.a_add_message(instruction=ins)
     yield ins
 
     if branch.chat_model.provider_session_id is not None:
@@ -90,7 +90,7 @@ async def run(
     thinking_parts: list[str] = []
     text_parts: list[str] = []
 
-    def _flush_response() -> AssistantResponse | None:
+    async def _flush_response() -> AssistantResponse | None:
         if not text_parts:
             return None
         text = "".join(text_parts)
@@ -104,7 +104,7 @@ async def run(
         )
         if metadata:
             res.metadata.update(metadata)
-        branch.msgs.add_message(assistant_response=res)
+        await branch.msgs.a_add_message(assistant_response=res)
         text_parts.clear()
         thinking_parts.clear()
         return res
@@ -136,7 +136,7 @@ async def run(
                         text_parts.append(chunk.content)
 
                 case "tool_use":
-                    if res := _flush_response():
+                    if res := await _flush_response():
                         yield res
 
                     act_req = branch.msgs.create_action_request(
@@ -147,7 +147,7 @@ async def run(
                     )
                     if chunk.tool_id:
                         pending_requests[chunk.tool_id] = act_req
-                    branch.msgs.add_message(action_request=act_req)
+                    await branch.msgs.a_add_message(action_request=act_req)
                     yield act_req
 
                 case "tool_result":
@@ -190,7 +190,7 @@ async def run(
                     )
 
         # Flush remaining text — attach APICalling metadata to final response
-        if res := _flush_response():
+        if res := await _flush_response():
             if api_call_event is not None:
                 call_meta = Note.from_dict(api_call_event.to_dict())
                 call_meta.pop(["execution", "response"], None)

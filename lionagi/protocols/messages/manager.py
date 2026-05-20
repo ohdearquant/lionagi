@@ -30,8 +30,10 @@ class MessageManager(Manager):
         messages: list[Message] | None = None,
         progression: Progression | None = None,
         system: System | None = None,
+        on_message_added: list | None = None,
     ):
         super().__init__()
+        self._on_message_added: list = on_message_added or []
         m_ = []
         # Attempt to parse 'messages' as a list or from a dictionary
         if isinstance(messages, list):
@@ -78,9 +80,34 @@ class MessageManager(Manager):
             self.clear_messages()
 
     async def a_add_message(self, **kwargs):
-        """Add a message asynchronously with a manager-level lock."""
+        """Add a message asynchronously with a manager-level lock.
+
+        Awaits async on_message_added callbacks directly (vs sync-only
+        in the sync add_message path).
+        """
+        from lionagi.ln.concurrency import is_coro_func
+
         async with self.messages:
-            return self.add_message(**kwargs)
+            _msg = self.create_message(
+                **{k: v for k, v in kwargs.items() if v is not None}
+            )
+            system = kwargs.get("system")
+            if system:
+                self.set_system(_msg)
+            if _msg in self.messages:
+                idx = self.messages.progression.index(_msg.id)
+                self.messages.exclude(_msg.id)
+                self.messages.insert(idx, _msg)
+            else:
+                self.messages.include(_msg)
+
+            for cb in self._on_message_added:
+                if is_coro_func(cb):
+                    await cb(_msg)
+                else:
+                    cb(_msg)
+
+            return _msg
 
     @staticmethod
     def create_instruction(
@@ -445,7 +472,13 @@ class MessageManager(Manager):
         else:
             self.messages.include(_msg)
 
+        self._fire_on_message_added(_msg)
+
         return _msg
+
+    def _fire_on_message_added(self, msg: Message) -> None:
+        for cb in self._on_message_added:
+            cb(msg)
 
     def clear_messages(self):
         """Remove all messages except the system message if it exists."""

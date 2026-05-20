@@ -236,6 +236,10 @@ class Branch(Element, Relational):
         return self._message_manager.system
 
     @property
+    def on_message_added(self) -> list:
+        return self._message_manager._on_message_added
+
+    @property
     def msgs(self) -> MessageManager:
         """Returns the associated MessageManager."""
         return self._message_manager
