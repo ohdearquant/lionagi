@@ -24,8 +24,12 @@ does not justify the abstraction. Revisit when a third arrives.
 
 from __future__ import annotations
 
+import json
+import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from lionagi import Branch, Session
 from lionagi.operations.builder import OperationGraphBuilder
@@ -42,6 +46,8 @@ __all__ = (
     "setup_orchestration",
     "build_worker_branch",
     "finalize_orchestration",
+    "start_live_persist",
+    "stop_live_persist",
     "EFFORT_GUIDANCE",
     "EFFORT_MAP",
     "team_guidance",
@@ -180,6 +186,9 @@ class OrchestrationEnv:
 
     # Optional shared features
     team_data: dict | None = None
+
+    # Live SQLite persist context (set by start_live_persist)
+    _live_persist: dict | None = field(default=None, repr=False)
 
     # Worker name bookkeeping (mutable)
     _name_counts: dict[str, int] = field(default_factory=dict)
@@ -406,6 +415,11 @@ def build_worker_branch(
         name=wname,
     )
     env.session.include_branches(wb)
+
+    # Register live persist hook on this new branch
+    if env._live_persist:
+        _register_branch_hook(env._live_persist, wb)
+
     return wb, w_model, w_profile
 
 
@@ -475,3 +489,144 @@ def finalize_orchestration(
                 hint(f'[{bname}]      li agent -r {bid} "..."')
 
     return branch_ids, orc_branch_id
+
+
+# ── Live SQLite persist ──────────────────────────────────────────────
+
+
+async def start_live_persist(env: OrchestrationEnv) -> None:
+    """Open state.db, create session row, register hooks on existing branches.
+
+    New branches created via build_worker_branch auto-register via the
+    env._live_persist check there.
+    """
+    try:
+        from lionagi.state.db import StateDB
+    except ImportError:
+        return
+
+    try:
+        db = StateDB()
+        await db.open()
+
+        session = env.session
+        session_id = str(session.id)
+        session_dict = session.to_dict(mode="db")
+
+        session_prog_id = str(uuid.uuid4())
+        await db.create_progression(session_prog_id)
+        await db.create_session({
+            "id": session_id,
+            "created_at": session_dict["created_at"],
+            "node_metadata": session_dict.get("node_metadata"),
+            "name": session_dict.get("name"),
+            "user": session_dict.get("user"),
+            "progression_id": session_prog_id,
+            "first_msg_id": None,
+            "last_msg_id": None,
+        })
+
+        ctx: dict[str, Any] = {
+            "db": db,
+            "session_id": session_id,
+            "session_prog_id": session_prog_id,
+            "branch_prog_ids": {},
+            "hooks": [],
+        }
+        env._live_persist = ctx
+
+        for branch in session.branches:
+            _register_branch_hook(ctx, branch)
+    except Exception:
+        env._live_persist = None
+
+
+def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
+    """Register async message hook on a branch.
+
+    Branch row + progression are lazily created on the first message
+    (since this function may be called from sync build_worker_branch
+    where we can't await DB operations).
+    """
+    db = ctx["db"]
+    session_id = ctx["session_id"]
+    session_prog_id = ctx["session_prog_id"]
+    branch_id = str(branch.id)
+
+    branch_prog_id = str(uuid.uuid4())
+    ctx["branch_prog_ids"][branch_id] = branch_prog_id
+    initialized = {"done": False}
+
+    async def _ensure_branch_row():
+        if initialized["done"]:
+            return
+        initialized["done"] = True
+
+        await db.create_progression(branch_prog_id)
+
+        branch_dict = branch.to_dict(mode="db")
+        node_meta = branch_dict.get("node_metadata") or {}
+        if isinstance(node_meta, str):
+            node_meta = json.loads(node_meta)
+        if "chat_model" in branch_dict:
+            node_meta["chat_model"] = branch_dict["chat_model"]
+
+        system_msg_id = None
+        if branch.system:
+            sys_dict = branch.system.to_dict(mode="db")
+            system_msg_id = sys_dict["id"]
+            await db.insert_message(sys_dict)
+
+        await db.create_branch({
+            "id": branch_id,
+            "created_at": branch_dict["created_at"],
+            "node_metadata": node_meta,
+            "user": branch_dict.get("user"),
+            "name": branch_dict.get("name"),
+            "session_id": session_id,
+            "progression_id": branch_prog_id,
+            "system_msg_id": system_msg_id,
+        })
+
+    async def _on_message(msg):
+        try:
+            await _ensure_branch_row()
+            msg_dict = msg.to_dict(mode="db")
+            msg_id = msg_dict["id"]
+            await db.insert_message(msg_dict)
+            await db.append_to_progression(branch_prog_id, msg_id)
+            await db.append_to_progression(session_prog_id, msg_id)
+        except Exception:
+            pass
+
+    branch.on_message_added.append(_on_message)
+    ctx["hooks"].append((branch, _on_message))
+
+
+async def stop_live_persist(env: OrchestrationEnv) -> None:
+    """Update session bookmarks and close DB."""
+    ctx = env._live_persist
+    if ctx is None:
+        return
+    try:
+        db = ctx["db"]
+        session_prog_id = ctx["session_prog_id"]
+
+        all_msgs = await db.get_progression(session_prog_id)
+        if all_msgs:
+            await db.update_session(
+                ctx["session_id"],
+                first_msg_id=all_msgs[0],
+                last_msg_id=all_msgs[-1],
+            )
+
+        for branch, hook in ctx["hooks"]:
+            try:
+                branch.on_message_added.remove(hook)
+            except ValueError:
+                pass
+
+        await db.close()
+    except Exception:
+        pass
+    env._live_persist = None

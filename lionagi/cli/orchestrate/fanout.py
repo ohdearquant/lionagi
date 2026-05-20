@@ -28,6 +28,8 @@ from ._orchestration import (
     finalize_orchestration,
     resolve_worker_spec,
     setup_orchestration,
+    start_live_persist,
+    stop_live_persist,
 )
 
 
@@ -71,6 +73,8 @@ async def _run_fanout(
     )
     _shared: dict = {}
 
+    await start_live_persist(env)
+
     inner_kw = dict(
         env=env,
         num_workers=num_workers,
@@ -84,21 +88,22 @@ async def _run_fanout(
         _shared=_shared,
     )
 
-    if timeout:
-        with move_on_after(timeout) as cancel_scope:
-            result = await _run_fanout_inner(model_spec, prompt, **inner_kw)
-        if cancel_scope.cancelled_caught:
-            # Salvage: persist whatever branches the session collected
-            # before the cancel, so the user can resume individual workers.
-            persist_session_branches(env.session, env.run)
-            n_saved = len(_shared.get("saved_workers", []))
-            msg = f"Fanout timed out after {timeout}s"
-            if n_saved:
-                msg += f" ({n_saved} worker results already saved to {env.run.artifact_root})"
-            log_error(msg)
-            raise LionTimeoutError(msg)
-        return result
-    return await _run_fanout_inner(model_spec, prompt, **inner_kw)
+    try:
+        if timeout:
+            with move_on_after(timeout) as cancel_scope:
+                result = await _run_fanout_inner(model_spec, prompt, **inner_kw)
+            if cancel_scope.cancelled_caught:
+                persist_session_branches(env.session, env.run)
+                n_saved = len(_shared.get("saved_workers", []))
+                msg = f"Fanout timed out after {timeout}s"
+                if n_saved:
+                    msg += f" ({n_saved} worker results already saved to {env.run.artifact_root})"
+                log_error(msg)
+                raise LionTimeoutError(msg)
+            return result
+        return await _run_fanout_inner(model_spec, prompt, **inner_kw)
+    finally:
+        await stop_live_persist(env)
 
 
 async def _run_fanout_inner(

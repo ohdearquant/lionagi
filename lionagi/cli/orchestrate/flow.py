@@ -28,6 +28,8 @@ from ._orchestration import (
     finalize_orchestration,
     resolve_worker_spec,
     setup_orchestration,
+    start_live_persist,
+    stop_live_persist,
     team_guidance,
 )
 
@@ -447,6 +449,8 @@ async def _run_flow(
         fast=fast,
     )
 
+    await start_live_persist(env)
+
     inner_kw = dict(
         env=env,
         with_synthesis=with_synthesis,
@@ -459,13 +463,16 @@ async def _run_flow(
         dry_run=dry_run,
         show_graph=show_graph,
     )
-    if timeout:
-        with move_on_after(timeout) as cancel_scope:
-            result = await _run_flow_inner(model_spec, prompt, **inner_kw)
-        if cancel_scope.cancelled_caught:
-            raise LionTimeoutError(f"Flow timed out after {timeout}s")
-        return result
-    return await _run_flow_inner(model_spec, prompt, **inner_kw)
+    try:
+        if timeout:
+            with move_on_after(timeout) as cancel_scope:
+                result = await _run_flow_inner(model_spec, prompt, **inner_kw)
+            if cancel_scope.cancelled_caught:
+                raise LionTimeoutError(f"Flow timed out after {timeout}s")
+            return result
+        return await _run_flow_inner(model_spec, prompt, **inner_kw)
+    finally:
+        await stop_live_persist(env)
 
 
 async def _run_flow_inner(
