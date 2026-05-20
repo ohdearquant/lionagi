@@ -418,8 +418,7 @@ def _resolve_playbook_path(name: str) -> tuple[object, str | None]:
     except (OSError, ValueError):
         return (
             None,
-            f"playbook {name!r} resolves outside playbooks root "
-            "(symlink escape blocked)",
+            f"playbook {name!r} resolves outside playbooks root (symlink escape blocked)",
         )
     return candidate, None
 
@@ -462,10 +461,7 @@ def _validate_args_schema(args_schema) -> str | None:
             return f"args[{name!r}] must be a dict, got {type(spec).__name__}"
         type_str = spec.get("type", "str")
         if type_str not in valid_types:
-            return (
-                f"args[{name!r}].type must be one of {sorted(valid_types)}, "
-                f"got {type_str!r}"
-            )
+            return f"args[{name!r}].type must be one of {sorted(valid_types)}, got {type_str!r}"
     return None
 
 
@@ -557,9 +553,7 @@ def _validate_spec_fields(spec: dict) -> str | None:
     if "workers" in spec:
         workers = spec["workers"]
         if not isinstance(workers, int) or isinstance(workers, bool):
-            return (
-                f"spec field 'workers' must be an integer, got {type(workers).__name__}"
-            )
+            return f"spec field 'workers' must be an integer, got {type(workers).__name__}"
         if not (1 <= workers <= 32):
             return f"spec field 'workers' must be in [1, 32], got {workers}"
 
@@ -628,9 +622,7 @@ def _validate_spec_fields(spec: dict) -> str | None:
     return None
 
 
-def _interpolate_prompt(
-    template: str, positional: str | None, playbook_args: dict
-) -> str:
+def _interpolate_prompt(template: str, positional: str | None, playbook_args: dict) -> str:
     """Interpolate {input} + all playbook args into the prompt template.
 
     - {input} substitution uses the positional prompt if present
@@ -698,6 +690,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     cwd=args.cwd,
                     timeout=args.timeout,
                     agent_name=args.agent,
+                    fast=getattr(args, "fast", False),
                 )
             )
         except LionTimeoutError as e:
@@ -756,9 +749,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 raw = getattr(args, name, None)
                 if raw is None:
                     continue
-                coerced, coerce_err = _coerce_arg_value(
-                    name, raw, field.get("type", "str")
-                )
+                coerced, coerce_err = _coerce_arg_value(name, raw, field.get("type", "str"))
                 if coerce_err is not None:
                     log_error(coerce_err)
                     return 1
@@ -766,11 +757,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
 
             # If the file supplies the model/agent, argparse's lone positional
             # is a prompt override, not a model override.
-            if (
-                args.model
-                and args.prompt is None
-                and (spec.get("model") or spec.get("agent"))
-            ):
+            if args.model and args.prompt is None and (spec.get("model") or spec.get("agent")):
                 args.prompt = args.model
                 args.model = None
             # File values are defaults; CLI flags override.
@@ -779,9 +766,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             if args.agent is None and spec.get("agent"):
                 args.agent = spec["agent"]
             if spec.get("prompt"):
-                args.prompt = _interpolate_prompt(
-                    spec["prompt"], args.prompt, playbook_ctx
-                )
+                args.prompt = _interpolate_prompt(spec["prompt"], args.prompt, playbook_ctx)
             if args.max_concurrent == 0 and spec.get("workers"):
                 args.max_concurrent = spec["workers"]
             if args.effort is None and spec.get("effort"):
@@ -824,10 +809,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             log_error("prompt is required (positional or via -f spec file)")
             return 1
 
-        if (
-            args.team_mode is not None
-            and getattr(args, "team_attach", None) is not None
-        ):
+        if args.team_mode is not None and getattr(args, "team_attach", None) is not None:
             log_error("--team-mode and --team-attach are mutually exclusive")
             return 1
 
@@ -903,6 +885,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     max_ops=args.max_ops,
                     dry_run=args.dry_run,
                     show_graph=getattr(args, "show_graph", False),
+                    fast=getattr(args, "fast", False),
                 )
             )
         except LionTimeoutError as e:
