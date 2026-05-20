@@ -127,9 +127,11 @@ async def _run_agent(
     branch_id = str(branch.id)
 
     # Set up live SQLite persist (messages stream into DB as they're added)
-    live = await _setup_live_persist(branch, agent_name=agent_name)
+    live = await _setup_live_persist(
+        branch, agent_name=agent_name, artifacts_path=str(run.artifact_root),
+    )
 
-    _operate_failed = False
+    _terminal_status = "completed"
     try:
         res = await branch.operate(
             instruction=prompt,
@@ -138,24 +140,22 @@ async def _run_agent(
             timeout=timeout,
             **({"repo": cwd} if cwd else {}),
         )
-    except Exception:
-        _operate_failed = True
+    except KeyboardInterrupt:
+        _terminal_status = "aborted"
+        raise
+    except BaseException as exc:
+        from lionagi.ln.concurrency import get_cancelled_exc_class
+        if isinstance(exc, get_cancelled_exc_class()):
+            _terminal_status = "aborted"
+        else:
+            _terminal_status = "failed"
+        raise
+        _terminal_status = "failed"
         raise
     finally:
-        # Finalize: update session lifecycle columns + close DB
-        await _teardown_live_persist(live, failed=_operate_failed)
+        await _teardown_live_persist(live, status=_terminal_status)
 
-    # Final branch snapshot + run manifest (filesystem — legacy)
-    run.branch_path(branch_id).write_text(json.dumps(branch.to_dict()))
-    run.write_manifest(
-        {
-            "kind": "agent",
-            "model": model,
-            "provider": provider,
-            "prompt": prompt,
-            "branches": [{"id": branch_id, "provider": provider, "model": model}],
-        }
-    )
+    # Save branch pointer for --continue-last / -r resume
     save_last_branch_pointer(run.run_id, branch_id)
 
     return res or "", provider, branch_id
@@ -165,6 +165,7 @@ async def _setup_live_persist(
     branch: Branch,
     *,
     agent_name: str | None = None,
+    artifacts_path: str | None = None,
 ) -> dict | None:
     """Open DB, create session/branch rows, register live message hook.
 
@@ -212,6 +213,7 @@ async def _setup_live_persist(
                 "last_msg_id": None,
                 "invocation_kind": "agent",
                 "agent_name": agent_name,
+                "artifacts_path": artifacts_path,
                 "status": "running",
                 "started_at": time.time(),
             })
@@ -270,7 +272,7 @@ async def _setup_live_persist(
 async def _teardown_live_persist(
     ctx: dict | None,
     *,
-    failed: bool = False,
+    status: str = "completed",
 ) -> None:
     """Update session bookmarks, lifecycle columns, and close DB."""
     if ctx is None:
@@ -284,7 +286,7 @@ async def _teardown_live_persist(
 
         all_msgs = await db.get_progression(session_prog_id)
         update_kwargs: dict = {
-            "status": "failed" if failed else "completed",
+            "status": status,
             "ended_at": _time.time(),
         }
         if all_msgs:

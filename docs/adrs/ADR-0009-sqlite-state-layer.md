@@ -20,7 +20,7 @@ support:
 3. Branch forking and message sharing without content duplication.
 4. Vector similarity search on message embeddings.
 
-aiosqlite is already an optional dependency (`lionagi[sqlite]`).
+aiosqlite is a mandatory dependency (lightweight, ~15KB).
 
 ## Decision
 
@@ -188,7 +188,7 @@ grep, git, symlinks).  ADR-0004 remains valid for these.
 - Agent/playbook file-based contract preserved.
 
 **Negative**
-- New dependency path: `lionagi[sqlite]` required for the state layer.
+- `aiosqlite` is now a mandatory dependency (promoted from `lionagi[sqlite]` optional).
 - JSON array for progression ordering limits query-side operations (no
   `WHERE message_id IN progression` without JSON parsing).
 - Schema migrations will be needed as the model evolves. **Migration protocol:**

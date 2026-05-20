@@ -48,11 +48,27 @@ content, SQLite for operational/query state.
 
 Note: the browser route is `/runs/{id}` (user-facing 'Runs' label per ADR-0012), while the API route is `/api/sessions/{id}` (matching the SQLite table). The frontend API client translates between these.
 
+### Run persistence: SQLite only (no JSON snapshot)
+
+New runs write sessions, branches, and messages to SQLite via live hooks during
+execution. The CLI no longer writes a post-run `run.json` manifest or
+`branches/*.json` snapshot to `~/.lionagi/runs/`. Rationale: aiosqlite is now a
+mandatory dependency (not optional), and the live hooks provide richer data than
+the end-of-run JSON dump (e.g., messages appear as they're produced, not after
+the run completes).
+
+Historical `~/.lionagi/runs/` JSON directories remain on disk as a read-only
+archive. `li state import` brings them into SQLite for querying.
+
+For human-readable export, use `li state export <session-id> --format json`
+(future command).
+
 ### Sync and drift
 
-SQLite and filesystem can drift if a write to one fails before the other completes.
+For authored content (agents, playbooks, show plans), filesystem is canonical
+and SQLite tracks edit history. The two can drift if a write fails mid-operation.
 Mitigation: `li state import` and `li state import-shows` re-sync from filesystem
-into SQLite at any time. Filesystem is recoverable source; SQLite is the query cache.
+into SQLite at any time.
 
 ## Consequences
 

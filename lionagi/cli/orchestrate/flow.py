@@ -455,6 +455,7 @@ async def _run_flow(
         invocation_kind="flow",
         playbook_name=playbook_name,
         agent_name=agent_name,
+        artifacts_path=str(env.run.artifact_root),
     )
 
     inner_kw = dict(
@@ -469,21 +470,30 @@ async def _run_flow(
         dry_run=dry_run,
         show_graph=show_graph,
     )
-    _flow_failed = False
+    _terminal_status = "completed"
     try:
         if timeout:
             with move_on_after(timeout) as cancel_scope:
                 result = await _run_flow_inner(model_spec, prompt, **inner_kw)
             if cancel_scope.cancelled_caught:
-                _flow_failed = True
+                _terminal_status = "aborted"
                 raise LionTimeoutError(f"Flow timed out after {timeout}s")
             return result
         return await _run_flow_inner(model_spec, prompt, **inner_kw)
-    except Exception:
-        _flow_failed = True
+    except KeyboardInterrupt:
+        _terminal_status = "aborted"
+        raise
+    except BaseException as exc:
+        from lionagi.ln.concurrency import get_cancelled_exc_class
+        if isinstance(exc, get_cancelled_exc_class()):
+            _terminal_status = "aborted"
+        else:
+            _terminal_status = "failed"
+        raise
+        _terminal_status = "failed"
         raise
     finally:
-        await stop_live_persist(env, failed=_flow_failed)
+        await stop_live_persist(env, status=_terminal_status)
 
 
 async def _run_flow_inner(

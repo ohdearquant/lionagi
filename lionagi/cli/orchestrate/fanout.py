@@ -79,6 +79,7 @@ async def _run_fanout(
         invocation_kind="fanout",
         playbook_name=playbook_name,
         agent_name=agent_name,
+        artifacts_path=str(env.run.artifact_root),
     )
 
     inner_kw = dict(
@@ -94,13 +95,13 @@ async def _run_fanout(
         _shared=_shared,
     )
 
-    _fanout_failed = False
+    _terminal_status = "completed"
     try:
         if timeout:
             with move_on_after(timeout) as cancel_scope:
                 result = await _run_fanout_inner(model_spec, prompt, **inner_kw)
             if cancel_scope.cancelled_caught:
-                _fanout_failed = True
+                _terminal_status = "aborted"
                 persist_session_branches(env.session, env.run)
                 n_saved = len(_shared.get("saved_workers", []))
                 msg = f"Fanout timed out after {timeout}s"
@@ -110,11 +111,20 @@ async def _run_fanout(
                 raise LionTimeoutError(msg)
             return result
         return await _run_fanout_inner(model_spec, prompt, **inner_kw)
-    except Exception:
-        _fanout_failed = True
+    except KeyboardInterrupt:
+        _terminal_status = "aborted"
+        raise
+    except BaseException as exc:
+        from lionagi.ln.concurrency import get_cancelled_exc_class
+        if isinstance(exc, get_cancelled_exc_class()):
+            _terminal_status = "aborted"
+        else:
+            _terminal_status = "failed"
+        raise
+        _terminal_status = "failed"
         raise
     finally:
-        await stop_live_persist(env, failed=_fanout_failed)
+        await stop_live_persist(env, status=_terminal_status)
 
 
 async def _run_fanout_inner(

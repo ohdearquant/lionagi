@@ -474,12 +474,6 @@ def finalize_orchestration(
             for prov, bid, bname in branch_ids
         ],
     }
-    if extras:
-        # Extras win on conflicts — patterns can override the defaults above
-        # (e.g. custom branch-list shape with control flags).
-        manifest.update(extras)
-    env.run.write_manifest(manifest)
-
     save_last_branch_pointer(env.run.run_id, orc_branch_id)
 
     if emit_hints:
@@ -500,6 +494,7 @@ async def start_live_persist(
     invocation_kind: str | None = None,
     playbook_name: str | None = None,
     agent_name: str | None = None,
+    artifacts_path: str | None = None,
 ) -> None:
     """Open state.db, create session row, register hooks on existing branches.
 
@@ -530,6 +525,7 @@ async def start_live_persist(
             "invocation_kind": invocation_kind,
             "playbook_name": playbook_name,
             "agent_name": agent_name,
+            "artifacts_path": artifacts_path,
             "status": "running",
             "started_at": time.time(),
         })
@@ -615,7 +611,7 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
 async def stop_live_persist(
     env: OrchestrationEnv,
     *,
-    failed: bool = False,
+    status: str = "completed",
 ) -> None:
     """Update session bookmarks, lifecycle columns, and close DB."""
     ctx = env._live_persist
@@ -627,7 +623,7 @@ async def stop_live_persist(
 
         all_msgs = await db.get_progression(session_prog_id)
         update_kwargs: dict[str, Any] = {
-            "status": "failed" if failed else "completed",
+            "status": status,
             "ended_at": time.time(),
         }
         if all_msgs:

@@ -14,7 +14,6 @@ from lionagi.ln import acreate_path, json_dumps
 from lionagi.models.note import Note
 from lionagi.protocols.messages import (
     ActionRequest,
-    ActionResponse,
     AssistantResponse,
     AssistantResponseContent,
     Instruction,
@@ -159,7 +158,7 @@ async def run(
                     if orig_req is None:
                         continue
 
-                    act_res = branch.msgs.add_message(
+                    act_res = await branch.msgs.a_add_message(
                         action_request=orig_req,
                         action_output=chunk.tool_output,
                         sender=branch.user or "user",
