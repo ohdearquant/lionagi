@@ -1,0 +1,13 @@
+{
+  "name": "memory",
+  "description": "Memory recall, MEMORY.md hygiene, auto-memory bootstrap",
+  "version": "0.1.0",
+  "author": {
+    "name": "Ocean (HaiyangLi)",
+    "url": "https://github.com/ohdearquant"
+  },
+  "homepage": "https://github.com/khive-ai/lionagi",
+  "repository": "https://github.com/khive-ai/lionagi",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "recall", "auto-memory", "context"]
+}

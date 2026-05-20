@@ -1,0 +1,56 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "lionagi",
+  "description": "Daily-driver agent runtime with Lion Studio dashboard and curated skill plugins",
+  "owner": {
+    "name": "Ocean (HaiyangLi)",
+    "url": "https://github.com/ohdearquant"
+  },
+  "plugins": [
+    {
+      "name": "show",
+      "source": "./marketplace/show",
+      "description": "Direct multi-play DAGs with critic gating and worktree isolation"
+    },
+    {
+      "name": "play",
+      "source": "./marketplace/play",
+      "description": "Author lionagi playbooks for li play / li o flow"
+    },
+    {
+      "name": "orchestrate",
+      "source": "./marketplace/orchestrate",
+      "description": "Multi-agent orchestration via li o flow and li o fanout"
+    },
+    {
+      "name": "research",
+      "source": "./marketplace/research",
+      "description": "Multi-perspective research with web search, codebase analysis, and synthesis"
+    },
+    {
+      "name": "memory",
+      "source": "./marketplace/memory",
+      "description": "Memory recall, MEMORY.md hygiene, auto-memory bootstrap"
+    },
+    {
+      "name": "kg-bridge",
+      "source": "./marketplace/kg-bridge",
+      "description": "Bridge lionagi runs/agents to khive knowledge graph"
+    },
+    {
+      "name": "devx",
+      "source": "./marketplace/devx",
+      "description": "Conventional commit, formatting, CI, PR, summarize, session-start/-summarize"
+    },
+    {
+      "name": "studio",
+      "source": "./marketplace/studio",
+      "description": "Lion Studio dashboard — runs/agents/playbooks/shows monitoring UI with FastAPI backend MCP"
+    },
+    {
+      "name": "mcp-bundle",
+      "source": "./marketplace/mcp-bundle",
+      "description": "Lionagi canonical MCP server access for agents"
+    }
+  ]
+}
