@@ -1,56 +1,95 @@
-# ADR-0008: Lion Studio v1 Scope — Read-Only, Single-Workspace, Internal
+# ADR-0008: Lion Studio Scope — CLI-Primary, Definition-Editable, Localhost
 
 **Status**: Accepted
-**Date**: 2026-05-19
+**Date**: 2026-05-19 (revised 2026-05-20)
 
 ## Context
 
-Lion Studio is a monitoring dashboard for lionagi runs, agents, playbooks, and shows. Before
-building the backend and frontend, the scope of v1 must be bounded to avoid scope creep and
-to make explicit what is NOT supported (so future PRs adding those capabilities do so knowingly).
+Lion Studio is a dashboard for observing, inspecting, editing, and debugging the
+lionagi runtime. Before building features, the scope must be bounded to prevent
+consumer-SaaS feature creep.
 
-Three boundary decisions were on the table: write operations, multi-workspace/multi-user support,
-and authentication. Each has implementation cost and risk disproportionate to v1 value.
+The governing principle is **CLI-primary, Studio-secondary** (ADR-0014): the CLI
+handles creation and execution; Studio handles observation, inspection, editing
+definitions, and debugging.
 
 ## Decision
 
-Lion Studio v1 is bounded as follows:
+### What Studio does
 
-- **Read-only**: All write endpoints (create, update, delete) are stubbed with HTTP 501. A
-  `# TODO(lift-backend-writes)` comment marks each stub for a future play.
-- **Single local workspace**: Data is read from the local machine's filesystem only
-  (`~/.lionagi/`, `~/khive-work/`). No remote backends, no multi-user routing.
-- **Internal**: Not published as a separate PyPI package or public service. Installed via
-  `pip install lionagi[studio]` only (see ADR-0001).
-- **No authentication**: The studio serves `localhost` only; authentication is explicitly out
-  of scope for v1.
+| Capability | Scope |
+|-----------|-------|
+| **Observe** | Dashboard metrics, session list, show progress, plugin catalog |
+| **Inspect** | Run detail with branches/messages/errors/files, show play details |
+| **Edit** | Agent definitions, playbook YAML — with version history and rollback |
+| **Debug** | Execution lineage drill-down: show → play → session → branch → messages |
+| **Browse** | Plugin/skill/agent catalog with source information and cross-links |
 
-Cross-project monitoring (lionagi issue #967) is a v2 concern.
+### What Studio does NOT do
+
+| Capability | Why not | Where instead |
+|-----------|---------|---------------|
+| Run playbooks with parameters | CLI handles input binding, worktree setup, team coordination | `li play` |
+| Create agents from scratch (full authoring) | Full definition authoring is text editor + CLI; Studio scaffolding creates a skeleton file and opens it in the editor — see note below | `$EDITOR` + `li agent` |
+| Install/remove plugins | Claude Code manages plugin lifecycle | `claude plugin add/remove` |
+| Orchestrate shows | Show skill is a Claude Code agent skill | `/show topic` in Claude Code |
+| Authentication/RBAC | Localhost-only, single-user | Not needed |
+| Multi-workspace/remote backends | Single local machine | Not needed |
+| Rich execution configuration | Parameters, team mode, worktree customization | CLI flags |
+
+### The "Run" button exception
+
+The playbook detail page has a "Run" button — a convenience shortcut that shells
+out to the CLI with defaults. It is explicitly de-emphasized and does not support
+input binding, execution modes, or team configuration.
+
+### The "New Agent / New Playbook" scaffolding exception
+
+ADR-0014 introduces New Agent and New Playbook pages. These write a minimal
+skeleton file to `~/.lionagi/agents/` or `~/.lionagi/playbooks/` and immediately
+redirect to the editor view for that file. This is a convenience shortcut, not a
+full creation wizard. The scaffolding does not set provider, model, tools, or any
+runtime configuration — those are the user's responsibility in the editor. Full
+authoring from scratch remains the domain of `$EDITOR` + `li agent`.
+
+### Write policy
+
+- **Writable**: agent definitions, playbook definitions (through definitions API
+  with version history)
+- **Read-only**: plugin components (marketplace and third-party), skills, session
+  data, show data, run data
+- **Import-only**: filesystem runs → SQLite sessions (via `li state import`)
+
+### Security posture
+
+- Binds to `127.0.0.1` only — never exposed to the network.
+- No CORS policy needed (same-origin: browser and server share localhost).
+- Definition writes are restricted to known config directories
+  (`~/.lionagi/agents/`, `~/.lionagi/playbooks/`); paths outside these roots
+  are rejected by the definitions API.
+- The Run button executes via `li play` — the same trust boundary as a terminal
+  command; no privilege escalation.
+- No authentication or RBAC: single-user, localhost workload.
 
 ## Consequences
 
 **Positive**
-- 11 GET routes can ship in v1 without any mutation risk to user data.
-- No auth layer means no token management, session handling, or RBAC to implement or test.
-- Minimal operational surface: one uvicorn process, no credentials, no secrets.
+- Studio stays focused: observe + inspect + edit + debug.
+- No feature creep toward replicating CLI capabilities in the browser.
+- Simpler UI: no complex forms for run configuration.
+- The CLI evolves independently — new execution modes don't require Studio changes.
 
 **Negative**
-- Any future PR adding writes, auth, multi-workspace, or remote support MUST explicitly
-  acknowledge that it is changing the v1 scope decision captured here.
-- Write stubs (501) return an error to the client rather than silently ignoring mutations —
-  this is intentional, not a bug.
+- Collaborators who don't use the CLI cannot create or run things from Studio alone.
+- The Run button is a partial exception that may confuse expectations.
+- Some inspector features (e.g., "re-run this failed play") require switching to
+  the terminal.
 
 ## Alternatives Considered
 
 | Alternative | Why Rejected |
-|-------------|--------------|
-| Ship with stub authentication (e.g., static API key) | Premature; localhost-only workload needs no auth; adds config surface for no benefit |
-| Enable write endpoints behind a feature flag | Mutations without UX polish (confirmation dialogs, error handling) create data-loss risk; deferred until UX is validated |
-
-## References
-
-- `lift-backend/_intent.md:53-55` — write endpoint stub convention (`# TODO(lift-backend-writes)`) — verified against `feat/lion-studio-backend` router files
-- `add-shows-pages/_intent.md:50` — authentication explicitly out of scope
-- `lift-backend/lift_summary.md:83` — 11 GET routes implemented, 11 write endpoints stubbed (501)
-- [ADR-0004](ADR-0004-filesystem-data-layer.md) — filesystem data layer (enables single-workspace)
-- lionagi issue #967 — cross-project monitoring (v2)
+|-------------|-------------|
+| Full execution surface | Replicates CLI complexity; two execution surfaces means two places for bugs |
+| Read-only only (no editing) | Editing definitions with version history is genuinely useful |
+| Ship with auth | Localhost-only workload; adds config surface for no benefit |
+| Multi-workspace support | Single-user local tool; adds routing/state complexity for no benefit |

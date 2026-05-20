@@ -1,52 +1,68 @@
-# ADR-0006: Server-Sent Events for Live Streaming
+# ADR-0006: Live Update Transport — SSE + Interval Refresh
 
 **Status**: Accepted
-**Date**: 2026-05-19
+**Date**: 2026-05-19 (revised 2026-05-20)
 
 ## Context
 
-Lion Studio's dashboard needs live updates for two data surfaces: run progress (token-by-token
-output as a run executes) and show DAG state (play statuses as a multi-play show advances).
+Lion Studio needs live updates for three surfaces: session message streams
+(new messages appearing during an active run), show DAG state (play statuses
+advancing), and dashboard metrics (counts and recent activity).
 
-Both consumers are read-only from the browser's perspective — the UI displays state but does not
-send commands back over the same channel. The backend is FastAPI / Starlette (see ADR-0002).
+All consumers are read-only from the browser's perspective — the UI displays
+state but does not send commands. The backend is FastAPI / Starlette (ADR-0002).
 
 ## Decision
 
-Use Starlette `StreamingResponse` for all live update streams. Change detection for show
-directories uses 500ms polling with `os.stat()` — no filesystem event daemon required.
+### Transport policy
 
-The run-events endpoint (`GET /api/runs/{run_id}/events`) yields newline-delimited JSON chunks
-as SSE. The browser side uses the native `EventSource` API. Any action that triggers a side
-effect (e.g., starting a re-run) is a separate REST `POST` endpoint; the SSE channel is
-one-way only.
+| Surface | Transport | Why |
+|---------|-----------|-----|
+| Session messages | SSE (`/api/sessions/{id}/stream`) | Real-time per-message push; EventSource API is native |
+| Show play state | SSE (`/api/shows/{topic}/stream`) | File change detection via 500ms `os.stat()` polling, pushed as SSE |
+| Dashboard metrics | Interval refresh (30s `setInterval` on `/api/stats`) | Dashboard is a snapshot, not a live stream; interval is cheaper |
+
+**SSE is the only push transport.** No WebSocket. The browser-to-server direction
+uses standard REST endpoints for any mutations (save definition, trigger run).
+
+Note: with shows structural state in SQLite (ADR-0011), the show stream can use `shows.updated_at` / `plays.updated_at` as a cursor instead of filesystem polling. Filesystem polling remains valid as a fallback for shows not yet imported to SQLite, or as a change trigger that causes a SQLite refetch.
+
+### SSE implementation
+
+Starlette `StreamingResponse` with `text/event-stream` media type. Newline-delimited
+JSON chunks. The browser uses native `EventSource` API — no client library.
+
+Change detection for show directories uses 500ms polling with `os.stat()`. For
+sessions, new messages after a timestamp cursor are queried from SQLite.
+
+### Reconnect behavior
+
+SSE auto-reconnects via `EventSource`. The server sends a `{"type":"done"}` event
+when a session is no longer active (no updates for 60s), signaling the client to
+stop reconnecting.
 
 ## Consequences
 
 **Positive**
-- `EventSource` is native in all modern browsers; no client library required.
-- Starlette `StreamingResponse` is synchronous to the existing FastAPI stack — no additional
-  dependency or protocol server.
-- One-way constraint is a feature for this read-only v1 scope: no reconnect-and-replay
-  complexity for bidirectional state.
+- `EventSource` is native in all modern browsers; no client library.
+- Starlette `StreamingResponse` integrates with the existing FastAPI stack.
+- One-way constraint prevents bidirectional state complexity.
+- No WebSocket server, connection upgrade, or ping/pong management.
 
 **Negative**
-- SSE is strictly server-to-client. Triggering a re-run or cancelling a run from the UI requires
-  a separate REST endpoint; the SSE channel cannot carry commands.
-- HTTP/1.1 browser connection limits (6 per origin) constrain the number of concurrent SSE
-  streams a single page can hold open.
+- SSE is strictly server-to-client. Any client-to-server action requires a
+  separate REST endpoint.
+- HTTP/1.1 browser connection limits (6 per origin) constrain concurrent SSE
+  streams per page.
+- 500ms filesystem polling for shows is acceptable at 5-20 files but would need
+  replacement at scale. SQLite-backed show state (ADR-0011) reduces reliance on
+  filesystem polling.
 
 ## Alternatives Considered
 
 | Alternative | Why Rejected |
-|-------------|--------------|
-| WebSocket | Overkill for one-way streaming; adds reconnect-and-replay logic; no bidirectional need in v1 |
-| inotify / FSEvents filesystem watcher | Show directories are small (~5-20 files × ~10 plays); polling at 500ms is sufficient; avoids platform-specific daemon dependency |
+|-------------|-------------|
+| WebSocket | Overkill for one-way streaming; adds reconnect-and-replay logic; no bidirectional need |
+| inotify/FSEvents filesystem watcher | Platform-specific daemon dependency; polling at 500ms is sufficient for show dir sizes |
 | Long-polling | More client complexity than SSE for equivalent one-way semantics |
-
-## References
-
-- `add-shows-pages/_intent.md:65-70` — use `StreamingResponse` (not `EventSourceResponse`)
-- `lift-backend/lift_summary.md:73-74` — `GET /api/runs/{run_id}/events` SSE implementation
-- `add-shows-pages/_intent.md:69` — polling rationale (show dir size)
-- [ADR-0002](ADR-0002-studio-tech-stack.md) — FastAPI/Starlette stack this decision builds on
+| SSE for dashboard | Dashboard metrics are a snapshot, not an event stream; interval refresh is simpler |

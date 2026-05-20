@@ -1,54 +1,76 @@
-# ADR-0004: Filesystem-Backed Data Layer for Lion Studio
+# ADR-0004: Data Layer — Filesystem + SQLite Hybrid
 
 **Status**: Accepted
-**Date**: 2026-05-19
+**Date**: 2026-05-19 (revised 2026-05-20)
 
 ## Context
 
-Lion Studio's backend must serve runs, agents, playbooks, and show data to the dashboard. The
-data already exists on the local filesystem as output from lionagi's CLI and show tooling:
-`~/.lionagi/runs/`, `~/.lionagi/agents/`, `~/.lionagi/playbooks/`, and `~/khive-work/shows/`.
+Lion Studio's backend serves runs, agents, playbooks, plugins, shows, and sessions.
+Data exists in two forms: authored files on the local filesystem (agent definitions,
+playbook YAML, show plans, skill markdown) and operational state in SQLite (sessions,
+branches, messages, shows, plays).
 
-A persistent database, ORM, or caching layer would require schema definition, migration tooling,
-and a sync process to keep the DB consistent with the filesystem that the CLI writes to directly.
+The original design read everything from filesystem. As the product evolved, SQLite
+became necessary for live monitoring, cross-session queries, and execution lineage
+(see ADR-0009, ADR-0011, ADR-0012).
 
 ## Decision
 
-The Lion Studio backend reads all data directly from the local filesystem on each request. No
-database, ORM, or caching layer is introduced. Each service scans its designated directory tree
-and returns the results. The configuration mapping is:
+Lion Studio uses a **hybrid data layer**: filesystem for authored definitions and
+content, SQLite for operational/query state.
 
-| Route | Filesystem root |
-|-------|----------------|
-| `/api/runs` | `~/.lionagi/runs/` |
-| `/api/agents` | `~/.lionagi/agents/` |
-| `/api/playbooks` | `~/.lionagi/playbooks/` |
-| `/api/shows` | `~/khive-work/shows/` |
+### Data authority matrix
+
+| Data | Location | Why |
+|------|----------|-----|
+| Agent definitions (`*.md`) | Filesystem `~/.lionagi/agents/` | Edited by humans, git-versioned, read by CLI/Claude Code |
+| Playbook definitions (`*.yaml`) | Filesystem `~/.lionagi/playbooks/` | Same — authored content |
+| Skill content (`SKILL.md`) | Filesystem (plugin dirs) | Read-only from disk, part of plugin packages |
+| Plugin structure | Filesystem (marketplace + cache) | Scanned by plugin discovery |
+| Show plans (`_show.md`, `_intent.md`) | Filesystem `~/khive-work/shows/` | Authored markdown, git-versioned, edited mid-show |
+| Artifacts (agent output files) | Filesystem (play dirs, worktrees) | Binary/large files, git-tracked |
+| Sessions, branches, messages | SQLite `~/.lionagi/state.db` | Queryable, FK-linked, live-updatable |
+| Shows, plays (structural state) | SQLite `~/.lionagi/state.db` | Queryable, cross-referenced to sessions |
+| Definition versions (edit history) | SQLite `definitions` table | Disk is source of truth; SQLite tracks edit history |
+
+### Route mapping
+
+| Route | Data source |
+|-------|-------------|
+| `/api/runs` | SQLite `sessions` (enriched with provenance) |
+| `/api/sessions/{id}` | SQLite sessions + branches + messages |
+| `/api/agents` | Filesystem scan + definitions API for versions |
+| `/api/playbooks` | Filesystem scan + definitions API for versions |
+| `/api/plugins` | Filesystem scan (marketplace + third-party cache) |
+| `/api/shows` | SQLite `shows` + `plays`, filesystem fallback |
+| `/api/shows/{topic}` | SQLite + filesystem (`_show.md`, `_intent.md`) |
+| `/api/stats` | Mixed — sessions from SQLite, definitions from filesystem |
+
+Note: the browser route is `/runs/{id}` (user-facing 'Runs' label per ADR-0012), while the API route is `/api/sessions/{id}` (matching the SQLite table). The frontend API client translates between these.
+
+### Sync and drift
+
+SQLite and filesystem can drift if a write to one fails before the other completes.
+Mitigation: `li state import` and `li state import-shows` re-sync from filesystem
+into SQLite at any time. Filesystem is recoverable source; SQLite is the query cache.
 
 ## Consequences
 
 **Positive**
-- Zero schema migrations; the filesystem is the schema.
-- Instant consistency: CLI writes are visible to the dashboard on the next poll cycle.
-- Trivial deployment — no database process to start or configure.
-- No ORM impedance mismatch; directory scan logic is plain Python.
+- Authored content stays in git-friendly files editable by any tool.
+- Operational queries are fast (SQLite indexes, JOINs, aggregates).
+- No external database process — SQLite is embedded.
+- CLI and Studio share the same data without coordination protocol.
 
 **Negative**
-- Directory scans on every request do not scale beyond a single local workspace.
-- Multi-user, remote, or persistent-state features are ruled out without revisiting this decision.
-- No query capabilities (filtering, sorting) beyond what Python list comprehensions provide.
+- Two data sources means two things to keep in sync.
+- Import commands needed for historical data migration.
+- Contributors must know which data lives where.
 
 ## Alternatives Considered
 
 | Alternative | Why Rejected |
-|-------------|--------------|
-| SQLite for query speed | Adds schema management and a sync process; the single-user local workload does not justify the complexity |
-| Redis cache layer | Single-user workload; cache invalidation adds complexity with no throughput benefit |
-
-## References
-
-- `_show.md:8` — shows root at `~/khive-work/shows/<topic>/`
-- `lift-backend/_intent.md:44-48` — services scan filesystem directories
-- `lift-backend/lift_summary.md:40-45` — services/*.py descriptions
-- `brand_swaps.md:41-55` — config mapping (directories)
-- [ADR-0008](ADR-0008-studio-v1-scope.md) — v1 scope decision (single-workspace, read-only)
+|-------------|-------------|
+| Filesystem only | Cannot support live monitoring, cross-session queries, or execution lineage |
+| SQLite only | Agent/playbook definitions are authored markdown/YAML — git versioning and editor access matter more than query performance on content |
+| External database (Postgres, etc.) | Overkill for single-user local workload; adds ops burden |
