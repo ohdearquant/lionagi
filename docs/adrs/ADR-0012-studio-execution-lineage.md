@@ -275,7 +275,8 @@ Other improvements:
 
 ## Implementation Phases
 
-**Done** (implemented in this session):
+**Phase 0 — Prerequisites** (implemented on `feat/studio-monitoring-polish`,
+pending merge):
 - Session schema enrichment + provenance columns (v2→v3 migration)
 - Show → Session drill-down (play accordion with session links)
 - Run detail anchored sections (Overview, Tool errors, Branches, Files)
