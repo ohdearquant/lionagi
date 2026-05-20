@@ -6,6 +6,8 @@ import yaml
 
 from lionagi.cli._runs import LIONAGI_HOME
 
+from ._path_safety import safe_path_join
+
 _PLAYBOOKS_ROOT = LIONAGI_HOME / "playbooks"
 
 
@@ -35,6 +37,7 @@ def list_playbooks() -> list[dict[str, Any]]:
 
 def get_playbook(name: str) -> dict[str, Any] | None:
     stem = name.removesuffix(".playbook.yaml").removesuffix(".yaml")
+    safe_path_join(_PLAYBOOKS_ROOT, f"{stem}.playbook.yaml")
     path = _PLAYBOOKS_ROOT / f"{stem}.playbook.yaml"
     if not path.exists():
         return None
