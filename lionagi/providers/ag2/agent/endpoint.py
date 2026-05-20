@@ -5,6 +5,20 @@
 
 Wraps autogen.beta.Agent as a lionagi agentic endpoint.
 Events from the beta stream are converted to StreamChunks.
+
+Pre-built agent passthrough
+---------------------------
+Pass a pre-constructed ``autogen.beta.Agent`` object via
+``AG2AgentRequest.agent`` (or the ``"agent"`` key in a dict request) to
+bypass the config-driven ``Agent(**kwargs)`` construction that normally
+happens on every call.  When ``agent`` is provided it takes precedence over
+``agent_config``; ``agent_config`` is silently ignored and a log message is
+emitted.  This allows reuse of agents with expensive initialization (custom
+tools, observers, populated knowledge stores) across many ``stream()`` calls
+while preserving their accumulated state.
+
+When neither ``agent`` nor ``agent_config`` is supplied a ``ValueError`` is
+raised, preserving the existing validation behavior.
 """
 
 from __future__ import annotations
@@ -42,9 +56,7 @@ class AG2BetaEndpoint(AgenticEndpoint):
         self._tool_registry: dict[str, Any] = kwargs.get("tool_registry", {})
 
     async def _call(self, payload, headers, **kwargs):
-        raise NotImplementedError(
-            "AG2 beta Agent is stream-only. Use stream() to iterate events."
-        )
+        raise NotImplementedError("AG2 beta Agent is stream-only. Use stream() to iterate events.")
 
     def create_payload(self, request: dict | BaseModel, **kwargs):
         from .models import AG2AgentRequest
@@ -53,18 +65,18 @@ class AG2BetaEndpoint(AgenticEndpoint):
         messages = req_dict.pop("messages", [])
         prompt = req_dict.pop("prompt", "")
         agent_config = req_dict.pop("agent_config", None)
+        agent = req_dict.pop("agent", None)
         return {
             "request": AG2AgentRequest(
                 messages=messages,
                 prompt=prompt,
                 agent_config=agent_config,
+                agent=agent,
             )
         }, {}
 
-    async def stream(
-        self, request: dict | BaseModel, **kwargs
-    ) -> AsyncIterator[StreamChunk]:
-        from .models import AG2AgentRequest, AgentConfig, run_beta_agent
+    async def stream(self, request: dict | BaseModel, **kwargs) -> AsyncIterator[StreamChunk]:
+        from .models import AgentConfig, run_beta_agent
 
         if isinstance(request, dict) and "request" in request:
             request_obj = request["request"]
@@ -76,33 +88,52 @@ class AG2BetaEndpoint(AgenticEndpoint):
             request_obj.messages[-1]["content"] if request_obj.messages else ""
         )
         if not prompt:
-            raise ValueError(
-                "AG2BetaEndpoint requires a non-empty prompt or at least one message."
-            )
+            raise ValueError("AG2BetaEndpoint requires a non-empty prompt or at least one message.")
 
-        agent_config = request_obj.agent_config
-        if agent_config is None:
-            agent_config = AgentConfig(**kwargs.get("agent_config", self._agent_config))
+        # Resolve the pre-built agent (if any) and the agent_config.
+        # Pre-built agent takes precedence; agent_config is the fallback.
+        prebuilt_agent = request_obj.agent or kwargs.get("agent")
+
+        if prebuilt_agent is None:
+            agent_config = request_obj.agent_config
+            if agent_config is None:
+                agent_config = AgentConfig(**kwargs.get("agent_config", self._agent_config))
+        else:
+            # Pre-built agent path: agent_config may be None; that's fine.
+            agent_config = request_obj.agent_config  # kept for metadata only
 
         llm_config = kwargs.get("llm_config", self._llm_config)
         tool_registry = kwargs.get("tool_registry", self._tool_registry)
 
-        if llm_config is None:
+        if llm_config is None and prebuilt_agent is None:
             raise ValueError("AG2BetaEndpoint requires llm_config")
 
-        model_config = _resolve_model_config(llm_config)
+        model_config = _resolve_model_config(llm_config) if llm_config is not None else None
 
-        yield StreamChunk(
-            type="system",
-            metadata={
+        # Build system chunk metadata. When a pre-built agent is used the
+        # config fields are not authoritative; surface what we know.
+        if prebuilt_agent is not None:
+            agent_name = getattr(prebuilt_agent, "name", "pre-built")
+            system_meta: dict = {
+                "provider": "ag2",
+                "api": "beta",
+                "agent": agent_name,
+                "pre_built": True,
+            }
+        else:
+            system_meta = {
                 "provider": "ag2",
                 "api": "beta",
                 "agent": agent_config.name,
                 "tools": agent_config.tools,
                 "observers": agent_config.observers,
                 "policies": agent_config.policies,
-            },
-        )
+            }
+
+        yield StreamChunk(type="system", metadata=system_meta)
+
+        # Agent name used in per-event metadata below.
+        _agent_name = system_meta["agent"]
 
         try:
             async for event in run_beta_agent(
@@ -110,6 +141,7 @@ class AG2BetaEndpoint(AgenticEndpoint):
                 message=prompt,
                 llm_config=model_config,
                 tool_registry=tool_registry,
+                agent=prebuilt_agent,
             ):
                 etype = event.get("type")
 
@@ -119,7 +151,7 @@ class AG2BetaEndpoint(AgenticEndpoint):
                         tool_name=event.get("name"),
                         tool_id=event.get("id"),
                         tool_input=event.get("arguments"),
-                        metadata={"agent": agent_config.name},
+                        metadata={"agent": _agent_name},
                     )
 
                 elif etype == "tool_result":
@@ -127,7 +159,7 @@ class AG2BetaEndpoint(AgenticEndpoint):
                         type="tool_result",
                         tool_output=event.get("content"),
                         metadata={
-                            "agent": agent_config.name,
+                            "agent": _agent_name,
                             "tool_name": event.get("name"),
                         },
                     )
@@ -140,7 +172,7 @@ class AG2BetaEndpoint(AgenticEndpoint):
                         type="text",
                         content=content,
                         metadata={
-                            "agent": agent_config.name,
+                            "agent": _agent_name,
                             "typed_result": typed_result,
                         },
                     )
@@ -152,7 +184,7 @@ class AG2BetaEndpoint(AgenticEndpoint):
         yield StreamChunk(
             type="result",
             content="Agent complete",
-            metadata={"agent": agent_config.name},
+            metadata={"agent": _agent_name},
         )
 
 

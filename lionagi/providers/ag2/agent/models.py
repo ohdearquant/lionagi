@@ -59,9 +59,20 @@ class AgentConfig(BaseModel):
 class AG2AgentRequest(BaseModel):
     """Request for AG2 beta Agent endpoint."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     messages: list[dict[str, Any]] = Field(default_factory=list)
     prompt: str = ""
     agent_config: AgentConfig | None = None
+    agent: Any | None = Field(
+        default=None,
+        description=(
+            "Pre-built autogen.beta.Agent instance. "
+            "If provided, overrides agent_config — agent_config is ignored. "
+            "Use this to reuse an agent with expensive init (tools, knowledge, "
+            "observers) across multiple stream() calls."
+        ),
+    )
 
 
 def _build_observers(names: list[str]) -> list:
@@ -113,65 +124,83 @@ def _build_policies(names: list[str]) -> list:
 
 
 async def run_beta_agent(
-    config: AgentConfig,
+    config: AgentConfig | None,
     message: str,
     llm_config: Any,
     tool_registry: dict[str, Callable] | None = None,
+    agent: Any | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Run an AG2 beta Agent and yield events from its stream.
 
     Subscribes to the MemoryStream to yield intermediate events
     (tool calls, model chunks) as they arrive, then yields the
     final response with optional typed result from response_schema.
-    """
-    from autogen.beta.agent import Agent, KnowledgeConfig, TaskConfig
-    from autogen.beta.events import ModelResponse
-    from autogen.beta.events.tool_events import (
-        ToolCallEvent,
-        ToolCallsEvent,
-        ToolResultEvent,
-    )
-    from autogen.beta.knowledge.memory import MemoryKnowledgeStore
-    from autogen.beta.stream import MemoryStream
-    from autogen.beta.tools.final import tool as ag2_tool
 
+    If ``agent`` is provided it is used directly and ``config`` is ignored
+    (no Agent construction happens).  When both are supplied, ``agent``
+    wins and a log message is emitted noting that ``config`` was skipped.
+    When neither is supplied, ``config`` must be non-None and is used to
+    construct a fresh Agent on every call (original behavior).
+    """
     tool_registry = tool_registry or {}
 
-    agent_kwargs: dict[str, Any] = {
-        "name": config.name,
-        "prompt": config.prompt if isinstance(config.prompt, list) else [config.prompt],
-        "config": llm_config,
-    }
-
-    ag2_tools = []
-    for tool_name in config.tools:
-        if tool_name in tool_registry:
-            fn = tool_registry[tool_name]
-            wrapped = ag2_tool(
-                fn, name=tool_name, description=getattr(fn, "__doc__", "") or tool_name
+    if agent is not None:
+        if config is not None:
+            logger.info("run_beta_agent: pre-built agent provided; agent_config is ignored.")
+        # Use the caller-supplied agent as-is.
+        # AG2 stream imports still needed for the subscription machinery below.
+    else:
+        # Config-driven path: build a fresh Agent from AgentConfig.
+        if config is None:
+            raise ValueError(
+                "run_beta_agent requires either a pre-built 'agent' or a non-None 'config'."
             )
-            ag2_tools.append(wrapped)
-    if ag2_tools:
-        agent_kwargs["tools"] = ag2_tools
+        from autogen.beta.agent import Agent, KnowledgeConfig, TaskConfig
+        from autogen.beta.knowledge.memory import MemoryKnowledgeStore
+        from autogen.beta.tools.final import tool as ag2_tool
 
-    observers = _build_observers(config.observers)
-    if observers:
-        agent_kwargs["observers"] = observers
+        agent_kwargs: dict[str, Any] = {
+            "name": config.name,
+            "prompt": config.prompt if isinstance(config.prompt, list) else [config.prompt],
+            "config": llm_config,
+        }
 
-    policies = _build_policies(config.policies)
-    if policies:
-        agent_kwargs["assembly"] = policies
+        ag2_tools = []
+        for tool_name in config.tools:
+            if tool_name in tool_registry:
+                fn = tool_registry[tool_name]
+                wrapped = ag2_tool(
+                    fn, name=tool_name, description=getattr(fn, "__doc__", "") or tool_name
+                )
+                ag2_tools.append(wrapped)
+        if ag2_tools:
+            agent_kwargs["tools"] = ag2_tools
 
-    if config.knowledge:
-        agent_kwargs["knowledge"] = KnowledgeConfig(store=MemoryKnowledgeStore())
+        observers = _build_observers(config.observers)
+        if observers:
+            agent_kwargs["observers"] = observers
 
-    if config.enable_subtasks:
-        agent_kwargs["tasks"] = TaskConfig()
+        policies = _build_policies(config.policies)
+        if policies:
+            agent_kwargs["assembly"] = policies
 
-    if config.response_schema:
-        agent_kwargs["response_schema"] = config.response_schema
+        if config.knowledge:
+            from autogen.beta.knowledge.memory import MemoryKnowledgeStore
 
-    agent = Agent(**agent_kwargs)
+            agent_kwargs["knowledge"] = KnowledgeConfig(store=MemoryKnowledgeStore())
+
+        if config.enable_subtasks:
+            agent_kwargs["tasks"] = TaskConfig()
+
+        if config.response_schema:
+            agent_kwargs["response_schema"] = config.response_schema
+
+        agent = Agent(**agent_kwargs)
+
+    # AG2 stream/event imports are deferred until after the ValueError guard
+    # so that tests can catch the ValueError without needing autogen installed.
+    from autogen.beta.events.tool_events import ToolCallsEvent, ToolResultEvent
+    from autogen.beta.stream import MemoryStream
 
     stream = MemoryStream()
     event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -190,11 +219,7 @@ async def run_beta_agent(
     async def _on_tool_result(event: ToolResultEvent) -> None:
         content = ""
         if event.result and event.result.parts:
-            from autogen.beta.events.input_events import TextInput
-
-            content = " ".join(
-                getattr(p, "content", str(p)) for p in event.result.parts
-            )
+            content = " ".join(getattr(p, "content", str(p)) for p in event.result.parts)
         await event_queue.put(
             {
                 "type": "tool_result",
@@ -206,12 +231,8 @@ async def run_beta_agent(
 
     from autogen.beta.events.conditions import TypeCondition
 
-    sub_tools = stream.subscribe(
-        _on_tool_calls, condition=TypeCondition(ToolCallsEvent)
-    )
-    sub_results = stream.subscribe(
-        _on_tool_result, condition=TypeCondition(ToolResultEvent)
-    )
+    sub_tools = stream.subscribe(_on_tool_calls, condition=TypeCondition(ToolCallsEvent))
+    sub_results = stream.subscribe(_on_tool_result, condition=TypeCondition(ToolResultEvent))
 
     async def _run_agent():
         return await agent.ask(message, stream=stream)
@@ -232,7 +253,8 @@ async def run_beta_agent(
         reply = task.result()
 
         typed_result = None
-        if config.response_schema:
+        response_schema = config.response_schema if config is not None else None
+        if response_schema:
             try:
                 typed_result = await reply.content(retries=1)
             except Exception:
@@ -240,9 +262,7 @@ async def run_beta_agent(
 
         content = ""
         if reply.response and reply.response.message:
-            content = getattr(
-                reply.response.message, "content", str(reply.response.message)
-            )
+            content = getattr(reply.response.message, "content", str(reply.response.message))
 
         yield {
             "type": "response",
