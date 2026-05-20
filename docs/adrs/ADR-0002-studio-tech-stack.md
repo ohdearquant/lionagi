@@ -1,0 +1,96 @@
+# ADR-0002: Lion Studio Tech Stack
+
+**Status**: Accepted
+**Date**: 2026-05-19
+
+## Context
+
+Lion Studio (see [ADR-0001](ADR-0001-lion-studio-internal-app.md)) needs a frontend dashboard and
+a Python API backend. The selection criteria are: DAG visualisation support, language alignment
+with lionagi (Python), SSE streaming compatibility, and minimal net-new code for problems with
+existing open-source solutions.
+
+Two frontend approaches were evaluated: a custom React 19 + Vite setup, and Next.js 14 with a
+curated set of UI libraries. For the backend, FastAPI on a fixed port was compared against Flask
+and a raw Starlette app.
+
+## Decision
+
+Lion Studio uses:
+
+- **Frontend**: Next.js 14 + TypeScript + Tailwind CSS + ReactFlow + dagre
+- **Backend**: Python + FastAPI + uvicorn, port 8765
+
+ReactFlow with dagre layout is the industry-standard solution for interactive DAG visualisation
+in React; reproducing this from scratch offers no benefit. Next.js 14 provides SSR, API routes,
+and a mature build system. Tailwind keeps styling co-located without a CSS build step.
+
+FastAPI with Starlette's `StreamingResponse` is the natural SSE backend for a Python codebase:
+async-first, Pydantic-native, and avoids the "async-in-sync" friction that Flask introduces.
+Port 8765 is unreserved by IANA and is the studio's established default; no conflicts have been
+found in common development environments.
+
+The alternative (Vite + React 19 + custom DAG canvas) solves no unique problem for Lion Studio
+and introduces redundant engineering for capabilities the chosen stack provides out of the box.
+
+## Consequences
+
+**Positive**
+- DAG visualisation, runs polling loop, and agent editor all have proven library support.
+- Python backend stays idiomatic with lionagi's own codebase (FastAPI + Pydantic).
+- SSE support is first-class via Starlette `StreamingResponse` — no third-party adapter required.
+- Port 8765 is consistent across all Studio documentation and tooling.
+
+**Negative**
+- Next.js 14 is not the latest version; upgrading is deferred to a later milestone but adds
+  future toil.
+- `npm install` requires `--legacy-peer-deps` due to an ESLint 9 / `@eslint/js` 10 peer conflict
+  in the dependency tree (see Appendix A).
+- TypeScript symbol names (`WorkerFormData`, `listWorkers`) reflect an earlier naming layer;
+  they are accepted tech debt for v1 (see Appendix B).
+
+## Alternatives Considered
+
+| Alternative | Why Rejected |
+|-------------|--------------|
+| Vite + React 19 (build from scratch) | DAG viz, runs polling, and agent editor are already solved problems — reimplementing them yields no capability advantage |
+| Lift lionag2's AG-UI + Vite stack | lionag2 has no CLI-provider concept; lionagi's claude/codex/gemini CLI providers are load-bearing for the daily-driver use case |
+| Flask instead of FastAPI | Sync-first; wrapping async SSE streaming adds friction; Pydantic integration is not native |
+
+## References
+
+- Show plan: `/Users/lion/khive-work/shows/lion-studio-init/_show.md`
+- [ADR-0001](ADR-0001-lion-studio-internal-app.md) — establishes `apps/studio/` as the home
+- [ADR-0006](ADR-0006-sse-live-streaming.md) — SSE protocol decision (uses this stack)
+
+---
+
+## Appendix A — `npm install --legacy-peer-deps`
+
+The frontend dependency tree has a pre-existing peer conflict: `@eslint/js@10` (required by
+`eslint-config-next`) conflicts with `eslint@9`'s peer expectations. Running `npm install`
+without `--legacy-peer-deps` fails with a peer resolution error. Next.js 14 is retained
+intentionally (not upgraded), so this flag is the accepted workaround until a Next.js upgrade
+play resolves the conflict. Every `npm install` in CI and local setup MUST include the flag.
+
+Source: `_show.md:148-149`
+
+## Appendix B — TypeScript Symbol Names Retained (`WorkerFormData`, `listWorkers`)
+
+The workers → playbooks rename is URL/API/path-level only for v1. Internal TypeScript identifiers
+(`WorkerFormData`, `listWorkers`, `WorkersPage`, etc.) are intentionally left unchanged as
+accepted tech debt. A future sweeper must not perform a mechanical symbol rename without
+understanding all call sites. See [ADR-0005](ADR-0005-workers-playbooks-rename.md) for full
+scope documentation.
+
+Source: `_show.md:151`
+
+## Appendix C — Run Detail API Shape (`run.steps` absent, F4 defensive default)
+
+The backend run manifest shape is `{run_id, state_root, artifact_root, manifest, branches}`;
+there is no top-level `steps` field. The frontend makes `steps` optional in `lib/types.ts` and
+defaults all read sites to `[]`. Deriving `steps` from `branches[]` was evaluated but rejected:
+branch snapshots are opaque JSON blobs with no documented `steps` sub-field. The defensive
+frontend default is the smallest correct fix; backend derivation is deferred.
+
+Source: `frontend-finalize/impl1/summary.md:88-97`; `visual-walkthrough/walkthrough_findings.md:98-103`
