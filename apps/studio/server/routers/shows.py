@@ -12,12 +12,17 @@ router = APIRouter(prefix="/shows", tags=["shows"])
 
 @router.get("/")
 async def list_shows() -> list[dict[str, Any]]:
-    return shows_svc.list_shows()
+    return await shows_svc.list_shows()
+
+
+@router.get("/import", tags=["shows"])
+async def import_shows() -> dict[str, int]:
+    return await shows_svc.import_shows()
 
 
 @router.get("/{topic}")
 async def get_show(topic: str) -> dict[str, Any]:
-    show = shows_svc.get_show(topic)
+    show = await shows_svc.get_show(topic)
     if show is None:
         raise HTTPException(status_code=404, detail=f"Show '{topic}' not found")
     return show
@@ -26,7 +31,7 @@ async def get_show(topic: str) -> dict[str, Any]:
 @router.get("/{topic}/stream")
 async def stream_show(topic: str):
     """SSE stream of file changes under one show directory."""
-    if shows_svc.get_show(topic) is None:
+    if await shows_svc.get_show(topic) is None:
         raise HTTPException(status_code=404, detail=f"Show '{topic}' not found")
     return StreamingResponse(
         shows_svc.watch_show(topic),

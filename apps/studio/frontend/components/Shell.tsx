@@ -13,9 +13,9 @@ type NavItem = {
 const navItems: NavItem[] = [
   { label: "Playbooks", href: "/playbooks" },
   { label: "Agents", href: "/agents" },
-  { label: "Skills", href: "/skills" },
-  { label: "Runs", href: "/runs" },
+  { label: "Plugins", href: "/plugins" },
   { label: "Shows", href: "/shows" },
+  { label: "Runs", href: "/runs" },
 ];
 
 function isActive(item: NavItem, pathname: string) {
@@ -89,6 +89,7 @@ export default function Shell({ children }: ShellProps) {
           {/* Brand: monogram + wordmark */}
           <Link
             href="/"
+            title="Dashboard"
             className="group flex shrink-0 items-center gap-2.5 self-center"
           >
             <span

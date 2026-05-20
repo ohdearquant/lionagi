@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import Shell from "@/components/Shell";
+import { ToastProvider } from "@/components/Toast";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -24,7 +25,9 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-screen bg-surface-base font-mono text-content-primary">
-        <Shell>{children}</Shell>
+        <ToastProvider>
+          <Shell>{children}</Shell>
+        </ToastProvider>
       </body>
     </html>
   );

@@ -19,8 +19,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -175,3 +175,12 @@ cython_debug/
 
 performance_results.json
 coverage.json
+
+# Studio frontend build artifacts
+apps/studio/frontend/.next/
+apps/studio/frontend/node_modules/
+
+# Consultation / review artifacts (not source of truth)
+DESIGN_REVIEW*.txt
+ADR_REVIEW*.txt
+ALL_ADRS_COMPILED.txt

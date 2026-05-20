@@ -2,21 +2,19 @@
 
 **Status**: Accepted
 **Date**: 2026-05-20
-**Supersedes**: ADR-0004 (filesystem-backed data layer) for operational state.
-ADR-0004 remains valid for agent/playbook definitions.
 
 ## Context
 
 Lion Studio's filesystem-only backend (ADR-0004) works for post-hoc review but
 cannot support live monitoring. A `li agent` run doesn't appear in the dashboard
 until after completion because `run.json` is written at the end. Polling the
-filesystem every 5 seconds gives no task/worker context for in-progress runs.
+filesystem every 5 seconds gives no task/agent context for in-progress runs.
 
 Separately, lionagi's `Session` / `Branch` / `Message` / `Progression` data
 model needs a persistent representation that mirrors the runtime exactly, to
 support:
 
-1. Instantaneous monitoring via hooks + WebSocket (not polling).
+1. Instantaneous monitoring via hooks + SSE push (not filesystem polling).
 2. Cross-session message exchange (replacing `li team`'s markdown-file
    coordination with structured inbox/outbox).
 3. Branch forking and message sharing without content duplication.
@@ -85,9 +83,13 @@ session-level message pool) and zero or more branches.  Maps 1:1 to
 | `last_msg_id` | TEXT FK | convenience bookmark |
 | `updated_at` | REAL | |
 
-Session is the **substrate**, not the invocation.  Run-level concerns (kind,
-task, cwd, worker_name, provider, model, status, lifecycle) are NOT on the
-session table — they belong to a higher layer when we get to monitoring.
+Session is the **substrate**, not the invocation. Heavy run-level concerns
+(full manifest, cwd, provider, model, detailed lifecycle) are NOT on the
+session table. However, minimal provenance columns (`playbook_name`,
+`invocation_kind`, `show_topic`, `show_play_name`, `agent_name`,
+`artifacts_path`, `source_kind`) are added to sessions for execution lineage
+queries (see ADR-0012). These are lightweight hints for display and filtering,
+not authoritative execution state.
 
 **`branches`** — A progression with identity.  A branch IS a progression (an
 ordered cursor over the session's messages) with attached agent configuration.
@@ -165,7 +167,7 @@ grep, git, symlinks).  ADR-0004 remains valid for these.
 - Session/branch/message model has a persistent representation that mirrors the
   runtime 1:1. Round-trip `to_dict(mode="db")` → INSERT → SELECT → `from_dict()`
   is lossless.
-- Foundation for live monitoring (hooks → DB INSERT → WebSocket push) without
+- Foundation for live monitoring (hooks → DB INSERT → SSE push) without
   filesystem polling.
 - Foundation for cross-session message exchange (structured inbox/outbox via
   recipient/sender fields + progression cursors).
@@ -188,7 +190,7 @@ grep, git, symlinks).  ADR-0004 remains valid for these.
 | Join table for progression ordering | Extra table + extra rows; JSON array is sufficient at current scale |
 | Full class path string for lion_class | 60 bytes/row waste; int enum is 4 bytes |
 | TEXT for embeddings | Wastes space; BLOB is compact and sqlite-vec compatible |
-| Run-level fields (kind, status, task) on session | Session is substrate, not invocation; mixing them violates separation of concerns |
+| Heavy run-level fields (full manifest, cwd, provider) on session | Session is substrate, not invocation; keep provenance lightweight (ADR-0012 adds minimal hints only) |
 
 ## References
 

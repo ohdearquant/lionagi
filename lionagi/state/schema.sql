@@ -1,4 +1,4 @@
--- lionagi state schema v1
+-- lionagi state schema v2
 -- Four core tables matching the runtime data model:
 --   messages, progressions, sessions, branches.
 --
@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   value   TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '1');
+INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '2');
 INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('created_at', strftime('%s', 'now'));
 
 -- ── Message types (int enum for lion_class) ───────────────────────────────
@@ -84,7 +84,15 @@ CREATE TABLE IF NOT EXISTS sessions (
   progression_id  TEXT    NOT NULL REFERENCES progressions(id),
   first_msg_id    TEXT    REFERENCES messages(id),
   last_msg_id     TEXT    REFERENCES messages(id),
-  updated_at      REAL    NOT NULL
+  updated_at      REAL    NOT NULL,
+  -- ── Provenance (ADR-0012) ──────────────────────────────────────────────
+  playbook_name   TEXT,
+  agent_name     TEXT,
+  invocation_kind TEXT,                        -- agent|play|flow|fanout|show-play
+  show_topic      TEXT,
+  show_play_name  TEXT,
+  artifacts_path  TEXT,
+  source_kind     TEXT    DEFAULT 'live'       -- live|imported_fs
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_updated
@@ -127,3 +135,53 @@ CREATE INDEX IF NOT EXISTS idx_def_kind_name
   ON definitions(kind, name, version DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_def_unique_version
   ON definitions(kind, name, version);
+
+-- ── Shows (multi-play DAGs) ──────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS shows (
+  id                  TEXT    PRIMARY KEY,
+  topic               TEXT    NOT NULL UNIQUE,
+  goal                TEXT,
+  repo                TEXT,
+  base_branch         TEXT,
+  integration_branch  TEXT,
+  status              TEXT    NOT NULL DEFAULT 'active',
+  show_dir            TEXT    NOT NULL,
+  created_at          REAL    NOT NULL,
+  updated_at          REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_shows_topic ON shows(topic);
+CREATE INDEX IF NOT EXISTS idx_shows_status ON shows(status);
+CREATE INDEX IF NOT EXISTS idx_shows_updated ON shows(updated_at DESC);
+
+-- ── Plays (within a show) ────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS plays (
+  id              TEXT    PRIMARY KEY,
+  show_id         TEXT    NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+  name            TEXT    NOT NULL,
+  playbook        TEXT,
+  effort          TEXT,
+  status          TEXT    NOT NULL DEFAULT 'pending',
+  attempt         INTEGER NOT NULL DEFAULT 1,
+  session_id      TEXT    REFERENCES sessions(id),
+  started_at      REAL,
+  ended_at        REAL,
+  exit_code       INTEGER,
+  worktree        TEXT,
+  branch          TEXT,
+  merge_sha       TEXT,
+  merged_at       REAL,
+  gate_passed     INTEGER,
+  gate_feedback   TEXT,
+  depends_on      JSON    DEFAULT '[]',
+  sort_order      INTEGER NOT NULL DEFAULT 0,
+  created_at      REAL    NOT NULL,
+  updated_at      REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_plays_show ON plays(show_id);
+CREATE INDEX IF NOT EXISTS idx_plays_status ON plays(status);
+CREATE INDEX IF NOT EXISTS idx_plays_session ON plays(session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plays_show_name ON plays(show_id, name);

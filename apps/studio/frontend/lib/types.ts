@@ -208,11 +208,17 @@ export interface ShowDetail {
   topic: string;
   path?: string;
   show_md: string | null;
+  goal?: string | null;
+  status?: string;
   plays: Array<{
     name: string;
     meta: PlayMeta;
     verdict?: ShowVerdict | null;
     updated_at?: number | string | null;
+    session_id?: string | null;
+    session_name?: string | null;
+    intent?: string | null;
+    depends_on?: string[];
   }>;
 }
 

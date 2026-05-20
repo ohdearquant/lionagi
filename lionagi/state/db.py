@@ -35,6 +35,7 @@ class StateDB:
         self._db.row_factory = aiosqlite.Row
         await self._apply_pragmas()
         await self._apply_schema()
+        await self._migrate()
 
     async def close(self) -> None:
         if self._db:
@@ -70,6 +71,56 @@ class StateDB:
             if not ln.strip().upper().startswith("PRAGMA")
         ]
         await self.db.executescript("\n".join(lines))
+
+    async def _migrate(self) -> None:
+        """Run forward migrations based on schema version."""
+        cur = await self.db.execute(
+            "SELECT value FROM schema_meta WHERE key = 'version'"
+        )
+        row = await cur.fetchone()
+        version = int(row["value"]) if row else 1
+
+        if version < 2:
+            # ADR-0012: session provenance columns
+            for col, coldef in [
+                ("playbook_name", "TEXT"),
+                ("agent_name", "TEXT"),
+                ("invocation_kind", "TEXT"),
+                ("show_topic", "TEXT"),
+                ("show_play_name", "TEXT"),
+                ("artifacts_path", "TEXT"),
+                ("source_kind", "TEXT DEFAULT 'live'"),
+            ]:
+                try:
+                    await self.db.execute(
+                        f"ALTER TABLE sessions ADD COLUMN {col} {coldef}"
+                    )
+                except Exception:
+                    pass  # column already exists
+            await self.db.execute(
+                "UPDATE schema_meta SET value = '2' WHERE key = 'version'"
+            )
+            await self.db.commit()
+            version = 2
+
+        if version < 3:
+            # Rename worker_name → agent_name
+            try:
+                await self.db.execute(
+                    "ALTER TABLE sessions RENAME COLUMN worker_name TO agent_name"
+                )
+            except Exception:
+                # Column may already be agent_name (fresh db) or rename unsupported
+                try:
+                    await self.db.execute(
+                        "ALTER TABLE sessions ADD COLUMN agent_name TEXT"
+                    )
+                except Exception:
+                    pass
+            await self.db.execute(
+                "UPDATE schema_meta SET value = '3' WHERE key = 'version'"
+            )
+            await self.db.commit()
 
     # ── Schema version ─────────────────────────────────────────────────
 

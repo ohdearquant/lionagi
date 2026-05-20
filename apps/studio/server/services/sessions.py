@@ -46,6 +46,12 @@ async def list_sessions() -> list[dict[str, Any]]:
                 s.name,
                 s.created_at,
                 s.updated_at,
+                s.playbook_name,
+                s.agent_name,
+                s.invocation_kind,
+                s.show_topic,
+                s.show_play_name,
+                s.source_kind,
                 COUNT(DISTINCT b.id) AS branch_count,
                 COALESCE(SUM(
                     json_array_length(p.collection)
@@ -68,6 +74,12 @@ async def list_sessions() -> list[dict[str, Any]]:
             "branch_count": row["branch_count"],
             "message_count": row["message_count"],
             "status": "running" if (now - (row["updated_at"] or 0)) <= 60 else "completed",
+            "playbook_name": row["playbook_name"],
+            "agent_name": row["agent_name"],
+            "invocation_kind": row["invocation_kind"],
+            "show_topic": row["show_topic"],
+            "show_play_name": row["show_play_name"],
+            "source_kind": row["source_kind"] or "live",
         }
         for row in rows
     ]
@@ -81,12 +93,31 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
         db.row_factory = aiosqlite.Row
 
         cur = await db.execute(
-            "SELECT id, name, created_at, updated_at FROM sessions WHERE id = ?",
+            """SELECT id, name, created_at, updated_at,
+                      playbook_name, agent_name, invocation_kind,
+                      show_topic, show_play_name, artifacts_path, source_kind
+               FROM sessions WHERE id = ?""",
             (session_id,),
         )
         session_row = await cur.fetchone()
         if not session_row:
             return None
+
+        # Reverse lookup: find the play that references this session
+        play_cur = await db.execute(
+            """SELECT sh.topic AS show_topic, p.name AS play_name
+               FROM plays p
+               JOIN shows sh ON sh.id = p.show_id
+               WHERE p.session_id = ?
+               LIMIT 1""",
+            (session_id,),
+        )
+        play_row = await play_cur.fetchone()
+        source_show = (
+            {"topic": play_row["show_topic"], "play_name": play_row["play_name"]}
+            if play_row
+            else None
+        )
 
         branch_cur = await db.execute(
             "SELECT id, name, created_at, progression_id FROM branches WHERE session_id = ? ORDER BY created_at",
@@ -140,6 +171,14 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
         "name": session_row["name"],
         "created_at": session_row["created_at"],
         "updated_at": session_row["updated_at"],
+        "playbook_name": session_row["playbook_name"],
+        "agent_name": session_row["agent_name"],
+        "invocation_kind": session_row["invocation_kind"],
+        "show_topic": session_row["show_topic"],
+        "show_play_name": session_row["show_play_name"],
+        "artifacts_path": session_row["artifacts_path"],
+        "source_kind": session_row["source_kind"] or "live",
+        "source_show": source_show,
         "branches": branches,
     }
 

@@ -530,3 +530,69 @@ export async function listSkills(): Promise<{ skills: SkillSummary[] }> {
 export async function getSkill(name: string): Promise<SkillDetail> {
   return fetchJson<SkillDetail>(`/api/skills/${encodeURIComponent(name)}`);
 }
+
+// ─── Plugins ──────────────────────────────────────────────────────────────────
+
+export interface PluginSummary {
+  name: string;
+  description: string;
+  version: string;
+  source: "marketplace" | "third-party";
+  skill_count: number;
+  agent_count: number;
+  has_hooks: boolean;
+  has_mcp: boolean;
+  path: string;
+}
+
+export interface PluginSkillRef {
+  name: string;
+  description: string;
+}
+
+export interface PluginAgentRef {
+  name: string;
+  description: string;
+}
+
+export interface PluginDetail {
+  name: string;
+  description: string;
+  version: string;
+  source: "marketplace" | "third-party";
+  skill_count: number;
+  agent_count: number;
+  has_hooks: boolean;
+  has_mcp: boolean;
+  path: string;
+  skills: PluginSkillRef[];
+  agents: PluginAgentRef[];
+  hooks: Record<string, unknown> | null;
+  mcp: Record<string, unknown> | null;
+  readme: string | null;
+}
+
+export interface PluginSkillDetail {
+  name: string;
+  description: string;
+  path: string;
+  content: string;
+  allowed_tools: string[];
+}
+
+export async function listPlugins(): Promise<{ plugins: PluginSummary[] }> {
+  return fetchJson<{ plugins: PluginSummary[] }>("/api/plugins");
+}
+
+export async function getPlugin(name: string): Promise<PluginDetail> {
+  return fetchJson<PluginDetail>(`/api/plugins/${encodeURIComponent(name)}`);
+}
+
+export async function getPluginSkill(
+  pluginName: string,
+  skillName: string,
+): Promise<PluginSkillDetail> {
+  return fetchJson<PluginSkillDetail>(
+    `/api/plugins/${encodeURIComponent(pluginName)}/skills/${encodeURIComponent(skillName)}`,
+  );
+}

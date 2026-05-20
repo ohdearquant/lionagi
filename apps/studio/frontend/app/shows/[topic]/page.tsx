@@ -61,8 +61,10 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [showRaw, setShowRaw] = useState(false);
+  const [showPlan, setShowPlan] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<number | null>(null);
+  // per-play raw-data section toggle (keyed by play name)
+  const [rawExpanded, setRawExpanded] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     try {
@@ -78,6 +80,15 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
   useEffect(() => {
     void load();
   }, [load]);
+
+  // open plan panel by default for active/running shows
+  useEffect(() => {
+    if (!show) return;
+    const s = show.status ?? show.plays.at(-1)?.meta.status ?? "";
+    if (s === "active" || s === "running") {
+      setShowPlan(true);
+    }
+  }, [show]);
 
   useEffect(() => {
     if (!live) return;
@@ -156,22 +167,17 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
           <ShowSummaryPanel summary={summary} rollup={rollup} />
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] lg:items-start">
-            {/* Left: optional Raw markdown panel (collapsed by default) */}
+            {/* Left: Plan & decisions (collapsed by default, open for active/running) */}
             <section className="flex min-w-0 flex-col gap-2">
-              <div className="flex items-center justify-between">
-                <h2 className="text-label font-semibold text-content-primary">
-                  Plan {showRaw ? "(raw _show.md)" : null}
-                </h2>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowRaw((v) => !v)}
-                  trailing={showRaw ? "▴" : "▾"}
-                >
-                  {showRaw ? "Hide raw" : "View raw"}
-                </Button>
-              </div>
-              {showRaw ? (
+              <button
+                type="button"
+                onClick={() => setShowPlan((v) => !v)}
+                className="flex items-center justify-between text-left text-label font-semibold text-content-primary hover:text-content-secondary transition-colors"
+              >
+                <span>Plan &amp; decisions</span>
+                <span className="text-content-muted text-body ml-2">{showPlan ? "▴" : "▾"}</span>
+              </button>
+              {showPlan ? (
                 <div className="overflow-auto rounded border border-edge bg-surface-raised p-4 max-h-[calc(100vh-18rem)]">
                   {show.show_md ? (
                     <Markdown>{show.show_md}</Markdown>
@@ -182,7 +188,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
               ) : (
                 <div className="rounded border border-edge bg-surface-overlay px-3 py-3 text-body text-content-secondary">
                   <p>
-                    Operational summary above. Toggle <em>View raw</em> for the full
+                    Operational summary above. Expand <em>Plan &amp; decisions</em> for the full
                     markdown plan.
                   </p>
                 </div>
@@ -284,46 +290,127 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                               <tr className="bg-surface-overlay">
                                 <td colSpan={8} className="px-4 py-3">
                                   <div className="flex flex-col gap-3">
-                                    {play.verdict?.feedback && (
+
+                                    {/* Intent */}
+                                    {play.intent && (
                                       <div>
                                         <div className="text-meta uppercase tracking-[0.06em] text-content-muted">
-                                          Feedback
+                                          Intent
                                         </div>
                                         <p className="mt-1 whitespace-pre-wrap text-body text-content-secondary">
-                                          {play.verdict.feedback}
+                                          {play.intent}
                                         </p>
                                       </div>
                                     )}
-                                    {play.verdict?.notes && (
+
+                                    {/* Session link */}
+                                    {play.session_id && (
                                       <div>
                                         <div className="text-meta uppercase tracking-[0.06em] text-content-muted">
-                                          Notes
+                                          Session
                                         </div>
-                                        <p className="mt-1 whitespace-pre-wrap text-body text-content-secondary">
-                                          {play.verdict.notes}
-                                        </p>
+                                        <div className="mt-1">
+                                          <Link
+                                            href={`/runs/${play.session_id}`}
+                                            className="inline-flex items-center gap-1 text-body font-medium text-interactive-primary hover:underline"
+                                          >
+                                            {play.session_name ?? play.session_id}
+                                            <span aria-hidden="true">→</span>
+                                          </Link>
+                                        </div>
                                       </div>
                                     )}
-                                    <div>
-                                      <div className="flex items-center justify-between text-meta uppercase tracking-[0.06em] text-content-muted">
-                                        <span>Meta</span>
-                                        <CopyButton text={JSON.stringify(play.meta, null, 2)} />
-                                      </div>
-                                      <pre className="mt-1 overflow-auto rounded border border-edge bg-surface-raised p-2 font-mono text-meta text-content-secondary">
-                                        {JSON.stringify(play.meta, null, 2)}
-                                      </pre>
+
+                                    {/* Duration / Exit / Attempt stats row */}
+                                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-body text-content-secondary">
+                                      <span>
+                                        <span className="text-meta uppercase tracking-[0.06em] text-content-muted mr-1">Duration</span>
+                                        <Duration value={dur} />
+                                      </span>
+                                      <span>
+                                        <span className="text-meta uppercase tracking-[0.06em] text-content-muted mr-1">Exit</span>
+                                        <span className="tabular-nums">{play.meta.exit_code ?? "—"}</span>
+                                      </span>
+                                      <span>
+                                        <span className="text-meta uppercase tracking-[0.06em] text-content-muted mr-1">Attempt</span>
+                                        <span className="tabular-nums">{play.meta.attempt}</span>
+                                      </span>
                                     </div>
+
+                                    {/* Gate + Feedback */}
                                     {play.verdict && (
-                                      <div>
-                                        <div className="flex items-center justify-between text-meta uppercase tracking-[0.06em] text-content-muted">
-                                          <span>Verdict</span>
-                                          <CopyButton text={JSON.stringify(play.verdict, null, 2)} />
+                                      <div className="flex flex-col gap-1.5">
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-meta uppercase tracking-[0.06em] text-content-muted">Gate</span>
+                                          <StatusPill
+                                            kind="verdict"
+                                            value={play.verdict.gate_passed ? "passed" : "rejected"}
+                                          />
                                         </div>
-                                        <pre className="mt-1 overflow-auto rounded border border-edge bg-surface-raised p-2 font-mono text-meta text-content-secondary">
-                                          {JSON.stringify(play.verdict, null, 2)}
-                                        </pre>
+                                        {play.verdict.feedback && (
+                                          <div>
+                                            <div className="text-meta uppercase tracking-[0.06em] text-content-muted">
+                                              Feedback
+                                            </div>
+                                            <p className="mt-1 whitespace-pre-wrap text-body text-content-secondary">
+                                              {play.verdict.feedback}
+                                            </p>
+                                          </div>
+                                        )}
+                                        {play.verdict.notes && (
+                                          <div>
+                                            <div className="text-meta uppercase tracking-[0.06em] text-content-muted">
+                                              Notes
+                                            </div>
+                                            <p className="mt-1 whitespace-pre-wrap text-body text-content-secondary">
+                                              {play.verdict.notes}
+                                            </p>
+                                          </div>
+                                        )}
                                       </div>
                                     )}
+
+                                    {/* Raw data (collapsed by default) */}
+                                    <div>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setRawExpanded((prev) => ({
+                                            ...prev,
+                                            [play.name]: !prev[play.name],
+                                          }))
+                                        }
+                                        className="flex items-center gap-1 text-meta uppercase tracking-[0.06em] text-content-muted hover:text-content-primary transition-colors"
+                                      >
+                                        <span>{rawExpanded[play.name] ? "▾" : "▸"}</span>
+                                        <span>Raw data</span>
+                                      </button>
+                                      {rawExpanded[play.name] && (
+                                        <div className="mt-2 flex flex-col gap-2">
+                                          <div>
+                                            <div className="flex items-center justify-between text-meta uppercase tracking-[0.06em] text-content-muted">
+                                              <span>Meta</span>
+                                              <CopyButton text={JSON.stringify(play.meta, null, 2)} />
+                                            </div>
+                                            <pre className="mt-1 overflow-auto rounded border border-edge bg-surface-raised p-2 font-mono text-meta text-content-secondary">
+                                              {JSON.stringify(play.meta, null, 2)}
+                                            </pre>
+                                          </div>
+                                          {play.verdict && (
+                                            <div>
+                                              <div className="flex items-center justify-between text-meta uppercase tracking-[0.06em] text-content-muted">
+                                                <span>Verdict</span>
+                                                <CopyButton text={JSON.stringify(play.verdict, null, 2)} />
+                                              </div>
+                                              <pre className="mt-1 overflow-auto rounded border border-edge bg-surface-raised p-2 font-mono text-meta text-content-secondary">
+                                                {JSON.stringify(play.verdict, null, 2)}
+                                              </pre>
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+
                                   </div>
                                 </td>
                               </tr>
