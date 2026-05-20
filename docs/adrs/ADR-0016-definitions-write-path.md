@@ -11,9 +11,11 @@ mutate local definitions — agent profiles and playbook YAML. This is the only
 sanctioned write path in Studio besides the convenience Run button. The
 invariants of this write path need a durable contract.
 
-The definitions API exists in code (`/api/definitions/`, `definitions` SQLite
-table) but its semantics are not formalized. Specifically: what is editable,
-what is the source of truth, how versioning works, and what rollback means.
+The definitions API is specified below. The agent and playbook write routes
+currently return 501 (unimplemented); the definitions SQLite table and
+versioning logic are part of the implementation phases in ADR-0012. This ADR
+formalizes the semantics: what is editable, what is the source of truth, how
+versioning works, and what rollback means.
 
 ## Decision
 
