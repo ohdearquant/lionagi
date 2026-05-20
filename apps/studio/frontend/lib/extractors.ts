@@ -98,15 +98,41 @@ export function extractAttending(
 
   if (byPath.size === 0) return [];
 
+  // Deduplicate by basename — when the same filename appears as a bare name
+  // and also as a full absolute path, keep only the most specific entry.
+  // Specificity order: full-path+lineStart > full-path > bare-name+lineStart > bare-name
+  const byBasename = new Map<string, { path: string; lineStart: number | null; chunkIndex: number }>();
+  for (const [path, { lineStart, chunkIndex }] of byPath) {
+    const basename = path.split("/").pop() ?? path;
+    const existing = byBasename.get(basename);
+    if (!existing) {
+      byBasename.set(basename, { path, lineStart, chunkIndex });
+    } else {
+      const isFullPath = path.includes("/");
+      const existingIsFullPath = existing.path.includes("/");
+      // Full paths always beat bare names regardless of recency
+      if (isFullPath && !existingIsFullPath) {
+        byBasename.set(basename, { path, lineStart, chunkIndex });
+      } else if (!isFullPath && existingIsFullPath) {
+        // Bare name cannot replace a full path — skip
+      } else {
+        // Same specificity level: prefer newer chunk > lineStart present > longer path
+        const betterChunk = chunkIndex > existing.chunkIndex;
+        const sameChunk = chunkIndex === existing.chunkIndex;
+        const betterLineStart = sameChunk && lineStart !== null && existing.lineStart === null;
+        const betterPath = sameChunk && lineStart === existing.lineStart && path.length > existing.path.length;
+        if (betterChunk || betterLineStart || betterPath) {
+          byBasename.set(basename, { path, lineStart, chunkIndex });
+        }
+      }
+    }
+  }
+
   // Assign weights: highest chunkIndex -> weight 1.0, linearly down to close to 0
-  const entries = Array.from(byPath.entries()).map(([path, { lineStart, chunkIndex }]) => ({
-    path,
-    lineStart,
-    chunkIndex,
-  }));
+  const entries = Array.from(byBasename.values());
 
   // Sort descending by chunkIndex (most recent first)
-  entries.sort((a, b) => b.chunkIndex - a.chunkIndex || b.lineStart! - a.lineStart!);
+  entries.sort((a, b) => b.chunkIndex - a.chunkIndex || (b.lineStart ?? -1) - (a.lineStart ?? -1));
 
   const maxIdx = entries[0].chunkIndex;
   const minIdx = entries[entries.length - 1].chunkIndex;
