@@ -106,7 +106,7 @@ export default function RunsPage() {
       ) : runs.length === 0 ? (
         <div className="flex flex-1 items-center justify-center py-20">
           <p className="text-center text-sm text-content-muted">
-            No runs yet. Start a run from any worker&apos;s detail page.
+            No runs yet. Start a run from any playbook&apos;s detail page.
           </p>
         </div>
       ) : (
@@ -115,7 +115,7 @@ export default function RunsPage() {
             <thead>
               <tr className="border-b border-edge text-xs uppercase text-content-muted">
                 <th className="px-3 py-2">Run</th>
-                <th className="px-3 py-2">Worker</th>
+                <th className="px-3 py-2">Playbook</th>
                 <th className="px-3 py-2">Task</th>
                 <th className="px-3 py-2">Status</th>
                 <th className="px-3 py-2">Steps</th>

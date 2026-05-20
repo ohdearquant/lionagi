@@ -9,7 +9,7 @@ import { listWorkers } from "@/lib/api";
 import type { WorkerSummary } from "@/lib/types";
 
 function messageFromError(error: unknown): string {
-  return error instanceof Error ? error.message : "Failed to load workers";
+  return error instanceof Error ? error.message : "Failed to load playbooks";
 }
 
 export default function WorkersPage() {

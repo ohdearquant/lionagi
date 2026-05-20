@@ -2,7 +2,7 @@
 
 Next.js 14 frontend for [Lion Studio](https://github.com/khive-ai/lionagi),
 the internal observability dashboard for lionagi runs, agents, and playbooks.
-Talks to the Lion Studio backend at `process.env.NEXT_PUBLIC_API_BASE`
+Talks to the Lion Studio backend at `process.env.NEXT_PUBLIC_STUDIO_API_BASE`
 (default `http://localhost:8765`).
 
 ## Routes
@@ -27,7 +27,7 @@ Talks to the Lion Studio backend at `process.env.NEXT_PUBLIC_API_BASE`
   port 8765 by default). Run state types match `~/.lionagi/runs/` manifest
   fields; agent profile types match the YAML frontmatter schema.
 - `lib/api.ts` — typed fetch wrappers per backend endpoint using
-  `API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8765'`.
+  `API_BASE = process.env.NEXT_PUBLIC_STUDIO_API_BASE || 'http://localhost:8765'`.
 - `lib/ws.ts` (if present) — reconnecting SSE/WebSocket hook for live run streams.
 - `components/` — shared UI on the dark neutral theme: `neutral-950` backgrounds,
   `neutral-800` borders, `neutral-500` muted text, `neutral-200` primary text.

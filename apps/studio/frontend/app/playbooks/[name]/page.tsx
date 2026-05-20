@@ -146,7 +146,7 @@ export default function WorkerDetailPage({ params }: { params: { name: string } 
           type="text"
           value={taskInput}
           onChange={(e) => setTaskInput(e.target.value)}
-          placeholder="Task — describe what the worker should do..."
+          placeholder="Task — describe what the playbook should do..."
           disabled={running}
           className="flex-1 rounded-md border border-edge bg-surface-input px-3 py-1.5 text-sm text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none disabled:opacity-50"
           onKeyDown={(e) => {

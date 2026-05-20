@@ -69,7 +69,7 @@ export default function NewWorkerPage() {
 
   const handleSave = useCallback(async () => {
     if (!name.trim()) {
-      setErrors(["Worker name is required"]);
+      setErrors(["Playbook name is required"]);
       return;
     }
 
@@ -142,7 +142,7 @@ export default function NewWorkerPage() {
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="Worker name..."
+          placeholder="Playbook name..."
           className="w-48 rounded border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-sm text-neutral-200 placeholder-neutral-600 focus:border-neutral-500 focus:outline-none"
         />
 

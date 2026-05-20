@@ -154,7 +154,7 @@ export default function EditWorkerPage({ params }: { params: { name: string } })
           type="text"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          placeholder="Worker description..."
+          placeholder="Playbook description..."
           className="flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-sm text-content-secondary placeholder-content-muted hover:border-edge focus:border-edge-strong focus:outline-none"
         />
 

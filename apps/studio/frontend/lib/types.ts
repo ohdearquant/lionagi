@@ -2,8 +2,10 @@
 
 export interface RunSummary {
   run_id: string;
+  state_root: string;
+  artifact_root: string;
   worker_name: string;
-  task: string | null;
+  task: string;
   status: string;
   step_count: number;
   started_at: number | null;
@@ -19,15 +21,19 @@ export interface RunStep {
 
 export interface RunDetail {
   run_id: string;
-  status: string;
+  state_root: string;
+  artifact_root: string;
   worker_name: string;
-  task: string | null;
+  task: string;
+  status: string;
   error: string | null;
   cwd: string | null;
   started_at: number | null;
   finished_at: number | null;
   steps?: RunStep[];
   graph: { nodes: WorkerStepNode[]; edges: WorkerLinkEdge[] };
+  manifest: Record<string, unknown>;
+  branches: unknown[];
 }
 
 // ─── Worker / Playbook types ──────────────────────────────────────────────────
@@ -112,10 +118,11 @@ export interface AgentProfileSummary {
 
 export interface AgentProfile {
   name: string;
+  path: string;
   provider: string;
   model: string;
-  system_prompt: string;
-  guidance: string;
+  system_prompt: string | null;
+  guidance: string | null;
   permission_mode?: string;
   reasoning_effort?: string;
   description?: string;

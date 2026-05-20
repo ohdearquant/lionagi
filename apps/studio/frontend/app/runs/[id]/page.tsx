@@ -100,7 +100,7 @@ export default function RunDetailPage({ params }: { params: { id: string } }) {
             </div>
             {run && (
               <p className="mt-1 text-sm text-neutral-400">
-                Worker:{" "}
+                Playbook:{" "}
                 <Link
                   href={`/playbooks/${encodeURIComponent(run.worker_name)}`}
                   className="text-blue-400 hover:text-blue-300"
@@ -117,7 +117,7 @@ export default function RunDetailPage({ params }: { params: { id: string } }) {
                 href={`/playbooks/${encodeURIComponent(run.worker_name)}/edit`}
                 className="rounded border border-neutral-700 bg-neutral-900 px-3 py-1 text-sm text-neutral-300 hover:border-neutral-500 hover:text-neutral-200"
               >
-                Edit Worker
+                Edit Playbook
               </Link>
               <button
                 onClick={handleRerun}
@@ -141,7 +141,7 @@ export default function RunDetailPage({ params }: { params: { id: string } }) {
         <>
           {/* Metadata row */}
           <section className="grid grid-cols-2 gap-2 md:grid-cols-5">
-            <MetricCard label="Worker" value={run.worker_name} />
+            <MetricCard label="Playbook" value={run.worker_name} />
             <MetricCard label="Steps" value={steps.length} />
             <MetricCard label="Duration" value={formatDuration(run.started_at, run.finished_at)} />
             <MetricCard label="Started" value={formatTime(run.started_at)} />
