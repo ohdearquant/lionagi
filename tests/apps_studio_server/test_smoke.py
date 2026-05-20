@@ -10,6 +10,8 @@ import json
 from pathlib import Path
 
 import pytest
+
+fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient
 
 # ---------------------------------------------------------------------------
