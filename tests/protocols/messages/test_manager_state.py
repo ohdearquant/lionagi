@@ -522,9 +522,7 @@ def test_sync_add_message_accepts_sync_hook(message_manager):
 
     message_manager._on_message_added.append(sync_hook)
 
-    msg = message_manager.add_message(
-        instruction="hi", sender="user", recipient="x"
-    )
+    msg = message_manager.add_message(instruction="hi", sender="user", recipient="x")
     assert fired == [msg]
 
 
@@ -536,6 +534,7 @@ def test_sync_add_message_preflight_does_not_mutate_pile(message_manager):
     continue with an in-memory message that was never persisted (the
     live SQLite hook never ran).
     """
+
     async def async_hook(_msg):  # pragma: no cover — never invoked
         pass
 
@@ -587,12 +586,10 @@ async def test_a_add_message_action_response_with_empty_output(message_manager):
 
     # The ActionRequest was NOT duplicated, and an ActionResponse WAS
     # created for the empty output.
-    assert requests_after == requests_before, (
-        "ActionRequest was re-emitted (truthy fallback fired)"
-    )
-    assert responses_after == 1, (
-        "ActionResponse for empty output was dropped"
-    )
+    assert (
+        requests_after == requests_before
+    ), "ActionRequest was re-emitted (truthy fallback fired)"
+    assert responses_after == 1, "ActionResponse for empty output was dropped"
 
 
 async def test_a_add_message_passes_through_prebuilt_action_response(

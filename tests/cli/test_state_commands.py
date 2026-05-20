@@ -53,16 +53,19 @@ async def _seed_session(
     sid = str(uuid.uuid4())
     pid = str(uuid.uuid4())
     await db.create_progression(pid)
-    await db.create_session({
-        "id": sid,
-        "progression_id": pid,
-        "name": name,
-        "status": status,
-        "started_at": time.time(),
-    })
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": pid,
+            "name": name,
+            "status": status,
+            "started_at": time.time(),
+        }
+    )
     if updated_at is not None:
         await db.db.execute(
-            "UPDATE sessions SET updated_at = ? WHERE id = ?", (updated_at, sid),
+            "UPDATE sessions SET updated_at = ? WHERE id = ?",
+            (updated_at, sid),
         )
         await db.db.commit()
     return sid
@@ -84,32 +87,43 @@ async def _seed_session_with_messages(
     bpid = str(uuid.uuid4())
     await db.create_progression(spid)
     await db.create_progression(bpid)
-    await db.create_session({
-        "id": sid, "progression_id": spid, "status": status,
-        "started_at": time.time(),
-    })
-    await db.create_branch({
-        "id": bid, "session_id": sid, "progression_id": bpid,
-    })
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": spid,
+            "status": status,
+            "started_at": time.time(),
+        }
+    )
+    await db.create_branch(
+        {
+            "id": bid,
+            "session_id": sid,
+            "progression_id": bpid,
+        }
+    )
     msg_ids = []
     for i in range(n_messages):
         mid = str(uuid.uuid4())
-        await db.insert_message({
-            "id": mid,
-            "created_at": time.time(),
-            "node_metadata": {},
-            "content": {"text": f"msg-{i}"},
-            "role": "user",
-            "sender": "u",
-            "recipient": "x",
-            "channel": "test",
-        })
+        await db.insert_message(
+            {
+                "id": mid,
+                "created_at": time.time(),
+                "node_metadata": {},
+                "content": {"text": f"msg-{i}"},
+                "role": "user",
+                "sender": "u",
+                "recipient": "x",
+                "channel": "test",
+            }
+        )
         await db.append_to_progression(bpid, mid)
         await db.append_to_progression(spid, mid)
         msg_ids.append(mid)
     if updated_at is not None:
         await db.db.execute(
-            "UPDATE sessions SET updated_at = ? WHERE id = ?", (updated_at, sid),
+            "UPDATE sessions SET updated_at = ? WHERE id = ?",
+            (updated_at, sid),
         )
         await db.db.commit()
     return sid, msg_ids
@@ -123,7 +137,7 @@ def test_format_bytes_handles_each_unit():
     assert "KiB" in _format_bytes(2 * 1024)
     assert "MiB" in _format_bytes(2 * 1024 * 1024)
     assert "GiB" in _format_bytes(2 * 1024 * 1024 * 1024)
-    assert "TiB" in _format_bytes(2 * 1024 ** 4)
+    assert "TiB" in _format_bytes(2 * 1024**4)
 
 
 # ── _list_sessions (li state ls) ──────────────────────────────────────────────
@@ -147,8 +161,9 @@ async def test_ls_lists_seeded_sessions(
     capsys: pytest.CaptureFixture,
 ):
     async with StateDB() as db:
-        sid = await _seed_session(db, name="foo", status="running",
-                                  updated_at=time.time())
+        sid = await _seed_session(
+            db, name="foo", status="running", updated_at=time.time()
+        )
 
     await _list_sessions(limit=50, status=None)
     out = capsys.readouterr().out
@@ -163,8 +178,9 @@ async def test_ls_limit_caps_results(
 ):
     async with StateDB() as db:
         for i in range(5):
-            await _seed_session(db, name=f"s{i}", status="completed",
-                                updated_at=time.time() - i)
+            await _seed_session(
+                db, name=f"s{i}", status="completed", updated_at=time.time() - i
+            )
 
     await _list_sessions(limit=2, status=None)
     out = capsys.readouterr().out
@@ -178,10 +194,10 @@ async def test_ls_status_filter(
     capsys: pytest.CaptureFixture,
 ):
     async with StateDB() as db:
-        await _seed_session(db, name="finished", status="completed",
-                            updated_at=time.time())
-        await _seed_session(db, name="open", status="running",
-                            updated_at=time.time())
+        await _seed_session(
+            db, name="finished", status="completed", updated_at=time.time()
+        )
+        await _seed_session(db, name="open", status="running", updated_at=time.time())
 
     await _list_sessions(limit=50, status="completed")
     out = capsys.readouterr().out
@@ -286,10 +302,14 @@ async def test_prune_dry_run_does_not_delete(temp_db_path: Path):
     old_ts = now - (60 * 86400)  # 60 days ago
     async with StateDB() as db:
         old_sid, _ = await _seed_session_with_messages(
-            db, n_messages=2, updated_at=old_ts,
+            db,
+            n_messages=2,
+            updated_at=old_ts,
         )
         new_sid, _ = await _seed_session_with_messages(
-            db, n_messages=1, updated_at=now,
+            db,
+            n_messages=1,
+            updated_at=now,
         )
 
     result = await _prune(keep_days=30, keep_n=1, dry_run=True)
@@ -319,10 +339,14 @@ async def test_prune_deletes_old_sessions_and_cascades_branches(
     old_ts = now - (60 * 86400)
     async with StateDB() as db:
         old_sid, old_msgs = await _seed_session_with_messages(
-            db, n_messages=3, updated_at=old_ts,
+            db,
+            n_messages=3,
+            updated_at=old_ts,
         )
         new_sid, new_msgs = await _seed_session_with_messages(
-            db, n_messages=2, updated_at=now,
+            db,
+            n_messages=2,
+            updated_at=now,
         )
 
     result = await _prune(keep_days=30, keep_n=1, dry_run=False)
@@ -357,12 +381,15 @@ async def test_prune_keeps_n_most_recent_even_when_old(temp_db_path: Path):
     old_ts = now - (60 * 86400)
     async with StateDB() as db:
         # All three sessions are OLD.
-        s1 = await _seed_session(db, name="oldest", status="completed",
-                                 updated_at=old_ts - 100)
-        s2 = await _seed_session(db, name="middle", status="completed",
-                                 updated_at=old_ts - 50)
-        s3 = await _seed_session(db, name="newest_old", status="completed",
-                                 updated_at=old_ts)
+        s1 = await _seed_session(
+            db, name="oldest", status="completed", updated_at=old_ts - 100
+        )
+        s2 = await _seed_session(
+            db, name="middle", status="completed", updated_at=old_ts - 50
+        )
+        s3 = await _seed_session(
+            db, name="newest_old", status="completed", updated_at=old_ts
+        )
 
     # keep_n=2: must preserve the 2 most recent (s2, s3).
     result = await _prune(keep_days=30, keep_n=2, dry_run=False)
@@ -380,8 +407,7 @@ async def test_prune_with_nothing_to_delete_returns_zero(temp_db_path: Path):
     """
     now = time.time()
     async with StateDB() as db:
-        sid = await _seed_session(db, name="recent", status="completed",
-                                  updated_at=now)
+        sid = await _seed_session(db, name="recent", status="completed", updated_at=now)
 
     result = await _prune(keep_days=30, keep_n=10, dry_run=False)
     assert result == {"sessions": 0, "branches": 0, "messages": 0}

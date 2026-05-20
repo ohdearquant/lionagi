@@ -64,7 +64,9 @@ async def test_hook_added_during_iteration_does_not_fire_this_call(
     mm._on_message_added.append(outer_hook)
 
     msg1 = await mm.a_add_message(
-        instruction="first", sender="u", recipient="x",
+        instruction="first",
+        sender="u",
+        recipient="x",
     )
 
     # outer_hook saw msg1; late_hook did NOT.
@@ -73,7 +75,9 @@ async def test_hook_added_during_iteration_does_not_fire_this_call(
 
     # On the next message, both fire (late_hook is now in the snapshot).
     msg2 = await mm.a_add_message(
-        instruction="second", sender="u", recipient="x",
+        instruction="second",
+        sender="u",
+        recipient="x",
     )
     assert fired_outer == [msg1, msg2]
     assert fired_late == [msg2]
@@ -95,10 +99,14 @@ async def test_hook_removed_during_iteration_still_fires_this_call(
     mm._on_message_added.append(self_removing_hook)
 
     msg1 = await mm.a_add_message(
-        instruction="a", sender="u", recipient="x",
+        instruction="a",
+        sender="u",
+        recipient="x",
     )
     await mm.a_add_message(
-        instruction="b", sender="u", recipient="x",
+        instruction="b",
+        sender="u",
+        recipient="x",
     )
 
     # Hook fired exactly once: for msg1 (then removed itself before msg2).
@@ -153,7 +161,9 @@ async def test_one_failing_hook_does_not_prevent_others_async(
 
     with pytest.raises(RuntimeError, match="a failed"):
         await mm.a_add_message(
-            instruction="hello", sender="u", recipient="x",
+            instruction="hello",
+            sender="u",
+            recipient="x",
         )
 
     # b and c still fired despite a raising.
@@ -168,6 +178,7 @@ async def test_multiple_failing_hooks_aggregated_into_exception_group(
     ``BaseExceptionGroup`` (3.10 backport) so callers can inspect all
     failures, not just the first.
     """
+
     async def hook_a(msg):
         raise RuntimeError("first")
 
@@ -181,7 +192,9 @@ async def test_multiple_failing_hooks_aggregated_into_exception_group(
 
     with pytest.raises(_ExcGroup) as excinfo:
         await mm.a_add_message(
-            instruction="hi", sender="u", recipient="x",
+            instruction="hi",
+            sender="u",
+            recipient="x",
         )
 
     excs = excinfo.value.exceptions
@@ -217,6 +230,7 @@ def test_sync_preflight_rejects_async_hook_before_pile_mutation(
     """R4-A MED-1 regression guard (also covered in test_manager_state.py).
     Pinned here as part of the hooks contract suite.
     """
+
     async def async_hook(_msg):  # pragma: no cover — never invoked
         return None
 
@@ -248,6 +262,7 @@ async def test_a_add_message_safe_when_hook_calls_a_add_message(
         # Re-entrant call: if this was the original instruction, emit
         # a derived "echo" — but only once, to avoid infinite recursion.
         from lionagi.protocols.messages import Instruction
+
         if isinstance(msg, Instruction) and msg.content.instruction == "trigger":
             await mm.a_add_message(
                 instruction="echo",
@@ -258,15 +273,14 @@ async def test_a_add_message_safe_when_hook_calls_a_add_message(
     mm._on_message_added.append(echo_hook)
 
     await mm.a_add_message(
-        instruction="trigger", sender="u", recipient="x",
+        instruction="trigger",
+        sender="u",
+        recipient="x",
     )
 
     # Hook fired for BOTH the trigger AND the echo it added.
     assert len(fired) == 2
     # Both messages landed in the pile.
-    contents = [
-        m.content.instruction
-        for _, m in fired
-    ]
+    contents = [m.content.instruction for _, m in fired]
     assert "trigger" in contents
     assert "echo" in contents

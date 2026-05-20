@@ -56,6 +56,7 @@ async def test_two_connections_can_insert_concurrently(db_path: Path):
     await db2.open()
     try:
         msgs = [_make_msg() for _ in range(20)]
+
         # Interleave writes across the two connections.
         async def insert_all(db: StateDB, batch: list[dict]):
             for m in batch:
@@ -130,6 +131,7 @@ async def test_busy_timeout_eventually_returns_locked_error(
         await db1.db.execute("BEGIN EXCLUSIVE")
         try:
             import aiosqlite
+
             with pytest.raises(aiosqlite.OperationalError):
                 # db2's write must error before 5s (busy_timeout=100).
                 await db2.insert_message(_make_msg())
@@ -157,10 +159,16 @@ async def test_concurrent_save_definition_same_key_serialized(
     try:
         versions = await asyncio.gather(
             db.save_definition(
-                kind="agent", name="rev", path="x.md", content="v1",
+                kind="agent",
+                name="rev",
+                path="x.md",
+                content="v1",
             ),
             db.save_definition(
-                kind="agent", name="rev", path="x.md", content="v2",
+                kind="agent",
+                name="rev",
+                path="x.md",
+                content="v2",
             ),
         )
         assert sorted(versions) == [1, 2]
@@ -179,13 +187,22 @@ async def test_concurrent_save_definition_different_keys_parallel(
     try:
         versions = await asyncio.gather(
             db.save_definition(
-                kind="agent", name="a1", path="a1.md", content="x",
+                kind="agent",
+                name="a1",
+                path="a1.md",
+                content="x",
             ),
             db.save_definition(
-                kind="agent", name="a2", path="a2.md", content="y",
+                kind="agent",
+                name="a2",
+                path="a2.md",
+                content="y",
             ),
             db.save_definition(
-                kind="playbook", name="p1", path="p1.md", content="z",
+                kind="playbook",
+                name="p1",
+                path="p1.md",
+                content="z",
             ),
         )
         # All version 1 — they're independent streams.

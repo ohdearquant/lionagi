@@ -182,9 +182,9 @@ async def test_setup_create_session_failure_closes_db(
         if _aiosqlite_thread_count() == before:
             break
         await asyncio.sleep(0.05)
-    assert _aiosqlite_thread_count() == before, (
-        "DB was not closed on setup failure — aiosqlite worker leaked"
-    )
+    assert (
+        _aiosqlite_thread_count() == before
+    ), "DB was not closed on setup failure — aiosqlite worker leaked"
 
     # Restore so other tests run clean.
     monkeypatch.setattr(StateDB, "create_session", original_create)
@@ -209,8 +209,11 @@ async def test_setup_resume_loads_existing_session_and_progression(
     # Build the message directly so we don't trip the sync add_message
     # async-hook guard.
     from lionagi.protocols.messages.manager import MessageManager
+
     msg = MessageManager.create_instruction(
-        instruction="hello", sender="user", recipient=str(branch.id),
+        instruction="hello",
+        sender="user",
+        recipient=str(branch.id),
     )
     await ctx1["hook"](msg)
     await _teardown_live_persist(ctx1, status="completed")
@@ -237,7 +240,9 @@ async def test_hook_dedupes_existing_messages_on_resume(
     branch = Branch(name="b1")
     ctx1 = await _setup_live_persist(branch)
     msg = MessageManager.create_instruction(
-        instruction="hello", sender="user", recipient=str(branch.id),
+        instruction="hello",
+        sender="user",
+        recipient=str(branch.id),
     )
     await ctx1["hook"](msg)
     await _teardown_live_persist(ctx1, status="completed")
@@ -275,7 +280,9 @@ async def test_hook_swallows_db_write_failure(
     monkeypatch.setattr(StateDB, "insert_message", boom)
 
     msg = MessageManager.create_instruction(
-        instruction="hi", sender="user", recipient=str(branch.id),
+        instruction="hi",
+        sender="user",
+        recipient=str(branch.id),
     )
 
     with caplog.at_level(logging.WARNING, logger="lionagi.cli"):
@@ -304,6 +311,7 @@ async def test_hook_updates_system_msg_id_when_system_replaced(
     # add_message(system=...). Simulate by constructing a new System
     # and firing the hook with it.
     from lionagi.protocols.messages import System
+
     new_sys = System(content={"system_message": "replaced"}, sender="system")
     await ctx["hook"](new_sys)
 
@@ -327,11 +335,15 @@ async def test_teardown_updates_session_bookmarks_and_status(
     ctx = await _setup_live_persist(branch)
 
     msg_a = MessageManager.create_instruction(
-        instruction="a", sender="u", recipient=str(branch.id),
+        instruction="a",
+        sender="u",
+        recipient=str(branch.id),
     )
     await ctx["hook"](msg_a)
     msg_b = MessageManager.create_instruction(
-        instruction="b", sender="u", recipient=str(branch.id),
+        instruction="b",
+        sender="u",
+        recipient=str(branch.id),
     )
     await ctx["hook"](msg_b)
 
@@ -419,7 +431,9 @@ async def test_setup_teardown_does_not_leak_aiosqlite_thread(
         ctx = await _setup_live_persist(branch)
         assert ctx is not None
         msg = MessageManager.create_instruction(
-            instruction="hi", sender="u", recipient=str(branch.id),
+            instruction="hi",
+            sender="u",
+            recipient=str(branch.id),
         )
         await ctx["hook"](msg)
         await _teardown_live_persist(ctx, status="completed")
@@ -430,6 +444,6 @@ async def test_setup_teardown_does_not_leak_aiosqlite_thread(
             if _aiosqlite_thread_count() <= baseline:
                 break
             await asyncio.sleep(0.05)
-        assert _aiosqlite_thread_count() <= baseline, (
-            "aiosqlite worker thread leaked across setup/teardown cycle"
-        )
+        assert (
+            _aiosqlite_thread_count() <= baseline
+        ), "aiosqlite worker thread leaked across setup/teardown cycle"

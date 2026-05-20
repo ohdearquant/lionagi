@@ -67,19 +67,32 @@ async def test_delete_session_cascades_branches(db: StateDB):
     await db.create_progression(spid)
     await db.create_progression(bpid1)
     await db.create_progression(bpid2)
-    await db.create_session({
-        "id": sid, "progression_id": spid, "status": "completed",
-    })
-    await db.create_branch({
-        "id": bid1, "session_id": sid, "progression_id": bpid1,
-    })
-    await db.create_branch({
-        "id": bid2, "session_id": sid, "progression_id": bpid2,
-    })
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": spid,
+            "status": "completed",
+        }
+    )
+    await db.create_branch(
+        {
+            "id": bid1,
+            "session_id": sid,
+            "progression_id": bpid1,
+        }
+    )
+    await db.create_branch(
+        {
+            "id": bid2,
+            "session_id": sid,
+            "progression_id": bpid2,
+        }
+    )
 
     # Two branches before delete.
     cur = await db.db.execute(
-        "SELECT COUNT(*) AS n FROM branches WHERE session_id = ?", (sid,),
+        "SELECT COUNT(*) AS n FROM branches WHERE session_id = ?",
+        (sid,),
     )
     assert (await cur.fetchone())["n"] == 2
 
@@ -88,7 +101,8 @@ async def test_delete_session_cascades_branches(db: StateDB):
 
     # Zero branches after.
     cur = await db.db.execute(
-        "SELECT COUNT(*) AS n FROM branches WHERE session_id = ?", (sid,),
+        "SELECT COUNT(*) AS n FROM branches WHERE session_id = ?",
+        (sid,),
     )
     assert (await cur.fetchone())["n"] == 0
 
@@ -108,7 +122,8 @@ async def test_delete_session_does_not_cascade_progression(db: StateDB):
     await db.db.commit()
 
     cur = await db.db.execute(
-        "SELECT COUNT(*) AS n FROM progressions WHERE id = ?", (spid,),
+        "SELECT COUNT(*) AS n FROM progressions WHERE id = ?",
+        (spid,),
     )
     assert (await cur.fetchone())["n"] == 1
 
@@ -121,19 +136,28 @@ async def test_delete_show_cascades_plays(db: StateDB):
     show_id (ON DELETE CASCADE).
     """
     show_id = str(uuid.uuid4())
-    await db.create_show({
-        "id": show_id, "topic": f"t-{show_id}",
-        "show_dir": f"shows/{show_id}", "status": "active",
-    })
+    await db.create_show(
+        {
+            "id": show_id,
+            "topic": f"t-{show_id}",
+            "show_dir": f"shows/{show_id}",
+            "status": "active",
+        }
+    )
     play_ids = [str(uuid.uuid4()) for _ in range(3)]
     for i, pid in enumerate(play_ids):
-        await db.create_play({
-            "id": pid, "show_id": show_id, "name": f"p{i}",
-            "status": "pending",
-        })
+        await db.create_play(
+            {
+                "id": pid,
+                "show_id": show_id,
+                "name": f"p{i}",
+                "status": "pending",
+            }
+        )
 
     cur = await db.db.execute(
-        "SELECT COUNT(*) AS n FROM plays WHERE show_id = ?", (show_id,),
+        "SELECT COUNT(*) AS n FROM plays WHERE show_id = ?",
+        (show_id,),
     )
     assert (await cur.fetchone())["n"] == 3
 
@@ -141,7 +165,8 @@ async def test_delete_show_cascades_plays(db: StateDB):
     await db.db.commit()
 
     cur = await db.db.execute(
-        "SELECT COUNT(*) AS n FROM plays WHERE show_id = ?", (show_id,),
+        "SELECT COUNT(*) AS n FROM plays WHERE show_id = ?",
+        (show_id,),
     )
     assert (await cur.fetchone())["n"] == 0
 
@@ -149,16 +174,20 @@ async def test_delete_show_cascades_plays(db: StateDB):
 async def test_delete_show_with_no_plays_succeeds(db: StateDB):
     """Empty-cascade case — should not error or affect other rows."""
     show_id = str(uuid.uuid4())
-    await db.create_show({
-        "id": show_id, "topic": f"t-{show_id}",
-        "show_dir": f"shows/{show_id}",
-    })
+    await db.create_show(
+        {
+            "id": show_id,
+            "topic": f"t-{show_id}",
+            "show_dir": f"shows/{show_id}",
+        }
+    )
 
     await db.db.execute("DELETE FROM shows WHERE id = ?", (show_id,))
     await db.db.commit()
 
     cur = await db.db.execute(
-        "SELECT COUNT(*) AS n FROM shows WHERE id = ?", (show_id,),
+        "SELECT COUNT(*) AS n FROM shows WHERE id = ?",
+        (show_id,),
     )
     assert (await cur.fetchone())["n"] == 0
 
@@ -175,10 +204,13 @@ async def test_delete_session_referenced_by_play_is_rejected(db: StateDB):
     import aiosqlite
 
     show_id = str(uuid.uuid4())
-    await db.create_show({
-        "id": show_id, "topic": f"t-{show_id}",
-        "show_dir": f"shows/{show_id}",
-    })
+    await db.create_show(
+        {
+            "id": show_id,
+            "topic": f"t-{show_id}",
+            "show_dir": f"shows/{show_id}",
+        }
+    )
 
     spid = str(uuid.uuid4())
     sid = str(uuid.uuid4())
@@ -186,10 +218,15 @@ async def test_delete_session_referenced_by_play_is_rejected(db: StateDB):
     await db.create_session({"id": sid, "progression_id": spid})
 
     play_id = str(uuid.uuid4())
-    await db.create_play({
-        "id": play_id, "show_id": show_id, "name": "p",
-        "session_id": sid, "status": "pending",
-    })
+    await db.create_play(
+        {
+            "id": play_id,
+            "show_id": show_id,
+            "name": "p",
+            "session_id": sid,
+            "status": "pending",
+        }
+    )
 
     with pytest.raises(aiosqlite.IntegrityError):
         await db.db.execute("DELETE FROM sessions WHERE id = ?", (sid,))
@@ -209,11 +246,16 @@ async def test_delete_message_does_not_cascade_to_branch_system_msg_id(
     import aiosqlite
 
     msg_id = str(uuid.uuid4())
-    await db.insert_message({
-        "id": msg_id, "created_at": time.time(),
-        "node_metadata": {}, "content": {"text": "sys"},
-        "role": "system", "sender": "s",
-    })
+    await db.insert_message(
+        {
+            "id": msg_id,
+            "created_at": time.time(),
+            "node_metadata": {},
+            "content": {"text": "sys"},
+            "role": "system",
+            "sender": "s",
+        }
+    )
     spid = str(uuid.uuid4())
     sid = str(uuid.uuid4())
     bpid = str(uuid.uuid4())
@@ -221,10 +263,14 @@ async def test_delete_message_does_not_cascade_to_branch_system_msg_id(
     await db.create_progression(spid)
     await db.create_progression(bpid)
     await db.create_session({"id": sid, "progression_id": spid})
-    await db.create_branch({
-        "id": bid, "session_id": sid, "progression_id": bpid,
-        "system_msg_id": msg_id,
-    })
+    await db.create_branch(
+        {
+            "id": bid,
+            "session_id": sid,
+            "progression_id": bpid,
+            "system_msg_id": msg_id,
+        }
+    )
 
     # PRAGMA foreign_keys = ON: deleting a referenced message must
     # raise IntegrityError (not silently break the pointer).

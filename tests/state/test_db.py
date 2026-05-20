@@ -17,7 +17,6 @@ import pytest
 
 from lionagi.state.db import StateDB
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 
@@ -134,9 +133,7 @@ async def test_schema_creates_all_tables(db: StateDB):
         "plays",
         "definitions",
     }
-    cur = await db.db.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    )
+    cur = await db.db.execute("SELECT name FROM sqlite_master WHERE type='table'")
     rows = await cur.fetchall()
     names = {r[0] for r in rows}
     assert expected <= names, f"Missing tables: {expected - names}"
@@ -189,9 +186,15 @@ async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
         cur = await db.db.execute("PRAGMA table_info(sessions)")
         cols = {r["name"] for r in await cur.fetchall()}
         for must_have in (
-            "status", "started_at", "ended_at", "invocation_kind",
-            "playbook_name", "agent_name", "artifacts_path",
-            "source_kind", "updated_at",
+            "status",
+            "started_at",
+            "ended_at",
+            "invocation_kind",
+            "playbook_name",
+            "agent_name",
+            "artifacts_path",
+            "source_kind",
+            "updated_at",
         ):
             assert must_have in cols, f"sessions.{must_have} not migrated"
         cur = await db.db.execute("PRAGMA table_info(branches)")
@@ -201,11 +204,15 @@ async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
         # migrated DB (the symptom we're guarding against).
         prog_id = uid()
         await db.create_progression(prog_id)
-        await db.create_session({
-            "id": uid(), "progression_id": prog_id,
-            "created_at": time.time(), "status": "running",
-            "started_at": time.time(),
-        })
+        await db.create_session(
+            {
+                "id": uid(),
+                "progression_id": prog_id,
+                "created_at": time.time(),
+                "status": "running",
+                "started_at": time.time(),
+            }
+        )
     finally:
         await db.close()
 
@@ -216,9 +223,7 @@ async def test_message_types_seeded(db: StateDB):
     row = await cur.fetchone()
     assert row["n"] == 6
 
-    cur = await db.db.execute(
-        "SELECT lion_class FROM message_types WHERE type_id = 0"
-    )
+    cur = await db.db.execute("SELECT lion_class FROM message_types WHERE type_id = 0")
     row = await cur.fetchone()
     assert row["lion_class"] == "__unknown__"
 
@@ -528,7 +533,11 @@ async def test_get_branch_messages(db: StateDB):
     await db.create_progression(prog_id)
 
     # Insert three messages in order
-    msgs = [make_message(role="user"), make_message(role="assistant"), make_message(role="user")]
+    msgs = [
+        make_message(role="user"),
+        make_message(role="assistant"),
+        make_message(role="user"),
+    ]
     for m in msgs:
         await db.insert_message(m)
         await db.append_to_progression(prog_id, m["id"])
@@ -662,9 +671,27 @@ async def test_list_plays_ordered(db: StateDB):
     t0 = time.time()
 
     plays = [
-        {"id": uid(), "show_id": show["id"], "name": "p3", "sort_order": 30, "created_at": t0},
-        {"id": uid(), "show_id": show["id"], "name": "p1", "sort_order": 10, "created_at": t0 + 1},
-        {"id": uid(), "show_id": show["id"], "name": "p2", "sort_order": 20, "created_at": t0 + 2},
+        {
+            "id": uid(),
+            "show_id": show["id"],
+            "name": "p3",
+            "sort_order": 30,
+            "created_at": t0,
+        },
+        {
+            "id": uid(),
+            "show_id": show["id"],
+            "name": "p1",
+            "sort_order": 10,
+            "created_at": t0 + 1,
+        },
+        {
+            "id": uid(),
+            "show_id": show["id"],
+            "name": "p2",
+            "sort_order": 20,
+            "created_at": t0 + 2,
+        },
     ]
     for p in plays:
         await db.create_play(p)
@@ -820,13 +847,15 @@ async def test_resolve_lion_class_concurrent_race(tmp_path):
         await db.create_progression(prog_id)
 
         async def insert_one(i):
-            await db.insert_message({
-                "id": f"raced-{i}",
-                "created_at": time.time(),
-                "node_metadata": {"lion_class": "test.race.NovelClass"},
-                "content": {"i": i},
-                "role": "user",
-            })
+            await db.insert_message(
+                {
+                    "id": f"raced-{i}",
+                    "created_at": time.time(),
+                    "node_metadata": {"lion_class": "test.race.NovelClass"},
+                    "content": {"i": i},
+                    "role": "user",
+                }
+            )
 
         # 20 concurrent inserts of the same novel class. Pre-fix this raised
         # ``sqlite3.IntegrityError: UNIQUE constraint failed`` for most.
@@ -856,20 +885,22 @@ async def test_save_definition_concurrent_versions_are_unique(tmp_path):
     await db.open()
     try:
         N = 10
-        versions = await asyncio.gather(*(
-            db.save_definition(
-                kind="agent",
-                name="race-agent",
-                path=".lionagi/agents/race-agent.md",
-                content=f"content-{i}",
-                message=f"save-{i}",
+        versions = await asyncio.gather(
+            *(
+                db.save_definition(
+                    kind="agent",
+                    name="race-agent",
+                    path=".lionagi/agents/race-agent.md",
+                    content=f"content-{i}",
+                    message=f"save-{i}",
+                )
+                for i in range(N)
             )
-            for i in range(N)
-        ))
-        # Every save returned a unique version, and the set is {1..N}.
-        assert sorted(versions) == list(range(1, N + 1)), (
-            f"Expected unique versions 1..{N}, got {sorted(versions)}"
         )
+        # Every save returned a unique version, and the set is {1..N}.
+        assert sorted(versions) == list(
+            range(1, N + 1)
+        ), f"Expected unique versions 1..{N}, got {sorted(versions)}"
 
         # Database state matches the API return values.
         rows = await db.list_definition_versions("agent", "race-agent")
@@ -890,27 +921,29 @@ async def test_message_content_string_roundtrips_as_string(db: StateDB):
     # Cases that would have round-tripped as dict pre-fix.
     json_like_strings = [
         '{"text": "literal string"}',  # looks like a JSON object
-        '[1, 2, 3]',                    # looks like a JSON array
-        '"already quoted"',             # already-quoted JSON string
-        'plain text',                   # not JSON at all
-        '',                             # empty string
-        '42',                           # JSON number
-        'null',                         # JSON null
+        "[1, 2, 3]",  # looks like a JSON array
+        '"already quoted"',  # already-quoted JSON string
+        "plain text",  # not JSON at all
+        "",  # empty string
+        "42",  # JSON number
+        "null",  # JSON null
     ]
     for i, raw in enumerate(json_like_strings):
         msg_id = f"str-{i}"
-        await db.insert_message({
-            "id": msg_id,
-            "created_at": time.time(),
-            "content": raw,
-            "role": "user",
-        })
+        await db.insert_message(
+            {
+                "id": msg_id,
+                "created_at": time.time(),
+                "content": raw,
+                "role": "user",
+            }
+        )
         got = await db.get_message(msg_id)
         assert got is not None
         # Critical: type AND value preserved exactly.
-        assert isinstance(got["content"], str), (
-            f"case {i!r}: expected str, got {type(got['content']).__name__}"
-        )
+        assert isinstance(
+            got["content"], str
+        ), f"case {i!r}: expected str, got {type(got['content']).__name__}"
         assert got["content"] == raw, f"case {i!r}: value diverged"
 
 
@@ -920,12 +953,14 @@ async def test_message_content_dict_roundtrips_as_dict(db: StateDB):
     prog_id = uid()
     await db.create_progression(prog_id)
 
-    await db.insert_message({
-        "id": "dict-msg",
-        "created_at": time.time(),
-        "content": {"role": "assistant", "text": "hello"},
-        "role": "assistant",
-    })
+    await db.insert_message(
+        {
+            "id": "dict-msg",
+            "created_at": time.time(),
+            "content": {"role": "assistant", "text": "hello"},
+            "role": "assistant",
+        }
+    )
     got = await db.get_message("dict-msg")
     assert got is not None
     assert isinstance(got["content"], dict)
@@ -937,11 +972,14 @@ async def test_create_session_rejects_invalid_invocation_kind(db: StateDB):
     prog_id = uid()
     await db.create_progression(prog_id)
     with pytest.raises(ValueError, match="invocation_kind"):
-        await db.create_session({
-            "id": uid(), "progression_id": prog_id,
-            "created_at": time.time(),
-            "invocation_kind": "not-a-real-kind",
-        })
+        await db.create_session(
+            {
+                "id": uid(),
+                "progression_id": prog_id,
+                "created_at": time.time(),
+                "invocation_kind": "not-a-real-kind",
+            }
+        )
 
 
 async def test_create_session_rejects_invalid_source_kind(db: StateDB):
@@ -949,11 +987,14 @@ async def test_create_session_rejects_invalid_source_kind(db: StateDB):
     prog_id = uid()
     await db.create_progression(prog_id)
     with pytest.raises(ValueError, match="source_kind"):
-        await db.create_session({
-            "id": uid(), "progression_id": prog_id,
-            "created_at": time.time(),
-            "source_kind": "remote_api",
-        })
+        await db.create_session(
+            {
+                "id": uid(),
+                "progression_id": prog_id,
+                "created_at": time.time(),
+                "source_kind": "remote_api",
+            }
+        )
 
 
 async def test_update_session_rejects_invalid_enums(db: StateDB):
@@ -961,11 +1002,15 @@ async def test_update_session_rejects_invalid_enums(db: StateDB):
     prog_id = uid()
     await db.create_progression(prog_id)
     sid = uid()
-    await db.create_session({
-        "id": sid, "progression_id": prog_id,
-        "created_at": time.time(),
-        "invocation_kind": "agent", "source_kind": "live",
-    })
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": prog_id,
+            "created_at": time.time(),
+            "invocation_kind": "agent",
+            "source_kind": "live",
+        }
+    )
 
     with pytest.raises(ValueError, match="invocation_kind"):
         await db.update_session(sid, invocation_kind="bogus")
@@ -977,20 +1022,27 @@ async def test_create_play_rejects_invalid_status(db: StateDB):
     """ADR-0011: play status ∈ 11-vocabulary."""
     show = await _make_show(db)
     with pytest.raises(ValueError, match="play status"):
-        await db.create_play({
-            "id": uid(), "show_id": show["id"],
-            "name": "bad-status-play",
-            "status": "completed",  # belongs to SESSIONS vocab
-        })
+        await db.create_play(
+            {
+                "id": uid(),
+                "show_id": show["id"],
+                "name": "bad-status-play",
+                "status": "completed",  # belongs to SESSIONS vocab
+            }
+        )
 
 
 async def test_create_show_rejects_invalid_status(db: StateDB):
     """ADR-0011: show status ∈ {active, completed, aborted, imported}."""
     with pytest.raises(ValueError, match="show status"):
-        await db.create_show({
-            "id": uid(), "topic": "bad-status",
-            "show_dir": "/tmp/bad", "status": "running",  # not in show vocab
-        })
+        await db.create_show(
+            {
+                "id": uid(),
+                "topic": "bad-status",
+                "show_dir": "/tmp/bad",
+                "status": "running",  # not in show vocab
+            }
+        )
 
 
 async def test_session_delete_cascades_branches(db: StateDB):
@@ -998,16 +1050,24 @@ async def test_session_delete_cascades_branches(db: StateDB):
     prog_id = uid()
     await db.create_progression(prog_id)
     sid = uid()
-    await db.create_session({
-        "id": sid, "progression_id": prog_id, "created_at": time.time(),
-    })
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": prog_id,
+            "created_at": time.time(),
+        }
+    )
     bprog = uid()
     await db.create_progression(bprog)
     bid = uid()
-    await db.create_branch({
-        "id": bid, "session_id": sid, "progression_id": bprog,
-        "created_at": time.time(),
-    })
+    await db.create_branch(
+        {
+            "id": bid,
+            "session_id": sid,
+            "progression_id": bprog,
+            "created_at": time.time(),
+        }
+    )
 
     assert await db.get_branch(bid) is not None
     await db.db.execute("DELETE FROM sessions WHERE id = ?", (sid,))

@@ -84,7 +84,8 @@ async def test_insert_message_rejects_missing_role(db: StateDB):
 
 @pytest.mark.parametrize("size_kb", [10, 100, 1024])
 async def test_insert_message_roundtrips_large_content(
-    db: StateDB, size_kb: int,
+    db: StateDB,
+    size_kb: int,
 ):
     """Verify the layer can store up to ~1MB content without truncation
     or encoding damage. SQLite's default ``SQLITE_MAX_LENGTH`` is 1GB
@@ -159,7 +160,8 @@ async def test_insert_message_re_fire_updates_content(db: StateDB):
 
     # Only one row — the conflict updated, not inserted.
     cur = await db.db.execute(
-        "SELECT COUNT(*) AS n FROM messages WHERE id = ?", (msg["id"],),
+        "SELECT COUNT(*) AS n FROM messages WHERE id = ?",
+        (msg["id"],),
     )
     assert (await cur.fetchone())["n"] == 1
 

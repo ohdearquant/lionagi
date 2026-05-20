@@ -66,6 +66,7 @@ def _minimal_env(orc_branch: Branch | None = None) -> OrchestrationEnv:
     # We bypass setup_orchestration's full kwargs by directly constructing
     # OrchestrationEnv with only the fields live-persist reads.
     from unittest.mock import MagicMock
+
     return OrchestrationEnv(
         run=MagicMock(),
         session=session,
@@ -140,6 +141,7 @@ async def test_start_create_session_failure_closes_db(
     start leaves the connection open, the non-daemon worker prevents
     interpreter shutdown.
     """
+
     async def fail(self, session: dict):
         await self.db.execute("SELECT 1")
         raise RuntimeError("simulated DB failure")
@@ -160,9 +162,9 @@ async def test_start_create_session_failure_closes_db(
         if _aiosqlite_thread_count() <= before:
             break
         await asyncio.sleep(0.05)
-    assert _aiosqlite_thread_count() <= before, (
-        "DB was not closed on start failure — aiosqlite worker leaked"
-    )
+    assert (
+        _aiosqlite_thread_count() <= before
+    ), "DB was not closed on start failure — aiosqlite worker leaked"
 
 
 # ── _register_branch_hook: lazy branch row + multi-message paths ──────────────
@@ -193,14 +195,18 @@ async def test_register_branch_hook_creates_row_on_first_message(
 
     # Fire one message via the registered hook.
     msg = MessageManager.create_instruction(
-        instruction="hi", sender="u", recipient=str(worker.id),
+        instruction="hi",
+        sender="u",
+        recipient=str(worker.id),
     )
     hook = env._live_persist["hooks"][-1][1]
     await hook(msg)
 
     async with StateDB() as db:
         b_after = await db.get_branch(str(worker.id))
-        prog = await db.get_progression(env._live_persist["branch_prog_ids"][str(worker.id)])
+        prog = await db.get_progression(
+            env._live_persist["branch_prog_ids"][str(worker.id)]
+        )
         session_prog = await db.get_progression(env._live_persist["session_prog_id"])
     assert b_after is not None
     assert b_after["session_id"] == str(env.session.id)
@@ -229,10 +235,14 @@ async def test_register_branch_hook_ensure_branch_row_idempotent(
     hook = env._live_persist["hooks"][-1][1]
 
     msg1 = MessageManager.create_instruction(
-        instruction="a", sender="u", recipient=str(worker.id),
+        instruction="a",
+        sender="u",
+        recipient=str(worker.id),
     )
     msg2 = MessageManager.create_instruction(
-        instruction="b", sender="u", recipient=str(worker.id),
+        instruction="b",
+        sender="u",
+        recipient=str(worker.id),
     )
     await hook(msg1)
     await hook(msg2)
@@ -285,10 +295,14 @@ async def test_multiple_branches_share_session_progression(
     hooks = {str(br.id): hk for br, hk in env._live_persist["hooks"]}
 
     m1 = MessageManager.create_instruction(
-        instruction="from-w1", sender="u", recipient=str(w1.id),
+        instruction="from-w1",
+        sender="u",
+        recipient=str(w1.id),
     )
     m2 = MessageManager.create_instruction(
-        instruction="from-w2", sender="u", recipient=str(w2.id),
+        instruction="from-w2",
+        sender="u",
+        recipient=str(w2.id),
     )
 
     await hooks[str(w1.id)](m1)
@@ -296,8 +310,12 @@ async def test_multiple_branches_share_session_progression(
 
     async with StateDB() as db:
         session_prog = await db.get_progression(env._live_persist["session_prog_id"])
-        w1_prog = await db.get_progression(env._live_persist["branch_prog_ids"][str(w1.id)])
-        w2_prog = await db.get_progression(env._live_persist["branch_prog_ids"][str(w2.id)])
+        w1_prog = await db.get_progression(
+            env._live_persist["branch_prog_ids"][str(w1.id)]
+        )
+        w2_prog = await db.get_progression(
+            env._live_persist["branch_prog_ids"][str(w2.id)]
+        )
 
     assert set(session_prog) == {str(m1.id), str(m2.id)}
     assert w1_prog == [str(m1.id)]
@@ -333,14 +351,14 @@ async def test_hook_swallows_db_write_failure(
     monkeypatch.setattr(StateDB, "insert_message", boom)
 
     msg = MessageManager.create_instruction(
-        instruction="hi", sender="u", recipient=str(worker.id),
+        instruction="hi",
+        sender="u",
+        recipient=str(worker.id),
     )
     with caplog.at_level(logging.WARNING, logger="lionagi.cli"):
         await hook(msg)  # MUST NOT raise
 
-    assert any(
-        "live persist write failed" in rec.message for rec in caplog.records
-    )
+    assert any("live persist write failed" in rec.message for rec in caplog.records)
 
     await stop_live_persist(env, status="completed")
 
@@ -364,7 +382,9 @@ async def test_hook_updates_system_msg_id_when_system_replaced(
 
     # First message ensures branch row exists with original system_msg_id.
     init_msg = MessageManager.create_instruction(
-        instruction="warm up", sender="u", recipient=str(worker.id),
+        instruction="warm up",
+        sender="u",
+        recipient=str(worker.id),
     )
     await hook(init_msg)
 
@@ -394,10 +414,14 @@ async def test_stop_updates_session_bookmarks_and_status(
     hook = env._live_persist["hooks"][-1][1]
 
     m1 = MessageManager.create_instruction(
-        instruction="a", sender="u", recipient=str(worker.id),
+        instruction="a",
+        sender="u",
+        recipient=str(worker.id),
     )
     m2 = MessageManager.create_instruction(
-        instruction="b", sender="u", recipient=str(worker.id),
+        instruction="b",
+        sender="u",
+        recipient=str(worker.id),
     )
     await hook(m1)
     await hook(m2)
@@ -493,7 +517,9 @@ async def test_start_stop_does_not_leak_aiosqlite_thread(temp_db_path: Path):
         _register_branch_hook(env._live_persist, w)
         hook = env._live_persist["hooks"][-1][1]
         msg = MessageManager.create_instruction(
-            instruction="hi", sender="u", recipient=str(w.id),
+            instruction="hi",
+            sender="u",
+            recipient=str(w.id),
         )
         await hook(msg)
         await stop_live_persist(env, status="completed")
@@ -502,6 +528,6 @@ async def test_start_stop_does_not_leak_aiosqlite_thread(temp_db_path: Path):
             if _aiosqlite_thread_count() <= baseline:
                 break
             await asyncio.sleep(0.05)
-        assert _aiosqlite_thread_count() <= baseline, (
-            "aiosqlite worker thread leaked across orchestration start/stop"
-        )
+        assert (
+            _aiosqlite_thread_count() <= baseline
+        ), "aiosqlite worker thread leaked across orchestration start/stop"
