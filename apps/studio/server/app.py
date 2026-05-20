@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
 from .config import CORS_ORIGINS
-from .routers import agents, playbooks, runs, sessions, shows
+from .routers import agents, definitions, playbooks, runs, sessions, shows
 from .services import agents as agents_svc
 from .services import playbooks as playbooks_svc
 from .services import runs as runs_svc
@@ -23,6 +23,7 @@ app.add_middleware(
 
 app.include_router(runs.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
+app.include_router(definitions.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")
 app.include_router(playbooks.router, prefix="/api")
 app.include_router(shows.router, prefix="/api")

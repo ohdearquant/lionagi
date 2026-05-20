@@ -107,3 +107,23 @@ CREATE TABLE IF NOT EXISTS branches (
 
 CREATE INDEX IF NOT EXISTS idx_branches_session
   ON branches(session_id);
+
+-- ── Definitions (versioned agent + playbook files) ───────────────────────────
+-- Disk files remain source of truth; this table tracks edit history.
+-- Current version = MAX(version) per (kind, name).
+
+CREATE TABLE IF NOT EXISTS definitions (
+  id          TEXT    PRIMARY KEY,
+  kind        TEXT    NOT NULL,           -- 'agent' | 'playbook' | 'skill'
+  name        TEXT    NOT NULL,           -- e.g. 'analyst', 'review-flow'
+  path        TEXT    NOT NULL,           -- disk path relative to .lionagi/
+  content     TEXT    NOT NULL,           -- full file content at this version
+  version     INTEGER NOT NULL,           -- monotonic per (kind, name)
+  created_at  REAL    NOT NULL,
+  message     TEXT                        -- optional edit note
+);
+
+CREATE INDEX IF NOT EXISTS idx_def_kind_name
+  ON definitions(kind, name, version DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_def_unique_version
+  ON definitions(kind, name, version);
