@@ -73,7 +73,27 @@ async def _act(
             error_msg = f"Error invoking action '{_request['function']}': {e}"
             logging.error(error_msg)
 
-            # Return error as action response so model knows it failed
+            # Surface the failure in chat history so subsequent rounds
+            # (ReAct, LNDL retries) see the error and can self-correct.
+            if not isinstance(action_request, ActionRequest):
+                action_request = ActionRequest(
+                    content=_request,
+                    sender=branch.id,
+                    recipient=branch.id,
+                )
+            if action_request not in branch.messages:
+                branch.msgs.add_message(action_request=action_request)
+            branch.msgs.add_message(
+                action_request=action_request,
+                action_output={
+                    "error": str(e),
+                    "function": _request.get("function"),
+                    "arguments": _request.get("arguments"),
+                },
+                sender=branch.id,
+                recipient=branch.id,
+            )
+
             return ActionResponseModel(
                 function=_request.get("function", "unknown"),
                 arguments=_request.get("arguments", {}),

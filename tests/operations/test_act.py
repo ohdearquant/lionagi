@@ -114,6 +114,83 @@ async def test_act_suppress_errors_returns_error_response():
 
 
 @pytest.mark.asyncio
+async def test_act_suppress_errors_adds_messages_to_history():
+    """_act() with suppress_errors=True records ActionRequest+ActionResponse in branch.messages."""
+    branch = Branch()
+    req = {"function": "bad_tool", "arguments": {"x": 1}}
+    with patch.object(
+        branch._action_manager,
+        "invoke",
+        new=AsyncMock(side_effect=RuntimeError("tool exploded")),
+    ):
+        result = await _act(branch, req, suppress_errors=True)
+
+    assert isinstance(result, ActionResponseModel)
+
+    # Both the request and the error response must be in chat history.
+    from lionagi.protocols.messages import ActionRequest, ActionResponse
+
+    action_requests = [
+        m for m in branch.messages if isinstance(m, ActionRequest)
+    ]
+    action_responses = [
+        m for m in branch.messages if isinstance(m, ActionResponse)
+    ]
+    assert len(action_requests) == 1, "Failed ActionRequest must be in branch.messages"
+    assert len(action_responses) == 1, "Error ActionResponse must be in branch.messages"
+
+    # The response output must include the error fields.
+    response_output = action_responses[0].output
+    assert "error" in response_output
+    assert "tool exploded" in str(response_output["error"])
+
+
+@pytest.mark.asyncio
+async def test_act_suppress_errors_error_output_contains_function_and_args():
+    """ActionResponse output includes function name and arguments for model context."""
+    branch = Branch()
+    req = {"function": "missing_fn", "arguments": {"key": "val"}}
+    with patch.object(
+        branch._action_manager,
+        "invoke",
+        new=AsyncMock(side_effect=ValueError("Function missing_fn is not registered.")),
+    ):
+        await _act(branch, req, suppress_errors=True)
+
+    from lionagi.protocols.messages import ActionResponse
+
+    responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
+    assert len(responses) == 1
+    out = responses[0].output
+    assert out.get("function") == "missing_fn"
+    assert out.get("arguments") == {"key": "val"}
+
+
+@pytest.mark.asyncio
+async def test_act_suppress_errors_with_action_request_instance():
+    """When action_request is already an ActionRequest, it is added to messages directly."""
+    branch = Branch()
+    ar = ActionRequest(
+        content={"function": "nonexistent", "arguments": {}},
+        sender=branch.id,
+        recipient=branch.id,
+    )
+    with patch.object(
+        branch._action_manager,
+        "invoke",
+        new=AsyncMock(side_effect=RuntimeError("no such tool")),
+    ):
+        await _act(branch, ar, suppress_errors=True)
+
+    from lionagi.protocols.messages import ActionRequest as AR, ActionResponse
+
+    requests = [m for m in branch.messages if isinstance(m, AR)]
+    responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
+    assert len(requests) == 1
+    assert len(responses) == 1
+
+
+@pytest.mark.asyncio
 async def test_act_suppress_errors_false_reraises():
     """_act() with suppress_errors=False re-raises when action_manager raises (line 82)."""
     branch = Branch()
