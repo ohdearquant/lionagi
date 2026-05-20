@@ -1,0 +1,13 @@
+{
+  "name": "kg-bridge",
+  "description": "Bridge lionagi runs/agents to khive knowledge graph",
+  "version": "0.1.0",
+  "author": {
+    "name": "Ocean (HaiyangLi)",
+    "url": "https://github.com/ohdearquant"
+  },
+  "homepage": "https://github.com/khive-ai/lionagi",
+  "repository": "https://github.com/khive-ai/lionagi",
+  "license": "Apache-2.0",
+  "keywords": ["knowledge-graph", "khive", "bridge", "entities"]
+}
