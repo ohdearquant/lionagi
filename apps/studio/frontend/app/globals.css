@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* ─── Surface (backgrounds, layered dark → light) ─── */
+    --surface-base: #0e0e0e; /* deepest — canvas, page bg */
+    --surface-raised: #171717; /* cards, panels */
+    --surface-overlay: #1c1c1c; /* side panels, dropdowns, modals */
+    --surface-nav: #1a1a1a; /* header, navigation bar */
+    --surface-input: #222222; /* form inputs, textareas */
+    --surface-input-hover: #2a2a2a;
+
+    /* ─── Content (text) ─── */
+    --content-primary: #e5e5e5; /* main text */
+    --content-secondary: #a3a3a3; /* descriptions, metadata */
+    --content-muted: #6b6b6b; /* placeholders, disabled, labels */
+    --content-inverse: #ffffff; /* text on colored backgrounds */
+
+    /* ─── Edge (borders, dividers) ─── */
+    --edge-default: #2e2e2e; /* standard borders */
+    --edge-subtle: #232323; /* very light separation */
+    --edge-strong: #404040; /* emphasized borders, hover */
+
+    /* ─── Interactive (buttons, links) ─── */
+    --interactive-primary: #22c55e; /* green — primary action */
+    --interactive-primary-hover: #16a34a;
+    --interactive-secondary: #333333; /* secondary buttons bg */
+    --interactive-secondary-hover: #3d3d3d;
+    --interactive-focus: rgba(34, 197, 94, 0.3); /* focus ring */
+
+    /* ─── Status ─── */
+    --status-success: #22c55e;
+    --status-success-bg: rgba(34, 197, 94, 0.12);
+    --status-running: #60a5fa;
+    --status-running-bg: rgba(96, 165, 250, 0.12);
+    --status-error: #ef4444;
+    --status-error-bg: rgba(239, 68, 68, 0.12);
+    --status-warning: #f59e0b;
+    --status-warning-bg: rgba(245, 158, 11, 0.12);
+    --status-selected: #a855f7;
+    --status-selected-bg: rgba(168, 85, 247, 0.12);
+
+    /* ─── Role colors ─── */
+    --role-researcher: #22c55e;
+    --role-implementer: #a855f7;
+    --role-reviewer: #14b8a6;
+    --role-critic: #f59e0b;
+    --role-analyst: #3b82f6;
+    --role-architect: #ec4899;
+    --role-tester: #06b6d4;
+  }
+}
+
+/* Dark scrollbars — webkit (Chrome/Safari) */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--edge-default);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--edge-strong);
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--edge-default) transparent;
+}
