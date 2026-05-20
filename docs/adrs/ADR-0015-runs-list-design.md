@@ -108,7 +108,7 @@ During the transition period (most sessions have null provenance):
 **Negative**
 - Two-line rows use more vertical space per row (~52px vs ~36px).
 - Display-name algorithm requires client-side computation per row.
-- Filter state is local (no URL query params yet — add when deep-linking needed).
+- Filter state is local with one exception: the `?status=` query parameter is supported for dashboard deep links (ADR-0012). Other filter dimensions (kind, source, search) are local-only until deep-linking is needed.
 
 ## Alternatives Considered
 

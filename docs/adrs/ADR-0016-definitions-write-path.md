@@ -59,6 +59,8 @@ POST /api/definitions/{kind}/{name}
 
 Version numbers are monotonic per `(kind, name)`. Current version = `MAX(version)`.
 
+Definition identity is `(kind, name)`. This is unique because marketplace agents and playbooks are discovered at paths that resolve to the same namespace as local definitions (the plugin scanner contributes to the same agent/playbook registry). If a marketplace and local definition share the same name, the local definition takes precedence (closer to user). Collision detection is deferred — at current scale (20 playbooks, 17 agents), name conflicts have not occurred.
+
 ### Rollback semantics
 
 ```

@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS shows (
   repo                TEXT,                       -- absolute path to repo
   base_branch         TEXT,                       -- e.g. 'main'
   integration_branch  TEXT,                       -- e.g. 'show/topic/integration'
-  status              TEXT    NOT NULL DEFAULT 'active',  -- active|completed|aborted
+  status              TEXT    NOT NULL DEFAULT 'active',  -- active|completed|aborted|imported
+  status_source       TEXT,                       -- sqlite|filesystem|imported (confidence indicator)
   show_dir            TEXT    NOT NULL,           -- absolute path to show directory
   created_at          REAL    NOT NULL,
   updated_at          REAL    NOT NULL

@@ -25,6 +25,8 @@ state but does not send commands. The backend is FastAPI / Starlette (ADR-0002).
 **SSE is the only push transport.** No WebSocket. The browser-to-server direction
 uses standard REST endpoints for any mutations (save definition, trigger run).
 
+Note: with shows structural state in SQLite (ADR-0011), the show stream can use `shows.updated_at` / `plays.updated_at` as a cursor instead of filesystem polling. Filesystem polling remains valid as a fallback for shows not yet imported to SQLite, or as a change trigger that causes a SQLite refetch.
+
 ### SSE implementation
 
 Starlette `StreamingResponse` with `text/event-stream` media type. Newline-delimited

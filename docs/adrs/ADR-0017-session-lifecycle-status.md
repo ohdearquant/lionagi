@@ -1,0 +1,173 @@
+# ADR-0017: Session Lifecycle and Status Derivation
+
+**Status**: Accepted
+**Date**: 2026-05-20
+**Extends**: ADR-0009 (SQLite state layer), ADR-0012 (execution lineage)
+
+## Context
+
+The `sessions` table (ADR-0009) stores identity, metadata, progression references,
+and provenance hints (ADR-0012). But it has no lifecycle columns — no `status`,
+no `started_at`, no `ended_at`. Yet the UI depends on session lifecycle:
+
+- **Runs list** (ADR-0015) requires a Status column per row.
+- **Dashboard** (ADR-0012 §10) requires cards for running, failed, slow, needs-review.
+- **Display mapping** (ADR-0012 §3) translates raw statuses to UI vocabulary — but
+  doesn't specify where the raw status *comes from* for sessions.
+
+For show-play sessions, status can be derived from `plays.status` via the
+`plays.session_id` FK. For standalone sessions (`li agent`, `li play` without
+show context), there is no external status source.
+
+Without a lifecycle contract, implementers must invent derivation logic — leading
+to inconsistent status computation across the runs list, dashboard, and detail page.
+
+## Decision
+
+### Add lifecycle columns to sessions
+
+```sql
+ALTER TABLE sessions ADD COLUMN status     TEXT DEFAULT 'running';
+  -- running|completed|failed|aborted
+ALTER TABLE sessions ADD COLUMN started_at REAL;
+ALTER TABLE sessions ADD COLUMN ended_at   REAL;
+```
+
+Migration: v3→v4, same idempotent `ALTER TABLE ADD COLUMN` pattern as prior
+migrations (ADR-0009 migration protocol).
+
+### Status vocabulary (sessions)
+
+Sessions use a minimal lifecycle — four terminal-capable states:
+
+| Status | Meaning | Set by |
+|--------|---------|--------|
+| `running` | Session is active, branch(es) in progress | CLI at session creation |
+| `completed` | Session finished normally | CLI at session close (exit code 0) |
+| `failed` | Session terminated with error | CLI at session close (exit code != 0) |
+| `aborted` | Session was interrupted or cancelled | CLI on SIGINT/SIGTERM or user abort |
+
+This is deliberately simpler than the play status vocabulary (ADR-0011 has 11 play
+statuses). Sessions don't need gate/merge/redo states — those belong to the play
+layer. A show-play session is just `completed` or `failed`; the richer lifecycle
+lives on `plays.status`.
+
+### Write points
+
+| Event | Who writes | What changes |
+|-------|-----------|--------------|
+| `li agent` / `li play` start | CLI session init | INSERT session with `status='running'`, `started_at=now()` |
+| Session close (success) | CLI session finalize | UPDATE `status='completed'`, `ended_at=now()` |
+| Session close (error) | CLI session finalize | UPDATE `status='failed'`, `ended_at=now()` |
+| Session interrupt | CLI signal handler | UPDATE `status='aborted'`, `ended_at=now()` |
+| `li state import` | Import command | INSERT with status derived from run.json manifest |
+| Show play links session | Show skill Step 3 | Session already created by `li play`; play links via `plays.session_id` |
+
+### Import status derivation
+
+For filesystem imports (`source_kind='imported_fs'`), status is derived from:
+
+1. If `run.json` has `"status"` field → use it (mapped to session vocabulary).
+2. If `run.json` has `"exit_code": 0` → `completed`.
+3. If `run.json` has `"exit_code"` != 0 → `failed`.
+4. If neither → `completed` (conservative default for legacy runs that finished
+   writing `run.json`).
+
+`started_at` and `ended_at` come from `run.json` timestamps or filesystem
+`ctime`/`mtime` as fallback.
+
+### Duration computation
+
+Duration is computed, not stored:
+
+```
+duration_ms = (ended_at - started_at) * 1000   -- if both present
+duration_ms = NULL                               -- if session still running
+```
+
+The API returns `duration_ms` as a computed field. No `duration_ms` column.
+
+### Dashboard status queries
+
+With an explicit `status` column, dashboard queries become simple aggregates:
+
+```sql
+-- Running sessions
+SELECT COUNT(*) FROM sessions WHERE status = 'running';
+
+-- Failed sessions (last 24h)
+SELECT COUNT(*) FROM sessions WHERE status = 'failed'
+  AND ended_at > unixepoch() - 86400;
+
+-- Slow sessions (running > 30 min)
+SELECT COUNT(*) FROM sessions WHERE status = 'running'
+  AND started_at < unixepoch() - 1800;
+
+-- Needs review (sessions linked to gated/escalated/blocked plays)
+SELECT COUNT(DISTINCT s.id) FROM sessions s
+  JOIN plays p ON p.session_id = s.id
+  WHERE p.status IN ('gated', 'escalated', 'blocked');
+```
+
+### Relationship to play status
+
+For sessions created by show plays, both the session and the play have status.
+They are independent:
+
+- **Session status**: did the CLI process complete? (`completed` / `failed`)
+- **Play status**: what happened in the show lifecycle? (`running_complete` →
+  `gated` → `merged` or `gate_failed` → `redoing`)
+
+A session can be `completed` while its play is `gate_failed` — the CLI process
+succeeded, but the gate reviewer rejected the output. The session status answers
+"did it run?" The play status answers "was the output accepted?"
+
+The display mapping (ADR-0012 §3) applies to sessions on the runs list. Play
+status uses the richer vocabulary on the shows detail page (ADR-0011).
+
+### "Completed with errors" — no separate status
+
+Per ADR-0012 §3, tool errors are diagnostic, not status-changing. A session with
+intermediate tool failures is `completed`, not `completed_with_errors`. Error
+counts are surfaced on the run detail page, not in the session status.
+
+Error counts are NOT precomputed on the sessions table. Computing
+`COUNT(*) FROM messages WHERE role='tool' AND content LIKE '%error%'` is
+expensive at list-query time. Instead:
+
+- **Runs list**: all completed sessions show green `completed` pill. No error
+  distinction until error counts are precomputed (deferred optimization).
+- **Run detail**: error count computed on page load from the session's messages.
+- **Dashboard**: intermediate tool errors do not feed any dashboard card.
+
+## Consequences
+
+**Positive**
+- Runs list and dashboard can query session status directly — no derivation logic.
+- Four-status vocabulary is simple and unambiguous.
+- Duration is computable from two timestamps without a stored column.
+- Import status derivation is well-defined for legacy filesystem runs.
+- Clean separation: session status = "did it run?", play status = "was output accepted?"
+
+**Negative**
+- Three new columns on the sessions table (v4 migration).
+- CLI session init and finalize must write status — requires hooks or explicit calls.
+- Imported sessions may have imprecise timestamps if run.json is sparse.
+- Error counts remain expensive to compute at list-query time.
+
+## Alternatives Considered
+
+| Alternative | Why Rejected |
+|-------------|-------------|
+| Derive status from messages (no column) | Every list query scans messages; expensive and fragile (message patterns vary by provider) |
+| Derive from plays.status | Only works for show-play sessions; standalone sessions have no play |
+| Store error_count on sessions | Premature optimization; requires scanning all messages at session close; add when the runs list needs error distinction |
+| Rich session status (mirror play vocabulary) | Sessions don't have gates, merges, or redo cycles; forcing play lifecycle onto sessions is a category error |
+| Compute duration and store it | Derived from two timestamps; storing adds a column that can drift if ended_at is corrected |
+
+## References
+
+- [ADR-0009](ADR-0009-sqlite-state-layer.md) — sessions schema (extended by this ADR)
+- [ADR-0011](ADR-0011-shows-data-model.md) — play status vocabulary (richer, independent)
+- [ADR-0012](ADR-0012-studio-execution-lineage.md) — display mapping, dashboard cards, runs list
+- [ADR-0015](ADR-0015-runs-list-design.md) — runs list Status column (consumes this ADR)

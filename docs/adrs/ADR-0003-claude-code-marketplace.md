@@ -48,7 +48,7 @@ This play establishes the skeleton (manifests, directory structure, README, this
 - More manifests to maintain: root `marketplace.json` plus nine `plugin.json` files must stay in sync as plugin names or descriptions change.
 - Skills authored in `firm/resources/skills/` (canonical) must be copied or symlinked into `marketplace/<plugin>/skills/` for external installs — two places to update per skill change.
 - The `plugin.json` schema is not yet finalized by Anthropic; field names or required keys may shift before GA, requiring a sweep across all nine manifests.
-- `studio` and `mcp-bundle` manifests are intentionally incomplete stubs until the FastAPI route set from ADR-0002 is implemented; downstream consumers of those plugins will see empty capability until `marketplace-plugins-app` lands.
+- `studio` and `mcp-bundle` manifests are intentionally incomplete stubs until the FastAPI route contracts from ADR-0004 are implemented; downstream consumers of those plugins will see empty capability until `marketplace-plugins-app` lands.
 
 ## Alternatives Considered
 
@@ -61,7 +61,8 @@ This play establishes the skeleton (manifests, directory structure, README, this
 ## References
 
 - [ADR-0001: Lion Studio as Internal App](ADR-0001-lion-studio-internal-app.md) — establishes monorepo boundary and daily-driver app direction
-- [ADR-0002: Lion Studio Tech Stack](ADR-0002-studio-tech-stack.md) — establishes FastAPI backend route set that `studio` and `mcp-bundle` plugins will eventually configure
+- [ADR-0002: Lion Studio Tech Stack](ADR-0002-studio-tech-stack.md) — establishes FastAPI backend stack that the `studio` and `mcp-bundle` plugins depend on
+- [ADR-0004: Filesystem Data Layer](ADR-0004-filesystem-data-layer.md) — establishes the FastAPI backend route contracts that `studio` and `mcp-bundle` plugins will eventually configure
 - khive marketplace reference implementation: `/Users/lion/projects/khive/khive/marketplace/`
 
 ---
