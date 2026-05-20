@@ -130,12 +130,8 @@ async def test_act_suppress_errors_adds_messages_to_history():
     # Both the request and the error response must be in chat history.
     from lionagi.protocols.messages import ActionRequest, ActionResponse
 
-    action_requests = [
-        m for m in branch.messages if isinstance(m, ActionRequest)
-    ]
-    action_responses = [
-        m for m in branch.messages if isinstance(m, ActionResponse)
-    ]
+    action_requests = [m for m in branch.messages if isinstance(m, ActionRequest)]
+    action_responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
     assert len(action_requests) == 1, "Failed ActionRequest must be in branch.messages"
     assert len(action_responses) == 1, "Error ActionResponse must be in branch.messages"
 
@@ -182,7 +178,8 @@ async def test_act_suppress_errors_with_action_request_instance():
     ):
         await _act(branch, ar, suppress_errors=True)
 
-    from lionagi.protocols.messages import ActionRequest as AR, ActionResponse
+    from lionagi.protocols.messages import ActionRequest as AR
+    from lionagi.protocols.messages import ActionResponse
 
     requests = [m for m in branch.messages if isinstance(m, AR)]
     responses = [m for m in branch.messages if isinstance(m, ActionResponse)]

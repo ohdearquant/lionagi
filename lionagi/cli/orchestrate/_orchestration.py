@@ -240,7 +240,9 @@ def setup_orchestration(
             fast = True
 
     if not model_spec:
-        raise ValueError("Provide a model spec or use -a/--agent to load a profile with a model.")
+        raise ValueError(
+            "Provide a model spec or use -a/--agent to load a profile with a model."
+        )
 
     orc_imodel = build_imodel_from_spec(
         model_spec,
@@ -371,7 +373,9 @@ def build_worker_branch(
     w_imodel.endpoint.config.kwargs["repo"] = artifact_dir
     # Grant write access to the actual project directory so workers can
     # edit source files, not just their artifact sandbox.
-    project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
+    project_root = (
+        str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
+    )
     w_imodel.endpoint.config.kwargs.setdefault("add_dir", [])
     if project_root not in w_imodel.endpoint.config.kwargs["add_dir"]:
         w_imodel.endpoint.config.kwargs["add_dir"].append(project_root)
@@ -452,7 +456,8 @@ def finalize_orchestration(
         "model_spec": env.default_model_spec,
         "orchestrator_branch_id": orc_branch_id,
         "branches": [
-            {"id": bid, "provider": prov, "name": bname} for prov, bid, bname in branch_ids
+            {"id": bid, "provider": prov, "name": bname}
+            for prov, bid, bname in branch_ids
         ],
     }
     if extras:

@@ -36,11 +36,18 @@ def find_rollout(run_id: str) -> Path | None:
         return None
     try:
         date_str, _ = run_id.split("-", 1)
-        utc_dt = datetime.strptime(date_str, "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
+        utc_dt = datetime.strptime(date_str, "%Y%m%dT%H%M%S").replace(
+            tzinfo=timezone.utc
+        )
     except (ValueError, KeyError):
         return None
     local_dt = utc_dt.astimezone()
-    day_dir = CODEX_SESSIONS_ROOT / f"{local_dt.year:04d}" / f"{local_dt.month:02d}" / f"{local_dt.day:02d}"
+    day_dir = (
+        CODEX_SESSIONS_ROOT
+        / f"{local_dt.year:04d}"
+        / f"{local_dt.month:02d}"
+        / f"{local_dt.day:02d}"
+    )
     if not day_dir.exists():
         return None
     prefix = local_dt.strftime("rollout-%Y-%m-%dT%H-%M-%S-")
@@ -48,7 +55,9 @@ def find_rollout(run_id: str) -> Path | None:
     if matches:
         return matches[0]
     target_ts = local_dt.timestamp()
-    candidates = [(abs(p.stat().st_mtime - target_ts), p) for p in day_dir.glob("rollout-*.jsonl")]
+    candidates = [
+        (abs(p.stat().st_mtime - target_ts), p) for p in day_dir.glob("rollout-*.jsonl")
+    ]
     candidates.sort()
     if candidates and candidates[0][0] <= 60:
         return candidates[0][1]
@@ -84,23 +93,27 @@ def parse_rollout_events(rollout_path: Path) -> list[dict[str, Any]]:
                         args = {"raw": args_raw}
                 if not isinstance(args, dict):
                     args = {"raw": str(args)}
-                events.append({
-                    "kind": "function_call",
-                    "call_id": payload.get("call_id", ""),
-                    "name": name,
-                    "arguments": args,
-                    "ts": ts,
-                })
+                events.append(
+                    {
+                        "kind": "function_call",
+                        "call_id": payload.get("call_id", ""),
+                        "name": name,
+                        "arguments": args,
+                        "ts": ts,
+                    }
+                )
             elif ptype == "function_call_output":
                 output = payload.get("output", "")
                 if isinstance(output, dict):
                     output = output.get("content") or json.dumps(output)
-                events.append({
-                    "kind": "function_call_output",
-                    "call_id": payload.get("call_id", ""),
-                    "output": str(output),
-                    "ts": ts,
-                })
+                events.append(
+                    {
+                        "kind": "function_call_output",
+                        "call_id": payload.get("call_id", ""),
+                        "output": str(output),
+                        "ts": ts,
+                    }
+                )
             elif ptype == "custom_tool_call":
                 inp = payload.get("input", "")
                 args: Any
@@ -110,24 +123,30 @@ def parse_rollout_events(rollout_path: Path) -> list[dict[str, Any]]:
                     args = inp
                 else:
                     args = {"input": str(inp)}
-                events.append({
-                    "kind": "function_call",
-                    "call_id": payload.get("call_id", ""),
-                    "name": payload.get("name", ""),
-                    "arguments": args,
-                    "ts": ts,
-                })
+                events.append(
+                    {
+                        "kind": "function_call",
+                        "call_id": payload.get("call_id", ""),
+                        "name": payload.get("name", ""),
+                        "arguments": args,
+                        "ts": ts,
+                    }
+                )
             elif ptype == "custom_tool_call_output":
-                events.append({
-                    "kind": "function_call_output",
-                    "call_id": payload.get("call_id", ""),
-                    "output": str(payload.get("output", "")),
-                    "ts": ts,
-                })
+                events.append(
+                    {
+                        "kind": "function_call_output",
+                        "call_id": payload.get("call_id", ""),
+                        "output": str(payload.get("output", "")),
+                        "ts": ts,
+                    }
+                )
             elif ptype == "agent_message":
                 text = payload.get("message", "")
                 if text:
-                    events.append({"kind": "agent_message", "text": str(text), "ts": ts})
+                    events.append(
+                        {"kind": "agent_message", "text": str(text), "ts": ts}
+                    )
 
     return events
 
@@ -154,7 +173,9 @@ def make_action_request(
     return {
         "id": str(uuid.uuid4()),
         "created_at": created_at,
-        "metadata": {"lion_class": "lionagi.protocols.messages.action_request.ActionRequest"},
+        "metadata": {
+            "lion_class": "lionagi.protocols.messages.action_request.ActionRequest"
+        },
         "content": {
             "arguments": arguments,
             "function": function,
@@ -182,7 +203,9 @@ def make_action_response(
     return {
         "id": response_id,
         "created_at": created_at,
-        "metadata": {"lion_class": "lionagi.protocols.messages.action_response.ActionResponse"},
+        "metadata": {
+            "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+        },
         "content": {
             "arguments": arguments,
             "function": function,
@@ -207,7 +230,9 @@ def make_assistant_response(
     return {
         "id": str(uuid.uuid4()),
         "created_at": created_at,
-        "metadata": {"lion_class": "lionagi.protocols.messages.assistant_response.AssistantResponse"},
+        "metadata": {
+            "lion_class": "lionagi.protocols.messages.assistant_response.AssistantResponse"
+        },
         "content": {"assistant_response": text},
         "embedding": None,
         "sender": sender,
@@ -266,7 +291,11 @@ def reconstruct_messages(
                 created_at=ts,
             )
             new_collections.append(req)
-            pending_requests[ev["call_id"]] = {"req_id": req["id"], "res_id": response_id, "req": req}
+            pending_requests[ev["call_id"]] = {
+                "req_id": req["id"],
+                "res_id": response_id,
+                "req": req,
+            }
 
         elif kind == "function_call_output":
             paired = pending_requests.pop(ev["call_id"], None)
@@ -352,7 +381,9 @@ def migrate_branch(branch_path: Path, rollout_path: Path) -> int:
         return 0
 
     msgs["collections"] = new_collections
-    msgs["progression"]["order"] = [c["id"] for c in new_collections if isinstance(c, dict)]
+    msgs["progression"]["order"] = [
+        c["id"] for c in new_collections if isinstance(c, dict)
+    ]
 
     backup = branch_path.with_suffix(".json.pre-migrate")
     if not backup.exists():
@@ -422,7 +453,9 @@ def main() -> int:
                 matched_runs += 1
                 migrated_branches += 1
                 added_messages += added
-                print(f"  {run_dir.name} :: {branch_file.name[:16]}  +{added} messages from {branch_rollout.name}")
+                print(
+                    f"  {run_dir.name} :: {branch_file.name[:16]}  +{added} messages from {branch_rollout.name}"
+                )
 
     print()
     print(f"Codex branches scanned: {total_runs}")
@@ -438,7 +471,12 @@ def find_rollout_for_branch(branch_created_at: float) -> Path | None:
     if not CODEX_SESSIONS_ROOT.exists() or not branch_created_at:
         return None
     local_dt = datetime.fromtimestamp(branch_created_at)
-    day_dir = CODEX_SESSIONS_ROOT / f"{local_dt.year:04d}" / f"{local_dt.month:02d}" / f"{local_dt.day:02d}"
+    day_dir = (
+        CODEX_SESSIONS_ROOT
+        / f"{local_dt.year:04d}"
+        / f"{local_dt.month:02d}"
+        / f"{local_dt.day:02d}"
+    )
     if not day_dir.exists():
         return None
     candidates: list[tuple[float, Path]] = []

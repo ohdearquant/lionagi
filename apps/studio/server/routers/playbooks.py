@@ -29,7 +29,9 @@ async def create_playbook(name: str) -> dict[str, Any]:
 
 
 @router.put("/{name}")
-async def update_playbook(name: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def update_playbook(
+    name: str, body: dict[str, Any] = Body(...)
+) -> dict[str, Any]:
     updated = playbooks_svc.update_playbook(name, body)
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Playbook '{name}' not found")
@@ -43,7 +45,9 @@ async def delete_playbook(name: str) -> dict[str, Any]:
 
 
 @router.post("/{name}/validate")
-async def validate_playbook(name: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def validate_playbook(
+    name: str, body: dict[str, Any] = Body(...)
+) -> dict[str, Any]:
     return playbooks_svc.validate_playbook(name, body)
 
 

@@ -433,7 +433,7 @@ class MessageManager(Manager):
         params = {
             k: v
             for k, v in locals().items()
-            if k not in ("system", "self") and v is not None
+            if k != "self" and v is not None
         }
         _msg = self.create_message(**params)
         if system:

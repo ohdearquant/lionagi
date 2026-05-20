@@ -55,7 +55,9 @@ def _adapt_summary(
             status = "completed"
             if not finished_at:
                 try:
-                    latest = max(branches_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
+                    latest = max(
+                        branches_dir.glob("*.json"), key=lambda p: p.stat().st_mtime
+                    )
                     finished_at = latest.stat().st_mtime
                 except (OSError, ValueError):
                     pass
@@ -98,17 +100,21 @@ def _build_graph(manifest: dict[str, Any]) -> dict[str, Any]:
         kind = manifest.get("kind", "")
         if kind:
             return {
-                "nodes": [{
-                    "id": kind,
-                    "label": kind,
-                    "role": manifest.get("provider", ""),
-                    "assignment": manifest.get("model_spec") or manifest.get("model") or "",
-                    "prompt": "",
-                    "capacity": 1,
-                    "timeout": None,
-                    "inputs": [],
-                    "outputs": [],
-                }],
+                "nodes": [
+                    {
+                        "id": kind,
+                        "label": kind,
+                        "role": manifest.get("provider", ""),
+                        "assignment": manifest.get("model_spec")
+                        or manifest.get("model")
+                        or "",
+                        "prompt": "",
+                        "capacity": 1,
+                        "timeout": None,
+                        "inputs": [],
+                        "outputs": [],
+                    }
+                ],
                 "edges": [],
             }
         return {"nodes": [], "edges": []}
@@ -122,24 +128,28 @@ def _build_graph(manifest: dict[str, Any]) -> dict[str, Any]:
             continue
         agent_id = op.get("agent_id", "")
         agent = agent_map.get(agent_id, {})
-        nodes.append({
-            "id": op["id"],
-            "label": op["id"],
-            "role": agent.get("name", ""),
-            "assignment": agent.get("model", ""),
-            "prompt": "",
-            "capacity": 1,
-            "timeout": None,
-            "inputs": op.get("depends_on", []),
-            "outputs": [],
-        })
+        nodes.append(
+            {
+                "id": op["id"],
+                "label": op["id"],
+                "role": agent.get("name", ""),
+                "assignment": agent.get("model", ""),
+                "prompt": "",
+                "capacity": 1,
+                "timeout": None,
+                "inputs": op.get("depends_on", []),
+                "outputs": [],
+            }
+        )
         for dep in op.get("depends_on", []):
-            edges.append({
-                "id": f"e-{dep}-{op['id']}",
-                "source": dep,
-                "target": op["id"],
-                "mode": "simple",
-            })
+            edges.append(
+                {
+                    "id": f"e-{dep}-{op['id']}",
+                    "source": dep,
+                    "target": op["id"],
+                    "mode": "simple",
+                }
+            )
 
     return {"nodes": nodes, "edges": edges}
 
@@ -185,7 +195,10 @@ def _detect_status(output: str, function: str) -> tuple[str, int | None]:
             break
     if exit_code is not None and exit_code != 0:
         return ("error", exit_code)
-    if any(kw in lower[:300] for kw in ("error:", "failed", "permission denied", "not found")):
+    if any(
+        kw in lower[:300]
+        for kw in ("error:", "failed", "permission denied", "not found")
+    ):
         if "no such file or directory" in lower:
             return ("error", exit_code)
     return ("ok", exit_code)
@@ -245,9 +258,20 @@ def _extract_messages(branch: dict[str, Any]) -> list[dict[str, Any]]:
 
         # Render System
         if role == "system":
-            text = content.get("system_message", "") if isinstance(content, dict) else str(content)
+            text = (
+                content.get("system_message", "")
+                if isinstance(content, dict)
+                else str(content)
+            )
             if text:
-                out.append({"role": "system", "content": text, "sender": sender[:8], "timestamp": ts})
+                out.append(
+                    {
+                        "role": "system",
+                        "content": text,
+                        "sender": sender[:8],
+                        "timestamp": ts,
+                    }
+                )
             continue
 
         # Render User (Instruction)
@@ -262,23 +286,47 @@ def _extract_messages(branch: dict[str, Any]) -> list[dict[str, Any]]:
             else:
                 text = str(content)
             if text:
-                out.append({"role": "user", "content": text, "sender": sender[:8], "timestamp": ts})
+                out.append(
+                    {
+                        "role": "user",
+                        "content": text,
+                        "sender": sender[:8],
+                        "timestamp": ts,
+                    }
+                )
             continue
 
         # Render Assistant
         if role == "assistant":
-            text = content.get("assistant_response", "") if isinstance(content, dict) else str(content)
+            text = (
+                content.get("assistant_response", "")
+                if isinstance(content, dict)
+                else str(content)
+            )
             if text:
-                out.append({"role": "assistant", "content": text, "sender": sender[:8], "timestamp": ts})
+                out.append(
+                    {
+                        "role": "assistant",
+                        "content": text,
+                        "sender": sender[:8],
+                        "timestamp": ts,
+                    }
+                )
             continue
 
         # Render Action (tool call) — pair request with its response
         if role == "action" and cls == "ActionRequest":
             args = content.get("arguments", {}) if isinstance(content, dict) else {}
             fn = content.get("function", "") if isinstance(content, dict) else ""
-            response_id = content.get("action_response_id") if isinstance(content, dict) else None
+            response_id = (
+                content.get("action_response_id") if isinstance(content, dict) else None
+            )
             response_msg = response_by_id.get(response_id, {}) if response_id else {}
-            response_content = response_msg.get("content", {}) if isinstance(response_msg, dict) else {}
+            response_content = (
+                response_msg.get("content", {})
+                if isinstance(response_msg, dict)
+                else {}
+            )
             output_text = ""
             if isinstance(response_content, dict):
                 output_text = str(response_content.get("output", ""))
@@ -288,17 +336,19 @@ def _extract_messages(branch: dict[str, Any]) -> list[dict[str, Any]]:
             status, exit_code = _detect_status(output_text, fn)
             summary = _summarize_args(fn, args if isinstance(args, dict) else {})
 
-            out.append({
-                "role": "tool_call",
-                "function": fn,
-                "summary": summary,
-                "arguments": args if isinstance(args, dict) else {},
-                "output": output_text,
-                "status": status,
-                "exit_code": exit_code,
-                "sender": sender[:8],
-                "timestamp": ts,
-            })
+            out.append(
+                {
+                    "role": "tool_call",
+                    "function": fn,
+                    "summary": summary,
+                    "arguments": args if isinstance(args, dict) else {},
+                    "output": output_text,
+                    "status": status,
+                    "exit_code": exit_code,
+                    "sender": sender[:8],
+                    "timestamp": ts,
+                }
+            )
             continue
 
         # Orphan action_response (shouldn't normally happen)
@@ -307,17 +357,21 @@ def _extract_messages(branch: dict[str, Any]) -> list[dict[str, Any]]:
             fn = content.get("function", "") if isinstance(content, dict) else ""
             output_text = content.get("output", "") if isinstance(content, dict) else ""
             status, exit_code = _detect_status(str(output_text), fn)
-            out.append({
-                "role": "tool_call",
-                "function": fn,
-                "summary": _summarize_args(fn, args if isinstance(args, dict) else {}),
-                "arguments": args if isinstance(args, dict) else {},
-                "output": str(output_text),
-                "status": status,
-                "exit_code": exit_code,
-                "sender": sender[:8],
-                "timestamp": ts,
-            })
+            out.append(
+                {
+                    "role": "tool_call",
+                    "function": fn,
+                    "summary": _summarize_args(
+                        fn, args if isinstance(args, dict) else {}
+                    ),
+                    "arguments": args if isinstance(args, dict) else {},
+                    "output": str(output_text),
+                    "status": status,
+                    "exit_code": exit_code,
+                    "sender": sender[:8],
+                    "timestamp": ts,
+                }
+            )
 
     return out
 
@@ -342,18 +396,22 @@ def _build_steps(
             for m in messages:
                 r = m["role"]
                 role_counts[r] = role_counts.get(r, 0) + 1
-            steps.append({
-                "step": name,
-                "status": "completed" if messages else "pending",
-                "result": {
-                    "agent": name,
-                    "model": manifest.get("model_spec") or manifest.get("model") or "",
-                    "message_count": len(messages),
-                    "roles": role_counts,
-                },
-                "messages": messages,
-                "timestamp": None,
-            })
+            steps.append(
+                {
+                    "step": name,
+                    "status": "completed" if messages else "pending",
+                    "result": {
+                        "agent": name,
+                        "model": manifest.get("model_spec")
+                        or manifest.get("model")
+                        or "",
+                        "message_count": len(messages),
+                        "roles": role_counts,
+                    },
+                    "messages": messages,
+                    "timestamp": None,
+                }
+            )
         return steps if steps else None
 
     agent_map = {a["id"]: a for a in agents if isinstance(a, dict) and "id" in a}
@@ -378,18 +436,24 @@ def _build_steps(
             r = m["role"]
             role_counts[r] = role_counts.get(r, 0) + 1
 
-        steps.append({
-            "step": op["id"],
-            "status": "completed" if has_branch else "pending",
-            "result": {
-                "agent": agent_name,
-                "model": agent.get("model", ""),
-                "message_count": len(messages),
-                "roles": role_counts,
-            } if has_branch else None,
-            "messages": messages if has_branch else [],
-            "timestamp": None,
-        })
+        steps.append(
+            {
+                "step": op["id"],
+                "status": "completed" if has_branch else "pending",
+                "result": (
+                    {
+                        "agent": agent_name,
+                        "model": agent.get("model", ""),
+                        "message_count": len(messages),
+                        "roles": role_counts,
+                    }
+                    if has_branch
+                    else None
+                ),
+                "messages": messages if has_branch else [],
+                "timestamp": None,
+            }
+        )
 
     seen_agents: set[str] = set()
     for step in steps:
@@ -460,7 +524,9 @@ def get_run(run_id: str) -> dict[str, Any] | None:
 
     state_root = RUNS_ROOT / run_id
     if not state_root.is_dir():
-        matches = [d for d in RUNS_ROOT.iterdir() if d.is_dir() and d.name.startswith(run_id)]
+        matches = [
+            d for d in RUNS_ROOT.iterdir() if d.is_dir() and d.name.startswith(run_id)
+        ]
         if not matches:
             return None
         state_root = sorted(matches, key=lambda p: p.stat().st_mtime, reverse=True)[0]
@@ -504,7 +570,9 @@ def stream_run_events(run_id: str) -> AsyncGenerator[str, None] | None:
 
     state_root = RUNS_ROOT / run_id
     if not state_root.is_dir():
-        matches = [d for d in RUNS_ROOT.iterdir() if d.is_dir() and d.name.startswith(run_id)]
+        matches = [
+            d for d in RUNS_ROOT.iterdir() if d.is_dir() and d.name.startswith(run_id)
+        ]
         if not matches:
             return None
         state_root = sorted(matches, key=lambda p: p.stat().st_mtime, reverse=True)[0]

@@ -49,7 +49,9 @@ async def _run_agent(
     Returns (result, provider, branch_id).
     """
     if resume and continue_last:
-        raise ValueError("--resume / -r and --continue-last / -c are mutually exclusive.")
+        raise ValueError(
+            "--resume / -r and --continue-last / -c are mutually exclusive."
+        )
 
     # Load agent profile if specified — provides defaults for model/effort/yolo/fast_mode
     profile = None
@@ -92,7 +94,9 @@ async def _run_agent(
         )
 
     if branch is None:
-        chat_model = build_chat_model(provider, model, yolo, verbose, theme, effort, fast)
+        chat_model = build_chat_model(
+            provider, model, yolo, verbose, theme, effort, fast
+        )
         branch = Branch(
             chat_model=chat_model,
             log_config=DataLoggerConfig(auto_save_on_exit=False),
@@ -130,7 +134,7 @@ async def _run_agent(
         **({"repo": cwd} if cwd else {}),
     )
 
-    # Final branch snapshot + run manifest
+    # Final branch snapshot + run manifest (filesystem — legacy)
     run.branch_path(branch_id).write_text(json.dumps(branch.to_dict()))
     run.write_manifest(
         {
@@ -143,7 +147,29 @@ async def _run_agent(
     )
     save_last_branch_pointer(run.run_id, branch_id)
 
+    # Persist to SQLite state layer (if aiosqlite available)
+    await _persist_to_state_db(branch, prompt)
+
     return res or "", provider, branch_id
+
+
+async def _persist_to_state_db(branch: Branch, task: str) -> None:
+    """Best-effort persist to ~/.lionagi/state.db."""
+    try:
+        from lionagi.session.session import Session
+
+        from lionagi.state.db import StateDB
+        from lionagi.state.persist import persist_session
+
+        session = Session(name="agent")
+        session.include_branches(branch)
+
+        async with StateDB() as db:
+            await persist_session(db, session)
+    except ImportError:
+        pass
+    except Exception:
+        pass
 
 
 def add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:

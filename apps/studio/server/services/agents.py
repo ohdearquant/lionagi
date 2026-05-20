@@ -148,7 +148,11 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
 
     if fm:
         fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
-        new_text = f"---\n{fm_text}\n---\n\n{new_body}\n" if new_body else f"---\n{fm_text}\n---\n"
+        new_text = (
+            f"---\n{fm_text}\n---\n\n{new_body}\n"
+            if new_body
+            else f"---\n{fm_text}\n---\n"
+        )
     else:
         new_text = f"{new_body}\n" if new_body else ""
 
