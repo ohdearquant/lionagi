@@ -590,6 +590,12 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     Yields each JSON object emitted by the Codex CLI (JSONL mode).
 
     Robust against UTF-8 splits and uses json.JSONDecoder.raw_decode.
+    Drains stderr concurrently into a bounded buffer so the subprocess
+    cannot deadlock when it produces large stderr volumes before any
+    stdout output. The codex CLI launches with ``start_new_session=True``,
+    so cancellation terminates the whole process group rather than just
+    the direct child — needed for cleanup when shells, ssh, etc. are
+    spawned beneath the CLI itself.
     """
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
@@ -608,6 +614,34 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
 
     if proc.stdout is None:
         raise RuntimeError("Failed to capture stdout from Codex CLI")
+
+    # Bounded stderr capture (256 KiB) — enough for a useful error tail,
+    # bounded so a runaway logger can't consume unlimited memory.
+    stderr_cap = 256 * 1024
+    stderr_chunks: list[bytes] = []
+    stderr_total = 0
+
+    async def _drain_stderr() -> None:
+        nonlocal stderr_total
+        if proc.stderr is None:
+            return
+        try:
+            while True:
+                chunk = await proc.stderr.read(4096)
+                if not chunk:
+                    break
+                remaining = stderr_cap - stderr_total
+                if remaining > 0:
+                    take = chunk[:remaining]
+                    stderr_chunks.append(take)
+                    stderr_total += len(take)
+                # Beyond the cap we keep draining the pipe (so the
+                # subprocess never blocks on a full pipe buffer) but
+                # discard the bytes.
+        except Exception as exc:
+            log.debug("stderr drain ended: %s", exc)
+
+    stderr_task = asyncio.create_task(_drain_stderr())
 
     try:
         while True:
@@ -638,21 +672,44 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
                 log.error("Skipped unrecoverable JSON tail: %.120s...", buffer)
 
         if await proc.wait() != 0:
-            err = ""
-            if proc.stderr is not None:
-                err = (await proc.stderr.read()).decode().strip()
+            # Wait for stderr drain to finish before reading the buffer.
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(stderr_task, timeout=2.0)
+            err = b"".join(stderr_chunks).decode(errors="replace").strip()
             raise RuntimeError(err or "Codex CLI exited non-zero")
 
     finally:
+        # Terminate the whole process group (start_new_session=True above)
+        # so any sub-children spawned by codex itself are reaped too.
+        import os
+        import signal
+
+        pgid: int | None = None
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, OSError):
+            pgid = None
+
+        if pgid is not None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(pgid, signal.SIGTERM)
         with contextlib.suppress(ProcessLookupError):
             proc.terminate()
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
         except asyncio.TimeoutError:
+            if pgid is not None:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(pgid, signal.SIGKILL)
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             with contextlib.suppress(Exception):
                 await proc.wait()
+
+        # Ensure the stderr drain task is reaped so the event loop can close.
+        stderr_task.cancel()
+        with contextlib.suppress(Exception):
+            await stderr_task
 
 
 # --------------------------------------------------------------------------- event stream

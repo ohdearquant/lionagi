@@ -91,18 +91,21 @@ session-level message pool) and zero or more branches.  Maps 1:1 to
 | `last_msg_id` | TEXT FK | convenience bookmark |
 | `updated_at` | REAL | defaults to `now()` on insert; callers can override for lossless `li state import` / backfill |
 
-> **Provenance columns (migration v2→v3):** `playbook_name`, `agent_name`,
-> `invocation_kind`, `show_topic`, `show_play_name`, `artifacts_path`, and
-> `source_kind` are added to the sessions table by the v2→v3 migration. See
-> ADR-0012 for the enrichment decision. These columns are nullable lightweight
-> hints for display and filtering — they are not authoritative execution state.
+> **Provenance columns:** `playbook_name`, `agent_name`, `invocation_kind`,
+> `show_topic`, `show_play_name`, `artifacts_path`, and `source_kind` are
+> first-class columns on `sessions`. See ADR-0012 for the enrichment decision.
+> These columns are nullable lightweight hints for display and filtering —
+> they are not authoritative execution state. `invocation_kind` and
+> `source_kind` carry schema-level `CHECK` constraints mirrored by Python
+> validators in `db.py` (closed vocabularies, ADR-0012).
 
 Session is the **substrate**, not the invocation. Heavy run-level concerns
 (full manifest, cwd, provider, model, play-level lifecycle) are NOT on the
 session table. Minimal lifecycle columns (`status`, `started_at`, `ended_at`)
-are added by ADR-0017's v3→v4 migration for dashboard and runs-list queries. However, minimal provenance columns (`playbook_name`,
+are first-class on `sessions` for dashboard and runs-list queries (see
+ADR-0017). However, minimal provenance columns (`playbook_name`,
 `invocation_kind`, `show_topic`, `show_play_name`, `agent_name`,
-`artifacts_path`, `source_kind`) are added to sessions for execution lineage
+`artifacts_path`, `source_kind`) are also on sessions for execution lineage
 queries (see ADR-0012). These are lightweight hints for display and filtering,
 not authoritative execution state.
 
@@ -209,11 +212,16 @@ grep, git, symlinks).  ADR-0004 remains valid for these.
 - JSON array for progression ordering limits query-side operations (no
   `WHERE message_id IN progression` without JSON parsing).
 - Schema migrations will be needed as the model evolves. **Migration protocol:**
-  a `schema_meta` table tracks the current version number. Migrations run
-  sequentially on database open (v1→v2, v2→v3, etc.). Each migration step is
-  idempotent — uses the `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` / try-except
-  pattern so re-runs are safe. The `db.py _migrate()` method is the canonical
-  migration runner.
+  this PR ships v1 as the collapsed initial release schema (no `v1→v2`
+  migration runner yet). Forward-only column reconciliation is handled in
+  `StateDB._reconcile_columns()` — it `PRAGMA table_info`s every table named
+  in `_MIGRATION_COLUMNS` and `ALTER TABLE ... ADD COLUMN`s anything that
+  exists in the current schema but not on disk. This safely upgrades
+  pre-release `state.db` files that were written before late provenance /
+  lifecycle columns landed without requiring a numbered migration step. When
+  the schema needs a true v2 (column removal, type change, table split), the
+  numbered `_migrate()` runner described above will be added and `schema_meta`
+  will bump.
 
 ## Alternatives Considered
 

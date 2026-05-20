@@ -10,7 +10,6 @@ entry points (li agent, li play, etc.) after the session completes.
 
 from __future__ import annotations
 
-import time
 import uuid
 from typing import TYPE_CHECKING
 

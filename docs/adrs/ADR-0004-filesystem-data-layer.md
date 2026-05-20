@@ -57,8 +57,26 @@ mandatory dependency (not optional), and the live hooks provide richer data than
 the end-of-run JSON dump (e.g., messages appear as they're produced, not after
 the run completes).
 
+> **Stream artifacts are a narrow exception.** `stream_persist=True` writes
+> `~/.lionagi/runs/<id>/stream/<branch>.json` plus a `<branch>.buffer.jsonl`
+> incremental chunk log. These are **not** canonical state — SQLite is — they
+> exist as a transient resume/debug artifact for the streaming providers (the
+> JSON file is the last-known branch snapshot; the JSONL buffer is the
+> chunk-by-chunk stream). Downstream tooling MUST NOT treat them as the
+> source of truth, and Studio query routes MUST NOT read them.
+
 Historical `~/.lionagi/runs/` JSON directories remain on disk as a read-only
 archive. `li state import` brings them into SQLite for querying.
+
+> **Studio query rewiring is pending.** The Studio API routes for
+> `/api/runs`, `/api/sessions/{id}`, and `/api/shows` were originally
+> implemented against the filesystem (`~/.lionagi/runs/run.json`,
+> `branches/*.json`, `~/.lionagi/shows/_meta.json`) and have not yet been
+> rewired to read from SQLite. The state layer landed in this PR; the
+> Studio rewire is a follow-up (issue TBD). Until then, new SQLite-backed
+> runs are correctly persisted but invisible to the Studio listing UI for
+> the routes still pointing at the filesystem. CLI tooling (`li state list`,
+> direct DB queries) is unaffected.
 
 For human-readable export, use `li state export <session-id> --format json`
 (future command).

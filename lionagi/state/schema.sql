@@ -89,11 +89,18 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- ── Provenance (ADR-0012) ──────────────────────────────────────────────
   playbook_name   TEXT,
   agent_name     TEXT,
-  invocation_kind TEXT,                        -- agent|play|flow|fanout|show-play
+  invocation_kind TEXT CHECK(
+                    invocation_kind IS NULL
+                    OR invocation_kind IN
+                      ('agent', 'play', 'flow', 'fanout', 'show-play')
+                  ),
   show_topic      TEXT,
   show_play_name  TEXT,
   artifacts_path  TEXT,
-  source_kind     TEXT    DEFAULT 'live',       -- live|imported_fs
+  source_kind     TEXT    DEFAULT 'live' CHECK(
+                    source_kind IS NULL
+                    OR source_kind IN ('live', 'imported_fs')
+                  ),
   -- ── Lifecycle (ADR-0017) ───────────────────────────────────────────
   status          TEXT CHECK(
                     status IS NULL
@@ -154,7 +161,9 @@ CREATE TABLE IF NOT EXISTS shows (
   repo                TEXT,
   base_branch         TEXT,
   integration_branch  TEXT,
-  status              TEXT    NOT NULL DEFAULT 'active',
+  status              TEXT    NOT NULL DEFAULT 'active' CHECK(
+                        status IN ('active', 'completed', 'aborted', 'imported')
+                      ),
   show_dir            TEXT    NOT NULL,
   created_at          REAL    NOT NULL,
   updated_at          REAL    NOT NULL
@@ -172,7 +181,13 @@ CREATE TABLE IF NOT EXISTS plays (
   name            TEXT    NOT NULL,
   playbook        TEXT,
   effort          TEXT,
-  status          TEXT    NOT NULL DEFAULT 'pending',
+  status          TEXT    NOT NULL DEFAULT 'pending' CHECK(
+                    status IN (
+                      'pending', 'prepared', 'running', 'running_complete',
+                      'gated', 'gate_failed', 'redoing', 'merged',
+                      'escalated', 'blocked', 'aborted_after_finish'
+                    )
+                  ),
   attempt         INTEGER NOT NULL DEFAULT 1,
   session_id      TEXT    REFERENCES sessions(id),
   started_at      REAL,

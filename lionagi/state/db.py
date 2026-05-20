@@ -40,6 +40,19 @@ _PLAY_COLUMNS = frozenset({
 # get a clear ``ValueError`` instead of an opaque sqlite IntegrityError.
 _SESSION_STATUSES = frozenset({"running", "completed", "failed", "aborted"})
 
+# ADR-0012: closed provenance vocabularies. Validated alongside status
+# so dashboards/filters can't be polluted with arbitrary text.
+_INVOCATION_KINDS = frozenset({"agent", "play", "flow", "fanout", "show-play"})
+_SOURCE_KINDS = frozenset({"live", "imported_fs"})
+
+# ADR-0011: shows + plays lifecycle vocabularies.
+_SHOW_STATUSES = frozenset({"active", "completed", "aborted", "imported"})
+_PLAY_STATUSES = frozenset({
+    "pending", "prepared", "running", "running_complete",
+    "gated", "gate_failed", "redoing", "merged",
+    "escalated", "blocked", "aborted_after_finish",
+})
+
 # ADR-0016: only agent + playbook definitions are editable via Studio's
 # write path. Skills and third-party plugin components are read-only.
 _DEFINITION_KINDS = frozenset({"agent", "playbook"})
@@ -51,6 +64,24 @@ def _validate_columns(fields: dict[str, Any], allowed: frozenset[str]) -> None:
         raise ValueError(f"Invalid column(s): {bad}")
 
 
+def _to_json_column(value: Any) -> Any:
+    """Serialize ``value`` to a JSON-tagged string for round-trippable storage.
+
+    Without this, a string that happens to be valid JSON (e.g. user
+    content ``'{"text": "x"}'``) round-trips to a dict because
+    ``_row_to_dict`` ``json.loads()`` every string column. Always
+    serializing here means ``json.loads`` on the way out is the exact
+    inverse — a string stays a string, a dict stays a dict.
+
+    ``None`` is preserved as ``NULL``. ``bytes`` (used for embeddings)
+    are passed through unchanged so they go into the SQLite BLOB
+    storage class without UTF-8 coercion.
+    """
+    if value is None or isinstance(value, (bytes, bytearray, memoryview)):
+        return value
+    return json.dumps(value)
+
+
 def _validate_session_status(status: Any) -> None:
     if status is None:
         return
@@ -58,6 +89,20 @@ def _validate_session_status(status: Any) -> None:
         raise ValueError(
             f"Invalid session status {status!r}; "
             f"ADR-0017 vocabulary is {sorted(_SESSION_STATUSES)}"
+        )
+
+
+def _validate_enum(
+    name: str, value: Any, allowed: frozenset[str], *, adr: str,
+    nullable: bool = True,
+) -> None:
+    if value is None:
+        if nullable:
+            return
+        raise ValueError(f"{name} is required")
+    if value not in allowed:
+        raise ValueError(
+            f"Invalid {name} {value!r}; {adr} vocabulary is {sorted(allowed)}"
         )
 
 
@@ -181,10 +226,8 @@ class StateDB:
 
     async def insert_message(self, msg: dict[str, Any]) -> None:
         lion_class_str = (msg.get("node_metadata") or {}).get("lion_class", "")
-        if isinstance(msg.get("node_metadata"), dict):
-            node_metadata = json.dumps(msg["node_metadata"])
-        else:
-            node_metadata = msg.get("node_metadata")
+        node_metadata = _to_json_column(msg.get("node_metadata"))
+        content = _to_json_column(msg["content"])
 
         type_id = await self._resolve_lion_class(lion_class_str)
 
@@ -196,7 +239,7 @@ class StateDB:
                 msg["id"],
                 msg["created_at"],
                 node_metadata,
-                json.dumps(msg["content"]) if isinstance(msg["content"], (dict, list)) else msg["content"],
+                content,
                 msg.get("embedding"),
                 msg.get("sender"),
                 msg.get("recipient"),
@@ -219,17 +262,22 @@ class StateDB:
         return self._row_to_dict(row) if row else None
 
     async def _resolve_lion_class(self, lion_class_str: str) -> int:
+        """Get or create a ``message_types`` row for ``lion_class_str``.
+
+        Concurrent live-persist writes can see the same novel class.
+        ``INSERT OR IGNORE`` + ``SELECT`` is atomic w.r.t. the SQLite
+        connection lock and avoids the ``UNIQUE constraint failed``
+        race that the previous SELECT-then-INSERT pattern produced
+        when two tasks raced on the same new class.
+        """
         if not lion_class_str:
             return self._UNKNOWN_TYPE_ID
-        cur = await self.db.execute(
-            "SELECT type_id FROM message_types WHERE lion_class = ?",
+        await self.db.execute(
+            "INSERT OR IGNORE INTO message_types (lion_class) VALUES (?)",
             (lion_class_str,),
         )
-        row = await cur.fetchone()
-        if row:
-            return row["type_id"]
         cur = await self.db.execute(
-            "INSERT INTO message_types (lion_class) VALUES (?) RETURNING type_id",
+            "SELECT type_id FROM message_types WHERE lion_class = ?",
             (lion_class_str,),
         )
         row = await cur.fetchone()
@@ -266,6 +314,14 @@ class StateDB:
 
     async def create_session(self, session: dict[str, Any]) -> None:
         _validate_session_status(session.get("status"))
+        _validate_enum(
+            "invocation_kind", session.get("invocation_kind"),
+            _INVOCATION_KINDS, adr="ADR-0012",
+        )
+        _validate_enum(
+            "source_kind", session.get("source_kind"),
+            _SOURCE_KINDS, adr="ADR-0012",
+        )
         now = time.time()
         await self.db.execute(
             """INSERT OR IGNORE INTO sessions (id, created_at, node_metadata, name, user,
@@ -277,7 +333,7 @@ class StateDB:
             (
                 session["id"],
                 session.get("created_at", now),
-                json.dumps(session.get("node_metadata")) if isinstance(session.get("node_metadata"), dict) else session.get("node_metadata"),
+                _to_json_column(session.get("node_metadata")),
                 session.get("name"),
                 session.get("user"),
                 session["progression_id"],
@@ -311,6 +367,16 @@ class StateDB:
         _validate_columns(fields, _SESSION_COLUMNS)
         if "status" in fields:
             _validate_session_status(fields["status"])
+        if "invocation_kind" in fields:
+            _validate_enum(
+                "invocation_kind", fields["invocation_kind"],
+                _INVOCATION_KINDS, adr="ADR-0012",
+            )
+        if "source_kind" in fields:
+            _validate_enum(
+                "source_kind", fields["source_kind"],
+                _SOURCE_KINDS, adr="ADR-0012",
+            )
         fields["updated_at"] = time.time()
         sets = ", ".join(f"{k} = ?" for k in fields)
         vals = list(fields.values()) + [session_id]
@@ -359,7 +425,7 @@ class StateDB:
             (
                 branch["id"],
                 branch.get("created_at", time.time()),
-                json.dumps(branch.get("node_metadata")) if isinstance(branch.get("node_metadata"), dict) else branch.get("node_metadata"),
+                _to_json_column(branch.get("node_metadata")),
                 branch.get("user"),
                 branch.get("name"),
                 branch["session_id"],
@@ -409,6 +475,10 @@ class StateDB:
     # ── Shows ─────────────────────────────────────────────────────────
 
     async def create_show(self, show: dict[str, Any]) -> None:
+        _validate_enum(
+            "show status", show.get("status", "active"),
+            _SHOW_STATUSES, adr="ADR-0011", nullable=False,
+        )
         now = time.time()
         await self.db.execute(
             """INSERT OR IGNORE INTO shows (id, topic, goal, repo, base_branch,
@@ -458,6 +528,11 @@ class StateDB:
 
     async def update_show(self, show_id: str, **fields: Any) -> None:
         _validate_columns(fields, _SHOW_COLUMNS)
+        if "status" in fields:
+            _validate_enum(
+                "show status", fields["status"], _SHOW_STATUSES,
+                adr="ADR-0011", nullable=False,
+            )
         fields["updated_at"] = time.time()
         sets = ", ".join(f"{k} = ?" for k in fields)
         vals = list(fields.values()) + [show_id]
@@ -470,6 +545,10 @@ class StateDB:
     # ── Plays ─────────────────────────────────────────────────────────
 
     async def create_play(self, play: dict[str, Any]) -> None:
+        _validate_enum(
+            "play status", play.get("status", "pending"),
+            _PLAY_STATUSES, adr="ADR-0011", nullable=False,
+        )
         now = time.time()
         await self.db.execute(
             """INSERT OR IGNORE INTO plays (id, show_id, name, playbook, effort,
@@ -520,6 +599,11 @@ class StateDB:
 
     async def update_play(self, play_id: str, **fields: Any) -> None:
         _validate_columns(fields, _PLAY_COLUMNS)
+        if "status" in fields:
+            _validate_enum(
+                "play status", fields["status"], _PLAY_STATUSES,
+                adr="ADR-0011", nullable=False,
+            )
         fields["updated_at"] = time.time()
         sets = ", ".join(f"{k} = ?" for k in fields)
         vals = list(fields.values()) + [play_id]
@@ -549,29 +633,51 @@ class StateDB:
                 f"Invalid definition kind {kind!r}; "
                 f"ADR-0016 editable set is {sorted(_DEFINITION_KINDS)}"
             )
-        cur = await self.db.execute(
-            "SELECT MAX(version) AS v FROM definitions WHERE kind = ? AND name = ?",
-            (kind, name),
-        )
-        row = await cur.fetchone()
-        next_version = (row["v"] or 0) + 1
 
-        await self.db.execute(
-            """INSERT INTO definitions (id, kind, name, path, content, version, created_at, message)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                str(uuid.uuid4()),
-                kind,
-                name,
-                path,
-                content,
-                next_version,
-                time.time(),
-                message,
-            ),
+        # Concurrent saves for the same (kind, name) need a serialization
+        # point: ``SELECT MAX(version)`` + ``INSERT`` is not atomic and
+        # two writers can pick the same next version, with all but one
+        # losing on the ``UNIQUE(kind, name, version)`` index. BEGIN
+        # IMMEDIATE acquires the SQLite RESERVED lock up-front so the
+        # second writer waits (and then sees the first writer's row).
+        # Bounded retry catches the residual case where two connections
+        # race past the lock (e.g. multi-process Studio).
+        last_exc: Exception | None = None
+        for _ in range(5):
+            try:
+                await self.db.execute("BEGIN IMMEDIATE")
+                cur = await self.db.execute(
+                    "SELECT MAX(version) AS v FROM definitions "
+                    "WHERE kind = ? AND name = ?",
+                    (kind, name),
+                )
+                row = await cur.fetchone()
+                next_version = (row["v"] or 0) + 1
+                await self.db.execute(
+                    """INSERT INTO definitions
+                       (id, kind, name, path, content, version,
+                        created_at, message)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        str(uuid.uuid4()),
+                        kind, name, path, content,
+                        next_version, time.time(), message,
+                    ),
+                )
+                await self.db.commit()
+                return next_version
+            except aiosqlite.IntegrityError as exc:
+                # Lost the unique-version race; back out and retry.
+                last_exc = exc
+                await self.db.rollback()
+                continue
+            except Exception:
+                await self.db.rollback()
+                raise
+        raise RuntimeError(
+            f"save_definition failed to acquire a unique version after "
+            f"5 retries (kind={kind!r}, name={name!r}): {last_exc}"
         )
-        await self.db.commit()
-        return next_version
 
     async def get_definition(
         self, kind: str, name: str, *, version: int | None = None

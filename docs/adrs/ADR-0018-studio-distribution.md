@@ -1,6 +1,14 @@
 # ADR-0018: Studio Distribution and Local Access
 
-**Status**: Accepted
+**Status**: Accepted (decision); **Implementation deferred** — this PR does
+not ship the packaged Studio wheel, the `li studio` no-arg launcher, or the
+`StaticFiles` mount described below. The frontend remains a separate Next.js
+dev app on port 3000 and `apps/studio/server/app.py` only exposes API
+routers + `/health`. The pieces specified here (move/package server under
+`lionagi/studio/`, bundle built static assets in the wheel, mount static
+after `/api/*`, make `li studio` start the server) are tracked as
+follow-up work and are NOT a hard contract for this PR.
+
 **Date**: 2026-05-20
 
 ## Context

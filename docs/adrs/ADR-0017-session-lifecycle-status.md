@@ -40,11 +40,12 @@ UPDATE sessions SET status = 'completed'
   WHERE status IS NULL;
 ```
 
-Migration: v3→v4, same idempotent `ALTER TABLE ADD COLUMN` pattern as prior
-migrations (ADR-0009 migration protocol). The backfill conservatively marks all
-existing sessions as `completed` — the 376 historical sessions are all finished
-runs. New sessions get `status='running'` at INSERT time from the CLI, not from
-a column DEFAULT.
+Migration: these columns are part of the collapsed v1 schema (see ADR-0009
+Migration Protocol). For a pre-release `state.db` that pre-dates these
+columns, `StateDB._reconcile_columns()` `ALTER TABLE ADD COLUMN`s them on
+open; existing rows therefore have `status IS NULL` and the conservative
+backfill statements above apply. New sessions get `status='running'` at
+INSERT time from the CLI, not from a column DEFAULT.
 
 ### Status vocabulary (sessions)
 
@@ -160,7 +161,7 @@ expensive at list-query time. Instead:
 - Clean separation: session status = "did it run?", play status = "was output accepted?"
 
 **Negative**
-- Three new columns on the sessions table (v4 migration).
+- Three new columns on the sessions table (part of the collapsed v1 schema; reconciled into pre-release DBs by `StateDB._reconcile_columns()`).
 - CLI session init and finalize must write status — requires hooks or explicit calls.
 - Imported sessions may have imprecise timestamps if run.json is sparse.
 - Error counts remain expensive to compute at list-query time.

@@ -181,9 +181,17 @@ Agent: architect → 47 tool calls → 11 files → Verdict: PASS
 ```
 
 **Provenance instrumentation starts now**: all CLI commands (`li play`, `li agent`,
-`li o flow`, `li o fanout`) write `playbook_name`, `agent_name`, `invocation_kind`,
-`show_topic`, `show_play_name` to the session at creation time. This is cheap and
-makes future ExecutionDag wiring automatic.
+`li o flow`, `li o fanout`) write `playbook_name`, `agent_name`, `invocation_kind`
+to the session at creation time. This is cheap and makes future ExecutionDag
+wiring automatic.
+
+> **`show_topic` / `show_play_name` (show-play lineage) is deferred.** The
+> show orchestration runner that would supply these fields lives outside the
+> single-process CLI surface this PR ships. Standalone agent / flow / fanout /
+> play invocations write `NULL` for those columns; the `show-play` value in
+> the `invocation_kind` vocabulary is reserved for the future runner that
+> will pass `--show-topic` / `--show-play-name` (or an equivalent env
+> contract) through to `start_live_persist`. Tracking issue: TBD.
 
 ### 6. Show → Session lineage
 

@@ -198,6 +198,27 @@ async def _import_one_run(
     session_prog_id = str(uuid.uuid4())
     await db.create_progression(session_prog_id)
 
+    # Provenance enrichment (ADR-0012 §52-54): derive invocation_kind
+    # from manifest "kind" so imported runs are filterable by the same
+    # vocabulary live runs write. Map "agent" / "play" / "flow" /
+    # "fanout" literally; pre-show legacy kinds map to "agent" as the
+    # safest default. Unrecognized kinds → NULL (won't pass the
+    # invocation_kind enum check otherwise).
+    raw_kind = (manifest.get("kind") or "").lower()
+    legacy_kind_map = {
+        "agent": "agent", "play": "play", "flow": "flow",
+        "fanout": "fanout",
+    }
+    invocation_kind = legacy_kind_map.get(raw_kind)
+
+    # artifacts_path: prefer manifest field, fall back to run_dir/artifacts
+    # if present on disk. None if neither.
+    artifacts_path = manifest.get("artifact_root") or manifest.get("artifacts_path")
+    if artifacts_path is None:
+        candidate = run_dir / "artifacts"
+        if candidate.exists():
+            artifacts_path = str(candidate)
+
     # Session must exist before branches can reference it via FK.
     await db.create_session({
         "id": run_id,
@@ -208,6 +229,12 @@ async def _import_one_run(
         "progression_id": session_prog_id,
         "first_msg_id": None,
         "last_msg_id": None,
+        # ADR-0012 enriched provenance — written so imported rows are
+        # queryable by the same fields live runs use.
+        "invocation_kind": invocation_kind,
+        "playbook_name": manifest.get("playbook_name") or manifest.get("playbook"),
+        "agent_name": manifest.get("agent_name") or manifest.get("agent"),
+        "artifacts_path": artifacts_path,
         "source_kind": "imported_fs",
         "status": status,
         "started_at": started_at,

@@ -680,10 +680,18 @@ async def test_update_play(db: StateDB):
     await db.create_play(play)
 
     end_time = time.time()
-    await db.update_play(play["id"], status="completed", exit_code=0, ended_at=end_time)
+    # ADR-0011 vocab: plays use ``running_complete`` (not ``completed``)
+    # for the "finished running" terminal — ``completed`` belongs to the
+    # sessions vocabulary (ADR-0017), not plays.
+    await db.update_play(
+        play["id"],
+        status="running_complete",
+        exit_code=0,
+        ended_at=end_time,
+    )
 
     retrieved = await db.get_play(play["id"])
-    assert retrieved["status"] == "completed"
+    assert retrieved["status"] == "running_complete"
     assert retrieved["exit_code"] == 0
     assert retrieved["ended_at"] == pytest.approx(end_time, abs=1e-3)
 

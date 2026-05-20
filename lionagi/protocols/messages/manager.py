@@ -358,7 +358,11 @@ class MessageManager(Manager):
         action_response: ActionResponse | Any = None,
     ):
         message_types = [instruction, assistant_response, system]
-        if action_request and not action_output:
+        # An action_request paired with NO output/response means "this is
+        # a tool call message" (the request itself is the message body).
+        # Paired with output OR a response means "this is the result
+        # message" — don't count it as a separate message type.
+        if action_request and action_output is None and action_response is None:
             message_types.append(action_request)
 
         if sum(bool(x) for x in message_types) > 1:
@@ -373,7 +377,11 @@ class MessageManager(Manager):
                 recipient=recipient,
             )
 
-        elif action_output:
+        # ``action_output`` may legitimately be falsey (empty string from a
+        # successful shell command, ``0``, ``False``, ``[]``, ``{}``). Use
+        # ``is not None`` so we don't silently drop the ActionResponse and
+        # re-emit the ActionRequest as a duplicate.
+        elif action_response is not None or action_output is not None:
             _msg = MessageManager.create_action_response(
                 action_request=action_request,
                 action_output=action_output,
@@ -457,6 +465,13 @@ class MessageManager(Manager):
         - AssistantResponse
         - ActionRequest / ActionResponse
         """
+        # Preflight: if any registered on_message_added is async, we
+        # can't fire it from this sync path. Raise BEFORE mutating the
+        # pile so the message and the live SQLite state stay coherent
+        # (otherwise a caller catching the error continues with an
+        # in-memory message that was never persisted).
+        self._check_no_async_hooks()
+
         params = {
             k: v
             for k, v in locals().items()
@@ -476,15 +491,15 @@ class MessageManager(Manager):
 
         return _msg
 
-    def _fire_on_message_added(self, msg: Message) -> None:
-        """Fire sync on_message_added callbacks.
+    def _check_no_async_hooks(self) -> None:
+        """Preflight that the sync add_message path can fire every hook.
 
-        Async callbacks cannot be awaited from this sync path, so we
-        refuse to silently drop them. This protects live persistence (and
-        any other async hook) from cases where mixing a sync add_message
-        call with an async hook would otherwise lose the SQLite write
-        AND emit only a 'coroutine was never awaited' RuntimeWarning.
-        Callers with async hooks MUST use ``a_add_message`` instead.
+        Raises ``RuntimeError`` *before* any pile mutation if any
+        registered ``on_message_added`` is a coroutine function — those
+        require ``a_add_message`` from an async context. Without this
+        preflight, sync ``add_message`` would mutate the pile and then
+        raise from ``_fire_on_message_added``, leaving an in-memory
+        message that was never persisted.
         """
         from lionagi.ln.concurrency import is_coro_func
 
@@ -495,6 +510,11 @@ class MessageManager(Manager):
                     "from the sync add_message path. Use a_add_message "
                     "from an async context instead."
                 )
+
+    def _fire_on_message_added(self, msg: Message) -> None:
+        """Fire sync on_message_added callbacks. Async callbacks already
+        rejected by ``_check_no_async_hooks`` at the add_message entry."""
+        for cb in self._on_message_added:
             cb(msg)
 
     def clear_messages(self):
