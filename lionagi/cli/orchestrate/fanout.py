@@ -52,6 +52,7 @@ async def _run_fanout(
     cwd: str | None = None,
     timeout: int | None = None,
     agent_name: str | None = None,
+    fast: bool = False,
 ) -> str:
     """Three-phase fan-out: decompose → fan out → synthesize."""
     env = setup_orchestration(
@@ -66,6 +67,7 @@ async def _run_fanout(
         effort=effort,
         theme=theme,
         bare=False,
+        fast=fast,
     )
     _shared: dict = {}
 
@@ -136,19 +138,14 @@ async def _run_fanout_inner(
     for i, wp in enumerate(worker_profiles):
         if wp and wp.name:
             base = wp.name
-            count = sum(
-                1 for n in worker_names if n == base or n.startswith(f"{base}-")
-            )
+            count = sum(1 for n in worker_names if n == base or n.startswith(f"{base}-"))
             worker_names.append(f"{base}-{count + 1}" if count > 0 else base)
         else:
             worker_names.append(f"worker-{i + 1}")
 
     if team_name:
         env.team_data = _create_fanout_team(team_name, worker_names)
-        progress(
-            f"Team '{team_name}' created ({env.team_data['id']}): "
-            f"{', '.join(worker_names)}"
-        )
+        progress(f"Team '{team_name}' created ({env.team_data['id']}): {', '.join(worker_names)}")
 
     if _shared is not None:
         _shared["session"] = env.session
@@ -158,9 +155,7 @@ async def _run_fanout_inner(
     for i, wm in enumerate(worker_model_list):
         wp = worker_profiles[i] if i < len(worker_profiles) else None
         if wp and wp.name:
-            worker_descriptions.append(
-                f"{worker_names[i]} (role: {wp.name}, model: {wm})"
-            )
+            worker_descriptions.append(f"{worker_names[i]} (role: {wp.name}, model: {wm})")
         else:
             worker_descriptions.append(f"{worker_names[i]} (model: {wm})")
     roster_guidance = "; ".join(worker_descriptions)
@@ -175,8 +170,7 @@ async def _run_fanout_inner(
             ),
             context={"user_prompt": prompt},
             guidance=(
-                f"Available workers: {roster_guidance}. "
-                f"{AgentRequest.DECOMPOSITION_DISCIPLINE}"
+                f"Available workers: {roster_guidance}. {AgentRequest.DECOMPOSITION_DISCIPLINE}"
             ),
         ),
         field_models=[AGENT_REQUEST_FIELDS],
@@ -184,8 +178,7 @@ async def _run_fanout_inner(
     )
 
     progress(
-        f"Phase 1: Orchestrator decomposing task into "
-        f"{len(worker_model_list)} agent requests..."
+        f"Phase 1: Orchestrator decomposing task into {len(worker_model_list)} agent requests..."
     )
 
     result1 = await env.session.flow(env.builder.get_graph())
@@ -207,15 +200,13 @@ async def _run_fanout_inner(
     for i, a in enumerate(agents):
         # Pick the model: orchestrator override > profile > default
         wprofile = worker_profiles[i] if i < len(worker_profiles) else None
-        desired_model = (
-            a.model or (wprofile.model if wprofile else None) or default_ms.model
-        )
+        desired_model = a.model or (wprofile.model if wprofile else None) or default_ms.model
         wname = worker_names[i]
 
         w_branch, w_model, _ = build_worker_branch(
             env,
             agent_id=wname,
-            role=wprofile.name if wprofile else f"worker-{i+1}",
+            role=wprofile.name if wprofile else f"worker-{i + 1}",
             model_override=desired_model,
             explicit_name=wname,
         )
@@ -321,9 +312,7 @@ async def _run_fanout_inner(
 
     # ── Post to team ─────────────────────────────────────────────────
     if env.team_data:
-        _post_results_to_team(
-            env.team_data, worker_results, worker_names, synthesis_result
-        )
+        _post_results_to_team(env.team_data, worker_results, worker_names, synthesis_result)
         progress(
             f"\nTeam '{env.team_data['name']}' ({env.team_data['id']}): "
             f"{len(worker_results)} results posted."
@@ -338,9 +327,7 @@ async def _run_fanout_inner(
         prompt=prompt,
         extras={
             "workers": fanned_labels,
-            "synthesis_model": (
-                synthesis_result["model"] if synthesis_result else None
-            ),
+            "synthesis_model": (synthesis_result["model"] if synthesis_result else None),
         },
     )
 

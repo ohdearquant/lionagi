@@ -174,6 +174,7 @@ class OrchestrationEnv:
     yolo: bool
     bypass: bool
     verbose: bool
+    fast: bool
     cwd: str | None  # user --cwd (falls through to orchestrator); per-worker
     # artifact dirs override this when writing via build_worker_branch
 
@@ -217,6 +218,7 @@ def setup_orchestration(
     effort: str | None,
     theme: str | None,
     bare: bool = False,
+    fast: bool = False,
 ) -> OrchestrationEnv:
     """Phase A — resolve orchestrator config, allocate run, build branch+session.
 
@@ -234,11 +236,11 @@ def setup_orchestration(
             effort = orc_profile.effort
         if orc_profile.yolo and not yolo:
             yolo = True
+        if orc_profile.fast_mode and not fast:
+            fast = True
 
     if not model_spec:
-        raise ValueError(
-            "Provide a model spec or use -a/--agent to load a profile with a model."
-        )
+        raise ValueError("Provide a model spec or use -a/--agent to load a profile with a model.")
 
     orc_imodel = build_imodel_from_spec(
         model_spec,
@@ -246,6 +248,7 @@ def setup_orchestration(
         verbose=verbose,
         effort_override=effort,
         theme=theme,
+        fast=fast,
     )
     if cwd:
         orc_imodel.endpoint.config.kwargs.setdefault("repo", Path(cwd))
@@ -276,6 +279,7 @@ def setup_orchestration(
         yolo=yolo,
         bypass=bypass,
         verbose=verbose,
+        fast=fast,
         cwd=cwd,
     )
 
@@ -347,6 +351,9 @@ def build_worker_branch(
     w_yolo = env.yolo
     if not env.bare and w_profile and w_profile.yolo:
         w_yolo = True
+    w_fast = env.fast
+    if not env.bare and w_profile and w_profile.fast_mode:
+        w_fast = True
 
     w_imodel = build_imodel_from_spec(
         w_model,
@@ -355,6 +362,7 @@ def build_worker_branch(
         verbose=env.verbose,
         effort_override=w_effort,
         theme=env.theme,
+        fast=w_fast,
     )
     # Per-agent artifact directory: workers write files here; downstream
     # agents read via relative paths. Overrides env.cwd.
@@ -363,9 +371,7 @@ def build_worker_branch(
     w_imodel.endpoint.config.kwargs["repo"] = artifact_dir
     # Grant write access to the actual project directory so workers can
     # edit source files, not just their artifact sandbox.
-    project_root = (
-        str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
-    )
+    project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
     w_imodel.endpoint.config.kwargs.setdefault("add_dir", [])
     if project_root not in w_imodel.endpoint.config.kwargs["add_dir"]:
         w_imodel.endpoint.config.kwargs["add_dir"].append(project_root)
@@ -446,8 +452,7 @@ def finalize_orchestration(
         "model_spec": env.default_model_spec,
         "orchestrator_branch_id": orc_branch_id,
         "branches": [
-            {"id": bid, "provider": prov, "name": bname}
-            for prov, bid, bname in branch_ids
+            {"id": bid, "provider": prov, "name": bname} for prov, bid, bname in branch_ids
         ],
     }
     if extras:

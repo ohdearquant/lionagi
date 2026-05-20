@@ -15,6 +15,7 @@ from ._agents import load_agent_profile
 from ._logging import hint, log_error
 from ._providers import (
     PROVIDER_EFFORT_KWARG,
+    PROVIDER_FAST_KWARGS,
     PROVIDER_YOLO_KWARGS,
     add_common_cli_args,
     build_chat_model,
@@ -41,17 +42,16 @@ async def _run_agent(
     agent_name: str | None = None,
     cwd: str | None = None,
     timeout: int | None = None,
+    fast: bool = False,
 ) -> tuple[str, str, str]:
     """Execute one agent turn (new or resumed).
 
     Returns (result, provider, branch_id).
     """
     if resume and continue_last:
-        raise ValueError(
-            "--resume / -r and --continue-last / -c are mutually exclusive."
-        )
+        raise ValueError("--resume / -r and --continue-last / -c are mutually exclusive.")
 
-    # Load agent profile if specified — provides defaults for model/effort/yolo
+    # Load agent profile if specified — provides defaults for model/effort/yolo/fast_mode
     profile = None
     if agent_name:
         profile = load_agent_profile(agent_name)
@@ -61,6 +61,8 @@ async def _run_agent(
             effort = profile.effort
         if profile.yolo and not yolo:
             yolo = True
+        if profile.fast_mode and not fast:
+            fast = True
 
     branch: Branch | None = None
     if continue_last:
@@ -90,7 +92,7 @@ async def _run_agent(
         )
 
     if branch is None:
-        chat_model = build_chat_model(provider, model, yolo, verbose, theme, effort)
+        chat_model = build_chat_model(provider, model, yolo, verbose, theme, effort, fast)
         branch = Branch(
             chat_model=chat_model,
             log_config=DataLoggerConfig(auto_save_on_exit=False),
@@ -110,6 +112,8 @@ async def _run_agent(
                 cfg[kwarg] = effort
         if yolo:
             cfg.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
+        if fast:
+            cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
 
     # Inject agent system prompt
     if profile and profile.system_prompt:
@@ -198,8 +202,7 @@ def run_agent(args: argparse.Namespace) -> int:
     has_model = args.model is not None or args.agent is not None
     if not has_model and not (args.resume or args.continue_last):
         log_error(
-            "model or --agent is required unless --resume / -r or "
-            "--continue-last / -c is set"
+            "model or --agent is required unless --resume / -r or --continue-last / -c is set"
         )
         return 1
 
@@ -216,6 +219,7 @@ def run_agent(args: argparse.Namespace) -> int:
             agent_name=args.agent,
             cwd=args.cwd,
             timeout=args.timeout,
+            fast=args.fast,
         )
     )
     if not args.verbose:

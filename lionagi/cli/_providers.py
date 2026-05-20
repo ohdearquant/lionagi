@@ -90,6 +90,12 @@ PROVIDER_BYPASS_KWARGS: dict[str, dict] = {
     "pi": {"no_tools": False},
 }
 
+# fast_mode: route codex via OpenAI priority tier (lower latency, same effort)
+# No-op for providers that don't support service_tier.
+PROVIDER_FAST_KWARGS: dict[str, dict] = {
+    "codex": {"fast_mode": True},
+}
+
 PROVIDER_TO_ALIAS: dict[str, str] = {
     "claude_code": "claude",
     "codex": "codex",
@@ -166,11 +172,7 @@ def _normalize_model_name(model: str, provider_hint: str | None = None) -> str:
     """Normalize bare model name (no provider prefix)."""
     if provider_hint and provider_hint in _CLAUDE_PROVIDER_NAMES:
         for prefix in _CLAUDE_MODEL_PREFIXES:
-            if (
-                model.startswith(prefix)
-                and model != prefix
-                and not model.startswith("claude-")
-            ):
+            if model.startswith(prefix) and model != prefix and not model.startswith("claude-"):
                 return f"claude-{model}"
     return model
 
@@ -204,9 +206,7 @@ def parse_model_spec(spec: str) -> ModelSpec:
                 f"Provider '{provider_raw}' does not support effort levels. "
                 f"Remove '-{effort}' from '{spec}'."
             )
-        return ModelSpec(
-            model=_normalize_model(model_clean, provider_raw), effort=effort
-        )
+        return ModelSpec(model=_normalize_model(model_clean, provider_raw), effort=effort)
 
     return ModelSpec(model=_normalize_model(spec, provider_raw), effort=None)
 
@@ -222,6 +222,7 @@ def build_imodel_from_spec(
     verbose: bool = False,
     effort_override: str | None = None,
     theme: str | None = None,
+    fast: bool = False,
 ) -> iModel:
     """Parse spec, build iModel. Effort in spec unless overridden."""
     ms = parse_model_spec(spec)
@@ -236,6 +237,8 @@ def build_imodel_from_spec(
         extra.update(PROVIDER_BYPASS_KWARGS.get(provider_raw, {}))
     elif yolo:
         extra.update(PROVIDER_YOLO_KWARGS.get(provider_raw, {}))
+    if fast:
+        extra.update(PROVIDER_FAST_KWARGS.get(provider_raw, {}))
     if verbose:
         extra["verbose_output"] = True
     if theme is not None:
@@ -264,11 +267,14 @@ def build_chat_model(
     verbose: bool,
     theme: str | None,
     effort: str | None = None,
+    fast: bool = False,
 ) -> iModel | str:
     """Legacy: for agent.py compat. Returns bare spec string when no flags."""
     extra: dict = {}
     if yolo:
         extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
+    if fast:
+        extra.update(PROVIDER_FAST_KWARGS.get(provider, {}))
     if verbose:
         extra["verbose_output"] = True
     if theme is not None:
@@ -313,11 +319,16 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
         help="Bypass all codex approvals and sandbox (for cloud/codespace environments).",
     )
     parser.add_argument(
-        "-v", "--verbose", action="store_true", help="Stream real-time output."
+        "--fast",
+        action="store_true",
+        help=(
+            "Route codex requests through OpenAI's priority service tier "
+            "(lower latency; requires account eligibility). "
+            "Does not change model or reasoning effort."
+        ),
     )
-    parser.add_argument(
-        "--theme", choices=("light", "dark"), default=None, help="Terminal theme."
-    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Stream real-time output.")
+    parser.add_argument("--theme", choices=("light", "dark"), default=None, help="Terminal theme.")
     parser.add_argument(
         "--effort",
         metavar="LEVEL",

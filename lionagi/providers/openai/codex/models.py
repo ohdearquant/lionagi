@@ -227,6 +227,19 @@ class CodexCodeRequest(BaseModel):
         description="Plan-mode reasoning effort (emitted as -c plan_mode_reasoning_effort=<val>)",
     )
 
+    # ── fast mode (priority service tier) ────────────────────────
+    fast_mode: bool = Field(
+        default=False,
+        description=(
+            "Route this request through OpenAI's *priority* service tier for "
+            "lower latency. Emitted as ``-c service_tier=priority``. "
+            "Requires an OpenAI account with priority-tier eligibility. "
+            "Does NOT cap or change ``reasoning_effort`` — "
+            "``fast_mode=True`` with ``reasoning_effort='xhigh'`` is valid "
+            "and gives maximum reasoning depth on the fast lane."
+        ),
+    )
+
     @model_validator(mode="before")
     @classmethod
     def _clamp_effort(cls, values):
@@ -312,14 +325,10 @@ class CodexCodeRequest(BaseModel):
         ws_path = Path(self.ws)
 
         if ws_path.is_absolute():
-            raise ValueError(
-                f"Workspace path must be relative, got absolute: {self.ws}"
-            )
+            raise ValueError(f"Workspace path must be relative, got absolute: {self.ws}")
 
         if ".." in ws_path.parts:
-            raise ValueError(
-                f"Directory traversal detected in workspace path: {self.ws}"
-            )
+            raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
 
         repo_resolved = self.repo.resolve()
         result = (self.repo / ws_path).resolve()
@@ -388,6 +397,10 @@ class CodexCodeRequest(BaseModel):
                     f"plan_mode_reasoning_effort={self.plan_mode_reasoning_effort}",
                 ]
             )
+
+        # Fast mode → -c service_tier=priority (priority lane, lower latency)
+        if self.fast_mode:
+            args.extend(["-c", "service_tier=priority"])
 
         # Images (repeat -i per image)
         for image in self.images:
@@ -538,16 +551,12 @@ def _extract_summary(session: CodexSession) -> dict[str, Any]:
         else:
             key_actions.append(f"Used {tool_name}")
 
-    key_actions = (
-        list(dict.fromkeys(key_actions)) if key_actions else ["No specific actions"]
-    )
+    key_actions = list(dict.fromkeys(key_actions)) if key_actions else ["No specific actions"]
 
     for op_type in file_operations:
         file_operations[op_type] = list(dict.fromkeys(file_operations[op_type]))
 
-    result_summary = (
-        (session.result[:200] + "...") if len(session.result) > 200 else session.result
-    )
+    result_summary = (session.result[:200] + "...") if len(session.result) > 200 else session.result
 
     return {
         "tool_counts": tool_counts,
@@ -870,9 +879,7 @@ async def stream_codex_cli(
     if session.num_turns is None and session.messages:
         session.num_turns = len(session.messages)
     if session.duration_ms is None:
-        session.duration_ms = int(
-            (asyncio.get_running_loop().time() - _start_monotonic) * 1000
-        )
+        session.duration_ms = int((asyncio.get_running_loop().time() - _start_monotonic) * 1000)
 
     await _maybe_await(on_final, session)
     if request.verbose_output:
