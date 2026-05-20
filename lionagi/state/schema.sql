@@ -1,6 +1,6 @@
--- lionagi state schema v2
--- Four core tables matching the runtime data model:
---   messages, progressions, sessions, branches.
+-- lionagi state schema v1
+-- Core tables: messages, progressions, sessions, branches,
+-- shows, plays, definitions.
 --
 -- Field names match model_dump() output from the runtime objects.
 
@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   value   TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '2');
+INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '1');
 INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('created_at', strftime('%s', 'now'));
 
 -- ── Message types (int enum for lion_class) ───────────────────────────────
@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS message_types (
 );
 
 INSERT OR IGNORE INTO message_types (type_id, lion_class) VALUES
+  (0, '__unknown__'),
   (1, 'lionagi.protocols.messages.system.System'),
   (2, 'lionagi.protocols.messages.instruction.Instruction'),
   (3, 'lionagi.protocols.messages.assistant_response.AssistantResponse'),
@@ -92,7 +93,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   show_topic      TEXT,
   show_play_name  TEXT,
   artifacts_path  TEXT,
-  source_kind     TEXT    DEFAULT 'live'       -- live|imported_fs
+  source_kind     TEXT    DEFAULT 'live',       -- live|imported_fs
+  -- ── Lifecycle (ADR-0017) ───────────────────────────────────────────
+  status          TEXT,                          -- running|completed|failed|aborted
+  started_at      REAL,
+  ended_at        REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_updated

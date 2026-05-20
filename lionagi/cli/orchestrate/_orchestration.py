@@ -494,16 +494,19 @@ def finalize_orchestration(
 # ── Live SQLite persist ──────────────────────────────────────────────
 
 
-async def start_live_persist(env: OrchestrationEnv) -> None:
+async def start_live_persist(
+    env: OrchestrationEnv,
+    *,
+    invocation_kind: str | None = None,
+    playbook_name: str | None = None,
+    agent_name: str | None = None,
+) -> None:
     """Open state.db, create session row, register hooks on existing branches.
 
     New branches created via build_worker_branch auto-register via the
     env._live_persist check there.
     """
-    try:
-        from lionagi.state.db import StateDB
-    except ImportError:
-        return
+    from lionagi.state.db import StateDB
 
     try:
         db = StateDB()
@@ -524,6 +527,11 @@ async def start_live_persist(env: OrchestrationEnv) -> None:
             "progression_id": session_prog_id,
             "first_msg_id": None,
             "last_msg_id": None,
+            "invocation_kind": invocation_kind,
+            "playbook_name": playbook_name,
+            "agent_name": agent_name,
+            "status": "running",
+            "started_at": time.time(),
         })
 
         ctx: dict[str, Any] = {
@@ -604,8 +612,12 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
     ctx["hooks"].append((branch, _on_message))
 
 
-async def stop_live_persist(env: OrchestrationEnv) -> None:
-    """Update session bookmarks and close DB."""
+async def stop_live_persist(
+    env: OrchestrationEnv,
+    *,
+    failed: bool = False,
+) -> None:
+    """Update session bookmarks, lifecycle columns, and close DB."""
     ctx = env._live_persist
     if ctx is None:
         return
@@ -614,12 +626,14 @@ async def stop_live_persist(env: OrchestrationEnv) -> None:
         session_prog_id = ctx["session_prog_id"]
 
         all_msgs = await db.get_progression(session_prog_id)
+        update_kwargs: dict[str, Any] = {
+            "status": "failed" if failed else "completed",
+            "ended_at": time.time(),
+        }
         if all_msgs:
-            await db.update_session(
-                ctx["session_id"],
-                first_msg_id=all_msgs[0],
-                last_msg_id=all_msgs[-1],
-            )
+            update_kwargs["first_msg_id"] = all_msgs[0]
+            update_kwargs["last_msg_id"] = all_msgs[-1]
+        await db.update_session(ctx["session_id"], **update_kwargs)
 
         for branch, hook in ctx["hooks"]:
             try:

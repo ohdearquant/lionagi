@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,31 @@ from lionagi.cli._runs import LIONAGI_HOME
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
+
+_SESSION_COLUMNS = frozenset({
+    "name", "user", "node_metadata", "first_msg_id", "last_msg_id",
+    "updated_at", "playbook_name", "agent_name", "invocation_kind",
+    "show_topic", "show_play_name", "artifacts_path", "source_kind",
+    "status", "started_at", "ended_at",
+})
+
+_SHOW_COLUMNS = frozenset({
+    "topic", "goal", "repo", "base_branch", "integration_branch",
+    "status", "show_dir", "updated_at",
+})
+
+_PLAY_COLUMNS = frozenset({
+    "name", "playbook", "effort", "status", "attempt", "session_id",
+    "started_at", "ended_at", "exit_code", "worktree", "branch",
+    "merge_sha", "merged_at", "gate_passed", "gate_feedback",
+    "depends_on", "sort_order", "updated_at",
+})
+
+
+def _validate_columns(fields: dict[str, Any], allowed: frozenset[str]) -> None:
+    bad = set(fields) - allowed
+    if bad:
+        raise ValueError(f"Invalid column(s): {bad}")
 
 
 class StateDB:
@@ -35,7 +61,6 @@ class StateDB:
         self._db.row_factory = aiosqlite.Row
         await self._apply_pragmas()
         await self._apply_schema()
-        await self._migrate()
 
     async def close(self) -> None:
         if self._db:
@@ -64,63 +89,11 @@ class StateDB:
 
     async def _apply_schema(self) -> None:
         schema = _SCHEMA_PATH.read_text()
-        # Strip PRAGMA lines (already applied above) — executescript
-        # doesn't mix well with PRAGMA inside a transaction.
         lines = [
             ln for ln in schema.splitlines()
             if not ln.strip().upper().startswith("PRAGMA")
         ]
         await self.db.executescript("\n".join(lines))
-
-    async def _migrate(self) -> None:
-        """Run forward migrations based on schema version."""
-        cur = await self.db.execute(
-            "SELECT value FROM schema_meta WHERE key = 'version'"
-        )
-        row = await cur.fetchone()
-        version = int(row["value"]) if row else 1
-
-        if version < 2:
-            # ADR-0012: session provenance columns
-            for col, coldef in [
-                ("playbook_name", "TEXT"),
-                ("agent_name", "TEXT"),
-                ("invocation_kind", "TEXT"),
-                ("show_topic", "TEXT"),
-                ("show_play_name", "TEXT"),
-                ("artifacts_path", "TEXT"),
-                ("source_kind", "TEXT DEFAULT 'live'"),
-            ]:
-                try:
-                    await self.db.execute(
-                        f"ALTER TABLE sessions ADD COLUMN {col} {coldef}"
-                    )
-                except Exception:
-                    pass  # column already exists
-            await self.db.execute(
-                "UPDATE schema_meta SET value = '2' WHERE key = 'version'"
-            )
-            await self.db.commit()
-            version = 2
-
-        if version < 3:
-            # Rename worker_name → agent_name
-            try:
-                await self.db.execute(
-                    "ALTER TABLE sessions RENAME COLUMN worker_name TO agent_name"
-                )
-            except Exception:
-                # Column may already be agent_name (fresh db) or rename unsupported
-                try:
-                    await self.db.execute(
-                        "ALTER TABLE sessions ADD COLUMN agent_name TEXT"
-                    )
-                except Exception:
-                    pass
-            await self.db.execute(
-                "UPDATE schema_meta SET value = '3' WHERE key = 'version'"
-            )
-            await self.db.commit()
 
     # ── Schema version ─────────────────────────────────────────────────
 
@@ -132,6 +105,8 @@ class StateDB:
         return row["value"] if row else None
 
     # ── Messages ───────────────────────────────────────────────────────
+
+    _UNKNOWN_TYPE_ID = 0
 
     async def insert_message(self, msg: dict[str, Any]) -> None:
         lion_class_str = (msg.get("node_metadata") or {}).get("lion_class", "")
@@ -173,6 +148,8 @@ class StateDB:
         return self._row_to_dict(row) if row else None
 
     async def _resolve_lion_class(self, lion_class_str: str) -> int:
+        if not lion_class_str:
+            return self._UNKNOWN_TYPE_ID
         cur = await self.db.execute(
             "SELECT type_id FROM message_types WHERE lion_class = ?",
             (lion_class_str,),
@@ -180,7 +157,6 @@ class StateDB:
         row = await cur.fetchone()
         if row:
             return row["type_id"]
-        # Auto-register new types
         cur = await self.db.execute(
             "INSERT INTO message_types (lion_class) VALUES (?) RETURNING type_id",
             (lion_class_str,),
@@ -223,8 +199,11 @@ class StateDB:
         now = time.time()
         await self.db.execute(
             """INSERT OR IGNORE INTO sessions (id, created_at, node_metadata, name, user,
-               progression_id, first_msg_id, last_msg_id, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               progression_id, first_msg_id, last_msg_id, updated_at,
+               playbook_name, agent_name, invocation_kind, show_topic,
+               show_play_name, artifacts_path, source_kind,
+               status, started_at, ended_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session["id"],
                 session.get("created_at", now),
@@ -235,6 +214,16 @@ class StateDB:
                 session.get("first_msg_id"),
                 session.get("last_msg_id"),
                 now,
+                session.get("playbook_name"),
+                session.get("agent_name"),
+                session.get("invocation_kind"),
+                session.get("show_topic"),
+                session.get("show_play_name"),
+                session.get("artifacts_path"),
+                session.get("source_kind", "live"),
+                session.get("status"),
+                session.get("started_at"),
+                session.get("ended_at"),
             ),
         )
         await self.db.commit()
@@ -247,6 +236,7 @@ class StateDB:
         return self._row_to_dict(row) if row else None
 
     async def update_session(self, session_id: str, **fields: Any) -> None:
+        _validate_columns(fields, _SESSION_COLUMNS)
         fields["updated_at"] = time.time()
         sets = ", ".join(f"{k} = ?" for k in fields)
         vals = list(fields.values()) + [session_id]
@@ -255,11 +245,40 @@ class StateDB:
         )
         await self.db.commit()
 
+    async def list_sessions(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM sessions"
+        params: list[Any] = []
+        if status:
+            query += " WHERE status = ?"
+            params.append(status)
+        query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        cur = await self.db.execute(query, params)
+        rows = await cur.fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    async def count_sessions(self, *, status: str | None = None) -> int:
+        if status:
+            cur = await self.db.execute(
+                "SELECT COUNT(*) AS n FROM sessions WHERE status = ?",
+                (status,),
+            )
+        else:
+            cur = await self.db.execute("SELECT COUNT(*) AS n FROM sessions")
+        row = await cur.fetchone()
+        return row["n"]
+
     # ── Branches ───────────────────────────────────────────────────────
 
     async def create_branch(self, branch: dict[str, Any]) -> None:
         await self.db.execute(
-            """INSERT OR REPLACE INTO branches (id, created_at, node_metadata, user, name,
+            """INSERT OR IGNORE INTO branches (id, created_at, node_metadata, user, name,
                session_id, progression_id, system_msg_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
@@ -291,7 +310,6 @@ class StateDB:
         return [self._row_to_dict(r) for r in rows]
 
     async def get_branch_messages(self, branch_id: str) -> list[dict[str, Any]]:
-        """Get all messages in a branch's progression, in order."""
         branch = await self.get_branch(branch_id)
         if not branch:
             return []
@@ -307,15 +325,198 @@ class StateDB:
             message_ids,
         )
         rows = await cur.fetchall()
+        # Restore progression order (SQL IN doesn't guarantee order)
         by_id = {r["id"]: self._row_to_dict(r) for r in rows}
         return [by_id[mid] for mid in message_ids if mid in by_id]
+
+    # ── Shows ─────────────────────────────────────────────────────────
+
+    async def create_show(self, show: dict[str, Any]) -> None:
+        now = time.time()
+        await self.db.execute(
+            """INSERT OR IGNORE INTO shows (id, topic, goal, repo, base_branch,
+               integration_branch, status, show_dir, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                show["id"],
+                show["topic"],
+                show.get("goal"),
+                show.get("repo"),
+                show.get("base_branch"),
+                show.get("integration_branch"),
+                show.get("status", "active"),
+                show["show_dir"],
+                show.get("created_at", now),
+                now,
+            ),
+        )
+        await self.db.commit()
+
+    async def get_show(self, show_id: str) -> dict[str, Any] | None:
+        cur = await self.db.execute(
+            "SELECT * FROM shows WHERE id = ?", (show_id,)
+        )
+        row = await cur.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    async def get_show_by_topic(self, topic: str) -> dict[str, Any] | None:
+        cur = await self.db.execute(
+            "SELECT * FROM shows WHERE topic = ?", (topic,)
+        )
+        row = await cur.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    async def list_shows(self, *, status: str | None = None) -> list[dict[str, Any]]:
+        if status:
+            cur = await self.db.execute(
+                "SELECT * FROM shows WHERE status = ? ORDER BY updated_at DESC",
+                (status,),
+            )
+        else:
+            cur = await self.db.execute(
+                "SELECT * FROM shows ORDER BY updated_at DESC"
+            )
+        rows = await cur.fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    async def update_show(self, show_id: str, **fields: Any) -> None:
+        _validate_columns(fields, _SHOW_COLUMNS)
+        fields["updated_at"] = time.time()
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [show_id]
+        await self.db.execute(
+            f"UPDATE shows SET {sets} WHERE id = ?", vals
+        )
+        await self.db.commit()
+
+    # ── Plays ─────────────────────────────────────────────────────────
+
+    async def create_play(self, play: dict[str, Any]) -> None:
+        now = time.time()
+        await self.db.execute(
+            """INSERT OR IGNORE INTO plays (id, show_id, name, playbook, effort,
+               status, attempt, session_id, started_at, ended_at, exit_code,
+               worktree, branch, merge_sha, merged_at, gate_passed, gate_feedback,
+               depends_on, sort_order, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                play["id"],
+                play["show_id"],
+                play["name"],
+                play.get("playbook"),
+                play.get("effort"),
+                play.get("status", "pending"),
+                play.get("attempt", 1),
+                play.get("session_id"),
+                play.get("started_at"),
+                play.get("ended_at"),
+                play.get("exit_code"),
+                play.get("worktree"),
+                play.get("branch"),
+                play.get("merge_sha"),
+                play.get("merged_at"),
+                play.get("gate_passed"),
+                play.get("gate_feedback"),
+                json.dumps(play.get("depends_on", [])),
+                play.get("sort_order", 0),
+                play.get("created_at", now),
+                now,
+            ),
+        )
+        await self.db.commit()
+
+    async def get_play(self, play_id: str) -> dict[str, Any] | None:
+        cur = await self.db.execute(
+            "SELECT * FROM plays WHERE id = ?", (play_id,)
+        )
+        row = await cur.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    async def list_plays(self, show_id: str) -> list[dict[str, Any]]:
+        cur = await self.db.execute(
+            "SELECT * FROM plays WHERE show_id = ? ORDER BY sort_order, created_at",
+            (show_id,),
+        )
+        rows = await cur.fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    async def update_play(self, play_id: str, **fields: Any) -> None:
+        _validate_columns(fields, _PLAY_COLUMNS)
+        fields["updated_at"] = time.time()
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [play_id]
+        await self.db.execute(
+            f"UPDATE plays SET {sets} WHERE id = ?", vals
+        )
+        await self.db.commit()
+
+    # ── Definitions ───────────────────────────────────────────────────
+
+    async def save_definition(
+        self,
+        *,
+        kind: str,
+        name: str,
+        path: str,
+        content: str,
+        message: str | None = None,
+    ) -> int:
+        cur = await self.db.execute(
+            "SELECT MAX(version) AS v FROM definitions WHERE kind = ? AND name = ?",
+            (kind, name),
+        )
+        row = await cur.fetchone()
+        next_version = (row["v"] or 0) + 1
+
+        await self.db.execute(
+            """INSERT INTO definitions (id, kind, name, path, content, version, created_at, message)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                str(uuid.uuid4()),
+                kind,
+                name,
+                path,
+                content,
+                next_version,
+                time.time(),
+                message,
+            ),
+        )
+        await self.db.commit()
+        return next_version
+
+    async def get_definition(
+        self, kind: str, name: str, *, version: int | None = None
+    ) -> dict[str, Any] | None:
+        if version is not None:
+            cur = await self.db.execute(
+                "SELECT * FROM definitions WHERE kind = ? AND name = ? AND version = ?",
+                (kind, name, version),
+            )
+        else:
+            cur = await self.db.execute(
+                "SELECT * FROM definitions WHERE kind = ? AND name = ? ORDER BY version DESC LIMIT 1",
+                (kind, name),
+            )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_definition_versions(
+        self, kind: str, name: str
+    ) -> list[dict[str, Any]]:
+        cur = await self.db.execute(
+            "SELECT id, kind, name, version, created_at, message FROM definitions WHERE kind = ? AND name = ? ORDER BY version DESC",
+            (kind, name),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
     # ── Helpers ────────────────────────────────────────────────────────
 
     @staticmethod
     def _row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:
         d = dict(row)
-        for key in ("node_metadata", "content"):
+        for key in ("node_metadata", "content", "depends_on"):
             if key in d and isinstance(d[key], str):
                 try:
                     d[key] = json.loads(d[key])

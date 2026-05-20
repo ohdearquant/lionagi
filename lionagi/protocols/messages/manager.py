@@ -101,13 +101,13 @@ class MessageManager(Manager):
             else:
                 self.messages.include(_msg)
 
-            for cb in self._on_message_added:
-                if is_coro_func(cb):
-                    await cb(_msg)
-                else:
-                    cb(_msg)
+        for cb in self._on_message_added:
+            if is_coro_func(cb):
+                await cb(_msg)
+            else:
+                cb(_msg)
 
-            return _msg
+        return _msg
 
     @staticmethod
     def create_instruction(

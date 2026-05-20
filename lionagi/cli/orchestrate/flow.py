@@ -417,6 +417,7 @@ async def _run_flow(
     dry_run: bool = False,
     show_graph: bool = False,
     fast: bool = False,
+    playbook_name: str | None = None,
     **legacy_kwargs,
 ) -> str:
     """Auto-DAG flow: orchestrator plans DAG → engine executes with deps.
@@ -449,7 +450,12 @@ async def _run_flow(
         fast=fast,
     )
 
-    await start_live_persist(env)
+    await start_live_persist(
+        env,
+        invocation_kind="flow",
+        playbook_name=playbook_name,
+        agent_name=agent_name,
+    )
 
     inner_kw = dict(
         env=env,
@@ -463,16 +469,21 @@ async def _run_flow(
         dry_run=dry_run,
         show_graph=show_graph,
     )
+    _flow_failed = False
     try:
         if timeout:
             with move_on_after(timeout) as cancel_scope:
                 result = await _run_flow_inner(model_spec, prompt, **inner_kw)
             if cancel_scope.cancelled_caught:
+                _flow_failed = True
                 raise LionTimeoutError(f"Flow timed out after {timeout}s")
             return result
         return await _run_flow_inner(model_spec, prompt, **inner_kw)
+    except Exception:
+        _flow_failed = True
+        raise
     finally:
-        await stop_live_persist(env)
+        await stop_live_persist(env, failed=_flow_failed)
 
 
 async def _run_flow_inner(

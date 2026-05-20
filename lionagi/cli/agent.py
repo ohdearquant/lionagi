@@ -127,18 +127,23 @@ async def _run_agent(
     branch_id = str(branch.id)
 
     # Set up live SQLite persist (messages stream into DB as they're added)
-    live = await _setup_live_persist(branch)
+    live = await _setup_live_persist(branch, agent_name=agent_name)
 
-    res = await branch.operate(
-        instruction=prompt,
-        stream_persist=True,
-        persist_dir=str(run.stream_dir),
-        timeout=timeout,
-        **({"repo": cwd} if cwd else {}),
-    )
-
-    # Finalize: update session bookmarks + close DB
-    await _teardown_live_persist(live)
+    _operate_failed = False
+    try:
+        res = await branch.operate(
+            instruction=prompt,
+            stream_persist=True,
+            persist_dir=str(run.stream_dir),
+            timeout=timeout,
+            **({"repo": cwd} if cwd else {}),
+        )
+    except Exception:
+        _operate_failed = True
+        raise
+    finally:
+        # Finalize: update session lifecycle columns + close DB
+        await _teardown_live_persist(live, failed=_operate_failed)
 
     # Final branch snapshot + run manifest (filesystem — legacy)
     run.branch_path(branch_id).write_text(json.dumps(branch.to_dict()))
@@ -156,16 +161,17 @@ async def _run_agent(
     return res or "", provider, branch_id
 
 
-async def _setup_live_persist(branch: Branch) -> dict | None:
+async def _setup_live_persist(
+    branch: Branch,
+    *,
+    agent_name: str | None = None,
+) -> dict | None:
     """Open DB, create session/branch rows, register live message hook.
 
     Returns context dict for _teardown_live_persist, or None if unavailable.
     """
-    try:
-        from lionagi.session.session import Session
-        from lionagi.state.db import StateDB
-    except ImportError:
-        return None
+    from lionagi.session.session import Session
+    from lionagi.state.db import StateDB
 
     try:
         db = StateDB()
@@ -204,6 +210,10 @@ async def _setup_live_persist(branch: Branch) -> dict | None:
                 "progression_id": session_prog_id,
                 "first_msg_id": None,
                 "last_msg_id": None,
+                "invocation_kind": "agent",
+                "agent_name": agent_name,
+                "status": "running",
+                "started_at": time.time(),
             })
 
             # Persist system message if present
@@ -257,22 +267,30 @@ async def _setup_live_persist(branch: Branch) -> dict | None:
         return None
 
 
-async def _teardown_live_persist(ctx: dict | None) -> None:
-    """Update session bookmarks and close DB."""
+async def _teardown_live_persist(
+    ctx: dict | None,
+    *,
+    failed: bool = False,
+) -> None:
+    """Update session bookmarks, lifecycle columns, and close DB."""
     if ctx is None:
         return
     try:
+        import time as _time
+
         db = ctx["db"]
         session_id = ctx["session_id"]
         session_prog_id = ctx["session_prog_id"]
 
         all_msgs = await db.get_progression(session_prog_id)
+        update_kwargs: dict = {
+            "status": "failed" if failed else "completed",
+            "ended_at": _time.time(),
+        }
         if all_msgs:
-            await db.update_session(
-                session_id,
-                first_msg_id=all_msgs[0],
-                last_msg_id=all_msgs[-1],
-            )
+            update_kwargs["first_msg_id"] = all_msgs[0]
+            update_kwargs["last_msg_id"] = all_msgs[-1]
+        await db.update_session(session_id, **update_kwargs)
 
         ctx["branch"].on_message_added.remove(ctx["hook"])
         await db.close()

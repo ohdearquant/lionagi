@@ -95,7 +95,8 @@ async def _persist_branch(
     branch_id = branch_dict["id"]
 
     existing_branch = await db.get_branch(branch_id)
-    if existing_branch:
+    is_resume = existing_branch is not None
+    if is_resume:
         branch_prog_id = existing_branch["progression_id"]
         existing_msg_ids = set(await db.get_progression(branch_prog_id))
     else:
@@ -123,21 +124,27 @@ async def _persist_branch(
     if "system" in branch_dict:
         node_meta["system"] = branch_dict["system"]
 
-    # Persist system message as a regular message, store reference
+    # Persist system message as a regular message, store reference.
+    # Only append to all_message_ids if the system message wasn't already
+    # collected by the messages loop above (avoids double-counting on resume).
     system_msg_id = None
     if branch.system:
         sys_dict = branch.system.to_dict(mode="db")
         system_msg_id = sys_dict["id"]
         await db.insert_message(sys_dict)
-        all_message_ids.append(system_msg_id)
+        if system_msg_id not in existing_msg_ids and system_msg_id not in all_message_ids:
+            all_message_ids.append(system_msg_id)
 
-    await db.create_branch({
-        "id": branch_id,
-        "created_at": branch_dict["created_at"],
-        "node_metadata": node_meta,
-        "user": branch_dict.get("user"),
-        "name": branch_dict.get("name"),
-        "session_id": session_id,
-        "progression_id": branch_prog_id,
-        "system_msg_id": system_msg_id,
-    })
+    # On resume the branch row already exists (INSERT OR IGNORE would be a no-op).
+    # Skip create_branch to avoid unnecessary DB round-trip and keep semantics clear.
+    if not is_resume:
+        await db.create_branch({
+            "id": branch_id,
+            "created_at": branch_dict["created_at"],
+            "node_metadata": node_meta,
+            "user": branch_dict.get("user"),
+            "name": branch_dict.get("name"),
+            "session_id": session_id,
+            "progression_id": branch_prog_id,
+            "system_msg_id": system_msg_id,
+        })

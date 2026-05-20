@@ -55,6 +55,7 @@ async def _run_fanout(
     timeout: int | None = None,
     agent_name: str | None = None,
     fast: bool = False,
+    playbook_name: str | None = None,
 ) -> str:
     """Three-phase fan-out: decompose → fan out → synthesize."""
     env = setup_orchestration(
@@ -73,7 +74,12 @@ async def _run_fanout(
     )
     _shared: dict = {}
 
-    await start_live_persist(env)
+    await start_live_persist(
+        env,
+        invocation_kind="fanout",
+        playbook_name=playbook_name,
+        agent_name=agent_name,
+    )
 
     inner_kw = dict(
         env=env,
@@ -88,11 +94,13 @@ async def _run_fanout(
         _shared=_shared,
     )
 
+    _fanout_failed = False
     try:
         if timeout:
             with move_on_after(timeout) as cancel_scope:
                 result = await _run_fanout_inner(model_spec, prompt, **inner_kw)
             if cancel_scope.cancelled_caught:
+                _fanout_failed = True
                 persist_session_branches(env.session, env.run)
                 n_saved = len(_shared.get("saved_workers", []))
                 msg = f"Fanout timed out after {timeout}s"
@@ -102,8 +110,11 @@ async def _run_fanout(
                 raise LionTimeoutError(msg)
             return result
         return await _run_fanout_inner(model_spec, prompt, **inner_kw)
+    except Exception:
+        _fanout_failed = True
+        raise
     finally:
-        await stop_live_persist(env)
+        await stop_live_persist(env, failed=_fanout_failed)
 
 
 async def _run_fanout_inner(

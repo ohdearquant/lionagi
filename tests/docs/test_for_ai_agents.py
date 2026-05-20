@@ -190,9 +190,7 @@ class TestSelfImprovement:
 
         assert isinstance(data, dict)
         assert "messages" in data
-        assert "logs" in data
         assert "chat_model" in data
-        assert "parse_model" in data
 
     def test_from_dict_is_classmethod(self):
         """Branch.from_dict exists as a classmethod."""

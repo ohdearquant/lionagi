@@ -494,10 +494,10 @@ class iModel:  # noqa: N801
     def to_dict(
         self,
         include_request_options: bool = False,
-        include_processor_config: bool = False,
+        include_processor_config: bool = True,
     ) -> dict:
         endpoint = self.endpoint.to_dict()
-        if not include_request_options:
+        if not include_request_options and isinstance(endpoint.get("config"), dict):
             endpoint["config"].pop("request_options", None)
 
         data = {

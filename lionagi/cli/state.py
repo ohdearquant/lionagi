@@ -106,6 +106,82 @@ async def _import_runs() -> dict[str, int]:
     return counts
 
 
+_STATUS_MAP = {
+    "running": "running",
+    "completed": "completed",
+    "failed": "failed",
+    "aborted": "aborted",
+    # common aliases that may appear in run.json
+    "success": "completed",
+    "error": "failed",
+    "cancelled": "aborted",
+    "canceled": "aborted",
+}
+
+
+def _derive_import_status(manifest: dict[str, Any]) -> str:
+    """Derive session status from run.json per ADR-0017.
+
+    1. If manifest has "status" field → map to session vocabulary.
+    2. If manifest has "exit_code" == 0 → completed.
+    3. If manifest has "exit_code" != 0 → failed.
+    4. Otherwise → completed (conservative default).
+    """
+    raw_status = manifest.get("status")
+    if raw_status is not None:
+        return _STATUS_MAP.get(str(raw_status).lower(), "completed")
+
+    exit_code = manifest.get("exit_code")
+    if exit_code is not None:
+        return "completed" if exit_code == 0 else "failed"
+
+    return "completed"
+
+
+def _derive_timestamps(
+    manifest: dict[str, Any],
+    run_dir: Path,
+) -> tuple[float, float]:
+    """Return (started_at, ended_at) as floats.
+
+    Prefer manifest fields; fall back to filesystem ctime / mtime.
+    """
+    import time as _time
+
+    started_at = manifest.get("started_at")
+    ended_at = manifest.get("ended_at")
+
+    try:
+        stat = run_dir.stat()
+        fs_ctime = stat.st_birthtime if hasattr(stat, "st_birthtime") else stat.st_ctime
+        fs_mtime = stat.st_mtime
+    except OSError:
+        now = _time.time()
+        fs_ctime = now
+        fs_mtime = now
+
+    if started_at is None:
+        started_at = fs_ctime
+    if ended_at is None:
+        ended_at = fs_mtime
+
+    # If the values came from manifest they may be ISO strings; coerce to float.
+    if isinstance(started_at, str):
+        import datetime
+        try:
+            started_at = datetime.datetime.fromisoformat(started_at).timestamp()
+        except ValueError:
+            started_at = fs_ctime
+    if isinstance(ended_at, str):
+        import datetime
+        try:
+            ended_at = datetime.datetime.fromisoformat(ended_at).timestamp()
+        except ValueError:
+            ended_at = fs_mtime
+
+    return float(started_at), float(ended_at)
+
+
 async def _import_one_run(
     db: Any,
     run_id: str,
@@ -113,10 +189,11 @@ async def _import_one_run(
     manifest: dict[str, Any],
 ) -> tuple[int, int, int]:
     """Import a single run into the DB.  Returns (sessions, branches, messages) imported."""
-    import time
-
     created_at = _mtime_as_float(run_dir)
     session_name = manifest.get("kind") or "agent"
+
+    status = _derive_import_status(manifest)
+    started_at, ended_at = _derive_timestamps(manifest, run_dir)
 
     # Create session-level progression (empty for now; updated after branches).
     session_prog_id = str(uuid.uuid4())
@@ -132,6 +209,10 @@ async def _import_one_run(
         "progression_id": session_prog_id,
         "first_msg_id": None,
         "last_msg_id": None,
+        "source_kind": "imported_fs",
+        "status": status,
+        "started_at": started_at,
+        "ended_at": ended_at,
     })
 
     branches_dir = run_dir / "branches"
@@ -250,12 +331,11 @@ async def _list_sessions() -> None:
         )
         rows = await cur.fetchall()
 
-    if not rows:
-        print("(no sessions in state.db)")
-        return
+        if not rows:
+            print("(no sessions in state.db)")
+            return
 
-    # Gather branch / message counts per session.
-    async with StateDB() as db:
+        # Gather branch / message counts per session using the same connection.
         header = f"{'ID':<36}  {'NAME':<16}  {'BRANCHES':>8}  {'MESSAGES':>8}  {'UPDATED':<20}"
         print(header)
         print("-" * len(header))

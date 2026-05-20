@@ -512,13 +512,16 @@ class Branch(Element, Relational):
 
     @field_serializer("metadata")
     def _serialize_metadata_if_clone(self, v):
-        if "clone_from" in v:
-            v["clone_from"] = {
-                "id": str(v["clone_from"].id),
-                "user": str(v["clone_from"].user),
-                "created_at": v["clone_from"].created_at,
-                "progression": [str(i) for i in v["clone_from"].msgs.progression],
-            }
+        if "clone_from" not in v:
+            return v
+        v = dict(v)
+        source = v["clone_from"]
+        v["clone_from"] = {
+            "id": str(source.id),
+            "user": str(source.user),
+            "created_at": source.created_at,
+            "progression": [str(i) for i in source.msgs.progression],
+        }
         return v
 
     def to_dict(
@@ -532,8 +535,7 @@ class Branch(Element, Relational):
         **kw,
     ) -> dict:
         dict_ = super().to_dict(mode=mode, db_meta_key=db_meta_key, **kw)
-        if self.messages:
-            dict_["messages"] = self.messages.to_dict(mode=mode)
+        dict_["messages"] = self.messages.to_dict(mode=mode) if self.messages else {"collections": [], "progression": {"order": []}}
         if include_logs and self.logs:
             dict_["logs"] = self.logs.to_dict(mode=mode)
         if self.system:
@@ -541,11 +543,13 @@ class Branch(Element, Relational):
         if include_log_config:
             dict_["log_config"] = self._log_manager._config.model_dump()
         dict_["chat_model"] = self.chat_model.to_dict(
-            include_request_options, include_processor_config
+            include_request_options=include_request_options,
+            include_processor_config=include_processor_config,
         )
         if self.parse_model is not self.chat_model:
             dict_["parse_model"] = self.parse_model.to_dict(
-                include_request_options, include_processor_config
+                include_request_options=include_request_options,
+                include_processor_config=include_processor_config,
             )
         return dict_
 
