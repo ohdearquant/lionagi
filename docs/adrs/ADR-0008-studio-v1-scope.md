@@ -17,7 +17,7 @@ and authentication. Each has implementation cost and risk disproportionate to v1
 Lion Studio v1 is bounded as follows:
 
 - **Read-only**: All write endpoints (create, update, delete) are stubbed with HTTP 501. A
-  `# TODO(lion-studio-writes)` comment marks each stub for a future play.
+  `# TODO(lift-backend-writes)` comment marks each stub for a future play.
 - **Single local workspace**: Data is read from the local machine's filesystem only
   (`~/.lionagi/`, `~/khive-work/`). No remote backends, no multi-user routing.
 - **Internal**: Not published as a separate PyPI package or public service. Installed via
@@ -49,7 +49,7 @@ Cross-project monitoring (lionagi issue #967) is a v2 concern.
 
 ## References
 
-- `lift-backend/_intent.md:53-55` — write endpoint stub convention (`# TODO(lift-backend-writes)`)
+- `lift-backend/_intent.md:53-55` — write endpoint stub convention (`# TODO(lift-backend-writes)`) — verified against `feat/lion-studio-backend` router files
 - `add-shows-pages/_intent.md:50` — authentication explicitly out of scope
 - `lift-backend/lift_summary.md:83` — 11 GET routes implemented, 11 write endpoints stubbed (501)
 - [ADR-0004](ADR-0004-filesystem-data-layer.md) — filesystem data layer (enables single-workspace)

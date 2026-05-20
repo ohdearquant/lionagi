@@ -31,13 +31,17 @@ tech debt.
 ## Consequences
 
 **Positive**
-- Zero user-facing "Workers" copy remains after stage 1; the public model is consistent.
+- The bulk of user-facing "Workers" copy is replaced with "Playbooks" in stage 1; the public model
+  is consistent for all primary flows. Known residual strings (`"Failed to load workers"` in
+  `app/playbooks/page.tsx:12`, labels and button text in `app/runs/[id]/page.tsx:102,120`, and
+  `<th>Worker</th>` in `app/runs/page.tsx:118`) are addressed in PR-D's residual sweep; once that
+  lands, zero user-facing "Workers" copy remains.
 - Stage 1 risk is bounded to route and path changes, which are testable end-to-end.
 
 **Negative**
 - `grep "Workers"` still hits ~20 TypeScript identifiers in the frontend source.
 - A future sweeper performing a mechanical symbol rename risks breaking call sites; they MUST
-  read [ADR-0002 Appendix B](ADR-0002-studio-tech-stack.md#appendix-b) before touching symbols.
+  read [ADR-0002 Appendix B](ADR-0002-studio-tech-stack.md#appendix-b--typescript-symbol-names-retained-workerformdata-listworkers) before touching symbols.
 - The split between "renamed" and "not renamed" is a latent confusion point for new contributors.
 
 ## Alternatives Considered
@@ -53,4 +57,4 @@ tech debt.
 - `lift-frontend/_intent.md:39-40` — route rename + in-file API reference updates
 - `lift-backend/lift_summary.md:61-63` — Route Remap: `GET /api/workers` → `GET /api/playbooks`
 - `frontend-finalize/_intent.md:68` — F1 closes UI copy gap
-- [ADR-0002 Appendix B](ADR-0002-studio-tech-stack.md#appendix-b) — symbol retention rationale
+- [ADR-0002 Appendix B](ADR-0002-studio-tech-stack.md#appendix-b--typescript-symbol-names-retained-workerformdata-listworkers) — symbol retention rationale
