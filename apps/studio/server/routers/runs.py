@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from starlette.responses import StreamingResponse
 
 from ..services import runs as runs_svc
@@ -12,8 +11,11 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 
 
 @router.get("/")
-async def list_runs() -> dict[str, Any]:
-    return {"runs": runs_svc.list_runs()}
+async def list_runs(
+    worker: str | None = Query(default=None, description="Filter by worker name"),
+    status: str | None = Query(default=None, description="Filter by status"),
+) -> dict[str, Any]:
+    return {"runs": runs_svc.list_runs(worker=worker, status=status)}
 
 
 @router.get("/{run_id}")

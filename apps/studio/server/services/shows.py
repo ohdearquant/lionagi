@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import SHOWS_ROOT
+from ._path_safety import safe_path_join
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -67,7 +68,7 @@ def list_shows() -> list[dict[str, Any]]:
 
 
 def get_show(topic: str) -> dict[str, Any] | None:
-    show_dir = SHOWS_ROOT / topic
+    show_dir = safe_path_join(SHOWS_ROOT, topic)
     if not show_dir.is_dir():
         return None
 
@@ -98,7 +99,7 @@ def get_show(topic: str) -> dict[str, Any] | None:
 
 async def watch_show(topic: str) -> AsyncGenerator[str, None]:
     """Yield SSE-formatted events as files in the show directory mutate."""
-    topic_dir = SHOWS_ROOT / topic
+    topic_dir = safe_path_join(SHOWS_ROOT, topic)
     seen_files: dict[str, tuple[float, int]] = {}
 
     while True:

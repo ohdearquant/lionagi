@@ -6,6 +6,8 @@ import yaml
 
 from lionagi.cli._runs import LIONAGI_HOME
 
+from ._path_safety import safe_path_join
+
 _AGENTS_ROOT = LIONAGI_HOME / "agents"
 
 
@@ -44,6 +46,9 @@ def list_agents() -> list[dict[str, Any]]:
 
 
 def get_agent(name: str) -> dict[str, Any] | None:
+    # Validate path component — raises HTTPException(404) if unsafe
+    safe_path_join(_AGENTS_ROOT, name)
+
     stem = name.removesuffix(".md")
     path = _AGENTS_ROOT / f"{stem}.md"
     if not path.exists():
@@ -53,16 +58,26 @@ def get_agent(name: str) -> dict[str, Any] | None:
     except OSError:
         return None
     fm, body = _parse_frontmatter(text)
+
+    # Flatten into AgentProfile shape expected by the frontend
     result: dict[str, Any] = {
         "name": stem,
         "path": str(path),
-        "frontmatter": fm,
-        "body": body,
-        "raw": text,
+        "provider": str(fm.get("provider") or ""),
+        "model": str(fm.get("model") or ""),
+        "system_prompt": fm.get("system_prompt") or (body if body else None),
+        "guidance": fm.get("guidance") or None,
     }
+
+    # Preserve optional fields present in frontmatter
+    for optional_key in ("permission_mode", "reasoning_effort", "description"):
+        if optional_key in fm:
+            result[optional_key] = fm[optional_key]
+
     if path.is_symlink():
         try:
             result["symlink_target"] = str(path.resolve())
         except OSError:
             pass
+
     return result
