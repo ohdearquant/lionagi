@@ -90,8 +90,9 @@ session-level message pool) and zero or more branches.  Maps 1:1 to
 > hints for display and filtering — they are not authoritative execution state.
 
 Session is the **substrate**, not the invocation. Heavy run-level concerns
-(full manifest, cwd, provider, model, detailed lifecycle) are NOT on the
-session table. However, minimal provenance columns (`playbook_name`,
+(full manifest, cwd, provider, model, play-level lifecycle) are NOT on the
+session table. Minimal lifecycle columns (`status`, `started_at`, `ended_at`)
+are added by ADR-0017's v3→v4 migration for dashboard and runs-list queries. However, minimal provenance columns (`playbook_name`,
 `invocation_kind`, `show_topic`, `show_play_name`, `agent_name`,
 `artifacts_path`, `source_kind`) are added to sessions for execution lineage
 queries (see ADR-0012). These are lightweight hints for display and filtering,
