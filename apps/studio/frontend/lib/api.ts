@@ -352,3 +352,66 @@ export function streamShow(
   };
   return () => source.close();
 }
+
+// ─── Sessions ────────────────────────────────────────────────────────────────
+
+export interface SessionSummary {
+  id: string;
+  name: string;
+  created_at: number;
+  updated_at: number;
+  branch_count: number;
+  message_count: number;
+  status: string;
+}
+
+export interface SessionMessage {
+  id: string;
+  role: string;
+  content: Record<string, unknown>;
+  sender: string | null;
+  timestamp: number;
+  lion_class: string;
+  branch_id?: string;
+}
+
+export interface SessionBranch {
+  id: string;
+  name: string;
+  created_at: number;
+  messages: SessionMessage[];
+}
+
+export interface SessionDetail {
+  id: string;
+  name: string;
+  created_at: number;
+  updated_at: number;
+  branches: SessionBranch[];
+}
+
+export async function listSessions(): Promise<{ sessions: SessionSummary[] }> {
+  return fetchJson<{ sessions: SessionSummary[] }>("/api/sessions");
+}
+
+export async function getSession(id: string): Promise<SessionDetail> {
+  return fetchJson<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}`);
+}
+
+export function streamSession(
+  id: string,
+  onEvent: (event: Record<string, unknown>) => void,
+): () => void {
+  const source = new EventSource(
+    `${API_BASE}/api/sessions/${encodeURIComponent(id)}/stream`,
+  );
+  source.onmessage = (msg) => {
+    try {
+      onEvent(JSON.parse(msg.data) as Record<string, unknown>);
+    } catch {
+      /* malformed chunk */
+    }
+  };
+  source.onerror = () => source.close();
+  return () => source.close();
+}
