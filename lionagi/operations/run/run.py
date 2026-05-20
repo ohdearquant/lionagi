@@ -156,29 +156,17 @@ async def run(
                         if chunk.tool_id
                         else None
                     )
-                    if orig_req is not None:
-                        act_res = branch.msgs.create_action_response(
-                            action_request=orig_req,
-                            action_output=chunk.tool_output,
-                            sender=branch.user or "user",
-                            recipient=branch.id,
-                        )
-                        branch.msgs.messages.include(act_res)
-                    else:
-                        act_res = ActionResponse(
-                            content={
-                                "function": chunk.tool_name or "",
-                                "arguments": {},
-                                "output": chunk.tool_output,
-                            },
-                            sender=branch.user or "user",
-                            recipient=branch.id,
-                        )
-                        if chunk.is_error:
-                            act_res.metadata["is_error"] = True
-                        if chunk.tool_id:
-                            act_res.metadata["tool_id"] = chunk.tool_id
-                        branch.msgs.messages.include(act_res)
+                    if orig_req is None:
+                        continue
+
+                    act_res = branch.msgs.add_message(
+                        action_request=orig_req,
+                        action_output=chunk.tool_output,
+                        sender=branch.user or "user",
+                        recipient=branch.id,
+                    )
+                    if chunk.is_error:
+                        act_res.metadata["is_error"] = True
                     yield act_res
 
                 case "result":

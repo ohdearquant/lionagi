@@ -125,7 +125,7 @@ class StateDB:
                 msg["id"],
                 msg["created_at"],
                 node_metadata,
-                json.dumps(msg["content"]) if isinstance(msg["content"], dict) else msg["content"],
+                json.dumps(msg["content"]) if isinstance(msg["content"], (dict, list)) else msg["content"],
                 msg.get("embedding"),
                 msg.get("sender"),
                 msg.get("recipient"),
@@ -185,11 +185,9 @@ class StateDB:
         return json.loads(row["collection"])
 
     async def append_to_progression(self, progression_id: str, message_id: str) -> None:
-        collection = await self.get_progression(progression_id)
-        collection.append(message_id)
         await self.db.execute(
-            "UPDATE progressions SET collection = ? WHERE id = ?",
-            (json.dumps(collection), progression_id),
+            "UPDATE progressions SET collection = json_insert(collection, '$[#]', ?) WHERE id = ?",
+            (message_id, progression_id),
         )
         await self.db.commit()
 

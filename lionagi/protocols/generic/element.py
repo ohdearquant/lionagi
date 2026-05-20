@@ -198,9 +198,9 @@ class Element(BaseModel, Observable):
         metadata = {}
 
         if "node_metadata" in data:
-            metadata = dict(data.pop("node_metadata"))
+            metadata = dict(data.pop("node_metadata") or {})
         elif "metadata" in data:
-            metadata = dict(data.pop("metadata"))
+            metadata = dict(data.pop("metadata") or {})
         if "lion_class" in metadata:
             subcls: str = metadata.pop("lion_class")
             if subcls != Element.class_name(full=True):

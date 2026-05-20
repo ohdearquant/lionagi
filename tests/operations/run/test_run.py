@@ -156,8 +156,8 @@ async def test_run_flushes_text_before_tool_use_and_links_tool_result():
     assert last_ar.response == "after"
 
 
-async def test_run_unmatched_tool_result_preserves_error_metadata():
-    """Unmatched tool_result still yields ActionResponse with is_error metadata."""
+async def test_run_unmatched_tool_result_is_skipped():
+    """tool_result with unknown tool_id is silently skipped (no matching request)."""
     model, _ = _make_fake_cli_model(
         [
             StreamChunk(
@@ -175,12 +175,37 @@ async def test_run_unmatched_tool_result_preserves_error_metadata():
     results = await _collect(run(branch, "go", RunParam()))
 
     action_responses = [r for r in results if isinstance(r, ActionResponse)]
-    assert len(action_responses) == 1, "Expected exactly one ActionResponse"
+    assert len(action_responses) == 0, "Unmatched tool_result should be skipped"
 
-    act_res = action_responses[0]
-    assert act_res.metadata.get("is_error") is True
-    assert act_res.metadata.get("tool_id") == "missing"
-    assert act_res.function == "read"
+
+async def test_run_matched_tool_result_with_error():
+    """Matched tool_result with is_error=True preserves error metadata."""
+    model, _ = _make_fake_cli_model(
+        [
+            StreamChunk(
+                type="tool_use",
+                tool_id="call_1",
+                tool_name="read",
+                tool_input={"path": "/tmp"},
+            ),
+            StreamChunk(
+                type="tool_result",
+                tool_id="call_1",
+                tool_name="read",
+                tool_output={"error": "permission denied"},
+                is_error=True,
+            ),
+        ]
+    )
+    branch = Branch()
+    branch.chat_model = model
+
+    results = await _collect(run(branch, "go", RunParam()))
+
+    action_responses = [r for r in results if isinstance(r, ActionResponse)]
+    assert len(action_responses) == 1
+    assert action_responses[0].metadata.get("is_error") is True
+    assert action_responses[0].function == "read"
 
 
 async def test_run_error_chunk_raises_and_restores_streaming_processor():
