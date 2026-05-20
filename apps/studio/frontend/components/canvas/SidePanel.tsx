@@ -6,8 +6,8 @@ import type { StepNodeData } from "./StepNode";
 import type { ConditionEdgeData } from "./ConditionEdge";
 
 const INPUT_CLS =
-  "w-full rounded-md border border-edge bg-surface-input px-3 py-1.5 text-sm text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none";
-const LABEL_CLS = "block text-xs uppercase tracking-wide text-content-muted mb-1";
+  "w-full rounded-md border border-edge bg-surface-input px-3 py-1.5 text-body text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none";
+const LABEL_CLS = "block text-meta uppercase tracking-[0.06em] text-content-muted mb-1";
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -43,7 +43,7 @@ export default function SidePanel({
   if (selection.type === "none") {
     return (
       <div className="flex h-full items-center justify-center p-6">
-        <p className="text-center text-sm text-neutral-600">
+        <p className="text-center text-sm text-content-muted">
           Click a step or link to inspect or edit
         </p>
       </div>
@@ -114,11 +114,11 @@ function NodePanel({
   return (
     <div className="flex flex-col gap-4 p-4 overflow-y-auto">
       <div className="flex items-center justify-between">
-        <h3 className="font-mono text-sm font-semibold text-neutral-200">{data.label}</h3>
+        <h3 className="font-mono text-sm font-semibold text-content-primary">{data.label}</h3>
         {editable && onDelete && (
           <button
             onClick={() => onDelete("node", id)}
-            className="text-xs text-neutral-600 hover:text-red-400"
+            className="text-xs text-content-muted hover:text-status-error"
           >
             delete
           </button>
@@ -155,14 +155,14 @@ function NodePanel({
             })}
           </select>
         ) : (
-          <div className="text-sm text-neutral-300">{data.role || "—"}</div>
+          <div className="text-sm text-content-secondary">{data.role || "—"}</div>
         )}
 
         {data.role && (profile || override) && (
-          <div className="mt-1 flex items-center gap-2 text-xs text-neutral-500">
+          <div className="mt-1 flex items-center gap-2 text-xs text-content-muted">
             <span>
               via {override ? "override" : "profile"}:{" "}
-              <span className="font-mono text-neutral-400">
+              <span className="font-mono text-content-secondary">
                 {(override?.provider ?? profile?.provider) || "?"}/
                 {(override?.model ?? profile?.model) || "?"}
               </span>
@@ -183,7 +183,7 @@ function NodePanel({
             className={INPUT_CLS}
           />
         ) : (
-          <div className="font-mono text-sm text-neutral-300">{data.assignment || "—"}</div>
+          <div className="font-mono text-sm text-content-secondary">{data.assignment || "—"}</div>
         )}
       </div>
 
@@ -199,7 +199,7 @@ function NodePanel({
             className={`${INPUT_CLS} resize-y font-mono`}
           />
         ) : (
-          <pre className="whitespace-pre-wrap break-words rounded border border-neutral-800 bg-neutral-950 p-2 font-mono text-xs text-neutral-400">
+          <pre className="whitespace-pre-wrap break-words rounded border border-edge bg-surface-base p-2 font-mono text-xs text-content-secondary">
             {data.prompt || "—"}
           </pre>
         )}
@@ -218,7 +218,7 @@ function NodePanel({
               className={INPUT_CLS}
             />
           ) : (
-            <div className="text-sm text-neutral-300">{data.capacity ?? 1}</div>
+            <div className="text-sm text-content-secondary">{data.capacity ?? 1}</div>
           )}
         </div>
         <div className="flex-1">
@@ -235,7 +235,7 @@ function NodePanel({
               className={INPUT_CLS}
             />
           ) : (
-            <div className="text-sm text-neutral-300">{data.timeout ?? "none"}</div>
+            <div className="text-sm text-content-secondary">{data.timeout ?? "none"}</div>
           )}
         </div>
       </div>
@@ -268,11 +268,11 @@ function EdgePanel({
   return (
     <div className="flex flex-col gap-4 p-4 overflow-y-auto">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-neutral-200">Link</h3>
+        <h3 className="text-sm font-semibold text-content-primary">Link</h3>
         {editable && onDelete && (
           <button
             onClick={() => onDelete("edge", id)}
-            className="text-xs text-neutral-600 hover:text-red-400"
+            className="text-xs text-content-muted hover:text-status-error"
           >
             delete
           </button>
@@ -290,8 +290,8 @@ function EdgePanel({
                 onClick={() => update("mode", m)}
                 className={`rounded px-3 py-1 text-xs font-medium ${
                   data.mode === m
-                    ? "bg-neutral-700 text-neutral-200"
-                    : "bg-neutral-900 text-neutral-500 hover:text-neutral-300"
+                    ? "bg-interactive-secondary text-content-primary"
+                    : "bg-surface-input text-content-muted hover:text-content-primary"
                 }`}
               >
                 {m}
@@ -299,7 +299,7 @@ function EdgePanel({
             ))}
           </div>
         ) : (
-          <div className="text-sm text-neutral-300">{data.mode}</div>
+          <div className="text-sm text-content-secondary">{data.mode}</div>
         )}
       </div>
 
@@ -317,7 +317,7 @@ function EdgePanel({
                 className={INPUT_CLS}
               />
             ) : (
-              <div className="font-mono text-sm text-neutral-300">
+              <div className="font-mono text-sm text-content-secondary">
                 {data.condition || "unconditional"}
               </div>
             )}
@@ -329,13 +329,13 @@ function EdgePanel({
             {data.map && Object.keys(data.map).length > 0 ? (
               <div className="flex flex-col gap-1">
                 {Object.entries(data.map).map(([k, v]) => (
-                  <div key={k} className="font-mono text-xs text-neutral-400">
+                  <div key={k} className="font-mono text-xs text-content-secondary">
                     {k} &rarr; {v}
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="text-xs text-neutral-600">No field mapping</div>
+              <div className="text-xs text-content-muted">No field mapping</div>
             )}
           </div>
         </>
@@ -352,7 +352,7 @@ function EdgePanel({
               className={`${INPUT_CLS} resize-y font-mono`}
             />
           ) : (
-            <pre className="whitespace-pre-wrap break-words rounded border border-neutral-800 bg-neutral-950 p-2 font-mono text-xs text-neutral-400">
+            <pre className="whitespace-pre-wrap break-words rounded border border-edge bg-surface-base p-2 font-mono text-xs text-content-secondary">
               {data.handler || "—"}
             </pre>
           )}
@@ -376,15 +376,15 @@ function ExecResultPanel({
   return (
     <div className="flex flex-col gap-4 p-4 overflow-y-auto">
       <div className="flex items-center gap-2">
-        <h3 className="font-mono text-sm font-semibold text-green-400">{data.label}</h3>
-        <span className="rounded-full bg-green-900/50 px-2 py-0.5 text-[10px] text-green-300">
+        <h3 className="font-mono text-label font-semibold text-status-success">{data.label}</h3>
+        <span className="rounded-full border border-status-success/40 bg-status-success-bg px-2 py-0.5 text-meta text-status-success">
           completed
         </span>
       </div>
 
       {data.role && (
-        <div className="text-xs text-neutral-500">
-          Role: <span className="text-neutral-400">{data.role}</span>
+        <div className="text-xs text-content-muted">
+          Role: <span className="text-content-secondary">{data.role}</span>
         </div>
       )}
 
@@ -394,15 +394,15 @@ function ExecResultPanel({
           <div className="flex flex-col gap-2">
             {Object.entries(result).map(([key, val]) => (
               <div key={key}>
-                <span className="text-xs text-neutral-500">{key}:</span>
-                <p className="mt-0.5 whitespace-pre-wrap break-words text-sm text-neutral-300">
+                <span className="text-xs text-content-muted">{key}:</span>
+                <p className="mt-0.5 whitespace-pre-wrap break-words text-sm text-content-secondary">
                   {typeof val === "string" ? val : JSON.stringify(val, null, 2)}
                 </p>
               </div>
             ))}
           </div>
         ) : (
-          <div className="text-xs text-neutral-600">No output</div>
+          <div className="text-xs text-content-muted">No output</div>
         )}
       </div>
     </div>

@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import Button from "@/components/Button";
+import PageHeader from "@/components/PageHeader";
 import Table, { type TableColumn } from "@/components/Table";
 import { listAgents } from "@/lib/api";
 import type { AgentProfileSummary } from "@/lib/types";
@@ -54,7 +56,7 @@ export default function AgentsPage() {
     const cols: Array<TableColumn<AgentProfileSummary>> = [
       {
         id: "name",
-        header: "name",
+        header: "Name",
         accessor: (row) => (
           <div className="min-w-0">
             <div className="truncate font-medium text-content-primary">{row.name}</div>
@@ -69,7 +71,7 @@ export default function AgentsPage() {
     if (hasDescriptions) {
       cols.push({
         id: "description",
-        header: "description",
+        header: "Description",
         accessor: (row) =>
           row.description ? (
             <span
@@ -95,7 +97,7 @@ export default function AgentsPage() {
     cols.push(
       {
         id: "provider",
-        header: "provider",
+        header: "Provider",
         accessor: (row) => (
           <span className="font-mono text-meta text-content-secondary">{row.provider}</span>
         ),
@@ -104,7 +106,7 @@ export default function AgentsPage() {
       },
       {
         id: "model",
-        header: "model",
+        header: "Model",
         accessor: (row) => (
           <span className="font-mono text-meta text-content-secondary">{row.model}</span>
         ),
@@ -118,22 +120,17 @@ export default function AgentsPage() {
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6">
-      <header className="flex flex-col gap-3 border-b border-edge pb-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-semibold text-content-primary">Agents</h1>
-            <p className="text-body text-content-muted">
-              {agents.length} agent profile{agents.length === 1 ? "" : "s"}
-            </p>
-          </div>
-          <Link
-            href="/agents/new"
-            className="rounded border border-interactive-primary/40 bg-status-success-bg px-3 py-1.5 text-body font-medium text-status-success hover:border-interactive-primary hover:bg-interactive-primary hover:text-content-inverse"
-          >
-            + New Agent
+      <PageHeader
+        title="Agents"
+        subtitle={`${agents.length} agent profile${agents.length === 1 ? "" : "s"}`}
+        actions={
+          <Link href="/agents/new">
+            <Button variant="primary" size="sm" leading="+">
+              New Agent
+            </Button>
           </Link>
-        </div>
-      </header>
+        }
+      />
 
       {error ? (
         <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">

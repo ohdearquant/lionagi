@@ -3,10 +3,14 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { use, useCallback, useEffect, useRef, useState } from "react";
-import Badge from "@/components/Badge";
+import Button from "@/components/Button";
+import Duration from "@/components/Duration";
 import ExecutionDag from "@/components/ExecutionDag";
 import type { ExecutionStep } from "@/components/ExecutionDag";
 import RunStepCard from "@/components/RunStepCard";
+import SegmentedProgress from "@/components/SegmentedProgress";
+import StatusPill from "@/components/StatusPill";
+import Timestamp from "@/components/Timestamp";
 import { getRun, rerunRun, streamRunEvents } from "@/lib/api";
 import type { RunDetail, RunStep } from "@/lib/types";
 
@@ -62,53 +66,65 @@ const VERDICT_TONE: Record<string, string> = {
 function StepsTimeline({
   steps,
   totalNodes,
-  totalDuration,
+  totalDurationSec,
   activeStep,
   onNavigate,
 }: {
   steps: RunStep[];
   totalNodes: number;
-  totalDuration: string;
+  totalDurationSec: number | null;
   activeStep: string | null;
   onNavigate: (stepId: string) => void;
 }) {
   const completedCount = steps.filter((s) => s.status === "completed").length;
-  const total = Math.max(steps.length, totalNodes);
-  const pct = total > 0 ? Math.round((completedCount / total) * 100) : 0;
+  const failedCount = steps.filter((s) => s.status === "failed").length;
+  const runningCount = steps.filter((s) => s.status === "running").length;
+  const pendingCount = Math.max(0, totalNodes - completedCount - failedCount - runningCount);
+
+  // Sort: failed/running first, then completed, then pending — keeps abnormality on top.
+  const sortRank = (s: RunStep): number => {
+    if (s.status === "failed") return 0;
+    if (s.status === "running") return 1;
+    if (s.status === "blocked") return 2;
+    if (s.status === "completed") return 3;
+    return 4;
+  };
+  const sortedSteps = [...steps].sort((a, b) => sortRank(a) - sortRank(b));
 
   return (
     <div className="rounded border border-edge bg-surface-raised">
-      {/* Header: progress + total duration */}
+      {/* Header: segmented progress + total duration */}
       <div className="border-b border-edge px-3 py-2">
         <div className="mb-1.5 flex items-center justify-between gap-2">
-          <span className="text-[9px] font-semibold uppercase tracking-wider text-content-muted">
+          <span className="text-meta font-semibold uppercase tracking-[0.06em] text-content-muted">
             Steps
           </span>
-          <span className="font-mono text-[10px] text-content-muted">
-            {completedCount}/{total}
-            {totalDuration && totalDuration !== "—" && (
-              <span className="ml-1.5 text-content-muted opacity-70">{totalDuration}</span>
-            )}
+          <span className="font-mono text-meta tabular-nums text-content-muted">
+            {completedCount}/{totalNodes || steps.length}
+            {totalDurationSec != null && totalDurationSec >= 0 ? (
+              <span className="ml-1.5 opacity-70">
+                <Duration value={totalDurationSec} />
+              </span>
+            ) : null}
           </span>
         </div>
-        {/* Progress bar */}
-        <div className="h-1 w-full overflow-hidden rounded-full bg-surface-overlay">
-          <div
-            className="h-full rounded-full bg-status-success transition-all duration-300"
-            style={{ width: `${pct}%` }}
-          />
-        </div>
+        <SegmentedProgress
+          completed={completedCount}
+          failed={failedCount}
+          running={runningCount}
+          pending={pendingCount}
+        />
       </div>
 
-      {/* Timeline rows */}
+      {/* Timeline rows: sorted by abnormality (failed/running first) */}
       <ol className="flex flex-col py-1.5">
-        {steps.map((step, i) => {
-          const isLast = i === steps.length - 1;
+        {sortedSteps.map((step, i) => {
+          const execIndex = steps.indexOf(step) + 1;
+          const isLast = i === sortedSteps.length - 1;
           const isActive = activeStep === step.step;
           const { toolCount, failedCount, durationSec } = toolCountFromStep(step);
           const verdict = verdictFromStep(step);
 
-          // Status dot color + pulse for running
           const dotClass =
             step.status === "completed"
               ? "bg-status-success"
@@ -118,76 +134,64 @@ function StepsTimeline({
                   ? "bg-status-running animate-pulse"
                   : "bg-edge-strong";
 
-          // Row hover / active background
           const rowBg = isActive
             ? "bg-surface-overlay"
             : "hover:bg-surface-overlay/60";
 
           return (
-            <li key={i} className="relative flex items-stretch">
-              {/* Left gutter: step # + vertical line */}
+            <li key={step.step} className="relative flex items-stretch">
               <div className="relative flex w-7 shrink-0 flex-col items-center">
-                {/* Connecting line (full height, hidden on last row) */}
                 {!isLast && (
                   <div className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-edge" />
                 )}
-                {/* Step number */}
-                <span className="relative z-10 mt-2 font-mono text-[9px] text-content-muted">
-                  {i + 1}
+                <span
+                  className="relative z-10 mt-2 font-mono text-meta tabular-nums text-content-muted"
+                  title={`Step ${execIndex}`}
+                >
+                  {execIndex}
                 </span>
               </div>
 
-              {/* Row button */}
               <button
                 type="button"
                 onClick={() => onNavigate(step.step)}
                 className={`flex min-w-0 flex-1 flex-col gap-0.5 rounded-r py-1.5 pr-2 text-left transition-colors ${rowBg}`}
               >
-                {/* Top line: dot + name + duration */}
                 <div className="flex items-center gap-1.5">
-                  {/* Status dot */}
-                  <span
-                    className={`inline-block h-2 w-2 shrink-0 rounded-full ${dotClass}`}
-                  />
-                  {/* Step name */}
+                  <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${dotClass}`} />
                   <span
                     className={`min-w-0 flex-1 truncate font-mono text-body ${
-                      isActive
-                        ? "text-content-primary"
-                        : "text-content-secondary"
+                      isActive ? "text-content-primary" : "text-content-secondary"
                     }`}
                   >
                     {step.step}
                   </span>
-                  {/* Duration */}
-                  {durationSec != null && (
-                    <span className="shrink-0 font-mono text-[9px] text-content-muted">
-                      {fmtDur(durationSec)}
+                  {durationSec != null && durationSec >= 0 ? (
+                    <span className="shrink-0 font-mono text-meta tabular-nums text-content-muted">
+                      <Duration value={durationSec} />
                     </span>
-                  )}
+                  ) : null}
                 </div>
 
-                {/* Bottom line: tool count + failures + verdict (only if noteworthy) */}
                 {(toolCount > 0 || failedCount > 0 || verdict) && (
                   <div className="flex items-center gap-1.5 pl-3.5">
                     {toolCount > 0 && (
-                      <span className="font-mono text-[9px] text-content-muted">
+                      <span className="font-mono text-meta tabular-nums text-content-muted">
                         {toolCount}t
                       </span>
                     )}
                     {failedCount > 0 && (
-                      <span className="font-mono text-[9px] text-status-error">
+                      <span className="font-mono text-meta tabular-nums text-status-error">
                         {failedCount}✗
                       </span>
                     )}
                     {verdict && (
                       <span
-                        className={`font-mono text-[9px] font-medium ${VERDICT_TONE[verdict] ?? "text-content-muted"}`}
+                        className={`font-mono text-meta font-medium ${VERDICT_TONE[verdict] ?? "text-content-muted"}`}
                       >
                         {verdict}
                       </span>
                     )}
-                    {/* Active indicator dot */}
                     {isActive && (
                       <span className="ml-auto h-1 w-1 rounded-full bg-status-running" />
                     )}
@@ -202,26 +206,15 @@ function StepsTimeline({
   );
 }
 
-function formatDuration(started: number | null, finished: number | null): string {
-  if (!started) return "—";
+function runDurationSec(started: number | null, finished: number | null): number | null {
+  if (!started) return null;
   const end = finished ?? Date.now() / 1000;
-  const seconds = Math.round(end - started);
-  if (seconds < 60) return `${seconds}s`;
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `${mins}m ${secs}s`;
+  const seconds = end - started;
+  // Negative durations indicate timestamp ordering bugs upstream — render as
+  // "—" rather than expose the broken value. See Duration component.
+  if (seconds < 0) return -1;
+  return seconds;
 }
-
-function formatTime(ts: number | null): string {
-  if (!ts) return "—";
-  return new Date(ts * 1000).toLocaleString();
-}
-
-const STATUS_TONE: Record<string, "ok" | "pending" | "failed"> = {
-  completed: "ok",
-  running: "pending",
-  failed: "failed",
-};
 
 function mergeRunChunk(
   prev: RunDetail,
@@ -410,7 +403,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
         <h1 className="min-w-0 flex-1 truncate font-mono text-base font-semibold text-content-primary">
           {runId}
         </h1>
-        {run && <Badge tone={STATUS_TONE[run.status] ?? "pending"}>{run.status}</Badge>}
+        {run && <StatusPill value={run.status} kind="lifecycle" />}
         {streaming && (
           <span className="flex shrink-0 items-center gap-1.5 text-xs text-status-success">
             <span className="relative flex h-2 w-2">
@@ -421,15 +414,31 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
           </span>
         )}
         {run && (
-          <button
+          <Button
+            variant="primary"
+            size="sm"
             onClick={handleRerun}
             disabled={rerunning}
-            className="shrink-0 rounded border border-status-success/50 bg-status-success-bg px-3 py-1 text-sm text-status-success hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
+            leading="↻"
+            className="shrink-0"
           >
             {rerunning ? "Starting..." : "Re-run"}
-          </button>
+          </Button>
         )}
       </header>
+
+      {/* Run Health strip — incident summary directly below the header */}
+      {run && (
+        <RunHealthStrip
+          status={run.status}
+          steps={steps}
+          totalNodes={nodes.length}
+          startedAt={run.started_at}
+          finishedAt={run.finished_at}
+          error={run.error}
+          onJumpToStep={scrollToStep}
+        />
+      )}
 
       {error && (
         <div className="px-6 pt-4 xl:px-12">
@@ -457,9 +466,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                     {model !== "—" && <MetricRow label="Model" value={model} mono={true} />}
                     <MetricRow
                       label="Status"
-                      value={
-                        <Badge tone={STATUS_TONE[run.status] ?? "pending"}>{run.status}</Badge>
-                      }
+                      value={<StatusPill value={run.status} kind="lifecycle" />}
                     />
                     <MetricRow
                       label="Steps"
@@ -467,10 +474,16 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                     />
                     <MetricRow
                       label="Duration"
-                      value={formatDuration(run.started_at, run.finished_at)}
+                      value={<Duration value={runDurationSec(run.started_at, run.finished_at)} />}
                     />
-                    <MetricRow label="Started" value={formatTime(run.started_at)} />
-                    <MetricRow label="Finished" value={formatTime(run.finished_at)} />
+                    <MetricRow
+                      label="Started"
+                      value={<Timestamp value={run.started_at ?? null} exact />}
+                    />
+                    <MetricRow
+                      label="Finished"
+                      value={<Timestamp value={run.finished_at ?? null} exact />}
+                    />
                     {run.cwd && <MetricRow label="CWD" value={run.cwd} mono={true} />}
                   </dl>
                 </div>
@@ -521,7 +534,10 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
               {/* Mobile-only metric strip */}
               <div className="mb-4 flex flex-wrap gap-2 lg:hidden">
                 <MobileMetric label="Steps" value={`${completedCount}/${totalSteps}`} />
-                <MobileMetric label="Duration" value={formatDuration(run.started_at, run.finished_at)} />
+                <MobileMetric
+                  label="Duration"
+                  value={<Duration value={runDurationSec(run.started_at, run.finished_at)} />}
+                />
                 <MobileMetric label="Kind" value={run.worker_name || "—"} />
               </div>
 
@@ -590,7 +606,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
               <StepsTimeline
                 steps={steps}
                 totalNodes={nodes.length}
-                totalDuration={formatDuration(run?.started_at ?? null, run?.finished_at ?? null)}
+                totalDurationSec={runDurationSec(run?.started_at ?? null, run?.finished_at ?? null)}
                 activeStep={activeTimelineStep}
                 onNavigate={scrollToStep}
               />
@@ -602,6 +618,135 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
           </div>
         </aside>
       </div>
+    </div>
+  );
+}
+
+/* Run Health strip — surfaces verdict, primary failure, slowest step at the top */
+function RunHealthStrip({
+  status,
+  steps,
+  totalNodes,
+  startedAt,
+  finishedAt,
+  error,
+  onJumpToStep,
+}: {
+  status: string;
+  steps: RunStep[];
+  totalNodes: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+  error: string | null;
+  onJumpToStep: (stepId: string) => void;
+}) {
+  // Find primary failure
+  const failedStep = steps.find((s) => s.status === "failed");
+  // Find slowest step (by intra-step duration)
+  let slowest: { name: string; sec: number } | null = null;
+  let totalFailedTools = 0;
+  for (const step of steps) {
+    const { failedCount, durationSec } = toolCountFromStep(step);
+    totalFailedTools += failedCount;
+    if (durationSec != null && durationSec >= 0) {
+      if (!slowest || durationSec > slowest.sec) {
+        slowest = { name: step.step, sec: durationSec };
+      }
+    }
+  }
+
+  // Verdict: aggregate from last completed step that has a verdict
+  let verdict: string | null = null;
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const v = verdictFromStep(steps[i]);
+    if (v) {
+      verdict = v;
+      break;
+    }
+  }
+
+  const runSec = runDurationSec(startedAt, finishedAt);
+  const completedCount = steps.filter((s) => s.status === "completed").length;
+
+  return (
+    <div className="border-b border-edge bg-surface-overlay px-3 py-2 xl:px-4">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-meta">
+        <HealthChip label="Status" tone={status === "failed" ? "failed" : status === "running" ? "running" : "neutral"}>
+          <StatusPill value={status} kind="lifecycle" />
+        </HealthChip>
+        {verdict ? (
+          <HealthChip label="Verdict">
+            <StatusPill value={verdict} kind="verdict" label={verdict} />
+          </HealthChip>
+        ) : null}
+        <HealthChip label="Progress">
+          <span className="font-mono tabular-nums text-content-primary">
+            {completedCount} / {totalNodes || steps.length}
+          </span>
+        </HealthChip>
+        <HealthChip label="Duration">
+          <Duration value={runSec} className="text-content-primary" />
+        </HealthChip>
+        {totalFailedTools > 0 ? (
+          <HealthChip label="Failed tool calls" tone="failed">
+            <span className="font-mono tabular-nums text-status-error">{totalFailedTools}</span>
+          </HealthChip>
+        ) : null}
+        {failedStep ? (
+          <HealthChip label="Primary failure" tone="failed">
+            <button
+              type="button"
+              onClick={() => onJumpToStep(failedStep.step)}
+              className="font-mono text-status-error hover:underline truncate max-w-[16rem]"
+              title={`Jump to ${failedStep.step}`}
+            >
+              {failedStep.step}
+            </button>
+          </HealthChip>
+        ) : null}
+        {slowest && slowest.sec > 30 ? (
+          <HealthChip label="Slowest step">
+            <button
+              type="button"
+              onClick={() => onJumpToStep(slowest!.name)}
+              className="font-mono text-content-secondary hover:text-content-primary hover:underline truncate max-w-[12rem]"
+            >
+              {slowest.name}{" "}
+              <span className="text-content-muted">
+                (<Duration value={slowest.sec} />)
+              </span>
+            </button>
+          </HealthChip>
+        ) : null}
+      </div>
+      {error ? (
+        <div className="mt-1.5 truncate font-mono text-meta text-status-error" title={error}>
+          {error.split("\n")[0]}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function HealthChip({
+  label,
+  tone = "neutral",
+  children,
+}: {
+  label: string;
+  tone?: "neutral" | "running" | "failed";
+  children: React.ReactNode;
+}) {
+  const labelTone =
+    tone === "failed"
+      ? "text-status-error"
+      : tone === "running"
+        ? "text-status-running"
+        : "text-content-muted";
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className={`uppercase tracking-[0.06em] ${labelTone}`}>{label}</span>
+      <span className="flex items-center">{children}</span>
     </div>
   );
 }
@@ -629,11 +774,11 @@ function MetricRow({
 }
 
 /* Pill for mobile metric strip */
-function MobileMetric({ label, value }: { label: string; value: string }) {
+function MobileMetric({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="rounded border border-edge bg-surface-raised px-3 py-1.5">
-      <div className="text-[10px] uppercase text-content-muted">{label}</div>
-      <div className="text-xs font-medium text-content-primary">{value}</div>
+      <div className="text-meta uppercase tracking-[0.06em] text-content-muted">{label}</div>
+      <div className="text-body font-medium text-content-primary">{value}</div>
     </div>
   );
 }

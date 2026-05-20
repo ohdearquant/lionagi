@@ -171,11 +171,23 @@ export default function Table<T>({
                     <button
                       type="button"
                       onClick={() => toggleSort(column)}
-                      className="inline-flex max-w-full items-center gap-1 text-content-muted hover:text-content-primary"
+                      aria-sort={
+                        active ? (sort.direction === "asc" ? "ascending" : "descending") : "none"
+                      }
+                      className={[
+                        "inline-flex max-w-full items-center gap-1 hover:text-content-primary",
+                        active ? "text-content-primary" : "text-content-muted",
+                      ].join(" ")}
                     >
                       <span className="truncate">{column.header}</span>
-                      <span aria-hidden="true" className="shrink-0 text-meta">
-                        {active ? (sort.direction === "asc" ? "↑" : "↓") : ""}
+                      <span
+                        aria-hidden="true"
+                        className={[
+                          "shrink-0 text-meta tabular-nums",
+                          active ? "text-content-primary" : "text-content-muted/60",
+                        ].join(" ")}
+                      >
+                        {active ? (sort.direction === "asc" ? "↑" : "↓") : "↕"}
                       </span>
                     </button>
                   ) : (

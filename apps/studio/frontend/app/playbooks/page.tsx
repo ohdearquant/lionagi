@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import Button from "@/components/Button";
+import PageHeader from "@/components/PageHeader";
 import Table, { type TableColumn } from "@/components/Table";
 import { listWorkers } from "@/lib/api";
 import type { WorkerSummary } from "@/lib/types";
@@ -45,11 +47,16 @@ export default function WorkersPage() {
     };
   }, []);
 
-  const columns = useMemo<Array<TableColumn<WorkerSummary>>>(
-    () => [
+  const hasDescriptions = useMemo(
+    () => workers.some((w) => w.description && w.description.trim().length > 0),
+    [workers],
+  );
+
+  const columns = useMemo<Array<TableColumn<WorkerSummary>>>(() => {
+    const base: Array<TableColumn<WorkerSummary>> = [
       {
         id: "name",
-        header: "name",
+        header: "Name",
         accessor: (row) => (
           <div className="min-w-0">
             <div className="truncate font-medium text-content-primary">{row.name}</div>
@@ -59,12 +66,15 @@ export default function WorkersPage() {
           </div>
         ),
         sortValue: (row) => row.name,
-        className: "w-[20rem]",
+        className: hasDescriptions ? "w-[18rem]" : "w-[24rem]",
         truncate: false,
       },
-      {
+    ];
+
+    if (hasDescriptions) {
+      base.push({
         id: "description",
-        header: "description",
+        header: "Description",
         accessor: (row) =>
           row.description ? (
             <span
@@ -84,45 +94,54 @@ export default function WorkersPage() {
           ),
         sortValue: (row) => row.description ?? "",
         truncate: false,
-      },
+      });
+    }
+
+    base.push(
       {
         id: "steps",
-        header: "steps",
-        accessor: (row) => row.steps,
+        header: "Steps",
+        accessor: (row) =>
+          row.steps > 0 ? (
+            <span className="tabular-nums text-content-primary">{row.steps}</span>
+          ) : (
+            <span className="text-content-muted">—</span>
+          ),
         sortValue: (row) => row.steps,
         align: "right",
-        className: "w-[5rem]",
+        className: "w-[6rem] tabular-nums",
       },
       {
         id: "links",
-        header: "links",
-        accessor: (row) => row.links,
+        header: "Links",
+        accessor: (row) =>
+          row.links > 0 ? (
+            <span className="tabular-nums text-content-primary">{row.links}</span>
+          ) : (
+            <span className="text-content-muted">—</span>
+          ),
         sortValue: (row) => row.links,
         align: "right",
-        className: "w-[5rem]",
+        className: "w-[6rem] tabular-nums",
       },
-    ],
-    [],
-  );
+    );
+
+    return base;
+  }, [hasDescriptions]);
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6">
-      <header className="flex flex-col gap-3 border-b border-edge pb-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-semibold text-content-primary">Playbooks</h1>
-            <p className="text-body text-content-muted">
-              {workers.length} playbook definition{workers.length === 1 ? "" : "s"}
-            </p>
-          </div>
-          <Link
-            href="/playbooks/new"
-            className="rounded border border-interactive-primary/40 bg-status-success-bg px-3 py-1.5 text-body font-medium text-status-success hover:border-interactive-primary hover:bg-interactive-primary hover:text-content-inverse"
-          >
-            + New Playbook
+      <PageHeader
+        title="Playbooks"
+        subtitle={`${workers.length} playbook definition${workers.length === 1 ? "" : "s"}`}
+        actions={
+          <Link href="/playbooks/new">
+            <Button variant="primary" size="sm" leading="+">
+              New Playbook
+            </Button>
           </Link>
-        </div>
-      </header>
+        }
+      />
 
       {error ? (
         <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
