@@ -297,7 +297,8 @@ pending merge):
 | 7 | Quick fixes (breadcrumbs, cross-links, playbook search, version drawer) | P1 | Quick | ADR-0012 §9 |
 | 8 | Shows layout: _show.md below plays, always collapsed | P1 | Quick | ADR-0012 §8 |
 | 9 | ExecutionDag on playbook detail (graph-format playbooks only) | P2 | Medium | ADR-0012 §5 |
-| 10 | Definition editor standardization (shared shell, version drawer) | P2 | Medium | — |
+| 10 | Definitions API + `definitions` table + save/rollback versioning | P1 | Medium | ADR-0016 |
+| 11 | Definition editor standardization (shared shell, version drawer) | P2 | Medium | — |
 
 ## Consequences
 
