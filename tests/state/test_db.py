@@ -798,3 +798,218 @@ async def test_get_definition_missing(db: StateDB):
     # Also for an explicit version that doesn't exist
     result_versioned = await db.get_definition("agent", "nonexistent-agent", version=99)
     assert result_versioned is None
+
+
+# ── Regression: PR #980 R4 SQL race + JSON roundtrip + provenance ────────────
+
+
+async def test_resolve_lion_class_concurrent_race(tmp_path):
+    """R4-C HIGH-1: SELECT-then-INSERT raced on UNIQUE(message_types.lion_class).
+
+    The fix uses INSERT OR IGNORE + SELECT so concurrent writers for the same
+    novel ``lion_class`` no longer collide. Drive 20 concurrent insert_message
+    calls registering the same new class — none should raise.
+    """
+    import asyncio
+
+    path = tmp_path / "race.db"
+    db = StateDB(str(path))
+    await db.open()
+    try:
+        prog_id = uid()
+        await db.create_progression(prog_id)
+
+        async def insert_one(i):
+            await db.insert_message({
+                "id": f"raced-{i}",
+                "created_at": time.time(),
+                "node_metadata": {"lion_class": "test.race.NovelClass"},
+                "content": {"i": i},
+                "role": "user",
+            })
+
+        # 20 concurrent inserts of the same novel class. Pre-fix this raised
+        # ``sqlite3.IntegrityError: UNIQUE constraint failed`` for most.
+        await asyncio.gather(*(insert_one(i) for i in range(20)))
+
+        # Exactly one message_types row for the novel class.
+        cur = await db.db.execute(
+            "SELECT COUNT(*) AS n FROM message_types WHERE lion_class = ?",
+            ("test.race.NovelClass",),
+        )
+        row = await cur.fetchone()
+        assert row["n"] == 1
+    finally:
+        await db.close()
+
+
+async def test_save_definition_concurrent_versions_are_unique(tmp_path):
+    """R4-C HIGH-3: SELECT MAX(version) + INSERT raced under concurrent saves.
+
+    The fix uses BEGIN IMMEDIATE + bounded retry on IntegrityError so all
+    writers complete with unique, monotonically-increasing versions.
+    """
+    import asyncio
+
+    path = tmp_path / "defrace.db"
+    db = StateDB(str(path))
+    await db.open()
+    try:
+        N = 10
+        versions = await asyncio.gather(*(
+            db.save_definition(
+                kind="agent",
+                name="race-agent",
+                path=".lionagi/agents/race-agent.md",
+                content=f"content-{i}",
+                message=f"save-{i}",
+            )
+            for i in range(N)
+        ))
+        # Every save returned a unique version, and the set is {1..N}.
+        assert sorted(versions) == list(range(1, N + 1)), (
+            f"Expected unique versions 1..{N}, got {sorted(versions)}"
+        )
+
+        # Database state matches the API return values.
+        rows = await db.list_definition_versions("agent", "race-agent")
+        assert sorted(r["version"] for r in rows) == list(range(1, N + 1))
+    finally:
+        await db.close()
+
+
+async def test_message_content_string_roundtrips_as_string(db: StateDB):
+    """R4-C MED-3: A literal string content used to round-trip as a dict
+    because ``_row_to_dict`` ``json.loads()``'d every string column. The
+    fix wraps strings in JSON via ``_to_json_column`` so loads is the
+    exact inverse.
+    """
+    prog_id = uid()
+    await db.create_progression(prog_id)
+
+    # Cases that would have round-tripped as dict pre-fix.
+    json_like_strings = [
+        '{"text": "literal string"}',  # looks like a JSON object
+        '[1, 2, 3]',                    # looks like a JSON array
+        '"already quoted"',             # already-quoted JSON string
+        'plain text',                   # not JSON at all
+        '',                             # empty string
+        '42',                           # JSON number
+        'null',                         # JSON null
+    ]
+    for i, raw in enumerate(json_like_strings):
+        msg_id = f"str-{i}"
+        await db.insert_message({
+            "id": msg_id,
+            "created_at": time.time(),
+            "content": raw,
+            "role": "user",
+        })
+        got = await db.get_message(msg_id)
+        assert got is not None
+        # Critical: type AND value preserved exactly.
+        assert isinstance(got["content"], str), (
+            f"case {i!r}: expected str, got {type(got['content']).__name__}"
+        )
+        assert got["content"] == raw, f"case {i!r}: value diverged"
+
+
+async def test_message_content_dict_roundtrips_as_dict(db: StateDB):
+    """And dicts still round-trip as dicts — the fix shouldn't regress
+    the normal case."""
+    prog_id = uid()
+    await db.create_progression(prog_id)
+
+    await db.insert_message({
+        "id": "dict-msg",
+        "created_at": time.time(),
+        "content": {"role": "assistant", "text": "hello"},
+        "role": "assistant",
+    })
+    got = await db.get_message("dict-msg")
+    assert got is not None
+    assert isinstance(got["content"], dict)
+    assert got["content"] == {"role": "assistant", "text": "hello"}
+
+
+async def test_create_session_rejects_invalid_invocation_kind(db: StateDB):
+    """R4-B MED-2: ADR-0012 closed vocabulary, was unenforced before."""
+    prog_id = uid()
+    await db.create_progression(prog_id)
+    with pytest.raises(ValueError, match="invocation_kind"):
+        await db.create_session({
+            "id": uid(), "progression_id": prog_id,
+            "created_at": time.time(),
+            "invocation_kind": "not-a-real-kind",
+        })
+
+
+async def test_create_session_rejects_invalid_source_kind(db: StateDB):
+    """ADR-0012: source_kind ∈ {live, imported_fs}."""
+    prog_id = uid()
+    await db.create_progression(prog_id)
+    with pytest.raises(ValueError, match="source_kind"):
+        await db.create_session({
+            "id": uid(), "progression_id": prog_id,
+            "created_at": time.time(),
+            "source_kind": "remote_api",
+        })
+
+
+async def test_update_session_rejects_invalid_enums(db: StateDB):
+    """Updates also validate — not just create."""
+    prog_id = uid()
+    await db.create_progression(prog_id)
+    sid = uid()
+    await db.create_session({
+        "id": sid, "progression_id": prog_id,
+        "created_at": time.time(),
+        "invocation_kind": "agent", "source_kind": "live",
+    })
+
+    with pytest.raises(ValueError, match="invocation_kind"):
+        await db.update_session(sid, invocation_kind="bogus")
+    with pytest.raises(ValueError, match="source_kind"):
+        await db.update_session(sid, source_kind="bogus")
+
+
+async def test_create_play_rejects_invalid_status(db: StateDB):
+    """ADR-0011: play status ∈ 11-vocabulary."""
+    show = await _make_show(db)
+    with pytest.raises(ValueError, match="play status"):
+        await db.create_play({
+            "id": uid(), "show_id": show["id"],
+            "name": "bad-status-play",
+            "status": "completed",  # belongs to SESSIONS vocab
+        })
+
+
+async def test_create_show_rejects_invalid_status(db: StateDB):
+    """ADR-0011: show status ∈ {active, completed, aborted, imported}."""
+    with pytest.raises(ValueError, match="show status"):
+        await db.create_show({
+            "id": uid(), "topic": "bad-status",
+            "show_dir": "/tmp/bad", "status": "running",  # not in show vocab
+        })
+
+
+async def test_session_delete_cascades_branches(db: StateDB):
+    """R4-D MED-9: schema declares ON DELETE CASCADE for branches; verify."""
+    prog_id = uid()
+    await db.create_progression(prog_id)
+    sid = uid()
+    await db.create_session({
+        "id": sid, "progression_id": prog_id, "created_at": time.time(),
+    })
+    bprog = uid()
+    await db.create_progression(bprog)
+    bid = uid()
+    await db.create_branch({
+        "id": bid, "session_id": sid, "progression_id": bprog,
+        "created_at": time.time(),
+    })
+
+    assert await db.get_branch(bid) is not None
+    await db.db.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+    await db.db.commit()
+    assert await db.get_branch(bid) is None

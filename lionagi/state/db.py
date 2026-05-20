@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -33,6 +34,10 @@ _PLAY_COLUMNS = frozenset({
     "started_at", "ended_at", "exit_code", "worktree", "branch",
     "merge_sha", "merged_at", "gate_passed", "gate_feedback",
     "depends_on", "sort_order", "updated_at",
+})
+
+_BRANCH_COLUMNS = frozenset({
+    "name", "user", "node_metadata", "system_msg_id",
 })
 
 # ADR-0017: closed status vocabulary for sessions. Mirrored by the schema
@@ -116,6 +121,13 @@ class StateDB:
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path) if path else DEFAULT_DB_PATH
         self._db: aiosqlite.Connection | None = None
+        # Per-(kind, name) serialization for save_definition. Concurrent
+        # writers for the same definition stream would race on
+        # ``SELECT MAX(version) + INSERT`` and most would fail on the
+        # UNIQUE(kind, name, version) index. The lock is keyed by
+        # ``(kind, name)`` so unrelated definitions can still progress
+        # in parallel.
+        self._definition_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     # ── Connection lifecycle ───────────────────────────────────────────
 
@@ -225,16 +237,45 @@ class StateDB:
     _UNKNOWN_TYPE_ID = 0
 
     async def insert_message(self, msg: dict[str, Any]) -> None:
+        # ADR-0009 invariants: messages.content + messages.role are
+        # NOT NULL. SQLite enforces that at the column level, but
+        # ``INSERT OR IGNORE`` silently swallows constraint violations
+        # — without these explicit checks the live-persist hook would
+        # log a NULL row as a successful insert, then progression
+        # would reference a missing ID.
+        if msg.get("content") is None:
+            raise ValueError("messages.content is NOT NULL (ADR-0009)")
+        role = msg.get("role")
+        if not isinstance(role, str) or not role.strip():
+            raise ValueError(
+                "messages.role must be a non-empty string (ADR-0009); "
+                f"got {role!r}"
+            )
+
         lion_class_str = (msg.get("node_metadata") or {}).get("lion_class", "")
         node_metadata = _to_json_column(msg.get("node_metadata"))
         content = _to_json_column(msg["content"])
 
         type_id = await self._resolve_lion_class(lion_class_str)
 
+        # ON CONFLICT(id) DO UPDATE so a re-fire of the hook for a
+        # mutated existing message (e.g. ActionResponse.update via
+        # create_action_response) overwrites the stale row instead of
+        # silently keeping the old content. Immutable identity stays
+        # ``id`` + ``created_at``; mutable content is replaced.
         await self.db.execute(
-            """INSERT OR IGNORE INTO messages (id, created_at, node_metadata, content,
+            """INSERT INTO messages (id, created_at, node_metadata, content,
                embedding, sender, recipient, channel, role, lion_class)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 node_metadata = excluded.node_metadata,
+                 content       = excluded.content,
+                 embedding     = excluded.embedding,
+                 sender        = excluded.sender,
+                 recipient     = excluded.recipient,
+                 channel       = excluded.channel,
+                 role          = excluded.role,
+                 lion_class    = excluded.lion_class""",
             (
                 msg["id"],
                 msg["created_at"],
@@ -304,9 +345,25 @@ class StateDB:
         return json.loads(row["collection"])
 
     async def append_to_progression(self, progression_id: str, message_id: str) -> None:
+        """Append ``message_id`` to the progression's ordered collection.
+
+        Idempotent for same-(progression_id, message_id) pairs — a re-fire
+        of an on_message_added hook for an existing message (the
+        ActionResponse-update path mutates an existing object and re-emits
+        the hook) must not duplicate the ID in the progression JSON array.
+        Uses ``json_insert`` only when the ID is not already present;
+        ``EXISTS (json_each)`` lets SQLite do the check in one statement
+        without round-tripping the whole collection to Python.
+        """
         await self.db.execute(
-            "UPDATE progressions SET collection = json_insert(collection, '$[#]', ?) WHERE id = ?",
-            (message_id, progression_id),
+            """UPDATE progressions
+               SET collection = json_insert(collection, '$[#]', ?)
+               WHERE id = ?
+                 AND NOT EXISTS (
+                   SELECT 1 FROM json_each(progressions.collection)
+                   WHERE value = ?
+                 )""",
+            (message_id, progression_id, message_id),
         )
         await self.db.commit()
 
@@ -441,6 +498,26 @@ class StateDB:
         )
         row = await cur.fetchone()
         return self._row_to_dict(row) if row else None
+
+    async def update_branch(self, branch_id: str, **fields: Any) -> None:
+        """Update mutable columns on a branch row.
+
+        Restricted to the allowlist in ``_BRANCH_COLUMNS`` — system
+        prompt pointer (``system_msg_id``), display name, user, and
+        ``node_metadata`` are the only fields a long-lived branch
+        should change after creation. The branch identity (id,
+        session_id, progression_id, created_at) is immutable.
+        """
+        _validate_columns(fields, _BRANCH_COLUMNS)
+        if not fields:
+            return
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [branch_id]
+        # noqa: S608 — column names allowlisted via _validate_columns
+        await self.db.execute(
+            f"UPDATE branches SET {sets} WHERE id = ?", vals  # noqa: S608
+        )
+        await self.db.commit()
 
     async def list_branches(self, session_id: str) -> list[dict[str, Any]]:
         cur = await self.db.execute(
@@ -637,47 +714,46 @@ class StateDB:
         # Concurrent saves for the same (kind, name) need a serialization
         # point: ``SELECT MAX(version)`` + ``INSERT`` is not atomic and
         # two writers can pick the same next version, with all but one
-        # losing on the ``UNIQUE(kind, name, version)`` index. BEGIN
-        # IMMEDIATE acquires the SQLite RESERVED lock up-front so the
-        # second writer waits (and then sees the first writer's row).
-        # Bounded retry catches the residual case where two connections
-        # race past the lock (e.g. multi-process Studio).
-        last_exc: Exception | None = None
-        for _ in range(5):
-            try:
-                await self.db.execute("BEGIN IMMEDIATE")
-                cur = await self.db.execute(
-                    "SELECT MAX(version) AS v FROM definitions "
-                    "WHERE kind = ? AND name = ?",
-                    (kind, name),
-                )
-                row = await cur.fetchone()
-                next_version = (row["v"] or 0) + 1
-                await self.db.execute(
-                    """INSERT INTO definitions
-                       (id, kind, name, path, content, version,
-                        created_at, message)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        str(uuid.uuid4()),
-                        kind, name, path, content,
-                        next_version, time.time(), message,
-                    ),
-                )
-                await self.db.commit()
-                return next_version
-            except aiosqlite.IntegrityError as exc:
-                # Lost the unique-version race; back out and retry.
-                last_exc = exc
-                await self.db.rollback()
-                continue
-            except Exception:
-                await self.db.rollback()
-                raise
-        raise RuntimeError(
-            f"save_definition failed to acquire a unique version after "
-            f"5 retries (kind={kind!r}, name={name!r}): {last_exc}"
-        )
+        # losing on the ``UNIQUE(kind, name, version)`` index. We
+        # serialize at the Python level with a per-(kind, name)
+        # asyncio.Lock — explicit BEGIN IMMEDIATE would conflict with
+        # aiosqlite's implicit-transaction default. Bounded retry on
+        # IntegrityError catches the residual case where a separate
+        # ``StateDB`` instance (different connection) races us; the
+        # Lock alone handles intra-instance concurrency.
+        lock_key = (kind, name)
+        lock = self._definition_locks.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            last_exc: Exception | None = None
+            for _ in range(5):
+                try:
+                    cur = await self.db.execute(
+                        "SELECT MAX(version) AS v FROM definitions "
+                        "WHERE kind = ? AND name = ?",
+                        (kind, name),
+                    )
+                    row = await cur.fetchone()
+                    next_version = (row["v"] or 0) + 1
+                    await self.db.execute(
+                        """INSERT INTO definitions
+                           (id, kind, name, path, content, version,
+                            created_at, message)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            str(uuid.uuid4()),
+                            kind, name, path, content,
+                            next_version, time.time(), message,
+                        ),
+                    )
+                    await self.db.commit()
+                    return next_version
+                except aiosqlite.IntegrityError as exc:
+                    last_exc = exc
+                    continue
+            raise RuntimeError(
+                f"save_definition failed to acquire a unique version after "
+                f"5 retries (kind={kind!r}, name={name!r}): {last_exc}"
+            )
 
     async def get_definition(
         self, kind: str, name: str, *, version: int | None = None

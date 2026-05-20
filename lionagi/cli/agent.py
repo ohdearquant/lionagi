@@ -271,13 +271,31 @@ async def _setup_live_persist(
         }
 
         async def _on_message(msg):
-            msg_dict = msg.to_dict(mode="db")
-            msg_id = msg_dict["id"]
-            await db.insert_message(msg_dict)
-            if msg_id not in ctx["existing_msg_ids"]:
-                await db.append_to_progression(branch_prog_id, msg_id)
-                await db.append_to_progression(session_prog_id, msg_id)
-                ctx["new_msg_ids"].append(msg_id)
+            # Mirrors the orchestration hook contract: a transient DB
+            # write blip (lock contention, busy timeout) must NEVER
+            # abort the user-facing turn. Log and continue — the
+            # in-memory message is still valid, persistence merely
+            # missed a write.
+            try:
+                msg_dict = msg.to_dict(mode="db")
+                msg_id = msg_dict["id"]
+                await db.insert_message(msg_dict)
+                if msg_id not in ctx["existing_msg_ids"]:
+                    await db.append_to_progression(branch_prog_id, msg_id)
+                    await db.append_to_progression(session_prog_id, msg_id)
+                    ctx["new_msg_ids"].append(msg_id)
+                # ADR-0009: branches.system_msg_id must track the CURRENT
+                # system message. If the runtime replaces the system mid-run
+                # (set_system), update the pointer so Studio's O(1) lookup
+                # doesn't return the stale system.
+                if msg_dict.get("role") == "system":
+                    await db.update_branch(branch_id, system_msg_id=msg_id)
+            except Exception as exc:
+                import logging
+                logging.getLogger("lionagi.cli").warning(
+                    "live persist write failed for branch %s: %s",
+                    branch_id, exc, exc_info=True,
+                )
 
         ctx["hook"] = _on_message
         branch.on_message_added.append(_on_message)
@@ -336,10 +354,14 @@ async def _teardown_live_persist(
             update_kwargs["last_msg_id"] = all_msgs[-1]
         await db.update_session(session_id, **update_kwargs)
 
-        try:
-            ctx["branch"].on_message_added.remove(ctx["hook"])
-        except ValueError:
-            pass
+        # Remove ALL matching registrations of our hook. ``list.remove``
+        # only removes the first match; if a caller appended the same
+        # callable twice (test / dev), a closed-DB hook would survive
+        # teardown and fire on later messages.
+        hook = ctx["hook"]
+        ctx["branch"].on_message_added[:] = [
+            h for h in ctx["branch"].on_message_added if h is not hook
+        ]
     except Exception as exc:
         log.warning("live persist teardown failed: %s", exc, exc_info=True)
     finally:

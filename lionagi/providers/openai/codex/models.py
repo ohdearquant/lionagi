@@ -607,6 +607,11 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,  # isolate from parent's SIGINT
     )
+    # Capture PGID NOW — if we wait until teardown, the child may have
+    # exited and been reaped, ``os.getpgid(proc.pid)`` would raise
+    # ProcessLookupError, and we'd skip the group kill entirely.
+    # ``start_new_session=True`` makes pgid == proc.pid.
+    _codex_pgid: int = proc.pid
 
     decoder = codecs.getincrementaldecoder("utf-8")()
     json_decoder = json.JSONDecoder()
@@ -672,44 +677,56 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
                 log.error("Skipped unrecoverable JSON tail: %.120s...", buffer)
 
         if await proc.wait() != 0:
-            # Wait for stderr drain to finish before reading the buffer.
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(stderr_task, timeout=2.0)
+            # Drain task should be done now (stdout EOF + proc exit ⇒
+            # stderr EOF). ``shield`` so wait_for's timeout doesn't
+            # cancel the drain on slow systems — if we hit the timeout
+            # we report what we have and mark it truncated.
+            drain_truncated = False
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(stderr_task), timeout=2.0
+                )
+            except asyncio.TimeoutError:
+                drain_truncated = True
+            except asyncio.CancelledError:
+                # If WE are cancelled, propagate.
+                raise
             err = b"".join(stderr_chunks).decode(errors="replace").strip()
+            if drain_truncated:
+                err = (err or "") + " [stderr drain timed out]"
             raise RuntimeError(err or "Codex CLI exited non-zero")
 
     finally:
-        # Terminate the whole process group (start_new_session=True above)
-        # so any sub-children spawned by codex itself are reaped too.
+        # Terminate the whole process group (start_new_session=True
+        # above made pgid == proc.pid). Captured up-front so a reap
+        # before teardown doesn't make us skip the group kill.
         import os
         import signal
 
-        pgid: int | None = None
-        try:
-            pgid = os.getpgid(proc.pid)
-        except (ProcessLookupError, OSError):
-            pgid = None
-
-        if pgid is not None:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(pgid, signal.SIGTERM)
+        pgid = _codex_pgid
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, signal.SIGTERM)
         with contextlib.suppress(ProcessLookupError):
             proc.terminate()
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
         except asyncio.TimeoutError:
-            if pgid is not None:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(pgid, signal.SIGKILL)
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(pgid, signal.SIGKILL)
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             with contextlib.suppress(Exception):
                 await proc.wait()
 
-        # Ensure the stderr drain task is reaped so the event loop can close.
+        # Reap the stderr drain task. ``contextlib.suppress(Exception)``
+        # does NOT catch CancelledError (BaseException) — we have to
+        # suppress it explicitly so the intentional cancel here doesn't
+        # mask the actual generator outcome.
         stderr_task.cancel()
-        with contextlib.suppress(Exception):
+        try:
             await stderr_task
+        except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001 — intentional teardown reap
+            pass
 
 
 # --------------------------------------------------------------------------- event stream

@@ -1,9 +1,19 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+import sys
 from typing import Any, Literal
 
 from pydantic import BaseModel, JsonValue
+
+# Python 3.10 lacks BaseExceptionGroup; the ``exceptiongroup`` backport is
+# already pulled in transitively (anyio + pytest depend on it). We avoid
+# adding it as a direct dependency by detecting the runtime and falling
+# back to the backport on 3.10.
+if sys.version_info >= (3, 11):
+    _BaseExceptionGroup = BaseExceptionGroup  # noqa: F821
+else:
+    from exceptiongroup import BaseExceptionGroup as _BaseExceptionGroup
 
 from .._concepts import Manager
 from ..generic.pile import Pile
@@ -82,8 +92,15 @@ class MessageManager(Manager):
     async def a_add_message(self, **kwargs):
         """Add a message asynchronously with a manager-level lock.
 
-        Awaits async on_message_added callbacks directly (vs sync-only
-        in the sync add_message path).
+        Hook contract: ``on_message_added`` callbacks are **best-effort
+        notifications** fired AFTER pile mutation. The callback list is
+        snapshotted at firing time so a hook that mutates the list
+        cannot inject another hook into the current iteration. If any
+        callback raises, remaining callbacks still run; failures are
+        collected and re-raised as a single ``ExceptionGroup`` after
+        all hooks have had a chance to observe the message. The pile
+        is not rolled back — durable persistence belongs in a hook
+        that is itself transactional (e.g. SQLite).
         """
         from lionagi.ln.concurrency import is_coro_func
 
@@ -101,11 +118,23 @@ class MessageManager(Manager):
             else:
                 self.messages.include(_msg)
 
-        for cb in self._on_message_added:
-            if is_coro_func(cb):
-                await cb(_msg)
-            else:
-                cb(_msg)
+        # Snapshot callbacks so mid-iteration mutations of
+        # ``self._on_message_added`` (a public list) don't change what
+        # we fire for THIS message.
+        callbacks = list(self._on_message_added)
+        errors: list[BaseException] = []
+        for cb in callbacks:
+            try:
+                if is_coro_func(cb):
+                    await cb(_msg)
+                else:
+                    cb(_msg)
+            except BaseException as exc:  # noqa: BLE001 — collect, re-raise grouped
+                errors.append(exc)
+        if errors:
+            if len(errors) == 1:
+                raise errors[0]
+            raise _BaseExceptionGroup("on_message_added hooks failed", errors)
 
         return _msg
 
@@ -465,17 +494,18 @@ class MessageManager(Manager):
         - AssistantResponse
         - ActionRequest / ActionResponse
         """
-        # Preflight: if any registered on_message_added is async, we
-        # can't fire it from this sync path. Raise BEFORE mutating the
-        # pile so the message and the live SQLite state stay coherent
-        # (otherwise a caller catching the error continues with an
-        # in-memory message that was never persisted).
-        self._check_no_async_hooks()
+        # Preflight + snapshot: if any registered on_message_added is
+        # async, we can't fire it from this sync path. Raise BEFORE
+        # mutating the pile so the message and the live SQLite state
+        # stay coherent. The returned snapshot is what we fire below —
+        # decoupled from the public list so a hook appended during
+        # iteration can't sneak into this call's fire.
+        hook_snapshot = self._snapshot_hooks_or_reject_async()
 
         params = {
             k: v
             for k, v in locals().items()
-            if k != "self" and v is not None
+            if k != "self" and k != "hook_snapshot" and v is not None
         }
         _msg = self.create_message(**params)
         if system:
@@ -487,35 +517,50 @@ class MessageManager(Manager):
         else:
             self.messages.include(_msg)
 
-        self._fire_on_message_added(_msg)
+        self._fire_on_message_added(_msg, hook_snapshot)
 
         return _msg
 
-    def _check_no_async_hooks(self) -> None:
-        """Preflight that the sync add_message path can fire every hook.
+    def _snapshot_hooks_or_reject_async(self) -> list:
+        """Preflight + snapshot for the sync add_message path.
 
-        Raises ``RuntimeError`` *before* any pile mutation if any
-        registered ``on_message_added`` is a coroutine function — those
-        require ``a_add_message`` from an async context. Without this
-        preflight, sync ``add_message`` would mutate the pile and then
-        raise from ``_fire_on_message_added``, leaving an in-memory
-        message that was never persisted.
+        Returns a SNAPSHOT of the current callback list (so a hook
+        appended mid-iteration cannot inject itself into this fire),
+        and raises ``RuntimeError`` *before* any pile mutation if any
+        snapshotted callback is async — those require ``a_add_message``
+        from an async context. Without the snapshot, a sync hook
+        could append an async hook during iteration; the iterator
+        would visit it without awaiting, producing a coroutine warning
+        and a lost write.
         """
         from lionagi.ln.concurrency import is_coro_func
 
-        for cb in self._on_message_added:
+        snapshot = list(self._on_message_added)
+        for cb in snapshot:
             if is_coro_func(cb):
                 raise RuntimeError(
                     f"Async on_message_added callback {cb!r} cannot fire "
                     "from the sync add_message path. Use a_add_message "
                     "from an async context instead."
                 )
+        return snapshot
 
-    def _fire_on_message_added(self, msg: Message) -> None:
-        """Fire sync on_message_added callbacks. Async callbacks already
-        rejected by ``_check_no_async_hooks`` at the add_message entry."""
-        for cb in self._on_message_added:
-            cb(msg)
+    def _fire_on_message_added(self, msg: Message, snapshot: list) -> None:
+        """Fire pre-snapshotted sync on_message_added callbacks.
+
+        Failures collected and re-raised as ``ExceptionGroup`` after
+        all callbacks have observed the message (best-effort contract;
+        see ``a_add_message`` docstring)."""
+        errors: list[BaseException] = []
+        for cb in snapshot:
+            try:
+                cb(msg)
+            except BaseException as exc:  # noqa: BLE001 — collect, re-raise grouped
+                errors.append(exc)
+        if errors:
+            if len(errors) == 1:
+                raise errors[0]
+            raise _BaseExceptionGroup("on_message_added hooks failed", errors)
 
     def clear_messages(self):
         """Remove all messages except the system message if it exists."""

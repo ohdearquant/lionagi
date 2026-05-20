@@ -36,28 +36,47 @@ class iModelManager(Manager):  # noqa: N801 — mirrors iModel naming
         else:
             raise TypeError("Input model is not an instance of iModel")
 
-    async def shutdown(self) -> None:
+    async def shutdown(self, *, per_model_timeout: float = 10.0) -> None:
         """Close every registered iModel.
 
         Stops each iModel's RateLimitedAPIExecutor (and therefore its
         background ``start_replenishing`` task). Without this, the
         replenisher task stays scheduled on the event loop and prevents
-        ``anyio.run`` / ``asyncio.run`` from returning even after the
-        owning coroutine completes — manifesting as a hanging CLI process.
+        ``anyio.run`` / ``asyncio.run`` from returning — the CLI hangs.
 
-        Safe to call multiple times; ``iModel.close()`` is idempotent on
-        an already-stopped executor. Per-model failures (including
-        cancellation, which is ``BaseException`` not ``Exception``) are
-        logged and swallowed so one broken endpoint cannot leave the
-        rest of the registry leaked.
+        Closes models **concurrently** with a per-model timeout. The
+        CLI runs this inside an ``anyio.CancelScope(shield=True)`` so a
+        single wedged close can't propagate cancellation, and the
+        timeout prevents one stuck close from blocking the others.
+
+        Safe to call multiple times; ``iModel.close()`` is idempotent
+        on an already-stopped executor. Failures (including
+        ``CancelledError`` which is ``BaseException`` not ``Exception``)
+        are logged per model and swallowed so one broken endpoint
+        cannot leak the rest of the registry.
         """
+        import asyncio
         import logging
 
         log = logging.getLogger("lionagi.service")
-        for name, model in self.registry.items():
+
+        async def _close_one(name: str, model: iModel) -> None:
             try:
-                await model.close()
+                await asyncio.wait_for(model.close(), timeout=per_model_timeout)
+            except asyncio.TimeoutError:
+                log.warning(
+                    "iModel shutdown timed out for %r after %.1fs",
+                    name, per_model_timeout,
+                )
             except BaseException as exc:  # noqa: BLE001 — cancellation is BaseException
                 log.warning(
-                    "iModel shutdown failed for %r: %s", name, exc, exc_info=True
+                    "iModel shutdown failed for %r: %s",
+                    name, exc, exc_info=True,
                 )
+
+        if not self.registry:
+            return
+        await asyncio.gather(
+            *(_close_one(name, model) for name, model in self.registry.items()),
+            return_exceptions=True,
+        )

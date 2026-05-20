@@ -716,10 +716,38 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,  # isolate from parent's SIGINT
     )
+    # Capture PGID immediately — same pattern as Codex (see
+    # lionagi/providers/openai/codex/models.py for the full rationale).
+    _claude_pgid: int = proc.pid
 
     decoder = codecs.getincrementaldecoder("utf-8")()
     json_decoder = json.JSONDecoder()
     buffer: str = ""  # text buffer that may hold >1 JSON objects
+
+    # Bounded stderr drain — without this a stderr-heavy Claude session
+    # deadlocks when the OS pipe buffer fills before stdout EOF.
+    stderr_cap = 256 * 1024
+    stderr_chunks: list[bytes] = []
+    stderr_total = 0
+
+    async def _drain_stderr() -> None:
+        nonlocal stderr_total
+        if proc.stderr is None:
+            return
+        try:
+            while True:
+                chunk = await proc.stderr.read(4096)
+                if not chunk:
+                    break
+                remaining = stderr_cap - stderr_total
+                if remaining > 0:
+                    take = chunk[:remaining]
+                    stderr_chunks.append(take)
+                    stderr_total += len(take)
+        except Exception as exc:
+            log.debug("claude stderr drain ended: %s", exc)
+
+    stderr_task = asyncio.create_task(_drain_stderr())
 
     try:
         while True:
@@ -758,21 +786,51 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
                 except Exception:
                     log.error("Skipped unrecoverable JSON tail: %.120s…", buffer)
 
-        # 4) propagate non-zero exit code
+        # 4) propagate non-zero exit code, using the drained stderr buffer.
         if await proc.wait() != 0:
-            err = (await proc.stderr.read()).decode().strip()
+            drain_truncated = False
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(stderr_task), timeout=2.0
+                )
+            except asyncio.TimeoutError:
+                drain_truncated = True
+            except asyncio.CancelledError:
+                raise
+            err = b"".join(stderr_chunks).decode(errors="replace").strip()
+            if drain_truncated:
+                err = (err or "") + " [stderr drain timed out]"
             raise RuntimeError(err or "CLI exited non-zero")
 
     finally:
+        # Terminate the whole process group (start_new_session=True
+        # above made pgid == proc.pid). Captured up-front so a reap
+        # before teardown doesn't make us skip the group kill.
+        import os
+        import signal
+
+        pgid = _claude_pgid
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, signal.SIGTERM)
         with contextlib.suppress(ProcessLookupError):
             proc.terminate()
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
         except asyncio.TimeoutError:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(pgid, signal.SIGKILL)
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             with contextlib.suppress(Exception):
                 await proc.wait()
+
+        # Reap the stderr drain task — explicit CancelledError catch
+        # because contextlib.suppress(Exception) doesn't catch it.
+        stderr_task.cancel()
+        try:
+            await stderr_task
+        except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001 — intentional teardown reap
+            pass
 
 
 # --------------------------------------------------------------------------- SSE route

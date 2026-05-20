@@ -616,6 +616,10 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
             await db.insert_message(msg_dict)
             await db.append_to_progression(branch_prog_id, msg_id)
             await db.append_to_progression(session_prog_id, msg_id)
+            # ADR-0009: keep branches.system_msg_id pointing at the
+            # current system if the runtime replaces it mid-flow.
+            if msg_dict.get("role") == "system":
+                await db.update_branch(branch_id, system_msg_id=msg_id)
         except Exception as exc:
             import logging
 
@@ -660,11 +664,13 @@ async def stop_live_persist(
             update_kwargs["last_msg_id"] = all_msgs[-1]
         await db.update_session(ctx["session_id"], **update_kwargs)
 
+        # Remove ALL matching registrations of each hook (list.remove
+        # would only drop the first; a duplicate registration would
+        # leave a closed-DB hook live).
         for branch, hook in ctx["hooks"]:
-            try:
-                branch.on_message_added.remove(hook)
-            except ValueError:
-                pass
+            branch.on_message_added[:] = [
+                h for h in branch.on_message_added if h is not hook
+            ]
     except Exception as exc:
         log.warning("live persist teardown failed: %s", exc, exc_info=True)
     finally:

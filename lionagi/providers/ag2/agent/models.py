@@ -292,3 +292,12 @@ async def run_beta_agent(
         stream.unsubscribe(sub_results)
         if not task.done():
             task.cancel()
+            # Await the cancellation so we don't return with a dangling
+            # background task — leaks the event loop close just like the
+            # rate-limit replenisher did pre-R4. Suppress both the
+            # intentional CancelledError and any error from ``agent.ask``
+            # that the consumer no longer wants to see.
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001 — intentional teardown reap
+                pass

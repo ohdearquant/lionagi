@@ -526,3 +526,117 @@ def test_sync_add_message_accepts_sync_hook(message_manager):
         instruction="hi", sender="user", recipient="x"
     )
     assert fired == [msg]
+
+
+def test_sync_add_message_preflight_does_not_mutate_pile(message_manager):
+    """R4-A MED-1: the async-hook guard must fire BEFORE pile mutation.
+
+    Pre-fix: add_message created and inserted the message, THEN
+    _fire_on_message_added raised. Caller catching the error would
+    continue with an in-memory message that was never persisted (the
+    live SQLite hook never ran).
+    """
+    async def async_hook(_msg):  # pragma: no cover — never invoked
+        pass
+
+    message_manager._on_message_added.append(async_hook)
+    msgs_before = len(message_manager.messages)
+
+    with pytest.raises(RuntimeError, match="Async on_message_added callback"):
+        message_manager.add_message(instruction="hi", sender="u", recipient="x")
+
+    # Critical: the pile was NOT mutated. No in-memory drift vs SQLite.
+    assert len(message_manager.messages) == msgs_before
+
+
+async def test_a_add_message_action_response_with_empty_output(message_manager):
+    """R4-A HIGH-3: an ActionResponse with falsey output (empty string,
+    0, False, [], {}) used to be silently dropped because the dispatch
+    branch tested ``action_output`` truthiness instead of
+    ``action_output is not None``. The ActionRequest would then be
+    re-emitted as a duplicate via the fallback branch.
+    """
+    from lionagi.protocols.messages import ActionRequest, ActionResponse
+
+    # Build a real ActionRequest so the response can reference it.
+    req = ActionRequest(
+        content={"function": "ls", "arguments": {}},
+        sender="x",
+        recipient="user",
+    )
+    await message_manager.a_add_message(action_request=req)
+    requests_before = sum(
+        1 for m in message_manager.messages if isinstance(m, ActionRequest)
+    )
+
+    # Feed the response with empty-string output — the common case for
+    # a successful shell command with no stdout.
+    await message_manager.a_add_message(
+        action_request=req,
+        action_output="",  # falsey but valid
+        sender="user",
+        recipient="x",
+    )
+
+    requests_after = sum(
+        1 for m in message_manager.messages if isinstance(m, ActionRequest)
+    )
+    responses_after = sum(
+        1 for m in message_manager.messages if isinstance(m, ActionResponse)
+    )
+
+    # The ActionRequest was NOT duplicated, and an ActionResponse WAS
+    # created for the empty output.
+    assert requests_after == requests_before, (
+        "ActionRequest was re-emitted (truthy fallback fired)"
+    )
+    assert responses_after == 1, (
+        "ActionResponse for empty output was dropped"
+    )
+
+
+async def test_a_add_message_passes_through_prebuilt_action_response(
+    message_manager,
+):
+    """When run.py passes a fully-built ActionResponse (with is_error
+    already set), the manager must use that object — not create a new
+    one — so the persistence hook observes the final state.
+    """
+    from lionagi.protocols.messages import ActionRequest
+
+    req = ActionRequest(
+        content={"function": "rm", "arguments": {"path": "/etc/passwd"}},
+        sender="x",
+        recipient="user",
+    )
+    await message_manager.a_add_message(action_request=req)
+
+    prebuilt = MessageManager.create_action_response(
+        action_request=req,
+        action_output={"error": "permission denied"},
+        sender="user",
+        recipient="x",
+    )
+    prebuilt.metadata["is_error"] = True
+
+    captured = []
+
+    async def hook(msg):
+        captured.append((type(msg).__name__, dict(msg.metadata)))
+
+    message_manager._on_message_added.append(hook)
+    await message_manager.a_add_message(
+        action_request=req,
+        action_output={"error": "permission denied"},
+        action_response=prebuilt,
+        sender="user",
+        recipient="x",
+    )
+
+    # The hook observed an ActionResponse whose metadata['is_error']
+    # was already True at hook time (the bug R4 closed: live persist
+    # used to see is_error=False and serialize the wrong state).
+    assert any(
+        kind == "ActionResponse" and meta.get("is_error") is True
+        for kind, meta in captured
+    ), f"hook never observed final is_error state: {captured}"
