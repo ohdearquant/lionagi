@@ -95,7 +95,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   artifacts_path  TEXT,
   source_kind     TEXT    DEFAULT 'live',       -- live|imported_fs
   -- ── Lifecycle (ADR-0017) ───────────────────────────────────────────
-  status          TEXT,                          -- running|completed|failed|aborted
+  status          TEXT CHECK(
+                    status IS NULL
+                    OR status IN ('running', 'completed', 'failed', 'aborted')
+                  ),
   started_at      REAL,
   ended_at        REAL
 );
@@ -127,7 +130,8 @@ CREATE INDEX IF NOT EXISTS idx_branches_session
 
 CREATE TABLE IF NOT EXISTS definitions (
   id          TEXT    PRIMARY KEY,
-  kind        TEXT    NOT NULL,           -- 'agent' | 'playbook' | 'skill'
+  kind        TEXT    NOT NULL
+              CHECK(kind IN ('agent', 'playbook')),  -- ADR-0016 editable set
   name        TEXT    NOT NULL,           -- e.g. 'analyst', 'review-flow'
   path        TEXT    NOT NULL,           -- disk path relative to .lionagi/
   content     TEXT    NOT NULL,           -- full file content at this version

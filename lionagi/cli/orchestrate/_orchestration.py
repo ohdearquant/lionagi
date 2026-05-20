@@ -36,7 +36,7 @@ from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 
 from .._agents import AgentProfile, load_agent_profile
-from .._logging import hint, progress
+from .._logging import hint
 from .._providers import build_imodel_from_spec
 from .._runs import RunDir, allocate_run, save_last_branch_pointer
 
@@ -434,51 +434,44 @@ def finalize_orchestration(
     extras: dict | None = None,
     emit_hints: bool = True,
 ) -> tuple[list[tuple[str, str, str]], str]:
-    """Phase G — persist branches, write manifest, update last-branch pointer.
+    """Phase G — update last-branch pointer and emit resume hints.
+
+    Runs in SQLite-only mode (ADR-0004): branch state is persisted by the
+    live SQLite hooks during execution; this finalizer does NOT write
+    ``branches/*.json`` snapshots and does NOT write ``run.json``.
 
     Parameters
     ----------
     kind
-        The pattern kind recorded in the manifest: ``"fanout"`` |
-        ``"flow"`` | future. Used by ``li runs show`` to render the
-        right summary view.
+        Pattern kind (``"fanout"`` | ``"flow"``). Reserved for callers
+        that want to log/render the result; not written to disk.
     prompt
-        Original user prompt. Captured in the manifest for review.
+        Original user prompt. Reserved for caller diagnostics; not written
+        to disk.
     extras
-        Pattern-specific manifest fields (agent list, synthesis model,
-        control-round count, etc.). Merged under ``run.json`` alongside
-        the shared keys.
+        Pattern-specific extras. Reserved; not written to disk.
     emit_hints
         When True, print ``[to resume] li agent -r <id> "..."`` for the
-        orchestrator and each worker branch. Disable when a caller
-        wants custom post-run output.
+        orchestrator and each worker branch.
 
     Returns
     -------
     (branch_ids, orc_branch_id) where branch_ids is
-    ``[(provider, branch_id, name), ...]``.
+    ``[(provider, branch_id, name), ...]`` derived from the in-memory
+    session (no disk side effects).
     """
-    # Late import avoids the _common ↔ _orchestration cycle.
-    from ._common import persist_session_branches
+    # Derive branch identifiers from the in-memory session — no JSON writes.
+    branch_ids: list[tuple[str, str, str]] = []
+    for branch in env.session.branches:
+        provider = branch.chat_model.endpoint.config.provider
+        branch_ids.append((provider, str(branch.id), branch.name))
 
-    branch_ids = persist_session_branches(env.session, env.run)
     orc_branch_id = str(env.orc_branch.id)
-
-    manifest: dict = {
-        "kind": kind,
-        "prompt": prompt,
-        "model_spec": env.default_model_spec,
-        "orchestrator_branch_id": orc_branch_id,
-        "branches": [
-            {"id": bid, "provider": prov, "name": bname}
-            for prov, bid, bname in branch_ids
-        ],
-    }
     save_last_branch_pointer(env.run.run_id, orc_branch_id)
 
     if emit_hints:
         hint(f'\n[orchestrator] li agent -r {orc_branch_id} "..."')
-        for provider, bid, bname in branch_ids:
+        for _provider, bid, bname in branch_ids:
             if bid != orc_branch_id:
                 hint(f'[{bname}]      li agent -r {bid} "..."')
 
@@ -594,6 +587,9 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
         })
 
     async def _on_message(msg):
+        # Live-persist failures are logged (not raised) so a DB write
+        # blip cannot abort an in-flight orchestration. The error is
+        # visible in -v runs without crashing the worker.
         try:
             await _ensure_branch_row()
             msg_dict = msg.to_dict(mode="db")
@@ -601,8 +597,13 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
             await db.insert_message(msg_dict)
             await db.append_to_progression(branch_prog_id, msg_id)
             await db.append_to_progression(session_prog_id, msg_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging
+
+            logging.getLogger("lionagi.cli").warning(
+                "live persist write failed for branch %s: %s",
+                branch_id, exc, exc_info=True,
+            )
 
     branch.on_message_added.append(_on_message)
     ctx["hooks"].append((branch, _on_message))
@@ -638,6 +639,10 @@ async def stop_live_persist(
                 pass
 
         await db.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        import logging
+
+        logging.getLogger("lionagi.cli").warning(
+            "live persist teardown failed: %s", exc, exc_info=True
+        )
     env._live_persist = None

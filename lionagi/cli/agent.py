@@ -22,7 +22,6 @@ from ._providers import (
     parse_model_spec,
 )
 from ._runs import (
-    RunDir,
     allocate_run,
     find_branch,
     load_last_branch,
@@ -145,15 +144,19 @@ async def _run_agent(
         raise
     except BaseException as exc:
         from lionagi.ln.concurrency import get_cancelled_exc_class
+
         if isinstance(exc, get_cancelled_exc_class()):
             _terminal_status = "aborted"
         else:
             _terminal_status = "failed"
         raise
-        _terminal_status = "failed"
-        raise
     finally:
         await _teardown_live_persist(live, status=_terminal_status)
+        # Shut down every iModel on the branch (chat_model AND parse_model,
+        # plus any other registered) so each RateLimitedAPIExecutor's
+        # background replenisher task is cancelled. Without this, anyio.run
+        # never returns and the CLI process hangs after the agent completes.
+        await branch.mdls.shutdown()
 
     # Save branch pointer for --continue-last / -r resume
     save_last_branch_pointer(run.run_id, branch_id)
@@ -274,7 +277,14 @@ async def _teardown_live_persist(
     *,
     status: str = "completed",
 ) -> None:
-    """Update session bookmarks, lifecycle columns, and close DB."""
+    """Update session bookmarks, lifecycle columns, and close DB.
+
+    Failures here are logged (not raised) because teardown runs in a
+    ``finally`` block on the way out of the agent — losing a bookmark
+    update should never mask the original exception or block clean
+    process exit. The error is logged at WARNING so it's discoverable
+    in ``-v`` runs rather than silently swallowed.
+    """
     if ctx is None:
         return
     try:
@@ -296,8 +306,12 @@ async def _teardown_live_persist(
 
         ctx["branch"].on_message_added.remove(ctx["hook"])
         await db.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        import logging
+
+        logging.getLogger("lionagi.cli").warning(
+            "live persist teardown failed: %s", exc, exc_info=True
+        )
 
 
 def add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:

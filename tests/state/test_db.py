@@ -693,16 +693,30 @@ async def test_list_definition_versions(db: StateDB):
     """list_definition_versions returns all versions in descending order."""
     for i in range(3):
         await db.save_definition(
-            kind="skill",
-            name="summarize",
-            path=".lionagi/skills/summarize.yaml",
+            kind="agent",
+            name="reviewer",
+            path=".lionagi/agents/reviewer.md",
             content=f"version {i + 1}",
         )
 
-    versions = await db.list_definition_versions("skill", "summarize")
+    versions = await db.list_definition_versions("agent", "reviewer")
     assert len(versions) == 3
     # Descending version order
     assert [v["version"] for v in versions] == [3, 2, 1]
+
+
+async def test_save_definition_rejects_non_editable_kind(db: StateDB):
+    """ADR-0016: skills + arbitrary kinds are read-only and must be rejected."""
+    import pytest
+
+    for bad_kind in ("skill", "plugin", "something_else"):
+        with pytest.raises(ValueError, match="Invalid definition kind"):
+            await db.save_definition(
+                kind=bad_kind,
+                name="x",
+                path=".lionagi/x",
+                content="content",
+            )
 
 
 async def test_get_definition_missing(db: StateDB):

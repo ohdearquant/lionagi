@@ -450,9 +450,12 @@ async def _run_flow(
         fast=fast,
     )
 
+    # ADR-0012: `flow` and `play` are distinct invocation kinds. A playbook
+    # run (li play NAME, or li o flow -p NAME) is `play`; an ad-hoc DAG flow
+    # without a playbook is `flow`.
     await start_live_persist(
         env,
-        invocation_kind="flow",
+        invocation_kind="play" if playbook_name else "flow",
         playbook_name=playbook_name,
         agent_name=agent_name,
         artifacts_path=str(env.run.artifact_root),
@@ -485,15 +488,20 @@ async def _run_flow(
         raise
     except BaseException as exc:
         from lionagi.ln.concurrency import get_cancelled_exc_class
+
         if isinstance(exc, get_cancelled_exc_class()):
             _terminal_status = "aborted"
         else:
             _terminal_status = "failed"
         raise
-        _terminal_status = "failed"
-        raise
     finally:
         await stop_live_persist(env, status=_terminal_status)
+        # Shut down every iModel on every branch (chat_model AND parse_model,
+        # plus any other registered) so each executor's background
+        # replenisher task is cancelled. Without this, anyio.run never
+        # returns and the CLI process hangs after the flow completes.
+        for _br in env.session.branches:
+            await _br.mdls.shutdown()
 
 
 async def _run_flow_inner(

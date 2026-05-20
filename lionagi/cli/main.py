@@ -61,7 +61,6 @@ def _print_playbook_help(name: str) -> int:
             flag = f"--{arg_name.replace('_', '-')}"
             help_text = field.get("help", "")
             default = field.get("default")
-            type_str = field.get("type", "str")
             default_str = f" (default: {default})" if default not in (None, "") else ""
             print(f"  {flag:<24} {help_text}{default_str}")
 

@@ -7,7 +7,7 @@ from lionagi.utils import is_same_dtype
 from .imodel import iModel
 
 
-class iModelManager(Manager):
+class iModelManager(Manager):  # noqa: N801 — mirrors iModel naming
     def __init__(self, *args: iModel, **kwargs):
         super().__init__()
 
@@ -35,3 +35,26 @@ class iModelManager(Manager):
             self.registry[name] = model
         else:
             raise TypeError("Input model is not an instance of iModel")
+
+    async def shutdown(self) -> None:
+        """Close every registered iModel.
+
+        Stops each iModel's RateLimitedAPIExecutor (and therefore its
+        background ``start_replenishing`` task). Without this, the
+        replenisher task stays scheduled on the event loop and prevents
+        ``anyio.run`` / ``asyncio.run`` from returning even after the
+        owning coroutine completes — manifesting as a hanging CLI process.
+
+        Safe to call multiple times; ``iModel.close()`` is idempotent on
+        an already-stopped executor. Per-model failures are logged (not
+        raised) so one broken endpoint cannot mask others.
+        """
+        import logging
+
+        for name, model in self.registry.items():
+            try:
+                await model.close()
+            except Exception as exc:
+                logging.getLogger("lionagi.service").warning(
+                    "iModel shutdown failed for %r: %s", name, exc, exc_info=True
+                )

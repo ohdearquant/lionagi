@@ -51,11 +51,19 @@ progressions, not owned by a branch or session.  Fields match
 
 | type_id | lion_class |
 |---------|-----------|
+| 0 | `__unknown__` (sentinel — see below) |
 | 1 | `lionagi.protocols.messages.system.System` |
 | 2 | `lionagi.protocols.messages.instruction.Instruction` |
 | 3 | `lionagi.protocols.messages.assistant_response.AssistantResponse` |
 | 4 | `lionagi.protocols.messages.action_request.ActionRequest` |
 | 5 | `lionagi.protocols.messages.action_response.ActionResponse` |
+
+> **Type ID 0 sentinel:** the `__unknown__` row is a typed sentinel returned by
+> `StateDB._resolve_lion_class("")` when an incoming message dict carries no
+> `lion_class` string in its `node_metadata`. This keeps `insert_message()` total
+> (it never raises on missing class info) at the cost of an opaque row that
+> downstream readers cannot map back to a runtime class. New type strings
+> continue to be allocated their own auto-incremented IDs on first insert.
 
 **`progressions`** — `Progression[Message]`.  An ordered sequence of message
 IDs stored as a JSON array in `collection`.  Both sessions and branches own a
@@ -81,7 +89,7 @@ session-level message pool) and zero or more branches.  Maps 1:1 to
 | `progression_id` | TEXT FK | session's message pool ordering |
 | `first_msg_id` | TEXT FK | convenience bookmark |
 | `last_msg_id` | TEXT FK | convenience bookmark |
-| `updated_at` | REAL | |
+| `updated_at` | REAL | defaults to `now()` on insert; callers can override for lossless `li state import` / backfill |
 
 > **Provenance columns (migration v2→v3):** `playbook_name`, `agent_name`,
 > `invocation_kind`, `show_topic`, `show_play_name`, `artifacts_path`, and
@@ -112,11 +120,20 @@ Branch config (provider, model, system_prompt, tools, effort) lives in
 | `name` | TEXT | |
 | `session_id` | TEXT FK | owning session |
 | `progression_id` | TEXT FK | branch's message ordering |
+| `system_msg_id` | TEXT FK | system prompt pointer — see below |
 
 > **Fork columns:** `parent_branch_id` (TEXT) and `forked_at_ord` (INTEGER) are
 > stored in `node_metadata` JSON on the branch row, not as top-level columns. A
 > dedicated branch fork protocol may promote these to first-class columns in a
 > future migration if query patterns require it.
+
+> **`system_msg_id` is first-class.** Unlike fork pointers, the system prompt
+> reference is promoted to a top-level column because (a) every live persist
+> path writes it during branch initialization, (b) the Studio inbox/branch view
+> needs a constant-time lookup of the system message without parsing
+> `node_metadata`, and (c) sessions that resume should be able to detect "system
+> message already persisted" without round-tripping the JSON blob. The actual
+> message body remains in `messages`; this column is just an `O(1)` pointer.
 
 ### Key design decisions
 

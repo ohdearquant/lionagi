@@ -158,7 +158,12 @@ async def run(
                     if orig_req is None:
                         continue
 
-                    act_res = await branch.msgs.a_add_message(
+                    # Build the ActionResponse and attach is_error BEFORE
+                    # a_add_message so the live-persist hook (and any other
+                    # on_message_added callback) observes the final state.
+                    # Doing it after the await would let the hook serialize
+                    # an incomplete row that omits the error marker.
+                    act_res = branch.msgs.create_action_response(
                         action_request=orig_req,
                         action_output=chunk.tool_output,
                         sender=branch.user or "user",
@@ -166,6 +171,13 @@ async def run(
                     )
                     if chunk.is_error:
                         act_res.metadata["is_error"] = True
+                    await branch.msgs.a_add_message(
+                        action_request=orig_req,
+                        action_output=chunk.tool_output,
+                        action_response=act_res,
+                        sender=branch.user or "user",
+                        recipient=branch.id,
+                    )
                     yield act_res
 
                 case "result":

@@ -11,7 +11,7 @@ from lionagi.ln.concurrency import move_on_after
 from lionagi.operations.fields import Instruct
 
 from .._agents import AgentProfile
-from .._logging import hint, log_error, progress
+from .._logging import log_error, progress
 from .._providers import parse_model_spec
 from ._common import (
     AGENT_REQUEST_FIELDS,
@@ -20,7 +20,6 @@ from ._common import (
     _format_result_json,
     _format_result_text,
     _post_results_to_team,
-    persist_session_branches,
 )
 from ._orchestration import (
     OrchestrationEnv,
@@ -102,7 +101,6 @@ async def _run_fanout(
                 result = await _run_fanout_inner(model_spec, prompt, **inner_kw)
             if cancel_scope.cancelled_caught:
                 _terminal_status = "aborted"
-                persist_session_branches(env.session, env.run)
                 n_saved = len(_shared.get("saved_workers", []))
                 msg = f"Fanout timed out after {timeout}s"
                 if n_saved:
@@ -116,15 +114,20 @@ async def _run_fanout(
         raise
     except BaseException as exc:
         from lionagi.ln.concurrency import get_cancelled_exc_class
+
         if isinstance(exc, get_cancelled_exc_class()):
             _terminal_status = "aborted"
         else:
             _terminal_status = "failed"
         raise
-        _terminal_status = "failed"
-        raise
     finally:
         await stop_live_persist(env, status=_terminal_status)
+        # Shut down every iModel on every branch (chat_model AND parse_model,
+        # plus any other registered) so each executor's background
+        # replenisher task is cancelled. Without this, anyio.run never
+        # returns and the CLI process hangs after the fanout completes.
+        for _br in env.session.branches:
+            await _br.mdls.shutdown()
 
 
 async def _run_fanout_inner(

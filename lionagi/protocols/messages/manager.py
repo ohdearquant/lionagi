@@ -477,7 +477,24 @@ class MessageManager(Manager):
         return _msg
 
     def _fire_on_message_added(self, msg: Message) -> None:
+        """Fire sync on_message_added callbacks.
+
+        Async callbacks cannot be awaited from this sync path, so we
+        refuse to silently drop them. This protects live persistence (and
+        any other async hook) from cases where mixing a sync add_message
+        call with an async hook would otherwise lose the SQLite write
+        AND emit only a 'coroutine was never awaited' RuntimeWarning.
+        Callers with async hooks MUST use ``a_add_message`` instead.
+        """
+        from lionagi.ln.concurrency import is_coro_func
+
         for cb in self._on_message_added:
+            if is_coro_func(cb):
+                raise RuntimeError(
+                    f"Async on_message_added callback {cb!r} cannot fire "
+                    "from the sync add_message path. Use a_add_message "
+                    "from an async context instead."
+                )
             cb(msg)
 
     def clear_messages(self):

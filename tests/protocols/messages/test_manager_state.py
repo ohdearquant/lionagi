@@ -497,3 +497,32 @@ def test_add_message_system_instruction_error(message_manager):
             system="System message",
             instruction="Instruction",
         )
+
+
+def test_sync_add_message_rejects_async_hook(message_manager):
+    """Sync add_message must refuse to silently drop async on_message_added
+    callbacks — otherwise live SQLite persistence would lose writes while
+    the runtime emits only a 'coroutine was never awaited' RuntimeWarning."""
+
+    async def async_hook(_msg):  # pragma: no cover — never invoked
+        pass
+
+    message_manager._on_message_added.append(async_hook)
+
+    with pytest.raises(RuntimeError, match="Async on_message_added callback"):
+        message_manager.add_message(instruction="hi", sender="user", recipient="x")
+
+
+def test_sync_add_message_accepts_sync_hook(message_manager):
+    """Sync hooks fire from the sync add_message path as expected."""
+    fired: list = []
+
+    def sync_hook(msg):
+        fired.append(msg)
+
+    message_manager._on_message_added.append(sync_hook)
+
+    msg = message_manager.add_message(
+        instruction="hi", sender="user", recipient="x"
+    )
+    assert fired == [msg]

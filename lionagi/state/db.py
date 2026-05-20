@@ -35,11 +35,30 @@ _PLAY_COLUMNS = frozenset({
     "depends_on", "sort_order", "updated_at",
 })
 
+# ADR-0017: closed status vocabulary for sessions. Mirrored by the schema
+# CHECK constraint (lionagi/state/schema.sql); validated here so callers
+# get a clear ``ValueError`` instead of an opaque sqlite IntegrityError.
+_SESSION_STATUSES = frozenset({"running", "completed", "failed", "aborted"})
+
+# ADR-0016: only agent + playbook definitions are editable via Studio's
+# write path. Skills and third-party plugin components are read-only.
+_DEFINITION_KINDS = frozenset({"agent", "playbook"})
+
 
 def _validate_columns(fields: dict[str, Any], allowed: frozenset[str]) -> None:
     bad = set(fields) - allowed
     if bad:
         raise ValueError(f"Invalid column(s): {bad}")
+
+
+def _validate_session_status(status: Any) -> None:
+    if status is None:
+        return
+    if status not in _SESSION_STATUSES:
+        raise ValueError(
+            f"Invalid session status {status!r}; "
+            f"ADR-0017 vocabulary is {sorted(_SESSION_STATUSES)}"
+        )
 
 
 class StateDB:
@@ -194,6 +213,7 @@ class StateDB:
     # ── Sessions ───────────────────────────────────────────────────────
 
     async def create_session(self, session: dict[str, Any]) -> None:
+        _validate_session_status(session.get("status"))
         now = time.time()
         await self.db.execute(
             """INSERT OR IGNORE INTO sessions (id, created_at, node_metadata, name, user,
@@ -211,7 +231,9 @@ class StateDB:
                 session["progression_id"],
                 session.get("first_msg_id"),
                 session.get("last_msg_id"),
-                now,
+                # ADR-0009: caller may preserve ``updated_at`` for lossless
+                # import/backfill. Live sessions omit it and get ``now``.
+                session.get("updated_at", now),
                 session.get("playbook_name"),
                 session.get("agent_name"),
                 session.get("invocation_kind"),
@@ -235,11 +257,14 @@ class StateDB:
 
     async def update_session(self, session_id: str, **fields: Any) -> None:
         _validate_columns(fields, _SESSION_COLUMNS)
+        if "status" in fields:
+            _validate_session_status(fields["status"])
         fields["updated_at"] = time.time()
         sets = ", ".join(f"{k} = ?" for k in fields)
         vals = list(fields.values()) + [session_id]
+        # noqa: S608 — column names allowlisted via _validate_columns
         await self.db.execute(
-            f"UPDATE sessions SET {sets} WHERE id = ?", vals
+            f"UPDATE sessions SET {sets} WHERE id = ?", vals  # noqa: S608
         )
         await self.db.commit()
 
@@ -315,11 +340,13 @@ class StateDB:
         if not message_ids:
             return []
         placeholders = ",".join("?" for _ in message_ids)
+        # noqa: S608 — `placeholders` is a fixed-shape "?,?,?" string built
+        # from message_ids length; values flow through parameter binding.
         cur = await self.db.execute(
             f"""SELECT m.*, mt.lion_class AS lion_class_str
                 FROM messages m
                 LEFT JOIN message_types mt ON m.lion_class = mt.type_id
-                WHERE m.id IN ({placeholders})""",
+                WHERE m.id IN ({placeholders})""",  # noqa: S608
             message_ids,
         )
         rows = await cur.fetchall()
@@ -382,8 +409,9 @@ class StateDB:
         fields["updated_at"] = time.time()
         sets = ", ".join(f"{k} = ?" for k in fields)
         vals = list(fields.values()) + [show_id]
+        # noqa: S608 — column names allowlisted via _validate_columns
         await self.db.execute(
-            f"UPDATE shows SET {sets} WHERE id = ?", vals
+            f"UPDATE shows SET {sets} WHERE id = ?", vals  # noqa: S608
         )
         await self.db.commit()
 
@@ -443,8 +471,9 @@ class StateDB:
         fields["updated_at"] = time.time()
         sets = ", ".join(f"{k} = ?" for k in fields)
         vals = list(fields.values()) + [play_id]
+        # noqa: S608 — column names allowlisted via _validate_columns
         await self.db.execute(
-            f"UPDATE plays SET {sets} WHERE id = ?", vals
+            f"UPDATE plays SET {sets} WHERE id = ?", vals  # noqa: S608
         )
         await self.db.commit()
 
@@ -459,6 +488,15 @@ class StateDB:
         content: str,
         message: str | None = None,
     ) -> int:
+        # ADR-0016: Studio's write path is limited to agent + playbook
+        # definitions. Skills and third-party plugin components are
+        # source-controlled, read-only, and must not be versioned through
+        # this API.
+        if kind not in _DEFINITION_KINDS:
+            raise ValueError(
+                f"Invalid definition kind {kind!r}; "
+                f"ADR-0016 editable set is {sorted(_DEFINITION_KINDS)}"
+            )
         cur = await self.db.execute(
             "SELECT MAX(version) AS v FROM definitions WHERE kind = ? AND name = ?",
             (kind, name),
