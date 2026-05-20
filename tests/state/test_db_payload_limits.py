@@ -1,0 +1,191 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+Payload-shape regression tests for ``StateDB.insert_message``.
+
+These tests pin the ADR-0009 NOT NULL invariants (content + role) and
+verify the layer can roundtrip large payloads up to a few MB. They do
+NOT enforce a hard size cap — that's a separate operational change
+(see R5-D HIGH-6) — but they make the current limits explicit so a
+regression that silently chunks or truncates content trips here.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+import uuid
+
+import pytest
+
+from lionagi.state.db import StateDB
+
+
+@pytest.fixture
+async def db():
+    state = StateDB(":memory:")
+    await state.open()
+    yield state
+    await state.close()
+
+
+def _base_msg(**overrides) -> dict:
+    msg = {
+        "id": str(uuid.uuid4()),
+        "created_at": time.time(),
+        "node_metadata": {},
+        "content": {"text": "hello"},
+        "role": "user",
+        "sender": "u",
+        "recipient": "a",
+        "channel": "c",
+    }
+    msg.update(overrides)
+    return msg
+
+
+# ── Required-field rejection (ADR-0009 invariants) ───────────────────────────
+
+
+async def test_insert_message_rejects_null_content(db: StateDB):
+    """ADR-0009: messages.content is NOT NULL. insert_message MUST
+    raise ``ValueError`` before reaching SQLite — otherwise INSERT OR
+    IGNORE would silently swallow the constraint violation and the
+    progression would reference a missing ID.
+    """
+    msg = _base_msg(content=None)
+    with pytest.raises(ValueError, match="content is NOT NULL"):
+        await db.insert_message(msg)
+
+
+async def test_insert_message_rejects_empty_role(db: StateDB):
+    """ADR-0009: role must be a non-empty string."""
+    msg = _base_msg(role="")
+    with pytest.raises(ValueError, match="role must be a non-empty string"):
+        await db.insert_message(msg)
+
+
+async def test_insert_message_rejects_non_string_role(db: StateDB):
+    msg = _base_msg(role=42)
+    with pytest.raises(ValueError, match="role must be a non-empty string"):
+        await db.insert_message(msg)
+
+
+async def test_insert_message_rejects_missing_role(db: StateDB):
+    msg = _base_msg()
+    del msg["role"]
+    with pytest.raises(ValueError, match="role must be a non-empty string"):
+        await db.insert_message(msg)
+
+
+# ── Large-payload roundtrip ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("size_kb", [10, 100, 1024])
+async def test_insert_message_roundtrips_large_content(
+    db: StateDB, size_kb: int,
+):
+    """Verify the layer can store up to ~1MB content without truncation
+    or encoding damage. SQLite's default ``SQLITE_MAX_LENGTH`` is 1GB
+    so 1MB is well within the engine limit; this guards against a
+    higher-level chunking regression.
+    """
+    payload = "x" * (size_kb * 1024)
+    msg = _base_msg(content={"text": payload})
+    await db.insert_message(msg)
+
+    got = await db.get_message(msg["id"])
+    assert got is not None
+    content = got["content"]
+    # content is JSON-encoded in the DB; the runtime layer returns it
+    # as a string of JSON.
+    if isinstance(content, str):
+        content = json.loads(content)
+    assert content["text"] == payload
+
+
+async def test_insert_message_handles_deep_nested_metadata(db: StateDB):
+    """``node_metadata`` is a JSON column. Deeply-nested values must
+    roundtrip without collapsing or escaping pathologies.
+    """
+    deep = {"level": 0}
+    cursor = deep
+    for i in range(1, 50):
+        cursor["nested"] = {"level": i}
+        cursor = cursor["nested"]
+
+    msg = _base_msg(node_metadata=deep)
+    await db.insert_message(msg)
+
+    got = await db.get_message(msg["id"])
+    assert got is not None
+    nm = got["node_metadata"]
+    if isinstance(nm, str):
+        nm = json.loads(nm)
+    # Walk back down and confirm depth.
+    cursor = nm
+    depth = 0
+    while "nested" in cursor:
+        cursor = cursor["nested"]
+        depth += 1
+    assert depth == 49
+
+
+# ── Re-fire of mutated message (ON CONFLICT DO UPDATE) ───────────────────────
+
+
+async def test_insert_message_re_fire_updates_content(db: StateDB):
+    """``ON CONFLICT(id) DO UPDATE`` — a re-fire of the hook with a
+    mutated message MUST overwrite the stored content, not silently
+    keep the old row. Closes the R5-B issue where ActionResponse
+    updates would land stale.
+    """
+    msg = _base_msg(content={"text": "first"})
+    await db.insert_message(msg)
+
+    # Mutate and re-insert with the same ID.
+    msg2 = dict(msg)
+    msg2["content"] = {"text": "second"}
+    msg2["sender"] = "different-sender"
+    await db.insert_message(msg2)
+
+    got = await db.get_message(msg["id"])
+    content = got["content"]
+    if isinstance(content, str):
+        content = json.loads(content)
+    assert content["text"] == "second"
+    assert got["sender"] == "different-sender"
+
+    # Only one row — the conflict updated, not inserted.
+    cur = await db.db.execute(
+        "SELECT COUNT(*) AS n FROM messages WHERE id = ?", (msg["id"],),
+    )
+    assert (await cur.fetchone())["n"] == 1
+
+
+# ── Unicode + binary embedding ───────────────────────────────────────────────
+
+
+async def test_insert_message_roundtrips_unicode_content(db: StateDB):
+    payload = "你好 🦁 lionagi café 日本語"
+    msg = _base_msg(content={"text": payload})
+    await db.insert_message(msg)
+
+    got = await db.get_message(msg["id"])
+    content = got["content"]
+    if isinstance(content, str):
+        content = json.loads(content)
+    assert content["text"] == payload
+
+
+async def test_insert_message_roundtrips_embedding_blob(db: StateDB):
+    import struct
+
+    # A small float32 packed blob mimicking an embedding vector.
+    vec = struct.pack("4f", 0.1, 0.2, 0.3, 0.4)
+    msg = _base_msg(embedding=vec)
+    await db.insert_message(msg)
+
+    got = await db.get_message(msg["id"])
+    assert got["embedding"] == vec

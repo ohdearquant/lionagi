@@ -193,6 +193,28 @@ grep, git, symlinks).  ADR-0004 remains valid for these.
 - `request_options` excluded by default (bulk, not useful for persistence).
 - `processor_config` excluded by default.
 
+### Operational commands (`li state`)
+
+The state.db is a long-lived file that grows monotonically without
+intervention. To keep the file manageable and to give operators a single
+introspection surface, the CLI ships maintenance subcommands under
+`li state`:
+
+| Command | Purpose |
+|---------|---------|
+| `li state import` | Backfill from `~/.lionagi/runs/` filesystem snapshots (idempotent). |
+| `li state ls [--limit N] [--status S]` | Paginated session listing with optional status filter. |
+| `li state stats` | DB + WAL size, per-table row counts, status distribution, PRAGMAs (journal_mode / wal_autocheckpoint / busy_timeout / synchronous / foreign_keys). |
+| `li state checkpoint [--mode TRUNCATE\|PASSIVE\|RESTART\|FULL]` | Force `PRAGMA wal_checkpoint(...)`. Default `TRUNCATE` reclaims the `state.db-wal` file when no readers are active. |
+| `li state vacuum` | Run `VACUUM` to rebuild the DB file and reclaim pages freed by `prune`. Holds an exclusive lock for the duration. |
+| `li state prune --keep-days N --keep-n M [--dry-run]` | Delete sessions older than `--keep-days` (default 30), always preserving the `--keep-n` most-recent (default 100). Branches cascade via FK (`branches.session_id ... ON DELETE CASCADE`). Messages are swept only if NO progression references them — see ADR-0017 §"Pruning gaps" for the deliberate orphan-progression behavior. |
+
+The DB layer sets `PRAGMA wal_autocheckpoint = 1000` explicitly so the
+policy is visible (matches the SQLite default of 1000 frames). Operators
+who hit unbounded WAL growth (long-lived readers, never-closed connections
+on legacy versions) can drop the autocheckpoint setting or run
+`li state checkpoint --mode TRUNCATE` manually.
+
 ## Consequences
 
 **Positive**
