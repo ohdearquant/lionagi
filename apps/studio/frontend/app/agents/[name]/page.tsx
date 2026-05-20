@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { use, useEffect, useState } from "react";
 import Badge from "@/components/Badge";
 import { getAgent } from "@/lib/api";
 import type { AgentProfile } from "@/lib/types";
@@ -30,8 +30,9 @@ function CodeBlock({ value }: { value: string }) {
   );
 }
 
-export default function AgentDetailPage({ params }: { params: { name: string } }) {
-  const agentName = decodeURIComponent(params.name);
+export default function AgentDetailPage({ params }: { params: Promise<{ name: string }> }) {
+  const { name } = use(params);
+  const agentName = decodeURIComponent(name);
   const [agent, setAgent] = useState<AgentProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
 

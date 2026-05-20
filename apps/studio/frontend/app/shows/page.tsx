@@ -46,7 +46,7 @@ export default function ShowsPage() {
         id: "topic",
         header: "Topic",
         accessor: (row) => (
-          <span className="font-mono text-xs text-blue-400">{row.topic}</span>
+          <span className="font-mono text-body text-status-running">{row.topic}</span>
         ),
         sortValue: (row) => row.topic,
         className: "w-[20rem]",
@@ -73,7 +73,7 @@ export default function ShowsPage() {
         id: "last_update",
         header: "Last Update",
         accessor: (row) => (
-          <span className="text-xs text-neutral-500">
+          <span className="text-meta text-content-muted">
             {formatLastUpdate(row.last_update)}
           </span>
         ),
@@ -91,10 +91,10 @@ export default function ShowsPage() {
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6">
-      <header className="flex flex-col gap-3 border-b border-neutral-800 pb-4">
+      <header className="flex flex-col gap-3 border-b border-edge pb-4">
         <div>
-          <h1 className="text-xl font-semibold text-neutral-200">Shows</h1>
-          <p className="text-sm text-neutral-500">
+          <h1 className="text-xl font-semibold text-content-primary">Shows</h1>
+          <p className="text-body text-content-muted">
             {shows.length} show{shows.length !== 1 ? "s" : ""}
           </p>
         </div>

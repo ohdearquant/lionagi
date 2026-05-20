@@ -85,7 +85,7 @@ export default function RunsPage() {
             onChange={(e) => setWorkerFilter(e.target.value)}
             className="rounded border border-edge bg-surface-input px-2 py-1 text-sm text-content-secondary"
           >
-            <option value="">All playbooks</option>
+            <option value="">All kinds</option>
             {workerNames.map((w) => (
               <option key={w} value={w}>
                 {w}
@@ -115,7 +115,8 @@ export default function RunsPage() {
             <thead>
               <tr className="border-b border-edge text-xs uppercase text-content-muted">
                 <th className="px-3 py-2">Run</th>
-                <th className="px-3 py-2">Playbook</th>
+                <th className="px-3 py-2">Kind</th>
+                <th className="px-3 py-2">Model</th>
                 <th className="px-3 py-2">Task</th>
                 <th className="px-3 py-2">Status</th>
                 <th className="px-3 py-2">Steps</th>
@@ -135,14 +136,14 @@ export default function RunsPage() {
                     </Link>
                   </td>
                   <td className="px-3 py-2">
-                    <Link
-                      href={`/playbooks/${encodeURIComponent(run.worker_name)}`}
-                      className="text-content-secondary hover:text-neutral-100"
-                    >
-                      {run.worker_name}
-                    </Link>
+                    <Badge tone={run.worker_name === "flow" ? "ok" : "pending"}>
+                      {run.worker_name || "—"}
+                    </Badge>
                   </td>
-                  <td className="max-w-xs truncate px-3 py-2 text-content-secondary">
+                  <td className="px-3 py-2 text-xs text-content-secondary">
+                    {run.model || "—"}
+                  </td>
+                  <td className="max-w-sm truncate px-3 py-2 text-content-secondary" title={run.task}>
                     {run.task || "—"}
                   </td>
                   <td className="px-3 py-2">

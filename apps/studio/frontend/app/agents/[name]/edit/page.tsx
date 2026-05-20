@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useState } from "react";
 import AgentProfileForm from "@/components/AgentProfileForm";
 import type { AgentProfile } from "@/lib/types";
 import { getAgent, updateAgent } from "@/lib/api";
 
-export default function EditAgentPage({ params }: { params: { name: string } }) {
-  const agentName = decodeURIComponent(params.name);
+export default function EditAgentPage({ params }: { params: Promise<{ name: string }> }) {
+  const { name } = use(params);
+  const agentName = decodeURIComponent(name);
   const router = useRouter();
   const [initial, setInitial] = useState<AgentProfile | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);

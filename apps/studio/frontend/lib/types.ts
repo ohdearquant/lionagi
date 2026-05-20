@@ -10,12 +10,27 @@ export interface RunSummary {
   step_count: number;
   started_at: number | null;
   finished_at: number | null;
+  model?: string;
+}
+
+export interface RunMessage {
+  role: string;
+  content?: string;
+  sender?: string;
+  timestamp?: number | null;
+  function?: string;
+  summary?: string;
+  arguments?: Record<string, unknown>;
+  output?: string;
+  status?: string;
+  exit_code?: number | null;
 }
 
 export interface RunStep {
   step: string;
   status: string;
   result?: Record<string, unknown>;
+  messages?: RunMessage[];
   timestamp: number | null;
 }
 

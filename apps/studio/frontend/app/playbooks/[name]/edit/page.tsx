@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import WorkerCanvas from "@/components/canvas/WorkerCanvas";
 import ModelConfigTable from "@/components/ModelConfigTable";
 import { getWorkerGraph, getWorkerRaw, listAgents, updateWorker, validateWorker } from "@/lib/api";
@@ -15,8 +15,9 @@ import type {
   WorkerStepNode,
 } from "@/lib/types";
 
-export default function EditWorkerPage({ params }: { params: { name: string } }) {
-  const workerName = decodeURIComponent(params.name);
+export default function EditWorkerPage({ params }: { params: Promise<{ name: string }> }) {
+  const { name } = use(params);
+  const workerName = decodeURIComponent(name);
   const router = useRouter();
 
   const [graph, setGraph] = useState<WorkerGraph | null>(null);

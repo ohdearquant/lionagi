@@ -775,6 +775,85 @@ async def stream_codex_cli(
                         _pp_tool_use(tu, theme)
                     yield chunk
 
+                elif item_type == "command_execution":
+                    # Codex CLI emits command_execution items with command +
+                    # aggregated_output + exit_code. Treat as a paired
+                    # tool_use + tool_result so downstream message routing
+                    # records both the request and the result.
+                    item_id = item.get("id", "")
+                    command = item.get("command", "")
+                    output = item.get("aggregated_output", "")
+                    exit_code = item.get("exit_code")
+                    status = item.get("status", "")
+                    is_error = (
+                        status == "failed"
+                        or (exit_code is not None and exit_code != 0)
+                    )
+
+                    tu = {"id": item_id, "name": "Bash", "input": {"command": command}}
+                    chunk.tool_use = tu
+                    session.tool_uses.append(tu)
+                    await _maybe_await(on_tool_use, tu)
+                    if request.verbose_output:
+                        _pp_tool_use(tu, theme)
+                    yield chunk
+
+                    # Emit paired tool_result on a fresh chunk so the caller
+                    # always sees both halves of the exchange.
+                    result_chunk = CodexChunk(raw=obj, type=typ)
+                    tr = {
+                        "tool_use_id": item_id,
+                        "content": output,
+                        "is_error": is_error,
+                    }
+                    result_chunk.tool_result = tr
+                    session.tool_results.append(tr)
+                    session.chunks.append(result_chunk)
+                    await _maybe_await(on_tool_result, tr)
+                    if request.verbose_output:
+                        _pp_tool_result(tr, theme)
+                    yield result_chunk
+
+                elif item_type == "file_change":
+                    # Codex CLI emits file_change items with a `changes` list.
+                    # Surface each change as a single Edit tool call so the
+                    # branch records what files were touched.
+                    item_id = item.get("id", "")
+                    changes = item.get("changes", [])
+                    status = item.get("status", "")
+                    is_error = status == "failed"
+
+                    tu = {
+                        "id": item_id,
+                        "name": "Edit",
+                        "input": {"changes": changes},
+                    }
+                    chunk.tool_use = tu
+                    session.tool_uses.append(tu)
+                    await _maybe_await(on_tool_use, tu)
+                    if request.verbose_output:
+                        _pp_tool_use(tu, theme)
+                    yield chunk
+
+                    result_chunk = CodexChunk(raw=obj, type=typ)
+                    summary_parts = [
+                        f"{c.get('kind', 'change')}: {c.get('path', '?')}"
+                        for c in changes
+                        if isinstance(c, dict)
+                    ]
+                    tr = {
+                        "tool_use_id": item_id,
+                        "content": "; ".join(summary_parts) or status,
+                        "is_error": is_error,
+                    }
+                    result_chunk.tool_result = tr
+                    session.tool_results.append(tr)
+                    session.chunks.append(result_chunk)
+                    await _maybe_await(on_tool_result, tr)
+                    if request.verbose_output:
+                        _pp_tool_result(tr, theme)
+                    yield result_chunk
+
                 elif item_type == "function_call_output":
                     tr = {
                         "tool_use_id": item.get("call_id", item.get("id", "")),

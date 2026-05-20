@@ -52,6 +52,22 @@ export function runEventsUrl(runId: string): string {
   return `${API_BASE}/api/runs/${encodeURIComponent(runId)}/events`;
 }
 
+export function streamRunEvents(
+  runId: string,
+  onEvent: (event: Record<string, unknown>) => void,
+): () => void {
+  const source = new EventSource(runEventsUrl(runId));
+  source.onmessage = (msg) => {
+    try {
+      onEvent(JSON.parse(msg.data) as Record<string, unknown>);
+    } catch {
+      /* malformed chunk */
+    }
+  };
+  source.onerror = () => source.close();
+  return () => source.close();
+}
+
 // ─── Workers (playbooks) ──────────────────────────────────────────────────────
 
 interface PlaybookListEntry {

@@ -35,7 +35,19 @@ def list_agents() -> list[dict[str, Any]]:
         except OSError:
             continue
         fm, _ = _parse_frontmatter(text)
-        entry: dict[str, Any] = {"name": path.stem, "path": str(path), **fm}
+        model_raw = str(fm.get("model") or "")
+        if "/" in model_raw:
+            provider, model_id = model_raw.split("/", 1)
+        else:
+            provider, model_id = "", model_raw
+        entry: dict[str, Any] = {
+            "name": path.stem,
+            "path": str(path),
+            "provider": provider,
+            "model": model_id,
+            "description": str(fm.get("description") or ""),
+            **{k: v for k, v in fm.items() if k not in ("model", "description")},
+        }
         if path.is_symlink():
             try:
                 entry["symlink_target"] = str(path.resolve())

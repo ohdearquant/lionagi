@@ -1,14 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useState } from "react";
 import Badge from "@/components/Badge";
 import WorkerCanvas from "@/components/canvas/WorkerCanvas";
 import { getWorkerGraph, startRun, runEventsUrl } from "@/lib/api";
 import type { WorkerGraph } from "@/lib/types";
 
-export default function WorkerDetailPage({ params }: { params: { name: string } }) {
-  const workerName = decodeURIComponent(params.name);
+export default function WorkerDetailPage({ params }: { params: Promise<{ name: string }> }) {
+  const { name } = use(params);
+  const workerName = decodeURIComponent(name);
   const [graph, setGraph] = useState<WorkerGraph | null>(null);
   const [error, setError] = useState<string | null>(null);
 
