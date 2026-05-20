@@ -107,12 +107,64 @@ class StateDB:
         await self.db.execute("PRAGMA cache_size = -64000")
 
     async def _apply_schema(self) -> None:
+        # Older state.db files from earlier iterations of the schema lack
+        # the provenance / lifecycle columns added by ADR-0012 / ADR-0017,
+        # and ``CREATE TABLE IF NOT EXISTS`` is a no-op on existing
+        # tables. Reconcile column-by-column FIRST so the index/trigger
+        # statements in schema.sql that reference these columns can
+        # succeed. This is a forward-only migration; all migrated
+        # columns are nullable or have an INSERT-time default.
+        await self._reconcile_columns()
         schema = _SCHEMA_PATH.read_text()
         lines = [
             ln for ln in schema.splitlines()
             if not ln.strip().upper().startswith("PRAGMA")
         ]
         await self.db.executescript("\n".join(lines))
+
+    # Columns that may need to be back-added to an existing sessions
+    # table — keyed by table name. Each entry is (column_name, column_def).
+    # column_def must be valid in an ``ALTER TABLE ... ADD COLUMN`` clause
+    # (SQLite only allows CHECK constraints inline here if they reference
+    # only the new column; we skip CHECKs in ALTER and rely on the Python
+    # validators in this module to enforce them on old databases).
+    _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
+        "sessions": [
+            ("updated_at", "REAL"),
+            ("playbook_name", "TEXT"),
+            ("agent_name", "TEXT"),
+            ("invocation_kind", "TEXT"),
+            ("show_topic", "TEXT"),
+            ("show_play_name", "TEXT"),
+            ("artifacts_path", "TEXT"),
+            ("source_kind", "TEXT"),
+            ("status", "TEXT"),
+            ("started_at", "REAL"),
+            ("ended_at", "REAL"),
+        ],
+        "branches": [
+            ("system_msg_id", "TEXT"),
+        ],
+    }
+
+    async def _reconcile_columns(self) -> None:
+        for table, columns in self._MIGRATION_COLUMNS.items():
+            cur = await self.db.execute(f"PRAGMA table_info({table})")
+            rows = await cur.fetchall()
+            if not rows:
+                # Table doesn't exist yet — schema.sql will CREATE it
+                # with the full column list. Nothing to migrate.
+                continue
+            existing = {row["name"] for row in rows}
+            for name, defn in columns:
+                if name not in existing:
+                    # Identifier safety: name/defn come from the
+                    # _MIGRATION_COLUMNS class constant above, never user
+                    # input. Table name same. F-string is safe here.
+                    await self.db.execute(  # noqa: S608
+                        f"ALTER TABLE {table} ADD COLUMN {name} {defn}"
+                    )
+        await self.db.commit()
 
     # ── Schema version ─────────────────────────────────────────────────
 

@@ -46,15 +46,18 @@ class iModelManager(Manager):  # noqa: N801 — mirrors iModel naming
         owning coroutine completes — manifesting as a hanging CLI process.
 
         Safe to call multiple times; ``iModel.close()`` is idempotent on
-        an already-stopped executor. Per-model failures are logged (not
-        raised) so one broken endpoint cannot mask others.
+        an already-stopped executor. Per-model failures (including
+        cancellation, which is ``BaseException`` not ``Exception``) are
+        logged and swallowed so one broken endpoint cannot leave the
+        rest of the registry leaked.
         """
         import logging
 
+        log = logging.getLogger("lionagi.service")
         for name, model in self.registry.items():
             try:
                 await model.close()
-            except Exception as exc:
-                logging.getLogger("lionagi.service").warning(
+            except BaseException as exc:  # noqa: BLE001 — cancellation is BaseException
+                log.warning(
                     "iModel shutdown failed for %r: %s", name, exc, exc_info=True
                 )

@@ -493,9 +493,16 @@ async def start_live_persist(
 
     New branches created via build_worker_branch auto-register via the
     env._live_persist check there.
+
+    On any setup failure, the DB connection is closed before returning
+    so the aiosqlite background thread does not leak (non-daemon thread
+    leak prevents Python interpreter shutdown — "CLI hangs forever").
     """
+    import logging
+
     from lionagi.state.db import StateDB
 
+    db: StateDB | None = None
     try:
         db = StateDB()
         await db.open()
@@ -534,8 +541,20 @@ async def start_live_persist(
 
         for branch in session.branches:
             _register_branch_hook(ctx, branch)
-    except Exception:
+    except Exception as exc:
+        logging.getLogger("lionagi.cli").warning(
+            "live persist setup failed (%s) — disabling persistence for this run",
+            exc, exc_info=True,
+        )
         env._live_persist = None
+        if db is not None:
+            try:
+                await db.close()
+            except Exception as close_exc:  # noqa: BLE001
+                logging.getLogger("lionagi.cli").warning(
+                    "fallback db.close after setup failure also failed: %s",
+                    close_exc,
+                )
 
 
 def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
@@ -614,12 +633,21 @@ async def stop_live_persist(
     *,
     status: str = "completed",
 ) -> None:
-    """Update session bookmarks, lifecycle columns, and close DB."""
+    """Update session bookmarks, lifecycle columns, and close DB.
+
+    The DB close is in its own ``finally`` so it always runs — even if
+    the bookmark update or hook removal fails. Leaving the DB unclosed
+    leaks the aiosqlite worker (non-daemon thread) and prevents the
+    Python interpreter from shutting down.
+    """
+    import logging
+
     ctx = env._live_persist
     if ctx is None:
         return
+    log = logging.getLogger("lionagi.cli")
+    db = ctx["db"]
     try:
-        db = ctx["db"]
         session_prog_id = ctx["session_prog_id"]
 
         all_msgs = await db.get_progression(session_prog_id)
@@ -637,12 +665,11 @@ async def stop_live_persist(
                 branch.on_message_added.remove(hook)
             except ValueError:
                 pass
-
-        await db.close()
     except Exception as exc:
-        import logging
-
-        logging.getLogger("lionagi.cli").warning(
-            "live persist teardown failed: %s", exc, exc_info=True
-        )
-    env._live_persist = None
+        log.warning("live persist teardown failed: %s", exc, exc_info=True)
+    finally:
+        try:
+            await db.close()
+        except Exception as exc:
+            log.warning("live persist db.close failed: %s", exc, exc_info=True)
+        env._live_persist = None

@@ -147,6 +147,69 @@ async def test_schema_version(db: StateDB):
     assert await db.schema_version() == "1"
 
 
+async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
+    """Regression: an older state.db that pre-dates ADR-0012 / ADR-0017
+    columns must have them ADD COLUMN'd in by ``_reconcile_columns``.
+
+    Without this migration, ``CREATE TABLE IF NOT EXISTS`` is a no-op
+    on the existing tables, so ``create_session(status='running')``
+    fails with ``OperationalError: table sessions has no column named
+    status`` — the broad except in CLI live-persist setup swallows the
+    error, returns ``None``, and leaks the aiosqlite worker thread.
+    Resulting symptom: the CLI process hangs forever after the agent
+    completes.
+    """
+    import aiosqlite
+
+    path = tmp_path / "old.db"
+
+    # Simulate a real pre-PR-980 DB: ADR-0009 core columns are present
+    # (since they shipped first), but the provenance/lifecycle columns
+    # added later are missing.
+    async with aiosqlite.connect(str(path)) as old:
+        await old.execute(
+            "CREATE TABLE sessions ("
+            "id TEXT PRIMARY KEY, created_at REAL, node_metadata TEXT, "
+            "name TEXT, user TEXT, progression_id TEXT, "
+            "first_msg_id TEXT, last_msg_id TEXT)"
+        )
+        await old.execute(
+            "CREATE TABLE branches ("
+            "id TEXT PRIMARY KEY, created_at REAL, node_metadata TEXT, "
+            "user TEXT, name TEXT, session_id TEXT, progression_id TEXT)"
+        )
+        await old.commit()
+
+    # Opening with the current StateDB must reconcile in the new columns
+    # AND the index/trigger statements in schema.sql (which reference
+    # those columns) must succeed.
+    db = StateDB(str(path))
+    await db.open()
+    try:
+        cur = await db.db.execute("PRAGMA table_info(sessions)")
+        cols = {r["name"] for r in await cur.fetchall()}
+        for must_have in (
+            "status", "started_at", "ended_at", "invocation_kind",
+            "playbook_name", "agent_name", "artifacts_path",
+            "source_kind", "updated_at",
+        ):
+            assert must_have in cols, f"sessions.{must_have} not migrated"
+        cur = await db.db.execute("PRAGMA table_info(branches)")
+        bcols = {r["name"] for r in await cur.fetchall()}
+        assert "system_msg_id" in bcols
+        # And the live-persist write path actually works against the
+        # migrated DB (the symptom we're guarding against).
+        prog_id = uid()
+        await db.create_progression(prog_id)
+        await db.create_session({
+            "id": uid(), "progression_id": prog_id,
+            "created_at": time.time(), "status": "running",
+            "started_at": time.time(),
+        })
+    finally:
+        await db.close()
+
+
 async def test_message_types_seeded(db: StateDB):
     """6 message types pre-seeded (0 = __unknown__, 1-5 = known classes)."""
     cur = await db.db.execute("SELECT COUNT(*) AS n FROM message_types")

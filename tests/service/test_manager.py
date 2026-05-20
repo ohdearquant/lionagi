@@ -158,3 +158,60 @@ class TestiModelManagerRegisterIModel:
         assert manager.registry["chat"] is mock_model1
         assert manager.registry["parse"] is mock_model2
         assert manager.registry["embed"] is mock_model3
+
+
+class TestiModelManagerShutdown:
+    """Shutdown must stop every iModel's background executor so the CLI
+    process can exit cleanly. The replenisher task is non-daemon-async
+    relative to anyio.run: leaving it scheduled hangs anyio.run forever.
+    """
+
+    @pytest.mark.asyncio
+    async def test_shutdown_stops_every_executor_replenisher_task(self):
+        """Regression for the CLI-hang bug. cancel()+await on the
+        replenisher task re-raises CancelledError in Python 3.11+; the
+        old shutdown caught only Exception so the first close aborted
+        the loop and subsequent iModels leaked their executor task.
+        """
+        chat = iModel(provider="openai", model="gpt-4.1-mini", api_key="t")
+        parse = iModel(provider="openai", model="gpt-4.1-mini", api_key="t")
+        manager = iModelManager(chat=chat, parse=parse)
+
+        await chat.executor.start()
+        await parse.executor.start()
+
+        # Must not raise — CancelledError is BaseException, not Exception.
+        await manager.shutdown()
+
+        assert chat.executor.processor.is_stopped()
+        assert parse.executor.processor.is_stopped()
+        assert chat.executor.processor._rate_limit_replenisher_task is None
+        assert parse.executor.processor._rate_limit_replenisher_task is None
+
+    @pytest.mark.asyncio
+    async def test_shutdown_continues_when_one_close_fails(self, caplog):
+        """If one iModel.close() raises, the remaining models still get
+        closed (don't leak executors on one bad endpoint).
+        """
+        import logging
+
+        good = iModel(provider="openai", model="gpt-4.1-mini", api_key="t")
+        await good.executor.start()
+
+        bad = MagicMock()
+
+        async def boom():
+            raise RuntimeError("close failed")
+
+        bad.close = boom
+        manager = iModelManager()
+        # Bypass the iModel isinstance check — we want a stand-in that
+        # only the manager's iteration touches.
+        manager.registry["bad"] = bad
+        manager.register_imodel("good", good)
+
+        with caplog.at_level(logging.WARNING, logger="lionagi.service"):
+            await manager.shutdown()
+
+        assert good.executor.processor.is_stopped()
+        assert any("iModel shutdown failed" in r.message for r in caplog.records)

@@ -495,13 +495,13 @@ async def _run_flow(
             _terminal_status = "failed"
         raise
     finally:
-        await stop_live_persist(env, status=_terminal_status)
-        # Shut down every iModel on every branch (chat_model AND parse_model,
-        # plus any other registered) so each executor's background
-        # replenisher task is cancelled. Without this, anyio.run never
-        # returns and the CLI process hangs after the flow completes.
-        for _br in env.session.branches:
-            await _br.mdls.shutdown()
+        # Shield teardown from outer cancellation so iModel executors are
+        # always closed; see lionagi/cli/agent.py for the full rationale.
+        import anyio
+        with anyio.CancelScope(shield=True):
+            await stop_live_persist(env, status=_terminal_status)
+            for _br in env.session.branches:
+                await _br.mdls.shutdown()
 
 
 async def _run_flow_inner(

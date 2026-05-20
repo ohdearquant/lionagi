@@ -151,12 +151,18 @@ async def _run_agent(
             _terminal_status = "failed"
         raise
     finally:
-        await _teardown_live_persist(live, status=_terminal_status)
-        # Shut down every iModel on the branch (chat_model AND parse_model,
-        # plus any other registered) so each RateLimitedAPIExecutor's
-        # background replenisher task is cancelled. Without this, anyio.run
-        # never returns and the CLI process hangs after the agent completes.
-        await branch.mdls.shutdown()
+        # Shield teardown from outer cancellation (KeyboardInterrupt, anyio
+        # task-group cancel). Without the shield the first await below
+        # raises CancelledError, skipping iModel shutdown — leaking the
+        # rate-limit replenisher task and hanging anyio.run forever.
+        import anyio
+        with anyio.CancelScope(shield=True):
+            await _teardown_live_persist(live, status=_terminal_status)
+            # Shut down every iModel on the branch (chat_model AND
+            # parse_model, plus any other registered) so each
+            # RateLimitedAPIExecutor's background replenisher task is
+            # cancelled. Without this, anyio.run never returns.
+            await branch.mdls.shutdown()
 
     # Save branch pointer for --continue-last / -r resume
     save_last_branch_pointer(run.run_id, branch_id)
@@ -173,10 +179,18 @@ async def _setup_live_persist(
     """Open DB, create session/branch rows, register live message hook.
 
     Returns context dict for _teardown_live_persist, or None if unavailable.
+
+    On any failure, the DB connection is closed before returning None so
+    the aiosqlite background thread does not leak. The aiosqlite worker
+    is a non-daemon thread; leaking it prevents Python interpreter
+    shutdown and manifests as a hanging CLI process.
     """
+    import logging
+
     from lionagi.session.session import Session
     from lionagi.state.db import StateDB
 
+    db: StateDB | None = None
     try:
         db = StateDB()
         await db.open()
@@ -268,7 +282,19 @@ async def _setup_live_persist(
         ctx["hook"] = _on_message
         branch.on_message_added.append(_on_message)
         return ctx
-    except Exception:
+    except Exception as exc:
+        logging.getLogger("lionagi.cli").warning(
+            "live persist setup failed (%s) — disabling persistence for this run",
+            exc, exc_info=True,
+        )
+        if db is not None:
+            try:
+                await db.close()
+            except Exception as close_exc:  # noqa: BLE001
+                logging.getLogger("lionagi.cli").warning(
+                    "fallback db.close after setup failure also failed: %s",
+                    close_exc,
+                )
         return None
 
 
@@ -279,18 +305,24 @@ async def _teardown_live_persist(
 ) -> None:
     """Update session bookmarks, lifecycle columns, and close DB.
 
-    Failures here are logged (not raised) because teardown runs in a
-    ``finally`` block on the way out of the agent — losing a bookmark
-    update should never mask the original exception or block clean
-    process exit. The error is logged at WARNING so it's discoverable
-    in ``-v`` runs rather than silently swallowed.
+    The DB close is in its own ``finally`` so it always runs — even if
+    the bookmark update or hook removal fails. Failures elsewhere are
+    logged (not raised) because teardown runs in a ``finally`` on the
+    way out of the agent and must never block clean process exit.
+
+    Leaving the DB unclosed leaks the aiosqlite worker thread, which is
+    non-daemon and would prevent the Python interpreter from shutting
+    down — the symptom reported as "CLI process hangs after completion".
     """
     if ctx is None:
         return
+    import logging
+
+    log = logging.getLogger("lionagi.cli")
+    db = ctx["db"]
     try:
         import time as _time
 
-        db = ctx["db"]
         session_id = ctx["session_id"]
         session_prog_id = ctx["session_prog_id"]
 
@@ -304,14 +336,17 @@ async def _teardown_live_persist(
             update_kwargs["last_msg_id"] = all_msgs[-1]
         await db.update_session(session_id, **update_kwargs)
 
-        ctx["branch"].on_message_added.remove(ctx["hook"])
-        await db.close()
+        try:
+            ctx["branch"].on_message_added.remove(ctx["hook"])
+        except ValueError:
+            pass
     except Exception as exc:
-        import logging
-
-        logging.getLogger("lionagi.cli").warning(
-            "live persist teardown failed: %s", exc, exc_info=True
-        )
+        log.warning("live persist teardown failed: %s", exc, exc_info=True)
+    finally:
+        try:
+            await db.close()
+        except Exception as exc:
+            log.warning("live persist db.close failed: %s", exc, exc_info=True)
 
 
 def add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:
