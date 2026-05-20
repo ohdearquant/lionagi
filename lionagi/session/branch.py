@@ -535,7 +535,11 @@ class Branch(Element, Relational):
         **kw,
     ) -> dict:
         dict_ = super().to_dict(mode=mode, db_meta_key=db_meta_key, **kw)
-        dict_["messages"] = self.messages.to_dict(mode=mode) if self.messages else {"collections": [], "progression": {"order": []}}
+        dict_["messages"] = (
+            self.messages.to_dict(mode=mode)
+            if self.messages
+            else {"collections": [], "progression": {"order": []}}
+        )
         if include_logs and self.logs:
             dict_["logs"] = self.logs.to_dict(mode=mode)
         if self.system:

@@ -25,6 +25,7 @@ def _mtime_as_float(path: Path) -> float:
         return path.stat().st_mtime
     except OSError:
         import time
+
         return time.time()
 
 
@@ -37,7 +38,7 @@ def _msg_from_collection_entry(raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": raw["id"],
         "created_at": raw["created_at"],
-        "node_metadata": raw.get("metadata"),   # rename metadata → node_metadata
+        "node_metadata": raw.get("metadata"),  # rename metadata → node_metadata
         "content": raw.get("content", {}),
         "embedding": raw.get("embedding"),
         "sender": raw.get("sender"),
@@ -167,12 +168,14 @@ def _derive_timestamps(
     # If the values came from manifest they may be ISO strings; coerce to float.
     if isinstance(started_at, str):
         import datetime
+
         try:
             started_at = datetime.datetime.fromisoformat(started_at).timestamp()
         except ValueError:
             started_at = fs_ctime
     if isinstance(ended_at, str):
         import datetime
+
         try:
             ended_at = datetime.datetime.fromisoformat(ended_at).timestamp()
         except ValueError:
@@ -206,7 +209,9 @@ async def _import_one_run(
     # invocation_kind enum check otherwise).
     raw_kind = (manifest.get("kind") or "").lower()
     legacy_kind_map = {
-        "agent": "agent", "play": "play", "flow": "flow",
+        "agent": "agent",
+        "play": "play",
+        "flow": "flow",
         "fanout": "fanout",
     }
     invocation_kind = legacy_kind_map.get(raw_kind)
@@ -220,26 +225,28 @@ async def _import_one_run(
             artifacts_path = str(candidate)
 
     # Session must exist before branches can reference it via FK.
-    await db.create_session({
-        "id": run_id,
-        "created_at": created_at,
-        "node_metadata": None,
-        "name": session_name,
-        "user": None,
-        "progression_id": session_prog_id,
-        "first_msg_id": None,
-        "last_msg_id": None,
-        # ADR-0012 enriched provenance — written so imported rows are
-        # queryable by the same fields live runs use.
-        "invocation_kind": invocation_kind,
-        "playbook_name": manifest.get("playbook_name") or manifest.get("playbook"),
-        "agent_name": manifest.get("agent_name") or manifest.get("agent"),
-        "artifacts_path": artifacts_path,
-        "source_kind": "imported_fs",
-        "status": status,
-        "started_at": started_at,
-        "ended_at": ended_at,
-    })
+    await db.create_session(
+        {
+            "id": run_id,
+            "created_at": created_at,
+            "node_metadata": None,
+            "name": session_name,
+            "user": None,
+            "progression_id": session_prog_id,
+            "first_msg_id": None,
+            "last_msg_id": None,
+            # ADR-0012 enriched provenance — written so imported rows are
+            # queryable by the same fields live runs use.
+            "invocation_kind": invocation_kind,
+            "playbook_name": manifest.get("playbook_name") or manifest.get("playbook"),
+            "agent_name": manifest.get("agent_name") or manifest.get("agent"),
+            "artifacts_path": artifacts_path,
+            "source_kind": "imported_fs",
+            "status": status,
+            "started_at": started_at,
+            "ended_at": ended_at,
+        }
+    )
 
     branches_dir = run_dir / "branches"
 
@@ -259,7 +266,9 @@ async def _import_one_run(
             continue
 
         branch_id = branch_data.get("id") or branch_file.stem
-        branch_created_at = branch_data.get("created_at") or _mtime_as_float(branch_file)
+        branch_created_at = branch_data.get("created_at") or _mtime_as_float(
+            branch_file
+        )
 
         # Extract messages and ordering from Pile format.
         messages_pile = branch_data.get("messages", {})
@@ -309,16 +318,18 @@ async def _import_one_run(
             node_meta["model"] = model
         branch_name = manifest_branch_meta.get("name") or manifest.get("kind")
 
-        await db.create_branch({
-            "id": branch_id,
-            "created_at": branch_created_at,
-            "node_metadata": node_meta or None,
-            "user": branch_data.get("user"),
-            "name": branch_name,
-            "session_id": run_id,
-            "progression_id": branch_prog_id,
-            "system_msg_id": system_msg_id,
-        })
+        await db.create_branch(
+            {
+                "id": branch_id,
+                "created_at": branch_created_at,
+                "node_metadata": node_meta or None,
+                "user": branch_data.get("user"),
+                "name": branch_name,
+                "session_id": run_id,
+                "progression_id": branch_prog_id,
+                "system_msg_id": system_msg_id,
+            }
+        )
 
         session_msg_ids.extend(branch_msg_ids)
         total_branches += 1
@@ -383,7 +394,8 @@ async def _list_sessions(*, limit: int = 50, status: str | None = None) -> None:
             updated = row["updated_at"]
             updated_str = (
                 time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(updated))
-                if updated else ""
+                if updated
+                else ""
             )
 
             branch_cur = await db.db.execute(
@@ -431,10 +443,17 @@ async def _print_stats() -> None:
         # Row counts per table.
         print("Row counts:")
         for table in (
-            "messages", "progressions", "sessions", "branches",
-            "definitions", "shows", "plays",
+            "messages",
+            "progressions",
+            "sessions",
+            "branches",
+            "definitions",
+            "shows",
+            "plays",
         ):
-            cur = await db.db.execute(f"SELECT COUNT(*) AS n FROM {table}")  # noqa: S608
+            cur = await db.db.execute(
+                f"SELECT COUNT(*) AS n FROM {table}"
+            )  # noqa: S608
             row = await cur.fetchone()
             print(f"  {table:<14} {row['n']:>10}")
         print()
@@ -451,8 +470,13 @@ async def _print_stats() -> None:
 
         # PRAGMAs that affect operational behavior.
         print("PRAGMAs:")
-        for pragma in ("journal_mode", "wal_autocheckpoint", "busy_timeout",
-                       "synchronous", "foreign_keys"):
+        for pragma in (
+            "journal_mode",
+            "wal_autocheckpoint",
+            "busy_timeout",
+            "synchronous",
+            "foreign_keys",
+        ):
             cur = await db.db.execute(f"PRAGMA {pragma}")
             row = await cur.fetchone()
             val = row[0] if row else "?"
@@ -600,11 +624,14 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
         description="Print a table of sessions stored in state.db.",
     )
     ls.add_argument(
-        "--limit", type=int, default=50,
+        "--limit",
+        type=int,
+        default=50,
         help="Max sessions to list (default 50).",
     )
     ls.add_argument(
-        "--status", default=None,
+        "--status",
+        default=None,
         help="Filter by session status (running|completed|failed|aborted).",
     )
 
@@ -631,7 +658,8 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     cp.add_argument(
-        "--mode", default="TRUNCATE",
+        "--mode",
+        default="TRUNCATE",
         choices=["PASSIVE", "FULL", "RESTART", "TRUNCATE"],
         help="Checkpoint mode (default TRUNCATE).",
     )
@@ -659,15 +687,20 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     prune.add_argument(
-        "--keep-days", type=int, default=30,
+        "--keep-days",
+        type=int,
+        default=30,
         help="Keep sessions updated within the last N days (default 30).",
     )
     prune.add_argument(
-        "--keep-n", type=int, default=100,
+        "--keep-n",
+        type=int,
+        default=100,
         help="Always keep the N most recent sessions (default 100).",
     )
     prune.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Print what WOULD be deleted, but don't actually delete.",
     )
 
@@ -687,9 +720,12 @@ def run_state(args: argparse.Namespace) -> int:
         return 0 if counts["errors"] == 0 else 1
 
     if args.state_command == "ls":
-        run_async(_list_sessions(
-            limit=args.limit, status=args.status,
-        ))
+        run_async(
+            _list_sessions(
+                limit=args.limit,
+                status=args.status,
+            )
+        )
         return 0
 
     if args.state_command == "stats":
@@ -707,11 +743,13 @@ def run_state(args: argparse.Namespace) -> int:
         return 0
 
     if args.state_command == "prune":
-        result = run_async(_prune(
-            keep_days=args.keep_days,
-            keep_n=args.keep_n,
-            dry_run=args.dry_run,
-        ))
+        result = run_async(
+            _prune(
+                keep_days=args.keep_days,
+                keep_n=args.keep_n,
+                dry_run=args.dry_run,
+            )
+        )
         prefix = "(dry-run) would delete" if args.dry_run else "deleted"
         print(
             f"{prefix} {result['sessions']} session(s), "

@@ -21,12 +21,7 @@ from ._providers import (
     build_chat_model,
     parse_model_spec,
 )
-from ._runs import (
-    allocate_run,
-    find_branch,
-    load_last_branch,
-    save_last_branch_pointer,
-)
+from ._runs import allocate_run, find_branch, load_last_branch, save_last_branch_pointer
 
 
 async def _run_agent(
@@ -127,7 +122,9 @@ async def _run_agent(
 
     # Set up live SQLite persist (messages stream into DB as they're added)
     live = await _setup_live_persist(
-        branch, agent_name=agent_name, artifacts_path=str(run.artifact_root),
+        branch,
+        agent_name=agent_name,
+        artifacts_path=str(run.artifact_root),
     )
 
     _terminal_status = "completed"
@@ -156,6 +153,7 @@ async def _run_agent(
         # raises CancelledError, skipping iModel shutdown — leaking the
         # rate-limit replenisher task and hanging anyio.run forever.
         import anyio
+
         with anyio.CancelScope(shield=True):
             await _teardown_live_persist(live, status=_terminal_status)
             # Shut down every iModel on the branch (chat_model AND
@@ -219,21 +217,23 @@ async def _setup_live_persist(
             await db.create_progression(branch_prog_id)
 
             session_dict = session.to_dict(mode="db")
-            await db.create_session({
-                "id": session_id,
-                "created_at": session_dict["created_at"],
-                "node_metadata": session_dict.get("node_metadata"),
-                "name": session_dict.get("name"),
-                "user": session_dict.get("user"),
-                "progression_id": session_prog_id,
-                "first_msg_id": None,
-                "last_msg_id": None,
-                "invocation_kind": "agent",
-                "agent_name": agent_name,
-                "artifacts_path": artifacts_path,
-                "status": "running",
-                "started_at": time.time(),
-            })
+            await db.create_session(
+                {
+                    "id": session_id,
+                    "created_at": session_dict["created_at"],
+                    "node_metadata": session_dict.get("node_metadata"),
+                    "name": session_dict.get("name"),
+                    "user": session_dict.get("user"),
+                    "progression_id": session_prog_id,
+                    "first_msg_id": None,
+                    "last_msg_id": None,
+                    "invocation_kind": "agent",
+                    "agent_name": agent_name,
+                    "artifacts_path": artifacts_path,
+                    "status": "running",
+                    "started_at": time.time(),
+                }
+            )
 
             # Persist system message if present
             system_msg_id = None
@@ -249,16 +249,18 @@ async def _setup_live_persist(
             if "chat_model" in branch_dict:
                 node_meta["chat_model"] = branch_dict["chat_model"]
 
-            await db.create_branch({
-                "id": branch_id,
-                "created_at": branch_dict["created_at"],
-                "node_metadata": node_meta,
-                "user": branch_dict.get("user"),
-                "name": branch_dict.get("name"),
-                "session_id": session_id,
-                "progression_id": branch_prog_id,
-                "system_msg_id": system_msg_id,
-            })
+            await db.create_branch(
+                {
+                    "id": branch_id,
+                    "created_at": branch_dict["created_at"],
+                    "node_metadata": node_meta,
+                    "user": branch_dict.get("user"),
+                    "name": branch_dict.get("name"),
+                    "session_id": session_id,
+                    "progression_id": branch_prog_id,
+                    "system_msg_id": system_msg_id,
+                }
+            )
 
         ctx = {
             "db": db,
@@ -292,9 +294,12 @@ async def _setup_live_persist(
                     await db.update_branch(branch_id, system_msg_id=msg_id)
             except Exception as exc:
                 import logging
+
                 logging.getLogger("lionagi.cli").warning(
                     "live persist write failed for branch %s: %s",
-                    branch_id, exc, exc_info=True,
+                    branch_id,
+                    exc,
+                    exc_info=True,
                 )
 
         ctx["hook"] = _on_message
@@ -303,7 +308,8 @@ async def _setup_live_persist(
     except Exception as exc:
         logging.getLogger("lionagi.cli").warning(
             "live persist setup failed (%s) — disabling persistence for this run",
-            exc, exc_info=True,
+            exc,
+            exc_info=True,
         )
         if db is not None:
             try:

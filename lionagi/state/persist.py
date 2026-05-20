@@ -47,16 +47,18 @@ async def persist_session(db: StateDB, session: Session) -> None:
         session_id = session_dict["id"]
         session_prog_id = str(uuid.uuid4())
         await db.create_progression(session_prog_id)
-        await db.create_session({
-            "id": session_id,
-            "created_at": session_dict["created_at"],
-            "node_metadata": session_dict.get("node_metadata"),
-            "name": session_dict.get("name"),
-            "user": session_dict.get("user"),
-            "progression_id": session_prog_id,
-            "first_msg_id": None,
-            "last_msg_id": None,
-        })
+        await db.create_session(
+            {
+                "id": session_id,
+                "created_at": session_dict["created_at"],
+                "node_metadata": session_dict.get("node_metadata"),
+                "name": session_dict.get("name"),
+                "user": session_dict.get("user"),
+                "progression_id": session_prog_id,
+                "first_msg_id": None,
+                "last_msg_id": None,
+            }
+        )
 
     all_message_ids: list[str] = []
     existing_session_msgs = await db.get_progression(session_prog_id)
@@ -65,7 +67,9 @@ async def persist_session(db: StateDB, session: Session) -> None:
         await _persist_branch(db, session_id, branch, all_message_ids)
 
     # Add only NEW messages to session progression
-    new_session_msgs = [mid for mid in all_message_ids if mid not in existing_session_msgs]
+    new_session_msgs = [
+        mid for mid in all_message_ids if mid not in existing_session_msgs
+    ]
     for mid in new_session_msgs:
         await db.append_to_progression(session_prog_id, mid)
 
@@ -117,6 +121,7 @@ async def _persist_branch(
     node_meta = branch_dict.get("node_metadata") or {}
     if isinstance(node_meta, str):
         import json
+
         node_meta = json.loads(node_meta)
     if "chat_model" in branch_dict:
         node_meta["chat_model"] = branch_dict["chat_model"]
@@ -131,19 +136,24 @@ async def _persist_branch(
         sys_dict = branch.system.to_dict(mode="db")
         system_msg_id = sys_dict["id"]
         await db.insert_message(sys_dict)
-        if system_msg_id not in existing_msg_ids and system_msg_id not in all_message_ids:
+        if (
+            system_msg_id not in existing_msg_ids
+            and system_msg_id not in all_message_ids
+        ):
             all_message_ids.append(system_msg_id)
 
     # On resume the branch row already exists (INSERT OR IGNORE would be a no-op).
     # Skip create_branch to avoid unnecessary DB round-trip and keep semantics clear.
     if not is_resume:
-        await db.create_branch({
-            "id": branch_id,
-            "created_at": branch_dict["created_at"],
-            "node_metadata": node_meta,
-            "user": branch_dict.get("user"),
-            "name": branch_dict.get("name"),
-            "session_id": session_id,
-            "progression_id": branch_prog_id,
-            "system_msg_id": system_msg_id,
-        })
+        await db.create_branch(
+            {
+                "id": branch_id,
+                "created_at": branch_dict["created_at"],
+                "node_metadata": node_meta,
+                "user": branch_dict.get("user"),
+                "name": branch_dict.get("name"),
+                "session_id": session_id,
+                "progression_id": branch_prog_id,
+                "system_msg_id": system_msg_id,
+            }
+        )

@@ -252,5 +252,3 @@ def _post_results_to_team(
                     "read_by": {},
                 }
             )
-
-

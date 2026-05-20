@@ -17,28 +17,71 @@ from lionagi.cli._runs import LIONAGI_HOME
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 
-_SESSION_COLUMNS = frozenset({
-    "name", "user", "node_metadata", "first_msg_id", "last_msg_id",
-    "updated_at", "playbook_name", "agent_name", "invocation_kind",
-    "show_topic", "show_play_name", "artifacts_path", "source_kind",
-    "status", "started_at", "ended_at",
-})
+_SESSION_COLUMNS = frozenset(
+    {
+        "name",
+        "user",
+        "node_metadata",
+        "first_msg_id",
+        "last_msg_id",
+        "updated_at",
+        "playbook_name",
+        "agent_name",
+        "invocation_kind",
+        "show_topic",
+        "show_play_name",
+        "artifacts_path",
+        "source_kind",
+        "status",
+        "started_at",
+        "ended_at",
+    }
+)
 
-_SHOW_COLUMNS = frozenset({
-    "topic", "goal", "repo", "base_branch", "integration_branch",
-    "status", "show_dir", "updated_at",
-})
+_SHOW_COLUMNS = frozenset(
+    {
+        "topic",
+        "goal",
+        "repo",
+        "base_branch",
+        "integration_branch",
+        "status",
+        "show_dir",
+        "updated_at",
+    }
+)
 
-_PLAY_COLUMNS = frozenset({
-    "name", "playbook", "effort", "status", "attempt", "session_id",
-    "started_at", "ended_at", "exit_code", "worktree", "branch",
-    "merge_sha", "merged_at", "gate_passed", "gate_feedback",
-    "depends_on", "sort_order", "updated_at",
-})
+_PLAY_COLUMNS = frozenset(
+    {
+        "name",
+        "playbook",
+        "effort",
+        "status",
+        "attempt",
+        "session_id",
+        "started_at",
+        "ended_at",
+        "exit_code",
+        "worktree",
+        "branch",
+        "merge_sha",
+        "merged_at",
+        "gate_passed",
+        "gate_feedback",
+        "depends_on",
+        "sort_order",
+        "updated_at",
+    }
+)
 
-_BRANCH_COLUMNS = frozenset({
-    "name", "user", "node_metadata", "system_msg_id",
-})
+_BRANCH_COLUMNS = frozenset(
+    {
+        "name",
+        "user",
+        "node_metadata",
+        "system_msg_id",
+    }
+)
 
 # ADR-0017: closed status vocabulary for sessions. Mirrored by the schema
 # CHECK constraint (lionagi/state/schema.sql); validated here so callers
@@ -52,11 +95,21 @@ _SOURCE_KINDS = frozenset({"live", "imported_fs"})
 
 # ADR-0011: shows + plays lifecycle vocabularies.
 _SHOW_STATUSES = frozenset({"active", "completed", "aborted", "imported"})
-_PLAY_STATUSES = frozenset({
-    "pending", "prepared", "running", "running_complete",
-    "gated", "gate_failed", "redoing", "merged",
-    "escalated", "blocked", "aborted_after_finish",
-})
+_PLAY_STATUSES = frozenset(
+    {
+        "pending",
+        "prepared",
+        "running",
+        "running_complete",
+        "gated",
+        "gate_failed",
+        "redoing",
+        "merged",
+        "escalated",
+        "blocked",
+        "aborted_after_finish",
+    }
+)
 
 # ADR-0016: only agent + playbook definitions are editable via Studio's
 # write path. Skills and third-party plugin components are read-only.
@@ -98,7 +151,11 @@ def _validate_session_status(status: Any) -> None:
 
 
 def _validate_enum(
-    name: str, value: Any, allowed: frozenset[str], *, adr: str,
+    name: str,
+    value: Any,
+    allowed: frozenset[str],
+    *,
+    adr: str,
     nullable: bool = True,
 ) -> None:
     if value is None:
@@ -179,7 +236,8 @@ class StateDB:
         await self._reconcile_columns()
         schema = _SCHEMA_PATH.read_text()
         lines = [
-            ln for ln in schema.splitlines()
+            ln
+            for ln in schema.splitlines()
             if not ln.strip().upper().startswith("PRAGMA")
         ]
         await self.db.executescript("\n".join(lines))
@@ -253,8 +311,7 @@ class StateDB:
         role = msg.get("role")
         if not isinstance(role, str) or not role.strip():
             raise ValueError(
-                "messages.role must be a non-empty string (ADR-0009); "
-                f"got {role!r}"
+                "messages.role must be a non-empty string (ADR-0009); " f"got {role!r}"
             )
 
         lion_class_str = (msg.get("node_metadata") or {}).get("lion_class", "")
@@ -332,7 +389,9 @@ class StateDB:
 
     # ── Progressions ───────────────────────────────────────────────────
 
-    async def create_progression(self, progression_id: str, collection: list[str] | None = None) -> None:
+    async def create_progression(
+        self, progression_id: str, collection: list[str] | None = None
+    ) -> None:
         await self.db.execute(
             "INSERT OR IGNORE INTO progressions (id, created_at, collection) VALUES (?, ?, ?)",
             (progression_id, time.time(), json.dumps(collection or [])),
@@ -377,12 +436,16 @@ class StateDB:
     async def create_session(self, session: dict[str, Any]) -> None:
         _validate_session_status(session.get("status"))
         _validate_enum(
-            "invocation_kind", session.get("invocation_kind"),
-            _INVOCATION_KINDS, adr="ADR-0012",
+            "invocation_kind",
+            session.get("invocation_kind"),
+            _INVOCATION_KINDS,
+            adr="ADR-0012",
         )
         _validate_enum(
-            "source_kind", session.get("source_kind"),
-            _SOURCE_KINDS, adr="ADR-0012",
+            "source_kind",
+            session.get("source_kind"),
+            _SOURCE_KINDS,
+            adr="ADR-0012",
         )
         now = time.time()
         await self.db.execute(
@@ -431,13 +494,17 @@ class StateDB:
             _validate_session_status(fields["status"])
         if "invocation_kind" in fields:
             _validate_enum(
-                "invocation_kind", fields["invocation_kind"],
-                _INVOCATION_KINDS, adr="ADR-0012",
+                "invocation_kind",
+                fields["invocation_kind"],
+                _INVOCATION_KINDS,
+                adr="ADR-0012",
             )
         if "source_kind" in fields:
             _validate_enum(
-                "source_kind", fields["source_kind"],
-                _SOURCE_KINDS, adr="ADR-0012",
+                "source_kind",
+                fields["source_kind"],
+                _SOURCE_KINDS,
+                adr="ADR-0012",
             )
         fields["updated_at"] = time.time()
         sets = ", ".join(f"{k} = ?" for k in fields)
@@ -498,9 +565,7 @@ class StateDB:
         await self.db.commit()
 
     async def get_branch(self, branch_id: str) -> dict[str, Any] | None:
-        cur = await self.db.execute(
-            "SELECT * FROM branches WHERE id = ?", (branch_id,)
-        )
+        cur = await self.db.execute("SELECT * FROM branches WHERE id = ?", (branch_id,))
         row = await cur.fetchone()
         return self._row_to_dict(row) if row else None
 
@@ -558,8 +623,11 @@ class StateDB:
 
     async def create_show(self, show: dict[str, Any]) -> None:
         _validate_enum(
-            "show status", show.get("status", "active"),
-            _SHOW_STATUSES, adr="ADR-0011", nullable=False,
+            "show status",
+            show.get("status", "active"),
+            _SHOW_STATUSES,
+            adr="ADR-0011",
+            nullable=False,
         )
         now = time.time()
         await self.db.execute(
@@ -582,16 +650,12 @@ class StateDB:
         await self.db.commit()
 
     async def get_show(self, show_id: str) -> dict[str, Any] | None:
-        cur = await self.db.execute(
-            "SELECT * FROM shows WHERE id = ?", (show_id,)
-        )
+        cur = await self.db.execute("SELECT * FROM shows WHERE id = ?", (show_id,))
         row = await cur.fetchone()
         return self._row_to_dict(row) if row else None
 
     async def get_show_by_topic(self, topic: str) -> dict[str, Any] | None:
-        cur = await self.db.execute(
-            "SELECT * FROM shows WHERE topic = ?", (topic,)
-        )
+        cur = await self.db.execute("SELECT * FROM shows WHERE topic = ?", (topic,))
         row = await cur.fetchone()
         return self._row_to_dict(row) if row else None
 
@@ -602,9 +666,7 @@ class StateDB:
                 (status,),
             )
         else:
-            cur = await self.db.execute(
-                "SELECT * FROM shows ORDER BY updated_at DESC"
-            )
+            cur = await self.db.execute("SELECT * FROM shows ORDER BY updated_at DESC")
         rows = await cur.fetchall()
         return [self._row_to_dict(r) for r in rows]
 
@@ -612,8 +674,11 @@ class StateDB:
         _validate_columns(fields, _SHOW_COLUMNS)
         if "status" in fields:
             _validate_enum(
-                "show status", fields["status"], _SHOW_STATUSES,
-                adr="ADR-0011", nullable=False,
+                "show status",
+                fields["status"],
+                _SHOW_STATUSES,
+                adr="ADR-0011",
+                nullable=False,
             )
         fields["updated_at"] = time.time()
         sets = ", ".join(f"{k} = ?" for k in fields)
@@ -628,8 +693,11 @@ class StateDB:
 
     async def create_play(self, play: dict[str, Any]) -> None:
         _validate_enum(
-            "play status", play.get("status", "pending"),
-            _PLAY_STATUSES, adr="ADR-0011", nullable=False,
+            "play status",
+            play.get("status", "pending"),
+            _PLAY_STATUSES,
+            adr="ADR-0011",
+            nullable=False,
         )
         now = time.time()
         await self.db.execute(
@@ -665,9 +733,7 @@ class StateDB:
         await self.db.commit()
 
     async def get_play(self, play_id: str) -> dict[str, Any] | None:
-        cur = await self.db.execute(
-            "SELECT * FROM plays WHERE id = ?", (play_id,)
-        )
+        cur = await self.db.execute("SELECT * FROM plays WHERE id = ?", (play_id,))
         row = await cur.fetchone()
         return self._row_to_dict(row) if row else None
 
@@ -683,8 +749,11 @@ class StateDB:
         _validate_columns(fields, _PLAY_COLUMNS)
         if "status" in fields:
             _validate_enum(
-                "play status", fields["status"], _PLAY_STATUSES,
-                adr="ADR-0011", nullable=False,
+                "play status",
+                fields["status"],
+                _PLAY_STATUSES,
+                adr="ADR-0011",
+                nullable=False,
             )
         fields["updated_at"] = time.time()
         sets = ", ".join(f"{k} = ?" for k in fields)
@@ -746,8 +815,13 @@ class StateDB:
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             str(uuid.uuid4()),
-                            kind, name, path, content,
-                            next_version, time.time(), message,
+                            kind,
+                            name,
+                            path,
+                            content,
+                            next_version,
+                            time.time(),
+                            message,
                         ),
                     )
                     await self.db.commit()

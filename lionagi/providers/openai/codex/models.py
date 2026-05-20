@@ -683,9 +683,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
             # we report what we have and mark it truncated.
             drain_truncated = False
             try:
-                await asyncio.wait_for(
-                    asyncio.shield(stderr_task), timeout=2.0
-                )
+                await asyncio.wait_for(asyncio.shield(stderr_task), timeout=2.0)
             except asyncio.TimeoutError:
                 drain_truncated = True
             except asyncio.CancelledError:
@@ -725,7 +723,10 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
         stderr_task.cancel()
         try:
             await stderr_task
-        except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001 — intentional teardown reap
+        except (
+            asyncio.CancelledError,
+            Exception,
+        ):  # noqa: S110, BLE001 — intentional teardown reap
             pass
 
 

@@ -513,22 +513,24 @@ async def start_live_persist(
 
         session_prog_id = str(uuid.uuid4())
         await db.create_progression(session_prog_id)
-        await db.create_session({
-            "id": session_id,
-            "created_at": session_dict["created_at"],
-            "node_metadata": session_dict.get("node_metadata"),
-            "name": session_dict.get("name"),
-            "user": session_dict.get("user"),
-            "progression_id": session_prog_id,
-            "first_msg_id": None,
-            "last_msg_id": None,
-            "invocation_kind": invocation_kind,
-            "playbook_name": playbook_name,
-            "agent_name": agent_name,
-            "artifacts_path": artifacts_path,
-            "status": "running",
-            "started_at": time.time(),
-        })
+        await db.create_session(
+            {
+                "id": session_id,
+                "created_at": session_dict["created_at"],
+                "node_metadata": session_dict.get("node_metadata"),
+                "name": session_dict.get("name"),
+                "user": session_dict.get("user"),
+                "progression_id": session_prog_id,
+                "first_msg_id": None,
+                "last_msg_id": None,
+                "invocation_kind": invocation_kind,
+                "playbook_name": playbook_name,
+                "agent_name": agent_name,
+                "artifacts_path": artifacts_path,
+                "status": "running",
+                "started_at": time.time(),
+            }
+        )
 
         ctx: dict[str, Any] = {
             "db": db,
@@ -544,7 +546,8 @@ async def start_live_persist(
     except Exception as exc:
         logging.getLogger("lionagi.cli").warning(
             "live persist setup failed (%s) — disabling persistence for this run",
-            exc, exc_info=True,
+            exc,
+            exc_info=True,
         )
         env._live_persist = None
         if db is not None:
@@ -594,16 +597,18 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
             system_msg_id = sys_dict["id"]
             await db.insert_message(sys_dict)
 
-        await db.create_branch({
-            "id": branch_id,
-            "created_at": branch_dict["created_at"],
-            "node_metadata": node_meta,
-            "user": branch_dict.get("user"),
-            "name": branch_dict.get("name"),
-            "session_id": session_id,
-            "progression_id": branch_prog_id,
-            "system_msg_id": system_msg_id,
-        })
+        await db.create_branch(
+            {
+                "id": branch_id,
+                "created_at": branch_dict["created_at"],
+                "node_metadata": node_meta,
+                "user": branch_dict.get("user"),
+                "name": branch_dict.get("name"),
+                "session_id": session_id,
+                "progression_id": branch_prog_id,
+                "system_msg_id": system_msg_id,
+            }
+        )
 
     async def _on_message(msg):
         # Live-persist failures are logged (not raised) so a DB write
@@ -625,7 +630,9 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
 
             logging.getLogger("lionagi.cli").warning(
                 "live persist write failed for branch %s: %s",
-                branch_id, exc, exc_info=True,
+                branch_id,
+                exc,
+                exc_info=True,
             )
 
     branch.on_message_added.append(_on_message)

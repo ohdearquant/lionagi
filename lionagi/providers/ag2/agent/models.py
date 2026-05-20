@@ -299,5 +299,8 @@ async def run_beta_agent(
             # that the consumer no longer wants to see.
             try:
                 await task
-            except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001 — intentional teardown reap
+            except (
+                asyncio.CancelledError,
+                Exception,
+            ):  # noqa: S110, BLE001 — intentional teardown reap
                 pass

@@ -498,6 +498,7 @@ async def _run_flow(
         # Shield teardown from outer cancellation so iModel executors are
         # always closed; see lionagi/cli/agent.py for the full rationale.
         import anyio
+
         with anyio.CancelScope(shield=True):
             await stop_live_persist(env, status=_terminal_status)
             for _br in env.session.branches:

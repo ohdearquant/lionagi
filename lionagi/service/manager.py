@@ -66,12 +66,15 @@ class iModelManager(Manager):  # noqa: N801 — mirrors iModel naming
             except asyncio.TimeoutError:
                 log.warning(
                     "iModel shutdown timed out for %r after %.1fs",
-                    name, per_model_timeout,
+                    name,
+                    per_model_timeout,
                 )
             except BaseException as exc:  # noqa: BLE001 — cancellation is BaseException
                 log.warning(
                     "iModel shutdown failed for %r: %s",
-                    name, exc, exc_info=True,
+                    name,
+                    exc,
+                    exc_info=True,
                 )
 
         if not self.registry:
