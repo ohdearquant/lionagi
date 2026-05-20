@@ -300,6 +300,98 @@ class MessageManager(Manager):
             recipient=params.get("recipient"),
         )
 
+    @staticmethod
+    def create_message(
+        # common
+        sender: SenderRecipient = None,
+        recipient: SenderRecipient = None,
+        metadata: dict[str, Any] = None,
+        # instruction
+        instruction: JsonValue = None,
+        context: JsonValue = None,
+        handle_context: Literal["extend", "replace"] = "extend",
+        guidance: JsonValue = None,
+        request_fields: JsonValue = None,
+        plain_content: JsonValue = None,
+        request_model: BaseModel | type[BaseModel] = None,
+        response_format: BaseModel | type[BaseModel] = None,
+        images: list = None,
+        image_detail: Literal["low", "high", "auto"] = None,
+        tool_schemas: dict = None,
+        # system
+        system: Any = None,
+        system_datetime: bool | str = None,
+        # assistant_response
+        assistant_response: AssistantResponse | Any = None,
+        # actions
+        action_function: str = None,
+        action_arguments: dict[str, Any] = None,
+        action_output: Any = None,
+        action_request: ActionRequest | None = None,
+        action_response: ActionResponse | Any = None,
+    ):
+        message_types = [instruction, assistant_response, system]
+        if action_request and not action_output:
+            message_types.append(action_request)
+
+        if sum(bool(x) for x in message_types) > 1:
+            raise ValueError("Only one message type can be added at a time.")
+
+        _msg = None
+        if system:
+            _msg = MessageManager.create_system(
+                system=system,
+                system_datetime=system_datetime,
+                sender=sender,
+                recipient=recipient,
+            )
+
+        elif action_output:
+            _msg = MessageManager.create_action_response(
+                action_request=action_request,
+                action_output=action_output,
+                action_response=action_response,
+                sender=sender,
+                recipient=recipient,
+            )
+        elif action_request or (action_function and action_arguments is not None):
+            _msg = MessageManager.create_action_request(
+                sender=sender,
+                recipient=recipient,
+                function=action_function,
+                arguments=action_arguments,
+                action_request=action_request,
+            )
+
+        elif assistant_response:
+            _msg = MessageManager.create_assistant_response(
+                sender=sender,
+                recipient=recipient,
+                assistant_response=assistant_response,
+            )
+
+        else:
+            _msg = MessageManager.create_instruction(
+                instruction=instruction,
+                context=context,
+                handle_context=handle_context,
+                guidance=guidance,
+                images=images,
+                request_fields=request_fields,
+                plain_content=plain_content,
+                image_detail=image_detail,
+                request_model=request_model,
+                response_format=response_format,
+                tool_schemas=tool_schemas,
+                sender=sender,
+                recipient=recipient,
+            )
+
+        if metadata:
+            _msg.metadata.setdefault("extra", {})
+            _msg.metadata["extra"].update(metadata)
+        return _msg
+
     def add_message(
         self,
         *,
@@ -338,71 +430,14 @@ class MessageManager(Manager):
         - AssistantResponse
         - ActionRequest / ActionResponse
         """
-        _msg = None
-        # When creating ActionResponse, both action_request and action_output are needed
-        # So don't count action_request as a message type when action_output is present
-        message_types = [instruction, assistant_response, system]
-        if action_request and not action_output:
-            message_types.append(action_request)
-
-        if sum(bool(x) for x in message_types) > 1:
-            raise ValueError("Only one message type can be added at a time.")
-
+        params = {
+            k: v
+            for k, v in locals().items()
+            if k not in ("system", "self") and v is not None
+        }
+        _msg = self.create_message(**params)
         if system:
-            _msg = self.create_system(
-                system=system,
-                system_datetime=system_datetime,
-                sender=sender,
-                recipient=recipient,
-            )
             self.set_system(_msg)
-
-        elif action_output:
-            _msg = self.create_action_response(
-                action_request=action_request,
-                action_output=action_output,
-                action_response=action_response,
-                sender=sender,
-                recipient=recipient,
-            )
-
-        elif action_request or (action_function and action_arguments is not None):
-            _msg = self.create_action_request(
-                sender=sender,
-                recipient=recipient,
-                function=action_function,
-                arguments=action_arguments,
-                action_request=action_request,
-            )
-
-        elif assistant_response:
-            _msg = self.create_assistant_response(
-                sender=sender,
-                recipient=recipient,
-                assistant_response=assistant_response,
-            )
-
-        else:
-            _msg = self.create_instruction(
-                instruction=instruction,
-                context=context,
-                handle_context=handle_context,
-                guidance=guidance,
-                images=images,
-                request_fields=request_fields,
-                plain_content=plain_content,
-                image_detail=image_detail,
-                request_model=request_model,
-                response_format=response_format,
-                tool_schemas=tool_schemas,
-                sender=sender,
-                recipient=recipient,
-            )
-
-        if metadata:
-            _msg.metadata.setdefault("extra", {})
-            _msg.metadata["extra"].update(metadata)
-
         if _msg in self.messages:
             idx = self.messages.progression.index(_msg.id)
             self.messages.exclude(_msg.id)
@@ -537,6 +572,38 @@ class MessageManager(Manager):
 
     def __contains__(self, message: Message) -> bool:
         return message in self.messages
+
+
+def create_message(
+    sender: SenderRecipient = None,
+    recipient: SenderRecipient = None,
+    metadata: dict[str, Any] = None,
+    # instruction
+    instruction: JsonValue = None,
+    context: JsonValue = None,
+    handle_context: Literal["extend", "replace"] = "extend",
+    guidance: JsonValue = None,
+    request_fields: JsonValue = None,
+    plain_content: JsonValue = None,
+    request_model: BaseModel | type[BaseModel] = None,
+    response_format: BaseModel | type[BaseModel] = None,
+    images: list = None,
+    image_detail: Literal["low", "high", "auto"] = None,
+    tool_schemas: dict = None,
+    # system
+    system: Any = None,
+    system_datetime: bool | str = None,
+    # assistant_response
+    assistant_response: AssistantResponse | Any = None,
+    # actions
+    action_function: str = None,
+    action_arguments: dict[str, Any] = None,
+    action_output: Any = None,
+    action_request: ActionRequest | None = None,
+    action_response: ActionResponse | Any = None,
+) -> System | ActionResponse | ActionRequest | AssistantResponse | Instruction:
+    params = {k: v for k, v in locals().items() if v is not None}
+    return MessageManager.create_message(**params)
 
 
 # File: lionagi/protocols/messages/manager.py
