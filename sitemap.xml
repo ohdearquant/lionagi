@@ -57,6 +57,46 @@
          <lastmod>2026-05-20</lastmod>
     </url>
     <url>
+         <loc>https://lionagi.ai/adrs/ADR-0009-sqlite-state-layer/</loc>
+         <lastmod>2026-05-20</lastmod>
+    </url>
+    <url>
+         <loc>https://lionagi.ai/adrs/ADR-0010-plugin-aware-studio/</loc>
+         <lastmod>2026-05-20</lastmod>
+    </url>
+    <url>
+         <loc>https://lionagi.ai/adrs/ADR-0011-shows-data-model/</loc>
+         <lastmod>2026-05-20</lastmod>
+    </url>
+    <url>
+         <loc>https://lionagi.ai/adrs/ADR-0012-studio-execution-lineage/</loc>
+         <lastmod>2026-05-20</lastmod>
+    </url>
+    <url>
+         <loc>https://lionagi.ai/adrs/ADR-0013-zero-dependency-ui/</loc>
+         <lastmod>2026-05-20</lastmod>
+    </url>
+    <url>
+         <loc>https://lionagi.ai/adrs/ADR-0014-cli-primary-studio-secondary/</loc>
+         <lastmod>2026-05-20</lastmod>
+    </url>
+    <url>
+         <loc>https://lionagi.ai/adrs/ADR-0015-runs-list-design/</loc>
+         <lastmod>2026-05-20</lastmod>
+    </url>
+    <url>
+         <loc>https://lionagi.ai/adrs/ADR-0016-definitions-write-path/</loc>
+         <lastmod>2026-05-20</lastmod>
+    </url>
+    <url>
+         <loc>https://lionagi.ai/adrs/ADR-0017-session-lifecycle-status/</loc>
+         <lastmod>2026-05-20</lastmod>
+    </url>
+    <url>
+         <loc>https://lionagi.ai/adrs/DECISION_LOG/</loc>
+         <lastmod>2026-05-20</lastmod>
+    </url>
+    <url>
          <loc>https://lionagi.ai/adrs/TEMPLATE/</loc>
          <lastmod>2026-05-20</lastmod>
     </url>
