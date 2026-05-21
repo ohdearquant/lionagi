@@ -18,7 +18,15 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # Python 3.10+: asyncio.get_event_loop() raises in a fresh thread.
+    # CI under xdist starts each worker without a loop, so we create one
+    # per call and close it cleanly. Local pytest-asyncio runs were
+    # masking this — they pre-create the loop.
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +355,7 @@ def test_concurrent_save_disk_reflects_highest_version(tmp_path, monkeypatch):
         )
         return r1, r2
 
-    r1, r2 = asyncio.get_event_loop().run_until_complete(_run_concurrent())
+    r1, r2 = _run(_run_concurrent())
 
     versions = sorted([r1["version"], r2["version"]])
     assert versions == [1, 2], f"Expected versions [1, 2], got {versions}"
