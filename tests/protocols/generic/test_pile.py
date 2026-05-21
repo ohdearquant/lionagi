@@ -327,6 +327,12 @@ def test_pile_with_custom_hash_elements():
 
 @pytest.mark.parametrize("n", [100, 1000, 10000])
 def test_pile_scaling_performance(n):
+    # Coverage instrumentation adds 5-10x overhead, making wall-clock
+    # thresholds unreliable. Skip when coverage is active — perf is
+    # validated by the benchmarks workflow, not the coverage suite.
+    if sys.gettrace() is not None or "coverage" in sys.modules:
+        pytest.skip("perf thresholds unreliable under coverage/tracing")
+
     import time
 
     elements = [MockElement(value=i) for i in range(n)]
