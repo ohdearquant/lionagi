@@ -88,17 +88,16 @@ jobs:
     - uses: actions/setup-node@v4
       with:
         node-version: '22'
-    - uses: pnpm/action-setup@v4
-      with:
-        version: 9
+        cache: 'npm'
+        cache-dependency-path: apps/studio/frontend/package-lock.json
     - name: Install dependencies
-      run: pnpm install --frozen-lockfile
+      run: npm ci
     - name: Lint + typecheck
       run: |
-        pnpm lint
-        pnpm typecheck
+        npm run lint
+        npm run typecheck
     - name: Build
-      run: pnpm build
+      run: npm run build
 
   marketplace:
     runs-on: ubuntu-latest
