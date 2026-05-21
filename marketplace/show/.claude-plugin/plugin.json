@@ -1,13 +1,13 @@
 {
   "name": "show",
-  "description": "Direct multi-play DAGs with critic gating and worktree isolation",
+  "description": "Orchestrate multi-step agent workflows with quality gates and isolated workspaces",
   "version": "0.1.0",
   "author": {
     "name": "Ocean (HaiyangLi)",
     "url": "https://github.com/ohdearquant"
   },
-  "homepage": "https://github.com/khive-ai/lionagi",
-  "repository": "https://github.com/khive-ai/lionagi",
+  "homepage": "https://github.com/ohdearquant/lionagi",
+  "repository": "https://github.com/ohdearquant/lionagi",
   "license": "Apache-2.0",
   "keywords": ["orchestration", "dag", "worktree", "critic", "plays"]
 }

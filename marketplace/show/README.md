@@ -1,6 +1,6 @@
 # show
 
-Structured content review orchestration with play-gate, show-final-gate, and critic gating.
+General DAG orchestration of multi-play workflows, with play-gate, show-final-gate, and critic gating.
 
 ## What's inside
 
@@ -12,7 +12,7 @@ Structured content review orchestration with play-gate, show-final-gate, and cri
 ## Install
 
 ```
-claude /plugin marketplace add khive-ai/lionagi
+claude /plugin marketplace add ohdearquant/lionagi
 claude /plugin install show@lionagi
 ```
 

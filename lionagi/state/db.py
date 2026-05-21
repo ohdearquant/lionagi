@@ -47,6 +47,7 @@ _SHOW_COLUMNS = frozenset(
         "integration_branch",
         "status",
         "show_dir",
+        "status_source",
         "updated_at",
     }
 )
@@ -264,6 +265,9 @@ class StateDB:
         ],
         "branches": [
             ("system_msg_id", "TEXT"),
+        ],
+        "shows": [
+            ("status_source", "TEXT NOT NULL DEFAULT 'unknown'"),
         ],
     }
 
@@ -699,8 +703,9 @@ class StateDB:
         now = time.time()
         await self.db.execute(
             """INSERT OR IGNORE INTO shows (id, topic, goal, repo, base_branch,
-               integration_branch, status, show_dir, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               integration_branch, status, show_dir, status_source,
+               created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 show["id"],
                 show["topic"],
@@ -710,6 +715,7 @@ class StateDB:
                 show.get("integration_branch"),
                 show.get("status", "active"),
                 show["show_dir"],
+                show.get("status_source", "unknown"),
                 show.get("created_at", now),
                 now,
             ),

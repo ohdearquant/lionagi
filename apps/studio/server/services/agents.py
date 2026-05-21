@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import yaml
 
 from lionagi.cli._runs import LIONAGI_HOME
 
-from ._path_safety import safe_path_join
+from ._path_safety import public_path, safe_path_join
 
 _AGENTS_ROOT = LIONAGI_HOME / "agents"
+_log = logging.getLogger(__name__)
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -25,6 +27,29 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     return fm if isinstance(fm, dict) else {}, parts[2].strip()
 
 
+def _normalize_frontmatter(fm: dict[str, Any]) -> dict[str, Any]:
+    """Return canonical Studio agent frontmatter without mutating caller state."""
+    normalized = dict(fm)
+    if "reasoning_effort" in normalized:
+        if "effort" not in normalized:
+            normalized["effort"] = normalized["reasoning_effort"]
+        normalized.pop("reasoning_effort", None)
+        _log.warning(
+            "Agent frontmatter key 'reasoning_effort' is deprecated; use 'effort'"
+        )
+    return normalized
+
+
+def _canonical_model(model: Any, provider: Any) -> str:
+    model_s = str(model or "").strip()
+    if not model_s:
+        return ""
+    if "/" in model_s:
+        return model_s
+    provider_s = str(provider or "").strip()
+    return f"{provider_s}/{model_s}" if provider_s else model_s
+
+
 def list_agents() -> list[dict[str, Any]]:
     if not _AGENTS_ROOT.exists():
         return []
@@ -35,22 +60,18 @@ def list_agents() -> list[dict[str, Any]]:
         except OSError:
             continue
         fm, _ = _parse_frontmatter(text)
-        model_raw = str(fm.get("model") or "")
-        if "/" in model_raw:
-            provider, model_id = model_raw.split("/", 1)
-        else:
-            provider, model_id = "", model_raw
+        fm = _normalize_frontmatter(fm)
         entry: dict[str, Any] = {
             "name": path.stem,
-            "path": str(path),
-            "provider": provider,
-            "model": model_id,
+            "path": public_path(path),
+            "provider": str(fm.get("provider") or ""),
+            "model": str(fm.get("model") or ""),
             "description": str(fm.get("description") or ""),
-            **{k: v for k, v in fm.items() if k not in ("model", "description")},
+            **{k: v for k, v in fm.items() if k not in ("model", "description", "provider")},
         }
         if path.is_symlink():
             try:
-                entry["symlink_target"] = str(path.resolve())
+                entry["symlink_target"] = public_path(path.resolve())
             except OSError:
                 pass
         out.append(entry)
@@ -70,25 +91,27 @@ def get_agent(name: str) -> dict[str, Any] | None:
     except OSError:
         return None
     fm, body = _parse_frontmatter(text)
+    fm = _normalize_frontmatter(fm)
 
     # Flatten into AgentProfile shape expected by the frontend
     result: dict[str, Any] = {
         "name": stem,
-        "path": str(path),
+        "path": public_path(path),
         "provider": str(fm.get("provider") or ""),
         "model": str(fm.get("model") or ""),
         "system_prompt": fm.get("system_prompt") or (body if body else None),
         "guidance": fm.get("guidance") or None,
     }
 
-    # Preserve optional fields present in frontmatter
-    for optional_key in ("permission_mode", "reasoning_effort", "description"):
+    # Preserve optional fields present in frontmatter. `effort` is canonical;
+    # `reasoning_effort` is accepted only as a legacy read fallback.
+    for optional_key in ("permission_mode", "effort", "description"):
         if optional_key in fm:
             result[optional_key] = fm[optional_key]
 
     if path.is_symlink():
         try:
-            result["symlink_target"] = str(path.resolve())
+            result["symlink_target"] = public_path(path.resolve())
         except OSError:
             pass
 
@@ -101,15 +124,15 @@ _KNOWN_FRONTMATTER_KEYS = (
     "description",
     "guidance",
     "permission_mode",
-    "reasoning_effort",
+    "effort",
 )
 
 
 def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     """Write an agent profile back to disk.
 
-    Unknown frontmatter keys (e.g. ``effort``, ``yolo``, ``max-ops``) are
-    preserved so hand-authored agent files don't lose configuration on save.
+    Unknown frontmatter keys (e.g. ``yolo``, ``max-ops``) are preserved so
+    hand-authored agent files don't lose configuration on save.
     If the file is a symlink (the common case — ``~/.lionagi/agents/*`` points
     at ``firm/agents/*``), the write follows the link so the real source file
     is updated.
@@ -125,18 +148,27 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     except OSError:
         existing_text = ""
     existing_fm, existing_body = _parse_frontmatter(existing_text)
+    existing_fm = _normalize_frontmatter(existing_fm)
 
     # Merge: start with everything that was there, overlay known keys from
     # the request. A key explicitly set to "" or None is treated as "clear".
     fm: dict[str, Any] = dict(existing_fm)
+    incoming = _normalize_frontmatter(data)
     for key in _KNOWN_FRONTMATTER_KEYS:
-        if key not in data:
+        if key not in incoming:
             continue
-        value = data[key]
+        value = incoming[key]
         if value in (None, ""):
             fm.pop(key, None)
         else:
             fm[key] = value
+
+    if "model" in fm:
+        model = _canonical_model(fm.get("model"), fm.get("provider"))
+        if model:
+            fm["model"] = model
+        else:
+            fm.pop("model", None)
 
     # system_prompt convention: body of the markdown file. Frontmatter
     # ``system_prompt`` is supported on read but we always write to the body

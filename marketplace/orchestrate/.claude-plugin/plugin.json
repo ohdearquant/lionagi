@@ -1,13 +1,13 @@
 {
   "name": "orchestrate",
-  "description": "Multi-agent orchestration via li o flow and li o fanout",
+  "description": "Plan and run multi-agent pipelines: fan out to parallel workers or chain agents in dependency order",
   "version": "0.1.0",
   "author": {
     "name": "Ocean (HaiyangLi)",
     "url": "https://github.com/ohdearquant"
   },
-  "homepage": "https://github.com/khive-ai/lionagi",
-  "repository": "https://github.com/khive-ai/lionagi",
+  "homepage": "https://github.com/ohdearquant/lionagi",
+  "repository": "https://github.com/ohdearquant/lionagi",
   "license": "Apache-2.0",
   "keywords": ["multi-agent", "fanout", "flow", "dag"]
 }

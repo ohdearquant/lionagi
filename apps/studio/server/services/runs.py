@@ -1,13 +1,32 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
 from lionagi.cli._runs import RUNS_ROOT
 
-from ._path_safety import safe_path_join
+from ._path_safety import public_path, safe_path_join
 from . import sessions as _sessions_svc
+
+_STATUS_ALIASES: dict[str, set[str]] = {
+    "done": {"done", "completed", "success", "finished"},
+    "cancelled": {"cancelled", "canceled", "aborted"},
+    "canceled": {"cancelled", "canceled", "aborted"},
+    "pending": {"pending", "prepared"},
+}
+
+
+def _normalize_status_filter(status: str | list[str] | None) -> set[str] | None:
+    if status is None:
+        return None
+    if isinstance(status, str):
+        status = [status]
+    result: set[str] = set()
+    for s in status:
+        result |= _STATUS_ALIASES.get(s, {s})
+    return result or None
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -71,8 +90,8 @@ def _adapt_summary(
 
     return {
         "run_id": run_id,
-        "state_root": str(state_root),
-        "artifact_root": str(artifact_root),
+        "state_root": public_path(state_root),
+        "artifact_root": public_path(artifact_root),
         "worker_name": str(worker_name),
         "task": task,
         "status": status,
@@ -496,13 +515,14 @@ def _adapt_detail(
 
 async def list_runs(
     playbook: str | None = None,
-    status: str | None = None,
+    status: str | list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """List runs from SQLite sessions table (F-A1-1, ADR-0004 rewire).
 
     Each session row is mapped to a RunSummary-shaped dict so routers and
-    app.py see a consistent shape. The ``playbook`` and ``status`` filters
-    match against ``playbook_name`` and ``status`` columns respectively.
+    app.py see a consistent shape. The ``playbook`` filter is a
+    case-insensitive contains match; ``status`` supports multiple values with
+    alias normalization (e.g. "done" matches "completed").
 
     Decision (F-A1-3): stream_run_events() was removed entirely because the
     ``stream/*.buffer.jsonl`` files it read are explicitly forbidden as a
@@ -513,11 +533,12 @@ async def list_runs(
     is removed in the same commit.
     """
     sessions = await _sessions_svc.list_sessions()
+    status_set = _normalize_status_filter(status)
     out = []
     for s in sessions:
-        if playbook and s.get("playbook_name") != playbook:
+        if playbook and playbook.lower() not in (s.get("playbook_name") or "").lower():
             continue
-        if status and s.get("status") != status:
+        if status_set and s.get("status") not in status_set:
             continue
         out.append({
             "run_id": s["id"],
@@ -538,6 +559,28 @@ async def list_runs(
             "message_count": s.get("message_count", 0),
         })
     return out
+
+
+def paginate_runs(
+    runs: list[dict[str, Any]],
+    *,
+    page: int,
+    per_page: int,
+) -> dict[str, Any]:
+    """Slice *runs* into a page and return pagination metadata."""
+    total = len(runs)
+    total_pages = math.ceil(total / per_page) if total else 0
+    start = (page - 1) * per_page
+    page_runs = runs[start: start + per_page]
+    return {
+        "runs": page_runs,
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages,
+        "has_next": page < total_pages,
+        "has_prev": page > 1,
+    }
 
 
 def get_run(run_id: str) -> dict[str, Any] | None:

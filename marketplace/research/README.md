@@ -15,7 +15,7 @@ Multi-perspective research with web search, codebase analysis, and synthesis.
 ## Install
 
 ```
-claude /plugin marketplace add khive-ai/lionagi
+claude /plugin marketplace add ohdearquant/lionagi
 claude /plugin install research@lionagi
 ```
 
