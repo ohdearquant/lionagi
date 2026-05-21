@@ -8,7 +8,9 @@ from pathlib import Path
 
 PLUGIN_REQUIRED = ["name", "source", "description"]
 TOP_REQUIRED = ["name", "version", "description"]
-PER_PLUGIN_REQUIRED = ["name", "version"]
+PER_PLUGIN_REQUIRED = ["name", "version", "description"]
+PER_PLUGIN_STRING_FIELDS = ["name", "version", "description"]
+PER_PLUGIN_OPTIONAL_STRINGS = ["repository", "license", "homepage"]
 
 
 def main() -> int:
@@ -102,6 +104,28 @@ def main() -> int:
                             print(f"FAIL [{name}]: plugin.json missing required field '{field}'")
                             plugin_ok = False
                             failures += 1
+                    for field in PER_PLUGIN_STRING_FIELDS:
+                        val = per_plugin.get(field)
+                        if val is not None and not isinstance(val, str):
+                            print(f"FAIL [{name}]: plugin.json '{field}' must be a string, got {type(val).__name__}")
+                            plugin_ok = False
+                            failures += 1
+                    for field in PER_PLUGIN_OPTIONAL_STRINGS:
+                        val = per_plugin.get(field)
+                        if val is not None and not isinstance(val, str):
+                            print(f"FAIL [{name}]: plugin.json '{field}' must be a string, got {type(val).__name__}")
+                            plugin_ok = False
+                            failures += 1
+                    author = per_plugin.get("author")
+                    if author is not None and not isinstance(author, dict):
+                        print(f"FAIL [{name}]: plugin.json 'author' must be an object, got {type(author).__name__}")
+                        plugin_ok = False
+                        failures += 1
+                    mcp = per_plugin.get("mcpServers")
+                    if mcp is not None and not isinstance(mcp, dict):
+                        print(f"FAIL [{name}]: plugin.json 'mcpServers' must be an object, got {type(mcp).__name__}")
+                        plugin_ok = False
+                        failures += 1
                     # Reject stub mcpServers entries
                     for server_cfg in per_plugin.get("mcpServers", {}).values():
                         if server_cfg.get("type") == "stub":

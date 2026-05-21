@@ -127,6 +127,8 @@ async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, A
                     "session_id": row["id"],
                     "playbook": row["playbook_name"] or row["name"],
                     "started_at": row["started_at"],
+                    "updated_at": row["updated_at"] or 0.0,
+                    "artifacts_path": row["artifacts_path"],
                     "reason": reason,
                 }
             )
@@ -198,11 +200,14 @@ async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
         if p.get("reason") in ("process_dead", "stale_lock")
     ]
     artifact_entries = [
-        (p["session_id"], p.get("started_at", 0))
+        {
+            "id": p["session_id"],
+            "classified_updated_at": p.get("updated_at", 0),
+            "artifacts_path": p.get("artifacts_path"),
+        }
         for p in phantoms
         if p.get("reason") == "missing_artifacts"
     ]
-    artifact_ids = [e[0] for e in artifact_entries]
 
     pruned = 0
     async with _open_db(_DB) as db:
@@ -216,13 +221,15 @@ async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
             await db.commit()
             pruned += cur.rowcount or 0
 
-        if artifact_ids:
-            placeholders = ",".join("?" * len(artifact_ids))
+        for entry in artifact_entries:
+            ap = Path(entry["artifacts_path"]) if entry["artifacts_path"] else None
+            if ap and ap.exists():
+                continue
             cur = await db.execute(
-                f"DELETE FROM sessions WHERE id IN ({placeholders})"  # noqa: S608
+                "DELETE FROM sessions WHERE id = ?"
                 " AND status = 'running'"
                 " AND (updated_at IS NULL OR updated_at <= ?)",
-                (*artifact_ids, stale_cutoff),
+                (entry["id"], entry["classified_updated_at"]),
             )
             await db.commit()
             pruned += cur.rowcount or 0
