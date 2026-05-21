@@ -5,8 +5,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import aiosqlite
-
 from lionagi.cli._runs import LIONAGI_HOME
 from lionagi.state.db import DEFAULT_DB_PATH
 
@@ -132,8 +130,7 @@ async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
 
     versions: list[dict[str, Any]] = []
     if await _ensure_db():
-        async with aiosqlite.connect(_DB) as db:
-            db.row_factory = aiosqlite.Row
+        async with _open_db(_DB) as db:
             cur = await db.execute(
                 "SELECT id, version, created_at, message FROM definitions WHERE kind = ? AND name = ? ORDER BY version DESC",
                 (kind, name),
@@ -171,8 +168,7 @@ async def get_version(kind: str, name: str, version: int) -> dict[str, Any] | No
     if not await _ensure_db():
         return None
 
-    async with aiosqlite.connect(_DB) as db:
-        db.row_factory = aiosqlite.Row
+    async with _open_db(_DB) as db:
         cur = await db.execute(
             "SELECT id, content, version, created_at, message FROM definitions WHERE kind = ? AND name = ? AND version = ?",
             (kind, name, version),
@@ -281,8 +277,7 @@ async def rollback_definition(kind: str, name: str, target_version: int) -> dict
     # Capture current version BEFORE the save so we can report rolled_back_from
     current_version = 0
     if await _ensure_db():
-        async with aiosqlite.connect(_DB) as db:
-            db.row_factory = aiosqlite.Row
+        async with _open_db(_DB) as db:
             cur = await db.execute(
                 "SELECT MAX(version) AS v FROM definitions WHERE kind = ? AND name = ?",
                 (kind, name),
