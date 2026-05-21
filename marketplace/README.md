@@ -27,7 +27,6 @@ claude /plugin install devx@lionagi
 | `orchestrate` | Multi-agent orchestration via li o flow and li o fanout |
 | `research` | Multi-perspective research with web search, codebase analysis, and synthesis |
 | `memory` | Memory recall, MEMORY.md hygiene, auto-memory bootstrap |
-| `kg-bridge` | Bridge lionagi runs/agents to khive knowledge graph |
 | `devx` | Conventional commit, formatting, CI, PR, summarize, session-start/-summarize |
 
 ## Coming soon
@@ -46,5 +45,5 @@ See ADR-0003 (docs/adrs/ADR-0003-claude-code-marketplace.md) for the architectur
 Plugin skills, agents, and MCP server configuration are populated in subsequent plays:
 
 - **marketplace-plugins-core** — fills `show`, `play`, `orchestrate` with skills and agent profiles
-- **marketplace-plugins-knowledge** — fills `research`, `memory`, `kg-bridge`
+- **marketplace-plugins-knowledge** — fills `research`, `memory`
 - **marketplace-plugins-app** — fills `studio` (MCP server config) and `mcp-bundle`, `devx`

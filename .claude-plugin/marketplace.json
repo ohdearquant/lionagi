@@ -34,11 +34,6 @@
       "description": "Memory recall, MEMORY.md hygiene, auto-memory bootstrap"
     },
     {
-      "name": "kg-bridge",
-      "source": "./marketplace/kg-bridge",
-      "description": "Bridge lionagi runs/agents to khive knowledge graph"
-    },
-    {
       "name": "devx",
       "source": "./marketplace/devx",
       "description": "Conventional commit, formatting, CI, PR, summarize (session-start/session-summarize planned)"
