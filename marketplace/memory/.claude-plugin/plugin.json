@@ -1,13 +1,13 @@
 {
   "name": "memory",
-  "description": "Memory recall, MEMORY.md hygiene, auto-memory bootstrap",
+  "description": "Persist and recall project context — decisions, patterns, and facts — across sessions",
   "version": "0.1.0",
   "author": {
     "name": "Ocean (HaiyangLi)",
     "url": "https://github.com/ohdearquant"
   },
-  "homepage": "https://github.com/khive-ai/lionagi",
-  "repository": "https://github.com/khive-ai/lionagi",
+  "homepage": "https://github.com/ohdearquant/lionagi",
+  "repository": "https://github.com/ohdearquant/lionagi",
   "license": "Apache-2.0",
   "keywords": ["memory", "recall", "auto-memory", "context"]
 }

@@ -184,7 +184,7 @@ Write `_show.md`:
 ## Cost & time
 - Track actual `started_at`/`ended_at` in each `_meta.json`.
 - If a play's actual time exceeds 120 min OR observed spend looks unusual
-  vs peer plays, pause before firing the next and ask Ocean.
+  vs peer plays, pause before firing the next and ask the user.
 
 ## Cleanup-owed (populated on abort or final cleanup)
 - Remote branches still on origin: (list)
@@ -198,7 +198,7 @@ fails to resolve the venv from a worktree cwd, and the absolute path works
 from any directory:
 
 ```bash
-LI="/Users/lion/projects/.venv/bin/li"
+LI="$(command -v li)"
 SHOW_DIR="$HOME/khive-work/shows/<topic>"
 TOPIC="<topic>"
 ```
@@ -297,6 +297,7 @@ jq -n \
   --save "$SHOW_DIR/$PLAY" \
   --cwd "$WT" \
   --yolo \
+  --bypass \
   --effort <low|medium|high> \
   --team-mode "show_${TOPIC}_${PLAY}"
 EC=$?
@@ -319,6 +320,7 @@ always recorded, even if the director's shell crashes between fire and wait.
     --save "$SHOW_DIR/$PLAY" \
     --cwd "$WT" \
     --yolo \
+    --bypass \
     --effort <low|medium|high> \
     --team-mode "show_${TOPIC}_${PLAY}"
   ec=$?
@@ -370,7 +372,7 @@ ARTIFACT_TREE="$(cd $SHOW_DIR/$PLAY && find . -maxdepth 3 -type f \
   ! -name '.*' ! -name '_intent.md' ! -name '_prompt.md' \
   ! -name '_verdict.json' ! -name '_meta.json' | sort)"
 
-"$LI" agent -a play-gate --cwd "$WT" "$(cat <<EOF
+"$LI" agent -a play-gate --cwd "$WT" --yolo --bypass "$(cat <<EOF
 Gate this play.
 
 Intent (why this play exists):
@@ -489,19 +491,23 @@ fi
 tmp=$(mktemp); jq '.attempt=2 | .status="redoing" | del(.exit_code, .ended_at)' \
   "$SHOW_DIR/$PLAY/_meta.json" > "$tmp" && mv "$tmp" "$SHOW_DIR/$PLAY/_meta.json"
 
-# Build redo prompt: original + feedback prepended
-FEEDBACK=$(jq -r '.feedback' "$SHOW_DIR/$PLAY/_verdict.json")
-PROMPT=$(printf '## Previous attempt feedback (fix these):\n%s\n\n---\n\n%s' \
-  "$FEEDBACK" "$(cat $SHOW_DIR/$PLAY/_prompt.md)")
+# Build redo prompt in a temp file and pass contents as one quoted positional arg.
+# Never interpolate feedback text directly into a command string.
+REDO_PROMPT_FILE=$(mktemp "$SHOW_DIR/$PLAY/.redo_prompt.XXXXXX")
+FEEDBACK=$(jq -r '.feedback // ""' "$SHOW_DIR/$PLAY/_verdict.json")
+printf '## Previous attempt feedback (fix these):\n%s\n\n---\n\n%s' \
+  "$FEEDBACK" "$(cat "$SHOW_DIR/$PLAY/_prompt.md")" > "$REDO_PROMPT_FILE"
 
 # Re-fire (same as Step 3 foreground), but with --team-attach (NOT --team-mode)
-"$LI" play <playbook> "$PROMPT" \
+"$LI" play <playbook> "$(cat "$REDO_PROMPT_FILE")" \
   --save "$SHOW_DIR/$PLAY" \
   --cwd "$WT" \
   --yolo \
+  --bypass \
   --effort <low|medium|high> \
   --team-attach "show_${TOPIC}_${PLAY}"
 EC=$?
+rm -f "$REDO_PROMPT_FILE"
 
 # Record + re-gate (same as Step 4)
 tmp=$(mktemp); jq --argjson ec "$EC" --arg t "$(date -Iseconds)" \
@@ -522,7 +528,7 @@ tmp=$(mktemp); jq '.status="escalated"' "$SHOW_DIR/$PLAY/_meta.json" > "$tmp" \
 ```
 
 Mark all downstream plays (transitively dependent on this one) as `blocked`.
-Stop firing new plays. Surface to Ocean:
+Stop firing new plays. Surface to the user:
 
 ```text
 ESCALATED: <play-name>
@@ -538,7 +544,7 @@ Options:
   (d) Abort the show.
 ```
 
-Do not auto-fire any option. Wait for Ocean.
+Do not auto-fire any option. Wait for the user.
 
 #### 5d — Subprocess crash (non-zero exit)
 
@@ -589,7 +595,7 @@ PLAY_ARTIFACTS=$(find "$SHOW_DIR" -maxdepth 4 -type f \
   ! -name '.*' ! -name '_show.md' ! -name '_ABORT' ! -name '_final_verdict.json' \
   | sort)
 
-"$LI" agent -a show-final-gate --effort high --cwd "$SHOW_DIR" "$(cat <<EOF
+"$LI" agent -a show-final-gate --effort high --cwd "$SHOW_DIR" --yolo --bypass "$(cat <<EOF
 Final review of show "${TOPIC}".
 
 Show dir: $SHOW_DIR
@@ -641,7 +647,7 @@ If `show_passed: false`:
 Options:
   - Treat each blocker as a new play (re-enter Step 1).
   - Roll back specific play merges (see rollback below) and re-decompose.
-  - Accept partial + ship anyway (with Ocean's approval).
+  - Accept partial + ship anyway (with your approval).
 ```
 
 **Rollback** (after merge, when final gate finds an irreparable cross-play issue):
@@ -669,10 +675,10 @@ git checkout <base>
 git pull origin <base>
 git merge --no-ff "show/${TOPIC}/integration" -m "Show ${TOPIC}: integrate"
 # Resolve conflicts if base moved. Inspect the diff manually.
-# DO NOT auto-push — surface the diff to Ocean before pushing.
+# DO NOT auto-push — surface the diff to the user before pushing.
 ```
 
-Then prune worktrees and branches (after Ocean confirms forensics complete):
+Then prune worktrees and branches (after the user confirms forensics complete):
 
 ```bash
 for wt in $HOME/khive-work/worktrees/${TOPIC}-*; do
@@ -680,7 +686,7 @@ for wt in $HOME/khive-work/worktrees/${TOPIC}-*; do
 done
 git branch -d show/${TOPIC}/integration
 git push origin --delete show/${TOPIC}/integration
-# Optional: delete play branches on remote after 1 week or per Ocean's policy.
+# Optional: delete play branches on remote after 1 week or per your policy.
 ```
 
 ## Resume protocol (first-class — multi-hour shows survive compaction)
@@ -691,7 +697,7 @@ compacted), do these reads + rehydration BEFORE doing anything else.
 ### Rehydrate shell variables
 
 ```bash
-LI="/Users/lion/projects/.venv/bin/li"
+LI="$(command -v li)"
 SHOW_DIR="$HOME/khive-work/shows/<topic>"  # use the show dir the resume targets
 TOPIC=$(basename "$SHOW_DIR")
 REPO="$(awk -F': ' '/^- Repo: / {print $2; exit}' $SHOW_DIR/_show.md)"
@@ -713,14 +719,14 @@ match wins:
 
 ```text
 1. `$SHOW_DIR/_ABORT` exists
-   → ALL plays: aborted_pending_cleanup. Do not fire, redo, or merge without Ocean.
+   → ALL plays: aborted_pending_cleanup. Do not fire, redo, or merge without the user.
 
 2. play's `.pid` file exists AND `ps -p $(cat .pid) -o command=` contains "li play"
    → state: running. Poll until exit, then re-gate.
 
 3. play's `.pid` file exists but PID dead OR command doesn't match
    → state: state_corrupt_manual_review. Inspect `.log`; the wrapper crashed
-     before recording exit code. Surface to Ocean.
+     before recording exit code. Surface to the user.
 
 4. `_verdict.json gate_passed:true` AND `_meta.merged_at` present
    → state: completed. Skip.
@@ -735,13 +741,13 @@ match wins:
    → state: needs_redo. Proceed to Step 5b.
 
 7. `_verdict.json gate_passed:false` AND `_meta.attempt == 2`
-   → state: escalated. Surface to Ocean.
+   → state: escalated. Surface to the user.
 
 8. `_verdict.json gate_passed:false` AND `_meta.attempt` missing
-   → state: state_corrupt_manual_review. Surface to Ocean.
+   → state: state_corrupt_manual_review. Surface to the user.
 
 9. `_verdict.json` present AND `_meta.json` missing
-   → state: state_corrupt_manual_review. Surface to Ocean.
+   → state: state_corrupt_manual_review. Surface to the user.
 
 10. no `.pid` AND `_meta.exit_code` present (or `_meta.status == "running_complete"`)
     AND no `_verdict.json`
@@ -757,7 +763,7 @@ match wins:
 ```
 
 `state_corrupt_manual_review` always escalates. Do not attempt to repair
-corrupt state without Ocean.
+corrupt state without the user.
 
 ## Abort protocol
 
@@ -790,14 +796,13 @@ pkill -9 -f "li play.*show_${TOPIC}_" 2>/dev/null || true
 
 Worktrees stay intact after abort — forensics first, cleanup later. The
 remote `show/${TOPIC}/integration` branch is left on origin; record it in
-`_show.md`'s "Cleanup-owed" section for Ocean to delete later (or via the
+`_show.md`'s "Cleanup-owed" section for the user to delete later (or via the
 `/clean` skill).
 
 ## Custom agent profiles
 
 If a default profile doesn't fit, write a new one. Canonical location:
-`firm/agents/<name>/<name>.md`. Lionagi resolves via `~/.lionagi/agents/<name>.md`
-(symlinked into firm). Format:
+`~/.lionagi/agents/<name>.md`. Format:
 
 ```markdown
 ---
@@ -843,7 +848,7 @@ When a play is escalated:
    marked `blocked` — they do NOT auto-fire.
 3. Plays whose dependency cone does NOT include the escalated play MAY
    continue if their deps are met (parallel branches of the show DAG).
-4. The director surfaces options to Ocean (5c list) and waits.
+4. The director surfaces options to the user (5c list) and waits.
 
 "Downstream cone of P": all plays that transitively depend on P. Compute
 by walking `depends_on` forward from P.
@@ -852,8 +857,7 @@ by walking `depends_on` forward from P.
 
 - **`run_in_background` ≠ play completion.** Notification fires on wrapper
   exit, instantly. Use PID polling + command-line verification.
-- **`uv run li` from worktree cwd fails.** Use `$LI="/Users/lion/projects/.venv/bin/li"` 
-  set in Step 0.
+- **`uv run li` from worktree cwd fails.** Use `$LI` (set in Step 0 via `command -v li`).
 - **Foreground play blocks 60-90 min.** Use bg + polling unless you want
   to wait synchronously.
 - **Each play gets its own `--save` subdir.** Sharing dirs clobbers artifacts.
@@ -881,7 +885,7 @@ Initial `_show.md`:
 Implement, test, and review the Sinkhorn-attention path in lattice-inference per ADR-053.
 
 ## Repository
-Repo: /Users/lion/projects/khive/lattice
+Repo: <path-to-repo>
 Integration: show/adr-053-sinkhorn/integration
 Base: main
 
@@ -903,11 +907,11 @@ design            → gate fail 1st (missing ablation) → redo (--team-attach) 
 implement         → gate fail 2x (test coverage) → ESCALATE
                               ↓
                               Director surfaces options.
-                              Ocean picks "(b) director writes missing tests".
+                              The user picks "(b) director writes missing tests".
                               Director writes tests in worktree, re-runs Step 4.
                               Re-gate passes. Merge.
 review            → gate pass → merge
-Step 7 show-final-gate → show_passed:true → final merge to main (manual push by Ocean)
+Step 7 show-final-gate → show_passed:true → final merge to main (manual push by the user)
                        → cleanup worktrees + delete play branches per policy
 ```
 

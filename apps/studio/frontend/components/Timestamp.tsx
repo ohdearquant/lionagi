@@ -51,6 +51,7 @@ export default function Timestamp({ value, exact = false, className }: Timestamp
   const [now, setNow] = useState<Date | null>(null);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only clock init; null during SSR avoids hydration mismatch
     setNow(new Date());
     const id = setInterval(() => setNow(new Date()), 30_000);
     return () => clearInterval(id);

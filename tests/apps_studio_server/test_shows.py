@@ -77,6 +77,7 @@ def show_with_play(shows_root: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 def test_shows_list_returns_array(patched_app):
     r = patched_app.get("/api/shows")
     assert r.status_code == 200
