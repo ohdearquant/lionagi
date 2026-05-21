@@ -353,6 +353,113 @@ async def _import_one_run(
     return 1, total_branches, total_messages
 
 
+# ── teams import (ADR-0019) ─────────────────────────────────────────────────
+
+
+async def _import_teams() -> dict[str, int]:
+    """Backfill ~/.lionagi/teams/*.json into the teams + team_messages tables.
+
+    Idempotent: teams already present in ``teams`` (by id) are skipped along
+    with their messages. JSON files remain the runtime's primary write path
+    until the dual-write layer ships.
+    """
+    from lionagi.state.db import StateDB
+
+    teams_dir = (RUNS_ROOT.parent / "teams").resolve()
+    counts = {"teams": 0, "messages": 0, "skipped_teams": 0, "errors": 0}
+    if not teams_dir.exists():
+        return counts
+
+    json_files = sorted(teams_dir.glob("*.json"))
+    if not json_files:
+        return counts
+
+    async with StateDB() as db:
+        for path in json_files:
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                counts["errors"] += 1
+                continue
+            team_id = data.get("id")
+            if not team_id:
+                counts["errors"] += 1
+                continue
+
+            # Idempotency: check before inserting.
+            cur = await db.db.execute(
+                "SELECT 1 FROM teams WHERE id = ? LIMIT 1", (team_id,)
+            )
+            if await cur.fetchone() is not None:
+                counts["skipped_teams"] += 1
+                continue
+
+            members = data.get("members") or []
+            created_at = _mtime_as_float(path)
+            await db.db.execute(
+                """INSERT INTO teams
+                   (id, name, created_at, updated_at, member_count, members, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    team_id,
+                    data.get("name") or team_id,
+                    created_at,
+                    created_at,
+                    len(members),
+                    json.dumps(members),
+                    "active",
+                ),
+            )
+            counts["teams"] += 1
+
+            for msg in data.get("messages") or []:
+                msg_id = msg.get("id") or uuid.uuid4().hex[:12]
+                to = msg.get("to") or []
+                recipient = "all" if to == ["*"] else ",".join(to) or "all"
+                content = msg.get("content") or ""
+                ts_raw = msg.get("timestamp")
+                # JSON stores ISO timestamps; the DB stores REAL epoch
+                # seconds. Best-effort parse; fall back to file mtime so
+                # ordering is at least monotonic per file.
+                try:
+                    from datetime import datetime
+
+                    created = datetime.fromisoformat(ts_raw).timestamp()
+                except (TypeError, ValueError):
+                    created = created_at
+                read_by = msg.get("read_by") or {}
+                if isinstance(read_by, dict):
+                    read_by_arr = sorted(read_by.keys())
+                elif isinstance(read_by, list):
+                    read_by_arr = list(read_by)
+                else:
+                    read_by_arr = []
+                await db.db.execute(
+                    """INSERT INTO team_messages
+                       (id, team_id, created_at, sender, recipient, content,
+                        summary, read_by, session_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        msg_id,
+                        team_id,
+                        created,
+                        msg.get("from") or "_unknown",
+                        recipient,
+                        content,
+                        # Only set summary for long content; leave NULL otherwise
+                        # so the Studio teams page knows to show raw inline.
+                        (content[:200] + "…") if len(content) > 200 else None,
+                        json.dumps(read_by_arr),
+                        None,
+                    ),
+                )
+                counts["messages"] += 1
+
+        await db.db.commit()
+
+    return counts
+
+
 # ── async ls logic ────────────────────────────────────────────────────────────
 
 
@@ -688,6 +795,19 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
 
+    # li state import-teams (ADR-0019)
+    state_sub.add_parser(
+        "import-teams",
+        help="Backfill team JSON files (~/.lionagi/teams/*.json) into state.db.",
+        description=(
+            "Scan ~/.lionagi/teams/*.json and INSERT each team + its messages "
+            "into the `teams` and `team_messages` tables (ADR-0019). Idempotent: "
+            "existing rows (matched by team id) are left alone. Run once after "
+            "upgrading; the runtime can keep using JSON until the dual-write "
+            "path ships."
+        ),
+    )
+
     # li state ls
     ls = state_sub.add_parser(
         "ls",
@@ -819,6 +939,15 @@ def run_state(args: argparse.Namespace) -> int:
             f"{counts['branches']} branch(es), "
             f"{counts['messages']} message(s) "
             f"[skipped={counts['skipped']}, errors={counts['errors']}]"
+        )
+        return 0 if counts["errors"] == 0 else 1
+
+    if args.state_command == "import-teams":
+        counts = run_async(_import_teams())
+        print(
+            f"\nimported {counts['teams']} team(s), "
+            f"{counts['messages']} team message(s) "
+            f"[skipped_teams={counts['skipped_teams']}, errors={counts['errors']}]"
         )
         return 0 if counts["errors"] == 0 else 1
 

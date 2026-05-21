@@ -108,11 +108,19 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- cancelled) can evolve without a SQLite table rebuild.
   status          TEXT,
   started_at      REAL,
-  ended_at        REAL
+  ended_at        REAL,
+  -- ── Activity (ADR-0019) ────────────────────────────────────────────
+  -- Bumped on every message INSERT so staleness_check() can answer
+  -- "is this running session still active?" without scanning messages.
+  last_message_at REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_updated
   ON sessions(updated_at DESC);
+-- ADR-0019: lets the staleness query (running sessions sorted by oldest
+-- activity) skip the full table scan.
+CREATE INDEX IF NOT EXISTS idx_sessions_status_last_msg
+  ON sessions(status, last_message_at) WHERE status = 'running';
 
 -- ── Branches ──────────────────────────────────────────────────────────────
 -- A progression with identity.  Branch config (provider, model,
@@ -211,3 +219,43 @@ CREATE INDEX IF NOT EXISTS idx_plays_show ON plays(show_id);
 CREATE INDEX IF NOT EXISTS idx_plays_status ON plays(status);
 CREATE INDEX IF NOT EXISTS idx_plays_session ON plays(session_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_plays_show_name ON plays(show_id, name);
+
+-- ── Teams (ADR-0019) ─────────────────────────────────────────────────────
+-- Mirrors the JSON files at ~/.lionagi/teams/{id}.json (still primary
+-- write path; populated via dual-write or `li state import-teams`).
+-- Storing teams in the DB unlocks queries, cross-session linkage, and
+-- replaces the file-only model that doesn't compose with async DB code.
+
+CREATE TABLE IF NOT EXISTS teams (
+  id              TEXT    PRIMARY KEY,
+  name            TEXT    NOT NULL,
+  created_at      REAL    NOT NULL,
+  updated_at      REAL    NOT NULL,
+  member_count    INTEGER NOT NULL DEFAULT 0,
+  members         JSON    NOT NULL DEFAULT '[]',
+  node_metadata   JSON,
+  status          TEXT    NOT NULL DEFAULT 'active' CHECK(
+                    status IN ('active', 'archived')
+                  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_teams_name ON teams(name);
+CREATE INDEX IF NOT EXISTS idx_teams_updated ON teams(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_teams_status ON teams(status);
+
+CREATE TABLE IF NOT EXISTS team_messages (
+  id              TEXT    PRIMARY KEY,
+  team_id         TEXT    NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  created_at      REAL    NOT NULL,
+  sender          TEXT    NOT NULL,
+  recipient       TEXT    NOT NULL DEFAULT 'all',
+  content         TEXT    NOT NULL,
+  summary         TEXT,
+  read_by         JSON    NOT NULL DEFAULT '[]',
+  session_id      TEXT    REFERENCES sessions(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_msgs_team ON team_messages(team_id);
+CREATE INDEX IF NOT EXISTS idx_team_msgs_created ON team_messages(created_at);
+CREATE INDEX IF NOT EXISTS idx_team_msgs_session ON team_messages(session_id)
+  WHERE session_id IS NOT NULL;
