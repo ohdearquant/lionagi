@@ -179,9 +179,10 @@ async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
     Guard strategy is per-reason:
     - ``process_dead`` / ``stale_lock``: require ``status = 'running' AND
       updated_at <= stale_cutoff`` (staleness confirms the process is gone).
-    - ``missing_artifacts``: require ``status = 'running'`` only — the artifact
-      directory is absent regardless of how recently the session was updated, so
-      the staleness guard would incorrectly skip fresh phantom sessions.
+    - ``missing_artifacts``: require ``status = 'running' AND updated_at <=
+      stale_cutoff`` — same guard as stale reasons to prevent deleting a session
+      that recovered (created its artifacts + heartbeated) between classification
+      and deletion.
     """
     phantoms = await list_phantom_sessions(stale_hours=stale_hours)
     if not phantoms or not DEFAULT_DB_PATH.exists():
@@ -196,11 +197,13 @@ async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
         for p in phantoms
         if p.get("reason") in ("process_dead", "stale_lock")
     ]
-    artifact_ids = [
-        p["session_id"]
+    artifact_entries = [
+        (p["session_id"], p.get("started_at", 0))
         for p in phantoms
         if p.get("reason") == "missing_artifacts"
     ]
+    artifact_ids = [e[0] for e in artifact_entries]
+    artifact_cutoff = max((e[1] for e in artifact_entries), default=0) if artifact_entries else 0
 
     pruned = 0
     async with _open_db(_DB) as db:
@@ -218,8 +221,9 @@ async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
             placeholders = ",".join("?" * len(artifact_ids))
             cur = await db.execute(
                 f"DELETE FROM sessions WHERE id IN ({placeholders})"  # noqa: S608
-                " AND status = 'running'",
-                artifact_ids,
+                " AND status = 'running'"
+                " AND (updated_at IS NULL OR updated_at <= ?)",
+                (*artifact_ids, stale_cutoff),
             )
             await db.commit()
             pruned += cur.rowcount or 0
