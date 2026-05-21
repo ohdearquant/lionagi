@@ -145,18 +145,33 @@ async def test_touch_session_activity_bumps_last_message_at(db: StateDB):
 
 
 async def test_touch_session_activity_with_explicit_at(db: StateDB):
-    s = await _make_session(db, status="running", invocation_kind="agent")
     pinned = 1_700_000_000.0
+    # Seed the session before `pinned` so the monotonic MAX lets it advance.
+    s = await _make_session(db, status="running", invocation_kind="agent", started_at=pinned - 1)
     await db.touch_session_activity(s["id"], at=pinned)
     row = await db.get_session(s["id"])
     assert row["last_message_at"] == pinned
 
 
+async def test_touch_session_activity_is_monotonic(db: StateDB):
+    """A backward-in-time touch must not regress last_message_at or updated_at."""
+    # Pin both time columns below the forward touch so MAX lets them advance.
+    s = await _make_session(db, status="running", invocation_kind="agent",
+                            started_at=100.0, updated_at=100.0)
+    await db.touch_session_activity(s["id"], at=200.0)
+    await db.touch_session_activity(s["id"], at=150.0)  # backward — must not regress
+    row = await db.get_session(s["id"])
+    assert row["last_message_at"] == 200.0
+    assert row["updated_at"] == 200.0
+
+
 async def test_touch_updates_updated_at_too(db: StateDB):
     """updated_at and last_message_at move together so list ordering stays
     consistent with activity, not just lifecycle writes."""
-    s = await _make_session(db, status="running", invocation_kind="agent")
     pinned = 1_700_000_000.0
+    # Pin both time columns before `pinned` so the monotonic MAX lets them advance.
+    s = await _make_session(db, status="running", invocation_kind="agent",
+                            started_at=pinned - 1, updated_at=pinned - 1)
     await db.touch_session_activity(s["id"], at=pinned)
     row = await db.get_session(s["id"])
     assert row["updated_at"] == pinned

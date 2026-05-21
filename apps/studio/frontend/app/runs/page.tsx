@@ -262,7 +262,14 @@ function RunsPageInner() {
                       </span>
                     </td>
                     <td className="px-3 py-2">
-                      <StatusPill value={run.status} kind="lifecycle" />
+                      <StatusPill
+                        value={
+                          run.effective_health && run.effective_health !== run.status
+                            ? run.effective_health
+                            : run.status
+                        }
+                        kind="lifecycle"
+                      />
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-2 flex-wrap">
