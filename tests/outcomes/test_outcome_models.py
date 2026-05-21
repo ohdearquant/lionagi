@@ -53,6 +53,17 @@ def test_review_verdict_default_outcome_kind_pinned():
     assert v.findings == []
 
 
+def test_review_verdict_accepts_hyphenated_producer_string():
+    """Producer strings like APPROVE-WITH-SUGGESTIONS are normalized on ingest."""
+    v = ReviewVerdict.model_validate({"verdict": "APPROVE-WITH-SUGGESTIONS", "summary": "ok"})
+    assert v.verdict == "APPROVE_WITH_SUGGESTIONS"
+
+
+def test_review_verdict_accepts_spaced_producer_string():
+    v = ReviewVerdict.model_validate({"verdict": "REQUEST CHANGES", "summary": "ok"})
+    assert v.verdict == "REQUEST_CHANGES"
+
+
 def test_review_verdict_rejects_unknown_decision():
     with pytest.raises(ValidationError):
         ReviewVerdict(verdict="MEH", summary="?")
@@ -97,6 +108,14 @@ def test_review_verdict_dump_round_trips():
 
 
 # ── GateVerdict ───────────────────────────────────────────────────────────────
+
+
+def test_gate_verdict_without_summary():
+    """GateVerdict must validate raw play-gate JSON that has no summary field."""
+    g = GateVerdict.model_validate({"gate_passed": True, "passed": True})
+    assert g.summary is None
+    assert g.gate_passed is True
+    assert g.outcome_kind == "gate_verdict"
 
 
 def test_gate_verdict_dump_round_trips():

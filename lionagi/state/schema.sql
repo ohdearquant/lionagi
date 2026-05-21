@@ -335,6 +335,21 @@ CREATE TABLE IF NOT EXISTS artifacts (
   file_path       TEXT
 );
 
+-- Natural uniqueness keys for idempotent inserts (INSERT OR REPLACE).
+-- SQLite treats NULLs as distinct in UNIQUE indexes, so a single
+-- 4-column index on (invocation_id, session_id, kind, name) fails
+-- when either FK is NULL. Three partial indexes cover every reachable
+-- artifact shape without the NULL-distinctness pitfall.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_natural_key_inv_only
+  ON artifacts(invocation_id, kind, name)
+  WHERE invocation_id IS NOT NULL AND session_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_natural_key_ses_only
+  ON artifacts(session_id, kind, name)
+  WHERE session_id IS NOT NULL AND invocation_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_natural_key_both
+  ON artifacts(invocation_id, session_id, kind, name)
+  WHERE invocation_id IS NOT NULL AND session_id IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_artifacts_invocation
   ON artifacts(invocation_id) WHERE invocation_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_artifacts_session
@@ -342,3 +357,9 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_session
 CREATE INDEX IF NOT EXISTS idx_artifacts_kind ON artifacts(kind);
 CREATE INDEX IF NOT EXISTS idx_artifacts_created
   ON artifacts(created_at DESC);
+-- Composite indexes that match the ORDER BY shape of the two list
+-- queries — avoids a temp B-tree for the sort step.
+CREATE INDEX IF NOT EXISTS idx_artifacts_invocation_time
+  ON artifacts(invocation_id, created_at) WHERE invocation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_artifacts_session_time
+  ON artifacts(session_id, created_at) WHERE session_id IS NOT NULL;

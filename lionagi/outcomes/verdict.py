@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from lionagi.models import HashableModel
 
@@ -71,6 +71,13 @@ class ReviewVerdict(SkillOutcome):
     verdict: VerdictDecision = Field(
         description="Top-level decision; drives card color + downstream chain conditions.",
     )
+
+    @field_validator("verdict", mode="before")
+    @classmethod
+    def _normalize_verdict(cls, v: object) -> object:
+        if isinstance(v, str):
+            return v.replace("-", "_").replace(" ", "_")
+        return v
     findings: list[Finding] = Field(
         default_factory=list,
         description="Findings list — blocking-first ordering is the writer's responsibility.",

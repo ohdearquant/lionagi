@@ -873,7 +873,7 @@ class StateDB:
             raise ValueError("artifact name is required")
         art_id = uuid.uuid4().hex[:12]
         await self.db.execute(
-            "INSERT INTO artifacts (id, invocation_id, session_id, "
+            "INSERT OR REPLACE INTO artifacts (id, invocation_id, session_id, "
             "created_at, kind, name, content, file_path) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (

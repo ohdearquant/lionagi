@@ -128,6 +128,43 @@ async def test_artifacts_cascade_when_invocation_deleted(db: StateDB):
     assert await db.get_artifact(art_id) is None
 
 
+# ── Idempotency ───────────────────────────────────────────────────────────────
+
+
+async def test_insert_artifact_is_idempotent(db: StateDB):
+    """INSERT OR REPLACE keeps count at 1 when the same natural key is reused."""
+    inv = await _make_invocation(db)
+    for _ in range(2):
+        await db.insert_artifact(
+            invocation_id=inv["id"],
+            kind="review_verdict",
+            name="Round 1",
+            content={"verdict": "APPROVE"},
+        )
+    rows = await db.list_artifacts_for_invocation(inv["id"])
+    assert len(rows) == 1
+
+
+async def test_insert_artifact_idempotent_updates_content(db: StateDB):
+    """Second insert with the same key replaces the content."""
+    inv = await _make_invocation(db)
+    await db.insert_artifact(
+        invocation_id=inv["id"],
+        kind="review_verdict",
+        name="Round 1",
+        content={"verdict": "REQUEST_CHANGES"},
+    )
+    await db.insert_artifact(
+        invocation_id=inv["id"],
+        kind="review_verdict",
+        name="Round 1",
+        content={"verdict": "APPROVE"},
+    )
+    rows = await db.list_artifacts_for_invocation(inv["id"])
+    assert len(rows) == 1
+    assert rows[0]["content"]["verdict"] == "APPROVE"
+
+
 # ── Ordering ──────────────────────────────────────────────────────────────────
 
 

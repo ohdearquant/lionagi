@@ -23,11 +23,12 @@ class SkillOutcome(HashableModel):
             "narrow this to a Literal[...] of one value."
         )
     )
-    summary: str = Field(
+    summary: str | None = Field(
+        default=None,
         description=(
             "One-line human-readable summary. Shown in list views before "
             "the operator clicks through to the full structured outcome."
-        )
+        ),
     )
     passed: bool | None = Field(
         default=None,
