@@ -83,7 +83,7 @@ async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
                 "kind": k,
                 "name": name,
                 "path": _relative_path(f),
-                "disk_path": str(f),
+                "disk_path": _relative_path(f),
                 "has_versions": False,
                 "version": 0,
                 "updated_at": f.stat().st_mtime,
@@ -310,8 +310,8 @@ async def snapshot_current(kind: str | None = None) -> int:
     defs = await list_definitions(kind)
 
     for d in defs:
-        disk_path = Path(d["disk_path"])
-        if not disk_path.exists():
+        disk_path = _find_definition_file(KIND_DIRS[d["kind"]], d["name"])
+        if disk_path is None:
             continue
 
         content = disk_path.read_text()

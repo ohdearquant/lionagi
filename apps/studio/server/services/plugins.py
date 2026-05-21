@@ -6,7 +6,7 @@ from typing import Any
 
 import yaml
 
-from ._path_safety import safe_path_join
+from ._path_safety import public_path, safe_path_join
 
 # ---------------------------------------------------------------------------
 # Root directories
@@ -137,7 +137,7 @@ def _plugin_summary(
         "agent_count": len(agents),
         "has_hooks": has_hooks,
         "has_mcp": has_mcp,
-        "path": str(plugin_dir),
+        "path": public_path(plugin_dir),
     }
 
 
@@ -186,6 +186,25 @@ def _plugin_detail(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_marketplace_source(source_rel: str) -> Path | None:
+    """Resolve a marketplace manifest source path, rejecting escape attempts.
+
+    Rejects empty, absolute, parent-traversal, and symlink-escaped paths so
+    a malicious marketplace.json cannot reference files outside the repo.
+    """
+    if not source_rel:
+        return None
+    source_path = Path(source_rel)
+    if source_path.is_absolute() or ".." in source_path.parts:
+        return None
+    try:
+        plugin_dir = (_REPO_ROOT / source_path).resolve()
+        plugin_dir.relative_to(_REPO_ROOT.resolve())
+    except (OSError, ValueError):
+        return None
+    return plugin_dir
+
+
 def _iter_marketplace_plugins() -> list[tuple[Path, str, str]]:
     """Yield (plugin_dir, name, description) for each marketplace plugin."""
     if not MARKETPLACE_MANIFEST.exists():
@@ -202,12 +221,22 @@ def _iter_marketplace_plugins() -> list[tuple[Path, str, str]]:
         desc = str(entry.get("description") or "")
         if not name:
             continue
-        # source paths in marketplace.json are relative to repo root: "./marketplace/X"
-        plugin_dir = (_REPO_ROOT / source_rel).resolve()
-        if plugin_dir.exists():
+        plugin_dir = _resolve_marketplace_source(source_rel)
+        if plugin_dir is not None and plugin_dir.exists():
             results.append((plugin_dir, name, desc))
 
     return results
+
+
+def _find_plugin_dir_for(name: str) -> Path | None:
+    """Return the actual filesystem Path for a named plugin without going through the API response."""
+    for plugin_dir, pname, _ in _iter_marketplace_plugins():
+        if pname == name:
+            return plugin_dir
+    for plugin_dir, pname, _, _ in _iter_thirdparty_plugins():
+        if pname == name:
+            return plugin_dir
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -296,11 +325,9 @@ def get_plugin_skill(plugin_name: str, skill_name: str) -> dict[str, Any] | None
     Returns name, description, path, content, allowed_tools — same shape as
     skills.get_skill().
     """
-    plugin = get_plugin(plugin_name)
-    if not plugin:
+    plugin_dir = _find_plugin_dir_for(plugin_name)
+    if plugin_dir is None:
         return None
-
-    plugin_dir = Path(plugin["path"])
     # Validate skill_name is safe before joining to filesystem path
     safe_path_join(plugin_dir / "skills", skill_name)
 
@@ -330,7 +357,7 @@ def get_plugin_skill(plugin_name: str, skill_name: str) -> dict[str, Any] | None
     return {
         "name": str(fm.get("name") or skill_name),
         "description": str(fm.get("description") or "").strip(),
-        "path": str(skill_md),
+        "path": public_path(skill_md),
         "allowed_tools": allowed_tools,
         "content": body,
     }
@@ -341,11 +368,9 @@ def get_plugin_agent(plugin_name: str, agent_name: str) -> dict[str, Any] | None
 
     Returns name, description, path, content.
     """
-    plugin = get_plugin(plugin_name)
-    if not plugin:
+    plugin_dir = _find_plugin_dir_for(plugin_name)
+    if plugin_dir is None:
         return None
-
-    plugin_dir = Path(plugin["path"])
     # Validate agent_name is safe before joining to filesystem path
     safe_path_join(plugin_dir / "agents", agent_name)
 
@@ -366,6 +391,6 @@ def get_plugin_agent(plugin_name: str, agent_name: str) -> dict[str, Any] | None
     return {
         "name": stem,
         "description": str(fm.get("description") or "").strip(),
-        "path": str(agent_path),
+        "path": public_path(agent_path),
         "content": body,
     }

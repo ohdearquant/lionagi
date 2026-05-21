@@ -6,7 +6,7 @@ import yaml
 
 from lionagi.cli._runs import LIONAGI_HOME
 
-from ._path_safety import safe_path_join
+from ._path_safety import public_path, safe_path_join
 
 _PLAYBOOKS_ROOT = LIONAGI_HOME / "playbooks"
 
@@ -38,12 +38,12 @@ def list_playbooks() -> list[dict[str, Any]]:
             raw = {}
         entry: dict[str, Any] = {
             "name": name,
-            "path": str(path),
+            "path": public_path(path),
             "description": raw.get("description", "") if isinstance(raw, dict) else "",
         }
         if path.is_symlink():
             try:
-                entry["symlink_target"] = str(path.resolve())
+                entry["symlink_target"] = public_path(path.resolve())
             except OSError:
                 pass
         out.append(entry)
@@ -63,13 +63,13 @@ def get_playbook(name: str) -> dict[str, Any] | None:
         return None
     result: dict[str, Any] = {
         "name": stem,
-        "path": str(path),
+        "path": public_path(path),
         "data": raw if isinstance(raw, dict) else {},
         "raw": text,
     }
     if path.is_symlink():
         try:
-            result["symlink_target"] = str(path.resolve())
+            result["symlink_target"] = public_path(path.resolve())
         except OSError:
             pass
     return result

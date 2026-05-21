@@ -14,7 +14,7 @@ import aiosqlite
 from lionagi.state.db import DEFAULT_DB_PATH
 
 from ..config import SHOWS_ROOT
-from ._path_safety import safe_path_join
+from ._path_safety import public_path, safe_path_join
 
 _DB = str(DEFAULT_DB_PATH)
 
@@ -103,7 +103,7 @@ async def _list_shows_db() -> list[dict[str, Any]]:
     return [
         {
             "topic": row["topic"],
-            "path": row["show_dir"],
+            "path": public_path(Path(row["show_dir"])),
             "play_count": row["play_count"],
             "latest_status": row["status"],
             # F-A1-5 (ADR-0011 §"Show status provenance"): status_source field.
@@ -145,7 +145,7 @@ def _list_shows_fs() -> list[dict[str, Any]]:
         out.append(
             {
                 "topic": path.name,
-                "path": str(path),
+                "path": public_path(path),
                 "play_count": len(plays),
                 "latest_status": latest_status,
                 # F-A1-5: filesystem-loaded rows carry "filesystem" provenance
@@ -239,7 +239,7 @@ async def get_show(topic: str) -> dict[str, Any] | None:
 
     return {
         "topic": topic,
-        "path": str(show_dir),
+        "path": public_path(show_dir),
         "show_md": show_md,
         "goal": show_row["goal"] if show_row else _extract_goal(show_md),
         "status": show_row["status"] if show_row else "unknown",
