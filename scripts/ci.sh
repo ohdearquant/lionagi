@@ -127,21 +127,45 @@ lint-marketplace() {
   echo "==> marketplace content lint"
   cd "$REPO_ROOT"
   local rc=0
+  local SCAN_PATHS="marketplace/ .claude-plugin/ README.md"
 
   echo "  checking absolute paths..."
-  if rg --hidden "/Users/lion" marketplace/ .claude-plugin/ README.md 2>/dev/null; then
+  if rg --hidden "/Users/lion" $SCAN_PATHS 2>/dev/null; then
     echo "  FAIL: absolute paths found"; rc=1
   fi
 
   echo "  checking stale repo refs..."
-  if rg --hidden "khive-ai/lionagi" marketplace/ .claude-plugin/ README.md 2>/dev/null; then
+  if rg --hidden "khive-ai/lionagi" $SCAN_PATHS 2>/dev/null; then
     echo "  FAIL: stale khive-ai/lionagi refs found"; rc=1
   fi
 
   echo "  checking yolo without bypass..."
-  # NOTE: line-based check; multiline li play commands may need manual review
-  if rg --hidden 'li play.*--yolo' marketplace/ .claude-plugin/ 2>/dev/null | grep -v -- '--bypass' | grep -q .; then
-    echo "  FAIL: --yolo without --bypass found"; rc=1
+  # Multiline-aware: join backslash-continued lines before checking
+  # for --yolo without --bypass.
+  if _has_cmd python3 || _has_cmd python; then
+    local py=$(_has_cmd python3 && echo python3 || echo python)
+    local yolo_files
+    yolo_files=$(rg -l --hidden 'li play' $SCAN_PATHS 2>/dev/null || true)
+    if [ -n "$yolo_files" ]; then
+      if ! echo "$yolo_files" | xargs "$py" -c "
+import sys, re
+rc = 0
+for path in sys.argv[1:]:
+    text = open(path).read()
+    joined = re.sub(r'\\\\\n\s*', ' ', text)
+    for m in re.finditer(r'li play[^\n]*--yolo[^\n]*', joined):
+        if '--bypass' not in m.group():
+            print(f'{path}: {m.group().strip()[:120]}')
+            rc = 1
+sys.exit(rc)
+"; then
+        echo "  FAIL: --yolo without --bypass found"; rc=1
+      fi
+    fi
+  else
+    if rg --hidden 'li play.*--yolo' $SCAN_PATHS 2>/dev/null | grep -v -- '--bypass' | grep -q .; then
+      echo "  FAIL: --yolo without --bypass found"; rc=1
+    fi
   fi
 
   echo "  validating manifests..."
