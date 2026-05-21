@@ -12,7 +12,7 @@ DAG orchestration planning and execution via `li o flow` and `li o fanout`.
 ## Install
 
 ```
-claude /plugin marketplace add ohdearquant/lionagi
+claude /plugin marketplace add khive-ai/lionagi
 claude /plugin install orchestrate@lionagi
 ```
 

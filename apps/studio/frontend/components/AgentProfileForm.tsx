@@ -120,9 +120,8 @@ export default function AgentProfileForm({
         </div>
 
         <div className="flex flex-col gap-1">
-          <label htmlFor="agent-name" className={FIELD_LABEL}>Name</label>
+          <label className={FIELD_LABEL}>Name</label>
           <input
-            id="agent-name"
             type="text"
             value={form.name}
             onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
@@ -133,9 +132,8 @@ export default function AgentProfileForm({
         </div>
 
         <div className="flex flex-col gap-1">
-          <label htmlFor="agent-description" className={FIELD_LABEL}>Description</label>
+          <label className={FIELD_LABEL}>Description</label>
           <input
-            id="agent-description"
             type="text"
             value={form.description}
             onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
@@ -154,9 +152,8 @@ export default function AgentProfileForm({
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="flex flex-col gap-1">
-            <label htmlFor="agent-provider" className={FIELD_LABEL}>Provider</label>
+            <label className={FIELD_LABEL}>Provider</label>
             <select
-              id="agent-provider"
               value={provider}
               onChange={(e) => handleProviderChange(e.target.value)}
               className={SELECT_CLS}
@@ -170,9 +167,8 @@ export default function AgentProfileForm({
           </div>
 
           <div className="flex flex-col gap-1">
-            <label htmlFor="agent-model" className={FIELD_LABEL}>Model</label>
+            <label className={FIELD_LABEL}>Model</label>
             <input
-              id="agent-model"
               type="text"
               list={`model-options-${provider}`}
               value={form.model}
@@ -190,9 +186,8 @@ export default function AgentProfileForm({
           {/* Permission Mode — claude_code only */}
           {provider === "claude_code" ? (
             <div className="flex flex-col gap-1">
-              <label htmlFor="agent-perm-mode" className={FIELD_LABEL}>Permission Mode</label>
+              <label className={FIELD_LABEL}>Permission Mode</label>
               <select
-                id="agent-perm-mode"
                 value={form.permission_mode ?? "default"}
                 onChange={(e) =>
                   setForm((prev) => ({
@@ -214,9 +209,8 @@ export default function AgentProfileForm({
           {/* Reasoning Effort — codex only */}
           {provider === "codex" ? (
             <div className="flex flex-col gap-1">
-              <label htmlFor="agent-reasoning-effort" className={FIELD_LABEL}>Reasoning Effort</label>
+              <label className={FIELD_LABEL}>Reasoning Effort</label>
               <select
-                id="agent-reasoning-effort"
                 value={form.reasoning_effort ?? "none"}
                 onChange={(e) =>
                   setForm((prev) => ({
@@ -244,7 +238,6 @@ export default function AgentProfileForm({
           <p className={SECTION_DESC}>Base identity and role instructions for this agent</p>
         </div>
         <textarea
-          aria-label="System prompt"
           value={form.system_prompt ?? ""}
           onChange={(e) => setForm((prev) => ({ ...prev, system_prompt: e.target.value }))}
           placeholder="You are a specialized agent that..."
@@ -260,7 +253,6 @@ export default function AgentProfileForm({
           <p className={SECTION_DESC}>Task-specific instructions and constraints</p>
         </div>
         <textarea
-          aria-label="Guidance"
           value={form.guidance ?? ""}
           onChange={(e) => setForm((prev) => ({ ...prev, guidance: e.target.value }))}
           placeholder="When working on this task, always..."

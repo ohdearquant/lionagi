@@ -364,7 +364,6 @@ function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
               >
                 <button
                   type="button"
-                  aria-expanded={isOpen}
                   onClick={() => toggleGroup(fn)}
                   className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-surface-overlay"
                 >

@@ -29,31 +29,10 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 // ─── Runs ─────────────────────────────────────────────────────────────────────
 
-export interface RunListParams {
-  page?: number;
-  per_page?: number;
-  status?: string[];
-  playbook?: string;
-}
-
-export interface RunListResponse {
-  runs: RunSummary[];
-  page: number;
-  per_page: number;
-  total: number;
-  total_pages: number;
-  has_next: boolean;
-  has_prev: boolean;
-}
-
-export async function listRuns(params?: RunListParams): Promise<RunListResponse> {
-  const query = new URLSearchParams();
-  if (params?.page != null) query.set("page", String(params.page));
-  if (params?.per_page != null) query.set("per_page", String(params.per_page));
-  if (params?.playbook) query.set("playbook", params.playbook);
-  for (const value of params?.status ?? []) query.append("status", value);
-  const suffix = query.toString() ? `?${query.toString()}` : "";
-  return fetchJson<RunListResponse>(`/api/runs${suffix}`);
+export async function listRuns(params?: Record<string, string>): Promise<{ runs: RunSummary[] }> {
+  const query =
+    params && Object.keys(params).length > 0 ? `?${new URLSearchParams(params).toString()}` : "";
+  return fetchJson<{ runs: RunSummary[] }>(`/api/runs${query}`);
 }
 
 export async function getRun(runId: string): Promise<RunDetail> {
@@ -373,18 +352,13 @@ export function streamSession(
 ): () => void {
   const source = new EventSource(`${API_BASE}/api/sessions/${encodeURIComponent(id)}/stream`);
   source.onmessage = (msg) => {
-    let event: Record<string, unknown>;
     try {
-      event = JSON.parse(msg.data) as Record<string, unknown>;
+      onEvent(JSON.parse(msg.data) as Record<string, unknown>);
     } catch {
       /* malformed chunk */
-      return;
     }
-    if (event.type === "done") {
-      source.close();
-    }
-    onEvent(event);
   };
+  source.onerror = () => source.close();
   return () => source.close();
 }
 
@@ -573,107 +547,4 @@ export async function getPluginSkill(
   return fetchJson<PluginSkillDetail>(
     `/api/plugins/${encodeURIComponent(pluginName)}/skills/${encodeURIComponent(skillName)}`,
   );
-}
-
-// ─── Admin ────────────────────────────────────────────────────────────────────
-
-export type PhantomReason = "process_dead" | "missing_artifacts" | "stale_lock";
-
-export interface PhantomSession {
-  session_id: string;
-  playbook: string | null;
-  started_at: number | null;
-  reason: PhantomReason;
-}
-
-export interface AdminDoctorResponse {
-  phantom_sessions: PhantomSession[];
-  db_health: {
-    size_bytes: number;
-    wal_bytes: number;
-    wal_pending: number;
-  };
-  diagnostic_run_at: string;
-}
-
-export interface AdminPruneRequest {
-  session_ids?: string[];
-  all_phantom?: boolean;
-}
-
-export async function getAdminDoctor(): Promise<AdminDoctorResponse> {
-  return fetchJson<AdminDoctorResponse>("/api/admin/doctor");
-}
-
-export async function pruneAdmin(body: AdminPruneRequest): Promise<{ pruned: number }> {
-  return fetchJson<{ pruned: number }>("/api/admin/prune", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-// ─── Teams ────────────────────────────────────────────────────────────────────
-
-export interface TeamSummary {
-  id: string;
-  name: string;
-  member_count: number;
-  last_modified: number;
-}
-
-export interface TeamListResponse {
-  teams: TeamSummary[];
-  limit: number;
-  offset: number;
-  total: number;
-  has_next: boolean;
-}
-
-export type TeamDetail = Record<string, unknown> & {
-  id?: string;
-  name?: string;
-  members?: unknown[];
-  messages?: unknown[];
-  created_at?: string | number | null;
-};
-
-export async function listTeams(params?: { limit?: number; offset?: number }): Promise<TeamListResponse> {
-  const query = new URLSearchParams();
-  if (params?.limit != null) query.set("limit", String(params.limit));
-  if (params?.offset != null) query.set("offset", String(params.offset));
-  const suffix = query.toString() ? `?${query.toString()}` : "";
-  return fetchJson<TeamListResponse>(`/api/teams${suffix}`);
-}
-
-export async function getTeam(teamId: string): Promise<TeamDetail> {
-  return fetchJson<TeamDetail>(`/api/teams/${encodeURIComponent(teamId)}`);
-}
-
-// ─── Stats (extended) ─────────────────────────────────────────────────────────
-
-export interface DbStats {
-  path: string;
-  size_bytes: number;
-  wal_bytes: number;
-  connections_active: number;
-  last_checkpoint_at: string | null;
-  tables?: Record<string, number>;
-  sessions_by_status?: Record<string, number>;
-  pragmas?: Record<string, string | number | boolean | null>;
-  slow_queries?: null;
-}
-
-export interface StudioStats {
-  playbooks: number;
-  agents: number;
-  runs: number;
-  shows: number;
-  skills: number;
-  plugins: number;
-  db?: DbStats;
-}
-
-export async function getStats(): Promise<StudioStats> {
-  return fetchJson<StudioStats>("/api/stats");
 }

@@ -11,7 +11,7 @@ Bridge lionagi runs/agents to khive's knowledge graph — opt-in, implementation
 ## Install
 
 ```
-claude /plugin marketplace add ohdearquant/lionagi
+claude /plugin marketplace add khive-ai/lionagi
 claude /plugin install kg-bridge@lionagi
 ```
 

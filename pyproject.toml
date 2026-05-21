@@ -177,7 +177,7 @@ ignore = [
 "cookbooks/**" = ["S101", "B904", "N"]
 
 [tool.pytest.ini_options]
-addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n auto --dist loadfile --benchmark-disable"
+addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n auto --dist loadfile"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
@@ -189,20 +189,18 @@ timeout_method = "thread"
 markers = [
     "performance: marks tests as performance benchmarks",
     "slow: marks tests as slow (> 1 second)",
-    "integration: exercises multiple Studio server components, FastAPI TestClient, SQLite, or filesystem state",
+    "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
     "asyncio: marks tests as async",
     "property: marks tests as property-based tests",
     "migration: marks tests as migration/compatibility tests",
-    "network: requires network access",
+    "network: marks tests requiring network calls",
 ]
 filterwarnings = [
     # Ignore Pydantic deprecation warnings from external datamodel-code-generator
     "ignore:The `parse_obj` method is deprecated.*:pydantic.warnings.PydanticDeprecatedSince20",
     "ignore:The `dict` method is deprecated.*:pydantic.warnings.PydanticDeprecatedSince20",
     "ignore:The `__fields_set__` attribute is deprecated.*:pydantic.warnings.PydanticDeprecatedSince20",
-    # pytest-benchmark emits this during configure when xdist is active; narrow filter keeps -W error usable
-    "ignore:Benchmarks are automatically disabled because xdist plugin is active.Benchmarks cannot be performed reliably in a parallelized environment.:pytest_benchmark.logger.PytestBenchmarkWarning",
     "ignore::DeprecationWarning:^(?!lionagi\\.).*",
     "ignore::PendingDeprecationWarning",
     "ignore::pytest.PytestUnraisableExceptionWarning",

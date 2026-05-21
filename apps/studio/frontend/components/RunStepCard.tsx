@@ -1,11 +1,9 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 import Badge from "@/components/Badge";
+import Markdown from "@/components/Markdown";
 import type { RunMessage, RunStep } from "@/lib/types";
-
-const Markdown = dynamic(() => import("@/components/Markdown"), { ssr: false });
 
 interface RolesBreakdown {
   system?: number;
@@ -180,7 +178,7 @@ export default function RunStepCard({
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [expandedTools, setExpandedTools] = useState<Set<number>>(new Set());
 
-  const messages = useMemo(() => step.messages ?? [], [step.messages]);
+  const messages = step.messages ?? [];
   const result = (step.result ?? {}) as StepResult;
   const roles = (result.roles ?? {}) as RolesBreakdown;
 
@@ -304,8 +302,6 @@ export default function RunStepCard({
     >
       <button
         type="button"
-        aria-expanded={expanded}
-        aria-controls={`step-${step.step}-body`}
         onClick={() => setExpanded((v) => !v)}
         className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-surface-overlay"
       >
@@ -357,17 +353,16 @@ export default function RunStepCard({
       </button>
 
       {expanded && (
-        <div id={`step-${step.step}-body`} className="border-t border-edge">
+        <div className="border-t border-edge">
           {/* Tab bar */}
-          <div role="tablist" aria-label="Step details" className="sticky top-0 z-10 flex items-center gap-0 border-b border-edge bg-surface-base/95 px-2 backdrop-blur">
-            <TabButton id="overview" active={tab} onSelect={setTab} label="Overview" panelId={`step-${step.step}-panel-overview`} />
+          <div className="sticky top-0 z-10 flex items-center gap-0 border-b border-edge bg-surface-base/95 px-2 backdrop-blur">
+            <TabButton id="overview" active={tab} onSelect={setTab} label="Overview" />
             <TabButton
               id="files"
               active={tab}
               onSelect={setTab}
               label="Files"
               count={summary.files.length}
-              panelId={`step-${step.step}-panel-files`}
             />
             <TabButton
               id="commands"
@@ -375,7 +370,6 @@ export default function RunStepCard({
               onSelect={setTab}
               label="Commands"
               count={summary.toolCount}
-              panelId={`step-${step.step}-panel-commands`}
             />
             <TabButton
               id="errors"
@@ -384,7 +378,6 @@ export default function RunStepCard({
               label="Errors"
               count={summary.failedCount}
               tone={summary.failedCount > 0 ? "error" : undefined}
-              panelId={`step-${step.step}-panel-errors`}
             />
             <TabButton
               id="conversation"
@@ -392,7 +385,6 @@ export default function RunStepCard({
               onSelect={setTab}
               label="Conversation"
               count={messages.length}
-              panelId={`step-${step.step}-panel-conversation`}
             />
             {tab === "conversation" && assistantList.length > 0 && (
               <button
@@ -412,35 +404,21 @@ export default function RunStepCard({
           </div>
 
           {tab === "overview" && (
-            <div role="tabpanel" id={`step-${step.step}-panel-overview`}>
-              <OverviewPanel
-                summary={summary}
-                lastAssistant={lastAssistant}
-                onJumpToConversation={() => setTab("conversation")}
-              />
-            </div>
+            <OverviewPanel
+              summary={summary}
+              lastAssistant={lastAssistant}
+              onJumpToConversation={() => setTab("conversation")}
+            />
           )}
 
-          {tab === "files" && (
-            <div role="tabpanel" id={`step-${step.step}-panel-files`}>
-              <FilesPanel files={summary.files} />
-            </div>
-          )}
+          {tab === "files" && <FilesPanel files={summary.files} />}
 
-          {tab === "commands" && (
-            <div role="tabpanel" id={`step-${step.step}-panel-commands`}>
-              <CommandsPanel commands={summary.commands} />
-            </div>
-          )}
+          {tab === "commands" && <CommandsPanel commands={summary.commands} />}
 
-          {tab === "errors" && (
-            <div role="tabpanel" id={`step-${step.step}-panel-errors`}>
-              <ErrorsPanel failed={summary.failedTools} />
-            </div>
-          )}
+          {tab === "errors" && <ErrorsPanel failed={summary.failedTools} />}
 
           {tab === "conversation" && (
-            <div role="tabpanel" id={`step-${step.step}-panel-conversation`}>
+            <>
               <div className="flex flex-wrap items-center gap-1.5 border-b border-edge px-2 py-1">
                 <span className="text-[9px] uppercase tracking-wide text-content-muted">
                   filter:
@@ -480,7 +458,7 @@ export default function RunStepCard({
                 expandedTools={expandedTools}
                 onToggleTool={toggleTool}
               />
-            </div>
+            </>
           )}
         </div>
       )}
@@ -495,7 +473,6 @@ function TabButton({
   label,
   count,
   tone,
-  panelId,
 }: {
   id: TabId;
   active: TabId;
@@ -503,15 +480,11 @@ function TabButton({
   label: string;
   count?: number;
   tone?: "error";
-  panelId: string;
 }) {
   const isActive = id === active;
   return (
     <button
       type="button"
-      role="tab"
-      aria-selected={isActive}
-      aria-controls={panelId}
       onClick={() => onSelect(id)}
       className={`relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-body font-medium transition-colors ${
         isActive
@@ -845,13 +818,7 @@ function MessageFeed({
   onToggleTool,
   stepKey = "",
 }: MessageFeedProps) {
-  // Precompute per-message assistant ordinals before JSX to avoid mutation during render
-  const assistantOrdinals: number[] = new Array(messages.length);
-  let ordinalCount = 0;
-  for (let i = 0; i < messages.length; i++) {
-    if (messages[i].role === "assistant") ordinalCount += 1;
-    assistantOrdinals[i] = ordinalCount;
-  }
+  let respCounter = 0;
 
   return (
     <div className="flex flex-col">
@@ -868,14 +835,14 @@ function MessageFeed({
           return <UserBlock key={i} content={m.content || ""} timestamp={m.timestamp} />;
         }
         if (m.role === "assistant") {
-          const ordinal = assistantOrdinals[i];
+          respCounter += 1;
           return (
             <AssistantBlock
               key={i}
-              anchorId={`step-${stepKey}-r${ordinal - 1}`}
+              anchorId={`step-${stepKey}-r${respCounter - 1}`}
               content={m.content || ""}
               timestamp={m.timestamp}
-              ordinal={ordinal}
+              ordinal={respCounter}
             />
           );
         }
@@ -917,7 +884,6 @@ function UserBlock({ content, timestamp }: { content: string; timestamp?: number
     <div className="border-b border-edge border-l-2 border-l-status-success bg-surface-overlay/40 px-3 py-1.5">
       <button
         type="button"
-        aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-start gap-2 text-left"
       >
@@ -1024,7 +990,6 @@ function ToolCallBlock({
     <div className={`border-b border-edge ${isError ? "bg-status-error-bg" : "bg-surface-base"}`}>
       <button
         type="button"
-        aria-expanded={expanded}
         onClick={onToggle}
         className="flex w-full items-center gap-2 px-3 py-0.5 text-left hover:bg-surface-overlay"
       >

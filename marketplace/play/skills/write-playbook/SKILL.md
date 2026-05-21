@@ -240,7 +240,7 @@ prompt: |
 vim firm/resources/playbooks/my-thing.playbook.yaml
 
 # 2. Symlink into ~/.lionagi/playbooks/ so `li play` sees it
-ln -s "$(pwd)/my-thing.playbook.yaml" \
+ln -s /Users/lion/projects/firm/resources/playbooks/my-thing.playbook.yaml \
       ~/.lionagi/playbooks/my-thing.playbook.yaml
 
 # 3. Verify

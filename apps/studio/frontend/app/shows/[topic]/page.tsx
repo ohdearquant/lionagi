@@ -1,18 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import dynamic from "next/dynamic";
 import React, { use, useCallback, useEffect, useMemo, useState } from "react";
 import Button from "@/components/Button";
 import Duration from "@/components/Duration";
+import Markdown from "@/components/Markdown";
 import PageHeader from "@/components/PageHeader";
 import StatusPill from "@/components/StatusPill";
 import Timestamp from "@/components/Timestamp";
 import { getShow, streamShow } from "@/lib/api";
 import type { PlayMeta, ShowDetail, ShowEvent } from "@/lib/types";
-
-const Markdown = dynamic(() => import("@/components/Markdown"), { ssr: false });
-const PlayDag = dynamic(() => import("./components/PlayDag"), { ssr: false });
+import PlayDag from "./components/PlayDag";
 
 type Play = ShowDetail["plays"][number];
 
@@ -81,7 +79,6 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
   }, [topic]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- load is async; setState only fires after await, never synchronously
     void load();
   }, [load]);
 
@@ -90,8 +87,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
     if (!show) return;
     const s = show.status ?? show.plays.at(-1)?.meta.status ?? "";
     if (s === "active" || s === "running") {
-      const id = setTimeout(() => setShowPlan(true), 0);
-      return () => clearTimeout(id);
+      setShowPlan(true);
     }
   }, [show]);
 
@@ -184,7 +180,6 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
             <section className="flex min-w-0 flex-col gap-2">
               <button
                 type="button"
-                aria-expanded={showPlan}
                 onClick={() => setShowPlan((v) => !v)}
                 className="flex items-center justify-between text-left text-label font-semibold text-content-primary hover:text-content-secondary transition-colors"
               >
@@ -409,7 +404,6 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                     <div>
                                       <button
                                         type="button"
-                                        aria-expanded={Boolean(rawExpanded[play.name])}
                                         onClick={() =>
                                           setRawExpanded((prev) => ({
                                             ...prev,

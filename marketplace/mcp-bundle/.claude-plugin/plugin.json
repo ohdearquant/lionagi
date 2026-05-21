@@ -6,8 +6,15 @@
     "name": "Ocean (HaiyangLi)",
     "url": "https://github.com/ohdearquant"
   },
-  "homepage": "https://github.com/ohdearquant/lionagi",
-  "repository": "https://github.com/ohdearquant/lionagi",
+  "homepage": "https://github.com/khive-ai/lionagi",
+  "repository": "https://github.com/khive-ai/lionagi",
   "license": "Apache-2.0",
-  "keywords": ["mcp", "server", "tools", "agents"]
+  "keywords": ["mcp", "server", "tools", "agents"],
+  "mcpServers": {
+    "_TODO_lionagi_mcp": {
+      "_comment": "Pending implementation: add `li mcp serve` entrypoint that exposes lionagi's tool ecosystem as an MCP server. Bridge module at lionagi/service/connections/mcp_wrapper.py (MCPConnectionPool, create_mcp_tool) provides the underlying mechanism. Once implemented, replace with: {type: stdio, command: uv, args: [run, li, mcp, serve], installHint: uv pip install lionagi}",
+      "type": "stub",
+      "args": []
+    }
+  }
 }

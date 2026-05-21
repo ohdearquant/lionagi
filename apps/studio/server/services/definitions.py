@@ -5,10 +5,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
+
 from lionagi.cli._runs import LIONAGI_HOME
 from lionagi.state.db import DEFAULT_DB_PATH
 
-from ._db import open_db as _open_db
 from ._path_safety import validate_name_component
 
 # ---------------------------------------------------------------------------
@@ -82,32 +83,27 @@ async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
                 "kind": k,
                 "name": name,
                 "path": _relative_path(f),
-                "disk_path": _relative_path(f),
+                "disk_path": str(f),
                 "has_versions": False,
                 "version": 0,
                 "updated_at": f.stat().st_mtime,
             }
 
-            result.append(entry)
+            if await _ensure_db():
+                async with aiosqlite.connect(_DB) as db:
+                    await db.execute("PRAGMA journal_mode = WAL")
+                    db.row_factory = aiosqlite.Row
+                    cur = await db.execute(
+                        "SELECT MAX(version) as v, MAX(created_at) as ts FROM definitions WHERE kind = ? AND name = ?",
+                        (k, name),
+                    )
+                    row = await cur.fetchone()
+                    if row and row["v"] is not None:
+                        entry["has_versions"] = True
+                        entry["version"] = row["v"]
+                        entry["updated_at"] = row["ts"] or entry["updated_at"]
 
-    # Batch-enrich all entries with version info in one DB round-trip (#989).
-    if result and await _ensure_db():
-        conditions = " OR ".join("(kind = ? AND name = ?)" for _ in result)
-        params = [value for item in result for value in (item["kind"], item["name"])]
-        async with _open_db(_DB) as db:
-            cur = await db.execute(
-                f"SELECT kind, name, MAX(version) AS v, MAX(created_at) AS ts"
-                f" FROM definitions WHERE {conditions} GROUP BY kind, name",
-                params,
-            )
-            rows = await cur.fetchall()
-        versions = {(row["kind"], row["name"]): row for row in rows}
-        for entry in result:
-            row = versions.get((entry["kind"], entry["name"]))
-            if row and row["v"] is not None:
-                entry["has_versions"] = True
-                entry["version"] = row["v"]
-                entry["updated_at"] = row["ts"] or entry["updated_at"]
+            result.append(entry)
 
     return result
 
@@ -130,7 +126,8 @@ async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
 
     versions: list[dict[str, Any]] = []
     if await _ensure_db():
-        async with _open_db(_DB) as db:
+        async with aiosqlite.connect(_DB) as db:
+            db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 "SELECT id, version, created_at, message FROM definitions WHERE kind = ? AND name = ? ORDER BY version DESC",
                 (kind, name),
@@ -168,7 +165,8 @@ async def get_version(kind: str, name: str, version: int) -> dict[str, Any] | No
     if not await _ensure_db():
         return None
 
-    async with _open_db(_DB) as db:
+    async with aiosqlite.connect(_DB) as db:
+        db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT id, content, version, created_at, message FROM definitions WHERE kind = ? AND name = ? AND version = ?",
             (kind, name, version),
@@ -277,7 +275,8 @@ async def rollback_definition(kind: str, name: str, target_version: int) -> dict
     # Capture current version BEFORE the save so we can report rolled_back_from
     current_version = 0
     if await _ensure_db():
-        async with _open_db(_DB) as db:
+        async with aiosqlite.connect(_DB) as db:
+            db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 "SELECT MAX(version) AS v FROM definitions WHERE kind = ? AND name = ?",
                 (kind, name),
@@ -311,8 +310,8 @@ async def snapshot_current(kind: str | None = None) -> int:
     defs = await list_definitions(kind)
 
     for d in defs:
-        disk_path = _find_definition_file(KIND_DIRS[d["kind"]], d["name"])
-        if disk_path is None:
+        disk_path = Path(d["disk_path"])
+        if not disk_path.exists():
             continue
 
         content = disk_path.read_text()

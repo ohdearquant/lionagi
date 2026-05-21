@@ -165,7 +165,6 @@ CREATE TABLE IF NOT EXISTS shows (
                         status IN ('active', 'completed', 'aborted', 'imported')
                       ),
   show_dir            TEXT    NOT NULL,
-  status_source       TEXT    NOT NULL DEFAULT 'unknown',
   created_at          REAL    NOT NULL,
   updated_at          REAL    NOT NULL
 );

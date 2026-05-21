@@ -1,8 +1,0 @@
-_local/
-*.scratch.*
-.DS_Store
-*.swp
-*.swo
-*~
-__pycache__/
-.pytest_cache/

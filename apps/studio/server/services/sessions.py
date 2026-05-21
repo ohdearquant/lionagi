@@ -8,12 +8,7 @@ import aiosqlite
 
 from lionagi.state.db import DEFAULT_DB_PATH
 
-from ._db import open_db as _open_db
-
 _DB = str(DEFAULT_DB_PATH)
-
-SESSION_TERMINAL_STATUSES = frozenset({"completed", "failed", "aborted"})
-SESSION_DONE_STABLE_SECS = 60.0
 
 
 def _parse_json_col(value: Any) -> Any:
@@ -40,7 +35,9 @@ async def list_sessions() -> list[dict[str, Any]]:
     if not DEFAULT_DB_PATH.exists():
         return []
 
-    async with _open_db(_DB) as db:
+    async with aiosqlite.connect(_DB) as db:
+        await db.execute("PRAGMA journal_mode = WAL")
+        db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
             SELECT
@@ -98,7 +95,9 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
     if not DEFAULT_DB_PATH.exists():
         return None
 
-    async with _open_db(_DB) as db:
+    async with aiosqlite.connect(_DB) as db:
+        db.row_factory = aiosqlite.Row
+
         cur = await db.execute(
             # F-A1-4 (ADR-0017): include lifecycle columns in session detail
             """SELECT id, name, created_at, updated_at,
@@ -211,7 +210,9 @@ async def get_session_messages_after(
     if not DEFAULT_DB_PATH.exists():
         return []
 
-    async with _open_db(_DB) as db:
+    async with aiosqlite.connect(_DB) as db:
+        db.row_factory = aiosqlite.Row
+
         branch_cur = await db.execute(
             "SELECT id, progression_id FROM branches WHERE session_id = ?",
             (session_id,),
@@ -268,43 +269,10 @@ async def session_exists(session_id: str) -> bool:
     if not DEFAULT_DB_PATH.exists():
         return False
 
-    async with _open_db(_DB) as db:
+    async with aiosqlite.connect(_DB) as db:
         cur = await db.execute(
             "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
             (session_id,),
         )
         row = await cur.fetchone()
         return row is not None
-
-
-async def get_session_stream_state(session_id: str) -> dict[str, Any] | None:
-    """Scalar read for the SSE done-condition check — avoids the full get_session() round-trip."""
-    if not DEFAULT_DB_PATH.exists():
-        return None
-
-    async with _open_db(_DB) as db:
-        cur = await db.execute(
-            "SELECT updated_at, status FROM sessions WHERE id = ?",
-            (session_id,),
-        )
-        row = await cur.fetchone()
-    if not row:
-        return None
-    return {
-        "updated_at": row["updated_at"] or 0.0,
-        "status": row["status"] or "completed",  # NULL → "completed" for legacy rows
-    }
-
-
-def is_session_stream_done(state: dict[str, Any] | None, *, now: float) -> bool:
-    """Return True only when the session is in a terminal status AND has been stable >= 60s.
-
-    Both conditions must hold — terminal status alone might be a transient write;
-    stale time alone would close active sessions that haven't received messages recently.
-    """
-    if state is None:
-        return False
-    return (
-        state.get("status") in SESSION_TERMINAL_STATUSES
-        and now - float(state.get("updated_at") or 0.0) > SESSION_DONE_STABLE_SECS
-    )

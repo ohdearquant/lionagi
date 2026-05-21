@@ -127,7 +127,7 @@ env:
 
 prompt: |
   ## Why this matters
-  [Your intent. What daily-driver pain this solves.]
+  [Ocean's intent. What daily-driver pain this solves.]
 
   ## What I want
   [EXHAUSTIVE requirements. Every behavior, edge case, acceptance
@@ -161,7 +161,7 @@ cp tools/flows/{name}.yaml ../{project}-{name}/tools/flows/
 ### 5. Validate
 
 ```bash
-li o flow -f {path} --dry-run
+li o flow validate -f {path}
 ```
 
 ### 6. Fire
@@ -171,12 +171,9 @@ writes to the launcher's CWD.
 
 ```bash
 cd /path/to/{worktree} && \
-  li o flow -f tools/flows/{name}.yaml \
-    --background \
-    --save .khive/flows/{name} \
-    --yolo \
-    --bypass
-echo "Flow saved to: .khive/flows/{name}"
+  nohup li o flow run -f tools/flows/{name}.yaml \
+  > /tmp/flow_{name}.log 2>&1 &
+echo "Flow PID: $!"
 ```
 
 ### 7. Monitor + Diagnose

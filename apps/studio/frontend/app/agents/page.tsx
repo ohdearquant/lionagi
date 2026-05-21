@@ -67,9 +67,11 @@ function AgentList({
         <span className="text-meta font-medium text-content-secondary uppercase tracking-[0.06em]">
           Agents
         </span>
-        <Button variant="primary" size="sm" leading="+" disabled title="Coming soon">
-          New
-        </Button>
+        <Link href="/agents/new">
+          <Button variant="primary" size="sm" leading="+">
+            New
+          </Button>
+        </Link>
       </div>
 
       {/* Search */}
@@ -155,18 +157,22 @@ function AgentDetail({ agentName, agentProfile }: AgentDetailProps) {
 
   // Load definition whenever the selected agent changes
   useEffect(() => {
-    if (!agentName) return;
+    if (!agentName) {
+      setDef(null);
+      setDefError(null);
+      setPreviewVersion(null);
+      setEditing(false);
+      return;
+    }
 
     let active = true;
-    void Promise.resolve()
-      .then(() => {
-        setDefLoading(true);
-        setDefError(null);
-        setDef(null);
-        setPreviewVersion(null);
-        setEditing(false);
-        return getDefinition("agent", agentName);
-      })
+    setDefLoading(true);
+    setDefError(null);
+    setDef(null);
+    setPreviewVersion(null);
+    setEditing(false);
+
+    getDefinition("agent", agentName)
       .then((data) => {
         if (active) {
           setDef(data);

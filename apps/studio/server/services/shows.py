@@ -14,10 +14,7 @@ import aiosqlite
 from lionagi.state.db import DEFAULT_DB_PATH
 
 from ..config import SHOWS_ROOT
-from ._db import open_db as _open_db
-from ._path_safety import public_path, safe_path_join
-
-_log = __import__("logging").getLogger(__name__)
+from ._path_safety import safe_path_join
 
 _DB = str(DEFAULT_DB_PATH)
 
@@ -80,12 +77,14 @@ async def list_shows() -> list[dict[str, Any]]:
         try:
             return await _list_shows_db()
         except Exception:
-            _log.warning("list_shows DB query failed, falling back to filesystem", exc_info=True)
+            pass
     return _list_shows_fs()
 
 
 async def _list_shows_db() -> list[dict[str, Any]]:
-    async with _open_db(_DB) as db:
+    async with aiosqlite.connect(_DB) as db:
+        await db.execute("PRAGMA journal_mode = WAL")
+        db.row_factory = aiosqlite.Row
         cur = await db.execute("""
             SELECT s.id, s.topic, s.goal, s.status, s.show_dir,
                    s.created_at, s.updated_at,
@@ -104,7 +103,7 @@ async def _list_shows_db() -> list[dict[str, Any]]:
     return [
         {
             "topic": row["topic"],
-            "path": public_path(Path(row["show_dir"])),
+            "path": row["show_dir"],
             "play_count": row["play_count"],
             "latest_status": row["status"],
             # F-A1-5 (ADR-0011 §"Show status provenance"): status_source field.
@@ -146,7 +145,7 @@ def _list_shows_fs() -> list[dict[str, Any]]:
         out.append(
             {
                 "topic": path.name,
-                "path": public_path(path),
+                "path": str(path),
                 "play_count": len(plays),
                 "latest_status": latest_status,
                 # F-A1-5: filesystem-loaded rows carry "filesystem" provenance
@@ -168,7 +167,9 @@ async def get_show(topic: str) -> dict[str, Any] | None:
     show_row: dict[str, Any] | None = None
     if await _db_available():
         try:
-            async with _open_db(_DB) as db:
+            async with aiosqlite.connect(_DB) as db:
+                await db.execute("PRAGMA journal_mode = WAL")
+                db.row_factory = aiosqlite.Row
                 cur = await db.execute(
                     "SELECT * FROM shows WHERE topic = ?", (topic,)
                 )
@@ -186,7 +187,7 @@ async def get_show(topic: str) -> dict[str, Any] | None:
                     play_rows = await play_cur.fetchall()
                     db_plays = [dict(r) for r in play_rows]
         except Exception:
-            _log.warning("get_show DB query failed for topic %r", topic, exc_info=True)
+            pass
 
     if db_plays:
         plays = []
@@ -238,7 +239,7 @@ async def get_show(topic: str) -> dict[str, Any] | None:
 
     return {
         "topic": topic,
-        "path": public_path(show_dir),
+        "path": str(show_dir),
         "show_md": show_md,
         "goal": show_row["goal"] if show_row else _extract_goal(show_md),
         "status": show_row["status"] if show_row else "unknown",
@@ -448,7 +449,8 @@ async def watch_show(topic: str) -> AsyncGenerator[str, None]:
             show_status: str | None = None
             if await _db_available():
                 try:
-                    async with _open_db(_DB) as db:
+                    async with aiosqlite.connect(_DB) as db:
+                        db.row_factory = aiosqlite.Row
                         cur = await db.execute(
                             "SELECT status FROM shows WHERE topic = ?", (topic,)
                         )
@@ -456,7 +458,7 @@ async def watch_show(topic: str) -> AsyncGenerator[str, None]:
                         if row:
                             show_status = row["status"]
                 except Exception:
-                    _log.debug("watch_show DB status check failed for topic %r", topic, exc_info=True)
+                    pass
             if show_status in _SHOW_TERMINAL_STATUSES:
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return

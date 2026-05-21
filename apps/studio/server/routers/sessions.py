@@ -52,10 +52,12 @@ async def stream_session(session_id: str):
                 yield 'data: {"type":"heartbeat"}\n\n'
                 last_heartbeat = time.monotonic()
 
-            state = await sessions_svc.get_session_stream_state(session_id)
-            if sessions_svc.is_session_stream_done(state, now=time.time()):
-                yield 'data: {"type":"done"}\n\n'
-                return
+            session = await sessions_svc.get_session(session_id)
+            if session is not None:
+                updated_at = session.get("updated_at") or 0.0
+                if time.time() - updated_at > 60.0:
+                    yield 'data: {"type":"done"}\n\n'
+                    return
 
             await asyncio.sleep(0.5)
 

@@ -16,8 +16,6 @@ const navItems: NavItem[] = [
   { label: "Plugins", href: "/plugins" },
   { label: "Shows", href: "/shows" },
   { label: "Runs", href: "/runs" },
-  { label: "Teams", href: "/teams" },
-  { label: "Admin", href: "/admin" },
 ];
 
 function isActive(item: NavItem, pathname: string) {
@@ -40,7 +38,6 @@ function ThemeToggle() {
   const [dark, setDark] = useState(false);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- SSR hydration guard: reads DOM class unavailable during server render
     setDark(document.documentElement.classList.contains("dark"));
   }, []);
 
@@ -61,7 +58,6 @@ function ThemeToggle() {
       type="button"
       onClick={toggle}
       aria-label="Toggle theme"
-      aria-pressed={dark}
       className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-content-muted hover:bg-interactive-secondary hover:text-content-primary transition-colors"
     >
       {dark ? (
@@ -175,7 +171,7 @@ export default function Shell({ children }: ShellProps) {
         </div>
       </header>
 
-      <div id="main-content" className="w-full">{children}</div>
+      <div className="w-full">{children}</div>
     </div>
   );
 }

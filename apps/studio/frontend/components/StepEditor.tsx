@@ -92,7 +92,6 @@ function StepCard({
         <button
           type="button"
           aria-label={expanded ? "Collapse step" : "Expand step"}
-          aria-expanded={expanded}
           onClick={() => setExpanded((v) => !v)}
           className="shrink-0 text-neutral-600 hover:text-neutral-300 focus:outline-none"
         >
@@ -128,10 +127,9 @@ function StepCard({
         <div className="mt-4 flex flex-col gap-3">
           {/* Role */}
           <div className="flex flex-col gap-1">
-            <label htmlFor={`${stepKey}-role`} className={LABEL_CLS}>Role</label>
+            <label className={LABEL_CLS}>Role</label>
             {roles.length > 0 ? (
               <select
-                id={`${stepKey}-role`}
                 value={data.role}
                 onChange={(e) => onChangeField(stepKey, "role", e.target.value)}
                 className={INPUT_CLS}
@@ -158,7 +156,6 @@ function StepCard({
               </select>
             ) : (
               <input
-                id={`${stepKey}-role`}
                 type="text"
                 value={data.role}
                 onChange={(e) => onChangeField(stepKey, "role", e.target.value)}
@@ -191,9 +188,8 @@ function StepCard({
 
           {/* Assignment */}
           <div className="flex flex-col gap-1">
-            <label htmlFor={`${stepKey}-assignment`} className={LABEL_CLS}>Assignment</label>
+            <label className={LABEL_CLS}>Assignment</label>
             <input
-              id={`${stepKey}-assignment`}
               type="text"
               value={data.assignment}
               onChange={(e) => onChangeField(stepKey, "assignment", e.target.value)}
@@ -204,9 +200,8 @@ function StepCard({
 
           {/* Prompt template */}
           <div className="flex flex-col gap-1">
-            <label htmlFor={`${stepKey}-prompt`} className={LABEL_CLS}>Prompt Template</label>
+            <label className={LABEL_CLS}>Prompt Template</label>
             <textarea
-              id={`${stepKey}-prompt`}
               value={data.prompt}
               onChange={(e) => onChangeField(stepKey, "prompt", e.target.value)}
               placeholder={
@@ -220,9 +215,8 @@ function StepCard({
           {/* Capacity + Timeout row */}
           <div className="flex gap-3">
             <div className="flex flex-1 flex-col gap-1">
-              <label htmlFor={`${stepKey}-capacity`} className={LABEL_CLS}>Capacity</label>
+              <label className={LABEL_CLS}>Capacity</label>
               <input
-                id={`${stepKey}-capacity`}
                 type="number"
                 min={1}
                 value={data.capacity ?? 1}
@@ -235,9 +229,8 @@ function StepCard({
             </div>
 
             <div className="flex flex-1 flex-col gap-1">
-              <label htmlFor={`${stepKey}-timeout`} className={LABEL_CLS}>Timeout (s)</label>
+              <label className={LABEL_CLS}>Timeout (s)</label>
               <input
-                id={`${stepKey}-timeout`}
                 type="number"
                 min={0}
                 value={data.timeout ?? ""}
