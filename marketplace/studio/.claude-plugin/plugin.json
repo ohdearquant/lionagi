@@ -9,12 +9,5 @@
   "homepage": "https://github.com/khive-ai/lionagi",
   "repository": "https://github.com/khive-ai/lionagi",
   "license": "Apache-2.0",
-  "keywords": ["dashboard", "monitoring", "fastapi", "mcp", "ui"],
-  "mcpServers": {
-    "_TODO_lion_studio": {
-      "_comment": "Pending implementation: add `li studio mcp` subcommand that exposes lion-studio backend routes as MCP tools. See ADR-0003 and apps/studio/server/. Once implemented, replace this stub with: {type: stdio, command: li, args: [studio, mcp], installHint: uv pip install 'lionagi[studio]'}",
-      "type": "stub",
-      "args": []
-    }
-  }
+  "keywords": ["dashboard", "monitoring", "fastapi", "mcp", "ui"]
 }

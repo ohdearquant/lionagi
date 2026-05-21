@@ -297,6 +297,7 @@ jq -n \
   --save "$SHOW_DIR/$PLAY" \
   --cwd "$WT" \
   --yolo \
+  --bypass \
   --effort <low|medium|high> \
   --team-mode "show_${TOPIC}_${PLAY}"
 EC=$?
@@ -319,6 +320,7 @@ always recorded, even if the director's shell crashes between fire and wait.
     --save "$SHOW_DIR/$PLAY" \
     --cwd "$WT" \
     --yolo \
+    --bypass \
     --effort <low|medium|high> \
     --team-mode "show_${TOPIC}_${PLAY}"
   ec=$?
@@ -370,7 +372,7 @@ ARTIFACT_TREE="$(cd $SHOW_DIR/$PLAY && find . -maxdepth 3 -type f \
   ! -name '.*' ! -name '_intent.md' ! -name '_prompt.md' \
   ! -name '_verdict.json' ! -name '_meta.json' | sort)"
 
-"$LI" agent -a play-gate --cwd "$WT" "$(cat <<EOF
+"$LI" agent -a play-gate --cwd "$WT" --yolo --bypass "$(cat <<EOF
 Gate this play.
 
 Intent (why this play exists):
@@ -489,19 +491,23 @@ fi
 tmp=$(mktemp); jq '.attempt=2 | .status="redoing" | del(.exit_code, .ended_at)' \
   "$SHOW_DIR/$PLAY/_meta.json" > "$tmp" && mv "$tmp" "$SHOW_DIR/$PLAY/_meta.json"
 
-# Build redo prompt: original + feedback prepended
-FEEDBACK=$(jq -r '.feedback' "$SHOW_DIR/$PLAY/_verdict.json")
-PROMPT=$(printf '## Previous attempt feedback (fix these):\n%s\n\n---\n\n%s' \
-  "$FEEDBACK" "$(cat $SHOW_DIR/$PLAY/_prompt.md)")
+# Build redo prompt in a temp file and pass contents as one quoted positional arg.
+# Never interpolate feedback text directly into a command string.
+REDO_PROMPT_FILE=$(mktemp "$SHOW_DIR/$PLAY/.redo_prompt.XXXXXX")
+FEEDBACK=$(jq -r '.feedback // ""' "$SHOW_DIR/$PLAY/_verdict.json")
+printf '## Previous attempt feedback (fix these):\n%s\n\n---\n\n%s' \
+  "$FEEDBACK" "$(cat "$SHOW_DIR/$PLAY/_prompt.md")" > "$REDO_PROMPT_FILE"
 
 # Re-fire (same as Step 3 foreground), but with --team-attach (NOT --team-mode)
-"$LI" play <playbook> "$PROMPT" \
+"$LI" play <playbook> "$(cat "$REDO_PROMPT_FILE")" \
   --save "$SHOW_DIR/$PLAY" \
   --cwd "$WT" \
   --yolo \
+  --bypass \
   --effort <low|medium|high> \
   --team-attach "show_${TOPIC}_${PLAY}"
 EC=$?
+rm -f "$REDO_PROMPT_FILE"
 
 # Record + re-gate (same as Step 4)
 tmp=$(mktemp); jq --argjson ec "$EC" --arg t "$(date -Iseconds)" \
@@ -589,7 +595,7 @@ PLAY_ARTIFACTS=$(find "$SHOW_DIR" -maxdepth 4 -type f \
   ! -name '.*' ! -name '_show.md' ! -name '_ABORT' ! -name '_final_verdict.json' \
   | sort)
 
-"$LI" agent -a show-final-gate --effort high --cwd "$SHOW_DIR" "$(cat <<EOF
+"$LI" agent -a show-final-gate --effort high --cwd "$SHOW_DIR" --yolo --bypass "$(cat <<EOF
 Final review of show "${TOPIC}".
 
 Show dir: $SHOW_DIR

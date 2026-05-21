@@ -6,7 +6,7 @@ description: >
   "evaluate responses", "progress research", "chatgpt research", "deep research",
   "research pipeline", exploring new asset classes, strategies, or topics needing
   broad literature coverage.
-allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch]
+allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch, mcp__khive__recall, mcp__khive__next]
 ---
 
 # /progress-research
@@ -48,11 +48,11 @@ Use these phases when beginning a fresh topic with no prior rounds. Skip to Phas
 
 ```python
 # From memory
-memory.recall("current capital positions portfolio", limit=3)
-memory.recall("{topic} prior research findings", limit=5)
+mcp__khive__recall(query="current capital positions portfolio", limit=3)
+mcp__khive__recall(query="{topic} prior research findings", limit=5)
 
 # From task queue
-work.tasks(assignee="lambda:backtesting", limit=5)
+mcp__khive__next(assignee="lambda:backtesting", limit=5)
 
 # From project state — read if they exist
 # Read RESEARCH_LOG.md, RESEARCH_CATALOG.md

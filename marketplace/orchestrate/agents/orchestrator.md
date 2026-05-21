@@ -215,17 +215,17 @@ Include language, framework, pattern names, domain terms, role context.
 
 ```text
 What kind of work is this?
-  AUDIT/INVENTORY  → parallel explorers(gpt-5.5) → analyst(gpt-5.5) → critic(opus)
-  DESIGN/PLAN      → researcher(gpt-5.5) → architect(gpt-5.5) → strategist → critic(opus)
-  FIX/HARDEN       → explorer/auditor(gpt-5.5) → analyst(gpt-5.5, writes fix specs) → implementer(sonnet) → tester(sonnet) → critic(opus)
-  BUILD/IMPLEMENT  → researcher(gpt-5.5) → architect(gpt-5.5) → implementer(sonnet),tester(sonnet) → coordinator(git) → reviewer → critic(opus)
-  LARGE BUILD      → coordinator(branch) → explorer(gpt-5.5) per-lane → implementer(sonnet) per-lane → coordinator(merge) → reviewer → critic(opus)
-  REVIEW/COMPARE   → parallel explorers(gpt-5.5) → analyst(gpt-5.5) → reviewer → critic(opus)
-  RESEARCH/REPORT  → parallel researchers(gpt-5.5) → analyst(gpt-5.5) → synthesizer
+  AUDIT/INVENTORY  → parallel explorers(gpt-5.3-codex) → analyst(gpt-5.3-codex) → critic(opus)
+  DESIGN/PLAN      → researcher(gpt-5.3-codex) → architect(gpt-5.3-codex) → strategist → critic(opus)
+  FIX/HARDEN       → explorer/auditor(gpt-5.3-codex) → analyst(gpt-5.3-codex, writes fix specs) → implementer(sonnet) → tester(sonnet) → critic(opus)
+  BUILD/IMPLEMENT  → researcher(gpt-5.3-codex) → architect(gpt-5.3-codex) → implementer(sonnet),tester(sonnet) → coordinator(git) → reviewer → critic(opus)
+  LARGE BUILD      → coordinator(branch) → explorer(gpt-5.3-codex) per-lane → implementer(sonnet) per-lane → coordinator(merge) → reviewer → critic(opus)
+  REVIEW/COMPARE   → parallel explorers(gpt-5.3-codex) → analyst(gpt-5.3-codex) → reviewer → critic(opus)
+  RESEARCH/REPORT  → parallel researchers(gpt-5.3-codex) → analyst(gpt-5.3-codex) → synthesizer
 ```
 
 **FIX/HARDEN is the audit-cleansing pattern (validated 2026-04-24, 748 findings):**
-GPT-5.5 finds problems with file:line precision → analyst consolidates into fix specs →
+Codex gpt-5.3-codex finds problems with file:line precision → analyst consolidates into fix specs →
 Sonnet implements reliably → critic verifies. This pipeline does NOT need `--bypass`
 because the analyst phase gives implementers exact locations and change descriptions.
 
@@ -245,11 +245,11 @@ Max budget:              15 agents (beyond this, coordination overhead dominates
 
 ### Step 4: Match roles to models — NEVER skip analysis phases
 
-Early phases (breadth) → GPT-5.5 roles (researcher, explorer, analyst, auditor).
+Early phases (breadth) → gpt-5.3-codex roles (researcher, explorer, analyst, auditor).
 Mid phases (precision) → Sonnet roles (architect, implementer, tester, coordinator).
 Final phase (gate) → Opus critic. Always.
 
-**CRITICAL: Implementers must NEVER be the first wave.** GPT-5.5 is excellent at
+**CRITICAL: Implementers must NEVER be the first wave.** gpt-5.3-codex is excellent at
 finding problems and writing detailed fix specs with file:line context. Sonnet is
 excellent at executing those specs reliably. Skipping the analysis phase and going
 straight to implementers results in: (1) fabricated fixes when using codex, (2)
@@ -257,7 +257,7 @@ incomplete coverage when using Sonnet (it doesn't scan as thoroughly).
 
 **Minimum viable pipeline for code changes:**
 ```text
-explorer/researcher (gpt-5.5) → analyst (gpt-5.5) → implementer (sonnet) → critic (opus)
+explorer/researcher (gpt-5.3-codex) → analyst (gpt-5.3-codex) → implementer (sonnet) → critic (opus)
 ```
 
 When analysis phases produce precise file:line locations and exact fix descriptions,
@@ -549,24 +549,24 @@ that match the task type to leverage the right model automatically.
 
 | Role | Model | Strength | Best Phase |
 |------|-------|----------|------------|
-| researcher | codex/gpt-5.5 (low/medium) | Exhaustive reading, evidence grounding, provenance | Early |
-| explorer | codex/gpt-5.5 (minimal/low) | Structured inventory, zero-prose scanning | Early |
-| analyst | codex/gpt-5.5 (low/medium) | Self-correction, data-heavy cross-referencing | After research |
-| auditor | codex/gpt-5.5 (low/medium) | Security deep-dive, literal compliance checking | Early or late |
-| innovator | codex/gpt-5.5 (medium/high) | Cross-domain synthesis, breadth exploration | Early |
-| theorist | codex/gpt-5.5 (xhigh) | Formal proofs, Lean4, mathematical rigor | After design |
-| architect | codex/gpt-5.5 (high/xhigh) | Scope judgment, design decisions, evidence-grounded | After research |
+| researcher | codex/gpt-5.3-codex (low/medium) | Exhaustive reading, evidence grounding, provenance | Early |
+| explorer | codex/gpt-5.3-codex (minimal/low) | Structured inventory, zero-prose scanning | Early |
+| analyst | codex/gpt-5.3-codex (low/medium) | Self-correction, data-heavy cross-referencing | After research |
+| auditor | codex/gpt-5.3-codex (low/medium) | Security deep-dive, literal compliance checking | Early or late |
+| innovator | codex/gpt-5.3-codex (medium/high) | Cross-domain synthesis, breadth exploration | Early |
+| theorist | codex/gpt-5.3-codex (xhigh) | Formal proofs, Lean4, mathematical rigor | After design |
+| architect | codex/gpt-5.3-codex (high/xhigh) | Scope judgment, design decisions, evidence-grounded | After research |
 | implementer | claude/claude-sonnet-4-6 (high) | Code edits, tests, specs (default executor) — codex fabricates fixes | After design |
 | tester | claude/claude-sonnet-4-6 (medium) | Focused validation, edge cases | Parallel with impl |
-| reviewer | codex/gpt-5.5 (medium/high) | Actionable feedback, standards compliance | After impl |
-| strategist | codex/gpt-5.5 (high/xhigh) | Prioritization, feasibility judgment | Early |
+| reviewer | codex/gpt-5.3-codex (medium/high) | Actionable feedback, standards compliance | After impl |
+| strategist | codex/gpt-5.3-codex (high/xhigh) | Prioritization, feasibility judgment | Early |
 | suggester | claude/claude-sonnet-4-6 (low/medium) | Divergent thinking, 3× parallel verbose sampling | Early |
 | commentator | claude/claude-sonnet-4-6 (medium) | Voice/tone critique, 吐槽+鼓励 — Claude's soft-reasoning edge | After impl |
 | coordinator | claude/claude-sonnet-4-6 (high) | Git branch/commit/merge, CI checks, progress tracking | Throughout |
 | critic | claude/opus (high/xhigh) | Adversarial review, formal verdict | LAST (mandatory) |
 
 **Routing principle**: Sonnet is the DEFAULT executor for implementer/tester — reliable
-code edits with no fabrication. GPT-5.5 for research, exploration, analysis, auditing
+code edits with no fabrication. gpt-5.3-codex for research, exploration, analysis, auditing
 (evidence grounding, heavy file I/O). Opus only for critic (adversarial gate).
 
 **Why implementer shifted back to Sonnet (2026-04-25)**: Codex fabricated fix claims

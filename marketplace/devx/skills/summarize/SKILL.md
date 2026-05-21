@@ -5,7 +5,7 @@ description: >
   progress made but session continues, approaching context limits, switching topics, checkpoint
   learnings, significant decisions made, patterns emerge, or session is winding down.
   Lighter than /session-summarize — stores to memory and continues.
-allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, mcp__khive__memory]
+allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, mcp__khive__remember, mcp__khive__recall]
 ---
 
 # Summarize (Mid-Session)
@@ -39,7 +39,7 @@ Scan recent work to identify:
 Store the summary as episodic memory:
 
 ```python
-memory.remember(
+mcp__khive__remember(
     content="""CHECKPOINT: {topic}
 
 ## Accomplished
@@ -70,7 +70,7 @@ memory.remember(
 For particularly important insights, store separately as semantic memory:
 
 ```python
-memory.remember(
+mcp__khive__remember(
     content="PATTERN: {pattern_name} — {description}. Use when: {conditions}. Example: {brief example}.",
     memory_type="semantic",
     importance=0.9,
@@ -88,7 +88,7 @@ Decisions (table with rationale + alternatives), Learnings, Next Steps.
 After storing, resume work. Reference the checkpoint if needed:
 
 ```python
-memory.recall(query="CHECKPOINT {topic}", limit=3)
+mcp__khive__recall(query="CHECKPOINT {topic}", limit=3)
 ```
 
 ## Proactive Capture Triggers
@@ -121,7 +121,7 @@ Want me to store this? (or run full /session-summarize)
 
 **Decision** (architecture choice, approach selection, trade-off):
 ```python
-memory.remember(
+mcp__khive__remember(
     content="Decision: {what}. Chose {choice} over {alternatives}. Rationale: {why}.",
     memory_type="episodic", importance=0.85,
 )
@@ -129,7 +129,7 @@ memory.remember(
 
 **Lesson learned** (unexpected failure or success):
 ```python
-memory.remember(
+mcp__khive__remember(
     content="Lesson: {what_learned}. Context: {situation}. Applies when: {conditions}.",
     memory_type="semantic", importance=0.9,
 )
