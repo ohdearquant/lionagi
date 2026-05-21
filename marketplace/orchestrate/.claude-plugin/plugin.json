@@ -1,6 +1,6 @@
 {
   "name": "orchestrate",
-  "description": "Multi-agent orchestration via li o flow and li o fanout",
+  "description": "Plan and run multi-agent pipelines: fan out to parallel workers or chain agents in dependency order",
   "version": "0.1.0",
   "author": {
     "name": "Ocean (HaiyangLi)",

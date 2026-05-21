@@ -1,6 +1,6 @@
 {
   "name": "play",
-  "description": "Author lionagi playbooks for li play / li o flow",
+  "description": "Define and run reusable workflow templates (playbooks) that parameterize agent tasks",
   "version": "0.1.0",
   "author": {
     "name": "Ocean (HaiyangLi)",

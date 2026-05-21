@@ -1,6 +1,6 @@
 {
   "name": "show",
-  "description": "Direct multi-play DAGs with critic gating and worktree isolation",
+  "description": "Orchestrate multi-step agent workflows with quality gates and isolated workspaces",
   "version": "0.1.0",
   "author": {
     "name": "Ocean (HaiyangLi)",

@@ -1,6 +1,6 @@
 {
   "name": "memory",
-  "description": "Memory recall, MEMORY.md hygiene, auto-memory bootstrap",
+  "description": "Persist and recall project context — decisions, patterns, and facts — across sessions",
   "version": "0.1.0",
   "author": {
     "name": "Ocean (HaiyangLi)",
