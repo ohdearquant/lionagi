@@ -150,6 +150,10 @@ def update_playbook(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
         else:
             merged[key] = value
 
+    validation = validate_playbook(stem, merged)
+    if not validation["ok"]:
+        raise ValueError("; ".join(validation["errors"] or ["invalid playbook"]))
+
     new_text = yaml.dump(
         merged,
         Dumper=_PlaybookDumper,

@@ -32,7 +32,10 @@ async def create_playbook(name: str) -> dict[str, Any]:
 async def update_playbook(
     name: str, body: Annotated[dict[str, Any], Body(...)]
 ) -> dict[str, Any]:
-    updated = playbooks_svc.update_playbook(name, body)
+    try:
+        updated = playbooks_svc.update_playbook(name, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Playbook '{name}' not found")
     return updated
