@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import Shell from "@/components/Shell";
+import { ToastProvider } from "@/components/Toast";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -14,9 +15,19 @@ export default function RootLayout({
   children: ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className="min-h-screen bg-neutral-950 font-mono text-neutral-200">
-        <Shell>{children}</Shell>
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Prevent FOUC: read localStorage before paint, default to light */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){var t=localStorage.getItem('theme');if(t==='dark'){document.documentElement.classList.add('dark');}})();`,
+          }}
+        />
+      </head>
+      <body className="min-h-screen bg-surface-base font-mono text-content-primary">
+        <ToastProvider>
+          <Shell>{children}</Shell>
+        </ToastProvider>
       </body>
     </html>
   );

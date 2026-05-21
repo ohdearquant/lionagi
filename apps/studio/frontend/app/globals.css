@@ -3,32 +3,105 @@
 @tailwind utilities;
 
 @layer base {
+  /* ── Light theme (default) ── */
   :root {
-    /* ─── Surface (backgrounds, layered dark → light) ─── */
-    --surface-base: #0e0e0e; /* deepest — canvas, page bg */
-    --surface-raised: #171717; /* cards, panels */
-    --surface-overlay: #1c1c1c; /* side panels, dropdowns, modals */
-    --surface-nav: #1a1a1a; /* header, navigation bar */
-    --surface-input: #222222; /* form inputs, textareas */
+    /* ─── Surface ─── */
+    --surface-base: #f9f9f9;
+    --surface-raised: #ffffff;
+    --surface-overlay: #f3f3f3;
+    --surface-nav: #ffffff;
+    --surface-input: #f0f0f0;
+    --surface-input-hover: #e8e8e8;
+
+    /* ─── Content (text) ─── */
+    --content-primary: #1a1a1a;
+    --content-secondary: #525252;
+    --content-muted: #8a8a8a;
+    --content-inverse: #ffffff;
+
+    /* ─── Edge (borders, dividers) ─── */
+    --edge-default: #e0e0e0;
+    --edge-subtle: #ebebeb;
+    --edge-strong: #c4c4c4;
+
+    /* ─── Interactive (buttons, links) ─── */
+    --interactive-primary: #16a34a;
+    --interactive-primary-hover: #15803d;
+    --interactive-secondary: #e8e8e8;
+    --interactive-secondary-hover: #d4d4d4;
+    --interactive-focus: rgba(22, 163, 74, 0.25);
+
+    /* ─── Status ─── */
+    --status-success: #16a34a;
+    --status-success-bg: rgba(22, 163, 74, 0.1);
+    --status-running: #2563eb;
+    --status-running-bg: rgba(37, 99, 235, 0.1);
+    --status-error: #dc2626;
+    --status-error-bg: rgba(220, 38, 38, 0.1);
+    --status-warning: #d97706;
+    --status-warning-bg: rgba(217, 119, 6, 0.1);
+    --status-selected: #9333ea;
+    --status-selected-bg: rgba(147, 51, 234, 0.1);
+
+    /* ─── Role colors ─── */
+    --role-researcher: #16a34a;
+    --role-implementer: #9333ea;
+    --role-reviewer: #0d9488;
+    --role-critic: #d97706;
+    --role-analyst: #2563eb;
+    --role-architect: #db2777;
+    --role-tester: #0891b2;
+
+    /* ─── DAG SVG palette ─── */
+    --dag-pending-bg: #f5f5f5;
+    --dag-pending-border: #d4d4d4;
+    --dag-pending-label: #737373;
+    --dag-pending-dot: #d4d4d4;
+    --dag-running-bg: #eff6ff;
+    --dag-running-border: #2563eb;
+    --dag-running-label: #1d4ed8;
+    --dag-running-dot: #2563eb;
+    --dag-completed-bg: #f0fdf4;
+    --dag-completed-border: #16a34a;
+    --dag-completed-label: #15803d;
+    --dag-completed-dot: #16a34a;
+    --dag-failed-bg: #fef2f2;
+    --dag-failed-border: #dc2626;
+    --dag-failed-label: #b91c1c;
+    --dag-failed-dot: #dc2626;
+    --dag-edge-pending: #d4d4d4;
+    --dag-edge-done: #16a34a;
+    --dag-hover-border: #737373;
+    --dag-assign-text: #c4c4c4;
+  }
+
+  /* ── Dark theme ── */
+  .dark {
+    /* ─── Surface ─── */
+    --surface-base: #0e0e0e;
+    --surface-raised: #171717;
+    --surface-overlay: #1c1c1c;
+    --surface-nav: #1a1a1a;
+    --surface-input: #222222;
     --surface-input-hover: #2a2a2a;
 
     /* ─── Content (text) ─── */
-    --content-primary: #e5e5e5; /* main text */
-    --content-secondary: #a3a3a3; /* descriptions, metadata */
-    --content-muted: #6b6b6b; /* placeholders, disabled, labels */
-    --content-inverse: #ffffff; /* text on colored backgrounds */
+    --content-primary: #e5e5e5;
+    --content-secondary: #a3a3a3;
+    --content-muted: #6b6b6b;
+    --content-inverse: #ffffff;
 
     /* ─── Edge (borders, dividers) ─── */
-    --edge-default: #2e2e2e; /* standard borders */
-    --edge-subtle: #232323; /* very light separation */
-    --edge-strong: #404040; /* emphasized borders, hover */
+    --edge-default: #2e2e2e;
+    --edge-subtle: #232323;
+    --edge-strong: #404040;
 
     /* ─── Interactive (buttons, links) ─── */
-    --interactive-primary: #22c55e; /* green — primary action */
+    --interactive-primary: #22c55e;
     --interactive-primary-hover: #16a34a;
-    --interactive-secondary: #333333; /* secondary buttons bg */
+    --interactive-secondary: #333333;
     --interactive-secondary-hover: #3d3d3d;
-    --interactive-focus: rgba(34, 197, 94, 0.3); /* focus ring */
+    --interactive-focus: rgba(34, 197, 94, 0.3);
 
     /* ─── Status ─── */
     --status-success: #22c55e;
@@ -50,7 +123,140 @@
     --role-analyst: #3b82f6;
     --role-architect: #ec4899;
     --role-tester: #06b6d4;
+
+    /* ─── DAG SVG palette ─── */
+    --dag-pending-bg: #1c1c1c;
+    --dag-pending-border: #3a3a3a;
+    --dag-pending-label: #6b6b6b;
+    --dag-pending-dot: #3a3a3a;
+    --dag-running-bg: #0e1a2b;
+    --dag-running-border: #3b82f6;
+    --dag-running-label: #93c5fd;
+    --dag-running-dot: #3b82f6;
+    --dag-completed-bg: #0d1f15;
+    --dag-completed-border: #22c55e;
+    --dag-completed-label: #86efac;
+    --dag-completed-dot: #22c55e;
+    --dag-failed-bg: #1f0f0f;
+    --dag-failed-border: #ef4444;
+    --dag-failed-label: #fca5a5;
+    --dag-failed-dot: #ef4444;
+    --dag-edge-pending: #333333;
+    --dag-edge-done: #22c55e;
+    --dag-hover-border: #666666;
+    --dag-assign-text: #3d3d3d;
   }
+}
+
+/* ── Semantic typography utilities ──────────────────────────────────────────
+   text-meta   → 10px  (labels, counters, timestamps, chip labels)
+   text-body   → 12px  (content paragraphs, tool summaries)
+   text-label  → 13px  (step names, prominent identifiers)
+   text-heading → 14px (section headers; use sparingly)
+   text-[9px] is reserved only for UPPERCASE tracking labels (section dividers)
+   Do NOT use text-[10px] / text-[11px] / text-[12.5px] / text-[13px] inline.
+*/
+@layer utilities {
+  .text-meta   { font-size: 10px; line-height: 1.4; }
+  .text-body   { font-size: 12px; line-height: 1.5; }
+  .text-label  { font-size: 13px; line-height: 1.4; }
+  .text-heading { font-size: 14px; line-height: 1.3; }
+}
+
+/* ── Markdown rendering ────────────────────────────────────────────────────
+   Used by <Markdown /> for any rendered markdown content (show.md, task
+   descriptions, etc). Tokenized so dark/light theme follows automatically.
+*/
+.markdown-body {
+  color: var(--content-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  color: var(--content-primary);
+  font-weight: 600;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+  line-height: 1.3;
+}
+.markdown-body h1 { font-size: 1.5em; }
+.markdown-body h2 { font-size: 1.25em; border-bottom: 1px solid var(--edge-subtle); padding-bottom: 0.3em; }
+.markdown-body h3 { font-size: 1.1em; }
+.markdown-body h4 { font-size: 1em; }
+.markdown-body > :first-child { margin-top: 0; }
+.markdown-body p { margin: 0.6em 0; }
+.markdown-body strong { color: var(--content-primary); font-weight: 600; }
+.markdown-body em { font-style: italic; }
+.markdown-body a {
+  color: var(--status-running);
+  text-decoration: none;
+}
+.markdown-body a:hover { text-decoration: underline; }
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.6em 0;
+  padding-left: 1.5em;
+}
+.markdown-body li { margin: 0.2em 0; }
+.markdown-body ul { list-style: disc; }
+.markdown-body ol { list-style: decimal; }
+.markdown-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  padding: 0.15em 0.35em;
+  background: var(--surface-overlay);
+  border: 1px solid var(--edge-subtle);
+  border-radius: 3px;
+  color: var(--content-primary);
+}
+.markdown-body pre {
+  margin: 0.8em 0;
+  padding: 0.75em 1em;
+  background: var(--surface-overlay);
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+.markdown-body pre code {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--content-secondary);
+}
+.markdown-body blockquote {
+  margin: 0.8em 0;
+  padding-left: 1em;
+  border-left: 3px solid var(--edge);
+  color: var(--content-muted);
+}
+.markdown-body hr {
+  margin: 1.5em 0;
+  border: 0;
+  border-top: 1px solid var(--edge);
+}
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  font-size: 0.9em;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--edge);
+  padding: 0.4em 0.7em;
+  text-align: left;
+}
+.markdown-body th {
+  background: var(--surface-overlay);
+  color: var(--content-primary);
+  font-weight: 600;
 }
 
 /* Dark scrollbars — webkit (Chrome/Safari) */
@@ -76,4 +282,13 @@
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--edge-default) transparent;
+}
+
+/* ── Session message feed ──────────────────────────────────────────────────── */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in {
+  animation: fade-in 0.15s ease-out both;
 }

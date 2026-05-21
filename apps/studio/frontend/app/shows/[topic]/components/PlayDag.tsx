@@ -40,10 +40,14 @@ function parseShowMdDeps(showMd: string | null | undefined): Map<string, string[
 }
 
 function statusColor(status: string): string {
-  if (status === "merged" || status === "completed" || status === "done") return "#22c55e";
-  if (status === "running" || status === "pending") return "#60a5fa";
-  if (status === "failed" || status === "error") return "#ef4444";
-  return "#555";
+  if (status === "merged" || status === "completed" || status === "done" || status === "director-managed-complete") {
+    return "var(--status-success)";
+  }
+  if (status === "running" || status === "pending" || status === "director-managed") {
+    return "var(--status-running)";
+  }
+  if (status === "failed" || status === "error") return "var(--status-error)";
+  return "var(--edge-strong)";
 }
 
 export default function PlayDag({ plays, showMd }: PlayDagProps) {
@@ -57,9 +61,9 @@ export default function PlayDag({ plays, showMd }: PlayDagProps) {
       position: { x: 0, y: 0 },
       data: { label: play.name },
       style: {
-        background: "#111",
+        background: "var(--surface-raised)",
         border: `1px solid ${statusColor(play.meta.status)}`,
-        color: "#ccc",
+        color: "var(--content-primary)",
         fontSize: 11,
         fontFamily: "monospace",
         width: 200,
@@ -82,7 +86,7 @@ export default function PlayDag({ plays, showMd }: PlayDagProps) {
               source: dep,
               target: play.name,
               markerEnd: { type: MarkerType.ArrowClosed },
-              style: { stroke: "#444" },
+              style: { stroke: "var(--edge-default)" },
             });
           }
         }
@@ -101,7 +105,7 @@ export default function PlayDag({ plays, showMd }: PlayDagProps) {
   }, [plays, showMd]);
 
   return (
-    <div style={{ height: 280 }} className="rounded border border-neutral-800 bg-neutral-950">
+    <div style={{ height: 280 }} className="rounded border border-edge bg-surface-base">
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -111,12 +115,12 @@ export default function PlayDag({ plays, showMd }: PlayDagProps) {
         nodesConnectable={false}
         elementsSelectable={false}
         proOptions={{ hideAttribution: true }}
-        className="bg-neutral-950"
+        className="bg-surface-base"
       >
-        <Background color="#222" gap={20} size={1} />
+        <Background color="var(--edge-subtle)" gap={20} size={1} />
         <Controls
           showInteractive={false}
-          className="!bg-neutral-900 !border-neutral-700 !shadow-none [&>button]:!bg-neutral-800 [&>button]:!border-neutral-700 [&>button]:!text-neutral-400"
+          className="!bg-surface-raised !border-edge !shadow-none [&>button]:!bg-surface-raised [&>button]:!border-edge [&>button]:!text-content-secondary [&>button:hover]:!bg-surface-overlay [&>button:hover]:!text-content-primary"
         />
       </ReactFlow>
     </div>

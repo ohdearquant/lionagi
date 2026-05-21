@@ -102,7 +102,7 @@ export function extractAttending(
   // and also as a full absolute path, keep only the most specific entry.
   // Specificity order: full-path+lineStart > full-path > bare-name+lineStart > bare-name
   const byBasename = new Map<string, { path: string; lineStart: number | null; chunkIndex: number }>();
-  for (const [path, { lineStart, chunkIndex }] of byPath) {
+  for (const [path, { lineStart, chunkIndex }] of Array.from(byPath)) {
     const basename = path.split("/").pop() ?? path;
     const existing = byBasename.get(basename);
     if (!existing) {

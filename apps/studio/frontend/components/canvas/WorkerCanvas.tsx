@@ -324,24 +324,26 @@ export default function WorkerCanvas({
           fitView
           fitViewOptions={{ padding: 0.3 }}
           proOptions={{ hideAttribution: true }}
-          className="bg-neutral-950"
+          className="bg-surface-base"
         >
-          <Background color="#222" gap={20} size={1} />
+          <Background color="var(--edge-subtle)" gap={20} size={1} />
           <Controls
             showInteractive={false}
-            className="!bg-neutral-900 !border-neutral-700 !shadow-none [&>button]:!bg-neutral-800 [&>button]:!border-neutral-700 [&>button]:!text-neutral-400 [&>button:hover]:!bg-neutral-700"
+            className="!bg-surface-raised !border-edge !shadow-none [&>button]:!bg-surface-raised [&>button]:!border-edge [&>button]:!text-content-secondary [&>button:hover]:!bg-surface-overlay [&>button:hover]:!text-content-primary"
           />
-          <MiniMap
-            nodeColor={() => "#333"}
-            maskColor="rgba(0, 0, 0, 0.7)"
-            className="!bg-neutral-900 !border-neutral-700"
-          />
+          {nodes.length > 10 ? (
+            <MiniMap
+              nodeColor={() => "var(--edge-strong)"}
+              maskColor="rgba(0, 0, 0, 0.5)"
+              className="!bg-surface-raised !border-edge"
+            />
+          ) : null}
 
           {/* Custom SVG markers */}
           <svg>
             <defs>
               <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-                <polygon points="0 0, 8 3, 0 6" fill="#444" />
+                <polygon points="0 0, 8 3, 0 6" fill="var(--edge-strong)" />
               </marker>
               <marker
                 id="arrow-active"
@@ -351,7 +353,7 @@ export default function WorkerCanvas({
                 refY="3"
                 orient="auto"
               >
-                <polygon points="0 0, 8 3, 0 6" fill="#22c55e" />
+                <polygon points="0 0, 8 3, 0 6" fill="var(--status-success)" />
               </marker>
             </defs>
           </svg>

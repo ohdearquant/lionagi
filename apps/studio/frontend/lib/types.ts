@@ -10,12 +10,27 @@ export interface RunSummary {
   step_count: number;
   started_at: number | null;
   finished_at: number | null;
+  model?: string;
+}
+
+export interface RunMessage {
+  role: string;
+  content?: string;
+  sender?: string;
+  timestamp?: number | null;
+  function?: string;
+  summary?: string;
+  arguments?: Record<string, unknown>;
+  output?: string;
+  status?: string;
+  exit_code?: number | null;
 }
 
 export interface RunStep {
   step: string;
   status: string;
   result?: Record<string, unknown>;
+  messages?: RunMessage[];
   timestamp: number | null;
 }
 
@@ -82,6 +97,30 @@ export interface WorkerRaw {
   use?: { models?: Record<string, ModelConfig> };
   data?: Record<string, unknown>;
   raw?: string;
+}
+
+// ─── Declarative playbook (agent + prompt format) ─────────────────────────────
+
+export type PlaybookFormat = "declarative" | "graph";
+
+export interface DeclarativeArgSpec {
+  name: string;
+  type: string;
+  default: string;
+  help: string;
+}
+
+export interface DeclarativePlaybookData {
+  name: string;
+  description: string;
+  agent: string;
+  effort: string;
+  maxOps: number | null;
+  prompt: string;
+  args: DeclarativeArgSpec[];
+  yolo: boolean;
+  showGraph: boolean;
+  argumentHint: string;
 }
 
 export interface WorkerFormData {
@@ -169,11 +208,17 @@ export interface ShowDetail {
   topic: string;
   path?: string;
   show_md: string | null;
+  goal?: string | null;
+  status?: string;
   plays: Array<{
     name: string;
     meta: PlayMeta;
     verdict?: ShowVerdict | null;
     updated_at?: number | string | null;
+    session_id?: string | null;
+    session_name?: string | null;
+    intent?: string | null;
+    depends_on?: string[];
   }>;
 }
 
