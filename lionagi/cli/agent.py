@@ -144,6 +144,11 @@ async def _run_agent(
     except KeyboardInterrupt:
         _terminal_status = "aborted"
         raise
+    except TimeoutError:
+        _terminal_status = "failed"
+        from lionagi.cli._logging import warn
+        warn(f"agent timed out after {timeout}s")
+        res = None
     except BaseException as exc:
         from lionagi.ln.concurrency import get_cancelled_exc_class
 
@@ -488,4 +493,4 @@ def run_agent(args: argparse.Namespace) -> int:
         print(f"\n{result}" if result is not None else "", flush=True)
 
     hint(f'\n[to resume] li agent -r {branch_id} "..."')
-    return 0
+    return 0 if result is not None else 1

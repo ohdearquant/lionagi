@@ -18,8 +18,6 @@ from lionagi.protocols.messages import (
     AssistantResponseContent,
     Instruction,
 )
-from lionagi.service.connections import APICalling
-
 from ..chat._prepare import _prepare_run_kwargs
 from ..types import ChatParam, ParseParam, RunParam
 
@@ -112,7 +110,6 @@ async def run(
         return res
 
     pending_requests: dict[str, ActionRequest] = {}
-    api_call_event = None
 
     # Extract caller-supplied wall-clock timeout (seconds). The CLI-provider
     # stream loops are unbounded — without an outer fail_after the codex /
@@ -136,10 +133,6 @@ async def run(
         # context-manager cost rather than branching the stream loop.
         with anyio.fail_after(_stream_timeout):
             async for chunk in model.stream(api_call=api_call):
-                if isinstance(chunk, APICalling):
-                    api_call_event = chunk
-                    continue
-
                 match chunk.type:
                     case "system":
                         if sid := chunk.metadata.get("session_id"):
@@ -207,10 +200,9 @@ async def run(
                             chunk.content or "Stream error from CLI endpoint"
                         )
 
-            # Flush remaining text — attach APICalling metadata to final response
             if res := await _flush_response():
-                if api_call_event is not None:
-                    call_meta = Note.from_dict(api_call_event.to_dict())
+                if hasattr(api_call, "to_dict"):
+                    call_meta = Note.from_dict(api_call.to_dict())
                     call_meta.pop(["execution", "response"], None)
                     res.metadata["api_call_meta"] = call_meta.to_dict()
                 yield res

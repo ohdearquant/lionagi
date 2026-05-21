@@ -911,8 +911,10 @@ class Branch(Element, Relational):
         _pms = {
             k: v
             for k, v in locals().items()
-            if k not in ("self", "_pms") and v is not None
+            if k not in ("self", "_pms", "kwargs") and v is not None
         }
+        if kwargs:
+            _pms.update(kwargs)
         from lionagi.operations.operate.operate import operate, prepare_operate_kw
 
         return await operate(self, **prepare_operate_kw(self, **_pms))

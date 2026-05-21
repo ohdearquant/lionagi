@@ -474,3 +474,117 @@ async def test_run_strips_timeout_from_create_event_kwargs():
     assert "timeout" not in captured, (
         f"timeout leaked into create_event kwargs: {captured!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression: Branch.operate() must flatten **kwargs so timeout reaches run()
+# ---------------------------------------------------------------------------
+
+
+async def test_branch_operate_forwards_timeout_to_run(monkeypatch):
+    """Branch.operate(**kwargs) must flatten kwargs before passing to
+    prepare_operate_kw, otherwise timeout arrives as a nested dict
+    {"kwargs": {"timeout": N}} and run() never sees it."""
+    received_timeout = []
+
+    original_run = run
+
+    async def spy_run(branch, instruction, param):
+        kw_copy = (param.imodel_kw or {}).copy()
+        received_timeout.append(kw_copy.get("timeout"))
+        async for msg in original_run(branch, instruction, param):
+            yield msg
+
+    monkeypatch.setattr("lionagi.operations.run.run.run", spy_run)
+
+    model, _ = _make_fake_cli_model([StreamChunk(type="text", content="ok")])
+    branch = Branch()
+    branch.chat_model = model
+
+    await branch.operate(instruction="test", timeout=42)
+
+    assert received_timeout == [42], (
+        f"timeout not forwarded correctly: {received_timeout}"
+    )
+
+
+async def test_branch_operate_forwards_extra_kwargs_to_run(monkeypatch):
+    """Arbitrary **kwargs on Branch.operate() reach run() via imodel_kw."""
+    received_kw = {}
+
+    original_run = run
+
+    async def spy_run(branch, instruction, param):
+        received_kw.update(param.imodel_kw or {})
+        async for msg in original_run(branch, instruction, param):
+            yield msg
+
+    monkeypatch.setattr("lionagi.operations.run.run.run", spy_run)
+
+    model, _ = _make_fake_cli_model([StreamChunk(type="text", content="ok")])
+    branch = Branch()
+    branch.chat_model = model
+
+    await branch.operate(instruction="test", repo="/tmp/test", timeout=99)
+
+    assert received_kw.get("timeout") == 99
+    assert received_kw.get("repo") == "/tmp/test"
+
+
+# ---------------------------------------------------------------------------
+# Regression: iModel.stream() must not yield in finally (swallows cancellation)
+# ---------------------------------------------------------------------------
+
+
+async def test_imodel_stream_propagates_cancellation():
+    """iModel.stream() must propagate CancelledError from the inner stream,
+    not swallow it via a yield-in-finally."""
+    import anyio
+
+    from lionagi.protocols.generic.event import Event, EventStatus
+    from lionagi.service.connections.api_calling import APICalling
+
+    m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
+
+    class SlowEndpoint:
+        is_cli = True
+        session_id = None
+        DEFAULT_QUEUE_CAPACITY = 10
+
+        async def stream(self, request=None, extra_headers=None, **kw):
+            for _ in range(100):
+                await anyio.sleep(0.5)
+                yield StreamChunk(type="text", content="x")
+
+    m.endpoint = SlowEndpoint()
+
+    api_call = AsyncMock(spec=APICalling)
+    api_call.id = "test-api-call-id"
+    api_call.execution = AsyncMock()
+    api_call.execution.status = EventStatus.PENDING
+
+    async def fake_core_stream():
+        for _ in range(100):
+            await anyio.sleep(0.5)
+            yield StreamChunk(type="text", content="x")
+
+    api_call.stream = fake_core_stream
+    m.executor = types.SimpleNamespace(
+        append=AsyncMock(),
+        pile=types.SimpleNamespace(pop=lambda *a, **kw: None),
+        processor=types.SimpleNamespace(
+            _concurrency_sem=None,
+            is_stopped=lambda: False,
+        ),
+        config={},
+    )
+
+    import time
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        with anyio.fail_after(0.1):
+            async for _ in m.stream(api_call=api_call):
+                pass
+    elapsed = time.monotonic() - started
+    assert elapsed < 1.0, f"cancellation took too long: {elapsed:.2f}s"
