@@ -137,6 +137,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const [mounted, setMounted] = useState(false);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- portal mount guard: useState(false) avoids SSR hydration mismatch on createPortal
   useEffect(() => setMounted(true), []);
 
   return (

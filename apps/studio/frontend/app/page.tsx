@@ -66,6 +66,7 @@ export default function DashboardPage() {
   const [shows, setShows] = useState<ShowSummary[]>([]);
   const [range, setRange] = useState<TimeRange>("24h");
   const [now, setNow] = useState<number>(() => Math.floor(Date.now() / 1000));
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -81,8 +82,9 @@ export default function DashboardPage() {
         setStats(statsRes);
         setAllRuns(runsRes.runs ?? []);
         setShows(showsRes ?? []);
+        setFetchError(null);
       } catch {
-        /* ignore */
+        if (active) setFetchError("API unreachable — data may be stale");
       }
     }
 
@@ -142,12 +144,18 @@ export default function DashboardPage() {
         density="tight"
       />
 
+      {fetchError && (
+        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+          {fetchError}
+        </div>
+      )}
+
       {/* Operational stat cards */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <MetricCard
           label="Running now"
           value={buckets.running.length}
-          hint={buckets.stuck.length > 0 ? `${buckets.stuck.length} stuck >10m` : `${rangeLabel}`}
+          hint={buckets.stuck.length > 0 ? `${buckets.stuck.length} stuck >${STUCK_RUN_SECONDS / 60}m` : `${rangeLabel}`}
           tone={buckets.running.length > 0 ? "running" : "neutral"}
           icon={buckets.running.length > 0 ? "◐" : "○"}
         />
@@ -205,7 +213,7 @@ export default function DashboardPage() {
           <SectionHeader
             title="Needs attention"
             count={buckets.attention.length}
-            href="/runs?filter=attention"
+            href="/runs"
           />
           {buckets.attention.length === 0 ? (
             <div className="rounded border border-status-success/25 bg-status-success-bg px-4 py-4 text-body text-status-success shadow-card">
