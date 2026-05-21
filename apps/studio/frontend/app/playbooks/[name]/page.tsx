@@ -8,6 +8,9 @@ import WorkerCanvas from "@/components/canvas/WorkerCanvas";
 import { getWorkerGraph, startRun, runEventsUrl } from "@/lib/api";
 import type { WorkerGraph } from "@/lib/types";
 
+// ADR-0014: Run button is defaults-only. No task input, no CWD field.
+// Input variable binding and worktree customisation belong in `li play`.
+
 export default function WorkerDetailPage({ params }: { params: Promise<{ name: string }> }) {
   const { name } = use(params);
   const workerName = decodeURIComponent(name);
@@ -15,8 +18,6 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
   const [error, setError] = useState<string | null>(null);
 
   // Execution state
-  const [taskInput, setTaskInput] = useState("");
-  const [cwdInput, setCwdInput] = useState("");
   const [running, setRunning] = useState(false);
   const [runStatus, setRunStatus] = useState<"idle" | "running" | "completed" | "failed">("idle");
   const [execSteps, setExecSteps] = useState<
@@ -39,7 +40,7 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
   }, [workerName]);
 
   const handleRun = useCallback(async () => {
-    if (!graph || running || !taskInput.trim()) return;
+    if (!graph || running) return;
 
     setExecSteps([]);
     setCurrentStep(null);
@@ -47,7 +48,7 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
     setRunning(true);
 
     try {
-      const data = await startRun(workerName, taskInput.trim(), cwdInput.trim());
+      const data = await startRun(workerName);
       const evtSource = new EventSource(runEventsUrl(data.run_id));
 
       evtSource.onmessage = (event) => {
@@ -93,7 +94,7 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
       setRunning(false);
       setRunStatus("failed");
     }
-  }, [graph, running, workerName, taskInput, cwdInput]);
+  }, [graph, running, workerName]);
 
   if (error) {
     return (
@@ -113,8 +114,7 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
     );
   }
 
-  const taskTrimmed = taskInput.trim();
-  const runDisabled = running || !taskTrimmed;
+  const runDisabled = running;
 
   return (
     <div className="flex h-[calc(100vh-56px)] flex-col">
@@ -144,6 +144,15 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
           {runStatus === "completed" && <StatusPill value="completed" kind="lifecycle" />}
           {runStatus === "failed" && <StatusPill value="failed" kind="lifecycle" />}
 
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={handleRun}
+            disabled={runDisabled}
+            leading="▶"
+          >
+            {running ? "Running…" : "Run"}
+          </Button>
           <Link href={`/playbooks/${encodeURIComponent(workerName)}/edit`}>
             <Button variant="secondary" size="sm" leading="✎">
               Edit
@@ -152,57 +161,11 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
         </div>
       </div>
 
-      {/* Task command bar */}
-      <div className="flex items-center gap-2 border-b border-edge bg-surface-raised px-4 py-2">
-        <div className="flex flex-1 items-center gap-2">
-          <label className="hidden text-meta uppercase tracking-[0.06em] text-content-muted md:inline">
-            Task
-          </label>
-          <input
-            type="text"
-            value={taskInput}
-            onChange={(e) => setTaskInput(e.target.value)}
-            placeholder="Describe what the playbook should do..."
-            disabled={running}
-            className="flex-1 rounded-md border border-edge bg-surface-input px-3 py-1.5 text-body text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none disabled:opacity-50"
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleRun();
-              }
-            }}
-          />
-        </div>
-        <div className="flex items-center gap-2">
-          <label className="hidden text-meta uppercase tracking-[0.06em] text-content-muted md:inline">
-            CWD
-          </label>
-          <input
-            type="text"
-            value={cwdInput}
-            onChange={(e) => setCwdInput(e.target.value)}
-            placeholder="working directory"
-            disabled={running}
-            className="w-52 rounded-md border border-edge bg-surface-input px-3 py-1.5 font-mono text-meta text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none disabled:opacity-50"
-          />
-        </div>
-        <Button
-          variant="primary"
-          size="md"
-          onClick={handleRun}
-          disabled={runDisabled}
-          leading="▶"
-        >
-          {running ? "Running…" : "Run"}
-        </Button>
-      </div>
-
       {/* Canvas — or empty state when no steps */}
       {graph.nodes.length === 0 ? (
         <div className="flex flex-1 items-center justify-center bg-surface-base px-4 py-10">
           <PlaybookEmptyState
             workerName={workerName}
-            taskTrimmed={taskTrimmed}
             runDisabled={runDisabled}
             running={running}
             onRun={handleRun}
@@ -224,13 +187,11 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
 
 function PlaybookEmptyState({
   workerName,
-  taskTrimmed,
   runDisabled,
   running,
   onRun,
 }: {
   workerName: string;
-  taskTrimmed: string;
   runDisabled: boolean;
   running: boolean;
   onRun: () => void;
@@ -243,14 +204,13 @@ function PlaybookEmptyState({
       <div>
         <h2 className="text-label font-semibold text-content-primary">No steps defined yet</h2>
         <p className="mt-1 text-body text-content-secondary">
-          This playbook uses the declarative agent + prompt format. You can run it with a task
-          to let the orchestrator generate steps on the fly, or open the editor to author them
-          as a graph.
+          This playbook uses the declarative agent + prompt format. Run it with defaults or open
+          the editor to author steps as a graph.
         </p>
       </div>
       <div className="flex flex-wrap justify-center gap-2">
         <Button variant="primary" size="md" onClick={onRun} disabled={runDisabled} leading="▶">
-          {running ? "Running…" : taskTrimmed ? "Run with task above" : "Type a task above to run"}
+          {running ? "Running…" : "Run"}
         </Button>
         <Link href={`/playbooks/${encodeURIComponent(workerName)}/edit`}>
           <Button variant="secondary" size="md" leading="✎">

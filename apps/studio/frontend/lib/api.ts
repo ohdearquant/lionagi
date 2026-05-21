@@ -283,18 +283,13 @@ export async function updatePlaybook(
   });
 }
 
-export async function startRun(
-  workerName: string,
-  task: string,
-  cwd: string,
-): Promise<{ run_id: string }> {
+// ADR-0014: Run button is defaults-only. No task/cwd payload — the backend
+// runs the playbook with its default configuration. Input binding and
+// worktree customisation belong in `li play`.
+export async function startRun(workerName: string): Promise<{ run_id: string }> {
   return fetchJson<{ run_id: string }>(
     `/api/playbooks/${encodeURIComponent(workerName)}/run`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task, cwd }),
-    },
+    { method: "POST" },
   );
 }
 

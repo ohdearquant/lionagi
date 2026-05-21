@@ -331,7 +331,7 @@ function PlaybookDetail({ name }: { name: string }) {
     setRunning(true);
     setRunError(null);
     try {
-      const data = await startRun(name, "", "");
+      const data = await startRun(name);
       router.push(`/runs/${data.run_id}`);
     } catch (err) {
       setRunError(err instanceof Error ? err.message : "Run failed");
