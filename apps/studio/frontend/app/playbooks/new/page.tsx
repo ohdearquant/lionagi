@@ -2,16 +2,14 @@
 
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ModelConfigTable from "@/components/ModelConfigTable";
 
 const WorkerCanvas = dynamic(() => import("@/components/canvas/WorkerCanvas"), { ssr: false });
-import { createWorker, listAgents, validateWorker } from "@/lib/api";
+import { listAgents } from "@/lib/api";
 import type {
   AgentProfileSummary,
   ModelConfig,
-  WorkerFormData,
   WorkerGraph,
   WorkerLinkEdge,
   WorkerStepNode,
@@ -37,14 +35,11 @@ const EMPTY_GRAPH: WorkerGraph = {
 };
 
 export default function NewWorkerPage() {
-  const router = useRouter();
-
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [models, setModels] = useState<Record<string, ModelConfig>>({});
   const [agentProfiles, setAgentProfiles] = useState<AgentProfileSummary[]>([]);
 
-  const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [showModels, setShowModels] = useState(false);
 
@@ -70,67 +65,8 @@ export default function NewWorkerPage() {
   }, []);
 
   const handleSave = useCallback(async () => {
-    if (!name.trim()) {
-      setErrors(["Playbook name is required"]);
-      return;
-    }
-
-    setSaving(true);
-    setErrors([]);
-
-    const nodes = canvasNodesRef.current;
-    const edges = canvasEdgesRef.current;
-
-    const steps: Record<
-      string,
-      {
-        assignment: string;
-        role: string;
-        prompt: string;
-        capacity?: number;
-        timeout?: number | null;
-      }
-    > = {};
-    for (const n of nodes) {
-      steps[n.id] = {
-        assignment: n.assignment,
-        role: n.role,
-        prompt: n.prompt,
-        capacity: n.capacity,
-        timeout: n.timeout,
-      };
-    }
-
-    const links = edges.map((e) => ({
-      from: e.source,
-      to: e.target,
-      condition: e.condition,
-      map: e.map,
-      handler: e.handler,
-    }));
-
-    const data: WorkerFormData = {
-      name: name.trim(),
-      description,
-      use: { models },
-      steps,
-      links,
-    };
-
-    try {
-      const validation = await validateWorker(data.name, data);
-      if (!validation.ok) {
-        setErrors(validation.errors ?? ["Validation failed"]);
-        setSaving(false);
-        return;
-      }
-      await createWorker(data.name, data);
-      router.push(`/playbooks/${encodeURIComponent(data.name)}`);
-    } catch (err) {
-      setErrors([err instanceof Error ? err.message : "Create failed"]);
-      setSaving(false);
-    }
-  }, [name, description, models, router]);
+    setErrors(["Not yet available"]);
+  }, []);
 
   return (
     <div className="flex h-[calc(100vh-56px)] flex-col">
@@ -165,10 +101,11 @@ export default function NewWorkerPage() {
 
         <button
           onClick={handleSave}
-          disabled={saving || !name.trim()}
+          disabled
+          title="Coming soon"
           className="rounded border border-green-700 bg-green-900/50 px-4 py-1 text-sm font-medium text-green-300 hover:bg-green-800/50 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {saving ? "Creating..." : "Create"}
+          Create
         </button>
       </div>
 

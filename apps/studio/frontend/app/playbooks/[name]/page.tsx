@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import Button from "@/components/Button";
 import StatusPill from "@/components/StatusPill";
-import { getWorkerGraph, startRun } from "@/lib/api";
+import { getWorkerGraph } from "@/lib/api";
 import type { WorkerGraph } from "@/lib/types";
 
 const WorkerCanvas = dynamic(() => import("@/components/canvas/WorkerCanvas"), { ssr: false });
@@ -33,7 +33,6 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
   // H-FE-1: activeRunId drives polling from a useEffect so the timeout and
   // any in-flight fetch are cancelled on unmount.
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
-  const [running, setRunning] = useState(false);
   const [runStatus, setRunStatus] = useState<"idle" | "running" | "completed" | "failed">("idle");
   // M-FE-1: surface startRun / poll errors to the user
   const [runError, setRunError] = useState<string | null>(null);
@@ -92,7 +91,6 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
         if (!cancelled) {
           setRunStatus("failed");
           setRunError("Run timed out after 10 minutes");
-          setRunning(false);
           setActiveRunId(null);
         }
         return;
@@ -110,26 +108,8 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
   }, [activeRunId]);
 
   const handleRun = useCallback(async () => {
-    if (!graph || running) return;
-
-    setRunError(null);
-    setRunStatus("running");
-    setRunning(true);
-
-    try {
-      const data = await startRun(workerName);
-      // Guard: component may have unmounted while the POST was in-flight
-      if (!mountedRef.current) return;
-      startedAtRef.current = Date.now();
-      setActiveRunId(data.run_id);
-    } catch (err) {
-      // M-FE-1: show the error, not a silent status flip
-      if (!mountedRef.current) return;
-      setRunning(false);
-      setRunStatus("failed");
-      setRunError(err instanceof Error ? err.message : "Run failed");
-    }
-  }, [graph, running, workerName]);
+    setRunError("Not yet available");
+  }, []);
 
   if (error) {
     return (
@@ -149,7 +129,7 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
     );
   }
 
-  const runDisabled = running;
+  const runDisabled = true;
 
   return (
     <div className="flex h-[calc(100vh-56px)] flex-col">
@@ -188,9 +168,10 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
             size="sm"
             onClick={handleRun}
             disabled={runDisabled}
+            title="Coming soon"
             leading="▶"
           >
-            {running ? "Running…" : "Run"}
+            Run
           </Button>
           <Link href={`/playbooks/${encodeURIComponent(workerName)}/edit`}>
             <Button variant="secondary" size="sm" leading="✎">
@@ -206,7 +187,6 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
           <PlaybookEmptyState
             workerName={workerName}
             runDisabled={runDisabled}
-            running={running}
             onRun={handleRun}
           />
         </div>
@@ -227,12 +207,10 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
 function PlaybookEmptyState({
   workerName,
   runDisabled,
-  running,
   onRun,
 }: {
   workerName: string;
   runDisabled: boolean;
-  running: boolean;
   onRun: () => void;
 }) {
   return (
@@ -250,8 +228,8 @@ function PlaybookEmptyState({
         </p>
       </div>
       <div className="flex flex-wrap justify-center gap-2">
-        <Button variant="primary" size="md" onClick={onRun} disabled={runDisabled} leading="▶">
-          {running ? "Running…" : "Run"}
+        <Button variant="primary" size="md" onClick={onRun} disabled={runDisabled} title="Coming soon" leading="▶">
+          Run
         </Button>
         <Link href={`/playbooks/${encodeURIComponent(workerName)}/edit`}>
           <Button variant="secondary" size="md" leading="✎">

@@ -67,11 +67,9 @@ function AgentList({
         <span className="text-meta font-medium text-content-secondary uppercase tracking-[0.06em]">
           Agents
         </span>
-        <Link href="/agents/new">
-          <Button variant="primary" size="sm" leading="+">
-            New
-          </Button>
-        </Link>
+        <Button variant="primary" size="sm" leading="+" disabled title="Coming soon">
+          New
+        </Button>
       </div>
 
       {/* Search */}
