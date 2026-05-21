@@ -848,6 +848,61 @@ class StateDB:
         rows = await cur.fetchall()
         return [self._row_to_dict(r) for r in rows]
 
+    # ── Admin events (ADR-0024) ─────────────────────────────────────────
+
+    async def insert_admin_event(
+        self,
+        *,
+        action: str,
+        details: dict[str, Any],
+        target_id: str | None = None,
+        actor: str = "admin",
+    ) -> str:
+        """Append one row to the admin event log (NIST SP 800-92 pattern).
+
+        Insert-only; the cleanup job is the only allowed deleter. Returns
+        the generated event id so callers can correlate follow-up writes.
+        """
+        event_id = uuid.uuid4().hex[:12]
+        await self.db.execute(
+            "INSERT INTO admin_events (id, created_at, action, target_id, "
+            "details, actor) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                event_id,
+                time.time(),
+                action,
+                target_id,
+                _to_json_column(details),
+                actor,
+            ),
+        )
+        await self.db.commit()
+        return event_id
+
+    async def list_admin_events(
+        self,
+        *,
+        action: str | None = None,
+        target_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM admin_events"
+        conds: list[str] = []
+        params: list[Any] = []
+        if action:
+            conds.append("action = ?")
+            params.append(action)
+        if target_id:
+            conds.append("target_id = ?")
+            params.append(target_id)
+        if conds:
+            query += " WHERE " + " AND ".join(conds)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        cur = await self.db.execute(query, params)
+        rows = await cur.fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
     # ── Branches ───────────────────────────────────────────────────────
 
     async def create_branch(self, branch: dict[str, Any]) -> None:

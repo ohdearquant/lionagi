@@ -221,6 +221,7 @@ function RunsPageInner() {
             <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
               <th className="px-3 py-2.5 font-medium">Run</th>
               <th className="px-3 py-2.5 font-medium">Status</th>
+              <th className="px-3 py-2.5 font-medium">Health</th>
               <th className="px-3 py-2.5 font-medium">Activity</th>
               <th className="px-3 py-2.5 font-medium">Updated</th>
             </tr>
@@ -234,7 +235,7 @@ function RunsPageInner() {
               </>
             ) : runs.length === 0 ? (
               <tr>
-                <td colSpan={4} className="px-3 py-14 text-center text-body text-content-muted">
+                <td colSpan={5} className="px-3 py-14 text-center text-body text-content-muted">
                   <span className="block mb-1 text-[11px]">No runs found</span>
                   {(statuses.length > 0 || playbook) && (
                     <span className="text-meta">Try adjusting your filters.</span>
@@ -245,6 +246,17 @@ function RunsPageInner() {
               runs.map((run) => {
                 const prov = provenanceLabel(run);
                 const durSec = durationSeconds(run, now);
+                // ADR-0024 §C: "do not show a blue Running pill alone
+                // when health is stale." When running + degraded health,
+                // demote the status pill's emphasis so the operator's
+                // eye lands on the health column instead.
+                const isRunning = run.status === "running";
+                const health = run.effective_health ?? null;
+                const degraded =
+                  isRunning &&
+                  health != null &&
+                  health !== "healthy" &&
+                  health !== "idle";
                 return (
                   <tr
                     key={run.run_id}
@@ -262,7 +274,23 @@ function RunsPageInner() {
                       </span>
                     </td>
                     <td className="px-3 py-2">
-                      <StatusPill value={run.status} kind="lifecycle" />
+                      <StatusPill
+                        value={run.status}
+                        kind="lifecycle"
+                        taxonomy="session"
+                        tone={degraded ? "neutral" : undefined}
+                      />
+                    </td>
+                    <td className="px-3 py-2">
+                      {health ? (
+                        <StatusPill
+                          value={health}
+                          kind="lifecycle"
+                          taxonomy="health"
+                        />
+                      ) : (
+                        <span className="text-meta text-content-muted">—</span>
+                      )}
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-2 flex-wrap">

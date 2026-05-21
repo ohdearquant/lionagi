@@ -3,11 +3,26 @@ import type { ReactNode } from "react";
 export type StatusKind = "lifecycle" | "verdict" | "integration" | "role" | "neutral";
 export type StatusTone = "ok" | "running" | "failed" | "pending" | "blocked" | "neutral";
 
+// ADR-0024 §C: explicit taxonomy so different vocabularies can't drift
+// into the same tone. "session" = ADR-0025 status; "health" = ADR-0024
+// derived health; "verdict" = critic/review verdicts; "play" = ADR-0011
+// play vocabulary; "neutral" = catch-all.
+export type StatusTaxonomy =
+  | "session"
+  | "health"
+  | "verdict"
+  | "play"
+  | "neutral";
+
 export interface StatusPillProps {
   // Raw machine string (e.g. "director-managed-complete"). Used to derive
   // tone and human label when those aren't passed explicitly.
   value?: string | null;
   kind?: StatusKind;
+  // ADR-0024 §C: explicit vocabulary marker. When set, tone resolution
+  // looks up the value in the taxonomy-specific table so e.g. a session
+  // status "running" and a play status "running" can stay distinct.
+  taxonomy?: StatusTaxonomy;
   // Override the displayed label
   label?: ReactNode;
   // Override the tone resolution
@@ -74,9 +89,52 @@ const TONE_BY_VALUE: Record<string, StatusTone> = {
   draft: "pending",
 };
 
-function toneFromValue(value: string | null | undefined): StatusTone {
+// ADR-0024 §C: per-taxonomy overrides. The shared TONE_BY_VALUE table
+// covers the common case; these dictionaries narrow specific values
+// when the taxonomy makes the intent clear. E.g. "stale" in the health
+// taxonomy is amber (pending), not a generic blocked.
+const TONE_BY_TAXONOMY: Record<StatusTaxonomy, Record<string, StatusTone>> = {
+  session: {
+    // ADR-0025: session lifecycle statuses.
+    running: "running",
+    completed: "ok",
+    failed: "failed",
+    timed_out: "pending",  // deliberate bound — amber, not red
+    aborted: "neutral",    // user Ctrl-C
+    cancelled: "neutral",  // system / orchestrator cancellation
+  },
+  health: {
+    // ADR-0024: six-level derived health. Pre-sorted by severity for the
+    // worst-of-group calculation in the grouped runs view.
+    healthy: "ok",
+    idle: "neutral",
+    unresponsive: "pending",  // amber — alive but past threshold
+    stale: "pending",         // amber/orange — process dead, has output
+    orphaned: "blocked",      // purple — never produced output
+    zombie: "failed",         // red — terminal, but resources leaked
+  },
+  verdict: {
+    approve: "ok",
+    approved: "ok",
+    "approve-with-fixes": "pending",
+    request_changes: "pending",
+    reject: "failed",
+    rejected: "failed",
+  },
+  play: {},
+  neutral: {},
+};
+
+function toneFromValue(
+  value: string | null | undefined,
+  taxonomy?: StatusTaxonomy,
+): StatusTone {
   if (!value) return "neutral";
-  return TONE_BY_VALUE[value.toLowerCase().trim()] ?? "neutral";
+  const key = value.toLowerCase().trim();
+  if (taxonomy && TONE_BY_TAXONOMY[taxonomy][key]) {
+    return TONE_BY_TAXONOMY[taxonomy][key];
+  }
+  return TONE_BY_VALUE[key] ?? "neutral";
 }
 
 // ─── Label humanization ─────────────────────────────────────────────────────
@@ -90,6 +148,10 @@ const LABEL_OVERRIDES: Record<string, string> = {
   "approve-with-fixes": "Approve w/ fixes",
   timed_out: "Timed out",
   needs_review: "Needs review",
+  // ADR-0024 health levels
+  unresponsive: "Unresponsive",
+  orphaned: "Orphaned",
+  zombie: "Zombie",
 };
 
 function humanize(value: string): string {
@@ -139,12 +201,13 @@ const TONE_CLASS: Record<StatusTone, string> = {
 export default function StatusPill({
   value,
   kind = "lifecycle",
+  taxonomy,
   label,
   tone,
   icon,
   className,
 }: StatusPillProps) {
-  const resolvedTone = tone ?? toneFromValue(value);
+  const resolvedTone = tone ?? toneFromValue(value, taxonomy);
   const resolvedLabel = label ?? (value ? humanize(value) : "");
   const resolvedIcon = icon === null ? null : (icon ?? ICON_BY_KIND[kind][resolvedTone] ?? null);
 
