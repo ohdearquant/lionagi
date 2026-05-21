@@ -4,9 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from typing import ClassVar
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
 
 from lionagi.protocols.generic.event import Event, EventStatus
 from lionagi.protocols.generic.processor import Executor, Processor

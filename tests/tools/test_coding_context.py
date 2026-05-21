@@ -3,7 +3,6 @@
 
 """Tests for CodingToolkit: search, context management, and file_state tracking."""
 
-import pytest
 
 from lionagi.session.branch import Branch
 from lionagi.tools.coding import CodingToolkit

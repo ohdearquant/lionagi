@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-import pytest
-
 from lionagi.protocols.messages.base import (
     MESSAGE_FIELDS,
     MessageField,

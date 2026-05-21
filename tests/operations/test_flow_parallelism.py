@@ -12,7 +12,6 @@ These tests ensure that:
 """
 
 import asyncio
-import time
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 

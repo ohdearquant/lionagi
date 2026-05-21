@@ -3,7 +3,6 @@
 
 """Tests for lionagi.operations.operate.step — Step factory methods."""
 
-import pytest
 
 from lionagi.ln.types import Spec
 from lionagi.models import FieldModel

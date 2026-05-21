@@ -11,11 +11,7 @@ from enum import Enum
 import pytest
 
 from lionagi.ln.fuzzy._to_dict import (
-    _convert_top_level_to_dict,
-    _enum_class_to_dict,
-    _is_na,
     _object_to_mapping_like,
-    _parse_str,
     _preprocess_recursive,
     to_dict,
 )

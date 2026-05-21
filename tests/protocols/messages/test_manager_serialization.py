@@ -2,14 +2,8 @@ import pytest
 from pydantic import BaseModel
 
 from lionagi.protocols.types import (
-    ActionRequest,
-    ActionResponse,
-    AssistantResponse,
     Instruction,
     MessageManager,
-    MessageRole,
-    Pile,
-    System,
 )
 
 

@@ -4,7 +4,6 @@ Missing lines before this file: 55, 96, 99-102, 137, 154-155, 175-176,
 186, 192-201, 209-210, 219, 230-239, 246.
 """
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -13,8 +12,6 @@ from lionagi.protocols.generic.log import (
     DataLogger,
     DataLoggerConfig,
     Log,
-    LogManager,
-    LogManagerConfig,
 )
 from lionagi.protocols.generic.pile import Pile
 

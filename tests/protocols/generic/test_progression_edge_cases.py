@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from lionagi._errors import ItemNotFoundError
-from lionagi.protocols.generic.event import Event, EventStatus
+from lionagi.protocols.generic.event import Event
 from lionagi.protocols.generic.processor import Processor
 from lionagi.protocols.generic.progression import Progression, prog
 

@@ -235,7 +235,6 @@ async def test_bash_tool_malformed_command_returns_permission_error_response():
 
 
 async def test_bash_tool_popen_failure_returns_execution_error(monkeypatch):
-    import subprocess as _subprocess
 
     import lionagi.tools.code.bash as bash_mod
 

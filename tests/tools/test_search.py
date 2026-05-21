@@ -5,8 +5,6 @@
 
 import asyncio
 
-import pytest
-
 from lionagi.protocols.action.tool import Tool
 from lionagi.tools.code.search import (
     SearchAction,

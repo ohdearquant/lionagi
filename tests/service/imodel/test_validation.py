@@ -1,15 +1,9 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-import asyncio
-import os
-from unittest.mock import patch
 
 import pytest
 
-from lionagi.protocols.generic.event import EventStatus
-from lionagi.service.connections.api_calling import APICalling
-from lionagi.service.hooks import HookRegistry
 from lionagi.service.imodel import iModel
 
 

@@ -5,18 +5,11 @@ Missing lines: 30-33, 50-52, 91, 127, 134-138, 164-182, 186-200, 208, 245, 276, 
 """
 
 import dataclasses
-from collections import OrderedDict
 from enum import Enum
 
 import pytest
 
 from lionagi.ln.fuzzy._to_dict import (
-    _convert_top_level_to_dict,
-    _enum_class_to_dict,
-    _is_na,
-    _object_to_mapping_like,
-    _parse_str,
-    _preprocess_recursive,
     to_dict,
 )
 

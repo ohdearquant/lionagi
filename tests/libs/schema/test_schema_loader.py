@@ -1,4 +1,3 @@
-import pytest
 
 from lionagi.libs.schema.load_pydantic_model_from_schema import (
     load_pydantic_model_from_schema,

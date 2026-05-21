@@ -3,8 +3,7 @@
 
 """Tests for lionagi.operations.act.act — _act, act, prepare_act_kw, strategies."""
 
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 

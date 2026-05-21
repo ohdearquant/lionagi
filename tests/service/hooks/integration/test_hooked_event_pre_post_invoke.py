@@ -3,7 +3,7 @@
 
 """Test HookedEvent integration with pre/post hooks."""
 
-from typing import Any, Optional
+from typing import Any
 
 import pytest
 from pydantic import ConfigDict, Field

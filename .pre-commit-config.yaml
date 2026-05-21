@@ -10,18 +10,13 @@ repos:
       - id: check-ast
       - id: check-json
 
-  - repo: https://github.com/psf/black
-    rev: 24.3.0
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.0
     hooks:
-      - id: black
-        language_version: python3
+      - id: ruff-format
         exclude: '\.ipynb$'
-
-  - repo: https://github.com/pycqa/isort
-    rev: 5.13.2
-    hooks:
-      - id: isort
-        args: ["--profile", "black"]
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
         exclude: '\.ipynb$'
 
   - repo: https://github.com/asottile/pyupgrade
@@ -39,7 +34,7 @@ repos:
 
   # Studio frontend: ESLint (Next.js + TS) + Prettier on staged files.
   # Skipped if node_modules/ is absent (e.g. fresh checkout); enable with:
-  #   npm install --prefix apps/studio/frontend
+  #   pnpm install --prefix apps/studio/frontend
   - repo: local
     hooks:
       - id: studio-frontend-eslint
@@ -56,3 +51,9 @@ repos:
         files: ^apps/studio/frontend/.*\.(ts|tsx|js|jsx|mjs|cjs|json|css|md)$
         exclude: ^apps/studio/frontend/(node_modules|\.next|out|dist)/
         pass_filenames: true
+      - id: marketplace-lint
+        name: marketplace-lint
+        language: system
+        entry: scripts/ci.sh lint-marketplace
+        files: ^(marketplace/|\.claude-plugin/)
+        pass_filenames: false

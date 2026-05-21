@@ -3,7 +3,6 @@
 
 """Tests for lionagi.tools.context.ContextTool — public tool callable."""
 
-import pytest
 
 from lionagi.session.branch import Branch
 from lionagi.tools.context.context import ContextTool
@@ -87,7 +86,7 @@ async def test_context_tool_evict_invalid_range_returns_error():
 
 async def test_context_tool_status_counts_roles_and_estimated_tokens():
     """status returns per-role counts and non-negative estimated_tokens."""
-    from lionagi.protocols.messages import ActionRequest, ActionResponse
+    from lionagi.protocols.messages import ActionResponse
 
     branch = Branch(system="sys msg")
     branch.msgs.add_message(

@@ -144,7 +144,6 @@ class TestPlanValidation:
         # Pydantic validates FlowAgent construction, but a plan with
         # two agents sharing an id should fail at the flow-level check.
         # We construct the plan directly and import the validator.
-        from lionagi.cli.orchestrate import flow as flow_mod
 
         # Build plan with duplicate agent ids
         a1 = FlowAgent(id="r1", role="researcher")
@@ -288,7 +287,6 @@ class TestHandlePlayShortcut:
 class TestLazyStderrHandler:
     def test_emit_uses_current_stderr(self, capsys, monkeypatch):
         import logging
-        import sys
 
         handler = _LazyStderrHandler()
         handler.setFormatter(logging.Formatter("%(message)s"))

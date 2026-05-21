@@ -375,7 +375,7 @@ def test_prepare_operate_kw_snapshot_dir_alone_triggers_run_param():
 # ---------------------------------------------------------------------------
 
 from lionagi.operations.operate.operate import operate
-from lionagi.operations.types import ChatParam, ParseParam
+from lionagi.operations.types import ChatParam
 
 
 @pytest.mark.asyncio

@@ -495,7 +495,6 @@ async def test_attach_hooks_adds_postprocessor_for_standalone_tool():
 
 
 async def test_register_coding_tools_skips_malformed_keys():
-    from lionagi.agent.factory import _register_coding_tools
 
     config = AgentConfig.coding()
     config.hook_handlers["malformed_no_colon"] = [lambda *a: None]

@@ -12,11 +12,8 @@ import orjson
 import pytest
 
 from lionagi.ln._json_dump import (
-    get_orjson_default,
     json_dumpb,
     json_dumps,
-    json_lines_iter,
-    make_options,
 )
 
 

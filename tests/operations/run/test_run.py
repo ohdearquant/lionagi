@@ -18,7 +18,6 @@ from lionagi.protocols.messages import (
     ActionResponse,
     AssistantResponse,
     AssistantResponseContent,
-    Instruction,
 )
 from lionagi.service.imodel import iModel
 from lionagi.service.types.stream_chunk import StreamChunk
@@ -396,6 +395,7 @@ def _make_slow_cli_model(chunk_delay: float, n_chunks: int = 100):
     """A CLI iModel whose stream sleeps between each chunk. Use a long delay
     + many chunks so the total runtime exceeds any test timeout."""
     import anyio
+
     from lionagi.service.types.stream_chunk import StreamChunk
 
     m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
@@ -449,7 +449,6 @@ async def test_run_honors_caller_timeout_on_slow_stream():
 async def test_run_no_timeout_when_kwarg_absent():
     """Back-compat: callers that don't supply timeout get the legacy
     unbounded behaviour (subject to chunk count, not wall clock)."""
-    from lionagi.service.types.stream_chunk import StreamChunk
 
     model, _ = _make_slow_cli_model(chunk_delay=0.0, n_chunks=3)
     branch = Branch()
@@ -466,7 +465,6 @@ async def test_run_strips_timeout_from_create_event_kwargs():
     """The provider does NOT consume ``timeout``; verify it is popped from
     kw before create_event sees it (otherwise codex would receive an
     unexpected kwarg and may crash)."""
-    from lionagi.service.types.stream_chunk import StreamChunk
 
     model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
     branch = Branch()
