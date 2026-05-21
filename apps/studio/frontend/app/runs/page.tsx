@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Button from "@/components/Button";
 import Duration from "@/components/Duration";
@@ -66,7 +66,7 @@ function SkeletonRow() {
   );
 }
 
-export default function RunsPage() {
+function RunsPageInner() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -297,5 +297,13 @@ export default function RunsPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+export default function RunsPage() {
+  return (
+    <Suspense>
+      <RunsPageInner />
+    </Suspense>
   );
 }

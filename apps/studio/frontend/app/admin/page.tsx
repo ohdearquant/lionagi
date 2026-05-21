@@ -66,6 +66,7 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- refresh() calls setState inside async callbacks, not synchronously in the effect body
     void refresh();
   }, []);
 

@@ -19,11 +19,18 @@ export default function TeamsPage() {
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    listTeams({ limit: LIMIT, offset })
-      .then((d) => { if (active) { setData(d); setError(null); } })
-      .catch(() => { if (active) setError("Failed to load teams"); })
-      .finally(() => { if (active) setLoading(false); });
+    async function load() {
+      setLoading(true);
+      try {
+        const d = await listTeams({ limit: LIMIT, offset });
+        if (active) { setData(d); setError(null); }
+      } catch {
+        if (active) setError("Failed to load teams");
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+    void load();
     return () => { active = false; };
   }, [offset]);
 
