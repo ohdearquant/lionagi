@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import Badge from "@/components/Badge";
+import PageHeader from "@/components/PageHeader";
 import { listSessions } from "@/lib/api";
 import type { SessionSummary } from "@/lib/api";
 
@@ -16,6 +17,22 @@ function timeSince(ts: number): string {
   if (sec < 60) return `${sec}s ago`;
   if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
   return `${Math.floor(sec / 3600)}h ago`;
+}
+
+// Subtle skeleton row for loading state
+function SkeletonRow() {
+  return (
+    <tr className="border-b border-edge-subtle">
+      {[60, 28, 28, 52, 48].map((w, i) => (
+        <td key={i} className="px-3 py-2.5">
+          <div
+            className="skeleton h-3 rounded"
+            style={{ width: `${w}%`, maxWidth: `${w * 2}px` }}
+          />
+        </td>
+      ))}
+    </tr>
+  );
 }
 
 export default function RunsPage() {
@@ -45,72 +62,88 @@ export default function RunsPage() {
   }, []);
 
   return (
-    <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6">
-      <header className="flex flex-col gap-3 border-b border-edge pb-4">
-        <div>
-          <h1 className="text-xl font-semibold text-content-primary">Runs</h1>
-          <p className="text-sm text-content-muted">Live and completed agent sessions</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="ml-auto text-xs text-content-muted">
-            {sessions.length} run{sessions.length !== 1 ? "s" : ""}
-          </span>
-        </div>
-      </header>
+    <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 animate-page-enter">
+      <PageHeader
+        title="Runs"
+        subtitle="Live and completed agent sessions"
+        density="tight"
+        badges={
+          !loading ? (
+            <span className="text-meta text-content-muted tabular-nums">
+              {sessions.length} run{sessions.length !== 1 ? "s" : ""}
+            </span>
+          ) : null
+        }
+      />
 
-      {loading ? (
-        <div className="flex flex-1 items-center justify-center py-20">
-          <p className="text-sm text-content-muted">Loading...</p>
-        </div>
-      ) : sessions.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center py-20">
-          <p className="text-center text-sm text-content-muted">
-            No runs yet. Use <code className="text-content-secondary">li agent</code> or{" "}
-            <code className="text-content-secondary">li play</code> to start one.
-          </p>
-        </div>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-edge text-xs uppercase text-content-muted">
-                <th className="px-3 py-2">Name</th>
-                <th className="px-3 py-2">Branches</th>
-                <th className="px-3 py-2">Messages</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2">Updated</th>
+      <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
+        <table className="w-full text-left text-body">
+          <thead>
+            <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
+              <th className="px-3 py-2.5 font-medium">Name</th>
+              <th className="px-3 py-2.5 font-medium tabular-nums">Branches</th>
+              <th className="px-3 py-2.5 font-medium tabular-nums">Messages</th>
+              <th className="px-3 py-2.5 font-medium">Status</th>
+              <th className="px-3 py-2.5 font-medium">Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <>
+                <SkeletonRow />
+                <SkeletonRow />
+                <SkeletonRow />
+              </>
+            ) : sessions.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="px-3 py-14 text-center text-body text-content-muted">
+                  <span className="block mb-1 text-[11px]">No runs yet</span>
+                  <span className="text-meta">
+                    Use{" "}
+                    <code className="rounded border border-edge bg-surface-overlay px-1 py-0.5 font-mono text-content-secondary">
+                      li agent
+                    </code>{" "}
+                    or{" "}
+                    <code className="rounded border border-edge bg-surface-overlay px-1 py-0.5 font-mono text-content-secondary">
+                      li play
+                    </code>{" "}
+                    to start one.
+                  </span>
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {sessions.map((s) => (
-                <tr key={s.id} className="border-b border-edge/50 hover:bg-surface-input/50">
+            ) : (
+              sessions.map((s) => (
+                <tr
+                  key={s.id}
+                  className="border-b border-edge-subtle text-content-secondary transition-colors duration-100 hover:bg-surface-overlay"
+                >
                   <td className="px-3 py-2">
                     <Link
                       href={`/runs/${s.id}`}
-                      className="font-medium text-content-primary hover:text-blue-400"
+                      className="font-medium text-content-primary transition-colors duration-100 hover:text-status-running"
                     >
                       {s.name || s.id.slice(0, 8)}
                     </Link>
-                    <span className="ml-2 font-mono text-xs text-content-muted">
+                    <span className="ml-2 font-mono text-meta text-content-muted">
                       {s.id.slice(0, 8)}
                     </span>
                   </td>
-                  <td className="px-3 py-2 text-content-secondary">{s.branch_count}</td>
-                  <td className="px-3 py-2 text-content-secondary">{s.message_count}</td>
+                  <td className="px-3 py-2 tabular-nums">{s.branch_count}</td>
+                  <td className="px-3 py-2 tabular-nums">{s.message_count}</td>
                   <td className="px-3 py-2">
                     <Badge tone={s.status === "running" ? "running" : "ok"}>
                       {s.status}
                     </Badge>
                   </td>
-                  <td className="px-3 py-2 text-xs text-content-muted">
+                  <td className="px-3 py-2 text-meta text-content-muted">
                     {s.status === "running" ? timeSince(s.updated_at) : formatTime(s.updated_at)}
                   </td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </main>
   );
 }

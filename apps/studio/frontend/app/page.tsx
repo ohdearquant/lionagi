@@ -124,7 +124,7 @@ export default function DashboardPage() {
   const rangeLabel = range === "all" ? "all time" : range;
 
   return (
-    <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6">
+    <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 animate-page-enter">
       <PageHeader
         title="Dashboard"
         subtitle="Operational overview"
@@ -166,18 +166,18 @@ export default function DashboardPage() {
 
       {/* Secondary inventory strip */}
       {stats ? (
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 rounded border border-edge bg-surface-overlay px-4 py-2 text-meta text-content-muted">
-          <span className="uppercase tracking-[0.06em]">Inventory</span>
-          <Link href="/playbooks" className="hover:text-content-primary">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 rounded border border-edge bg-surface-overlay px-4 py-2.5 text-meta text-content-muted">
+          <span className="uppercase tracking-[0.08em] text-content-muted">Inventory</span>
+          <Link href="/playbooks" className="transition-colors duration-100 hover:text-content-primary">
             <span className="tabular-nums text-content-secondary">{stats.playbooks}</span> playbooks
           </Link>
-          <Link href="/agents" className="hover:text-content-primary">
+          <Link href="/agents" className="transition-colors duration-100 hover:text-content-primary">
             <span className="tabular-nums text-content-secondary">{stats.agents}</span> agents
           </Link>
-          <Link href="/runs" className="hover:text-content-primary">
+          <Link href="/runs" className="transition-colors duration-100 hover:text-content-primary">
             <span className="tabular-nums text-content-secondary">{stats.runs}</span> runs total
           </Link>
-          <Link href="/shows" className="hover:text-content-primary">
+          <Link href="/shows" className="transition-colors duration-100 hover:text-content-primary">
             <span className="tabular-nums text-content-secondary">{stats.shows}</span> shows
           </Link>
         </div>
@@ -192,8 +192,8 @@ export default function DashboardPage() {
             href="/runs?filter=attention"
           />
           {buckets.attention.length === 0 ? (
-            <div className="rounded border border-status-success/30 bg-status-success-bg px-4 py-4 text-body text-status-success">
-              <span className="font-medium">All clean.</span>{" "}
+            <div className="rounded border border-status-success/25 bg-status-success-bg px-4 py-4 text-body text-status-success shadow-card">
+              <span className="font-semibold">All clean.</span>{" "}
               <span className="text-content-secondary">
                 No failed, stuck, or blocked runs in window.
               </span>
@@ -216,20 +216,20 @@ export default function DashboardPage() {
       {/* Shows table */}
       <section>
         <SectionHeader title="Shows" count={shows.length} href="/shows" />
-        <div className="overflow-hidden rounded border border-edge bg-surface-raised">
+        <div className="overflow-hidden rounded border border-edge bg-surface-raised shadow-card">
           <table className="w-full text-left text-body">
             <thead>
               <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
-                <th className="px-3 py-2 font-medium">Topic</th>
-                <th className="px-3 py-2 font-medium tabular-nums">Plays</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium">Last update</th>
+                <th className="px-3 py-2.5 font-medium">Topic</th>
+                <th className="px-3 py-2.5 font-medium tabular-nums">Plays</th>
+                <th className="px-3 py-2.5 font-medium">Status</th>
+                <th className="px-3 py-2.5 font-medium">Last update</th>
               </tr>
             </thead>
             <tbody>
               {shows.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-3 py-6 text-center text-body text-content-muted">
+                  <td colSpan={4} className="px-3 py-8 text-center text-meta text-content-muted">
                     No shows
                   </td>
                 </tr>
@@ -237,17 +237,17 @@ export default function DashboardPage() {
                 shows.map((show) => (
                   <tr
                     key={show.topic}
-                    className="border-b border-edge-subtle hover:bg-surface-overlay"
+                    className="border-b border-edge-subtle text-content-secondary transition-colors duration-100 hover:bg-surface-overlay"
                   >
                     <td className="px-3 py-2">
                       <Link
                         href={`/shows/${encodeURIComponent(show.topic)}`}
-                        className="text-status-running hover:underline"
+                        className="text-status-running transition-colors duration-100 hover:opacity-80"
                       >
                         {show.topic}
                       </Link>
                     </td>
-                    <td className="px-3 py-2 tabular-nums text-content-secondary">{show.play_count}</td>
+                    <td className="px-3 py-2 tabular-nums">{show.play_count}</td>
                     <td className="px-3 py-2">
                       <StatusPill value={show.latest_status} kind="lifecycle" />
                     </td>
@@ -275,13 +275,16 @@ function SectionHeader({
   href: string;
 }) {
   return (
-    <div className="mb-3 flex items-baseline justify-between">
-      <h2 className="text-label font-semibold text-content-primary">
-        {title} <span className="tabular-nums text-content-muted">({count})</span>
-      </h2>
+    <div className="mb-2.5 flex items-center justify-between">
+      <div className="flex items-center gap-2">
+        <h2 className="text-label font-semibold text-content-primary">{title}</h2>
+        <span className="rounded bg-surface-overlay px-1.5 py-0.5 font-mono text-meta tabular-nums text-content-muted">
+          {count}
+        </span>
+      </div>
       <Link
         href={href}
-        className="text-meta uppercase tracking-[0.06em] text-content-muted hover:text-content-primary"
+        className="text-meta text-content-muted transition-colors duration-100 hover:text-content-primary"
       >
         View all →
       </Link>
@@ -299,31 +302,34 @@ function RunsTable({
   now: number;
 }) {
   return (
-    <div className="overflow-hidden rounded border border-edge bg-surface-raised">
+    <div className="overflow-hidden rounded border border-edge bg-surface-raised shadow-card">
       <table className="w-full text-left text-body">
         <thead>
           <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
-            <th className="px-3 py-2 font-medium">Run</th>
-            <th className="px-3 py-2 font-medium">Kind</th>
-            <th className="px-3 py-2 font-medium">Status</th>
-            <th className="px-3 py-2 font-medium tabular-nums text-right">Duration</th>
-            <th className="px-3 py-2 font-medium">Started</th>
+            <th className="px-3 py-2.5 font-medium">Run</th>
+            <th className="px-3 py-2.5 font-medium">Kind</th>
+            <th className="px-3 py-2.5 font-medium">Status</th>
+            <th className="px-3 py-2.5 font-medium tabular-nums text-right">Duration</th>
+            <th className="px-3 py-2.5 font-medium">Started</th>
           </tr>
         </thead>
         <tbody>
           {runs.length === 0 ? (
             <tr>
-              <td colSpan={5} className="px-3 py-6 text-center text-body text-content-muted">
+              <td colSpan={5} className="px-3 py-8 text-center text-meta text-content-muted">
                 {emptyText}
               </td>
             </tr>
           ) : (
             runs.map((run) => (
-              <tr key={run.run_id} className="border-b border-edge-subtle hover:bg-surface-overlay">
+              <tr
+                key={run.run_id}
+                className="border-b border-edge-subtle text-content-secondary transition-colors duration-100 hover:bg-surface-overlay"
+              >
                 <td className="px-3 py-2">
                   <Link
                     href={`/runs/${run.run_id}`}
-                    className="font-mono text-body text-status-running hover:underline"
+                    className="font-mono text-body text-status-running transition-colors duration-100 hover:opacity-80"
                   >
                     {run.run_id.slice(-12)}
                   </Link>

@@ -220,15 +220,15 @@ function OverviewSection({ data }: { data: OverviewData }) {
   return (
     <div id="overview" className="scroll-mt-24">
       <SectionHeader label="Overview" />
-      <div className="rounded border border-edge bg-surface-raised px-4 py-3">
-        <div className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3 lg:grid-cols-6">
+      <div className="rounded border border-edge bg-surface-raised px-4 py-3 shadow-card">
+        <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-6">
           {stats.map((s) => (
             <div key={s.label} className="flex flex-col gap-0.5">
               <span className="text-[9px] font-semibold uppercase tracking-wider text-content-muted">
                 {s.label}
               </span>
               <span
-                className={`font-mono text-sm font-semibold ${
+                className={`font-mono text-label font-semibold tabular-nums tracking-tight ${
                   s.tone === "error"
                     ? "text-status-error"
                     : s.tone === "ok"
@@ -242,11 +242,11 @@ function OverviewSection({ data }: { data: OverviewData }) {
           ))}
         </div>
         {provenance.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-3 border-t border-edge pt-3">
+          <div className="mt-3 flex flex-wrap gap-3 border-t border-edge-subtle pt-3">
             {provenance.map((p) => (
               <div key={p.label} className="flex items-center gap-1.5">
                 <span className="text-[9px] uppercase tracking-wide text-content-muted">{p.label}</span>
-                <span className="font-mono text-[11px] text-content-secondary">{p.value}</span>
+                <span className="font-mono text-meta text-content-secondary">{p.value}</span>
               </div>
             ))}
           </div>
@@ -607,7 +607,9 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
   if (error) {
     return (
       <main className="flex items-center justify-center py-20">
-        <p className="text-sm text-status-error">{error}</p>
+        <div className="rounded border border-status-error/30 bg-status-error-bg px-4 py-3 text-body text-status-error shadow-card">
+          {error}
+        </div>
       </main>
     );
   }
@@ -615,7 +617,14 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
   if (!session) {
     return (
       <main className="flex items-center justify-center py-20">
-        <p className="text-sm text-content-muted">Loading...</p>
+        <div className="flex flex-col items-center gap-3">
+          <div className="flex gap-1">
+            <span className="block h-2 w-2 rounded-full bg-content-muted opacity-60 animate-bounce" style={{ animationDelay: "0ms" }} />
+            <span className="block h-2 w-2 rounded-full bg-content-muted opacity-60 animate-bounce" style={{ animationDelay: "150ms" }} />
+            <span className="block h-2 w-2 rounded-full bg-content-muted opacity-60 animate-bounce" style={{ animationDelay: "300ms" }} />
+          </div>
+          <p className="text-meta text-content-muted">Loading session…</p>
+        </div>
       </main>
     );
   }
@@ -654,7 +663,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
   ];
 
   return (
-    <div className="flex min-h-screen w-full flex-col bg-surface-base text-content-primary">
+    <div className="flex min-h-screen w-full flex-col bg-surface-base text-content-primary animate-page-enter">
       {/* Header */}
       <header className="sticky top-11 z-30 flex items-center gap-3 border-b border-edge bg-surface-base px-3 py-1.5 xl:px-4">
         <Link href="/runs" className="shrink-0 text-sm text-content-secondary hover:text-content-primary">
