@@ -454,6 +454,13 @@ async def _run_flow(
     # ADR-0012: `flow` and `play` are distinct invocation kinds. A playbook
     # run (li play NAME, or li o flow -p NAME) is `play`; an ad-hoc DAG flow
     # without a playbook is `flow`.
+    # ADR-0022: surface the orchestrator's default model + effort on the
+    # session row. Per-branch (per-agent) model is written by
+    # _register_branch_hook → create_branch when each worker spawns.
+    _orc_ms = parse_model_spec(env.default_model_spec) if env.default_model_spec else None
+    _orc_provider = None
+    if _orc_ms and "/" in _orc_ms.model:
+        _orc_provider = _orc_ms.model.split("/", 1)[0]
     await start_live_persist(
         env,
         invocation_kind="play" if playbook_name else "flow",
@@ -461,6 +468,9 @@ async def _run_flow(
         agent_name=agent_name,
         artifacts_path=str(env.run.artifact_root),
         invocation_id=invocation_id,
+        model=_orc_ms.model if _orc_ms else None,
+        provider=_orc_provider,
+        effort=env.effort,
     )
 
     inner_kw = dict(

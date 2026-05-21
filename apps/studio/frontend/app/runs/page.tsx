@@ -220,6 +220,7 @@ function RunsPageInner() {
           <thead>
             <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
               <th className="px-3 py-2.5 font-medium">Run</th>
+              <th className="px-3 py-2.5 font-medium">Model</th>
               <th className="px-3 py-2.5 font-medium">Status</th>
               <th className="px-3 py-2.5 font-medium">Health</th>
               <th className="px-3 py-2.5 font-medium">Activity</th>
@@ -235,7 +236,7 @@ function RunsPageInner() {
               </>
             ) : runs.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-3 py-14 text-center text-body text-content-muted">
+                <td colSpan={6} className="px-3 py-14 text-center text-body text-content-muted">
                   <span className="block mb-1 text-[11px]">No runs found</span>
                   {(statuses.length > 0 || playbook) && (
                     <span className="text-meta">Try adjusting your filters.</span>
@@ -272,6 +273,23 @@ function RunsPageInner() {
                       <span className="font-mono text-meta text-content-muted">
                         {shortRunId(run)}
                       </span>
+                    </td>
+                    <td className="px-3 py-2">
+                      {run.model ? (
+                        <span
+                          className="font-mono text-meta text-content-secondary"
+                          title={run.effort ? `effort: ${run.effort}` : undefined}
+                        >
+                          {run.model}
+                          {run.effort ? (
+                            <span className="ml-1 text-content-muted">
+                              · {run.effort}
+                            </span>
+                          ) : null}
+                        </span>
+                      ) : (
+                        <span className="text-meta text-content-muted">—</span>
+                      )}
                     </td>
                     <td className="px-3 py-2">
                       <StatusPill

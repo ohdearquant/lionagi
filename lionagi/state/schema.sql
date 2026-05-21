@@ -118,7 +118,17 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- /codex-pr-review) that spawned this session. NULL when the CLI
   -- ran standalone. Orthogonal to invocation_kind, which describes the
   -- CLI primitive (agent / play / flow / fanout / show-play).
-  invocation_id   TEXT    REFERENCES invocations(id)
+  invocation_id   TEXT    REFERENCES invocations(id),
+  -- ── Provenance disclosure (ADR-0022) ────────────────────────────────
+  -- Resolved values — what the runtime actually used after defaults,
+  -- overrides, and fallbacks. ``model`` is the canonical spec ("claude/
+  -- claude-sonnet-4-6"), not the user input ("sonnet"). ``agent_hash``
+  -- is a 16-char SHA-256 fingerprint of the agent profile content at
+  -- invocation time for drift detection.
+  model           TEXT,
+  provider        TEXT,
+  effort          TEXT,
+  agent_hash      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_updated
@@ -143,7 +153,16 @@ CREATE TABLE IF NOT EXISTS branches (
   name            TEXT,
   session_id      TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   progression_id  TEXT    NOT NULL REFERENCES progressions(id),
-  system_msg_id   TEXT    REFERENCES messages(id)   -- system prompt; just a reference to the message
+  system_msg_id   TEXT    REFERENCES messages(id),  -- system prompt; just a reference to the message
+  -- ── Provenance disclosure (ADR-0022) ────────────────────────────────
+  -- Per-branch (per-agent) resolved model + provider + agent role name.
+  -- For multi-agent flows the session-level model is the "default" and
+  -- per-branch model is the actual model that produced messages on this
+  -- branch. agent_name here is the *role* within the flow (e.g., "r1"
+  -- or "critic"), not the agent_profile name on sessions.
+  model           TEXT,
+  provider        TEXT,
+  agent_name      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_branches_session
