@@ -201,7 +201,13 @@ def sqlite_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             )
             await db.db.commit()
 
-    asyncio.get_event_loop().run_until_complete(_seed_db())
+    # Python 3.10+: asyncio.get_event_loop() raises in a fresh thread.
+    # CI xdist workers start without a loop. Use a fresh loop per fixture.
+    _loop = asyncio.new_event_loop()
+    try:
+        _loop.run_until_complete(_seed_db())
+    finally:
+        _loop.close()
 
     from apps.studio.server.app import app
 
