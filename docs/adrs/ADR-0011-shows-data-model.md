@@ -148,6 +148,66 @@ GET /api/shows/{topic}/plays/{name}
                           → play.session_id for drill-down link to /runs/{session_id}
 ```
 
+### Response schema — `GET /api/shows/{topic}`
+
+The endpoint returns a JSON object with the following canonical fields:
+
+```json
+{
+  "topic":         "<string>  — show directory name (URL-safe)",
+  "path":          "<string>  — absolute filesystem path to show directory",
+  "show_md":       "<string | null>  — raw content of _show.md; null if file absent",
+  "goal":          "<string | null>  — one-line summary from shows.goal column, or
+                                       extracted from _show.md first paragraph if not in DB",
+  "status":        "<string>  — shows.status value (active|completed|aborted|imported)
+                                or 'unknown' for shows not yet imported to SQLite",
+  "status_source": "<string>  — 'sqlite' when row found in DB; 'filesystem' when derived
+                                from filesystem only; 'imported' for import_shows rows",
+  "plays":         "<array>   — play objects (see play shape below)"
+}
+```
+
+Each element in `plays` has the following shape (SQLite-backed path):
+
+```json
+{
+  "name":       "<string>",
+  "meta": {
+    "worktree":    "<string | null>",
+    "branch":      "<string | null>",
+    "attempt":     "<integer>",
+    "started_at":  "<real | null>  — unix timestamp",
+    "ended_at":    "<real | null>  — unix timestamp",
+    "exit_code":   "<integer | null>",
+    "merged_at":   "<real | null>",
+    "merge_sha":   "<string | null>",
+    "status":      "<string>  — ADR-0011 play status vocabulary"
+  },
+  "verdict": {
+    "gate_passed": "<boolean | null>",
+    "feedback":    "<string | null>"
+  },
+  "session_id":   "<string | null>  — FK to sessions.id",
+  "session_name": "<string | null>",
+  "intent":       "<string | null>  — raw content of _intent.md",
+  "updated_at":   "<real>  — unix timestamp",
+  "depends_on":   "<array of string>  — play names this play depends on"
+}
+```
+
+For shows not imported to SQLite (filesystem-only fallback), the play shape is minimal:
+`{name, meta: <raw _meta.json object>, verdict: <_verdict.json object | null>, updated_at}`.
+
+#### Pending migration — `status_source` column
+
+`status_source` is returned by the API (`"sqlite"` or `"filesystem"`) but is **not yet a
+column in `schema.sql`** — it is derived in code. The `shows` table DDL in this ADR includes
+the column (see Schema section above), but the actual `schema.sql` and `_MIGRATION_COLUMNS`
+in `db.py` do not yet carry it. An `ALTER TABLE shows ADD COLUMN status_source TEXT` migration
+is required before `status_source` can be persisted or queried from the database. Until that
+migration lands, the field is always computed at response time from the code path taken (DB
+row found vs. filesystem fallback).
+
 ### Migration: `li state import-shows`
 
 One-time import of existing filesystem shows into SQLite:
