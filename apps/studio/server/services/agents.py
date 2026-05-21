@@ -6,7 +6,7 @@ import yaml
 
 from lionagi.cli._runs import LIONAGI_HOME
 
-from ._path_safety import safe_path_join
+from ._path_safety import public_path, safe_path_join
 
 _AGENTS_ROOT = LIONAGI_HOME / "agents"
 
@@ -42,7 +42,7 @@ def list_agents() -> list[dict[str, Any]]:
             provider, model_id = "", model_raw
         entry: dict[str, Any] = {
             "name": path.stem,
-            "path": str(path),
+            "path": public_path(path),
             "provider": provider,
             "model": model_id,
             "description": str(fm.get("description") or ""),
@@ -50,7 +50,7 @@ def list_agents() -> list[dict[str, Any]]:
         }
         if path.is_symlink():
             try:
-                entry["symlink_target"] = str(path.resolve())
+                entry["symlink_target"] = public_path(path.resolve())
             except OSError:
                 pass
         out.append(entry)
@@ -74,7 +74,7 @@ def get_agent(name: str) -> dict[str, Any] | None:
     # Flatten into AgentProfile shape expected by the frontend
     result: dict[str, Any] = {
         "name": stem,
-        "path": str(path),
+        "path": public_path(path),
         "provider": str(fm.get("provider") or ""),
         "model": str(fm.get("model") or ""),
         "system_prompt": fm.get("system_prompt") or (body if body else None),
@@ -88,7 +88,7 @@ def get_agent(name: str) -> dict[str, Any] | None:
 
     if path.is_symlink():
         try:
-            result["symlink_target"] = str(path.resolve())
+            result["symlink_target"] = public_path(path.resolve())
         except OSError:
             pass
 

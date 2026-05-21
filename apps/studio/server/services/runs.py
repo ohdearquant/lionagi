@@ -6,7 +6,7 @@ from typing import Any
 
 from lionagi.cli._runs import RUNS_ROOT
 
-from ._path_safety import safe_path_join
+from ._path_safety import public_path, safe_path_join
 from . import sessions as _sessions_svc
 
 # ---------------------------------------------------------------------------
@@ -71,8 +71,8 @@ def _adapt_summary(
 
     return {
         "run_id": run_id,
-        "state_root": str(state_root),
-        "artifact_root": str(artifact_root),
+        "state_root": public_path(state_root),
+        "artifact_root": public_path(artifact_root),
         "worker_name": str(worker_name),
         "task": task,
         "status": status,

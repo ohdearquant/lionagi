@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from starlette.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
 
 from .config import CORS_ORIGINS
 from .routers import agents, definitions, playbooks, plugins, runs, sessions, shows, skills
@@ -14,6 +16,8 @@ from .services import sessions as sessions_svc
 from .services import shows as shows_svc
 from .services import skills as skills_svc
 
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
 app = FastAPI(title="Lion Studio Server")
 
 app.add_middleware(
@@ -22,6 +26,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def require_studio_bearer_token(request: Request, call_next):
+    token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
+    if (
+        token
+        and request.url.path.startswith("/api")
+        and request.method in _MUTATING_METHODS
+        and request.headers.get("authorization") != f"Bearer {token}"
+    ):
+        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
 
 app.include_router(runs.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")

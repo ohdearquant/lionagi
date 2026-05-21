@@ -6,7 +6,7 @@ import yaml
 
 from lionagi.cli._runs import LIONAGI_HOME
 
-from ._path_safety import safe_path_join
+from ._path_safety import public_path, safe_path_join
 
 SKILLS_ROOT = LIONAGI_HOME / "skills"
 
@@ -76,7 +76,7 @@ def list_skills() -> list[dict[str, Any]]:
             {
                 "name": fm.get("name") or entry.stem,
                 "description": str(fm.get("description") or "").strip(),
-                "path": str(path),
+                "path": public_path(path),
                 "allowed_tools": allowed_tools,
             }
         )
@@ -112,7 +112,7 @@ def get_skill(name: str) -> dict[str, Any] | None:
     return {
         "name": fm.get("name") or name.removesuffix(".md"),
         "description": str(fm.get("description") or "").strip(),
-        "path": str(path),
+        "path": public_path(path),
         "allowed_tools": allowed_tools,
         "content": body,
     }
