@@ -18,24 +18,31 @@ jobs:
 
       - name: Banned MCP server names
         # rg exits 0 if match found; ! inverts so step fails on any match
+        # --hidden ensures dot-prefixed dirs like .claude-plugin/ are searched
         run: |
-          ! rg 'mcp__khive-(internal|oss|staging)__' marketplace/ .claude-plugin/ \
+          ! rg --hidden 'mcp__khive-(internal|oss|staging)__' marketplace/ .claude-plugin/ \
             $([ -d skills ] && echo 'skills/') 2>/dev/null
 
       - name: Banned models (codex/gpt-5.5)
         run: |
-          ! rg 'codex/gpt-5\.5' marketplace/ .claude-plugin/ \
+          ! rg --hidden 'codex/gpt-5\.5' marketplace/ .claude-plugin/ \
             $([ -d skills ] && echo 'skills/') 2>/dev/null
 
       - name: Banned models (claude-opus-4-7)
         run: |
-          ! rg 'claude-opus-4-7' marketplace/ .claude-plugin/ \
+          ! rg --hidden 'claude-opus-4-7' marketplace/ .claude-plugin/ \
             $([ -d skills ] && echo 'skills/') 2>/dev/null
 
       - name: No absolute paths
         run: |
-          ! rg '/Users/' marketplace/ .claude-plugin/ \
+          ! rg --hidden '/Users/' marketplace/ .claude-plugin/ \
             $([ -d skills ] && echo 'skills/') 2>/dev/null
+
+      - name: yolo without bypass
+        # Non-blocking warning: li play --yolo without --bypass present on the same line
+        run: |
+          ! rg --hidden 'li play.*--yolo(?!.*--bypass)' -P marketplace/ .claude-plugin/ \
+            $([ -d skills ] && echo 'skills/') 2>/dev/null || true
 
       - name: Validate marketplace manifests
         run: python3 marketplace/scripts/validate_manifests.py
