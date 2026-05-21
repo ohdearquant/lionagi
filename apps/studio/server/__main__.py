@@ -1,4 +1,5 @@
 import uvicorn
+
 from apps.studio.server.app import app
 from apps.studio.server.config import HOST, STUDIO_PORT
 

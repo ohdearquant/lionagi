@@ -5,8 +5,8 @@
 
 ## Context
 
-Lion Studio's frontend uses Next.js 14 + TypeScript + Tailwind CSS with no UI
-component library (no Radix, no shadcn, no Headless UI). All interactive
+Lion Studio's frontend uses Next.js 16 + React 19 + TypeScript + Tailwind CSS
+with no UI component library (no Radix, no shadcn, no Headless UI). All interactive
 components — Badge, StatusPill, Button, Toast, tabs, accordions, two-pane
 layouts, definition editors — are custom-built with Tailwind.
 
@@ -46,6 +46,32 @@ Currently the app uses custom tabs (plugin detail) and collapsible accordions (p
 - Theming: CSS custom properties in `globals.css`, class-based dark/light toggle.
 - Accessibility: manual ARIA attributes where needed (not systematically audited).
 - Animation: CSS transitions and Tailwind `animate-*` utilities. No Framer Motion.
+
+### Approved exceptions — content-rendering primitives
+
+Certain rendering tasks involve enough complexity that a hand-rolled implementation would
+duplicate significant library work without adding value. The threshold for approving a
+dependency as an exception to the zero-library rule is: the primitive simultaneously
+requires async parsing, a well-specified extension grammar, and tight React reconciliation
+integration — characteristics that individually justify custom code but together define a
+rendering pipeline.
+
+**`react-markdown` + `remark-gfm`** are approved as the markdown rendering stack.
+Markdown rendering clears the exception threshold for the following reasons:
+
+1. **GFM extension grammar** — tables, task lists, autolinks, and strikethrough each have
+   their own tokenizer rules. Implementing even a subset of GFM correctly is a non-trivial
+   parser project.
+2. **React reconciliation** — naive innerHTML injection bypasses React's tree; a React-aware
+   renderer is required for safe, diffable markdown output inside component trees.
+3. **Async parsing pipeline** — the remark/rehype AST pipeline enables safe HTML sanitization,
+   lazy plugin loading, and future extension (e.g., syntax highlighting) without rewriting the
+   renderer.
+
+`react-markdown` + `remark-gfm` may be used wherever markdown rendering is genuinely needed:
+plan documents, agent/playbook descriptions, plugin manifests, show `_show.md` content, and
+session summaries. They are not a general escape hatch — UI layout, interactive components, and
+data display still follow the zero-library rule.
 
 ### What we accept as trade-offs
 

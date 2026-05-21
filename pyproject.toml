@@ -135,6 +135,11 @@ studio = [
     "uvicorn>=0.34",
     "pyyaml>=6.0",
     "starlette>=0.46.2",
+    # F-A4-9 (ADR-0018 §"li studio extras dependency"): aiosqlite is required
+    # by the studio services that query state.db directly (sessions, shows, runs,
+    # definitions). It is also listed as a core dep but explicit in the extra
+    # keeps the [studio] group self-contained for pip install lionagi[studio].
+    "aiosqlite>=0.21.0",
 ]
 
 all = [

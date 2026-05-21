@@ -38,8 +38,8 @@ environment's UI.
 ### Primary distribution: bundled static assets in the Python package
 
 The React frontend is built at CI/release time. The built static files
-(`dist/`) are included in the Python package under
-`lionagi/studio/static/`. The FastAPI server serves them directly.
+are included in the Python package under `lionagi/studio/static/`. The
+FastAPI server serves them directly.
 
 ```
 pip install lionagi[studio]    # or: pip install lionagi (if studio becomes default)
@@ -49,16 +49,54 @@ li studio                      # starts uvicorn, serves frontend + API on 127.0.
 Users need: Python 3.11+, `pip install lionagi[studio]`. No Node.js, no npm,
 no Docker. One command to start.
 
+**Next.js output strategy — `output: "export"` (static HTML/JS/CSS)**:
+
+Next.js builds do not output to `dist/`. The output directory depends on
+configuration:
+
+- Default (no config): `.next/` — server-rendered output; requires Node.js at runtime.
+- `output: "standalone"`: `.next/standalone/` + `.next/static/` — self-contained Node server.
+- `output: "export"`: `out/` — fully static HTML/JS/CSS; no Node.js at runtime.
+
+For the bundled-static-assets-in-pip-wheel model, `output: "export"` is the
+correct choice. It produces a `out/` directory of static files that FastAPI
+can serve with `StaticFiles`, and has no Node.js runtime requirement for
+end users. This requires adding `output: "export"` to `apps/studio/frontend/next.config.mjs`
+when this ADR is implemented:
+
+```js
+// apps/studio/frontend/next.config.mjs  (to add at implementation time)
+const nextConfig = {
+  output: "export",
+};
+export default nextConfig;
+```
+
+> **Caveat**: `output: "export"` disables App Router server components, API
+> routes, and `next/image` optimization. Studio currently uses none of these —
+> all API calls go to the Python backend on `:8765`. If server components or
+> Next.js API routes are added in the future, reconsider `"standalone"` output
+> and update this ADR.
+
 **Build pipeline** (CI only — users never run this):
 
 ```bash
-cd apps/studio/frontend && npm ci && npm run build
-cp -r dist/ ../../lionagi/studio/static/
+# ADR-0002 §Appendix A: --legacy-peer-deps is required due to ESLint 9 /
+# @eslint/js peer conflict introduced by the Next.js 14 → 16 upgrade.
+# Every npm install in CI MUST use this flag until the conflict is resolved.
+cd apps/studio/frontend && npm ci --legacy-peer-deps && npm run build
+cp -r out/ ../../lionagi/studio/static/
 ```
 
 The `lionagi/studio/static/` directory is `.gitignore`d (built artifact, not
 source). The Python package's `pyproject.toml` includes it via
 `[tool.hatch.build.targets.wheel] / packages`.
+
+> **ADR-0019 candidate**: when the `apps/studio/` tree is relocated to
+> `lionagi/studio/` (as part of packaging), the build pipeline source path and
+> the `StaticFiles` mount path will change together. A separate ADR should
+> capture the relocation decision, target layout, and any changes to the
+> `output: "export"` static serving path.
 
 **Server startup** (`li studio`):
 
@@ -76,11 +114,21 @@ precedence. The frontend's client-side router handles all non-API paths.
 Developers who modify the frontend use the standard dev server:
 
 ```bash
-cd apps/studio/frontend && npm run dev    # Vite dev server on :5173
+cd apps/studio/frontend && npm run dev    # Next.js dev server on :3000
 cd apps/studio && uv run python -m server  # API server on :8765
 ```
 
-Vite proxies `/api/*` to `:8765`. This is already configured.
+The frontend is Next.js (not Vite — there is no `vite.config.ts`). In development, the
+Next.js dev server runs on port 3000 and reads the `NEXT_PUBLIC_STUDIO_API_BASE` environment
+variable to resolve API calls:
+
+```bash
+NEXT_PUBLIC_STUDIO_API_BASE=http://localhost:8765 npm run dev
+```
+
+When `NEXT_PUBLIC_STUDIO_API_BASE` is set, `lib/api.ts` prefixes all `/api/*` fetch calls
+with that base URL, routing them to the backend on `:8765`. No proxy configuration in
+`next.config.mjs` is required for this workflow.
 
 ### Optional: Docker Compose for server/team deployment
 
@@ -120,8 +168,11 @@ host access. Docker is for shared/server deployments."
 The `[studio]` extra adds:
 
 - `uvicorn` — ASGI server
-- `fastapi` — already a dependency of lionagi
-- `aiosqlite` — already decided as a dependency
+- `fastapi` — already a core dependency of lionagi
+- `aiosqlite>=0.21.0` — required by studio services (sessions, shows, runs, definitions)
+  that query `state.db` directly; also a core dependency, but listed explicitly in `[studio]`
+  so that `pip install lionagi[studio]` is self-contained without relying on transitive
+  resolution from the base package
 
 No heavyweight additions. The frontend is pre-built static HTML/JS/CSS —
 zero runtime frontend dependencies.

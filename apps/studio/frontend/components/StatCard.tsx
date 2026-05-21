@@ -11,9 +11,9 @@ export interface StatCardProps {
 }
 
 const deltaClasses: Record<StatDeltaTone, string> = {
-  neutral: "text-neutral-500",
-  up: "text-emerald-300",
-  down: "text-red-300",
+  neutral: "text-content-muted",
+  up: "text-status-success",
+  down: "text-status-error",
 };
 
 export default function StatCard({
@@ -25,14 +25,21 @@ export default function StatCard({
 }: StatCardProps) {
   return (
     <section
-      className={["min-w-0 rounded border border-neutral-800 bg-neutral-950 p-4", className]
+      className={[
+        "min-w-0 rounded border border-edge bg-surface-raised p-4 shadow-card transition-all duration-150 hover:border-edge-strong hover:shadow-card-hover",
+        className,
+      ]
         .filter(Boolean)
         .join(" ")}
     >
-      <div className="truncate text-xs uppercase tracking-normal text-neutral-500">{label}</div>
-      <div className="mt-3 truncate text-3xl font-semibold text-neutral-200">{value}</div>
+      <div className="truncate text-meta uppercase tracking-[0.08em] text-content-muted">
+        {label}
+      </div>
+      <div className="mt-3 truncate text-3xl font-semibold tabular-nums tracking-tight text-content-primary">
+        {value}
+      </div>
       {delta !== undefined && delta !== null ? (
-        <div className={`mt-2 truncate text-sm ${deltaClasses[deltaTone]}`}>{delta}</div>
+        <div className={`mt-1.5 truncate text-body ${deltaClasses[deltaTone]}`}>{delta}</div>
       ) : null}
     </section>
   );

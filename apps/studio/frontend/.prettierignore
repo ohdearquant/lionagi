@@ -1,0 +1,7 @@
+.next/
+node_modules/
+out/
+dist/
+*.min.js
+*.min.css
+package-lock.json

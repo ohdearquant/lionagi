@@ -145,9 +145,9 @@ export default function Table<T>({
   };
 
   return (
-    <div className="overflow-x-auto border border-neutral-800">
-      <table className="min-w-full table-fixed border-collapse text-sm">
-        <thead className="border-b border-neutral-800 bg-neutral-900/70 text-xs uppercase text-neutral-500">
+    <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
+      <table className="min-w-full table-fixed border-collapse text-body">
+        <thead className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
           <tr>
             {columns.map((column) => {
               const id = columnId(column);
@@ -159,7 +159,7 @@ export default function Table<T>({
                   key={id}
                   scope="col"
                   className={[
-                    "px-3 py-2 font-medium tracking-normal",
+                    "px-3 py-2.5 font-medium",
                     column.align === "right" ? "text-right" : "text-left",
                     column.className,
                     column.headerClassName,
@@ -171,11 +171,23 @@ export default function Table<T>({
                     <button
                       type="button"
                       onClick={() => toggleSort(column)}
-                      className="inline-flex max-w-full items-center gap-1 text-neutral-500 hover:text-neutral-200"
+                      aria-sort={
+                        active ? (sort.direction === "asc" ? "ascending" : "descending") : "none"
+                      }
+                      className={[
+                        "inline-flex max-w-full items-center gap-1 transition-colors duration-100 hover:text-content-primary",
+                        active ? "text-content-primary" : "text-content-muted",
+                      ].join(" ")}
                     >
                       <span className="truncate">{column.header}</span>
-                      <span aria-hidden="true" className="shrink-0 text-[10px]">
-                        {active ? (sort.direction === "asc" ? "^" : "v") : "-"}
+                      <span
+                        aria-hidden="true"
+                        className={[
+                          "shrink-0 text-meta tabular-nums",
+                          active ? "text-content-primary" : "text-content-muted/60",
+                        ].join(" ")}
+                      >
+                        {active ? (sort.direction === "asc" ? "↑" : "↓") : "↕"}
                       </span>
                     </button>
                   ) : (
@@ -195,8 +207,8 @@ export default function Table<T>({
               role={onRowClick ? "button" : undefined}
               tabIndex={onRowClick ? 0 : undefined}
               className={[
-                "border-b border-neutral-900 text-neutral-300",
-                onRowClick ? "cursor-pointer hover:bg-neutral-900" : "",
+                "border-b border-edge-subtle text-content-secondary transition-colors duration-100",
+                onRowClick ? "cursor-pointer hover:bg-surface-overlay" : "",
                 rowClassName?.(row, index),
               ]
                 .filter(Boolean)
@@ -205,14 +217,14 @@ export default function Table<T>({
               {columns.map((column) => {
                 const id = columnId(column);
                 const value =
-                  column.accessor?.(row) ?? ((rawValue(row, column) ?? "-") as ReactNode);
+                  column.accessor?.(row) ?? ((rawValue(row, column) ?? "—") as ReactNode);
                 const shouldTruncate = column.truncate !== false;
 
                 return (
                   <td
                     key={id}
                     className={[
-                      "px-3 py-2 align-top",
+                      "px-3 py-2 align-middle",
                       column.align === "right" ? "text-right" : "text-left",
                       column.className,
                       column.cellClassName,
@@ -236,9 +248,9 @@ export default function Table<T>({
             <tr>
               <td
                 colSpan={columns.length}
-                className="px-3 py-10 text-center text-sm text-neutral-500"
+                className="px-3 py-12 text-center text-body text-content-muted"
               >
-                {emptyMessage}
+                <span className="block text-[11px] text-content-muted">{emptyMessage}</span>
               </td>
             </tr>
           ) : null}

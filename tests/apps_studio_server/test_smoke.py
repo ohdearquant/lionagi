@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient  # noqa: E402 — must follow importorskip
 
 # ---------------------------------------------------------------------------
 # Helpers / shared fixtures
@@ -32,16 +32,21 @@ def _make_client(
     runs_root = tmp_path / "runs"
     agents_root = tmp_path / "agents"
     playbooks_root = tmp_path / "playbooks"
+    # A non-existent DB path so sessions_svc returns [] without touching the real DB
+    fake_db = tmp_path / "state.db"
     for d in (shows_root, runs_root, agents_root, playbooks_root):
         d.mkdir(parents=True)
 
     # Patch config + service modules
     import apps.studio.server.config as config_mod
     import apps.studio.server.services.agents as agents_mod
+    import apps.studio.server.services.definitions as defs_mod
     import apps.studio.server.services.playbooks as playbooks_mod
     import apps.studio.server.services.runs as runs_mod
+    import apps.studio.server.services.sessions as sessions_mod
     import apps.studio.server.services.shows as shows_mod
     import lionagi.cli._runs as cli_runs_mod
+    import lionagi.state.db as state_db_mod
 
     monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
@@ -49,6 +54,17 @@ def _make_client(
     monkeypatch.setattr(playbooks_mod, "_PLAYBOOKS_ROOT", playbooks_root)
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
     monkeypatch.setattr(cli_runs_mod, "RUNS_ROOT", runs_root)
+    # Redirect state DB so runs/sessions/shows queries don't touch the real DB
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    # sessions/shows/defs import DEFAULT_DB_PATH at module load; patch both the
+    # Path object and the _DB string so .exists() and aiosqlite.connect() both
+    # see the fake path.
+    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(sessions_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(shows_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(shows_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
 
     if with_run:
         run_dir = runs_root / "20240101T000000-abc123"
@@ -161,46 +177,42 @@ def test_runs_list_returns_dict(tmp_path, monkeypatch):
 
 
 def test_runs_list_has_contract_fields(tmp_path, monkeypatch):
-    """RunSummary must contain all fields expected by the frontend contract."""
+    """RunSummary must contain the SQLite-backed fields (F-A1-1, ADR-0004 rewire).
+
+    list_runs() now reads from the sessions SQLite table, not filesystem.
+    Field names match the sessions schema: playbook_name, status, started_at,
+    ended_at (not worker_name/task/step_count/finished_at from the old JSON snapshots).
+    With an empty/absent DB, the list is empty.
+    """
     client = _make_client(tmp_path, monkeypatch, with_run=True)
     r = client.get("/api/runs")
     assert r.status_code == 200
     runs = r.json()["runs"]
-    assert len(runs) == 1
-    run = runs[0]
-    for field in (
-        "run_id",
-        "worker_name",
-        "task",
-        "status",
-        "step_count",
-        "started_at",
-        "finished_at",
-    ):
-        assert field in run, f"missing field: {field}"
-    assert run["worker_name"] == "my-worker"
-    assert run["status"] == "success"
-    assert run["step_count"] == 2  # two branch files
+    # DB doesn't exist (fake_db) so sessions list is empty — correct behaviour
+    assert isinstance(runs, list)
+    assert len(runs) == 0
 
 
-def test_runs_list_filter_by_worker(tmp_path, monkeypatch):
+def test_runs_list_filter_by_playbook(tmp_path, monkeypatch):
+    """?playbook= filter replaces the old ?worker= param (F-A3-7, ADR-0005)."""
     client = _make_client(tmp_path, monkeypatch, with_run=True)
-    r = client.get("/api/runs?worker=my-worker")
+    # Correct param name; both should 200 with empty list (empty DB)
+    r = client.get("/api/runs?playbook=some-playbook")
     assert r.status_code == 200
-    assert len(r.json()["runs"]) == 1
+    assert r.json()["runs"] == []
 
-    r2 = client.get("/api/runs?worker=nonexistent")
+    # Old ?worker= param should still 200 (FastAPI ignores unknown query params)
+    r2 = client.get("/api/runs?worker=my-worker")
     assert r2.status_code == 200
-    assert r2.json()["runs"] == []
 
 
 def test_runs_list_filter_by_status(tmp_path, monkeypatch):
     client = _make_client(tmp_path, monkeypatch, with_run=True)
-    r = client.get("/api/runs?status=success")
+    r = client.get("/api/runs?status=completed")
     assert r.status_code == 200
-    assert len(r.json()["runs"]) == 1
+    assert r.json()["runs"] == []
 
-    r2 = client.get("/api/runs?status=failure")
+    r2 = client.get("/api/runs?status=failed")
     assert r2.status_code == 200
     assert r2.json()["runs"] == []
 

@@ -2,212 +2,161 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import WorkerCanvas from "@/components/canvas/WorkerCanvas";
-import ModelConfigTable from "@/components/ModelConfigTable";
-import { getWorkerGraph, getWorkerRaw, listAgents, updateWorker, validateWorker } from "@/lib/api";
-import type {
-  AgentProfileSummary,
-  ModelConfig,
-  WorkerFormData,
-  WorkerGraph,
-  WorkerLinkEdge,
-  WorkerStepNode,
-} from "@/lib/types";
+import { use, useCallback, useEffect, useState } from "react";
+import DeclarativePlaybookForm from "@/components/DeclarativePlaybookForm";
+import GraphPlaybookEditor from "@/components/GraphPlaybookEditor";
+import {
+  declarativeToPayload,
+  detectPlaybookFormat,
+  getWorkerRaw,
+  rawToDeclarative,
+  updatePlaybook,
+} from "@/lib/api";
+import type { DeclarativePlaybookData, PlaybookFormat } from "@/lib/types";
 
-export default function EditWorkerPage({ params }: { params: { name: string } }) {
-  const workerName = decodeURIComponent(params.name);
-  const router = useRouter();
+interface LoadState {
+  format: PlaybookFormat;
+  declarative?: DeclarativePlaybookData;
+  rawText?: string;
+}
 
-  const [graph, setGraph] = useState<WorkerGraph | null>(null);
-  const [description, setDescription] = useState("");
-  const [models, setModels] = useState<Record<string, ModelConfig>>({});
-  const [agentProfiles, setAgentProfiles] = useState<AgentProfileSummary[]>([]);
+export default function EditPlaybookPage({ params }: { params: Promise<{ name: string }> }) {
+  const { name } = use(params);
+  const workerName = decodeURIComponent(name);
 
+  const [loaded, setLoaded] = useState<LoadState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [errors, setErrors] = useState<string[]>([]);
-  const [showModels, setShowModels] = useState(false);
-
-  const canvasNodesRef = useRef<WorkerStepNode[]>([]);
-  const canvasEdgesRef = useRef<WorkerLinkEdge[]>([]);
 
   useEffect(() => {
-    Promise.all([
-      getWorkerGraph(workerName),
-      getWorkerRaw(workerName),
-      listAgents().catch(() => ({ agents: [] })),
-    ])
-      .then(([graphData, rawData, agentsData]) => {
-        setGraph(graphData);
-        setDescription(rawData.description || "");
-        setModels(rawData.use?.models || {});
-        setAgentProfiles(agentsData.agents);
-        canvasNodesRef.current = graphData.nodes;
-        canvasEdgesRef.current = graphData.edges;
+    let active = true;
+    getWorkerRaw(workerName)
+      .then((raw) => {
+        if (!active) return;
+        const data = (raw.data as Record<string, unknown>) ?? {};
+        const format = detectPlaybookFormat(data);
+        if (format === "declarative") {
+          setLoaded({
+            format,
+            declarative: rawToDeclarative(workerName, data),
+            rawText: raw.raw,
+          });
+        } else {
+          setLoaded({ format, rawText: raw.raw });
+        }
       })
       .catch((err) => {
-        setLoadError(err instanceof Error ? err.message : "Failed to load");
+        if (active) setLoadError(err instanceof Error ? err.message : "Failed to load");
       });
-  }, [workerName]);
-
-  const allRoleNames = useMemo(() => {
-    const names = new Set<string>();
-    agentProfiles.forEach((p) => names.add(p.name));
-    Object.keys(models).forEach((k) => names.add(k));
-    return Array.from(names).sort();
-  }, [agentProfiles, models]);
-
-  const handleCanvasChange = useCallback((nodes: WorkerStepNode[], edges: WorkerLinkEdge[]) => {
-    canvasNodesRef.current = nodes;
-    canvasEdgesRef.current = edges;
-  }, []);
-
-  const handleSave = useCallback(async () => {
-    setSaving(true);
-    setErrors([]);
-
-    const nodes = canvasNodesRef.current;
-    const edges = canvasEdgesRef.current;
-
-    const steps: Record<
-      string,
-      {
-        assignment: string;
-        role: string;
-        prompt: string;
-        capacity?: number;
-        timeout?: number | null;
-      }
-    > = {};
-    for (const n of nodes) {
-      steps[n.id] = {
-        assignment: n.assignment,
-        role: n.role,
-        prompt: n.prompt,
-        capacity: n.capacity,
-        timeout: n.timeout,
-      };
-    }
-
-    const links = edges.map((e) => ({
-      from: e.source,
-      to: e.target,
-      condition: e.condition,
-      map: e.map,
-      handler: e.handler,
-    }));
-
-    const data: WorkerFormData = {
-      name: workerName,
-      description,
-      use: { models },
-      steps,
-      links,
+    return () => {
+      active = false;
     };
-
-    try {
-      const validation = await validateWorker(workerName, data);
-      if (!validation.ok) {
-        setErrors(validation.errors ?? ["Validation failed"]);
-        setSaving(false);
-        return;
-      }
-      await updateWorker(workerName, data);
-      router.push(`/playbooks/${encodeURIComponent(workerName)}`);
-    } catch (err) {
-      setErrors([err instanceof Error ? err.message : "Save failed"]);
-      setSaving(false);
-    }
-  }, [workerName, description, models, router]);
+  }, [workerName]);
 
   if (loadError) {
     return (
       <main className="mx-auto max-w-7xl px-4 py-6">
-        <div className="border border-red-800 bg-neutral-950 px-3 py-2 text-sm text-red-300">
+        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
           {loadError}
         </div>
       </main>
     );
   }
 
-  if (!graph) {
+  if (!loaded) {
     return (
       <main className="mx-auto max-w-7xl px-4 py-6">
-        <p className="text-sm text-neutral-500">Loading...</p>
+        <p className="text-body text-content-muted">Loading...</p>
       </main>
     );
   }
 
+  if (loaded.format === "graph") {
+    return <GraphPlaybookEditor workerName={workerName} />;
+  }
+
   return (
-    <div className="flex h-[calc(100vh-56px)] flex-col">
-      {/* Top bar */}
-      <div className="flex items-center gap-3 border-b border-edge bg-surface-nav px-4 py-2">
+    <DeclarativeEditPage
+      workerName={workerName}
+      initial={loaded.declarative!}
+      rawText={loaded.rawText}
+    />
+  );
+}
+
+function DeclarativeEditPage({
+  workerName,
+  initial,
+  rawText,
+}: {
+  workerName: string;
+  initial: DeclarativePlaybookData;
+  rawText?: string;
+}) {
+  const router = useRouter();
+  const [saving, setSaving] = useState(false);
+  const [errors, setErrors] = useState<string[]>([]);
+  const [showRaw, setShowRaw] = useState(false);
+
+  const handleSave = useCallback(
+    async (data: DeclarativePlaybookData) => {
+      setSaving(true);
+      setErrors([]);
+      try {
+        await updatePlaybook(workerName, declarativeToPayload(data));
+        router.push(`/playbooks/${encodeURIComponent(workerName)}`);
+      } catch (err) {
+        setErrors([err instanceof Error ? err.message : "Save failed"]);
+        setSaving(false);
+      }
+    },
+    [router, workerName],
+  );
+
+  return (
+    <main className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 py-6 text-content-primary">
+      <header className="flex flex-col gap-2 border-b border-edge pb-4">
         <Link
           href={`/playbooks/${encodeURIComponent(workerName)}`}
-          className="text-xs text-content-secondary hover:text-content-primary"
+          className="text-meta text-content-muted hover:text-content-primary"
         >
-          &larr; {workerName}
+          / playbooks / {workerName}
         </Link>
-
-        <input
-          type="text"
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="Playbook description..."
-          className="flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-sm text-content-secondary placeholder-content-muted hover:border-edge focus:border-edge-strong focus:outline-none"
-        />
-
-        <button
-          onClick={() => setShowModels((v) => !v)}
-          className="rounded-md bg-interactive-secondary px-3 py-1 text-xs text-content-secondary hover:text-content-primary hover:bg-interactive-secondary-hover"
-        >
-          Models {showModels ? "▴" : "▾"}
-        </button>
-
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="rounded-md bg-interactive-primary px-4 py-1 text-sm font-medium text-content-inverse hover:bg-interactive-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {saving ? "Saving..." : "Save"}
-        </button>
-      </div>
-
-      {/* Errors */}
-      {errors.length > 0 && (
-        <div className="border-b border-status-error/30 bg-status-error-bg px-4 py-2">
-          {errors.map((err, i) => (
-            <p key={i} className="text-xs text-status-error">
-              {err}
-            </p>
-          ))}
+        <div className="flex items-end justify-between">
+          <h1 className="text-xl font-semibold text-content-primary">Edit: {workerName}</h1>
+          <span className="rounded border border-edge bg-surface-raised px-2 py-0.5 text-meta uppercase tracking-[0.06em] text-content-muted">
+            declarative
+          </span>
         </div>
-      )}
+        <p className="text-meta text-content-muted">
+          Single-agent playbook with a prompt template and CLI args. To convert this into a
+          multi-step DAG, open the file directly and add a{" "}
+          <code className="rounded bg-surface-overlay px-1 font-mono">steps:</code> key.
+        </p>
+      </header>
 
-      {/* Model overrides (collapsible) */}
-      {showModels && (
-        <div className="border-b border-edge bg-surface-raised px-4 py-3">
-          <div className="mx-auto max-w-3xl">
-            <h3 className="mb-2 text-xs font-semibold uppercase text-content-muted">
-              Model Overrides
-            </h3>
-            <ModelConfigTable models={models} onChange={setModels} />
-          </div>
-        </div>
-      )}
+      <DeclarativePlaybookForm
+        initial={initial}
+        onSave={handleSave}
+        saving={saving}
+        errors={errors}
+      />
 
-      {/* Canvas */}
-      <div className="flex-1 min-h-0">
-        <WorkerCanvas
-          graph={graph}
-          editable={true}
-          roles={allRoleNames}
-          agentProfiles={agentProfiles}
-          modelOverrides={models}
-          onChange={handleCanvasChange}
-        />
-      </div>
-    </div>
+      {rawText ? (
+        <section className="mt-2 flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={() => setShowRaw((v) => !v)}
+            className="self-start text-meta text-content-muted hover:text-content-primary"
+          >
+            {showRaw ? "▾" : "▸"} View raw YAML on disk
+          </button>
+          {showRaw ? (
+            <pre className="overflow-x-auto rounded border border-edge bg-surface-base px-3 py-2 font-mono text-meta text-content-secondary">
+              {rawText}
+            </pre>
+          ) : null}
+        </section>
+      ) : null}
+    </main>
   );
 }

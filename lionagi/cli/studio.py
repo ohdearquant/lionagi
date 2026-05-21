@@ -6,12 +6,15 @@ import sys
 
 
 def add_studio_subparser(subparsers: argparse._SubParsersAction) -> None:
+    # F-A4-8 (ADR-0018): `li studio` (no subcommand) must launch the server.
+    # The subcommand is now optional; the explicit `li studio start` form still
+    # works.  We achieve this by removing `required=True` from the inner
+    # subparsers and setting a default value of "start".
     studio_parser = subparsers.add_parser("studio", help="Lion Studio server")
-    studio_sub = studio_parser.add_subparsers(dest="studio_action", required=True)
+    studio_sub = studio_parser.add_subparsers(dest="studio_action")
+    studio_sub.required = False  # `li studio` without subcommand → default "start"
 
-    start_parser = studio_sub.add_parser(
-        "start", help="Start the Lion Studio backend server"
-    )
+    start_parser = studio_sub.add_parser("start", help="Start the Lion Studio backend server")
     start_parser.add_argument(
         "--port",
         type=int,
@@ -39,6 +42,9 @@ def add_studio_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run_studio(args: argparse.Namespace) -> int:
+    # Default to "start" when no subcommand was given (`li studio` bare form).
+    if not getattr(args, "studio_action", None):
+        args.studio_action = "start"
     return _studio_start(args)
 
 
@@ -53,7 +59,9 @@ def _studio_start(args: argparse.Namespace) -> int:
         return 1
 
     port_from_env = os.environ.get("LIONAGI_STUDIO_PORT")
-    port: int = args.port or (int(port_from_env) if port_from_env else None) or 8765
+    port: int = (
+        getattr(args, "port", None) or (int(port_from_env) if port_from_env else None) or 8765
+    )
     host: str = getattr(args, "host", "127.0.0.1")
     frontend_mode: str = getattr(args, "frontend_mode", "none")
     no_frontend: bool = getattr(args, "no_frontend", False)

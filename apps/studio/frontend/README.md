@@ -1,31 +1,34 @@
 # Lion Studio Frontend
 
-Next.js 14 frontend for [Lion Studio](https://github.com/khive-ai/lionagi),
+Next.js 16 + React 19 frontend for [Lion Studio](https://github.com/khive-ai/lionagi),
 the internal observability dashboard for lionagi runs, agents, and playbooks.
 Talks to the Lion Studio backend at `process.env.NEXT_PUBLIC_STUDIO_API_BASE`
 (default `http://localhost:8765`).
 
 ## Routes
 
-| Route                     | View                                                                                                           |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `/`                       | Redirects to `/playbooks`.                                                                                     |
-| `/playbooks`              | Playbook table sourced from `~/.lionagi/playbooks/*.playbook.yaml`, with status and metadata.                  |
-| `/playbooks/[name]`       | Playbook detail with YAML view and step DAG visualization.                                                     |
-| `/playbooks/[name]/edit`  | Edit an existing playbook YAML.                                                                                |
-| `/playbooks/new`          | Author a new playbook YAML.                                                                                    |
-| `/agents`                 | Agent profile table sourced from `~/.lionagi/agents/*.md`.                                                     |
-| `/agents/[name]`          | Agent profile detail with frontmatter, body, and edit link.                                                    |
-| `/agents/[name]/edit`     | Edit an existing agent profile.                                                                                |
-| `/agents/new`             | Author a new agent profile.                                                                                    |
-| `/runs`                   | Runs table from `~/.lionagi/runs/{id}/run.json`, with cost/duration/status filters.                            |
-| `/runs/[id]`              | Run detail with branch timelines, messages, API calls, DAG visualization, and live SSE stream for active runs. |
+| Route                    | View                                                                                                           |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `/`                      | Redirects to `/playbooks`.                                                                                     |
+| `/playbooks`             | Playbook table sourced from `~/.lionagi/playbooks/*.playbook.yaml`, with status and metadata.                  |
+| `/playbooks/[name]`      | Playbook detail with YAML view and step DAG visualization.                                                     |
+| `/playbooks/[name]/edit` | Edit an existing playbook YAML.                                                                                |
+| `/playbooks/new`         | Author a new playbook YAML.                                                                                    |
+| `/agents`                | Agent profile table sourced from `~/.lionagi/agents/*.md`.                                                     |
+| `/agents/[name]`         | Agent profile detail with frontmatter, body, and edit link.                                                    |
+| `/agents/[name]/edit`    | Edit an existing agent profile.                                                                                |
+| `/agents/new`            | Author a new agent profile.                                                                                    |
+| `/runs`                  | Runs table sourced from SQLite `sessions` (enriched as run summaries), with cost/duration/status filters.       |
+| `/runs/[id]`             | Run detail with branch timelines, messages, API calls, DAG visualization, and live SSE stream for active runs. |
 
 ## Foundation
 
 - `lib/types.ts` — data shapes returned by the Lion Studio backend (FastAPI on
-  port 8765 by default). Run state types match `~/.lionagi/runs/` manifest
-  fields; agent profile types match the YAML frontmatter schema.
+  port 8765 by default). Run summary types (`RunSummary`) match the SQLite
+  session shape (`playbook_name`, `agent_name`, `ended_at`, etc.); the run
+  detail page (`/runs/[id]`) still reads the historical filesystem path
+  (`RUNS_ROOT/<id>/run.json`) — see ADR-0004 for the open design question on
+  rewiring that route. Agent profile types match the YAML frontmatter schema.
 - `lib/api.ts` — typed fetch wrappers per backend endpoint using
   `API_BASE = process.env.NEXT_PUBLIC_STUDIO_API_BASE || 'http://localhost:8765'`.
 - `lib/ws.ts` (if present) — reconnecting SSE/WebSocket hook for live run streams.

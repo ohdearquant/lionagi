@@ -1,6 +1,7 @@
 import type { Config } from "tailwindcss";
 
 const config: Config = {
+  darkMode: "class",
   content: ["./app/**/*.{js,ts,jsx,tsx,mdx}", "./components/**/*.{js,ts,jsx,tsx,mdx}"],
   theme: {
     extend: {
@@ -51,6 +52,13 @@ const config: Config = {
           architect: "var(--role-architect)",
           tester: "var(--role-tester)",
         },
+      },
+      boxShadow: {
+        card: "var(--shadow-card)",
+        "card-hover": "var(--shadow-card-hover)",
+      },
+      borderRadius: {
+        DEFAULT: "6px",
       },
     },
   },

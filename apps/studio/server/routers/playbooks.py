@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 
 from ..services import playbooks as playbooks_svc
 
@@ -29,9 +29,13 @@ async def create_playbook(name: str) -> dict[str, Any]:
 
 
 @router.put("/{name}")
-async def update_playbook(name: str) -> dict[str, Any]:
-    # TODO(lift-backend-writes)
-    raise HTTPException(status_code=501, detail="Not implemented")
+async def update_playbook(
+    name: str, body: Annotated[dict[str, Any], Body(...)]
+) -> dict[str, Any]:
+    updated = playbooks_svc.update_playbook(name, body)
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Playbook '{name}' not found")
+    return updated
 
 
 @router.delete("/{name}")
@@ -41,9 +45,10 @@ async def delete_playbook(name: str) -> dict[str, Any]:
 
 
 @router.post("/{name}/validate")
-async def validate_playbook(name: str) -> dict[str, Any]:
-    # TODO(lift-backend-writes)
-    raise HTTPException(status_code=501, detail="Not implemented")
+async def validate_playbook(
+    name: str, body: Annotated[dict[str, Any], Body(...)]
+) -> dict[str, Any]:
+    return playbooks_svc.validate_playbook(name, body)
 
 
 @router.post("/{name}/run")

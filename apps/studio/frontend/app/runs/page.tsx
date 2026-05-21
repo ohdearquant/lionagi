@@ -3,164 +3,145 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import Badge from "@/components/Badge";
-import { listRuns } from "@/lib/api";
-import type { RunSummary } from "@/lib/types";
-
-function formatDuration(started: number | null, finished: number | null): string {
-  if (!started) return "—";
-  const end = finished ?? Date.now() / 1000;
-  const seconds = Math.round(end - started);
-  if (seconds < 60) return `${seconds}s`;
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `${mins}m ${secs}s`;
-}
+import PageHeader from "@/components/PageHeader";
+import { listSessions } from "@/lib/api";
+import type { SessionSummary } from "@/lib/api";
 
 function formatTime(ts: number | null): string {
   if (!ts) return "—";
   return new Date(ts * 1000).toLocaleString();
 }
 
-const STATUS_TONE: Record<string, "ok" | "pending" | "failed"> = {
-  completed: "ok",
-  running: "pending",
-  failed: "failed",
-};
+function timeSince(ts: number): string {
+  const sec = Math.round(Date.now() / 1000 - ts);
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  return `${Math.floor(sec / 3600)}h ago`;
+}
+
+// Subtle skeleton row for loading state
+function SkeletonRow() {
+  return (
+    <tr className="border-b border-edge-subtle">
+      {[60, 28, 28, 52, 48].map((w, i) => (
+        <td key={i} className="px-3 py-2.5">
+          <div
+            className="skeleton h-3 rounded"
+            style={{ width: `${w}%`, maxWidth: `${w * 2}px` }}
+          />
+        </td>
+      ))}
+    </tr>
+  );
+}
 
 export default function RunsPage() {
-  const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [workerFilter, setWorkerFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
 
   useEffect(() => {
     let active = true;
 
     async function load() {
       try {
-        const params: Record<string, string> = {};
-        if (workerFilter) params.worker = workerFilter;
-        if (statusFilter) params.status = statusFilter;
-        const data = await listRuns(params);
-        if (active) setRuns(data.runs);
+        const data = await listSessions();
+        if (active) setSessions(data.sessions);
       } catch {
-        if (active) setRuns([]);
+        if (active) setSessions([]);
       } finally {
         if (active) setLoading(false);
       }
     }
 
     void load();
-    const interval = setInterval(load, 5000);
+    const interval = setInterval(load, 3000);
     return () => {
       active = false;
       clearInterval(interval);
     };
-  }, [workerFilter, statusFilter]);
-
-  const workerNames = Array.from(new Set(runs.map((r) => r.worker_name))).sort();
+  }, []);
 
   return (
-    <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6">
-      <header className="flex flex-col gap-3 border-b border-edge pb-4">
-        <div>
-          <h1 className="text-xl font-semibold text-content-primary">Runs</h1>
-          <p className="text-sm text-content-muted">Execution history across all playbooks</p>
-        </div>
+    <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 animate-page-enter">
+      <PageHeader
+        title="Runs"
+        subtitle="Live and completed agent sessions"
+        density="tight"
+        badges={
+          !loading ? (
+            <span className="text-meta text-content-muted tabular-nums">
+              {sessions.length} run{sessions.length !== 1 ? "s" : ""}
+            </span>
+          ) : null
+        }
+      />
 
-        <div className="flex items-center gap-3">
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="rounded border border-edge bg-surface-input px-2 py-1 text-sm text-content-secondary"
-          >
-            <option value="">All statuses</option>
-            <option value="completed">Completed</option>
-            <option value="running">Running</option>
-            <option value="failed">Failed</option>
-          </select>
-
-          <select
-            value={workerFilter}
-            onChange={(e) => setWorkerFilter(e.target.value)}
-            className="rounded border border-edge bg-surface-input px-2 py-1 text-sm text-content-secondary"
-          >
-            <option value="">All playbooks</option>
-            {workerNames.map((w) => (
-              <option key={w} value={w}>
-                {w}
-              </option>
-            ))}
-          </select>
-
-          <span className="ml-auto text-xs text-content-muted">
-            {runs.length} run{runs.length !== 1 ? "s" : ""}
-          </span>
-        </div>
-      </header>
-
-      {loading ? (
-        <div className="flex flex-1 items-center justify-center py-20">
-          <p className="text-sm text-content-muted">Loading runs...</p>
-        </div>
-      ) : runs.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center py-20">
-          <p className="text-center text-sm text-content-muted">
-            No runs yet. Start a run from any playbook&apos;s detail page.
-          </p>
-        </div>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-edge text-xs uppercase text-content-muted">
-                <th className="px-3 py-2">Run</th>
-                <th className="px-3 py-2">Playbook</th>
-                <th className="px-3 py-2">Task</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2">Steps</th>
-                <th className="px-3 py-2">Duration</th>
-                <th className="px-3 py-2">Started</th>
+      <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
+        <table className="w-full text-left text-body">
+          <thead>
+            <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
+              <th className="px-3 py-2.5 font-medium">Name</th>
+              <th className="px-3 py-2.5 font-medium tabular-nums">Branches</th>
+              <th className="px-3 py-2.5 font-medium tabular-nums">Messages</th>
+              <th className="px-3 py-2.5 font-medium">Status</th>
+              <th className="px-3 py-2.5 font-medium">Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <>
+                <SkeletonRow />
+                <SkeletonRow />
+                <SkeletonRow />
+              </>
+            ) : sessions.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="px-3 py-14 text-center text-body text-content-muted">
+                  <span className="block mb-1 text-[11px]">No runs yet</span>
+                  <span className="text-meta">
+                    Use{" "}
+                    <code className="rounded border border-edge bg-surface-overlay px-1 py-0.5 font-mono text-content-secondary">
+                      li agent
+                    </code>{" "}
+                    or{" "}
+                    <code className="rounded border border-edge bg-surface-overlay px-1 py-0.5 font-mono text-content-secondary">
+                      li play
+                    </code>{" "}
+                    to start one.
+                  </span>
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {runs.map((run) => (
-                <tr key={run.run_id} className="border-b border-edge/50 hover:bg-surface-input/50">
+            ) : (
+              sessions.map((s) => (
+                <tr
+                  key={s.id}
+                  className="border-b border-edge-subtle text-content-secondary transition-colors duration-100 hover:bg-surface-overlay"
+                >
                   <td className="px-3 py-2">
                     <Link
-                      href={`/runs/${run.run_id}`}
-                      className="font-mono text-xs text-blue-400 hover:text-blue-300"
+                      href={`/runs/${s.id}`}
+                      className="font-medium text-content-primary transition-colors duration-100 hover:text-status-running"
                     >
-                      {run.run_id}
+                      {s.name || s.id.slice(0, 8)}
                     </Link>
+                    <span className="ml-2 font-mono text-meta text-content-muted">
+                      {s.id.slice(0, 8)}
+                    </span>
                   </td>
+                  <td className="px-3 py-2 tabular-nums">{s.branch_count}</td>
+                  <td className="px-3 py-2 tabular-nums">{s.message_count}</td>
                   <td className="px-3 py-2">
-                    <Link
-                      href={`/playbooks/${encodeURIComponent(run.worker_name)}`}
-                      className="text-content-secondary hover:text-neutral-100"
-                    >
-                      {run.worker_name}
-                    </Link>
+                    <Badge tone={s.status === "running" ? "running" : "ok"}>{s.status}</Badge>
                   </td>
-                  <td className="max-w-xs truncate px-3 py-2 text-content-secondary">
-                    {run.task || "—"}
-                  </td>
-                  <td className="px-3 py-2">
-                    <Badge tone={STATUS_TONE[run.status] ?? "pending"}>{run.status}</Badge>
-                  </td>
-                  <td className="px-3 py-2 text-content-secondary">{run.step_count}</td>
-                  <td className="px-3 py-2 font-mono text-xs text-content-secondary">
-                    {formatDuration(run.started_at, run.finished_at)}
-                  </td>
-                  <td className="px-3 py-2 text-xs text-content-muted">
-                    {formatTime(run.started_at)}
+                  <td className="px-3 py-2 text-meta text-content-muted">
+                    {s.status === "running" ? timeSince(s.updated_at) : formatTime(s.updated_at)}
                   </td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </main>
   );
 }

@@ -10,12 +10,12 @@ export interface BadgeProps {
 }
 
 const toneClasses: Record<BadgeTone, string> = {
-  ok: "border-emerald-800 bg-emerald-950/40 text-emerald-300",
-  running: "border-blue-800 bg-blue-950/40 text-blue-300",
-  failed: "border-red-800 bg-red-950/40 text-red-300",
-  pending: "border-amber-800 bg-amber-950/40 text-amber-300",
-  blocked: "border-fuchsia-800 bg-fuchsia-950/40 text-fuchsia-300",
-  default: "border-neutral-800 bg-neutral-950 text-neutral-300",
+  ok: "border-status-success/40 bg-status-success-bg text-status-success",
+  running: "border-status-running/40 bg-status-running-bg text-status-running",
+  failed: "border-status-error/40   bg-status-error-bg   text-status-error",
+  pending: "border-status-warning/40 bg-status-warning-bg text-status-warning",
+  blocked: "border-status-selected/40 bg-status-selected-bg text-status-selected",
+  default: "border-edge bg-surface-overlay text-content-secondary",
 };
 
 function toneFromValue(value: string | null | undefined): BadgeTone {
@@ -62,7 +62,7 @@ export default function Badge({ children, tone, value, className }: BadgeProps) 
   return (
     <span
       className={[
-        "inline-flex max-w-full items-center rounded-full border px-2 py-0.5 text-xs font-medium",
+        "inline-flex max-w-full items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none tracking-wide",
         toneClasses[resolvedTone],
         className,
       ]

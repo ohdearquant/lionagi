@@ -68,15 +68,24 @@ the run completes).
 Historical `~/.lionagi/runs/` JSON directories remain on disk as a read-only
 archive. `li state import` brings them into SQLite for querying.
 
-> **Studio query rewiring is pending.** The Studio API routes for
-> `/api/runs`, `/api/sessions/{id}`, and `/api/shows` were originally
-> implemented against the filesystem (`~/.lionagi/runs/run.json`,
-> `branches/*.json`, `~/.lionagi/shows/_meta.json`) and have not yet been
-> rewired to read from SQLite. The state layer landed in this PR; the
-> Studio rewire is a follow-up (issue TBD). Until then, new SQLite-backed
-> runs are correctly persisted but invisible to the Studio listing UI for
-> the routes still pointing at the filesystem. CLI tooling (`li state list`,
-> direct DB queries) is unaffected.
+> **Studio query rewiring — current state.** As of the feat/studio-apps-audit
+> PR (commit eaf3f3c28), the Studio API routes have been rewired as follows:
+>
+> | Route | Backing | Notes |
+> |-------|---------|-------|
+> | `GET /api/runs` (list) | SQLite `sessions` table | `services/runs.py list_runs()` reads SQLite via `list_sessions()` |
+> | `GET /api/runs/{id}` (detail) | **Filesystem** `RUNS_ROOT/<id>/run.json` | Still filesystem-backed; see design note below |
+> | `GET /api/sessions/{id}` | SQLite sessions + branches + messages | `services/sessions.py get_session()` |
+> | `GET /api/shows` (list) | SQLite `shows` + `plays`, filesystem fallback | `services/shows.py _list_shows_db()`, falls back to directory scan if DB empty |
+> | `/api/runs/{id}/events` | **REMOVED** | This SSE route was removed in the same PR; the session stream (`/api/sessions/{id}/stream`) is the correct live-data path |
+>
+> **Design note — `GET /api/runs/{id}` remains filesystem-backed**: the run
+> detail endpoint reads `RUNS_ROOT/<id>/run.json` for the full manifest. New
+> runs do not write `run.json` (SQLite-only persistence), so this endpoint
+> only serves historical filesystem-originated runs. Whether to rewire the
+> detail endpoint to SQLite (and what to return for SQLite-only sessions
+> lacking a `run.json`) is an open design question tracked separately.
+> Until then, the detail page for new runs may 404 or return partial data.
 
 For human-readable export, use `li state export <session-id> --format json`
 (future command).

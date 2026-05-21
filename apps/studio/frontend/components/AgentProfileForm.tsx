@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import Button from "./Button";
 import type { AgentProfile } from "@/lib/types";
 
 interface AgentProfileFormProps {
@@ -24,14 +25,15 @@ const MODEL_OPTIONS: Record<Provider, string[]> = {
 const PERMISSION_OPTIONS = ["default", "bypassPermissions"] as const;
 const EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh"] as const;
 
-const SECTION_LABEL = "text-sm font-semibold text-neutral-200";
-const SECTION_DESC = "text-xs text-neutral-500";
+const SECTION_LABEL = "text-label font-semibold text-content-primary";
+const SECTION_DESC = "text-meta text-content-muted";
+const FIELD_LABEL = "text-meta uppercase tracking-[0.06em] text-content-muted";
 const INPUT_CLS =
-  "w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 placeholder-neutral-600 focus:border-green-700 focus:outline-none";
+  "w-full rounded border border-edge bg-surface-input px-3 py-1.5 text-body text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none";
 const SELECT_CLS =
-  "w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 focus:border-green-700 focus:outline-none";
+  "w-full rounded border border-edge bg-surface-input px-3 py-1.5 text-body text-content-primary focus:border-interactive-primary focus:outline-none";
 const TEXTAREA_CLS =
-  "w-full resize-y rounded border border-neutral-700 bg-neutral-900 px-3 py-2 font-mono text-sm text-neutral-200 placeholder-neutral-600 focus:border-green-700 focus:outline-none";
+  "w-full resize-y rounded border border-edge bg-surface-input px-3 py-2 font-mono text-body text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none";
 
 function isProvider(value: string): value is Provider {
   return (PROVIDER_OPTIONS as readonly string[]).includes(value);
@@ -40,11 +42,36 @@ function isProvider(value: string): value is Provider {
 function emptyForm(): AgentProfile {
   return {
     name: "",
+    path: "",
     description: "",
     provider: "claude_code",
     model: MODEL_OPTIONS.claude_code[0],
     system_prompt: "",
     guidance: "",
+  };
+}
+
+function normalizeForm(profile: AgentProfile): AgentProfile {
+  // Many on-disk agent files predate the provider/model split (model carries
+  // the prefix, e.g. "claude/claude-opus-4-6"). Infer provider from the model
+  // string when frontmatter doesn't supply one, so the form is immediately
+  // valid for save without forcing the user to pick a value that wasn't
+  // missing in their data.
+  let provider = profile.provider;
+  if (!provider) {
+    const model = profile.model ?? "";
+    if (model.startsWith("claude") || model.includes("claude/")) provider = "claude_code";
+    else if (model.startsWith("gpt") || model.startsWith("o3") || model.startsWith("o4"))
+      provider = "codex";
+    else if (model.startsWith("gemini")) provider = "gemini_code";
+    else provider = "claude_code";
+  }
+  return {
+    ...profile,
+    provider,
+    description: profile.description ?? "",
+    system_prompt: profile.system_prompt ?? "",
+    guidance: profile.guidance ?? "",
   };
 }
 
@@ -55,7 +82,7 @@ export default function AgentProfileForm({
   saving = false,
   errors = [],
 }: AgentProfileFormProps) {
-  const [form, setForm] = useState<AgentProfile>(initial ?? emptyForm());
+  const [form, setForm] = useState<AgentProfile>(initial ? normalizeForm(initial) : emptyForm());
 
   const provider = isProvider(form.provider) ? form.provider : "claude_code";
   const availableModels = MODEL_OPTIONS[provider];
@@ -93,7 +120,7 @@ export default function AgentProfileForm({
         </div>
 
         <div className="flex flex-col gap-1">
-          <label className="text-xs uppercase text-neutral-500">Name</label>
+          <label className={FIELD_LABEL}>Name</label>
           <input
             type="text"
             value={form.name}
@@ -105,7 +132,7 @@ export default function AgentProfileForm({
         </div>
 
         <div className="flex flex-col gap-1">
-          <label className="text-xs uppercase text-neutral-500">Description</label>
+          <label className={FIELD_LABEL}>Description</label>
           <input
             type="text"
             value={form.description}
@@ -125,7 +152,7 @@ export default function AgentProfileForm({
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="flex flex-col gap-1">
-            <label className="text-xs uppercase text-neutral-500">Provider</label>
+            <label className={FIELD_LABEL}>Provider</label>
             <select
               value={provider}
               onChange={(e) => handleProviderChange(e.target.value)}
@@ -140,24 +167,26 @@ export default function AgentProfileForm({
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className="text-xs uppercase text-neutral-500">Model</label>
-            <select
+            <label className={FIELD_LABEL}>Model</label>
+            <input
+              type="text"
+              list={`model-options-${provider}`}
               value={form.model}
               onChange={(e) => setForm((prev) => ({ ...prev, model: e.target.value }))}
-              className={SELECT_CLS}
-            >
+              placeholder={availableModels[0]}
+              className={INPUT_CLS}
+            />
+            <datalist id={`model-options-${provider}`}>
               {availableModels.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
+                <option key={m} value={m} />
               ))}
-            </select>
+            </datalist>
           </div>
 
           {/* Permission Mode — claude_code only */}
           {provider === "claude_code" ? (
             <div className="flex flex-col gap-1">
-              <label className="text-xs uppercase text-neutral-500">Permission Mode</label>
+              <label className={FIELD_LABEL}>Permission Mode</label>
               <select
                 value={form.permission_mode ?? "default"}
                 onChange={(e) =>
@@ -180,7 +209,7 @@ export default function AgentProfileForm({
           {/* Reasoning Effort — codex only */}
           {provider === "codex" ? (
             <div className="flex flex-col gap-1">
-              <label className="text-xs uppercase text-neutral-500">Reasoning Effort</label>
+              <label className={FIELD_LABEL}>Reasoning Effort</label>
               <select
                 value={form.reasoning_effort ?? "none"}
                 onChange={(e) =>
@@ -209,7 +238,7 @@ export default function AgentProfileForm({
           <p className={SECTION_DESC}>Base identity and role instructions for this agent</p>
         </div>
         <textarea
-          value={form.system_prompt}
+          value={form.system_prompt ?? ""}
           onChange={(e) => setForm((prev) => ({ ...prev, system_prompt: e.target.value }))}
           placeholder="You are a specialized agent that..."
           rows={6}
@@ -224,7 +253,7 @@ export default function AgentProfileForm({
           <p className={SECTION_DESC}>Task-specific instructions and constraints</p>
         </div>
         <textarea
-          value={form.guidance}
+          value={form.guidance ?? ""}
           onChange={(e) => setForm((prev) => ({ ...prev, guidance: e.target.value }))}
           placeholder="When working on this task, always..."
           rows={4}
@@ -234,9 +263,11 @@ export default function AgentProfileForm({
 
       {/* Errors */}
       {errors.length > 0 ? (
-        <div className="rounded border border-red-900 bg-red-950/40 px-4 py-3">
-          <p className="text-xs font-semibold uppercase text-red-400">Validation errors</p>
-          <ul className="mt-1 list-inside list-disc text-sm text-red-300">
+        <div className="rounded border border-status-error/40 bg-status-error-bg px-4 py-3">
+          <p className="text-meta font-semibold uppercase tracking-[0.06em] text-status-error">
+            Validation errors
+          </p>
+          <ul className="mt-1 list-inside list-disc text-body text-status-error">
             {errors.map((err, i) => (
               <li key={i}>{err}</li>
             ))}
@@ -245,20 +276,12 @@ export default function AgentProfileForm({
       ) : null}
 
       {/* Submit */}
-      <div className="flex items-center gap-3 border-t border-neutral-800 pt-4">
-        <button
-          type="submit"
-          disabled={saving || !isValid}
-          className={`rounded px-6 py-2 text-sm font-medium transition ${
-            saving || !isValid
-              ? "cursor-not-allowed border border-neutral-700 bg-neutral-800 text-neutral-500"
-              : "border border-green-700 bg-green-900/50 text-green-300 hover:bg-green-800/50"
-          }`}
-        >
+      <div className="flex items-center gap-3 border-t border-edge pt-4">
+        <Button type="submit" variant="primary" disabled={saving || !isValid}>
           {saving ? "Saving..." : mode === "create" ? "Create Agent" : "Save Changes"}
-        </button>
+        </Button>
         {!isValid ? (
-          <span className="text-xs text-neutral-500">Name, provider, and model required</span>
+          <span className="text-meta text-content-muted">Name, provider, and model required</span>
         ) : null}
       </div>
     </form>

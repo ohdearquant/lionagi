@@ -73,7 +73,9 @@ export function extractAttending(
     if (
       !existing ||
       chunkIndex > existing.chunkIndex ||
-      (chunkIndex === existing.chunkIndex && parsed.lineStart !== null && existing.lineStart === null)
+      (chunkIndex === existing.chunkIndex &&
+        parsed.lineStart !== null &&
+        existing.lineStart === null)
     ) {
       byPath.set(parsed.path, { lineStart: parsed.lineStart, chunkIndex });
     }
@@ -101,8 +103,11 @@ export function extractAttending(
   // Deduplicate by basename — when the same filename appears as a bare name
   // and also as a full absolute path, keep only the most specific entry.
   // Specificity order: full-path+lineStart > full-path > bare-name+lineStart > bare-name
-  const byBasename = new Map<string, { path: string; lineStart: number | null; chunkIndex: number }>();
-  for (const [path, { lineStart, chunkIndex }] of byPath) {
+  const byBasename = new Map<
+    string,
+    { path: string; lineStart: number | null; chunkIndex: number }
+  >();
+  for (const [path, { lineStart, chunkIndex }] of Array.from(byPath)) {
     const basename = path.split("/").pop() ?? path;
     const existing = byBasename.get(basename);
     if (!existing) {
@@ -120,7 +125,8 @@ export function extractAttending(
         const betterChunk = chunkIndex > existing.chunkIndex;
         const sameChunk = chunkIndex === existing.chunkIndex;
         const betterLineStart = sameChunk && lineStart !== null && existing.lineStart === null;
-        const betterPath = sameChunk && lineStart === existing.lineStart && path.length > existing.path.length;
+        const betterPath =
+          sameChunk && lineStart === existing.lineStart && path.length > existing.path.length;
         if (betterChunk || betterLineStart || betterPath) {
           byBasename.set(basename, { path, lineStart, chunkIndex });
         }
@@ -164,7 +170,8 @@ export interface ThinkingItem {
  * marker ("Implemented", "Phase N", etc.), then return in chronological order.
  */
 export function extractThinking(chunks: StreamChunk[]): ThinkingItem[] {
-  const DECISION_RE = /^(Implemented|Phase\s+\d+|Created\s+Phase\s+\d+.*?implemented|Ran |Added |Updated |Fixed |Removed )/i;
+  const DECISION_RE =
+    /^(Implemented|Phase\s+\d+|Created\s+Phase\s+\d+.*?implemented|Ran |Added |Updated |Fixed |Removed )/i;
 
   const items: ThinkingItem[] = [];
 
@@ -176,10 +183,7 @@ export function extractThinking(chunks: StreamChunk[]): ThinkingItem[] {
     if (!firstLine) continue;
 
     // Include chunks whose first line describes an implementation or phase action
-    if (
-      firstLine.startsWith("Implemented") ||
-      /^Phase\s+\d+/.test(firstLine)
-    ) {
+    if (firstLine.startsWith("Implemented") || /^Phase\s+\d+/.test(firstLine)) {
       items.push({ text: firstLine, ts: chunk.ts, status: "complete" });
     }
   }

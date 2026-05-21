@@ -4,14 +4,14 @@ import { memo } from "react";
 import { Handle, Position } from "reactflow";
 import type { NodeProps } from "reactflow";
 
-const ROLE_COLORS: Record<string, string> = {
-  researcher: "#22c55e",
-  implementer: "#a855f7",
-  reviewer: "#14b8a6",
-  critic: "#f59e0b",
-  analyst: "#3b82f6",
-  architect: "#ec4899",
-  tester: "#06b6d4",
+const ROLE_VAR: Record<string, string> = {
+  researcher: "var(--role-researcher)",
+  implementer: "var(--role-implementer)",
+  reviewer: "var(--role-reviewer)",
+  critic: "var(--role-critic)",
+  analyst: "var(--role-analyst)",
+  architect: "var(--role-architect)",
+  tester: "var(--role-tester)",
 };
 
 export interface StepNodeData {
@@ -24,64 +24,88 @@ export interface StepNodeData {
   inputs: string[];
   outputs: string[];
   execStatus?: "pending" | "running" | "completed" | "failed";
+  // optional badges
+  durationSeconds?: number | null;
+  errorCount?: number;
+  toolCallCount?: number;
 }
 
 function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
-  const roleColor = ROLE_COLORS[data.role] || "#666";
+  const roleColor = ROLE_VAR[data.role] || "var(--content-muted)";
   const status = data.execStatus ?? "pending";
 
   const borderColor =
     status === "running"
-      ? "#60a5fa"
+      ? "var(--dag-running-border)"
       : status === "completed"
-        ? "#22c55e"
+        ? "var(--dag-completed-border)"
         : status === "failed"
-          ? "#ef4444"
+          ? "var(--dag-failed-border)"
           : selected
-            ? "#a855f7"
-            : "#333";
+            ? "var(--status-selected)"
+            : "var(--edge-default)";
 
   const bgColor =
     status === "running"
-      ? "#1a1a3e"
+      ? "var(--dag-running-bg)"
       : status === "completed"
-        ? "#0a2e1a"
+        ? "var(--dag-completed-bg)"
         : status === "failed"
-          ? "#2e0a0a"
-          : "#0d0d0d";
+          ? "var(--dag-failed-bg)"
+          : "var(--surface-raised)";
+
+  const labelColor =
+    status === "running"
+      ? "var(--dag-running-label)"
+      : status === "completed"
+        ? "var(--dag-completed-label)"
+        : status === "failed"
+          ? "var(--dag-failed-label)"
+          : "var(--content-primary)";
 
   return (
     <div
-      className="relative rounded-lg px-4 py-3"
+      className="relative rounded-lg px-3 py-2.5"
       style={{
         background: bgColor,
         border: `${selected || status === "running" ? 2 : 1}px solid ${borderColor}`,
-        minWidth: 180,
-        maxWidth: 240,
+        minWidth: 160,
+        maxWidth: 220,
         transition: "border-color 0.2s, background 0.2s",
       }}
     >
       <Handle
         type="target"
         position={Position.Left}
-        className="!w-2.5 !h-2.5 !bg-neutral-600 !border-neutral-500 hover:!bg-neutral-400"
+        style={{
+          width: 10,
+          height: 10,
+          background: "var(--edge-strong)",
+          borderColor: "var(--edge-default)",
+        }}
       />
 
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-sm font-semibold text-neutral-200 truncate">
+        <span className="font-mono text-body font-semibold truncate" style={{ color: labelColor }}>
           {data.label}
         </span>
         {status === "completed" && (
-          <span className="text-green-400 text-xs shrink-0">&#10003;</span>
+          <span className="shrink-0 text-meta" style={{ color: "var(--status-success)" }}>
+            ✓
+          </span>
         )}
-        {status === "failed" && <span className="text-red-400 text-xs shrink-0">&#10007;</span>}
+        {status === "failed" && (
+          <span className="shrink-0 text-meta" style={{ color: "var(--status-error)" }}>
+            ✕
+          </span>
+        )}
       </div>
 
       {data.role && (
         <span
-          className="inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-mono"
+          className="mt-1 inline-block rounded-full px-2 py-0.5 font-mono text-[10px]"
           style={{
-            backgroundColor: `${roleColor}20`,
+            backgroundColor: `color-mix(in srgb, ${roleColor} 14%, transparent)`,
             color: roleColor,
           }}
         >
@@ -90,16 +114,32 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
       )}
 
       {data.assignment && (
-        <div className="mt-1.5 font-mono text-[11px] text-neutral-500 truncate">
+        <div className="mt-1 truncate font-mono text-meta text-content-muted">
           {data.assignment}
+        </div>
+      )}
+
+      {(data.durationSeconds != null ||
+        (data.errorCount ?? 0) > 0 ||
+        (data.toolCallCount ?? 0) > 0) && (
+        <div className="mt-1.5 flex items-center gap-2 text-meta tabular-nums">
+          {data.durationSeconds != null && data.durationSeconds >= 0 ? (
+            <span className="text-content-muted">{formatStepDuration(data.durationSeconds)}</span>
+          ) : null}
+          {(data.errorCount ?? 0) > 0 ? (
+            <span className="text-status-error">{data.errorCount} err</span>
+          ) : null}
+          {(data.toolCallCount ?? 0) > 0 ? (
+            <span className="text-content-muted">{data.toolCallCount} calls</span>
+          ) : null}
         </div>
       )}
 
       {status === "running" && (
         <div
-          className="absolute inset-0 rounded-lg pointer-events-none"
+          className="pointer-events-none absolute inset-0 rounded-lg"
           style={{
-            border: "2px solid #60a5fa",
+            border: "2px solid var(--dag-running-border)",
             animation: "pulse 1.5s ease-in-out infinite",
             opacity: 0.4,
           }}
@@ -109,10 +149,22 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
       <Handle
         type="source"
         position={Position.Right}
-        className="!w-2.5 !h-2.5 !bg-neutral-600 !border-neutral-500 hover:!bg-neutral-400"
+        style={{
+          width: 10,
+          height: 10,
+          background: "var(--edge-strong)",
+          borderColor: "var(--edge-default)",
+        }}
       />
     </div>
   );
+}
+
+function formatStepDuration(seconds: number): string {
+  if (seconds < 1) return `${Math.round(seconds * 1000)}ms`;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+  const m = Math.floor(seconds / 60);
+  return `${m}m`;
 }
 
 export default memo(StepNodeComponent);

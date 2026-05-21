@@ -1,35 +1,67 @@
 // ─── Run types ───────────────────────────────────────────────────────────────
 
+// H-FE-3: RunSummary matches the actual SQLite-session response shape from
+// list_runs() (services/runs.py). Fields worker_name/finished_at were stale
+// filesystem-run remnants; the real fields are playbook_name/ended_at etc.
 export interface RunSummary {
   run_id: string;
-  state_root: string;
-  artifact_root: string;
-  worker_name: string;
-  task: string;
+  id?: string;
+  name?: string | null;
+  playbook_name?: string | null;
+  agent_name?: string | null;
+  invocation_kind?: string | null;
+  show_topic?: string | null;
+  show_play_name?: string | null;
+  source_kind?: string;
   status: string;
-  step_count: number;
   started_at: number | null;
-  finished_at: number | null;
+  ended_at?: number | null;
+  created_at?: number | null;
+  updated_at?: number | null;
+  branch_count?: number;
+  message_count?: number;
+}
+
+export interface RunMessage {
+  role: string;
+  content?: string;
+  sender?: string;
+  timestamp?: number | null;
+  function?: string;
+  summary?: string;
+  arguments?: Record<string, unknown>;
+  output?: string;
+  status?: string;
+  exit_code?: number | null;
 }
 
 export interface RunStep {
   step: string;
   status: string;
   result?: Record<string, unknown>;
+  messages?: RunMessage[];
   timestamp: number | null;
 }
 
+// RunDetail comes from the filesystem run.json path (GET /api/runs/{id} →
+// services/runs.py get_run → _adapt_summary). Unlike RunSummary which maps
+// SQLite session rows, RunDetail reads the on-disk run manifest. The manifest
+// uses "worker_name" and "finished_at" as canonical field names (see
+// _adapt_summary in services/runs.py). ADR-0004 open design question:
+// long-term these should unify with the SQLite session fields.
 export interface RunDetail {
   run_id: string;
   state_root: string;
   artifact_root: string;
-  worker_name: string;
-  task: string;
+  // Filesystem run.json fields — distinct from SQLite session schema
+  worker_name?: string;
+  task?: string;
   status: string;
   error: string | null;
   cwd: string | null;
   started_at: number | null;
-  finished_at: number | null;
+  finished_at?: number | null;
+  ended_at?: number | null;
   steps?: RunStep[];
   graph: { nodes: WorkerStepNode[]; edges: WorkerLinkEdge[] };
   manifest: Record<string, unknown>;
@@ -82,6 +114,30 @@ export interface WorkerRaw {
   use?: { models?: Record<string, ModelConfig> };
   data?: Record<string, unknown>;
   raw?: string;
+}
+
+// ─── Declarative playbook (agent + prompt format) ─────────────────────────────
+
+export type PlaybookFormat = "declarative" | "graph";
+
+export interface DeclarativeArgSpec {
+  name: string;
+  type: string;
+  default: string;
+  help: string;
+}
+
+export interface DeclarativePlaybookData {
+  name: string;
+  description: string;
+  agent: string;
+  effort: string;
+  maxOps: number | null;
+  prompt: string;
+  args: DeclarativeArgSpec[];
+  yolo: boolean;
+  showGraph: boolean;
+  argumentHint: string;
 }
 
 export interface WorkerFormData {
@@ -169,16 +225,26 @@ export interface ShowDetail {
   topic: string;
   path?: string;
   show_md: string | null;
+  goal?: string | null;
+  status?: string;
+  // M-FE-2: status_source added by backend agent (H-BE-3)
+  status_source?: "sqlite" | "filesystem";
   plays: Array<{
     name: string;
     meta: PlayMeta;
     verdict?: ShowVerdict | null;
     updated_at?: number | string | null;
+    session_id?: string | null;
+    session_name?: string | null;
+    intent?: string | null;
+    depends_on?: string[];
   }>;
 }
 
+// H-FE-5: "done" is the terminal SSE event emitted by shows.py:456-458.
+// The EventSource MUST be closed when this event arrives.
 export interface ShowEvent {
-  type: "new" | "change" | "delete";
-  path: string;
+  type: "new" | "change" | "delete" | "done";
+  path?: string;
   size?: number;
 }
