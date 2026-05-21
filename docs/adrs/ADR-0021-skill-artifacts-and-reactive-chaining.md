@@ -81,10 +81,11 @@ from lionagi.models.hashable_model import HashableModel
 class SkillOutcome(HashableModel):
     """Base for all structured skill outputs.
 
-    Persisted as an artifacts row (kind='outcome', content=JSON).
-    The primary outcome for an invocation is the latest artifact with
-    kind='outcome' linked via invocation_id. Studio renderers dispatch
-    on outcome_kind.
+    Persisted as an artifacts row with kind=outcome_kind (e.g.,
+    'review_verdict', 'gate_verdict', 'ci_result'). The primary
+    outcome for an invocation is resolved by querying the latest
+    artifact whose kind is a registered outcome type. Studio
+    renderers dispatch on artifact.kind directly.
     """
     outcome_kind: str              # "review_verdict", "gate_verdict", "ci_result", ...
     summary: str                   # one-line human-readable result
@@ -261,9 +262,21 @@ Chains are **not** a workflow engine. They are a thin reactive layer:
    resumes when Ocean approves (via Studio UI or CLI).
 5. **Timeouts** abort a step if it exceeds the limit.
 
-Chains produce invocations — each step is an invocation linked to the
-chain. The chain itself is an invocation with `skill='chain'` and
+Chains produce invocations — each step creates an invocation with
+`chain_run_id` and `step_index` linking it back to the chain run.
+The chain itself is an invocation with `skill='chain'` and
 `node_metadata` holding the chain definition + execution state.
+
+Step-to-invocation linkage columns on `invocations`:
+
+```sql
+ALTER TABLE invocations ADD COLUMN chain_run_id TEXT
+  REFERENCES chain_runs(id);
+ALTER TABLE invocations ADD COLUMN step_index INTEGER;
+
+CREATE INDEX IF NOT EXISTS idx_invocations_chain_run
+  ON invocations(chain_run_id) WHERE chain_run_id IS NOT NULL;
+```
 
 #### Chain persistence
 

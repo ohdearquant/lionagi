@@ -107,11 +107,11 @@ def classify_session_health(
     threshold = STALE_THRESHOLDS.get(kind, DEFAULT_STALE_THRESHOLD)
 
     if not process_alive:
-        if idle_seconds > threshold:
-            return SessionHealth.STALE
+        # Orphan check first — no artifacts AND no messages means
+        # the session never produced output (regardless of age).
         if not has_artifacts and session.get("message_count", 0) == 0:
             return SessionHealth.ORPHANED
-        # Process just died (< threshold) — still stale, but fresh
+        # Process is dead with some output — stale.
         return SessionHealth.STALE
 
     # Process is alive

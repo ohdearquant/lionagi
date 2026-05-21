@@ -294,14 +294,24 @@ branches in the session. Branches emit to the bus; handlers respond.
 class Session:
     def __init__(self, ...):
         self.hooks = HookBus()
-        # Register defaults
+        # Merge defaults with agent profile overrides.
+        # If a profile specifies a hook point, it REPLACES the default
+        # list for that point (e.g., message.add: [] disables persistence).
+        # Hook points not mentioned in the profile keep their defaults.
+        profile_hooks = (agent_config.hooks or {}) if agent_config else {}
         for point, handlers in DEFAULT_HOOKS.items():
-            for h in handlers:
-                self.hooks.on(point, h)
-        # Register agent-specific hooks from profile
-        if agent_config and agent_config.hooks:
-            for point_str, handler_names in agent_config.hooks.items():
-                point = HookPoint(point_str)
+            if point.value in profile_hooks:
+                # Profile overrides this hook point
+                for name in profile_hooks[point.value]:
+                    self.hooks.on(point, resolve_handler(name))
+            else:
+                # Keep defaults
+                for h in handlers:
+                    self.hooks.on(point, h)
+        # Register profile hooks for points that have no defaults
+        for point_str, handler_names in profile_hooks.items():
+            point = HookPoint(point_str)
+            if point not in DEFAULT_HOOKS:
                 for name in handler_names:
                     self.hooks.on(point, resolve_handler(name))
 ```

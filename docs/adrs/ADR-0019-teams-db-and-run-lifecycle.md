@@ -210,10 +210,11 @@ The dashboard gains two new cards from these signals:
 
 ### Status vocabulary update
 
-The session `status` CHECK constraint is unchanged — `stale` is NOT a DB
-value. The base DB statuses (`running`, `completed`, `failed`, `aborted`)
-are extended by ADR-0025 with `timed_out` and `cancelled`. `stale` exists
-only in the API response as a derived health indicator (see ADR-0024).
+This ADR does not modify the session status vocabulary or CHECK
+constraint. `stale` is NOT a stored status — it is a derived health
+indicator computed at read time (see ADR-0024). The session status
+vocabulary and its validation strategy (including CHECK removal) are
+governed entirely by ADR-0025.
 
 The runs list API response shape adds:
 
