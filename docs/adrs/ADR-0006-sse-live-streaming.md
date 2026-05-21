@@ -61,14 +61,16 @@ from "server died."
 | `change` | `{"type":"change","path":"<rel>","size":<n>}` | Existing file modified (size or mtime changed) |
 | `done` | `{"type":"done"}` | Show status is terminal (`completed` or `aborted`) AND no file changed for 60 s |
 
-**No heartbeat on the shows stream (intentional asymmetry)**: shows emit a `done`
-terminal event when the show reaches a terminal status and stabilises. Clients can
-rely on `done` for completion detection, which bounds the wait to at most 60 s of
-filesystem quiet after the show finishes. A heartbeat is unnecessary because there
-is no long-running silent period between events on a live show — file changes are
-the signal. If the show stalls without going terminal, the client stays connected
-and keeps receiving filesystem-change events as they arrive. This asymmetry is
-deliberate, not drift.
+**No heartbeat on the shows stream (accepted gap)**: the shows stream emits
+file-change events (`new`, `change`) and a terminal `done` event, but no periodic
+heartbeat. A non-terminal show can be quiet for longer than proxy or browser idle
+thresholds (typically 60–90 s) if no files change while plays are waiting or
+running. In that case the EventSource will reconnect automatically via its built-in
+retry; the server will resume streaming from the current filesystem state on
+reconnect. This reconnect behaviour is relied upon instead of a heartbeat.
+A heartbeat could be added in a future iteration if reconnect storms become a
+problem in practice. The asymmetry with the session stream (which does heartbeat
+every 5 s) is an accepted trade-off, not an accident.
 
 ### Reconnect behavior
 

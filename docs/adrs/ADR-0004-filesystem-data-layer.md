@@ -75,7 +75,7 @@ archive. `li state import` brings them into SQLite for querying.
 > |-------|---------|-------|
 > | `GET /api/runs` (list) | SQLite `sessions` table | `services/runs.py list_runs()` reads SQLite via `list_sessions()` |
 > | `GET /api/runs/{id}` (detail) | **Filesystem** `RUNS_ROOT/<id>/run.json` | Still filesystem-backed; see design note below |
-> | `GET /api/sessions/{id}` | SQLite sessions + branches + messages | `services/sessions.py list_sessions()` |
+> | `GET /api/sessions/{id}` | SQLite sessions + branches + messages | `services/sessions.py get_session()` |
 > | `GET /api/shows` (list) | SQLite `shows` + `plays`, filesystem fallback | `services/shows.py _list_shows_db()`, falls back to directory scan if DB empty |
 > | `/api/runs/{id}/events` | **REMOVED** | This SSE route was removed in the same PR; the session stream (`/api/sessions/{id}/stream`) is the correct live-data path |
 >

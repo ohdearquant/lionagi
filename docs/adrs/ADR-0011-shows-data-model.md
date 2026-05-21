@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS shows (
   base_branch         TEXT,                       -- e.g. 'main'
   integration_branch  TEXT,                       -- e.g. 'show/topic/integration'
   status              TEXT    NOT NULL DEFAULT 'active',  -- active|completed|aborted|imported
-  status_source       TEXT,                       -- sqlite|filesystem|imported (confidence indicator)
+  status_source       TEXT,                       -- sqlite|filesystem (confidence indicator)
   show_dir            TEXT    NOT NULL,           -- absolute path to show directory
   created_at          REAL    NOT NULL,
   updated_at          REAL    NOT NULL
@@ -162,7 +162,7 @@ The endpoint returns a JSON object with the following canonical fields:
   "status":        "<string>  — shows.status value (active|completed|aborted|imported)
                                 or 'unknown' for shows not yet imported to SQLite",
   "status_source": "<string>  — 'sqlite' when row found in DB; 'filesystem' when derived
-                                from filesystem only; 'imported' for import_shows rows",
+                                from filesystem only",
   "plays":         "<array>   — play objects (see play shape below)"
 }
 ```
@@ -304,9 +304,14 @@ Show status includes provenance to address trust concerns:
 - `active` — at least one play running or pending
 - `completed` — all plays merged and final gate passed (or inferred from filesystem)
 - `aborted` — `_ABORT` file exists
-- `imported` — status inferred during `import_shows`, may not reflect `_show.md` decisions log
 
-The API includes `status_source: "sqlite" | "filesystem" | "imported"` to
+> **Note**: The `shows` DDL reserves `imported` as a valid `status` value but the current
+> `import_shows` implementation (`services/shows.py`) resolves to `aborted`, `completed`, or
+> `active` based on filesystem evidence — it does not write `imported`. If a future import
+> path cannot determine status from filesystem signals, `imported` would be the appropriate
+> fallback. Until then, callers should not expect to see `imported` in `shows.status`.
+
+The API includes `status_source: "sqlite" | "filesystem"` to
 indicate confidence level.
 
 ## Consequences

@@ -71,7 +71,13 @@ POST /api/definitions/{kind}/{name}/rollback?version=N
   1. SELECT content FROM definitions WHERE kind=? AND name=? AND version=?
   2. Write that content to disk
   3. INSERT new definitions row with version = max(version)+1 and the restored content
-  4. Return { version: N+1, rolled_back_from: current, rolled_back_to: N }
+  4. Return {
+       version: N+1,            -- new version number assigned to the restored content
+       saved_at: <float>,       -- unix timestamp of the restore write (same as a save)
+       rolled_back_from: <int>, -- version that was current before the rollback
+       rolled_back_to: N,       -- version whose content was restored
+       message: <string|null>   -- auto-set to "rollback to vN"; mirrors save message field
+     }
 ```
 
 Rollback creates a NEW version (not a delete). The version history is append-only.
