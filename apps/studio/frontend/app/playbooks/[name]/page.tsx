@@ -17,6 +17,10 @@ import type { WorkerGraph } from "@/lib/types";
 // without attempting step-level introspection. execSteps / currentStep are
 // retained for WorkerCanvas prop compatibility but are never populated.
 
+// Hoisted to module scope so the polling useEffect dependency array can
+// reference it as a stable value without triggering eslint-react-hooks.
+const POLL_MAX_MS = 10 * 60 * 1000;
+
 export default function WorkerDetailPage({ params }: { params: Promise<{ name: string }> }) {
   const { name } = use(params);
   const workerName = decodeURIComponent(name);
@@ -59,7 +63,16 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
   // startRun returns a SQLite session ID, polling getRun() would 404.
   // We track status via a simple timeout ceiling instead of step polling.
   const startedAtRef = useRef<number>(0);
-  const POLL_MAX_MS = 10 * 60 * 1000;
+  // mountedRef guards all setState calls that follow an await in handleRun.
+  // The polling effect has its own `cancelled` flag; this ref covers the
+  // startRun() POST path which runs outside the effect.
+  const mountedRef = useRef<boolean>(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!activeRunId) return;
@@ -91,6 +104,8 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
       cancelled = true;
       if (handle != null) clearTimeout(handle);
     };
+  // POLL_MAX_MS is a module-scope constant — stable reference, not a dep.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRunId]);
 
   const handleRun = useCallback(async () => {
@@ -102,10 +117,13 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
 
     try {
       const data = await startRun(workerName);
+      // Guard: component may have unmounted while the POST was in-flight
+      if (!mountedRef.current) return;
       startedAtRef.current = Date.now();
       setActiveRunId(data.run_id);
     } catch (err) {
       // M-FE-1: show the error, not a silent status flip
+      if (!mountedRef.current) return;
       setRunning(false);
       setRunStatus("failed");
       setRunError(err instanceof Error ? err.message : "Run failed");

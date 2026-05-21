@@ -39,12 +39,6 @@ export async function getRun(runId: string): Promise<RunDetail> {
   return fetchJson<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`);
 }
 
-export async function rerunRun(runId: string): Promise<{ run_id: string }> {
-  return fetchJson<{ run_id: string }>(`/api/runs/${encodeURIComponent(runId)}/rerun`, {
-    method: "POST",
-  });
-}
-
 // ─── Workers (playbooks) ──────────────────────────────────────────────────────
 
 interface PlaybookListEntry {
@@ -293,15 +287,16 @@ export async function getShow(topic: string): Promise<ShowDetail> {
 }
 
 // H-FE-5: terminal {"type":"done"} event from shows.py:456-458 MUST close
-// the EventSource. Caller receives the event then the source is closed.
+// the EventSource. Source is closed BEFORE invoking the callback for done
+// events so that close() always runs even if the callback throws.
 export function streamShow(topic: string, onEvent: (event: ShowEvent) => void): () => void {
   const source = new EventSource(`${API_BASE}/api/shows/${encodeURIComponent(topic)}/stream`);
   source.onmessage = (message) => {
     const event = JSON.parse(message.data) as ShowEvent;
-    onEvent(event);
     if (event.type === "done") {
       source.close();
     }
+    onEvent(event);
   };
   return () => source.close();
 }
@@ -418,16 +413,19 @@ export async function getDefinitionVersion(
   );
 }
 
+// F-A3-1 (ADR-0016): backend is POST /api/definitions/{kind}/{name} — no PUT route exists.
+// Return type matches services/definitions.py save_definition() response shape:
+//   { kind, name, version, saved_at, message? }
 export async function saveDefinition(
   kind: string,
   name: string,
   content: string,
   message?: string,
-): Promise<{ version: number }> {
-  return fetchJson<{ version: number }>(
+): Promise<{ kind: string; name: string; version: number; saved_at: number; message: string | null }> {
+  return fetchJson<{ kind: string; name: string; version: number; saved_at: number; message: string | null }>(
     `/api/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`,
     {
-      method: "PUT",
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content, message }),
     },
