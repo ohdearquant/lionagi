@@ -76,11 +76,21 @@ precedence. The frontend's client-side router handles all non-API paths.
 Developers who modify the frontend use the standard dev server:
 
 ```bash
-cd apps/studio/frontend && npm run dev    # Vite dev server on :5173
+cd apps/studio/frontend && npm run dev    # Next.js dev server on :3000
 cd apps/studio && uv run python -m server  # API server on :8765
 ```
 
-Vite proxies `/api/*` to `:8765`. This is already configured.
+The frontend is Next.js (not Vite — there is no `vite.config.ts`). In development, the
+Next.js dev server runs on port 3000 and reads the `NEXT_PUBLIC_STUDIO_API_BASE` environment
+variable to resolve API calls:
+
+```bash
+NEXT_PUBLIC_STUDIO_API_BASE=http://localhost:8765 npm run dev
+```
+
+When `NEXT_PUBLIC_STUDIO_API_BASE` is set, `lib/api.ts` prefixes all `/api/*` fetch calls
+with that base URL, routing them to the backend on `:8765`. No proxy configuration in
+`next.config.mjs` is required for this workflow.
 
 ### Optional: Docker Compose for server/team deployment
 
@@ -120,8 +130,11 @@ host access. Docker is for shared/server deployments."
 The `[studio]` extra adds:
 
 - `uvicorn` — ASGI server
-- `fastapi` — already a dependency of lionagi
-- `aiosqlite` — already decided as a dependency
+- `fastapi` — already a core dependency of lionagi
+- `aiosqlite>=0.21.0` — required by studio services (sessions, shows, runs, definitions)
+  that query `state.db` directly; also a core dependency, but listed explicitly in `[studio]`
+  so that `pip install lionagi[studio]` is self-contained without relying on transitive
+  resolution from the base package
 
 No heavyweight additions. The frontend is pre-built static HTML/JS/CSS —
 zero runtime frontend dependencies.
