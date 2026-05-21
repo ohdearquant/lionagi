@@ -184,6 +184,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
             <section className="flex min-w-0 flex-col gap-2">
               <button
                 type="button"
+                aria-expanded={showPlan}
                 onClick={() => setShowPlan((v) => !v)}
                 className="flex items-center justify-between text-left text-label font-semibold text-content-primary hover:text-content-secondary transition-colors"
               >
@@ -408,6 +409,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                     <div>
                                       <button
                                         type="button"
+                                        aria-expanded={Boolean(rawExpanded[play.name])}
                                         onClick={() =>
                                           setRawExpanded((prev) => ({
                                             ...prev,

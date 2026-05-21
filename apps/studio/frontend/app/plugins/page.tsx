@@ -409,11 +409,14 @@ function PluginDetailPane({ pluginName }: PluginDetailPaneProps) {
 
       {/* Tab bar */}
       {tabs.length > 0 && (
-        <div className="flex shrink-0 items-center gap-0 border-b border-edge px-4">
+        <div role="tablist" aria-label="Plugin details" className="flex shrink-0 items-center gap-0 border-b border-edge px-4">
           {tabs.map((tab) => (
             <button
               key={tab.id}
               type="button"
+              role="tab"
+              aria-selected={visibleTab === tab.id}
+              aria-controls={`plugin-${detail.name}-panel-${tab.id}`}
               onClick={() => setActiveTab(tab.id)}
               className={[
                 "relative px-3 py-2 text-body transition-colors",
@@ -431,25 +434,31 @@ function PluginDetailPane({ pluginName }: PluginDetailPaneProps) {
       {/* Tab content */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {visibleTab === "skills" && (
-          <SkillSubPane key={detail.name} pluginName={detail.name} skillNames={detail.skills} />
+          <div role="tabpanel" id={`plugin-${detail.name}-panel-skills`} className="flex flex-1 overflow-hidden">
+            <SkillSubPane key={detail.name} pluginName={detail.name} skillNames={detail.skills} />
+          </div>
         )}
-        {visibleTab === "agents" && <AgentSubPane key={detail.name} agentRefs={detail.agents} />}
+        {visibleTab === "agents" && (
+          <div role="tabpanel" id={`plugin-${detail.name}-panel-agents`} className="flex flex-1 overflow-hidden">
+            <AgentSubPane key={detail.name} agentRefs={detail.agents} />
+          </div>
+        )}
         {visibleTab === "hooks" && detail.hooks && (
-          <div className="flex-1 overflow-y-auto px-4 py-3">
+          <div role="tabpanel" id={`plugin-${detail.name}-panel-hooks`} className="flex-1 overflow-y-auto px-4 py-3">
             <pre className="whitespace-pre-wrap break-words rounded border border-edge bg-surface-base p-4 font-mono text-body text-content-secondary leading-relaxed">
               {JSON.stringify(detail.hooks, null, 2)}
             </pre>
           </div>
         )}
         {visibleTab === "mcp" && detail.mcp && (
-          <div className="flex-1 overflow-y-auto px-4 py-3">
+          <div role="tabpanel" id={`plugin-${detail.name}-panel-mcp`} className="flex-1 overflow-y-auto px-4 py-3">
             <pre className="whitespace-pre-wrap break-words rounded border border-edge bg-surface-base p-4 font-mono text-body text-content-secondary leading-relaxed">
               {JSON.stringify(detail.mcp, null, 2)}
             </pre>
           </div>
         )}
         {visibleTab === "readme" && detail.readme && (
-          <div className="flex-1 overflow-y-auto px-4 py-4">
+          <div role="tabpanel" id={`plugin-${detail.name}-panel-readme`} className="flex-1 overflow-y-auto px-4 py-4">
             <Markdown>{detail.readme}</Markdown>
           </div>
         )}

@@ -75,8 +75,9 @@ export default function DeclarativePlaybookForm({
         </div>
 
         <div className="flex flex-col gap-1">
-          <label className={FIELD_LABEL}>Description</label>
+          <label htmlFor="pb-description" className={FIELD_LABEL}>Description</label>
           <input
+            id="pb-description"
             type="text"
             value={form.description}
             onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
@@ -86,8 +87,9 @@ export default function DeclarativePlaybookForm({
         </div>
 
         <div className="flex flex-col gap-1">
-          <label className={FIELD_LABEL}>Argument hint</label>
+          <label htmlFor="pb-arg-hint" className={FIELD_LABEL}>Argument hint</label>
           <input
+            id="pb-arg-hint"
             type="text"
             value={form.argumentHint}
             onChange={(e) => setForm((prev) => ({ ...prev, argumentHint: e.target.value }))}
@@ -109,8 +111,9 @@ export default function DeclarativePlaybookForm({
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div className="flex flex-col gap-1">
-            <label className={FIELD_LABEL}>Agent</label>
+            <label htmlFor="pb-agent" className={FIELD_LABEL}>Agent</label>
             <input
+              id="pb-agent"
               type="text"
               value={form.agent}
               onChange={(e) => setForm((prev) => ({ ...prev, agent: e.target.value }))}
@@ -120,8 +123,9 @@ export default function DeclarativePlaybookForm({
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className={FIELD_LABEL}>Effort</label>
+            <label htmlFor="pb-effort" className={FIELD_LABEL}>Effort</label>
             <select
+              id="pb-effort"
               value={form.effort}
               onChange={(e) => setForm((prev) => ({ ...prev, effort: e.target.value }))}
               className={SELECT_CLS}
@@ -135,8 +139,9 @@ export default function DeclarativePlaybookForm({
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className={FIELD_LABEL}>Max ops</label>
+            <label htmlFor="pb-max-ops" className={FIELD_LABEL}>Max ops</label>
             <input
+              id="pb-max-ops"
               type="number"
               min={0}
               value={form.maxOps ?? ""}
@@ -216,6 +221,7 @@ export default function DeclarativePlaybookForm({
                     <td className="px-2 py-1">
                       <input
                         type="text"
+                        aria-label={`Argument ${i + 1} name`}
                         value={arg.name}
                         onChange={(e) => updateArg(i, { name: e.target.value })}
                         placeholder="scope"
@@ -224,6 +230,7 @@ export default function DeclarativePlaybookForm({
                     </td>
                     <td className="px-2 py-1">
                       <select
+                        aria-label={`Argument ${i + 1} type`}
                         value={arg.type}
                         onChange={(e) => updateArg(i, { type: e.target.value })}
                         className={SELECT_CLS}
@@ -238,6 +245,7 @@ export default function DeclarativePlaybookForm({
                     <td className="px-2 py-1">
                       <input
                         type="text"
+                        aria-label={`Argument ${i + 1} default value`}
                         value={arg.default}
                         onChange={(e) => updateArg(i, { default: e.target.value })}
                         placeholder="auto"
@@ -247,6 +255,7 @@ export default function DeclarativePlaybookForm({
                     <td className="px-2 py-1">
                       <input
                         type="text"
+                        aria-label={`Argument ${i + 1} help text`}
                         value={arg.help}
                         onChange={(e) => updateArg(i, { help: e.target.value })}
                         placeholder="What this flag does"
@@ -282,6 +291,7 @@ export default function DeclarativePlaybookForm({
           </p>
         </div>
         <textarea
+          aria-label="Prompt"
           value={form.prompt}
           onChange={(e) => setForm((prev) => ({ ...prev, prompt: e.target.value }))}
           placeholder="# Task title&#10;&#10;## Shape&#10;research/report. Parallel researchers → analyst → critic.&#10;..."

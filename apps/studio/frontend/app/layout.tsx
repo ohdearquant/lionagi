@@ -25,6 +25,12 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-screen bg-surface-base font-mono text-content-primary">
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:absolute focus:z-[100] focus:m-2 focus:rounded focus:border focus:border-edge focus:bg-surface-nav focus:px-4 focus:py-2 focus:text-content-primary"
+        >
+          Skip to main content
+        </a>
         <ToastProvider>
           <Shell>{children}</Shell>
         </ToastProvider>

@@ -93,6 +93,7 @@ function FieldMapEditor({ map, onChange }: FieldMapEditorProps) {
         <div key={idx} className="grid grid-cols-[1fr_1fr_auto] items-center gap-1">
           <input
             type="text"
+            aria-label={`Field mapping ${idx + 1} source`}
             value={key}
             onChange={(e) => updateKey(key, e.target.value)}
             placeholder="source_field"
@@ -100,6 +101,7 @@ function FieldMapEditor({ map, onChange }: FieldMapEditorProps) {
           />
           <input
             type="text"
+            aria-label={`Field mapping ${idx + 1} destination`}
             value={value}
             onChange={(e) => updateValue(key, e.target.value)}
             placeholder="dest_field"
@@ -163,8 +165,9 @@ function LinkCard({ link, index, stepNames, onUpdate, onDelete }: LinkCardProps)
       <div className="flex flex-wrap items-center gap-3">
         {/* From */}
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <label className="text-xs uppercase text-neutral-500">from</label>
+          <label htmlFor={`link-${index}-from`} className="text-xs uppercase text-neutral-500">from</label>
           <select
+            id={`link-${index}-from`}
             value={link.from}
             onChange={(e) => set({ from: e.target.value })}
             className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-sm text-neutral-200 focus:border-neutral-500 focus:outline-none"
@@ -185,8 +188,9 @@ function LinkCard({ link, index, stepNames, onUpdate, onDelete }: LinkCardProps)
 
         {/* To */}
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <label className="text-xs uppercase text-neutral-500">to</label>
+          <label htmlFor={`link-${index}-to`} className="text-xs uppercase text-neutral-500">to</label>
           <select
+            id={`link-${index}-to`}
             value={link.to}
             onChange={(e) => set({ to: e.target.value })}
             className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-sm text-neutral-200 focus:border-neutral-500 focus:outline-none"
@@ -241,11 +245,12 @@ function LinkCard({ link, index, stepNames, onUpdate, onDelete }: LinkCardProps)
         <div className="flex flex-col gap-3">
           {/* Condition */}
           <div className="flex flex-col gap-1">
-            <label className="text-xs uppercase text-neutral-500">
+            <label htmlFor={`link-${index}-condition`} className="text-xs uppercase text-neutral-500">
               condition
               <span className="ml-1 normal-case text-neutral-600">(optional)</span>
             </label>
             <input
+              id={`link-${index}-condition`}
               type="text"
               value={link.condition ?? ""}
               onChange={(e) => set({ condition: e.target.value })}
@@ -265,8 +270,9 @@ function LinkCard({ link, index, stepNames, onUpdate, onDelete }: LinkCardProps)
       {/* Code mode body */}
       {mode === "code" ? (
         <div className="flex flex-col gap-1">
-          <label className="text-xs uppercase text-neutral-500">handler</label>
+          <label htmlFor={`link-${index}-handler`} className="text-xs uppercase text-neutral-500">handler</label>
           <textarea
+            id={`link-${index}-handler`}
             value={link.handler ?? ""}
             onChange={(e) => set({ handler: e.target.value })}
             rows={6}
