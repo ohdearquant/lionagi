@@ -97,6 +97,34 @@
          <lastmod>2026-05-21</lastmod>
     </url>
     <url>
+         <loc>https://lionagi.ai/adrs/ADR-0019-teams-db-and-run-lifecycle/</loc>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://lionagi.ai/adrs/ADR-0020-skill-invocations/</loc>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://lionagi.ai/adrs/ADR-0021-skill-artifacts-and-reactive-chaining/</loc>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://lionagi.ai/adrs/ADR-0022-run-step-provenance/</loc>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://lionagi.ai/adrs/ADR-0023-unified-hook-system/</loc>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://lionagi.ai/adrs/ADR-0024-session-health-and-admin-surface/</loc>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://lionagi.ai/adrs/ADR-0025-session-status-vocabulary/</loc>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
          <loc>https://lionagi.ai/adrs/DECISION_LOG/</loc>
          <lastmod>2026-05-21</lastmod>
     </url>
