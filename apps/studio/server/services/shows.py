@@ -9,8 +9,6 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
-import aiosqlite
-
 from lionagi.state.db import DEFAULT_DB_PATH
 
 from ..config import SHOWS_ROOT
@@ -350,13 +348,13 @@ async def import_shows() -> dict[str, int]:
                 started_at = meta.get("started_at")
                 ended_at = meta.get("ended_at")
                 if isinstance(started_at, str):
-                    from datetime import datetime, timezone
+                    from datetime import datetime
                     try:
                         started_at = datetime.fromisoformat(started_at).timestamp()
                     except (ValueError, TypeError):
                         started_at = None
                 if isinstance(ended_at, str):
-                    from datetime import datetime, timezone
+                    from datetime import datetime
                     try:
                         ended_at = datetime.fromisoformat(ended_at).timestamp()
                     except (ValueError, TypeError):
@@ -364,7 +362,7 @@ async def import_shows() -> dict[str, int]:
 
                 merged_at = meta.get("merged_at")
                 if isinstance(merged_at, str):
-                    from datetime import datetime, timezone
+                    from datetime import datetime
                     try:
                         merged_at = datetime.fromisoformat(merged_at).timestamp()
                     except (ValueError, TypeError):

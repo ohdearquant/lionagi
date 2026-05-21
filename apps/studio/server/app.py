@@ -8,10 +8,19 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 
 from .config import CORS_ORIGINS
-from .routers import admin, agents, definitions, playbooks, plugins, runs, sessions, shows, skills, teams
+from .routers import (
+    admin,
+    agents,
+    definitions,
+    playbooks,
+    plugins,
+    runs,
+    sessions,
+    shows,
+    skills,
+    teams,
+)
 from .services import stats as stats_svc
-
-_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 app = FastAPI(title="Lion Studio Server")
 
@@ -26,10 +35,12 @@ app.add_middleware(
 @app.middleware("http")
 async def require_studio_bearer_token(request: Request, call_next):
     token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
+    path = request.url.path
+    # Gate ALL methods on /api/admin/* — GET endpoints must not bypass auth.
+    # Other /api/* paths remain open for read-only access (stats, health, etc.).
     if (
         token
-        and request.url.path.startswith("/api")
-        and request.method in _MUTATING_METHODS
+        and path.startswith("/api/admin/")
         and request.headers.get("authorization") != f"Bearer {token}"
     ):
         return JSONResponse({"detail": "Unauthorized"}, status_code=401)

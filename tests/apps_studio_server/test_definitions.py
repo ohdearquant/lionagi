@@ -9,8 +9,7 @@ import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
-from tests.apps_studio_server._helpers import run_async as _run
-
+from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # H-BE-3: save_definition() writes DB first, then disk

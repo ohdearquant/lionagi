@@ -55,7 +55,7 @@ def _live_process_matches(session_id: str, artifacts_path: Path | None) -> bool:
             return _pid_is_live(pid)
     try:
         result = subprocess.run(
-            ["ps", "-axo", "pid=,command="],
+            ["ps", "-axo", "pid=,command="],  # noqa: S607
             capture_output=True,
             text=True,
             timeout=2,
@@ -142,6 +142,7 @@ async def doctor(*, stale_hours: float = 1.0) -> dict[str, Any]:
 
 
 async def prune_sessions(session_ids: list[str]) -> int:
+    """Delete sessions by explicit ID list (intentional admin action; unconditional)."""
     seen: dict[str, None] = {}
     for sid in session_ids:
         seen[sid] = None
@@ -151,7 +152,7 @@ async def prune_sessions(session_ids: list[str]) -> int:
     placeholders = ",".join("?" * len(unique_ids))
     async with _open_db(_DB) as db:
         cur = await db.execute(
-            f"DELETE FROM sessions WHERE id IN ({placeholders})",
+            f"DELETE FROM sessions WHERE id IN ({placeholders})",  # noqa: S608
             unique_ids,
         )
         await db.commit()
@@ -169,6 +170,40 @@ async def prune_sessions(session_ids: list[str]) -> int:
 
 
 async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
+    """Prune phantom sessions with a TOCTOU-safe guarded DELETE.
+
+    Re-checks the phantom condition (status='running' AND updated_at <=
+    classification timestamp) atomically in the WHERE clause so sessions that
+    transitioned to a terminal state between classification and deletion are
+    never removed.
+    """
     phantoms = await list_phantom_sessions(stale_hours=stale_hours)
+    if not phantoms or not DEFAULT_DB_PATH.exists():
+        return 0
+
+    # Build per-session guards: id must still be 'running' and updated_at must
+    # not have advanced past the moment we classified it as a phantom.
+    now = time.time()
+    stale_cutoff = now - stale_hours * 3600
+
     ids = [p["session_id"] for p in phantoms]
-    return await prune_sessions(ids)
+    placeholders = ",".join("?" * len(ids))
+    async with _open_db(_DB) as db:
+        cur = await db.execute(
+            f"DELETE FROM sessions WHERE id IN ({placeholders})"  # noqa: S608
+            " AND status = 'running' AND (updated_at IS NULL OR updated_at <= ?)",
+            (*ids, stale_cutoff),
+        )
+        await db.commit()
+        pruned = cur.rowcount or 0
+        if pruned:
+            await db.execute(
+                """
+                DELETE FROM messages
+                WHERE id NOT IN (
+                  SELECT value FROM progressions, json_each(progressions.collection)
+                )
+                """
+            )
+            await db.commit()
+    return pruned

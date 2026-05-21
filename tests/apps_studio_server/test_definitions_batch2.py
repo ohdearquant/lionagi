@@ -5,14 +5,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
-from tests.apps_studio_server._helpers import run_async as _run
-
+from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Shared fake DB plumbing
@@ -133,7 +130,6 @@ class TestListDefinitionsNPlusOne:
         monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
         monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
-        import aiosqlite
 
         class _RowLike:
             def __init__(self, data):

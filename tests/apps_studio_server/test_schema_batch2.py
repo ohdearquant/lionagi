@@ -7,15 +7,13 @@ from __future__ import annotations
 
 import time
 import uuid
-from pathlib import Path
 
 import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
-from tests.apps_studio_server._helpers import run_async as _run
-
+from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # #990 — status_source column migration and round-trip
@@ -69,7 +67,7 @@ class TestStatusSourceMigration:
                 await db.execute(
                     "INSERT INTO shows (id, topic, show_dir, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?)",
-                    ("old-id", "legacy-show", "/tmp/shows/legacy", time.time(), time.time()),
+                    ("old-id", "legacy-show", "/tmp/shows/legacy", time.time(), time.time()),  # noqa: S108
                 )
                 await db.commit()
 

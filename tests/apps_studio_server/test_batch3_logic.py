@@ -6,15 +6,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
-from tests.apps_studio_server._helpers import run_async as _run
-
+from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # #991 — is_session_stream_done() gates on terminal status AND stale time
@@ -225,8 +223,9 @@ class TestUpdatePlaybookValidation:
             "description: test\nsteps:\n  a: {}\n",
         )
 
-        from fastapi.testclient import TestClient
         from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
         from apps.studio.server.routers.playbooks import router
 
         app = FastAPI()
@@ -290,6 +289,7 @@ class TestUpdatePlaybookSpecFieldValidation:
 
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
+
         from apps.studio.server.routers.playbooks import router
 
         app = FastAPI()

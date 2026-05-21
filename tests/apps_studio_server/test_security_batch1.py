@@ -7,15 +7,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient  # noqa: E402
 
-from tests.apps_studio_server._helpers import run_async as _run
+from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
 
 def _make_fake_home(tmp_path: Path) -> Path:
@@ -35,10 +34,9 @@ def _make_fake_home(tmp_path: Path) -> Path:
 class TestPublicPath:
     def test_repo_relative_path(self, tmp_path):
         """public_path() with a path under the repo root returns relative posix."""
-        from apps.studio.server.services._path_safety import public_path
-
         # Simulate a path under the repo root (parents[4] from _path_safety.py)
         import apps.studio.server.services._path_safety as mod
+        from apps.studio.server.services._path_safety import public_path
         repo_root = Path(mod.__file__).resolve().parents[4]
         target = repo_root / "apps" / "studio" / "server" / "dummy.md"
         result = public_path(target)
@@ -256,9 +254,16 @@ class TestMarketplaceSourcePaths:
 
 @pytest.mark.integration
 class TestBearerTokenAuth:
-    def _get_client(self, monkeypatch) -> TestClient:
-        import apps.studio.server.app as app_mod
+    def _get_client(self, monkeypatch, fake_db: Path | None = None) -> TestClient:
         from importlib import reload
+
+        import apps.studio.server.app as app_mod
+        import apps.studio.server.services.stats as stats_mod
+
+        if fake_db is not None:
+            monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", fake_db)
+            monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
+
         reload(app_mod)
         return TestClient(app_mod.app, raise_server_exceptions=False)
 
@@ -292,10 +297,11 @@ class TestBearerTokenAuth:
         resp = client.get("/health")
         assert resp.status_code == 200
 
-    def test_readonly_api_open_when_token_set(self, monkeypatch):
+    def test_readonly_api_open_when_token_set(self, monkeypatch, tmp_path):
         """GET /api/stats must remain accessible (read-only) when auth token is set."""
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
-        client = self._get_client(monkeypatch)
+        fake_db = tmp_path / "state.db"
+        client = self._get_client(monkeypatch, fake_db=fake_db)
 
         resp = client.get("/api/stats")
         assert resp.status_code == 200

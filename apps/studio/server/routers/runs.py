@@ -13,7 +13,7 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 async def list_runs(
     page: int = Query(default=1, ge=1, description="1-based page number"),
     per_page: int = Query(default=20, ge=1, le=5000, description="Rows per page"),
-    status: list[str] | None = Query(default=None, description="Repeated status filter"),
+    status: list[str] | None = Query(default=None, description="Repeated status filter"),  # noqa: B008
     # F-A3-7 (ADR-0005): renamed from ?worker= to ?playbook= — "worker" is
     # not in lionagi's Studio vocabulary per ADR-0005.
     playbook: str | None = Query(default=None, description="Case-insensitive playbook contains filter"),

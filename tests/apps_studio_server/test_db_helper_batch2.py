@@ -5,15 +5,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
-from tests.apps_studio_server._helpers import run_async as _run
-
+from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # #992 — open_db() configures busy_timeout, WAL, and row_factory
@@ -56,7 +53,6 @@ class TestOpenDb:
     @pytest.mark.integration
     def test_open_db_sets_row_factory(self, tmp_path):
         """open_db() must set row_factory so rows are accessible by column name."""
-        import aiosqlite as aio
         from apps.studio.server.services._db import open_db
 
         db_path = str(tmp_path / "test.db")
@@ -77,8 +73,8 @@ class TestOpenDb:
 
     def test_sessions_service_uses_open_db(self):
         """sessions.py must import and use _open_db (not bare aiosqlite.connect)."""
-        import ast
         import inspect
+
         import apps.studio.server.services.sessions as sessions_mod
 
         src = inspect.getsource(sessions_mod)
@@ -97,6 +93,7 @@ class TestOpenDb:
     def test_shows_service_uses_open_db(self):
         """shows.py must import and use _open_db (not bare aiosqlite.connect)."""
         import inspect
+
         import apps.studio.server.services.shows as shows_mod
 
         src = inspect.getsource(shows_mod)

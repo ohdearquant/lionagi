@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient  # noqa: E402
 
-from lionagi.state.db import StateDB
+from lionagi.state.db import StateDB  # noqa: E402
 
 
 def _run(coro):

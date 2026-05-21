@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient  # noqa: E402
 
 
 def _make_client(monkeypatch, teams_root: Path) -> TestClient:

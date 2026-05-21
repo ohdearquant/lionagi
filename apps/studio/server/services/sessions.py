@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from typing import Any
 
 import aiosqlite
@@ -159,7 +158,7 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
                             FROM messages m
                             LEFT JOIN message_types mt ON m.lion_class = mt.type_id
                             WHERE m.id IN ({placeholders})
-                            """,
+                            """,  # noqa: S608
                             msg_ids,
                         )
                         msg_rows = await msg_cur.fetchall()
@@ -249,7 +248,7 @@ async def get_session_messages_after(
                 FROM messages m
                 LEFT JOIN message_types mt ON m.lion_class = mt.type_id
                 WHERE m.id IN ({placeholders}) AND m.created_at > ?
-                """,
+                """,  # noqa: S608
                 (*msg_ids, after_ts),
             )
             msg_rows = await msg_cur.fetchall()

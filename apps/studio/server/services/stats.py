@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from lionagi.state.db import DEFAULT_DB_PATH
@@ -11,7 +10,8 @@ from . import plugins as plugins_svc
 from . import sessions as sessions_svc
 from . import shows as shows_svc
 from . import skills as skills_svc
-from ._db import get_active_connection_count, open_db as _open_db
+from ._db import get_active_connection_count
+from ._db import open_db as _open_db
 from ._path_safety import public_path
 
 _DB = str(DEFAULT_DB_PATH)
@@ -21,7 +21,7 @@ async def _table_counts(db: Any) -> dict[str, int]:
     counts: dict[str, int] = {}
     for table in ("messages", "progressions", "sessions", "branches", "definitions", "shows", "plays"):
         try:
-            cur = await db.execute(f"SELECT COUNT(*) AS n FROM {table}")
+            cur = await db.execute(f"SELECT COUNT(*) AS n FROM {table}")  # noqa: S608
             row = await cur.fetchone()
             counts[table] = row["n"] if row else 0
         except Exception:

@@ -35,7 +35,7 @@ async def update_playbook(
     try:
         updated = playbooks_svc.update_playbook(name, body)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Playbook '{name}' not found")
     return updated

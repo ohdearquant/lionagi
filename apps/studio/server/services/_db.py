@@ -33,6 +33,7 @@ async def open_db(path: str) -> AsyncIterator[aiosqlite.Connection]:
         try:
             await db.execute("PRAGMA journal_mode = WAL")
             await db.execute("PRAGMA busy_timeout = 5000")
+            await db.execute("PRAGMA foreign_keys = ON")
             db.row_factory = aiosqlite.Row
             yield db
         finally:

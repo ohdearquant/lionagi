@@ -96,7 +96,7 @@ async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
         params = [value for item in result for value in (item["kind"], item["name"])]
         async with _open_db(_DB) as db:
             cur = await db.execute(
-                f"SELECT kind, name, MAX(version) AS v, MAX(created_at) AS ts"
+                f"SELECT kind, name, MAX(version) AS v, MAX(created_at) AS ts"  # noqa: S608
                 f" FROM definitions WHERE {conditions} GROUP BY kind, name",
                 params,
             )

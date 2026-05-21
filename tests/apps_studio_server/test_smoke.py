@@ -45,6 +45,7 @@ def _make_client(
     import apps.studio.server.services.runs as runs_mod
     import apps.studio.server.services.sessions as sessions_mod
     import apps.studio.server.services.shows as shows_mod
+    import apps.studio.server.services.stats as stats_mod
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
 
@@ -65,6 +66,8 @@ def _make_client(
     monkeypatch.setattr(shows_mod, "_DB", str(fake_db))
     monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
     monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
 
     if with_run:
         run_dir = runs_root / "20240101T000000-abc123"
