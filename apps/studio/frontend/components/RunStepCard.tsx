@@ -1,9 +1,11 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 import Badge from "@/components/Badge";
-import Markdown from "@/components/Markdown";
 import type { RunMessage, RunStep } from "@/lib/types";
+
+const Markdown = dynamic(() => import("@/components/Markdown"), { ssr: false });
 
 interface RolesBreakdown {
   system?: number;
@@ -178,7 +180,7 @@ export default function RunStepCard({
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [expandedTools, setExpandedTools] = useState<Set<number>>(new Set());
 
-  const messages = step.messages ?? [];
+  const messages = useMemo(() => step.messages ?? [], [step.messages]);
   const result = (step.result ?? {}) as StepResult;
   const roles = (result.roles ?? {}) as RolesBreakdown;
 
@@ -302,6 +304,8 @@ export default function RunStepCard({
     >
       <button
         type="button"
+        aria-expanded={expanded}
+        aria-controls={`step-${step.step}-body`}
         onClick={() => setExpanded((v) => !v)}
         className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-surface-overlay"
       >
@@ -353,16 +357,18 @@ export default function RunStepCard({
       </button>
 
       {expanded && (
-        <div className="border-t border-edge">
+        <div id={`step-${step.step}-body`} className="border-t border-edge">
           {/* Tab bar */}
-          <div className="sticky top-0 z-10 flex items-center gap-0 border-b border-edge bg-surface-base/95 px-2 backdrop-blur">
-            <TabButton id="overview" active={tab} onSelect={setTab} label="Overview" />
+          <div role="tablist" aria-label="Step details" className="sticky top-0 z-10 flex items-center gap-0 border-b border-edge bg-surface-base/95 px-2 backdrop-blur">
+            <TabButton id="overview" active={tab} onSelect={setTab} label="Overview" panelId={`step-${step.step}-panel-overview`} buttonId={`step-${step.step}-tab-overview`} />
             <TabButton
               id="files"
               active={tab}
               onSelect={setTab}
               label="Files"
               count={summary.files.length}
+              panelId={`step-${step.step}-panel-files`}
+              buttonId={`step-${step.step}-tab-files`}
             />
             <TabButton
               id="commands"
@@ -370,6 +376,8 @@ export default function RunStepCard({
               onSelect={setTab}
               label="Commands"
               count={summary.toolCount}
+              panelId={`step-${step.step}-panel-commands`}
+              buttonId={`step-${step.step}-tab-commands`}
             />
             <TabButton
               id="errors"
@@ -378,6 +386,8 @@ export default function RunStepCard({
               label="Errors"
               count={summary.failedCount}
               tone={summary.failedCount > 0 ? "error" : undefined}
+              panelId={`step-${step.step}-panel-errors`}
+              buttonId={`step-${step.step}-tab-errors`}
             />
             <TabButton
               id="conversation"
@@ -385,6 +395,8 @@ export default function RunStepCard({
               onSelect={setTab}
               label="Conversation"
               count={messages.length}
+              panelId={`step-${step.step}-panel-conversation`}
+              buttonId={`step-${step.step}-tab-conversation`}
             />
             {tab === "conversation" && assistantList.length > 0 && (
               <button
@@ -404,21 +416,35 @@ export default function RunStepCard({
           </div>
 
           {tab === "overview" && (
-            <OverviewPanel
-              summary={summary}
-              lastAssistant={lastAssistant}
-              onJumpToConversation={() => setTab("conversation")}
-            />
+            <div role="tabpanel" id={`step-${step.step}-panel-overview`} aria-labelledby={`step-${step.step}-tab-overview`}>
+              <OverviewPanel
+                summary={summary}
+                lastAssistant={lastAssistant}
+                onJumpToConversation={() => setTab("conversation")}
+              />
+            </div>
           )}
 
-          {tab === "files" && <FilesPanel files={summary.files} />}
+          {tab === "files" && (
+            <div role="tabpanel" id={`step-${step.step}-panel-files`} aria-labelledby={`step-${step.step}-tab-files`}>
+              <FilesPanel files={summary.files} />
+            </div>
+          )}
 
-          {tab === "commands" && <CommandsPanel commands={summary.commands} />}
+          {tab === "commands" && (
+            <div role="tabpanel" id={`step-${step.step}-panel-commands`} aria-labelledby={`step-${step.step}-tab-commands`}>
+              <CommandsPanel commands={summary.commands} />
+            </div>
+          )}
 
-          {tab === "errors" && <ErrorsPanel failed={summary.failedTools} />}
+          {tab === "errors" && (
+            <div role="tabpanel" id={`step-${step.step}-panel-errors`} aria-labelledby={`step-${step.step}-tab-errors`}>
+              <ErrorsPanel failed={summary.failedTools} />
+            </div>
+          )}
 
           {tab === "conversation" && (
-            <>
+            <div role="tabpanel" id={`step-${step.step}-panel-conversation`} aria-labelledby={`step-${step.step}-tab-conversation`}>
               <div className="flex flex-wrap items-center gap-1.5 border-b border-edge px-2 py-1">
                 <span className="text-[9px] uppercase tracking-wide text-content-muted">
                   filter:
@@ -458,7 +484,7 @@ export default function RunStepCard({
                 expandedTools={expandedTools}
                 onToggleTool={toggleTool}
               />
-            </>
+            </div>
           )}
         </div>
       )}
@@ -473,6 +499,8 @@ function TabButton({
   label,
   count,
   tone,
+  panelId,
+  buttonId,
 }: {
   id: TabId;
   active: TabId;
@@ -480,11 +508,17 @@ function TabButton({
   label: string;
   count?: number;
   tone?: "error";
+  panelId: string;
+  buttonId: string;
 }) {
   const isActive = id === active;
   return (
     <button
       type="button"
+      id={buttonId}
+      role="tab"
+      aria-selected={isActive}
+      aria-controls={panelId}
       onClick={() => onSelect(id)}
       className={`relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-body font-medium transition-colors ${
         isActive
@@ -818,7 +852,13 @@ function MessageFeed({
   onToggleTool,
   stepKey = "",
 }: MessageFeedProps) {
-  let respCounter = 0;
+  // Precompute per-message assistant ordinals before JSX to avoid mutation during render
+  const assistantOrdinals: number[] = new Array(messages.length);
+  let ordinalCount = 0;
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].role === "assistant") ordinalCount += 1;
+    assistantOrdinals[i] = ordinalCount;
+  }
 
   return (
     <div className="flex flex-col">
@@ -835,14 +875,14 @@ function MessageFeed({
           return <UserBlock key={i} content={m.content || ""} timestamp={m.timestamp} />;
         }
         if (m.role === "assistant") {
-          respCounter += 1;
+          const ordinal = assistantOrdinals[i];
           return (
             <AssistantBlock
               key={i}
-              anchorId={`step-${stepKey}-r${respCounter - 1}`}
+              anchorId={`step-${stepKey}-r${ordinal - 1}`}
               content={m.content || ""}
               timestamp={m.timestamp}
-              ordinal={respCounter}
+              ordinal={ordinal}
             />
           );
         }
@@ -884,6 +924,7 @@ function UserBlock({ content, timestamp }: { content: string; timestamp?: number
     <div className="border-b border-edge border-l-2 border-l-status-success bg-surface-overlay/40 px-3 py-1.5">
       <button
         type="button"
+        aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-start gap-2 text-left"
       >
@@ -990,6 +1031,7 @@ function ToolCallBlock({
     <div className={`border-b border-edge ${isError ? "bg-status-error-bg" : "bg-surface-base"}`}>
       <button
         type="button"
+        aria-expanded={expanded}
         onClick={onToggle}
         className="flex w-full items-center gap-2 px-3 py-0.5 text-left hover:bg-surface-overlay"
       >

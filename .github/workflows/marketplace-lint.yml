@@ -1,0 +1,63 @@
+name: marketplace-lint
+
+on:
+  pull_request:
+    paths:
+      - 'marketplace/**'
+      - '.claude-plugin/**'
+      - 'skills/**'
+      - 'README.md'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ripgrep
+        run: sudo apt-get install -y ripgrep
+
+      - name: Banned MCP server names
+        # rg exits 0 if match found; ! inverts so step fails on any match
+        # --hidden ensures dot-prefixed dirs like .claude-plugin/ are searched
+        run: |
+          ! rg --hidden 'mcp__khive-(internal|oss|staging)__' marketplace/ .claude-plugin/ \
+            $([ -d skills ] && echo 'skills/') 2>/dev/null
+
+      - name: Banned models (codex/gpt-5.5)
+        run: |
+          ! rg --hidden 'codex/gpt-5\.5' marketplace/ .claude-plugin/ \
+            $([ -d skills ] && echo 'skills/') 2>/dev/null
+
+      - name: Banned models (claude-opus-4-7)
+        run: |
+          ! rg --hidden 'claude-opus-4-7' marketplace/ .claude-plugin/ \
+            $([ -d skills ] && echo 'skills/') 2>/dev/null
+
+      - name: No absolute paths
+        run: |
+          ! rg --hidden '/Users/' marketplace/ .claude-plugin/ \
+            $([ -d skills ] && echo 'skills/') 2>/dev/null
+
+      - name: Deprecated grouped MCP verb forms
+        # Catch mcp__khive__(memory|graph|work|communication|waves) and bare
+        # service.action() forms — all replaced by direct mcp__khive__* verbs.
+        # Use \b word boundary (not trailing `(`) to also catch bare allowed-tools
+        # references like `mcp__khive__memory` with no parentheses.
+        run: |
+          ! rg --hidden 'mcp__khive__(memory|graph|work|communication|waves)\b' \
+            marketplace/ .claude-plugin/ README.md \
+            $([ -d skills ] && echo 'skills/') 2>/dev/null
+          ! rg --hidden 'memory\.recall|work\.tasks' \
+            marketplace/ .claude-plugin/ README.md \
+            $([ -d skills ] && echo 'skills/') 2>/dev/null
+
+      - name: yolo without bypass
+        # Blocking: li play --yolo without --bypass on the same line.
+        # NOTE: line-based check; multiline li play commands may need manual review.
+        run: |
+          ! rg --hidden -P 'li play.*--yolo(?!.*--bypass)' marketplace/ .claude-plugin/ README.md \
+            $([ -d skills ] && echo 'skills/') 2>/dev/null
+
+      - name: Validate marketplace manifests
+        run: python3 marketplace/scripts/validate_manifests.py

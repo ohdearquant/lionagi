@@ -158,6 +158,15 @@ export default function Table<T>({
                 <th
                   key={id}
                   scope="col"
+                  aria-sort={
+                    sortable
+                      ? active
+                        ? sort.direction === "asc"
+                          ? "ascending"
+                          : "descending"
+                        : "none"
+                      : undefined
+                  }
                   className={[
                     "px-3 py-2.5 font-medium",
                     column.align === "right" ? "text-right" : "text-left",
@@ -171,9 +180,6 @@ export default function Table<T>({
                     <button
                       type="button"
                       onClick={() => toggleSort(column)}
-                      aria-sort={
-                        active ? (sort.direction === "asc" ? "ascending" : "descending") : "none"
-                      }
                       className={[
                         "inline-flex max-w-full items-center gap-1 transition-colors duration-100 hover:text-content-primary",
                         active ? "text-content-primary" : "text-content-muted",

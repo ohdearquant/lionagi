@@ -1,13 +1,13 @@
 {
   "name": "play",
-  "description": "Author lionagi playbooks for li play / li o flow",
+  "description": "Define and run reusable workflow templates (playbooks) that parameterize agent tasks",
   "version": "0.1.0",
   "author": {
     "name": "Ocean (HaiyangLi)",
     "url": "https://github.com/ohdearquant"
   },
-  "homepage": "https://github.com/khive-ai/lionagi",
-  "repository": "https://github.com/khive-ai/lionagi",
+  "homepage": "https://github.com/ohdearquant/lionagi",
+  "repository": "https://github.com/ohdearquant/lionagi",
   "license": "Apache-2.0",
   "keywords": ["playbook", "authoring", "flow", "pipeline"]
 }

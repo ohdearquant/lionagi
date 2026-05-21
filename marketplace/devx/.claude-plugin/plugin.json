@@ -1,13 +1,13 @@
 {
   "name": "devx",
-  "description": "Conventional commit, formatting, CI, PR, and mid-session summarize (session-start/-summarize not shipped — see skills/TODO.md)",
+  "description": "Development workflow skills: conventional commits, formatting, CI checks, PR creation, and session summaries (session-start/session-summarize planned)",
   "version": "0.1.0",
   "author": {
     "name": "Ocean (HaiyangLi)",
     "url": "https://github.com/ohdearquant"
   },
-  "homepage": "https://github.com/khive-ai/lionagi",
-  "repository": "https://github.com/khive-ai/lionagi",
+  "homepage": "https://github.com/ohdearquant/lionagi",
+  "repository": "https://github.com/ohdearquant/lionagi",
   "license": "Apache-2.0",
   "keywords": ["developer-experience", "commit", "ci", "formatting", "session"]
 }

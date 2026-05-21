@@ -9,7 +9,7 @@ Playbook authoring for lionagi orchestration flows (`li play` / `li o flow`).
 ## Install
 
 ```
-claude /plugin marketplace add khive-ai/lionagi
+claude /plugin marketplace add ohdearquant/lionagi
 claude /plugin install play@lionagi
 ```
 

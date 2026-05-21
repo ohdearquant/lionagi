@@ -15,7 +15,7 @@ Memory recall, MEMORY.md hygiene, and auto-memory bootstrap for Claude Code sess
 ## Install
 
 ```
-claude /plugin marketplace add khive-ai/lionagi
+claude /plugin marketplace add ohdearquant/lionagi
 claude /plugin install memory@lionagi
 ```
 

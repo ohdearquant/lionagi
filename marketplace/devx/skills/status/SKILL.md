@@ -4,7 +4,7 @@ description: >
   Dashboard for all sub-lambdas: task queues, build health, blockers, idle/stuck state.
   Suggest when: "status", "dashboard", "what's happening", "who's free", "who's blocked",
   or before delegating work.
-allowed-tools: [Bash, Read, Glob, Grep, mcp__khive__work, mcp__khive__communication]
+allowed-tools: [Bash, Read, Glob, Grep, mcp__khive__next, mcp__khive__list, mcp__khive__inbox]
 ---
 
 # Status — Sub-Lambda Dashboard
@@ -23,15 +23,15 @@ Overview of all 5 sub-lambdas: health, tasks, activity, blockers.
 ### 1. Task Queue Status
 
 ```python
-mcp__khive__work(action="tasks", assignee="lambda:foundation")
-mcp__khive__work(action="tasks", assignee="lambda:platform")
-mcp__khive__work(action="tasks", assignee="lambda:features")
-mcp__khive__work(action="tasks", assignee="lambda:apps")
-mcp__khive__work(action="tasks", assignee="lambda:products")
+mcp__khive__next(assignee="lambda:foundation", limit=10)
+mcp__khive__next(assignee="lambda:platform", limit=10)
+mcp__khive__next(assignee="lambda:features", limit=10)
+mcp__khive__next(assignee="lambda:apps", limit=10)
+mcp__khive__next(assignee="lambda:products", limit=10)
 
 # Unassigned tasks (need delegation)
-mcp__khive__work(action="tasks", filter="inbox")
-mcp__khive__work(action="tasks", filter="next")
+mcp__khive__list(type="work", status="inbox", limit=10)
+mcp__khive__list(type="work", status="next", limit=10)
 ```
 
 ### 2. Build Health
@@ -71,10 +71,10 @@ cargo test --workspace --no-run 2>&1 | grep "Compiling\|test result" | tail -20
 
 ```python
 # Check for unread messages
-mcp__khive__communication(action="list", lambda_id="lambda:khive", status="unread")
+mcp__khive__inbox(status="unread", limit=20)
 
 # Active discussions
-mcp__khive__communication(action="list", channel="forum", limit=20)
+mcp__khive__list(type="comm", channel="forum", limit=20)
 ```
 
 ### 6. Identify Blockers
@@ -115,7 +115,7 @@ Look for:
 
 | State | Meaning | Action |
 |-------|---------|--------|
-| Lambda idle, no tasks | Available for new work | dispatch via `li o flow` or assign through `work.assign` MCP action |
+| Lambda idle, no tasks | Available for new work | dispatch via `li o flow` or assign through `mcp__khive__assign` |
 | Lambda has tasks, none active | Work queued but not started | Check priority |
 | Lambda active, no blockers | Working normally | Let it run |
 | Lambda blocked | Waiting on another lambda | Resolve dependency |

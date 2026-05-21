@@ -62,7 +62,7 @@ jobs:
       uses: codecov/codecov-action@v6
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        slug: khive-ai/lionagi
+        slug: ohdearquant/lionagi
 
   publish:
     needs: test

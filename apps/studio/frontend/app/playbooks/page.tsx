@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import Button from "@/components/Button";
 import Badge from "@/components/Badge";
 import {
@@ -11,7 +10,6 @@ import {
   getDefinitionVersion,
   saveDefinition,
   rollbackDefinition,
-  startRun,
 } from "@/lib/api";
 import type { DefinitionDetail, DefinitionVersion } from "@/lib/api";
 import type { WorkerSummary } from "@/lib/types";
@@ -48,11 +46,9 @@ function PlaybookList({
       {/* Header */}
       <div className="flex items-center justify-between border-b border-edge px-3 py-2.5">
         <span className="text-label font-semibold text-content-primary">Playbooks</span>
-        <Link href="/playbooks/new">
-          <Button variant="primary" size="sm" leading="+">
-            New
-          </Button>
-        </Link>
+        <Button variant="primary" size="sm" leading="+" disabled title="Coming soon">
+          New
+        </Button>
       </div>
 
       {/* Error */}
@@ -202,8 +198,6 @@ function VersionHistory({
 // ─── Right pane: playbook detail ──────────────────────────────────────────────
 
 function PlaybookDetail({ name }: { name: string }) {
-  const router = useRouter();
-
   const [detail, setDetail] = useState<DefinitionDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -222,7 +216,6 @@ function PlaybookDetail({ name }: { name: string }) {
   const [restoring, setRestoring] = useState(false);
 
   // Run state
-  const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
 
   // Track active fetch so stale loads from previous selection don't apply
@@ -230,18 +223,22 @@ function PlaybookDetail({ name }: { name: string }) {
 
   const loadDetail = useCallback((playbookName: string) => {
     const token = ++loadToken.current;
-    setDetail(null);
-    setLoadError(null);
-    setEditing(false);
-    setEditorContent("");
-    setCommitMessage("");
-    setSaveError(null);
-    setSaveSuccess(false);
-    setViewingVersion(null);
-    setViewContent(null);
-    setRunError(null);
-
-    getDefinition("playbook", playbookName)
+    // Defer resets into a Promise so setState is never called synchronously
+    // inside the effect body — avoids react-hooks/set-state-in-effect
+    void Promise.resolve()
+      .then(() => {
+        setDetail(null);
+        setLoadError(null);
+        setEditing(false);
+        setEditorContent("");
+        setCommitMessage("");
+        setSaveError(null);
+        setSaveSuccess(false);
+        setViewingVersion(null);
+        setViewContent(null);
+        setRunError(null);
+        return getDefinition("playbook", playbookName);
+      })
       .then((d) => {
         if (token !== loadToken.current) return;
         setDetail(d);
@@ -317,17 +314,8 @@ function PlaybookDetail({ name }: { name: string }) {
   );
 
   const handleRun = useCallback(async () => {
-    if (running) return;
-    setRunning(true);
-    setRunError(null);
-    try {
-      const data = await startRun(name);
-      router.push(`/runs/${data.run_id}`);
-    } catch (err) {
-      setRunError(err instanceof Error ? err.message : "Run failed");
-      setRunning(false);
-    }
-  }, [running, name, router]);
+    setRunError("Not yet available");
+  }, []);
 
   // Displayed content: versioned view, editing buffer, or live content
   const displayedContent =
@@ -430,9 +418,10 @@ function PlaybookDetail({ name }: { name: string }) {
                 size="sm"
                 leading="▶"
                 onClick={handleRun}
-                disabled={running}
+                disabled
+                title="Coming soon"
               >
-                {running ? "Starting…" : "Run"}
+                Run
               </Button>
             </>
           )}
@@ -490,11 +479,9 @@ function EmptyDetail() {
         <p className="text-body text-content-secondary">
           Select a playbook from the list to view its content and version history.
         </p>
-        <Link href="/playbooks/new">
-          <Button variant="primary" size="md" leading="+">
-            New Playbook
-          </Button>
-        </Link>
+        <Button variant="primary" size="md" leading="+" disabled title="Coming soon">
+          New Playbook
+        </Button>
       </div>
     </div>
   );

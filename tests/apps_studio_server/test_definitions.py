@@ -5,35 +5,18 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _run(coro):
-    # Python 3.10+: asyncio.get_event_loop() raises in a fresh thread.
-    # CI under xdist starts each worker without a loop, so we create one
-    # per call and close it cleanly. Local pytest-asyncio runs were
-    # masking this — they pre-create the loop.
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
-
+from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # H-BE-3: save_definition() writes DB first, then disk
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 def test_save_definition_creates_db_row_and_file(tmp_path, monkeypatch):
     """save_definition() with a missing (fresh) DB path must create the DB,
     insert a row, then write the file.  It must NOT return success without a
@@ -99,6 +82,7 @@ def test_save_definition_creates_db_row_and_file(tmp_path, monkeypatch):
     assert rows[0]["version"] == 1
 
 
+@pytest.mark.integration
 def test_save_definition_increments_version(tmp_path, monkeypatch):
     """Calling save_definition() twice for the same (kind, name) must increment version."""
     import apps.studio.server.services.definitions as defs_mod
@@ -192,6 +176,7 @@ def _make_patched_client(tmp_path, monkeypatch):
         "%5B%5D",    # URL-encoded [] (glob metachar)
     ],
 )
+@pytest.mark.integration
 def test_save_definition_rejects_unsafe_name_post(encoded_name, tmp_path, monkeypatch):
     """POST /api/definitions/agent/<unsafe_name> must NOT return 200.
 
@@ -314,6 +299,7 @@ def test_save_definition_accepts_valid_kinds(kind, tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 def test_concurrent_save_disk_reflects_highest_version(tmp_path, monkeypatch):
     """Two concurrent save_definition() calls for the same (kind, name) must
     leave the disk file with the content of the HIGHER committed version.

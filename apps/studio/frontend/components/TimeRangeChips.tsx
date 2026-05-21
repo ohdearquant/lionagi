@@ -28,7 +28,7 @@ export interface TimeRangeChipsProps {
 export default function TimeRangeChips({ value, onChange, className }: TimeRangeChipsProps) {
   return (
     <div
-      role="tablist"
+      role="radiogroup"
       aria-label="Time range"
       className={[
         "inline-flex items-center gap-0.5 rounded border border-edge bg-surface-overlay p-0.5 shadow-card",
@@ -43,8 +43,8 @@ export default function TimeRangeChips({ value, onChange, className }: TimeRange
           size="sm"
           variant={value === r.value ? "primary" : "ghost"}
           onClick={() => onChange(r.value)}
-          aria-selected={value === r.value}
-          role="tab"
+          aria-checked={value === r.value}
+          role="radio"
           className={value === r.value ? "" : "border-transparent"}
         >
           {r.label}

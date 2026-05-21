@@ -2,7 +2,7 @@
 ![PyPI - Version](https://img.shields.io/pypi/v/lionagi?labelColor=233476aa&color=231fc935)
 ![PyPI - Downloads](https://img.shields.io/pypi/dm/lionagi?color=blue)
 ![Python Version](https://img.shields.io/badge/python-3.10%2B-blue)
-[![codecov](https://codecov.io/github/khive-ai/lionagi/graph/badge.svg?token=FAE47FY26T)](https://codecov.io/github/khive-ai/lionagi)
+[![codecov](https://codecov.io/github/ohdearquant/lionagi/graph/badge.svg?token=FAE47FY26T)](https://codecov.io/github/ohdearquant/lionagi)
 
 # lionagi
 
@@ -159,10 +159,24 @@ uv add "lionagi[postgres]"  # PostgreSQL persistence
 uv add "lionagi[all]"       # Everything
 ```
 
+## Claude Code Marketplace
+
+The lionagi marketplace provides installable Claude Code plugins for the lionagi agent runtime. Each plugin adds a focused set of skills and agents for a specific workflow: structured show runs, research pipelines, memory management, playbook authoring, and multi-agent orchestration.
+
+**Install:**
+
+```bash
+claude /plugin marketplace add ohdearquant/lionagi
+```
+
+**Prerequisites:** lionagi (`pip install lionagi` or `uv pip install lionagi`) and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed.
+
+See [marketplace/README.md](marketplace/README.md) for the full plugin list and per-plugin install instructions.
+
 ## Community
 
 - [Discord](https://discord.gg/JDj9ENhUE8) — questions, ideas, help
-- [Issues](https://github.com/khive-ai/lionagi/issues) — bugs and feature requests
+- [Issues](https://github.com/ohdearquant/lionagi/issues) — bugs and feature requests
 - [Contributing](docs/contributing.md) — PR workflow
 
 **Citation**
@@ -172,6 +186,6 @@ uv add "lionagi[all]"       # Everything
   author = {Haiyang Li},
   year   = {2023},
   title  = {LionAGI: Towards Automated General Intelligence},
-  url    = {https://github.com/khive-ai/lionagi},
+  url    = {https://github.com/ohdearquant/lionagi},
 }
 ```
