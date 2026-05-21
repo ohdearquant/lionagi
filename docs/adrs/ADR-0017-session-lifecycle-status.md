@@ -40,11 +40,12 @@ UPDATE sessions SET status = 'completed'
   WHERE status IS NULL;
 ```
 
-Migration: v3→v4, same idempotent `ALTER TABLE ADD COLUMN` pattern as prior
-migrations (ADR-0009 migration protocol). The backfill conservatively marks all
-existing sessions as `completed` — the 376 historical sessions are all finished
-runs. New sessions get `status='running'` at INSERT time from the CLI, not from
-a column DEFAULT.
+Migration: these columns are part of the collapsed v1 schema (see ADR-0009
+Migration Protocol). For a pre-release `state.db` that pre-dates these
+columns, `StateDB._reconcile_columns()` `ALTER TABLE ADD COLUMN`s them on
+open; existing rows therefore have `status IS NULL` and the conservative
+backfill statements above apply. New sessions get `status='running'` at
+INSERT time from the CLI, not from a column DEFAULT.
 
 ### Status vocabulary (sessions)
 
@@ -71,6 +72,7 @@ lives on `plays.status`.
 | Session close (error) | CLI session finalize | UPDATE `status='failed'`, `ended_at=now()` |
 | Session interrupt | CLI signal handler | UPDATE `status='aborted'`, `ended_at=now()` |
 | `li state import` | Import command | INSERT with status derived from run.json manifest |
+| `li state prune` | Operator | DELETE old sessions (cascades branches); see ADR-0009 §"Operational commands". |
 | Show play links session | Show skill Step 3 | Session already created by `li play`; play links via `plays.session_id` |
 
 ### Import status derivation
@@ -150,6 +152,29 @@ expensive at list-query time. Instead:
 - **Run detail**: error count computed on page load from the session's messages.
 - **Dashboard**: intermediate tool errors do not feed any dashboard card.
 
+### Pruning gaps (deliberate, today)
+
+`li state prune` deletes session rows; ON DELETE CASCADE drops branches.
+Two layers are NOT yet cleaned up:
+
+1. **Orphan progressions.** `sessions.progression_id` and
+   `branches.progression_id` reference `progressions(id)` without
+   `ON DELETE CASCADE`, so the progression rows survive the parent
+   delete. The orphan-message sweep (`DELETE FROM messages WHERE id
+   NOT IN (SELECT value FROM progressions, json_each(...))`) therefore
+   still sees those messages as referenced and leaves them in place.
+2. **Plays still referencing deleted sessions.** `plays.session_id`
+   has no cascade and no SET NULL — SQLite REJECTS a delete of a
+   session that a play still references. This protects play history
+   from dangling pointers (ADR-0012) but means show-play sessions
+   can only be pruned after their owning show is pruned too.
+
+These are not bugs — they're conservative behavior pending an
+explicit decision on what cleanup the operator wants. A future
+`li state prune --orphan-progressions` would close (1) by sweeping
+progression rows referenced only by deleted sessions and then
+re-running the message sweep.
+
 ## Consequences
 
 **Positive**
@@ -160,7 +185,7 @@ expensive at list-query time. Instead:
 - Clean separation: session status = "did it run?", play status = "was output accepted?"
 
 **Negative**
-- Three new columns on the sessions table (v4 migration).
+- Three new columns on the sessions table (part of the collapsed v1 schema; reconciled into pre-release DBs by `StateDB._reconcile_columns()`).
 - CLI session init and finalize must write status — requires hooks or explicit calls.
 - Imported sessions may have imprecise timestamps if run.json is sparse.
 - Error counts remain expensive to compute at list-query time.

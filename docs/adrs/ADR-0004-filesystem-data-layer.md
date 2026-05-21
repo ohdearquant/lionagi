@@ -48,11 +48,45 @@ content, SQLite for operational/query state.
 
 Note: the browser route is `/runs/{id}` (user-facing 'Runs' label per ADR-0012), while the API route is `/api/sessions/{id}` (matching the SQLite table). The frontend API client translates between these.
 
+### Run persistence: SQLite only (no JSON snapshot)
+
+New runs write sessions, branches, and messages to SQLite via live hooks during
+execution. The CLI no longer writes a post-run `run.json` manifest or
+`branches/*.json` snapshot to `~/.lionagi/runs/`. Rationale: aiosqlite is now a
+mandatory dependency (not optional), and the live hooks provide richer data than
+the end-of-run JSON dump (e.g., messages appear as they're produced, not after
+the run completes).
+
+> **Stream artifacts are a narrow exception.** `stream_persist=True` writes
+> `~/.lionagi/runs/<id>/stream/<branch>.json` plus a `<branch>.buffer.jsonl`
+> incremental chunk log. These are **not** canonical state — SQLite is — they
+> exist as a transient resume/debug artifact for the streaming providers (the
+> JSON file is the last-known branch snapshot; the JSONL buffer is the
+> chunk-by-chunk stream). Downstream tooling MUST NOT treat them as the
+> source of truth, and Studio query routes MUST NOT read them.
+
+Historical `~/.lionagi/runs/` JSON directories remain on disk as a read-only
+archive. `li state import` brings them into SQLite for querying.
+
+> **Studio query rewiring is pending.** The Studio API routes for
+> `/api/runs`, `/api/sessions/{id}`, and `/api/shows` were originally
+> implemented against the filesystem (`~/.lionagi/runs/run.json`,
+> `branches/*.json`, `~/.lionagi/shows/_meta.json`) and have not yet been
+> rewired to read from SQLite. The state layer landed in this PR; the
+> Studio rewire is a follow-up (issue TBD). Until then, new SQLite-backed
+> runs are correctly persisted but invisible to the Studio listing UI for
+> the routes still pointing at the filesystem. CLI tooling (`li state list`,
+> direct DB queries) is unaffected.
+
+For human-readable export, use `li state export <session-id> --format json`
+(future command).
+
 ### Sync and drift
 
-SQLite and filesystem can drift if a write to one fails before the other completes.
+For authored content (agents, playbooks, show plans), filesystem is canonical
+and SQLite tracks edit history. The two can drift if a write fails mid-operation.
 Mitigation: `li state import` and `li state import-shows` re-sync from filesystem
-into SQLite at any time. Filesystem is recoverable source; SQLite is the query cache.
+into SQLite at any time.
 
 ## Consequences
 

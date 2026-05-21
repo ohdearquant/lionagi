@@ -69,5 +69,6 @@ Example: `_Supersedes [ADR-0001](ADR-0001-lion-studio-internal-app.md)._`
 | [ADR-0015](ADR-0015-runs-list-design.md) | Runs list design — identity, filters, pagination | Accepted |
 | [ADR-0016](ADR-0016-definitions-write-path.md) | Definition write path and versioning | Accepted |
 | [ADR-0017](ADR-0017-session-lifecycle-status.md) | Session lifecycle and status derivation | Accepted |
+| [ADR-0018](ADR-0018-studio-distribution.md) | Studio distribution and local access | Accepted |
 
 See also [Decision Log](DECISION_LOG.md) for lightweight decisions that don't warrant a full ADR.

@@ -156,8 +156,8 @@ async def test_run_flushes_text_before_tool_use_and_links_tool_result():
     assert last_ar.response == "after"
 
 
-async def test_run_unmatched_tool_result_preserves_error_metadata():
-    """Unmatched tool_result still yields ActionResponse with is_error metadata."""
+async def test_run_unmatched_tool_result_is_skipped():
+    """tool_result with unknown tool_id is silently skipped (no matching request)."""
     model, _ = _make_fake_cli_model(
         [
             StreamChunk(
@@ -175,12 +175,37 @@ async def test_run_unmatched_tool_result_preserves_error_metadata():
     results = await _collect(run(branch, "go", RunParam()))
 
     action_responses = [r for r in results if isinstance(r, ActionResponse)]
-    assert len(action_responses) == 1, "Expected exactly one ActionResponse"
+    assert len(action_responses) == 0, "Unmatched tool_result should be skipped"
 
-    act_res = action_responses[0]
-    assert act_res.metadata.get("is_error") is True
-    assert act_res.metadata.get("tool_id") == "missing"
-    assert act_res.function == "read"
+
+async def test_run_matched_tool_result_with_error():
+    """Matched tool_result with is_error=True preserves error metadata."""
+    model, _ = _make_fake_cli_model(
+        [
+            StreamChunk(
+                type="tool_use",
+                tool_id="call_1",
+                tool_name="read",
+                tool_input={"path": "/tmp"},
+            ),
+            StreamChunk(
+                type="tool_result",
+                tool_id="call_1",
+                tool_name="read",
+                tool_output={"error": "permission denied"},
+                is_error=True,
+            ),
+        ]
+    )
+    branch = Branch()
+    branch.chat_model = model
+
+    results = await _collect(run(branch, "go", RunParam()))
+
+    action_responses = [r for r in results if isinstance(r, ActionResponse)]
+    assert len(action_responses) == 1
+    assert action_responses[0].metadata.get("is_error") is True
+    assert action_responses[0].function == "read"
 
 
 async def test_run_error_chunk_raises_and_restores_streaming_processor():
@@ -219,6 +244,59 @@ async def test_run_stream_persist_writes_final_state_and_removes_buffer(tmp_path
 
     # Original streaming processor restored
     assert model.streaming_process_func is None
+
+
+async def test_run_stream_persist_snapshot_dir_routes_snapshot_separately(
+    tmp_path,
+):
+    """R5-A HIGH-1: snapshot_dir routes the branch snapshot JSON to a
+    different directory than the streaming buffer. Used by the CLI so
+    the snapshot lands in branches_dir (where find_branch looks) while
+    the .buffer.jsonl stays in stream_dir.
+    """
+    stream_dir = tmp_path / "stream"
+    branches_dir = tmp_path / "branches"
+    stream_dir.mkdir()
+    branches_dir.mkdir()
+
+    model, _ = _make_fake_cli_model([StreamChunk(type="text", content="done")])
+    branch = Branch()
+    branch.chat_model = model
+
+    param = RunParam(
+        stream_persist=True,
+        persist_dir=stream_dir,
+        snapshot_dir=branches_dir,
+    )
+    await _collect(run(branch, "persist-me", param))
+
+    # Snapshot landed in branches_dir, NOT stream_dir.
+    branch_snaps = list(branches_dir.glob("*.json"))
+    stream_snaps = list(stream_dir.glob("*.json"))
+    assert branch_snaps, "snapshot should be in branches_dir"
+    assert not stream_snaps, (
+        "no snapshot should land in stream_dir when snapshot_dir is set"
+    )
+    # The snapshot is named after the branch id.
+    assert branch_snaps[0].name == f"{branch.id}.json"
+
+
+async def test_run_stream_persist_snapshot_dir_default_falls_back_to_persist_dir(
+    tmp_path,
+):
+    """When snapshot_dir is None (default), the snapshot lands in
+    persist_dir — backwards-compatible behavior for non-CLI callers.
+    """
+    model, _ = _make_fake_cli_model([StreamChunk(type="text", content="done")])
+    branch = Branch()
+    branch.chat_model = model
+
+    param = RunParam(stream_persist=True, persist_dir=tmp_path)
+    # snapshot_dir defaults to a sentinel/None — fallback uses persist_dir
+    await _collect(run(branch, "persist-me", param))
+
+    # Snapshot is in persist_dir
+    assert list(tmp_path.glob("*.json"))
 
 
 # ---------------------------------------------------------------------------

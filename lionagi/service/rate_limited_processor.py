@@ -46,9 +46,15 @@ class RateLimitedAPIProcessor(Processor):
         self._lock = Lock()
 
     async def start_replenishing(self):
-        """Start replenishing rate limit capacities at regular intervals."""
-        await self.start()
+        """Start replenishing rate limit capacities at regular intervals.
+
+        The cancellation handler wraps ``await self.start()`` too so that a
+        cancel arriving before the main loop is reached is still caught
+        inside the task — otherwise the task ends with an uncaught
+        ``CancelledError`` and the awaiting ``stop()`` re-raises it.
+        """
         try:
+            await self.start()
             while not self.is_stopped():
                 await anyio.sleep(self.interval)
 
@@ -66,10 +72,22 @@ class RateLimitedAPIProcessor(Processor):
 
     @override
     async def stop(self) -> None:
-        """Stop the replenishment task."""
+        """Stop the replenishment task.
+
+        Python 3.11+ re-raises ``CancelledError`` on ``await task`` after
+        ``task.cancel()`` even when the task body suppressed the exception
+        (until ``uncancel()`` is called). Suppress it here so the caller —
+        typically ``iModelManager.shutdown()`` iterating multiple iModels —
+        does not abort on the first close.
+        """
         if self._rate_limit_replenisher_task:
             self._rate_limit_replenisher_task.cancel()
-            await self._rate_limit_replenisher_task
+            try:
+                await self._rate_limit_replenisher_task
+            except get_cancelled_exc_class():
+                pass
+            finally:
+                self._rate_limit_replenisher_task = None
         await super().stop()
 
     @override

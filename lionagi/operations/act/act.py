@@ -82,8 +82,8 @@ async def _act(
                     recipient=branch.id,
                 )
             if action_request not in branch.messages:
-                branch.msgs.add_message(action_request=action_request)
-            branch.msgs.add_message(
+                await branch.msgs.a_add_message(action_request=action_request)
+            await branch.msgs.a_add_message(
                 action_request=action_request,
                 action_output={
                     "error": str(e),
@@ -112,9 +112,9 @@ async def _act(
 
     # Add the action request/response to the message manager, if not present
     if action_request not in branch.messages:
-        branch.msgs.add_message(action_request=action_request)
+        await branch.msgs.a_add_message(action_request=action_request)
 
-    branch.msgs.add_message(
+    await branch.msgs.a_add_message(
         action_request=action_request,
         action_output=func_call.response,
     )

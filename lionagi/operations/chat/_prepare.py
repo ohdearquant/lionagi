@@ -28,6 +28,7 @@ def _prepare_run_kwargs(
     if isinstance(param, RunParam):
         to_exlcude.add("stream_persist")
         to_exlcude.add("persist_dir")
+        to_exlcude.add("snapshot_dir")
 
     params = param.to_dict(exclude=to_exlcude)
     params["sender"] = param.sender or branch.user or "user"

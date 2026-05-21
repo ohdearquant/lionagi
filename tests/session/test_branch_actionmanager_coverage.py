@@ -227,7 +227,9 @@ class TestBranchSerialization:
     def test_to_dict_has_model_keys(self, plain_branch):
         d = plain_branch.to_dict()
         assert "chat_model" in d
-        assert "parse_model" in d
+        # parse_model is only emitted when it differs from chat_model
+        if plain_branch.parse_model is not plain_branch.chat_model:
+            assert "parse_model" in d
 
     def test_roundtrip_plain_branch(self, plain_branch):
         d = plain_branch.to_dict()

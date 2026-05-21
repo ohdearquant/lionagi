@@ -24,15 +24,19 @@ does not justify the abstraction. Revisit when a third arrives.
 
 from __future__ import annotations
 
+import json
+import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from lionagi import Branch, Session
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 
 from .._agents import AgentProfile, load_agent_profile
-from .._logging import hint, progress
+from .._logging import hint
 from .._providers import build_imodel_from_spec
 from .._runs import RunDir, allocate_run, save_last_branch_pointer
 
@@ -42,6 +46,8 @@ __all__ = (
     "setup_orchestration",
     "build_worker_branch",
     "finalize_orchestration",
+    "start_live_persist",
+    "stop_live_persist",
     "EFFORT_GUIDANCE",
     "EFFORT_MAP",
     "team_guidance",
@@ -181,6 +187,9 @@ class OrchestrationEnv:
     # Optional shared features
     team_data: dict | None = None
 
+    # Live SQLite persist context (set by start_live_persist)
+    _live_persist: dict | None = field(default=None, repr=False)
+
     # Worker name bookkeeping (mutable)
     _name_counts: dict[str, int] = field(default_factory=dict)
     _all_names: list[str] = field(default_factory=list)
@@ -240,7 +249,9 @@ def setup_orchestration(
             fast = True
 
     if not model_spec:
-        raise ValueError("Provide a model spec or use -a/--agent to load a profile with a model.")
+        raise ValueError(
+            "Provide a model spec or use -a/--agent to load a profile with a model."
+        )
 
     orc_imodel = build_imodel_from_spec(
         model_spec,
@@ -371,7 +382,9 @@ def build_worker_branch(
     w_imodel.endpoint.config.kwargs["repo"] = artifact_dir
     # Grant write access to the actual project directory so workers can
     # edit source files, not just their artifact sandbox.
-    project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
+    project_root = (
+        str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
+    )
     w_imodel.endpoint.config.kwargs.setdefault("add_dir", [])
     if project_root not in w_imodel.endpoint.config.kwargs["add_dir"]:
         w_imodel.endpoint.config.kwargs["add_dir"].append(project_root)
@@ -402,6 +415,11 @@ def build_worker_branch(
         name=wname,
     )
     env.session.include_branches(wb)
+
+    # Register live persist hook on this new branch
+    if env._live_persist:
+        _register_branch_hook(env._live_persist, wb)
+
     return wb, w_model, w_profile
 
 
@@ -416,57 +434,285 @@ def finalize_orchestration(
     extras: dict | None = None,
     emit_hints: bool = True,
 ) -> tuple[list[tuple[str, str, str]], str]:
-    """Phase G — persist branches, write manifest, update last-branch pointer.
+    """Phase G — persist branch snapshots + last-branch pointer + hints.
+
+    Branch state persists via the live SQLite hooks during execution (ADR-0004),
+    but the resume hints emitted here say ``li agent -r <id>`` — which routes
+    through ``find_branch()`` and currently looks for
+    ``runs/<run>/branches/<id>.json``. We write one canonical snapshot per
+    branch so the hint resolves. The cost is a single small JSON write per
+    branch at exit; the run-time message stream itself stays SQLite-only.
 
     Parameters
     ----------
     kind
-        The pattern kind recorded in the manifest: ``"fanout"`` |
-        ``"flow"`` | future. Used by ``li runs show`` to render the
-        right summary view.
+        Pattern kind (``"fanout"`` | ``"flow"``). Reserved for callers
+        that want to log/render the result; not written to disk.
     prompt
-        Original user prompt. Captured in the manifest for review.
+        Original user prompt. Reserved for caller diagnostics; not written
+        to disk.
     extras
-        Pattern-specific manifest fields (agent list, synthesis model,
-        control-round count, etc.). Merged under ``run.json`` alongside
-        the shared keys.
+        Pattern-specific extras. Reserved; not written to disk.
     emit_hints
         When True, print ``[to resume] li agent -r <id> "..."`` for the
-        orchestrator and each worker branch. Disable when a caller
-        wants custom post-run output.
+        orchestrator and each worker branch.
 
     Returns
     -------
     (branch_ids, orc_branch_id) where branch_ids is
-    ``[(provider, branch_id, name), ...]``.
+    ``[(provider, branch_id, name), ...]`` derived from the in-memory
+    session.
     """
-    # Late import avoids the _common ↔ _orchestration cycle.
-    from ._common import persist_session_branches
+    import logging
 
-    branch_ids = persist_session_branches(env.session, env.run)
+    # Ensure branches_dir exists (allocate_run did, but be defensive).
+    env.run.ensure_state_dirs()
+    log = logging.getLogger("lionagi.cli")
+
+    branch_ids: list[tuple[str, str, str]] = []
+    for branch in env.session.branches:
+        provider = branch.chat_model.endpoint.config.provider
+        branch_ids.append((provider, str(branch.id), branch.name))
+
+        # Write the resume snapshot. Failure here must NOT abort the
+        # finalize — the run already completed; missing JSON only
+        # affects ``li agent -r`` for this branch.
+        try:
+            snap_path = env.run.branch_path(str(branch.id))
+            snap_path.write_text(json.dumps(branch.to_dict(), default=str))
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "finalize: branch snapshot write failed for %s: %s",
+                branch.id, exc, exc_info=True,
+            )
+
     orc_branch_id = str(env.orc_branch.id)
-
-    manifest: dict = {
-        "kind": kind,
-        "prompt": prompt,
-        "model_spec": env.default_model_spec,
-        "orchestrator_branch_id": orc_branch_id,
-        "branches": [
-            {"id": bid, "provider": prov, "name": bname} for prov, bid, bname in branch_ids
-        ],
-    }
-    if extras:
-        # Extras win on conflicts — patterns can override the defaults above
-        # (e.g. custom branch-list shape with control flags).
-        manifest.update(extras)
-    env.run.write_manifest(manifest)
-
     save_last_branch_pointer(env.run.run_id, orc_branch_id)
 
     if emit_hints:
         hint(f'\n[orchestrator] li agent -r {orc_branch_id} "..."')
-        for provider, bid, bname in branch_ids:
+        for _provider, bid, bname in branch_ids:
             if bid != orc_branch_id:
                 hint(f'[{bname}]      li agent -r {bid} "..."')
 
     return branch_ids, orc_branch_id
+
+
+# ── Live SQLite persist ──────────────────────────────────────────────
+
+
+async def start_live_persist(
+    env: OrchestrationEnv,
+    *,
+    invocation_kind: str | None = None,
+    playbook_name: str | None = None,
+    agent_name: str | None = None,
+    artifacts_path: str | None = None,
+) -> None:
+    """Open state.db, create session row, register hooks on existing branches.
+
+    New branches created via build_worker_branch auto-register via the
+    env._live_persist check there.
+
+    On any setup failure, the DB connection is closed before returning
+    so the aiosqlite background thread does not leak (non-daemon thread
+    leak prevents Python interpreter shutdown — "CLI hangs forever").
+    """
+    import logging
+
+    from lionagi.state.db import StateDB
+
+    db: StateDB | None = None
+    try:
+        db = StateDB()
+        await db.open()
+
+        session = env.session
+        session_id = str(session.id)
+        session_dict = session.to_dict(mode="db")
+
+        session_prog_id = str(uuid.uuid4())
+        await db.create_progression(session_prog_id)
+        await db.create_session(
+            {
+                "id": session_id,
+                "created_at": session_dict["created_at"],
+                "node_metadata": session_dict.get("node_metadata"),
+                "name": session_dict.get("name"),
+                "user": session_dict.get("user"),
+                "progression_id": session_prog_id,
+                "first_msg_id": None,
+                "last_msg_id": None,
+                "invocation_kind": invocation_kind,
+                "playbook_name": playbook_name,
+                "agent_name": agent_name,
+                "artifacts_path": artifacts_path,
+                "status": "running",
+                "started_at": time.time(),
+            }
+        )
+
+        ctx: dict[str, Any] = {
+            "db": db,
+            "session_id": session_id,
+            "session_prog_id": session_prog_id,
+            "branch_prog_ids": {},
+            "hooks": [],
+        }
+        env._live_persist = ctx
+
+        for branch in session.branches:
+            _register_branch_hook(ctx, branch)
+    except Exception as exc:
+        logging.getLogger("lionagi.cli").warning(
+            "live persist setup failed (%s) — disabling persistence for this run",
+            exc,
+            exc_info=True,
+        )
+        env._live_persist = None
+        if db is not None:
+            try:
+                await db.close()
+            except Exception as close_exc:  # noqa: BLE001
+                logging.getLogger("lionagi.cli").warning(
+                    "fallback db.close after setup failure also failed: %s",
+                    close_exc,
+                )
+
+
+def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
+    """Register async message hook on a branch.
+
+    Branch row + progression are lazily created on the first message
+    (since this function may be called from sync build_worker_branch
+    where we can't await DB operations).
+    """
+    import asyncio
+
+    db = ctx["db"]
+    session_id = ctx["session_id"]
+    session_prog_id = ctx["session_prog_id"]
+    branch_id = str(branch.id)
+
+    branch_prog_id = str(uuid.uuid4())
+    ctx["branch_prog_ids"][branch_id] = branch_prog_id
+    initialized = {"done": False}
+    init_lock = asyncio.Lock()
+
+    async def _ensure_branch_row():
+        # Serialize concurrent first messages on the same branch so
+        # only one of them runs the DB writes. The flag flips to True
+        # ONLY after the writes commit — a transient failure leaves
+        # initialized=False so the next message retries.
+        if initialized["done"]:
+            return
+        async with init_lock:
+            if initialized["done"]:
+                return
+
+            await db.create_progression(branch_prog_id)
+
+            branch_dict = branch.to_dict(mode="db")
+            node_meta = branch_dict.get("node_metadata") or {}
+            if isinstance(node_meta, str):
+                node_meta = json.loads(node_meta)
+            if "chat_model" in branch_dict:
+                node_meta["chat_model"] = branch_dict["chat_model"]
+            node_meta = json.loads(json.dumps(node_meta, default=str))
+
+            system_msg_id = None
+            if branch.system:
+                sys_dict = branch.system.to_dict(mode="db")
+                system_msg_id = sys_dict["id"]
+                await db.insert_message(sys_dict)
+
+            await db.create_branch(
+                {
+                    "id": branch_id,
+                    "created_at": branch_dict["created_at"],
+                    "node_metadata": node_meta,
+                    "user": branch_dict.get("user"),
+                    "name": branch_dict.get("name"),
+                    "session_id": session_id,
+                    "progression_id": branch_prog_id,
+                    "system_msg_id": system_msg_id,
+                }
+            )
+            initialized["done"] = True
+
+    async def _on_message(msg):
+        # Live-persist failures are logged (not raised) so a DB write
+        # blip cannot abort an in-flight orchestration. The error is
+        # visible in -v runs without crashing the worker.
+        try:
+            await _ensure_branch_row()
+            msg_dict = msg.to_dict(mode="db")
+            msg_id = msg_dict["id"]
+            await db.insert_message(msg_dict)
+            await db.append_to_progression(branch_prog_id, msg_id)
+            await db.append_to_progression(session_prog_id, msg_id)
+            # ADR-0009: keep branches.system_msg_id pointing at the
+            # current system if the runtime replaces it mid-flow.
+            if msg_dict.get("role") == "system":
+                await db.update_branch(branch_id, system_msg_id=msg_id)
+        except Exception as exc:
+            import logging
+
+            logging.getLogger("lionagi.cli").warning(
+                "live persist write failed for branch %s: %s",
+                branch_id,
+                exc,
+                exc_info=True,
+            )
+
+    branch.on_message_added.append(_on_message)
+    ctx["hooks"].append((branch, _on_message))
+
+
+async def stop_live_persist(
+    env: OrchestrationEnv,
+    *,
+    status: str = "completed",
+) -> None:
+    """Update session bookmarks, lifecycle columns, and close DB.
+
+    The DB close is in its own ``finally`` so it always runs — even if
+    the bookmark update or hook removal fails. Leaving the DB unclosed
+    leaks the aiosqlite worker (non-daemon thread) and prevents the
+    Python interpreter from shutting down.
+    """
+    import logging
+
+    ctx = env._live_persist
+    if ctx is None:
+        return
+    log = logging.getLogger("lionagi.cli")
+    db = ctx["db"]
+    try:
+        session_prog_id = ctx["session_prog_id"]
+
+        all_msgs = await db.get_progression(session_prog_id)
+        update_kwargs: dict[str, Any] = {
+            "status": status,
+            "ended_at": time.time(),
+        }
+        if all_msgs:
+            update_kwargs["first_msg_id"] = all_msgs[0]
+            update_kwargs["last_msg_id"] = all_msgs[-1]
+        await db.update_session(ctx["session_id"], **update_kwargs)
+
+        # Remove ALL matching registrations of each hook (list.remove
+        # would only drop the first; a duplicate registration would
+        # leave a closed-DB hook live).
+        for branch, hook in ctx["hooks"]:
+            branch.on_message_added[:] = [
+                h for h in branch.on_message_added if h is not hook
+            ]
+    except Exception as exc:
+        log.warning("live persist teardown failed: %s", exc, exc_info=True)
+    finally:
+        try:
+            await db.close()
+        except Exception as exc:
+            log.warning("live persist db.close failed: %s", exc, exc_info=True)
+        env._live_persist = None

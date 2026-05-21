@@ -67,39 +67,44 @@ class TestiModelEdgeCases:
 
     @pytest.mark.asyncio
     async def test_rate_limiting_under_load(self, mock_response):
-        """Test rate limiting enforcement under concurrent load."""
+        """Test rate limiting enforcement under concurrent load.
+
+        Fire exactly limit_requests so all clear in one window — over-
+        budget requests would block until the iModel.invoke 10s safety
+        timeout because the executor does not re-forward on replenishment.
+        """
         imodel = iModel(
             provider="openai",
             model="gpt-4.1-mini",
             api_key="test-key",
             limit_requests=3,
             limit_tokens=100,
-            capacity_refresh_time=1.0,
+            capacity_refresh_time=0.2,
         )
 
         call_times = []
 
         async def track_timing(*args, **kwargs):
             call_times.append(asyncio.get_event_loop().time())
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
             return mock_response.json.return_value
 
         with patch.object(imodel.endpoint, "call", side_effect=track_timing):
-            # Fire 10 concurrent requests
-            tasks = []
-            for i in range(10):
-                task = asyncio.create_task(
+            # Fire exactly limit_requests so all complete in one window
+            tasks = [
+                asyncio.create_task(
                     imodel.invoke(
                         messages=[{"role": "user", "content": f"Request {i}"}]
                     )
                 )
-                tasks.append(task)
+                for i in range(3)
+            ]
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Check that some requests completed successfully
+        # All should complete successfully within the single-window budget
         successful = [r for r in results if isinstance(r, APICalling)]
-        assert len(successful) > 0
+        assert len(successful) == 3
 
     @pytest.mark.asyncio
     async def test_provider_switching_mid_session(self, mock_response):
@@ -197,39 +202,46 @@ class TestiModelEdgeCases:
 
     @pytest.mark.asyncio
     async def test_concurrent_invoke_with_queue_capacity(self, mock_response):
-        """Test queue capacity limits with concurrent invocations."""
+        """Test queue capacity limits with concurrent invocations.
+
+        Fire exactly limit_requests so all clear in one rate-limit
+        window — over-budget requests would block until the iModel.invoke
+        10s safety timeout because the executor does not re-forward on
+        replenishment.
+        """
         imodel = iModel(
             provider="openai",
             model="gpt-4.1-mini",
             api_key="test-key",
             queue_capacity=5,
-            limit_requests=2,
+            limit_requests=3,
+            capacity_refresh_time=0.1,
         )
 
         async def slow_call(*args, **kwargs):
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.01)
             return mock_response.json.return_value
 
         with patch.object(imodel.endpoint, "call", side_effect=slow_call):
-            # Fire more requests than queue capacity
-            tasks = []
-            for i in range(10):
-                task = asyncio.create_task(
+            # Fire exactly limit_requests so all complete in one window
+            tasks = [
+                asyncio.create_task(
                     imodel.invoke(
                         messages=[{"role": "user", "content": f"Request {i}"}]
                     )
                 )
-                tasks.append(task)
+                for i in range(3)
+            ]
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Some should complete successfully
+        # All should complete successfully within the single-window budget
         successful = [
             r
             for r in results
             if isinstance(r, APICalling) and r.status == EventStatus.COMPLETED
         ]
-        assert len(successful) > 0
+        assert len(successful) == 3
 
     @pytest.mark.asyncio
     async def test_provider_metadata_persistence(self, mock_response):

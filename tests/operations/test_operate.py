@@ -337,6 +337,39 @@ def test_prepare_operate_kw_stream_persist_sets_run_param():
     assert chat_param.stream_persist is True
 
 
+def test_prepare_operate_kw_snapshot_dir_routes_to_run_param():
+    """snapshot_dir kwarg must be forwarded into the RunParam so the
+    branch snapshot can land in a separate dir from the stream buffer.
+    R5-A HIGH-1 regression — the resume hint pointed at branches_dir
+    but run.py wrote to persist_dir; snapshot_dir lets the caller split.
+    """
+    from lionagi.operations.types import RunParam
+
+    branch = Branch()
+    result = prepare_operate_kw(
+        branch, stream_persist=True,
+        persist_dir="/var/folders/buffer",
+        snapshot_dir="/var/folders/branches",
+    )
+    chat_param = result["chat_param"]
+    assert isinstance(chat_param, RunParam)
+    assert chat_param.persist_dir == "/var/folders/buffer"
+    assert chat_param.snapshot_dir == "/var/folders/branches"
+
+
+def test_prepare_operate_kw_snapshot_dir_alone_triggers_run_param():
+    """Passing only snapshot_dir (no stream_persist, no persist_dir)
+    must still promote to RunParam since the field only exists there.
+    """
+    from lionagi.operations.types import RunParam
+
+    branch = Branch()
+    result = prepare_operate_kw(branch, snapshot_dir="/var/folders/branches")
+    chat_param = result["chat_param"]
+    assert isinstance(chat_param, RunParam)
+    assert chat_param.snapshot_dir == "/var/folders/branches"
+
+
 # ---------------------------------------------------------------------------
 # operate() function direct tests — various branches
 # ---------------------------------------------------------------------------

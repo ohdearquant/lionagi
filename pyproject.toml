@@ -19,6 +19,7 @@ dependencies = [
     "pydapter[pandas]>=1.3.2",
     "python-dotenv>=1.2.2",
     "tiktoken>=0.10.0",
+    "aiosqlite>=0.21.0",
 ]
 license = {file = "LICENSE"}
 classifiers=[
@@ -100,6 +101,8 @@ postgres = [
 ]
 
 sqlite = [
+    # aiosqlite is now a core dependency; this extra is kept for backwards
+    # compatibility with existing `pip install lionagi[sqlite]` invocations.
     "aiosqlite>=0.21.0",
 ]
 

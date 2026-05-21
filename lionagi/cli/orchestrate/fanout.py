@@ -11,7 +11,7 @@ from lionagi.ln.concurrency import move_on_after
 from lionagi.operations.fields import Instruct
 
 from .._agents import AgentProfile
-from .._logging import hint, log_error, progress
+from .._logging import log_error, progress
 from .._providers import parse_model_spec
 from ._common import (
     AGENT_REQUEST_FIELDS,
@@ -20,7 +20,6 @@ from ._common import (
     _format_result_json,
     _format_result_text,
     _post_results_to_team,
-    persist_session_branches,
 )
 from ._orchestration import (
     OrchestrationEnv,
@@ -28,6 +27,8 @@ from ._orchestration import (
     finalize_orchestration,
     resolve_worker_spec,
     setup_orchestration,
+    start_live_persist,
+    stop_live_persist,
 )
 
 
@@ -53,6 +54,7 @@ async def _run_fanout(
     timeout: int | None = None,
     agent_name: str | None = None,
     fast: bool = False,
+    playbook_name: str | None = None,
 ) -> str:
     """Three-phase fan-out: decompose → fan out → synthesize."""
     env = setup_orchestration(
@@ -71,6 +73,14 @@ async def _run_fanout(
     )
     _shared: dict = {}
 
+    await start_live_persist(
+        env,
+        invocation_kind="fanout",
+        playbook_name=playbook_name,
+        agent_name=agent_name,
+        artifacts_path=str(env.run.artifact_root),
+    )
+
     inner_kw = dict(
         env=env,
         num_workers=num_workers,
@@ -84,21 +94,41 @@ async def _run_fanout(
         _shared=_shared,
     )
 
-    if timeout:
-        with move_on_after(timeout) as cancel_scope:
-            result = await _run_fanout_inner(model_spec, prompt, **inner_kw)
-        if cancel_scope.cancelled_caught:
-            # Salvage: persist whatever branches the session collected
-            # before the cancel, so the user can resume individual workers.
-            persist_session_branches(env.session, env.run)
-            n_saved = len(_shared.get("saved_workers", []))
-            msg = f"Fanout timed out after {timeout}s"
-            if n_saved:
-                msg += f" ({n_saved} worker results already saved to {env.run.artifact_root})"
-            log_error(msg)
-            raise LionTimeoutError(msg)
-        return result
-    return await _run_fanout_inner(model_spec, prompt, **inner_kw)
+    _terminal_status = "completed"
+    try:
+        if timeout:
+            with move_on_after(timeout) as cancel_scope:
+                result = await _run_fanout_inner(model_spec, prompt, **inner_kw)
+            if cancel_scope.cancelled_caught:
+                _terminal_status = "aborted"
+                n_saved = len(_shared.get("saved_workers", []))
+                msg = f"Fanout timed out after {timeout}s"
+                if n_saved:
+                    msg += f" ({n_saved} worker results already saved to {env.run.artifact_root})"
+                log_error(msg)
+                raise LionTimeoutError(msg)
+            return result
+        return await _run_fanout_inner(model_spec, prompt, **inner_kw)
+    except KeyboardInterrupt:
+        _terminal_status = "aborted"
+        raise
+    except BaseException as exc:
+        from lionagi.ln.concurrency import get_cancelled_exc_class
+
+        if isinstance(exc, get_cancelled_exc_class()):
+            _terminal_status = "aborted"
+        else:
+            _terminal_status = "failed"
+        raise
+    finally:
+        # Shield teardown from outer cancellation so iModel executors are
+        # always closed; see lionagi/cli/agent.py for the full rationale.
+        import anyio
+
+        with anyio.CancelScope(shield=True):
+            await stop_live_persist(env, status=_terminal_status)
+            for _br in env.session.branches:
+                await _br.mdls.shutdown()
 
 
 async def _run_fanout_inner(
@@ -138,14 +168,18 @@ async def _run_fanout_inner(
     for i, wp in enumerate(worker_profiles):
         if wp and wp.name:
             base = wp.name
-            count = sum(1 for n in worker_names if n == base or n.startswith(f"{base}-"))
+            count = sum(
+                1 for n in worker_names if n == base or n.startswith(f"{base}-")
+            )
             worker_names.append(f"{base}-{count + 1}" if count > 0 else base)
         else:
             worker_names.append(f"worker-{i + 1}")
 
     if team_name:
         env.team_data = _create_fanout_team(team_name, worker_names)
-        progress(f"Team '{team_name}' created ({env.team_data['id']}): {', '.join(worker_names)}")
+        progress(
+            f"Team '{team_name}' created ({env.team_data['id']}): {', '.join(worker_names)}"
+        )
 
     if _shared is not None:
         _shared["session"] = env.session
@@ -155,7 +189,9 @@ async def _run_fanout_inner(
     for i, wm in enumerate(worker_model_list):
         wp = worker_profiles[i] if i < len(worker_profiles) else None
         if wp and wp.name:
-            worker_descriptions.append(f"{worker_names[i]} (role: {wp.name}, model: {wm})")
+            worker_descriptions.append(
+                f"{worker_names[i]} (role: {wp.name}, model: {wm})"
+            )
         else:
             worker_descriptions.append(f"{worker_names[i]} (model: {wm})")
     roster_guidance = "; ".join(worker_descriptions)
@@ -200,7 +236,9 @@ async def _run_fanout_inner(
     for i, a in enumerate(agents):
         # Pick the model: orchestrator override > profile > default
         wprofile = worker_profiles[i] if i < len(worker_profiles) else None
-        desired_model = a.model or (wprofile.model if wprofile else None) or default_ms.model
+        desired_model = (
+            a.model or (wprofile.model if wprofile else None) or default_ms.model
+        )
         wname = worker_names[i]
 
         w_branch, w_model, _ = build_worker_branch(
@@ -312,7 +350,9 @@ async def _run_fanout_inner(
 
     # ── Post to team ─────────────────────────────────────────────────
     if env.team_data:
-        _post_results_to_team(env.team_data, worker_results, worker_names, synthesis_result)
+        _post_results_to_team(
+            env.team_data, worker_results, worker_names, synthesis_result
+        )
         progress(
             f"\nTeam '{env.team_data['name']}' ({env.team_data['id']}): "
             f"{len(worker_results)} results posted."
@@ -327,7 +367,9 @@ async def _run_fanout_inner(
         prompt=prompt,
         extras={
             "workers": fanned_labels,
-            "synthesis_model": (synthesis_result["model"] if synthesis_result else None),
+            "synthesis_model": (
+                synthesis_result["model"] if synthesis_result else None
+            ),
         },
     )
 

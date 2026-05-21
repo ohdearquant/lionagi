@@ -337,9 +337,8 @@ def test_to_dict_from_dict(branch_with_mock_imodel: Branch):
 
     d = branch_with_mock_imodel.to_dict()
     assert "messages" in d
-    assert "logs" in d
     assert "chat_model" in d
-    assert "parse_model" in d
+    # logs only present when non-empty; parse_model only when differs from chat_model
 
     new_branch = Branch.from_dict(d)
     assert len(new_branch.messages) == 1

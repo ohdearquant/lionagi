@@ -1,9 +1,19 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+import sys
 from typing import Any, Literal
 
 from pydantic import BaseModel, JsonValue
+
+# Python 3.10 lacks BaseExceptionGroup; the ``exceptiongroup`` backport is
+# already pulled in transitively (anyio + pytest depend on it). We avoid
+# adding it as a direct dependency by detecting the runtime and falling
+# back to the backport on 3.10.
+if sys.version_info >= (3, 11):
+    _BaseExceptionGroup = BaseExceptionGroup  # noqa: F821
+else:
+    from exceptiongroup import BaseExceptionGroup as _BaseExceptionGroup
 
 from .._concepts import Manager
 from ..generic.pile import Pile
@@ -30,8 +40,10 @@ class MessageManager(Manager):
         messages: list[Message] | None = None,
         progression: Progression | None = None,
         system: System | None = None,
+        on_message_added: list | None = None,
     ):
         super().__init__()
+        self._on_message_added: list = on_message_added or []
         m_ = []
         # Attempt to parse 'messages' as a list or from a dictionary
         if isinstance(messages, list):
@@ -78,9 +90,53 @@ class MessageManager(Manager):
             self.clear_messages()
 
     async def a_add_message(self, **kwargs):
-        """Add a message asynchronously with a manager-level lock."""
+        """Add a message asynchronously with a manager-level lock.
+
+        Hook contract: ``on_message_added`` callbacks are **best-effort
+        notifications** fired AFTER pile mutation. The callback list is
+        snapshotted at firing time so a hook that mutates the list
+        cannot inject another hook into the current iteration. If any
+        callback raises, remaining callbacks still run; failures are
+        collected and re-raised as a single ``ExceptionGroup`` after
+        all hooks have had a chance to observe the message. The pile
+        is not rolled back — durable persistence belongs in a hook
+        that is itself transactional (e.g. SQLite).
+        """
+        from lionagi.ln.concurrency import is_coro_func
+
         async with self.messages:
-            return self.add_message(**kwargs)
+            _msg = self.create_message(
+                **{k: v for k, v in kwargs.items() if v is not None}
+            )
+            system = kwargs.get("system")
+            if system:
+                self.set_system(_msg)
+            if _msg in self.messages:
+                idx = self.messages.progression.index(_msg.id)
+                self.messages.exclude(_msg.id)
+                self.messages.insert(idx, _msg)
+            else:
+                self.messages.include(_msg)
+
+        # Snapshot callbacks so mid-iteration mutations of
+        # ``self._on_message_added`` (a public list) don't change what
+        # we fire for THIS message.
+        callbacks = list(self._on_message_added)
+        errors: list[BaseException] = []
+        for cb in callbacks:
+            try:
+                if is_coro_func(cb):
+                    await cb(_msg)
+                else:
+                    cb(_msg)
+            except BaseException as exc:  # noqa: BLE001 — collect, re-raise grouped
+                errors.append(exc)
+        if errors:
+            if len(errors) == 1:
+                raise errors[0]
+            raise _BaseExceptionGroup("on_message_added hooks failed", errors)
+
+        return _msg
 
     @staticmethod
     def create_instruction(
@@ -300,6 +356,106 @@ class MessageManager(Manager):
             recipient=params.get("recipient"),
         )
 
+    @staticmethod
+    def create_message(
+        # common
+        sender: SenderRecipient = None,
+        recipient: SenderRecipient = None,
+        metadata: dict[str, Any] = None,
+        # instruction
+        instruction: JsonValue = None,
+        context: JsonValue = None,
+        handle_context: Literal["extend", "replace"] = "extend",
+        guidance: JsonValue = None,
+        request_fields: JsonValue = None,
+        plain_content: JsonValue = None,
+        request_model: BaseModel | type[BaseModel] = None,
+        response_format: BaseModel | type[BaseModel] = None,
+        images: list = None,
+        image_detail: Literal["low", "high", "auto"] = None,
+        tool_schemas: dict = None,
+        # system
+        system: Any = None,
+        system_datetime: bool | str = None,
+        # assistant_response
+        assistant_response: AssistantResponse | Any = None,
+        # actions
+        action_function: str = None,
+        action_arguments: dict[str, Any] = None,
+        action_output: Any = None,
+        action_request: ActionRequest | None = None,
+        action_response: ActionResponse | Any = None,
+    ):
+        message_types = [instruction, assistant_response, system]
+        # An action_request paired with NO output/response means "this is
+        # a tool call message" (the request itself is the message body).
+        # Paired with output OR a response means "this is the result
+        # message" — don't count it as a separate message type.
+        if action_request and action_output is None and action_response is None:
+            message_types.append(action_request)
+
+        if sum(bool(x) for x in message_types) > 1:
+            raise ValueError("Only one message type can be added at a time.")
+
+        _msg = None
+        if system:
+            _msg = MessageManager.create_system(
+                system=system,
+                system_datetime=system_datetime,
+                sender=sender,
+                recipient=recipient,
+            )
+
+        # ``action_output`` may legitimately be falsey (empty string from a
+        # successful shell command, ``0``, ``False``, ``[]``, ``{}``). Use
+        # ``is not None`` so we don't silently drop the ActionResponse and
+        # re-emit the ActionRequest as a duplicate.
+        elif action_response is not None or action_output is not None:
+            _msg = MessageManager.create_action_response(
+                action_request=action_request,
+                action_output=action_output,
+                action_response=action_response,
+                sender=sender,
+                recipient=recipient,
+            )
+        elif action_request or (action_function and action_arguments is not None):
+            _msg = MessageManager.create_action_request(
+                sender=sender,
+                recipient=recipient,
+                function=action_function,
+                arguments=action_arguments,
+                action_request=action_request,
+            )
+
+        elif assistant_response:
+            _msg = MessageManager.create_assistant_response(
+                sender=sender,
+                recipient=recipient,
+                assistant_response=assistant_response,
+            )
+
+        else:
+            _msg = MessageManager.create_instruction(
+                instruction=instruction,
+                context=context,
+                handle_context=handle_context,
+                guidance=guidance,
+                images=images,
+                request_fields=request_fields,
+                plain_content=plain_content,
+                image_detail=image_detail,
+                request_model=request_model,
+                response_format=response_format,
+                tool_schemas=tool_schemas,
+                sender=sender,
+                recipient=recipient,
+            )
+
+        if metadata:
+            _msg.metadata.setdefault("extra", {})
+            _msg.metadata["extra"].update(metadata)
+        return _msg
+
     def add_message(
         self,
         *,
@@ -338,71 +494,22 @@ class MessageManager(Manager):
         - AssistantResponse
         - ActionRequest / ActionResponse
         """
-        _msg = None
-        # When creating ActionResponse, both action_request and action_output are needed
-        # So don't count action_request as a message type when action_output is present
-        message_types = [instruction, assistant_response, system]
-        if action_request and not action_output:
-            message_types.append(action_request)
+        # Preflight + snapshot: if any registered on_message_added is
+        # async, we can't fire it from this sync path. Raise BEFORE
+        # mutating the pile so the message and the live SQLite state
+        # stay coherent. The returned snapshot is what we fire below —
+        # decoupled from the public list so a hook appended during
+        # iteration can't sneak into this call's fire.
+        hook_snapshot = self._snapshot_hooks_or_reject_async()
 
-        if sum(bool(x) for x in message_types) > 1:
-            raise ValueError("Only one message type can be added at a time.")
-
+        params = {
+            k: v
+            for k, v in locals().items()
+            if k != "self" and k != "hook_snapshot" and v is not None
+        }
+        _msg = self.create_message(**params)
         if system:
-            _msg = self.create_system(
-                system=system,
-                system_datetime=system_datetime,
-                sender=sender,
-                recipient=recipient,
-            )
             self.set_system(_msg)
-
-        elif action_output:
-            _msg = self.create_action_response(
-                action_request=action_request,
-                action_output=action_output,
-                action_response=action_response,
-                sender=sender,
-                recipient=recipient,
-            )
-
-        elif action_request or (action_function and action_arguments is not None):
-            _msg = self.create_action_request(
-                sender=sender,
-                recipient=recipient,
-                function=action_function,
-                arguments=action_arguments,
-                action_request=action_request,
-            )
-
-        elif assistant_response:
-            _msg = self.create_assistant_response(
-                sender=sender,
-                recipient=recipient,
-                assistant_response=assistant_response,
-            )
-
-        else:
-            _msg = self.create_instruction(
-                instruction=instruction,
-                context=context,
-                handle_context=handle_context,
-                guidance=guidance,
-                images=images,
-                request_fields=request_fields,
-                plain_content=plain_content,
-                image_detail=image_detail,
-                request_model=request_model,
-                response_format=response_format,
-                tool_schemas=tool_schemas,
-                sender=sender,
-                recipient=recipient,
-            )
-
-        if metadata:
-            _msg.metadata.setdefault("extra", {})
-            _msg.metadata["extra"].update(metadata)
-
         if _msg in self.messages:
             idx = self.messages.progression.index(_msg.id)
             self.messages.exclude(_msg.id)
@@ -410,7 +517,50 @@ class MessageManager(Manager):
         else:
             self.messages.include(_msg)
 
+        self._fire_on_message_added(_msg, hook_snapshot)
+
         return _msg
+
+    def _snapshot_hooks_or_reject_async(self) -> list:
+        """Preflight + snapshot for the sync add_message path.
+
+        Returns a SNAPSHOT of the current callback list (so a hook
+        appended mid-iteration cannot inject itself into this fire),
+        and raises ``RuntimeError`` *before* any pile mutation if any
+        snapshotted callback is async — those require ``a_add_message``
+        from an async context. Without the snapshot, a sync hook
+        could append an async hook during iteration; the iterator
+        would visit it without awaiting, producing a coroutine warning
+        and a lost write.
+        """
+        from lionagi.ln.concurrency import is_coro_func
+
+        snapshot = list(self._on_message_added)
+        for cb in snapshot:
+            if is_coro_func(cb):
+                raise RuntimeError(
+                    f"Async on_message_added callback {cb!r} cannot fire "
+                    "from the sync add_message path. Use a_add_message "
+                    "from an async context instead."
+                )
+        return snapshot
+
+    def _fire_on_message_added(self, msg: Message, snapshot: list) -> None:
+        """Fire pre-snapshotted sync on_message_added callbacks.
+
+        Failures collected and re-raised as ``ExceptionGroup`` after
+        all callbacks have observed the message (best-effort contract;
+        see ``a_add_message`` docstring)."""
+        errors: list[BaseException] = []
+        for cb in snapshot:
+            try:
+                cb(msg)
+            except BaseException as exc:  # noqa: BLE001 — collect, re-raise grouped
+                errors.append(exc)
+        if errors:
+            if len(errors) == 1:
+                raise errors[0]
+            raise _BaseExceptionGroup("on_message_added hooks failed", errors)
 
     def clear_messages(self):
         """Remove all messages except the system message if it exists."""
@@ -537,6 +687,38 @@ class MessageManager(Manager):
 
     def __contains__(self, message: Message) -> bool:
         return message in self.messages
+
+
+def create_message(
+    sender: SenderRecipient = None,
+    recipient: SenderRecipient = None,
+    metadata: dict[str, Any] = None,
+    # instruction
+    instruction: JsonValue = None,
+    context: JsonValue = None,
+    handle_context: Literal["extend", "replace"] = "extend",
+    guidance: JsonValue = None,
+    request_fields: JsonValue = None,
+    plain_content: JsonValue = None,
+    request_model: BaseModel | type[BaseModel] = None,
+    response_format: BaseModel | type[BaseModel] = None,
+    images: list = None,
+    image_detail: Literal["low", "high", "auto"] = None,
+    tool_schemas: dict = None,
+    # system
+    system: Any = None,
+    system_datetime: bool | str = None,
+    # assistant_response
+    assistant_response: AssistantResponse | Any = None,
+    # actions
+    action_function: str = None,
+    action_arguments: dict[str, Any] = None,
+    action_output: Any = None,
+    action_request: ActionRequest | None = None,
+    action_response: ActionResponse | Any = None,
+) -> System | ActionResponse | ActionRequest | AssistantResponse | Instruction:
+    params = {k: v for k, v in locals().items() if v is not None}
+    return MessageManager.create_message(**params)
 
 
 # File: lionagi/protocols/messages/manager.py

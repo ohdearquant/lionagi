@@ -12,7 +12,6 @@ from lionagi import FieldModel, json_dumps
 from lionagi.models import HashableModel
 from lionagi.operations.fields import Instruct
 
-from .._runs import RunDir
 from ..team import _now_iso, _save_team
 
 # ── Agent request model (structured output from fanout orchestrator) ──────
@@ -228,7 +227,7 @@ def _post_results_to_team(
 
     with _locked_team(team_data["id"]) as data:
         messages = data.setdefault("messages", [])
-        for wr, name in zip(worker_results, worker_names):
+        for wr, name in zip(worker_results, worker_names, strict=False):
             messages.append(
                 {
                     "id": uuid4().hex[:12],
@@ -253,24 +252,3 @@ def _post_results_to_team(
                     "read_by": {},
                 }
             )
-
-
-# ── Session persistence ──────────────────────────────────────────────────
-
-
-def persist_session_branches(session, run: RunDir) -> list[tuple[str, str, str]]:
-    """Persist all branches in a session into the run's ``branches/`` dir.
-
-    Returns ``[(provider, branch_id, branch_name)]`` for each branch
-    written. Synchronous: each snapshot is a single ``write_text`` and
-    there is no gain from async I/O here; removing it also lets callers
-    invoke from sync contexts (e.g. timeout-cancel paths).
-    """
-    run.ensure_state_dirs()
-    branch_ids: list[tuple[str, str, str]] = []
-    for branch in session.branches:
-        provider = branch.chat_model.endpoint.config.provider
-        branch_id = str(branch.id)
-        run.branch_path(branch_id).write_text(json_dumps(branch.to_dict()))
-        branch_ids.append((provider, branch_id, branch.name))
-    return branch_ids

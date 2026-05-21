@@ -26,6 +26,7 @@ from .orchestrate import (
     run_orchestrate,
 )
 from .skill import run_skill
+from .state import add_state_subparser, run_state
 from .studio import add_studio_subparser, run_studio
 from .team import add_team_subparser, run_team
 
@@ -60,7 +61,6 @@ def _print_playbook_help(name: str) -> int:
             flag = f"--{arg_name.replace('_', '-')}"
             help_text = field.get("help", "")
             default = field.get("default")
-            type_str = field.get("type", "str")
             default_str = f" (default: {default})" if default not in (None, "") else ""
             print(f"  {flag:<24} {help_text}{default_str}")
 
@@ -148,6 +148,7 @@ def main(argv: list[str] | None = None) -> int:
     add_agent_subparser(sub)
     add_team_subparser(sub)
     add_studio_subparser(sub)
+    add_state_subparser(sub)
 
     # If the user is invoking `li o flow -p NAME`, inject the playbook's
     # declared args as flags on the flow sub-parser BEFORE argparse runs,
@@ -167,6 +168,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "studio":
         return run_studio(args)
+
+    if args.command == "state":
+        return run_state(args)
 
     parser.print_help()
     return 1

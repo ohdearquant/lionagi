@@ -14,7 +14,6 @@ from lionagi.ln import acreate_path, json_dumps
 from lionagi.models.note import Note
 from lionagi.protocols.messages import (
     ActionRequest,
-    ActionResponse,
     AssistantResponse,
     AssistantResponseContent,
     Instruction,
@@ -41,7 +40,7 @@ async def run(
         raise ValueError("run operation only supports CLI endpoints")
 
     ins, kw = _prepare_run_kwargs(branch, instruction, param)
-    branch.msgs.add_message(instruction=ins)
+    await branch.msgs.a_add_message(instruction=ins)
     yield ins
 
     if branch.chat_model.provider_session_id is not None:
@@ -53,9 +52,12 @@ async def run(
     bfp = None
 
     if param.stream_persist:
-        # Placeholder: branch log with initial state
+        # Branch snapshot lives in snapshot_dir (when set) so it lands
+        # where find_branch() looks; the streaming buffer always lives
+        # next to the rest of the run-time chunks under persist_dir.
+        snapshot_dir = param.snapshot_dir or param.persist_dir
         fp = await acreate_path(
-            param.persist_dir,
+            snapshot_dir,
             str(branch.id),
             ".json",
             file_exist_ok=True,
@@ -90,7 +92,7 @@ async def run(
     thinking_parts: list[str] = []
     text_parts: list[str] = []
 
-    def _flush_response() -> AssistantResponse | None:
+    async def _flush_response() -> AssistantResponse | None:
         if not text_parts:
             return None
         text = "".join(text_parts)
@@ -104,7 +106,7 @@ async def run(
         )
         if metadata:
             res.metadata.update(metadata)
-        branch.msgs.add_message(assistant_response=res)
+        await branch.msgs.a_add_message(assistant_response=res)
         text_parts.clear()
         thinking_parts.clear()
         return res
@@ -136,7 +138,7 @@ async def run(
                         text_parts.append(chunk.content)
 
                 case "tool_use":
-                    if res := _flush_response():
+                    if res := await _flush_response():
                         yield res
 
                     act_req = branch.msgs.create_action_request(
@@ -147,7 +149,7 @@ async def run(
                     )
                     if chunk.tool_id:
                         pending_requests[chunk.tool_id] = act_req
-                    branch.msgs.add_message(action_request=act_req)
+                    await branch.msgs.a_add_message(action_request=act_req)
                     yield act_req
 
                 case "tool_result":
@@ -156,29 +158,29 @@ async def run(
                         if chunk.tool_id
                         else None
                     )
-                    if orig_req is not None:
-                        act_res = branch.msgs.create_action_response(
-                            action_request=orig_req,
-                            action_output=chunk.tool_output,
-                            sender=branch.user or "user",
-                            recipient=branch.id,
-                        )
-                        branch.msgs.messages.include(act_res)
-                    else:
-                        act_res = ActionResponse(
-                            content={
-                                "function": chunk.tool_name or "",
-                                "arguments": {},
-                                "output": chunk.tool_output,
-                            },
-                            sender=branch.user or "user",
-                            recipient=branch.id,
-                        )
-                        if chunk.is_error:
-                            act_res.metadata["is_error"] = True
-                        if chunk.tool_id:
-                            act_res.metadata["tool_id"] = chunk.tool_id
-                        branch.msgs.messages.include(act_res)
+                    if orig_req is None:
+                        continue
+
+                    # Build the ActionResponse and attach is_error BEFORE
+                    # a_add_message so the live-persist hook (and any other
+                    # on_message_added callback) observes the final state.
+                    # Doing it after the await would let the hook serialize
+                    # an incomplete row that omits the error marker.
+                    act_res = branch.msgs.create_action_response(
+                        action_request=orig_req,
+                        action_output=chunk.tool_output,
+                        sender=branch.user or "user",
+                        recipient=branch.id,
+                    )
+                    if chunk.is_error:
+                        act_res.metadata["is_error"] = True
+                    await branch.msgs.a_add_message(
+                        action_request=orig_req,
+                        action_output=chunk.tool_output,
+                        action_response=act_res,
+                        sender=branch.user or "user",
+                        recipient=branch.id,
+                    )
                     yield act_res
 
                 case "result":
@@ -190,7 +192,7 @@ async def run(
                     )
 
         # Flush remaining text — attach APICalling metadata to final response
-        if res := _flush_response():
+        if res := await _flush_response():
             if api_call_event is not None:
                 call_meta = Note.from_dict(api_call_event.to_dict())
                 call_meta.pop(["execution", "response"], None)
@@ -202,8 +204,9 @@ async def run(
 
         # Consolidate: always persist branch state on any exit
         if param.stream_persist:
+            snapshot_dir = param.snapshot_dir or param.persist_dir
             fp = await acreate_path(
-                param.persist_dir,
+                snapshot_dir,
                 str(branch.id),
                 ".json",
                 file_exist_ok=True,

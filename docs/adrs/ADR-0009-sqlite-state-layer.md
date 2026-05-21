@@ -20,7 +20,7 @@ support:
 3. Branch forking and message sharing without content duplication.
 4. Vector similarity search on message embeddings.
 
-aiosqlite is already an optional dependency (`lionagi[sqlite]`).
+aiosqlite is a mandatory dependency (lightweight, ~15KB).
 
 ## Decision
 
@@ -51,11 +51,19 @@ progressions, not owned by a branch or session.  Fields match
 
 | type_id | lion_class |
 |---------|-----------|
+| 0 | `__unknown__` (sentinel — see below) |
 | 1 | `lionagi.protocols.messages.system.System` |
 | 2 | `lionagi.protocols.messages.instruction.Instruction` |
 | 3 | `lionagi.protocols.messages.assistant_response.AssistantResponse` |
 | 4 | `lionagi.protocols.messages.action_request.ActionRequest` |
 | 5 | `lionagi.protocols.messages.action_response.ActionResponse` |
+
+> **Type ID 0 sentinel:** the `__unknown__` row is a typed sentinel returned by
+> `StateDB._resolve_lion_class("")` when an incoming message dict carries no
+> `lion_class` string in its `node_metadata`. This keeps `insert_message()` total
+> (it never raises on missing class info) at the cost of an opaque row that
+> downstream readers cannot map back to a runtime class. New type strings
+> continue to be allocated their own auto-incremented IDs on first insert.
 
 **`progressions`** — `Progression[Message]`.  An ordered sequence of message
 IDs stored as a JSON array in `collection`.  Both sessions and branches own a
@@ -81,20 +89,23 @@ session-level message pool) and zero or more branches.  Maps 1:1 to
 | `progression_id` | TEXT FK | session's message pool ordering |
 | `first_msg_id` | TEXT FK | convenience bookmark |
 | `last_msg_id` | TEXT FK | convenience bookmark |
-| `updated_at` | REAL | |
+| `updated_at` | REAL | defaults to `now()` on insert; callers can override for lossless `li state import` / backfill |
 
-> **Provenance columns (migration v2→v3):** `playbook_name`, `agent_name`,
-> `invocation_kind`, `show_topic`, `show_play_name`, `artifacts_path`, and
-> `source_kind` are added to the sessions table by the v2→v3 migration. See
-> ADR-0012 for the enrichment decision. These columns are nullable lightweight
-> hints for display and filtering — they are not authoritative execution state.
+> **Provenance columns:** `playbook_name`, `agent_name`, `invocation_kind`,
+> `show_topic`, `show_play_name`, `artifacts_path`, and `source_kind` are
+> first-class columns on `sessions`. See ADR-0012 for the enrichment decision.
+> These columns are nullable lightweight hints for display and filtering —
+> they are not authoritative execution state. `invocation_kind` and
+> `source_kind` carry schema-level `CHECK` constraints mirrored by Python
+> validators in `db.py` (closed vocabularies, ADR-0012).
 
 Session is the **substrate**, not the invocation. Heavy run-level concerns
 (full manifest, cwd, provider, model, play-level lifecycle) are NOT on the
 session table. Minimal lifecycle columns (`status`, `started_at`, `ended_at`)
-are added by ADR-0017's v3→v4 migration for dashboard and runs-list queries. However, minimal provenance columns (`playbook_name`,
+are first-class on `sessions` for dashboard and runs-list queries (see
+ADR-0017). However, minimal provenance columns (`playbook_name`,
 `invocation_kind`, `show_topic`, `show_play_name`, `agent_name`,
-`artifacts_path`, `source_kind`) are added to sessions for execution lineage
+`artifacts_path`, `source_kind`) are also on sessions for execution lineage
 queries (see ADR-0012). These are lightweight hints for display and filtering,
 not authoritative execution state.
 
@@ -112,11 +123,20 @@ Branch config (provider, model, system_prompt, tools, effort) lives in
 | `name` | TEXT | |
 | `session_id` | TEXT FK | owning session |
 | `progression_id` | TEXT FK | branch's message ordering |
+| `system_msg_id` | TEXT FK | system prompt pointer — see below |
 
 > **Fork columns:** `parent_branch_id` (TEXT) and `forked_at_ord` (INTEGER) are
 > stored in `node_metadata` JSON on the branch row, not as top-level columns. A
 > dedicated branch fork protocol may promote these to first-class columns in a
 > future migration if query patterns require it.
+
+> **`system_msg_id` is first-class.** Unlike fork pointers, the system prompt
+> reference is promoted to a top-level column because (a) every live persist
+> path writes it during branch initialization, (b) the Studio inbox/branch view
+> needs a constant-time lookup of the system message without parsing
+> `node_metadata`, and (c) sessions that resume should be able to detect "system
+> message already persisted" without round-tripping the JSON blob. The actual
+> message body remains in `messages`; this column is just an `O(1)` pointer.
 
 ### Key design decisions
 
@@ -173,6 +193,28 @@ grep, git, symlinks).  ADR-0004 remains valid for these.
 - `request_options` excluded by default (bulk, not useful for persistence).
 - `processor_config` excluded by default.
 
+### Operational commands (`li state`)
+
+The state.db is a long-lived file that grows monotonically without
+intervention. To keep the file manageable and to give operators a single
+introspection surface, the CLI ships maintenance subcommands under
+`li state`:
+
+| Command | Purpose |
+|---------|---------|
+| `li state import` | Backfill from `~/.lionagi/runs/` filesystem snapshots (idempotent). |
+| `li state ls [--limit N] [--status S]` | Paginated session listing with optional status filter. |
+| `li state stats` | DB + WAL size, per-table row counts, status distribution, PRAGMAs (journal_mode / wal_autocheckpoint / busy_timeout / synchronous / foreign_keys). |
+| `li state checkpoint [--mode TRUNCATE\|PASSIVE\|RESTART\|FULL]` | Force `PRAGMA wal_checkpoint(...)`. Default `TRUNCATE` reclaims the `state.db-wal` file when no readers are active. |
+| `li state vacuum` | Run `VACUUM` to rebuild the DB file and reclaim pages freed by `prune`. Holds an exclusive lock for the duration. |
+| `li state prune --keep-days N --keep-n M [--dry-run]` | Delete sessions older than `--keep-days` (default 30), always preserving the `--keep-n` most-recent (default 100). Branches cascade via FK (`branches.session_id ... ON DELETE CASCADE`). Messages are swept only if NO progression references them — see ADR-0017 §"Pruning gaps" for the deliberate orphan-progression behavior. |
+
+The DB layer sets `PRAGMA wal_autocheckpoint = 1000` explicitly so the
+policy is visible (matches the SQLite default of 1000 frames). Operators
+who hit unbounded WAL growth (long-lived readers, never-closed connections
+on legacy versions) can drop the autocheckpoint setting or run
+`li state checkpoint --mode TRUNCATE` manually.
+
 ## Consequences
 
 **Positive**
@@ -188,15 +230,20 @@ grep, git, symlinks).  ADR-0004 remains valid for these.
 - Agent/playbook file-based contract preserved.
 
 **Negative**
-- New dependency path: `lionagi[sqlite]` required for the state layer.
+- `aiosqlite` is now a mandatory dependency (promoted from `lionagi[sqlite]` optional).
 - JSON array for progression ordering limits query-side operations (no
   `WHERE message_id IN progression` without JSON parsing).
 - Schema migrations will be needed as the model evolves. **Migration protocol:**
-  a `schema_meta` table tracks the current version number. Migrations run
-  sequentially on database open (v1→v2, v2→v3, etc.). Each migration step is
-  idempotent — uses the `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` / try-except
-  pattern so re-runs are safe. The `db.py _migrate()` method is the canonical
-  migration runner.
+  this PR ships v1 as the collapsed initial release schema (no `v1→v2`
+  migration runner yet). Forward-only column reconciliation is handled in
+  `StateDB._reconcile_columns()` — it `PRAGMA table_info`s every table named
+  in `_MIGRATION_COLUMNS` and `ALTER TABLE ... ADD COLUMN`s anything that
+  exists in the current schema but not on disk. This safely upgrades
+  pre-release `state.db` files that were written before late provenance /
+  lifecycle columns landed without requiring a numbered migration step. When
+  the schema needs a true v2 (column removal, type change, table split), the
+  numbered `_migrate()` runner described above will be added and `schema_meta`
+  will bump.
 
 ## Alternatives Considered
 

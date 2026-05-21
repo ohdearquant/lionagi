@@ -166,7 +166,12 @@ class Element(BaseModel, Observable):
         dict_["metadata"].update({"lion_class": self.class_name(full=True)})
         return {k: v for k, v in dict_.items() if not_sentinel(v)}
 
-    def to_dict(self, mode: Literal["python", "json", "db"] = "python", **kw) -> dict:
+    def to_dict(
+        self,
+        mode: Literal["python", "json", "db"] = "python",
+        db_meta_key: str | None = None,
+        **kw,
+    ) -> dict:
         """Converts this Element to a dictionary."""
         if mode == "python":
             return self._to_dict(**kw)
@@ -174,7 +179,7 @@ class Element(BaseModel, Observable):
             return orjson.loads(self.to_json(decode=False, **kw))
         if mode == "db":
             dict_ = orjson.loads(self.to_json(decode=False, **kw))
-            dict_["node_metadata"] = dict_.pop("metadata", {})
+            dict_[db_meta_key or "node_metadata"] = dict_.pop("metadata", {})
             return dict_
         raise ValueError(f"Unsupported mode: {mode}")
 
@@ -193,9 +198,9 @@ class Element(BaseModel, Observable):
         metadata = {}
 
         if "node_metadata" in data:
-            metadata = dict(data.pop("node_metadata"))
+            metadata = dict(data.pop("node_metadata") or {})
         elif "metadata" in data:
-            metadata = dict(data.pop("metadata"))
+            metadata = dict(data.pop("metadata") or {})
         if "lion_class" in metadata:
             subcls: str = metadata.pop("lion_class")
             if subcls != Element.class_name(full=True):

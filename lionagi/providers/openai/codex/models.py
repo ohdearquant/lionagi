@@ -325,10 +325,14 @@ class CodexCodeRequest(BaseModel):
         ws_path = Path(self.ws)
 
         if ws_path.is_absolute():
-            raise ValueError(f"Workspace path must be relative, got absolute: {self.ws}")
+            raise ValueError(
+                f"Workspace path must be relative, got absolute: {self.ws}"
+            )
 
         if ".." in ws_path.parts:
-            raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
+            raise ValueError(
+                f"Directory traversal detected in workspace path: {self.ws}"
+            )
 
         repo_resolved = self.repo.resolve()
         result = (self.repo / ws_path).resolve()
@@ -551,12 +555,16 @@ def _extract_summary(session: CodexSession) -> dict[str, Any]:
         else:
             key_actions.append(f"Used {tool_name}")
 
-    key_actions = list(dict.fromkeys(key_actions)) if key_actions else ["No specific actions"]
+    key_actions = (
+        list(dict.fromkeys(key_actions)) if key_actions else ["No specific actions"]
+    )
 
     for op_type in file_operations:
         file_operations[op_type] = list(dict.fromkeys(file_operations[op_type]))
 
-    result_summary = (session.result[:200] + "...") if len(session.result) > 200 else session.result
+    result_summary = (
+        (session.result[:200] + "...") if len(session.result) > 200 else session.result
+    )
 
     return {
         "tool_counts": tool_counts,
@@ -582,6 +590,12 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     Yields each JSON object emitted by the Codex CLI (JSONL mode).
 
     Robust against UTF-8 splits and uses json.JSONDecoder.raw_decode.
+    Drains stderr concurrently into a bounded buffer so the subprocess
+    cannot deadlock when it produces large stderr volumes before any
+    stdout output. The codex CLI launches with ``start_new_session=True``,
+    so cancellation terminates the whole process group rather than just
+    the direct child — needed for cleanup when shells, ssh, etc. are
+    spawned beneath the CLI itself.
     """
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
@@ -593,6 +607,16 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,  # isolate from parent's SIGINT
     )
+    # Capture PGID NOW — if we wait until teardown, the child may have
+    # exited and been reaped, ``os.getpgid(proc.pid)`` would raise
+    # ProcessLookupError, and we'd skip the group kill entirely.
+    # ``start_new_session=True`` makes pgid == proc.pid.
+    # Guard against mocked subprocesses in tests where proc.pid may not
+    # be a real int: a MagicMock.pid coerces to 1 via __int__, and
+    # os.killpg(1, SIGTERM) signals init/the CI runner.
+    _codex_pgid: int | None = (
+        proc.pid if isinstance(proc.pid, int) and proc.pid > 1 else None
+    )
 
     decoder = codecs.getincrementaldecoder("utf-8")()
     json_decoder = json.JSONDecoder()
@@ -600,6 +624,34 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
 
     if proc.stdout is None:
         raise RuntimeError("Failed to capture stdout from Codex CLI")
+
+    # Bounded stderr capture (256 KiB) — enough for a useful error tail,
+    # bounded so a runaway logger can't consume unlimited memory.
+    stderr_cap = 256 * 1024
+    stderr_chunks: list[bytes] = []
+    stderr_total = 0
+
+    async def _drain_stderr() -> None:
+        nonlocal stderr_total
+        if proc.stderr is None:
+            return
+        try:
+            while True:
+                chunk = await proc.stderr.read(4096)
+                if not chunk:
+                    break
+                remaining = stderr_cap - stderr_total
+                if remaining > 0:
+                    take = chunk[:remaining]
+                    stderr_chunks.append(take)
+                    stderr_total += len(take)
+                # Beyond the cap we keep draining the pipe (so the
+                # subprocess never blocks on a full pipe buffer) but
+                # discard the bytes.
+        except Exception as exc:
+            log.debug("stderr drain ended: %s", exc)
+
+    stderr_task = asyncio.create_task(_drain_stderr())
 
     try:
         while True:
@@ -630,21 +682,59 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
                 log.error("Skipped unrecoverable JSON tail: %.120s...", buffer)
 
         if await proc.wait() != 0:
-            err = ""
-            if proc.stderr is not None:
-                err = (await proc.stderr.read()).decode().strip()
+            # Drain task should be done now (stdout EOF + proc exit ⇒
+            # stderr EOF). ``shield`` so wait_for's timeout doesn't
+            # cancel the drain on slow systems — if we hit the timeout
+            # we report what we have and mark it truncated.
+            drain_truncated = False
+            try:
+                await asyncio.wait_for(asyncio.shield(stderr_task), timeout=2.0)
+            except asyncio.TimeoutError:
+                drain_truncated = True
+            except asyncio.CancelledError:
+                # If WE are cancelled, propagate.
+                raise
+            err = b"".join(stderr_chunks).decode(errors="replace").strip()
+            if drain_truncated:
+                err = (err or "") + " [stderr drain timed out]"
             raise RuntimeError(err or "Codex CLI exited non-zero")
 
     finally:
+        # Terminate the whole process group (start_new_session=True
+        # above made pgid == proc.pid). Captured up-front so a reap
+        # before teardown doesn't make us skip the group kill.
+        import os
+        import signal
+
+        pgid = _codex_pgid
+        if pgid is not None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(pgid, signal.SIGTERM)
         with contextlib.suppress(ProcessLookupError):
             proc.terminate()
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
         except asyncio.TimeoutError:
+            if pgid is not None:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(pgid, signal.SIGKILL)
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             with contextlib.suppress(Exception):
                 await proc.wait()
+
+        # Reap the stderr drain task. ``contextlib.suppress(Exception)``
+        # does NOT catch CancelledError (BaseException) — we have to
+        # suppress it explicitly so the intentional cancel here doesn't
+        # mask the actual generator outcome.
+        stderr_task.cancel()
+        try:
+            await stderr_task
+        except (
+            asyncio.CancelledError,
+            Exception,
+        ):  # noqa: S110, BLE001 — intentional teardown reap
+            pass
 
 
 # --------------------------------------------------------------------------- event stream
@@ -775,6 +865,84 @@ async def stream_codex_cli(
                         _pp_tool_use(tu, theme)
                     yield chunk
 
+                elif item_type == "command_execution":
+                    # Codex CLI emits command_execution items with command +
+                    # aggregated_output + exit_code. Treat as a paired
+                    # tool_use + tool_result so downstream message routing
+                    # records both the request and the result.
+                    item_id = item.get("id", "")
+                    command = item.get("command", "")
+                    output = item.get("aggregated_output", "")
+                    exit_code = item.get("exit_code")
+                    status = item.get("status", "")
+                    is_error = status == "failed" or (
+                        exit_code is not None and exit_code != 0
+                    )
+
+                    tu = {"id": item_id, "name": "Bash", "input": {"command": command}}
+                    chunk.tool_use = tu
+                    session.tool_uses.append(tu)
+                    await _maybe_await(on_tool_use, tu)
+                    if request.verbose_output:
+                        _pp_tool_use(tu, theme)
+                    yield chunk
+
+                    # Emit paired tool_result on a fresh chunk so the caller
+                    # always sees both halves of the exchange.
+                    result_chunk = CodexChunk(raw=obj, type=typ)
+                    tr = {
+                        "tool_use_id": item_id,
+                        "content": output,
+                        "is_error": is_error,
+                    }
+                    result_chunk.tool_result = tr
+                    session.tool_results.append(tr)
+                    session.chunks.append(result_chunk)
+                    await _maybe_await(on_tool_result, tr)
+                    if request.verbose_output:
+                        _pp_tool_result(tr, theme)
+                    yield result_chunk
+
+                elif item_type == "file_change":
+                    # Codex CLI emits file_change items with a `changes` list.
+                    # Surface each change as a single Edit tool call so the
+                    # branch records what files were touched.
+                    item_id = item.get("id", "")
+                    changes = item.get("changes", [])
+                    status = item.get("status", "")
+                    is_error = status == "failed"
+
+                    tu = {
+                        "id": item_id,
+                        "name": "Edit",
+                        "input": {"changes": changes},
+                    }
+                    chunk.tool_use = tu
+                    session.tool_uses.append(tu)
+                    await _maybe_await(on_tool_use, tu)
+                    if request.verbose_output:
+                        _pp_tool_use(tu, theme)
+                    yield chunk
+
+                    result_chunk = CodexChunk(raw=obj, type=typ)
+                    summary_parts = [
+                        f"{c.get('kind', 'change')}: {c.get('path', '?')}"
+                        for c in changes
+                        if isinstance(c, dict)
+                    ]
+                    tr = {
+                        "tool_use_id": item_id,
+                        "content": "; ".join(summary_parts) or status,
+                        "is_error": is_error,
+                    }
+                    result_chunk.tool_result = tr
+                    session.tool_results.append(tr)
+                    session.chunks.append(result_chunk)
+                    await _maybe_await(on_tool_result, tr)
+                    if request.verbose_output:
+                        _pp_tool_result(tr, theme)
+                    yield result_chunk
+
                 elif item_type == "function_call_output":
                     tr = {
                         "tool_use_id": item.get("call_id", item.get("id", "")),
@@ -879,7 +1047,9 @@ async def stream_codex_cli(
     if session.num_turns is None and session.messages:
         session.num_turns = len(session.messages)
     if session.duration_ms is None:
-        session.duration_ms = int((asyncio.get_running_loop().time() - _start_monotonic) * 1000)
+        session.duration_ms = int(
+            (asyncio.get_running_loop().time() - _start_monotonic) * 1000
+        )
 
     await _maybe_await(on_final, session)
     if request.verbose_output:

@@ -5,6 +5,25 @@ import types
 
 import pytest
 
+# Hypothesis: coverage instrumentation (5-10x slowdown) makes the default
+# 200ms deadline trip on async property tests. Register a "ci" profile with
+# no deadline and load it whenever coverage is active or CI=true.
+try:
+    from hypothesis import HealthCheck, settings
+
+    settings.register_profile(
+        "ci",
+        deadline=None,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
+    import os as _os
+
+    if _os.environ.get("CI") or "coverage" in sys.modules or sys.gettrace() is not None:
+        settings.load_profile("ci")
+except ImportError:
+    # hypothesis not installed (e.g., light test runs)
+    pass
+
 
 @pytest.fixture
 def ensure_fake_lionagi(monkeypatch):

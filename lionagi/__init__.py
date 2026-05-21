@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from .operations.builder import OperationGraphBuilder as Builder
     from .operations.node import Operation
     from .protocols.action.manager import load_mcp_tools
+    from .protocols.messages import Message, create_message
     from .protocols.types import Edge, Element, Event, Graph, Node, Pile, Progression
     from .service.broadcaster import Broadcaster
     from .service.hooks import HookedEvent, HookRegistry
@@ -45,6 +46,8 @@ _LAZY_MAP: dict[str, tuple[str, str | None]] = {
     "Edge": ("protocols.graph.edge", "Edge"),
     "Graph": ("protocols.graph.graph", "Graph"),
     "Event": ("protocols.generic.event", "Event"),
+    "Message": ("protocols.messages", "Message"),
+    "create_message": ("protocols.messages.manager", "create_message"),
     "HookRegistry": ("service.hooks.hook_registry", "HookRegistry"),
     "HookedEvent": ("service.hooks.hooked_event", "HookedEvent"),
     "Broadcaster": ("service.broadcaster", "Broadcaster"),
@@ -86,6 +89,7 @@ __all__ = (
     "Graph",
     "HookRegistry",
     "HookedEvent",
+    "Message",
     "Node",
     "Operable",
     "OperableModel",
@@ -98,6 +102,7 @@ __all__ = (
     "Undefined",
     "Unset",
     "alcall",
+    "create_message",
     "iModel",
     "json_dumps",
     "lcall",
