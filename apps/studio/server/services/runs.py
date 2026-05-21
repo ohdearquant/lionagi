@@ -538,7 +538,7 @@ async def list_runs(
     routers/sessions.py.  The /api/runs/{id}/events route in routers/runs.py
     is removed in the same commit.
     """
-    from lionagi.state.staleness import staleness_check
+    from lionagi.state.health import classify_session_health
 
     sessions = await _sessions_svc.list_sessions()
     status_set = _normalize_status_filter(status)
@@ -551,6 +551,20 @@ async def list_runs(
             continue
         if status_set and s.get("status") not in status_set:
             continue
+        # ADR-0024: process liveness + artifact / lock signals would be
+        # checked here for full classification. Studio reads come from
+        # SQLite only — process/FS checks happen in admin endpoints
+        # where they're explicitly opted into. For the runs list we
+        # assume process_alive=True (we'd have heard otherwise via the
+        # CLI teardown), and fall back to the activity-only signal that
+        # gives stale / unresponsive / idle / healthy + zombie.
+        health = classify_session_health(
+            s,
+            now=now,
+            process_alive=True,
+            has_artifacts=bool(s.get("artifacts_path")),
+            has_stale_locks=False,
+        )
         out.append({
             "run_id": s["id"],
             "id": s["id"],
@@ -568,12 +582,9 @@ async def list_runs(
             "ended_at": s.get("ended_at"),
             "created_at": s.get("created_at"),
             "updated_at": s.get("updated_at"),
-            # ADR-0019: stored marker + derived label. ``effective_health``
-            # is null for terminal sessions; ADR-0024 expands it with the
-            # full health vocabulary (idle / unresponsive / orphaned /
-            # zombie).
+            # ADR-0019/0024: activity marker + derived health label.
             "last_message_at": s.get("last_message_at"),
-            "effective_health": staleness_check(s, now=now),
+            "effective_health": health.value,
             "branch_count": s.get("branch_count", 0),
             "message_count": s.get("message_count", 0),
         })

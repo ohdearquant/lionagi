@@ -295,3 +295,24 @@ CREATE TABLE IF NOT EXISTS invocations (
 CREATE INDEX IF NOT EXISTS idx_invocations_skill ON invocations(skill);
 CREATE INDEX IF NOT EXISTS idx_invocations_status ON invocations(status);
 CREATE INDEX IF NOT EXISTS idx_invocations_updated ON invocations(updated_at DESC);
+
+-- ── Admin event log (ADR-0024) ───────────────────────────────────────────
+-- Append-only audit log following NIST SP 800-92 pattern. Every admin
+-- mutation (transition, prune, checkpoint, vacuum, classify) inserts
+-- one row; no UPDATE / DELETE except the bounded cleanup job.
+
+CREATE TABLE IF NOT EXISTS admin_events (
+  id          TEXT    PRIMARY KEY,
+  created_at  REAL    NOT NULL,
+  action      TEXT    NOT NULL,    -- transition|prune|checkpoint|vacuum|classify
+  target_id   TEXT,                -- session_id, or NULL for DB-wide actions
+  details     JSON    NOT NULL,
+  actor       TEXT    NOT NULL DEFAULT 'admin'  -- admin|doctor_auto|chain
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_events_created
+  ON admin_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_admin_events_action
+  ON admin_events(action);
+CREATE INDEX IF NOT EXISTS idx_admin_events_target
+  ON admin_events(target_id) WHERE target_id IS NOT NULL;
