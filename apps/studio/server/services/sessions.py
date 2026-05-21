@@ -8,6 +8,8 @@ import aiosqlite
 
 from lionagi.state.db import DEFAULT_DB_PATH
 
+from ._db import open_db as _open_db
+
 _DB = str(DEFAULT_DB_PATH)
 
 
@@ -35,9 +37,7 @@ async def list_sessions() -> list[dict[str, Any]]:
     if not DEFAULT_DB_PATH.exists():
         return []
 
-    async with aiosqlite.connect(_DB) as db:
-        await db.execute("PRAGMA journal_mode = WAL")
-        db.row_factory = aiosqlite.Row
+    async with _open_db(_DB) as db:
         cur = await db.execute(
             """
             SELECT
@@ -95,9 +95,7 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
     if not DEFAULT_DB_PATH.exists():
         return None
 
-    async with aiosqlite.connect(_DB) as db:
-        db.row_factory = aiosqlite.Row
-
+    async with _open_db(_DB) as db:
         cur = await db.execute(
             # F-A1-4 (ADR-0017): include lifecycle columns in session detail
             """SELECT id, name, created_at, updated_at,
@@ -210,9 +208,7 @@ async def get_session_messages_after(
     if not DEFAULT_DB_PATH.exists():
         return []
 
-    async with aiosqlite.connect(_DB) as db:
-        db.row_factory = aiosqlite.Row
-
+    async with _open_db(_DB) as db:
         branch_cur = await db.execute(
             "SELECT id, progression_id FROM branches WHERE session_id = ?",
             (session_id,),
@@ -269,7 +265,7 @@ async def session_exists(session_id: str) -> bool:
     if not DEFAULT_DB_PATH.exists():
         return False
 
-    async with aiosqlite.connect(_DB) as db:
+    async with _open_db(_DB) as db:
         cur = await db.execute(
             "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
             (session_id,),

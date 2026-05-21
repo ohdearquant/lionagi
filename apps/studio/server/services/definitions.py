@@ -10,6 +10,7 @@ import aiosqlite
 from lionagi.cli._runs import LIONAGI_HOME
 from lionagi.state.db import DEFAULT_DB_PATH
 
+from ._db import open_db as _open_db
 from ._path_safety import validate_name_component
 
 # ---------------------------------------------------------------------------
@@ -95,9 +96,7 @@ async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
     if result and await _ensure_db():
         conditions = " OR ".join("(kind = ? AND name = ?)" for _ in result)
         params = [value for item in result for value in (item["kind"], item["name"])]
-        async with aiosqlite.connect(_DB) as db:
-            await db.execute("PRAGMA journal_mode = WAL")
-            db.row_factory = aiosqlite.Row
+        async with _open_db(_DB) as db:
             cur = await db.execute(
                 f"SELECT kind, name, MAX(version) AS v, MAX(created_at) AS ts"
                 f" FROM definitions WHERE {conditions} GROUP BY kind, name",

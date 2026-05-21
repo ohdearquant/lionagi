@@ -14,7 +14,10 @@ import aiosqlite
 from lionagi.state.db import DEFAULT_DB_PATH
 
 from ..config import SHOWS_ROOT
+from ._db import open_db as _open_db
 from ._path_safety import public_path, safe_path_join
+
+_log = __import__("logging").getLogger(__name__)
 
 _DB = str(DEFAULT_DB_PATH)
 
@@ -77,14 +80,12 @@ async def list_shows() -> list[dict[str, Any]]:
         try:
             return await _list_shows_db()
         except Exception:
-            pass
+            _log.warning("list_shows DB query failed, falling back to filesystem", exc_info=True)
     return _list_shows_fs()
 
 
 async def _list_shows_db() -> list[dict[str, Any]]:
-    async with aiosqlite.connect(_DB) as db:
-        await db.execute("PRAGMA journal_mode = WAL")
-        db.row_factory = aiosqlite.Row
+    async with _open_db(_DB) as db:
         cur = await db.execute("""
             SELECT s.id, s.topic, s.goal, s.status, s.show_dir,
                    s.created_at, s.updated_at,
@@ -167,9 +168,7 @@ async def get_show(topic: str) -> dict[str, Any] | None:
     show_row: dict[str, Any] | None = None
     if await _db_available():
         try:
-            async with aiosqlite.connect(_DB) as db:
-                await db.execute("PRAGMA journal_mode = WAL")
-                db.row_factory = aiosqlite.Row
+            async with _open_db(_DB) as db:
                 cur = await db.execute(
                     "SELECT * FROM shows WHERE topic = ?", (topic,)
                 )
@@ -187,7 +186,7 @@ async def get_show(topic: str) -> dict[str, Any] | None:
                     play_rows = await play_cur.fetchall()
                     db_plays = [dict(r) for r in play_rows]
         except Exception:
-            pass
+            _log.warning("get_show DB query failed for topic %r", topic, exc_info=True)
 
     if db_plays:
         plays = []
@@ -449,8 +448,7 @@ async def watch_show(topic: str) -> AsyncGenerator[str, None]:
             show_status: str | None = None
             if await _db_available():
                 try:
-                    async with aiosqlite.connect(_DB) as db:
-                        db.row_factory = aiosqlite.Row
+                    async with _open_db(_DB) as db:
                         cur = await db.execute(
                             "SELECT status FROM shows WHERE topic = ?", (topic,)
                         )
@@ -458,7 +456,7 @@ async def watch_show(topic: str) -> AsyncGenerator[str, None]:
                         if row:
                             show_status = row["status"]
                 except Exception:
-                    pass
+                    _log.debug("watch_show DB status check failed for topic %r", topic, exc_info=True)
             if show_status in _SHOW_TERMINAL_STATUSES:
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
