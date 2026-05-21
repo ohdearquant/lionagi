@@ -29,12 +29,14 @@ claude /plugin install devx@lionagi
 | `memory` | Persist and recall project context — decisions, patterns, and facts — across sessions |
 | `devx` | Development workflow skills: conventional commits, formatting, CI checks, PR creation, and session summaries (session-start/session-summarize planned) |
 
-## Coming soon
+## Coming Soon
+
+These plugins are **not yet installable** and will not be returned by `claude /plugin install`. They will move to the Plugins section above once the underlying implementation ships.
 
 | Name | Status |
 |------|--------|
-| `studio` | Deferred: `li studio mcp` is not implemented yet; re-list when the MCP server ships. |
-| `mcp-bundle` | Deferred: skeleton only; re-list when agent skills and real MCP server config land. |
+| `studio` | Not yet available: the `li studio mcp` server is not implemented. |
+| `mcp-bundle` | Not yet available: skeleton only; agent skills and MCP server configuration are pending. |
 
 ## Decision record
 
@@ -46,4 +48,4 @@ Plugin skills, agents, and MCP server configuration are populated in subsequent 
 
 - **marketplace-plugins-core** — fills `show`, `play`, `orchestrate` with skills and agent profiles
 - **marketplace-plugins-knowledge** — fills `research`, `memory`
-- **marketplace-plugins-app** — fills `studio` (MCP server config) and `mcp-bundle`, `devx`
+- **marketplace-plugins-app** — fills `devx`; `studio` and `mcp-bundle` are deferred until the MCP server ships
