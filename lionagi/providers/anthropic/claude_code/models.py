@@ -718,7 +718,12 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
     )
     # Capture PGID immediately — same pattern as Codex (see
     # lionagi/providers/openai/codex/models.py for the full rationale).
-    _claude_pgid: int = proc.pid
+    # Guard against mocked subprocesses in tests where proc.pid may not
+    # be a real int: a MagicMock.pid coerces to 1 via __int__, and
+    # os.killpg(1, SIGTERM) signals init/the CI runner.
+    _claude_pgid: int | None = (
+        proc.pid if isinstance(proc.pid, int) and proc.pid > 1 else None
+    )
 
     decoder = codecs.getincrementaldecoder("utf-8")()
     json_decoder = json.JSONDecoder()
@@ -808,15 +813,17 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
         import signal
 
         pgid = _claude_pgid
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pgid, signal.SIGTERM)
+        if pgid is not None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(pgid, signal.SIGTERM)
         with contextlib.suppress(ProcessLookupError):
             proc.terminate()
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
         except asyncio.TimeoutError:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(pgid, signal.SIGKILL)
+            if pgid is not None:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(pgid, signal.SIGKILL)
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             with contextlib.suppress(Exception):
