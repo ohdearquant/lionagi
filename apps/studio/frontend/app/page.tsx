@@ -8,15 +8,9 @@ import StatusPill from "@/components/StatusPill";
 import Timestamp from "@/components/Timestamp";
 import Duration from "@/components/Duration";
 import TimeRangeChips, { type TimeRange, rangeToSeconds } from "@/components/TimeRangeChips";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, getStats } from "@/lib/api";
+import type { DbStats, StudioStats } from "@/lib/api";
 import type { RunSummary, ShowSummary } from "@/lib/types";
-
-interface Stats {
-  playbooks: number;
-  agents: number;
-  runs: number;
-  shows: number;
-}
 
 const RUNNING_STATES = new Set(["running", "executing", "in_progress", "director-managed", "open"]);
 const FAILED_STATES = new Set([
@@ -61,7 +55,7 @@ function isInRange(run: RunSummary, windowSec: number | null, nowSec: number): b
 }
 
 export default function DashboardPage() {
-  const [stats, setStats] = useState<Stats | null>(null);
+  const [stats, setStats] = useState<StudioStats | null>(null);
   const [allRuns, setAllRuns] = useState<RunSummary[]>([]);
   const [shows, setShows] = useState<ShowSummary[]>([]);
   const [range, setRange] = useState<TimeRange>("24h");
@@ -74,8 +68,8 @@ export default function DashboardPage() {
     async function load() {
       try {
         const [statsRes, runsRes, showsRes] = await Promise.all([
-          fetch(`${API_BASE}/api/stats`).then((r) => r.json()),
-          fetch(`${API_BASE}/api/runs`).then((r) => r.json()),
+          getStats(),
+          fetch(`${API_BASE}/api/runs?per_page=2000`).then((r) => r.json()),
           fetch(`${API_BASE}/api/shows`).then((r) => r.json()),
         ]);
         if (!active) return;
@@ -206,6 +200,8 @@ export default function DashboardPage() {
           </Link>
         </div>
       ) : null}
+
+      <SystemHealthCard db={stats?.db} />
 
       {/* Two-column: Needs attention | Recent activity */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -364,6 +360,64 @@ function RunsTable({
           )}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function formatBytes(value: number | null | undefined): string {
+  if (!value) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(value) / Math.log(1024));
+  return `${(value / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
+}
+
+function SystemHealthCard({ db }: { db: DbStats | undefined }) {
+  if (!db) return null;
+  return (
+    <div className="rounded border border-edge bg-surface-raised p-4 shadow-card">
+      <div className="mb-3 flex items-center justify-between">
+        <span className="text-label font-semibold text-content-primary">System Health</span>
+        <span className="font-mono text-meta text-content-muted">{db.path}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 text-meta">
+        <div>
+          <div className="text-content-muted">State DB</div>
+          <div className="tabular-nums text-content-secondary">{formatBytes(db.size_bytes)}</div>
+        </div>
+        <div>
+          <div className="text-content-muted">WAL</div>
+          <div className="tabular-nums text-content-secondary">{formatBytes(db.wal_bytes)}</div>
+        </div>
+        <div>
+          <div className="text-content-muted">Connections</div>
+          <div className="tabular-nums text-content-secondary">{db.connections_active}</div>
+        </div>
+        <div>
+          <div className="text-content-muted">Last checkpoint</div>
+          <div className="text-content-secondary">
+            {db.last_checkpoint_at ? (
+              <Timestamp value={db.last_checkpoint_at} />
+            ) : (
+              "unavailable"
+            )}
+          </div>
+        </div>
+      </div>
+      {db.sessions_by_status && Object.keys(db.sessions_by_status).length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {Object.entries(db.sessions_by_status).map(([s, n]) => (
+            <span key={s} className="flex items-center gap-1">
+              <StatusPill value={s} kind="lifecycle" />
+              <span className="tabular-nums text-meta text-content-muted">{n}</span>
+            </span>
+          ))}
+          {(db.sessions_by_status["running"] ?? 0) > 0 && (
+            <Link href="/admin" className="text-meta text-status-running hover:underline">
+              Doctor →
+            </Link>
+          )}
+        </div>
+      )}
     </div>
   );
 }

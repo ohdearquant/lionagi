@@ -8,13 +8,8 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 
 from .config import CORS_ORIGINS
-from .routers import agents, definitions, playbooks, plugins, runs, sessions, shows, skills
-from .services import agents as agents_svc
-from .services import playbooks as playbooks_svc
-from .services import plugins as plugins_svc
-from .services import sessions as sessions_svc
-from .services import shows as shows_svc
-from .services import skills as skills_svc
+from .routers import admin, agents, definitions, playbooks, plugins, runs, sessions, shows, skills, teams
+from .services import stats as stats_svc
 
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
@@ -48,6 +43,8 @@ app.include_router(playbooks.router, prefix="/api")
 app.include_router(shows.router, prefix="/api")
 app.include_router(skills.router, prefix="/api")
 app.include_router(plugins.router, prefix="/api")
+app.include_router(admin.router, prefix="/api")
+app.include_router(teams.router, prefix="/api")
 
 
 @app.get("/health")
@@ -57,15 +54,8 @@ async def health() -> dict[str, Any]:
 
 @app.get("/api/stats")
 async def get_stats() -> dict[str, Any]:
-    return {
-        "playbooks": len(playbooks_svc.list_playbooks()),
-        "agents": len(agents_svc.list_agents()),
-        # F-A2-1 (ADR-0012 §10): "runs" count must come from SQLite sessions so
-        # the dashboard shows the same number as the Runs list page.  Previously
-        # called runs_svc.list_runs() which read filesystem dirs and returned a
-        # different count than the sessions-backed list endpoint.
-        "runs": len(await sessions_svc.list_sessions()),
-        "shows": len(await shows_svc.list_shows()),
-        "skills": len(skills_svc.list_skills()),
-        "plugins": len(plugins_svc.list_plugins()),
-    }
+    # F-A2-1 (ADR-0012 §10): "runs" count must come from SQLite sessions so
+    # the dashboard shows the same number as the Runs list page.  Previously
+    # called runs_svc.list_runs() which read filesystem dirs and returned a
+    # different count than the sessions-backed list endpoint.
+    return await stats_svc.get_stats()
