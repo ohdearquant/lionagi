@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -113,7 +111,12 @@ async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
             )
             rows = await cur.fetchall()
             versions = [
-                {"id": r["id"], "version": r["version"], "created_at": r["created_at"], "message": r["message"]}
+                {
+                    "id": r["id"],
+                    "version": r["version"],
+                    "created_at": r["created_at"],
+                    "message": r["message"],
+                }
                 for r in rows
             ]
 
@@ -160,7 +163,12 @@ async def save_definition(
     content: str,
     message: str | None = None,
 ) -> dict[str, Any]:
-    """Save definition: write to disk AND record version in SQLite.
+    """Save definition: record version in SQLite FIRST, then write to disk.
+
+    F-A3-4 (ADR-0016 §"Save semantics"): DB write must succeed before the
+    file is written.  If the DB write fails, propagate the exception — do NOT
+    return a success response without a row.  Using StateDB.save_definition()
+    ensures correct locking and automatic schema creation on first use.
 
     Returns the new version info.
     """
@@ -172,29 +180,25 @@ async def save_definition(
     if not disk_file:
         disk_file = base / f"{name}.md"
 
+    now = time.time()
+
+    from lionagi.state.db import StateDB
+
+    # DB write first — StateDB handles schema creation, locking, and retries.
+    # Raises on failure (e.g. unique-version retry exhaustion, schema error).
+    # The caller (router) catches exceptions and propagates as 500.
+    async with StateDB() as db:
+        version = await db.save_definition(
+            kind=kind,
+            name=name,
+            path=_relative_path(disk_file),
+            content=content,
+            message=message,
+        )
+
+    # Only write to disk after DB row is committed.
     disk_file.parent.mkdir(parents=True, exist_ok=True)
     disk_file.write_text(content)
-
-    version = 1
-    now = time.time()
-    def_id = str(uuid.uuid4())
-
-    if await _ensure_db():
-        from lionagi.state.db import StateDB
-        async with StateDB() as db:
-            cur = await db.db.execute(
-                "SELECT MAX(version) as v FROM definitions WHERE kind = ? AND name = ?",
-                (kind, name),
-            )
-            row = await cur.fetchone()
-            if row and row["v"] is not None:
-                version = row["v"] + 1
-
-            await db.db.execute(
-                "INSERT INTO definitions (id, kind, name, path, content, version, created_at, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (def_id, kind, name, _relative_path(disk_file), content, version, now, message),
-            )
-            await db.db.commit()
 
     # F-A3-4 (ADR-0016 §"Save semantics"): response field is "saved_at", not "created_at"
     return {
@@ -230,7 +234,9 @@ async def rollback_definition(kind: str, name: str, target_version: int) -> dict
                 current_version = row["v"]
 
     save_result = await save_definition(
-        kind, name, old["content"],
+        kind,
+        name,
+        old["content"],
         message=f"rollback to v{target_version}",
     )
 

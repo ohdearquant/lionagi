@@ -232,12 +232,18 @@ async def get_show(topic: str) -> dict[str, Any] | None:
                 "updated_at": updated_at,
             })
 
+    # F-A1-5 (ADR-0011 §"Show status provenance"): status_source mirrors the
+    # derivation in list_shows() — "sqlite" when the row came from the DB,
+    # "filesystem" for filesystem fallback (show_row is None).
+    status_source = "sqlite" if show_row else "filesystem"
+
     return {
         "topic": topic,
         "path": str(show_dir),
         "show_md": show_md,
         "goal": show_row["goal"] if show_row else _extract_goal(show_md),
         "status": show_row["status"] if show_row else "unknown",
+        "status_source": status_source,
         "plays": plays,
     }
 

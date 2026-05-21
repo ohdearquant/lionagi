@@ -32,7 +32,9 @@ async def get_definition(kind: str, name: str) -> dict[str, Any]:
 async def get_version(kind: str, name: str, version: int) -> dict[str, Any]:
     v = await defs_svc.get_version(kind, name, version)
     if v is None:
-        raise HTTPException(status_code=404, detail=f"Version {version} not found for {kind}/{name}")
+        raise HTTPException(
+            status_code=404, detail=f"Version {version} not found for {kind}/{name}"
+        )
     return v
 
 
@@ -49,7 +51,7 @@ async def save_definition(kind: str, name: str, body: SaveBody) -> dict[str, Any
     try:
         return await defs_svc.save_definition(kind, name, body.content, body.message)
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
 
 # F-A3-2 (ADR-0016 §"Rollback semantics"): version as query param, not path segment
@@ -61,7 +63,9 @@ async def rollback_definition(
 ) -> dict[str, Any]:
     result = await defs_svc.rollback_definition(kind, name, version)
     if result is None:
-        raise HTTPException(status_code=404, detail=f"Version {version} not found for {kind}/{name}")
+        raise HTTPException(
+            status_code=404, detail=f"Version {version} not found for {kind}/{name}"
+        )
     return result
 
 

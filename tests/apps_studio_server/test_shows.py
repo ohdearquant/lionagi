@@ -99,6 +99,23 @@ def test_show_detail_has_meta(patched_app, show_with_play):
     assert len(plays) > 0
 
 
+def test_show_detail_has_status_source(patched_app, show_with_play):
+    """GET /api/shows/{topic} must include a status_source field (H-BE-1).
+
+    ADR-0011 §"Show status provenance": the response MUST carry status_source
+    set to either "sqlite" or "filesystem" to indicate where the status was
+    derived from.  Without a real DB (fake_db path), the filesystem fallback
+    path is taken, so status_source must be "filesystem".
+    """
+    r = patched_app.get(f"/api/shows/{show_with_play}")
+    assert r.status_code == 200
+    data = r.json()
+    assert "status_source" in data, "status_source field missing from GET /api/shows/{topic}"
+    assert data["status_source"] in ("sqlite", "filesystem"), (
+        f"status_source must be 'sqlite' or 'filesystem', got {data['status_source']!r}"
+    )
+
+
 def test_show_detail_not_found(patched_app):
     r = patched_app.get("/api/shows/nonexistent-topic")
     assert r.status_code == 404

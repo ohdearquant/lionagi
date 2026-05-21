@@ -1,12 +1,16 @@
-"""Status display mapping (ADR-0012).
+"""Status display mapping for plays and sessions (ADR-0012).
 
 Raw statuses from the show skill's state machine are preserved in the database.
 This module provides display mappings for the UI.
+
+DISPLAY_MAP is a play + session display mapping — NOT a session lifecycle gate.
+It translates raw DB status tokens into UI-friendly display strings.
+Do not use this map for lifecycle validation or session state-machine transitions.
 """
 
 from __future__ import annotations
 
-# F-A1-7 (ADR-0011, ADR-0017): LIFECYCLE_MAP must only contain values present
+# F-A1-7 (ADR-0011, ADR-0017): DISPLAY_MAP must only contain values present
 # in the closed ADR vocabularies.
 #
 # ADR-0011 plays.status CHECK vocabulary (11 values):
@@ -23,7 +27,7 @@ from __future__ import annotations
 #   "error"     → not in any ADR CHECK constraint
 #   "cancelled" → not in any ADR CHECK constraint (ADR uses "aborted")
 #   "canceled"  → not in any ADR CHECK constraint (ADR uses "aborted")
-LIFECYCLE_MAP: dict[str, str] = {
+DISPLAY_MAP: dict[str, str] = {
     # play statuses (ADR-0011)
     "pending": "pending",
     "prepared": "pending",
@@ -46,7 +50,7 @@ LIFECYCLE_MAP: dict[str, str] = {
 def display_status(raw: str | None) -> str:
     if not raw:
         return "pending"
-    return LIFECYCLE_MAP.get(raw.lower().strip(), raw)
+    return DISPLAY_MAP.get(raw.lower().strip(), raw)
 
 
 def gate_badge(gate_passed: int | bool | None) -> str | None:
