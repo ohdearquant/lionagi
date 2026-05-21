@@ -297,6 +297,7 @@ jq -n \
   --save "$SHOW_DIR/$PLAY" \
   --cwd "$WT" \
   --yolo \
+  --bypass \
   --effort <low|medium|high> \
   --team-mode "show_${TOPIC}_${PLAY}"
 EC=$?
@@ -319,6 +320,7 @@ always recorded, even if the director's shell crashes between fire and wait.
     --save "$SHOW_DIR/$PLAY" \
     --cwd "$WT" \
     --yolo \
+    --bypass \
     --effort <low|medium|high> \
     --team-mode "show_${TOPIC}_${PLAY}"
   ec=$?
@@ -370,7 +372,7 @@ ARTIFACT_TREE="$(cd $SHOW_DIR/$PLAY && find . -maxdepth 3 -type f \
   ! -name '.*' ! -name '_intent.md' ! -name '_prompt.md' \
   ! -name '_verdict.json' ! -name '_meta.json' | sort)"
 
-"$LI" agent -a play-gate --cwd "$WT" "$(cat <<EOF
+"$LI" agent -a play-gate --cwd "$WT" --yolo --bypass "$(cat <<EOF
 Gate this play.
 
 Intent (why this play exists):
@@ -593,7 +595,7 @@ PLAY_ARTIFACTS=$(find "$SHOW_DIR" -maxdepth 4 -type f \
   ! -name '.*' ! -name '_show.md' ! -name '_ABORT' ! -name '_final_verdict.json' \
   | sort)
 
-"$LI" agent -a show-final-gate --effort high --cwd "$SHOW_DIR" "$(cat <<EOF
+"$LI" agent -a show-final-gate --effort high --cwd "$SHOW_DIR" --yolo --bypass "$(cat <<EOF
 Final review of show "${TOPIC}".
 
 Show dir: $SHOW_DIR
