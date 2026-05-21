@@ -223,3 +223,28 @@ def test_admin_transition_requires_reason(tmp_path, monkeypatch):
         },
     )
     assert r.status_code == 422
+
+
+def test_admin_transition_rejects_healthy_session(tmp_path, monkeypatch):
+    """ADR-0024 health guard: fresh running session with recent activity → 422."""
+    import apps.studio.server.services.admin as admin_mod
+
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    _run(_seed_running_session(db_path, sid))
+
+    # Simulate a live process so the classifier returns HEALTHY
+    # (idle_seconds ≈ 0, process alive → HEALTHY).
+    monkeypatch.setattr(admin_mod, "_live_process_matches", lambda *_: True)
+
+    client = _make_client(tmp_path, monkeypatch, db_path)
+    r = client.post(
+        "/api/admin/transition",
+        json={
+            "session_ids": [sid],
+            "target_status": "failed",
+            "reason": "cleanup attempt",
+        },
+    )
+    assert r.status_code == 422
+    assert "healthy" in r.json()["detail"].lower()

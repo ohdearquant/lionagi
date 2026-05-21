@@ -284,6 +284,12 @@ async def transition_sessions(
     * ``target_status`` must be in ``ADMIN_TRANSITION_TARGETS``.
     * Only ``running`` sessions are touched; already-terminal ones are
       reported in ``skipped`` so the caller can warn the operator.
+    * HEALTHY and IDLE sessions are refused with ValueError (→ 422) to
+      prevent accidental termination of active sessions (ADR-0024 health
+      guard).
+    * The DB update is conditional on ``status='running'`` in the WHERE
+      clause to close the TOCTOU window between the pre-check read and the
+      write.
     """
     if target_status not in _ADMIN_TRANSITION_TARGETS:
         raise ValueError(
@@ -298,25 +304,63 @@ async def transition_sessions(
         return {"transitioned": [], "skipped": session_ids, "event_id": None}
 
     from lionagi.state.db import StateDB
+    from lionagi.state.health import SessionHealth, classify_session_health
 
     transitioned: list[str] = []
     skipped: list[dict[str, str]] = []
     now = time.time()
 
     async with StateDB() as db:
+        # Health guard: refuse to transition sessions that are still healthy
+        # or merely idle — those should be left to complete normally.
         for sid in session_ids:
             current = await db.get_session(sid)
-            if current is None:
-                skipped.append({"session_id": sid, "reason": "not_found"})
+            if current is None or current.get("status") != "running":
                 continue
-            if current.get("status") != "running":
-                skipped.append(
-                    {"session_id": sid, "reason": f"not_running:{current.get('status')}"}
-                )
-                continue
-            await db.update_session(
-                sid, status=target_status, ended_at=now
+            artifacts = _artifacts_path(current)
+            has_artifacts = artifacts is not None and artifacts.exists()
+            has_stale_locks = (
+                _find_stale_lock(artifacts, cutoff=now - 3600) is not None
+                if artifacts is not None and artifacts.exists()
+                else False
             )
+            process_alive = _live_process_matches(current["id"], artifacts)
+            health = classify_session_health(
+                current,
+                now=now,
+                process_alive=process_alive,
+                has_artifacts=has_artifacts,
+                has_stale_locks=has_stale_locks,
+            )
+            if health in (SessionHealth.HEALTHY, SessionHealth.IDLE):
+                raise ValueError(
+                    f"Session {sid!r} is {health.value} — transition refused. "
+                    "Only unhealthy sessions may be force-transitioned."
+                )
+
+        # Atomic UPDATE: the WHERE clause guards against a concurrent
+        # terminal transition that races between the health pre-check and
+        # this write.  rowcount==0 means the session was never running (or
+        # was already transitioned) — look up the current state to explain.
+        for sid in session_ids:
+            cur = await db.db.execute(
+                "UPDATE sessions SET status=?, ended_at=?, updated_at=? "
+                "WHERE id=? AND status='running'",
+                (target_status, now, now, sid),
+            )
+            await db.db.commit()
+            if cur.rowcount == 0:
+                existing = await db.get_session(sid)
+                if existing is None:
+                    skipped.append({"session_id": sid, "reason": "not_found"})
+                else:
+                    skipped.append(
+                        {
+                            "session_id": sid,
+                            "reason": f"not_running:{existing.get('status')}",
+                        }
+                    )
+                continue
             transitioned.append(sid)
 
         event_id = await db.insert_admin_event(
