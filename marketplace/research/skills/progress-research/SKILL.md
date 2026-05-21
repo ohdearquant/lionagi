@@ -63,7 +63,7 @@ mcp__khive__next(assignee="lambda:backtesting", limit=5)
 ```markdown
 ## Context (auto-populated)
 - Available capital: [from task queue / memory]
-- Platforms: [Kalshi, KuCoin, Coinbase — from project state]
+- Platforms: [market data providers — from project state]
 - Data assets: [what data we already have]
 - Constraints: [fees, regulatory, technical]
 - Academic framework: [relevant theory we already know]
@@ -126,9 +126,9 @@ Be SPECIFIC. I need numbers, not narratives.
 
 **Claude's checklist**:
 - [ ] Cross-reference claims across directions (contradictions?)
-- [ ] Fee reality check (plug in actual Kalshi/KuCoin/Coinbase fees)
+- [ ] Fee reality check (plug in actual exchange fees)
 - [ ] Data availability check (do we actually have the data, or is ChatGPT assuming?)
-- [ ] Scale check (does this work at our capital level, $100-10K?)
+- [ ] Scale check (does this work at your capital level?)
 - [ ] Math verification (re-derive key formulas — ChatGPT hallucinates math)
 - [ ] Novelty check (is someone already doing this better?)
 
@@ -160,8 +160,8 @@ Present status table to Ocean. Ask what to do or proceed if standing orders say 
 For each prompt topic, launch an **analyst (Opus)** agent that:
 
 1. **Reads** the prior round's ChatGPT response (R{N-1}) for follow-ups
-2. **Reads** our empirical data (adverse_selection.jsonl, category_spreads.jsonl, etc.)
-3. **Pulls live Kalshi/KuCoin data** via existing CLI or API calls
+2. **Reads** our empirical data (project-specific data files)
+3. **Pulls live market data** via existing CLI or API calls
 4. **Reads** our proven computation results (fee proof, Greeks, etc.)
 5. **Identifies gaps** in the prior response (wrong fee model, missing data, hallucinated claims)
 6. **Produces a refined prompt** with our REAL data embedded
@@ -183,9 +183,9 @@ Each drill output MUST contain:
 ```
 
 **Mandatory checks per drill agent**:
-- Fee model: use PROVEN formula (maker = 1c always for 1-lot; multi-lot = ceil(0.0175 * C * P * (1-P) * 100)c)
-- Data identity: verify Kalshi category labels match actual content
-- Prior corrections: check 08_corrections.md for known errors in this topic area
+- Fee model: use the proven fee formula for your trading venue
+- Data identity: verify data category labels match actual content
+- Prior corrections: check your corrections log for known errors in this topic area
 
 ### Phase 2: Batch and Present
 
@@ -351,9 +351,9 @@ From highest to lowest:
 - **Drill agents = analyst (Opus)**. Evaluator agents = analyst (Opus). Progression update = analyst (Sonnet is OK).
 - **Max 5 agents per batch** (OOM prevention)
 - **Critics run AFTER evaluators, never in parallel**
-- **Fee model is PROVEN**: maker = 1c for 1-lot (max(1.75*P*(1-P)) = 0.4375 < 1). Multi-lot: ceil(0.0175 * C * P * (1-P) * 100)c. Include this in EVERY drill prompt.
-- **Check 08_corrections.md** before each round — don't repeat known errors
-- **"Financials" != Economics** on Kalshi — always verify category labels match content
+- **Fee model is PROVEN**: use the fee formula for your trading venue. Include this in EVERY drill prompt.
+- **Check your corrections log** before each round — don't repeat known errors
+- **Category alignment**: always verify data category labels match actual content
 - **Fabricated citation rate**: ~3-5% per ChatGPT response. Always audit academic outputs.
 - **The most valuable findings are the ones that KILL strategies** — prioritize honest negative results over optimistic projections
 - **NEVER use `python` or `pip`** — always `uv run`
