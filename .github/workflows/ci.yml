@@ -55,9 +55,10 @@ jobs:
         uv sync --all-extras
 
     - name: Run tests with coverage
+      timeout-minutes: 15
       run: |
         source .venv/bin/activate
-        uv run pytest --asyncio-mode=auto --maxfail=1 --disable-warnings --cov=lionagi --cov-report=xml --cov-report=term tests/
+        uv run pytest --asyncio-mode=auto --maxfail=1 --disable-warnings --cov=lionagi --cov-report=xml --cov-report=term -n 2 --dist loadfile -v tests/
 
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v6
