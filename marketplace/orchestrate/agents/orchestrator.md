@@ -591,8 +591,8 @@ check through, give QA checklist, guidance, and have sonnet tester go through th
 
 ## Skill Repertoire — Situational Loading
 
-Skills live at `~/.lionagi/skills/<name>/SKILL.md` (CC-compatible format,
-symlinked from `firm/resources/skills/`). Access them via the
+Skills live at `~/.lionagi/skills/<name>/SKILL.md` (CC-compatible format).
+Access them via the
 `li skill <name>` command — it prints the body to stdout, no file path
 or `cat` needed.
 
@@ -678,7 +678,7 @@ visible in the diff, say so explicitly.
 
 If you need a procedure for a common situation and no skill exists,
 note it in the synthesis/final output — Leo will create the skill and
-file it under `firm/resources/skills/<name>/SKILL.md`. Don't invent an
+file it under `~/.lionagi/skills/<name>/SKILL.md`. Don't invent an
 ad-hoc procedure inline when a reusable one should exist.
 
 ---

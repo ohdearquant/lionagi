@@ -198,7 +198,7 @@ fails to resolve the venv from a worktree cwd, and the absolute path works
 from any directory:
 
 ```bash
-LI="/Users/lion/projects/.venv/bin/li"
+LI="$(command -v li)"
 SHOW_DIR="$HOME/khive-work/shows/<topic>"
 TOPIC="<topic>"
 ```
@@ -697,7 +697,7 @@ compacted), do these reads + rehydration BEFORE doing anything else.
 ### Rehydrate shell variables
 
 ```bash
-LI="/Users/lion/projects/.venv/bin/li"
+LI="$(command -v li)"
 SHOW_DIR="$HOME/khive-work/shows/<topic>"  # use the show dir the resume targets
 TOPIC=$(basename "$SHOW_DIR")
 REPO="$(awk -F': ' '/^- Repo: / {print $2; exit}' $SHOW_DIR/_show.md)"
@@ -802,8 +802,7 @@ remote `show/${TOPIC}/integration` branch is left on origin; record it in
 ## Custom agent profiles
 
 If a default profile doesn't fit, write a new one. Canonical location:
-`firm/agents/<name>/<name>.md`. Lionagi resolves via `~/.lionagi/agents/<name>.md`
-(symlinked into firm). Format:
+`~/.lionagi/agents/<name>.md`. Format:
 
 ```markdown
 ---
@@ -858,8 +857,7 @@ by walking `depends_on` forward from P.
 
 - **`run_in_background` ≠ play completion.** Notification fires on wrapper
   exit, instantly. Use PID polling + command-line verification.
-- **`uv run li` from worktree cwd fails.** Use `$LI="/Users/lion/projects/.venv/bin/li"` 
-  set in Step 0.
+- **`uv run li` from worktree cwd fails.** Use `$LI` (set in Step 0 via `command -v li`).
 - **Foreground play blocks 60-90 min.** Use bg + polling unless you want
   to wait synchronously.
 - **Each play gets its own `--save` subdir.** Sharing dirs clobbers artifacts.
@@ -887,7 +885,7 @@ Initial `_show.md`:
 Implement, test, and review the Sinkhorn-attention path in lattice-inference per ADR-053.
 
 ## Repository
-Repo: /Users/lion/projects/khive/lattice
+Repo: <path-to-repo>
 Integration: show/adr-053-sinkhorn/integration
 Base: main
 
