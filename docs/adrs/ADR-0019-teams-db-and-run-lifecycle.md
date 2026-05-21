@@ -94,8 +94,11 @@ the DB is populated via a dual-write layer. This preserves backward
 compatibility during the transition:
 
 1. **Phase 1 (this ADR)**: Add tables. Studio reads from DB. `li team`
-   writes to both JSON and DB (dual-write in `_locked_team`). New
-   `li state import-teams` backfills existing JSON files into the DB.
+   writes to both JSON and DB. The JSON write stays synchronous
+   under `_locked_team`'s `fcntl.flock`; the DB write happens
+   after the lock release via a sync SQLite helper (not async
+   `StateDB`) to avoid mixing sync file locks with async DB.
+   New `li state import-teams` backfills existing JSON files into the DB.
 2. **Phase 2 (future)**: `li team` writes DB-only. JSON files become
    optional export (`li team export`). `fcntl.flock` replaced by DB
    transactions.
@@ -142,10 +145,15 @@ STALE_THRESHOLDS = {
 }
 DEFAULT_STALE_THRESHOLD = 6 * 3600  # 6h fallback
 
-def effective_health(session: dict, *, now: float) -> str:
-    raw = session["status"]
-    if raw != "running":
-        return raw
+def staleness_check(session: dict, *, now: float) -> str | None:
+    """Return 'stale' if a running session exceeds its activity threshold.
+
+    Returns None for terminal sessions (health classification is
+    handled by ADR-0024's classify_session_health). This function
+    only answers one question: is this running session still active?
+    """
+    if session["status"] != "running":
+        return None  # terminal — defer to ADR-0024 health classifier
 
     threshold = STALE_THRESHOLDS.get(
         session.get("invocation_kind"), DEFAULT_STALE_THRESHOLD
@@ -154,7 +162,7 @@ def effective_health(session: dict, *, now: float) -> str:
     if now - last_activity > threshold:
         return "stale"
 
-    return "running"
+    return None
 ```
 
 Key properties:

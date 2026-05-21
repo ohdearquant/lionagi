@@ -18,6 +18,7 @@ gap between "what model am I calling?" and "write this to the DB."
 | **iModel HookRegistry** | Service/API | Model, provider, payload, response, tokens, latency | `lionagi/service/hooks/` |
 | **Agent hook_handlers** | Tool execution | Tool name, args, result | `lionagi/agent/hooks.py` + `AgentConfig` |
 | **CLI `_on_message`** | Message persistence | Message content, role, sender | Ad-hoc closure in `lionagi/cli/agent.py` |
+| **Orchestrate `_on_message`** | Message persistence (flow/fanout) | Same as above | `lionagi/cli/orchestrate/_orchestration.py` |
 
 Problems:
 
@@ -165,19 +166,23 @@ handlers registered on the bus:
 # lionagi/hooks/builtins.py
 
 async def persist_session_start(*, session_id, model, provider, effort,
-                                 agent_name, agent_hash, **kw):
-    """Write session provenance to state.db at session start."""
+                                 agent_name, agent_hash,
+                                 invocation_id=None, invocation_kind=None,
+                                 **kw):
+    """Write session provenance + invocation linkage to state.db."""
     from lionagi.state.db import StateDB
     async with StateDB.open() as db:
-        await db.update_session(session_id, {
-            "model": model,
-            "provider": provider,
-            "effort": effort,
-            "agent_name": agent_name,
-            "agent_hash": agent_hash,
-            "status": "running",
-            "started_at": time.time(),
-        })
+        await db.update_session(
+            session_id,
+            model=model,
+            provider=provider,
+            effort=effort,
+            agent_name=agent_name,
+            agent_hash=agent_hash,
+            invocation_id=invocation_id,
+            status="running",
+            started_at=time.time(),
+        )
 
 async def persist_message(*, message, session_id, branch_id,
                            progression_id, **kw):
@@ -186,20 +191,15 @@ async def persist_message(*, message, session_id, branch_id,
     async with StateDB.open() as db:
         await db.insert_message(message)
         await db.append_to_progression(progression_id, message["id"])
-        await db.update_session(session_id, {
-            "last_message_at": time.time(),
-        })
+        await db.update_session(session_id, last_message_at=time.time())
 
 async def persist_branch_provenance(*, branch_id, model, provider,
                                      agent_name, **kw):
     """Write per-branch model/provider to state.db."""
     from lionagi.state.db import StateDB
     async with StateDB.open() as db:
-        await db.update_branch(branch_id, {
-            "model": model,
-            "provider": provider,
-            "agent_name": agent_name,
-        })
+        await db.update_branch(branch_id, model=model,
+                               provider=provider, agent_name=agent_name)
 
 async def guard_destructive_tool(*, tool_name, args, **kw):
     """Block destructive bash commands."""

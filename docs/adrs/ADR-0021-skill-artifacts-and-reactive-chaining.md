@@ -39,7 +39,7 @@ between a skill producing output and Studio displaying it?"
 
 Skills produce typed results: codex review produces a verdict
 (`gate_passed`, `feedback`, `severity`). Flow control produces
-`FlowControlVerdict` (`should_continue`, `justification`). Research
+`FlowControlVerdict` (`should_continue`, `reason`, `next_steps`). Research
 produces a landscape analysis. But these models are scattered:
 
 - `FlowControlVerdict` → `lionagi/cli/orchestrate/flow.py`
@@ -81,8 +81,10 @@ from lionagi.models.hashable_model import HashableModel
 class SkillOutcome(HashableModel):
     """Base for all structured skill outputs.
 
-    Persisted in invocations.outcome (JSON) and artifacts.content (JSON).
-    Studio renderers dispatch on outcome_kind.
+    Persisted as an artifacts row (kind='outcome', content=JSON).
+    The primary outcome for an invocation is the latest artifact with
+    kind='outcome' linked via invocation_id. Studio renderers dispatch
+    on outcome_kind.
     """
     outcome_kind: str              # "review_verdict", "gate_verdict", "ci_result", ...
     summary: str                   # one-line human-readable result
@@ -284,7 +286,8 @@ CREATE TABLE IF NOT EXISTS chain_runs (
   invocation_id   TEXT    REFERENCES invocations(id),  -- root invocation
   status          TEXT    NOT NULL DEFAULT 'running' CHECK(
                     status IN ('running', 'completed', 'failed',
-                               'waiting_approval', 'aborted')
+                               'timed_out', 'aborted', 'cancelled',
+                               'waiting_approval')
                   ),
   current_step    INTEGER NOT NULL DEFAULT 0,
   step_outcomes   JSON    NOT NULL DEFAULT '[]',  -- array of SkillOutcome dicts
@@ -294,6 +297,8 @@ CREATE TABLE IF NOT EXISTS chain_runs (
 
 CREATE INDEX IF NOT EXISTS idx_chain_runs_chain ON chain_runs(chain_id);
 CREATE INDEX IF NOT EXISTS idx_chain_runs_status ON chain_runs(status);
+CREATE INDEX IF NOT EXISTS idx_chain_runs_invocation
+  ON chain_runs(invocation_id) WHERE invocation_id IS NOT NULL;
 ```
 
 #### Scheduling

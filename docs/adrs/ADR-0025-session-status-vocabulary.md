@@ -61,23 +61,19 @@ The dashboard uses `SLOW_RUN_SECONDS = 30 * 60` (30 minutes) and
 
 ### Expanded session status vocabulary
 
-```sql
-ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_status_check;
--- SQLite doesn't support DROP CONSTRAINT; handled via schema migration
+The six-value status vocabulary replaces the four-value CHECK:
 
--- New CHECK:
-status TEXT CHECK(
-  status IS NULL
-  OR status IN (
-    'running',
-    'completed',
-    'failed',
-    'timed_out',
-    'aborted',
-    'cancelled'
-  )
-)
+```python
+# Python validation (source of truth — replaces SQLite CHECK,
+# see Schema Migration section below for rationale)
+VALID_SESSION_STATUSES = frozenset({
+    "running", "completed", "failed", "timed_out", "aborted", "cancelled"
+})
 ```
+
+The `schema.sql` CHECK constraint is **removed** and replaced with
+Python-only validation. See [Schema migration](#schema-migration) for
+the migration path.
 
 | Status | Meaning | Set by | Exit code |
 |--------|---------|--------|-----------|
@@ -118,18 +114,27 @@ The session status FSM is deterministic. All transitions originate from
 | `running` | `completed` | Normal completion | CLI teardown |
 | `running` | `failed` | Unhandled exception | CLI teardown |
 | `running` | `timed_out` | `TimeoutError` from `anyio.fail_after` | CLI teardown |
-| `running` | `aborted` | `KeyboardInterrupt` / `CancelledError` | CLI teardown |
-| `running` | `cancelled` | Orchestrator / admin decision | Skill runner or admin API |
+| `running` | `aborted` | `KeyboardInterrupt` (user Ctrl-C) | CLI teardown |
+| `running` | `cancelled` | `CancelledError` / orchestrator abort / admin decision | CLI teardown or admin API |
 
-No transitions between terminal statuses are permitted. The admin
-`TransitionBody` endpoint (ADR-0024) enforces this via
-`can_transition(current, target)` validation — modeled on khive's
-GTD `transition` verb with its Lean4-proven FSM properties.
+No transitions between terminal statuses are permitted.
+
+**CLI transition logic** uses the full terminal set:
 
 ```python
 def can_transition(current: str, target: str) -> bool:
     return current == "running" and target in SESSION_TERMINAL_STATUSES
 ```
+
+**Admin transitions** use a restricted subset — operators should not
+mark sessions as `completed` or `timed_out` (those are system-determined):
+
+```python
+ADMIN_TRANSITION_TARGETS = frozenset({"failed", "aborted", "cancelled"})
+```
+
+Both are modeled on khive's GTD `transition` verb with its Lean4-proven
+FSM properties (`can_transition` validation).
 
 ### Write points (updated from ADR-0017)
 

@@ -92,6 +92,9 @@ Add an optional FK on sessions:
 ```sql
 ALTER TABLE sessions ADD COLUMN invocation_id TEXT
   REFERENCES invocations(id);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_invocation
+  ON sessions(invocation_id) WHERE invocation_id IS NOT NULL;
 ```
 
 This replaces the need to expand the `invocation_kind` CHECK constraint
