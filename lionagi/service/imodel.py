@@ -352,22 +352,23 @@ class iModel:  # noqa: N801
                 try:
                     async for i in api_call.stream():
                         result = await self.process_chunk(i)
-                        # Yield processed result if available, otherwise yield raw chunk
                         yield result if result is not None else i
                 except Exception as e:
                     raise ValueError(f"Failed to stream API call: {e}") from e
                 finally:
-                    yield self.executor.pile.pop(api_call.id)
+                    # Pop without yielding — yield-in-finally swallows
+                    # CancelledError during generator cleanup, breaking
+                    # anyio.fail_after timeout enforcement.
+                    self.executor.pile.pop(api_call.id, None)
         else:
             try:
                 async for i in api_call.stream():
                     result = await self.process_chunk(i)
-                    # Yield processed result if available, otherwise yield raw chunk
                     yield result if result is not None else i
             except Exception as e:
                 raise ValueError(f"Failed to stream API call: {e}") from e
             finally:
-                yield self.executor.pile.pop(api_call.id)
+                self.executor.pile.pop(api_call.id, None)
 
     async def invoke(self, api_call: APICalling = None, **kw) -> APICalling:
         """Invokes a rate-limited API call with the given arguments.
