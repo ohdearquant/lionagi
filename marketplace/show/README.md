@@ -1,6 +1,8 @@
 # show
 
-Structured content review orchestration with play-gate, show-final-gate, and critic gating.
+Direct multi-play DAGs of li play invocations with per-play gates, worktree isolation, and adaptive show-level synthesis. Use when a goal spans ≥3 plays where outputs cascade.
+
+For single-play multi-agent DAGs (one playbook, many workers), see the orchestrate plugin.
 
 ## What's inside
 
