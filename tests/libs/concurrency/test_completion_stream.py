@@ -12,8 +12,11 @@ import pytest
 
 from lionagi.ln.concurrency.patterns import CompletionStream
 
-pytestmark = pytest.mark.anyio
-
+pytestmark = [
+    pytest.mark.anyio,
+    pytest.mark.integration,
+]
+# 
 
 # =============================================================================
 # Basic Lifecycle Tests
