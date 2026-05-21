@@ -16,6 +16,8 @@ const navItems: NavItem[] = [
   { label: "Plugins", href: "/plugins" },
   { label: "Shows", href: "/shows" },
   { label: "Runs", href: "/runs" },
+  { label: "Teams", href: "/teams" },
+  { label: "Admin", href: "/admin" },
 ];
 
 function isActive(item: NavItem, pathname: string) {
