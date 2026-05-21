@@ -161,7 +161,7 @@ cp tools/flows/{name}.yaml ../{project}-{name}/tools/flows/
 ### 5. Validate
 
 ```bash
-li o flow validate -f {path}
+li o flow -f {path} --dry-run
 ```
 
 ### 6. Fire
@@ -171,9 +171,9 @@ writes to the launcher's CWD.
 
 ```bash
 cd /path/to/{worktree} && \
-  nohup li o flow run -f tools/flows/{name}.yaml \
-  > /tmp/flow_{name}.log 2>&1 &
-echo "Flow PID: $!"
+  li o flow -f tools/flows/{name}.yaml \
+  --save .khive/flows/{name} \
+  --background
 ```
 
 ### 7. Monitor + Diagnose
