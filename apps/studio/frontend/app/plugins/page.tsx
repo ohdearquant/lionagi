@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Badge from "@/components/Badge";
+import Markdown from "@/components/Markdown";
 import { listPlugins, getPlugin, getPluginSkill } from "@/lib/api";
 import type { PluginSummary, PluginDetail, PluginSkillDetail } from "@/lib/api";
 
@@ -460,10 +461,8 @@ function PluginDetailPane({ pluginName }: PluginDetailPaneProps) {
           </div>
         )}
         {visibleTab === "readme" && detail.readme && (
-          <div className="flex-1 overflow-y-auto px-4 py-3">
-            <pre className="whitespace-pre-wrap break-words rounded border border-edge bg-surface-base p-4 font-mono text-body text-content-secondary leading-relaxed">
-              {detail.readme}
-            </pre>
+          <div className="flex-1 overflow-y-auto px-4 py-4">
+            <Markdown>{detail.readme}</Markdown>
           </div>
         )}
       </div>
