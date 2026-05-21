@@ -4,13 +4,13 @@ Claude Code marketplace plugins for the lionagi agent runtime. Install only the 
 
 ## What is this?
 
-The lionagi marketplace bundles curated skills, agents, and configuration into installable Claude Code plugins. Each plugin targets a specific capability slice — show direction, research patterns, memory hygiene, the Lion Studio dashboard, and more. The manifest at `../.claude-plugin/marketplace.json` declares all available plugins.
+The lionagi marketplace bundles curated skills, agents, and configuration into installable Claude Code plugins. Each plugin targets a specific capability — structured workflow runs, multi-agent research, memory management, playbook authoring, and multi-agent orchestration. The manifest at `../.claude-plugin/marketplace.json` declares all available plugins.
 
 ## Install
 
 ```bash
 # Add the lionagi marketplace to Claude Code
-claude /plugin marketplace add khive-ai/lionagi
+claude /plugin marketplace add ohdearquant/lionagi
 
 # Install a specific plugin
 claude /plugin install show@lionagi
@@ -22,20 +22,21 @@ claude /plugin install devx@lionagi
 
 | Name | Description |
 |------|-------------|
-| `show` | Direct multi-play DAGs with critic gating and worktree isolation |
-| `play` | Author lionagi playbooks for li play / li o flow |
-| `orchestrate` | Multi-agent orchestration via li o flow and li o fanout |
-| `research` | Multi-perspective research with web search, codebase analysis, and synthesis |
-| `memory` | Memory recall, MEMORY.md hygiene, auto-memory bootstrap |
-| `kg-bridge` | Bridge lionagi runs/agents to khive knowledge graph |
-| `devx` | Conventional commit, formatting, CI, PR, summarize, session-start/-summarize |
+| `show` | Orchestrate multi-step agent workflows with quality gates and isolated workspaces |
+| `play` | Define and run reusable workflow templates (playbooks) that parameterize agent tasks |
+| `orchestrate` | Plan and run multi-agent pipelines: fan out to parallel workers or chain agents in dependency order |
+| `research` | Run structured research across multiple viewpoints using web search, codebase analysis, and synthesis |
+| `memory` | Persist and recall project context — decisions, patterns, and facts — across sessions |
+| `devx` | Development workflow skills: conventional commits, formatting, CI checks, PR creation, and session summaries (session-start/session-summarize planned) |
 
-## Coming soon
+## Coming Soon
+
+These plugins are **not yet installable** and will not be returned by `claude /plugin install`. They will move to the Plugins section above once the underlying implementation ships.
 
 | Name | Status |
 |------|--------|
-| `studio` | Deferred: `li studio mcp` is not implemented yet; re-list when the MCP server ships. |
-| `mcp-bundle` | Deferred: skeleton only; re-list when agent skills and real MCP server config land. |
+| `studio` | Not yet available: the `li studio mcp` server is not implemented. |
+| `mcp-bundle` | Not yet available: skeleton only; agent skills and MCP server configuration are pending. |
 
 ## Decision record
 
@@ -46,5 +47,5 @@ See ADR-0003 (docs/adrs/ADR-0003-claude-code-marketplace.md) for the architectur
 Plugin skills, agents, and MCP server configuration are populated in subsequent plays:
 
 - **marketplace-plugins-core** — fills `show`, `play`, `orchestrate` with skills and agent profiles
-- **marketplace-plugins-knowledge** — fills `research`, `memory`, `kg-bridge`
-- **marketplace-plugins-app** — fills `studio` (MCP server config) and `mcp-bundle`, `devx`
+- **marketplace-plugins-knowledge** — fills `research`, `memory`
+- **marketplace-plugins-app** — fills `devx`; `studio` and `mcp-bundle` are deferred until the MCP server ships

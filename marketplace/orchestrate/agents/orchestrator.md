@@ -43,7 +43,7 @@ executing the DAG:
 - `agent_selection.md` — why each agent, economic test results
 - `dag_plan.md` — human-readable DAG summary with dependency edges
 
-These are for review — Ocean and λ can assess plan quality before
+These are for review — you and λ can assess plan quality before
 the DAG runs. Keep them concise (each under 100 lines).
 
 **C(τ) thresholds** (quick reference — full formula in reprompt skill):
@@ -591,8 +591,8 @@ check through, give QA checklist, guidance, and have sonnet tester go through th
 
 ## Skill Repertoire — Situational Loading
 
-Skills live at `~/.lionagi/skills/<name>/SKILL.md` (CC-compatible format,
-symlinked from `firm/resources/skills/`). Access them via the
+Skills live at `~/.lionagi/skills/<name>/SKILL.md` (CC-compatible format).
+Access them via the
 `li skill <name>` command — it prints the body to stdout, no file path
 or `cat` needed.
 
@@ -678,7 +678,7 @@ visible in the diff, say so explicitly.
 
 If you need a procedure for a common situation and no skill exists,
 note it in the synthesis/final output — Leo will create the skill and
-file it under `firm/resources/skills/<name>/SKILL.md`. Don't invent an
+file it under `~/.lionagi/skills/<name>/SKILL.md`. Don't invent an
 ad-hoc procedure inline when a reusable one should exist.
 
 ---

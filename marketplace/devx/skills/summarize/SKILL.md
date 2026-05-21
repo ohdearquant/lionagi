@@ -17,7 +17,7 @@ Capture context, learnings, and progress without ending the session. Store to me
 - Significant milestone reached but more work ahead
 - Switching to a different topic within same session
 - Context getting long (>100k tokens) — checkpoint before compaction
-- Ocean says "summarize", "capture this", "checkpoint"
+- User says "summarize", "capture this", "checkpoint"
 - After completing a multi-step task, before starting the next
 
 **Not** for session-ending summaries — use `/session-summarize` for that.
@@ -29,7 +29,7 @@ Capture context, learnings, and progress without ending the session. Store to me
 Scan recent work to identify:
 - What was accomplished
 - Key decisions made (with rationale)
-- Ocean's guidance (verbatim quotes)
+- User's guidance (verbatim quotes)
 - Patterns discovered
 - Files modified
 - Open threads / next steps
@@ -49,7 +49,7 @@ mcp__khive__remember(
 ## Decisions
 - {decision}: {rationale}
 
-## Ocean's Guidance
+## User's Guidance
 - "{quote}" — context: {why it matters}
 
 ## Key Learnings
@@ -93,7 +93,7 @@ mcp__khive__recall(query="CHECKPOINT {topic}", limit=3)
 
 ## Proactive Capture Triggers
 
-Fire a `memory.remember` call immediately when any of these occur — don't wait for Ocean to ask:
+Fire a `memory.remember` call immediately when any of these occur — don't wait for the user to ask:
 
 | Trigger | Action |
 |---|---|
@@ -102,9 +102,9 @@ Fire a `memory.remember` call immediately when any of these occur — don't wait
 | **Significant work completed** | Episodic capture of what was done + outcome |
 | **Problem solved** | Store approach + what worked/didn't |
 | **Session winding down** | Offer to run `/session-summarize` or auto-capture key points |
-| **Ocean expresses intent** | Note goals for future reference |
+| **User expresses intent** | Note goals for future reference |
 
-**Session wind-down signals**: Ocean says "thanks", "that's it", "done for now"; long pause after significant work; context switches to unrelated topic; time indicators ("gotta go", "wrapping up").
+**Session wind-down signals**: User says "thanks", "that's it", "done for now"; long pause after significant work; context switches to unrelated topic; time indicators ("gotta go", "wrapping up").
 
 When wind-down detected, offer:
 ```
@@ -139,7 +139,7 @@ mcp__khive__remember(
 
 **Always capture (importance ≥ 0.8)**: architectural decisions, technology choices with rationale,
 bug root causes + fixes, performance optimizations, security considerations, integration patterns,
-Ocean's explicit preferences.
+User's explicit preferences.
 
 **Capture when significant (importance 0.6–0.8)**: refactoring approaches, test strategies,
 debugging techniques, file organization decisions, naming conventions.
@@ -151,7 +151,7 @@ debugging techniques, file organization decisions, naming conventions.
 ### Include
 - Concrete achievements with impact
 - Decisions with alternatives considered
-- Ocean's exact words with context
+- User's exact words with context
 - Reusable patterns with "when to use"
 - File paths (always absolute)
 - What's next
@@ -168,7 +168,7 @@ debugging techniques, file organization decisions, naming conventions.
 - **Continue after**: This skill does NOT end the session.
 - **Compound**: Multiple checkpoints per session is fine — they build a trail.
 - **Searchable**: Use clear prefixes (CHECKPOINT, PATTERN, DECISION, LESSON) for future recall.
-- **Silent capture**: Don't interrupt Ocean's flow. Capture at natural breaks, not mid-thought.
+- **Silent capture**: Don't interrupt the user's flow. Capture at natural breaks, not mid-thought.
 - **Don't duplicate**: Check if pattern already stored before adding.
 
 ## Anti-Patterns
@@ -176,6 +176,6 @@ debugging techniques, file organization decisions, naming conventions.
 - Writing a full session summary (use `/session-summarize` for that)
 - Spending >5 minutes on the checkpoint
 - Skipping memory storage and only writing a file
-- Not capturing Ocean's guidance when given
+- Not capturing the user's guidance when given
 - Generic summaries without specifics ("worked on stuff")
 - Over-capturing: not every line of code matters

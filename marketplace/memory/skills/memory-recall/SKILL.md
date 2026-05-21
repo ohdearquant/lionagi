@@ -3,7 +3,7 @@ name: memory-recall
 description: >
   Proactively recall relevant memories when context suggests prior experience exists.
   Triggers when: difficult/important tasks arise, "recall" keyword appears, topics relate
-  to Ocean/khive/projects/relationships, discussion involves history/evolution/patterns,
+  to you/khive/projects/relationships, discussion involves history/evolution/patterns,
   or when building on previous work. Auto-searches episodic and semantic memory.
 allowed-tools: [Bash, Read, Glob, Grep, mcp__khive__recall, mcp__khive__search, mcp__khive__link]
 ---
@@ -26,7 +26,7 @@ Invoke this skill when detecting:
 
 - **Difficulty signal**: Complex task (C > 0.5) in familiar domain
 - **Importance signal**: P0/P1 priority or architectural decisions
-- **Domain match**: khive, lionagi, cognition, waves, Ocean's projects
+- **Domain match**: khive, lionagi, cognition, waves, your projects
 - **Relationship context**: Collaborators, community members, partners
 - **Pattern recognition**: Similar problem structure to past work
 
@@ -34,7 +34,7 @@ Invoke this skill when detecting:
 
 ```text
 khive, lionagi, cognition, waves, pydapter
-Ocean, community, partners
+you, community, partners
 architecture, design, pattern, approach
 migration, refactor, evolution
 decision, why we, rationale
@@ -187,7 +187,7 @@ format implies current truth. Treat technical-detail memories as perishable.
 khive, lionagi, cognition, waves, pydapter, khive-cli, khive-studio
 
 # People
-Ocean (creator), Prof. Sheng (advisor)
+you (user), Prof. Sheng (advisor)
 
 # Concepts
 orchestration patterns, agent architecture, memory systems

@@ -79,7 +79,7 @@ C > 0.7:   3× suggester (MANDATORY) → λ decides plan → implementer + teste
 ## Orchestration Rules (MANDATORY)
 
 **RULE 1: C ≥ 0.5 → 3× suggesters for complex/high-stakes/large-scope/innovative work**
-Deploy 3× suggester in parallel BEFORE orchestrating. **Run in background** (`run_in_background: true`) — don't block Ocean waiting. Each explores solution space independently. Lambda reads all 3 when notified, decides phases/sequencing/fallbacks, THEN orchestrates. 3 Sonnet suggesters save Opus context and collectively produce better plans than Opus alone. **C > 0.7 = MANDATORY. C 0.5-0.7 = strongly recommended.** Don't wait for Ocean to ask — deploy proactively when the task qualifies.
+Deploy 3× suggester in parallel BEFORE orchestrating. **Run in background** (`run_in_background: true`) — don't block the user waiting. Each explores solution space independently. Lambda reads all 3 when notified, decides phases/sequencing/fallbacks, THEN orchestrates. 3 Sonnet suggesters save Opus context and collectively produce better plans than Opus alone. **C > 0.7 = MANDATORY. C 0.5-0.7 = strongly recommended.** Don't wait for the user to ask — deploy proactively when the task qualifies.
 
 **RULE 1a: Ground suggesters in source code, not summaries.**
 When dispatching suggesters, include 2-3 key source files (handlers, data models, relevant modules) alongside the task description. Suggesters reading only a summary produce vague strategies ("wire semantic search") instead of grounded proposals ("add MATCH clause to channel_service.rs line 142").
