@@ -493,4 +493,4 @@ def run_agent(args: argparse.Namespace) -> int:
         print(f"\n{result}" if result is not None else "", flush=True)
 
     hint(f'\n[to resume] li agent -r {branch_id} "..."')
-    return 0
+    return 0 if result is not None else 1
