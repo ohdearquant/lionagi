@@ -51,8 +51,9 @@ Use these phases when beginning a fresh topic with no prior rounds. Skip to Phas
 memory.recall("current capital positions portfolio", limit=3)
 memory.recall("{topic} prior research findings", limit=5)
 
+
 # From task queue
-work.tasks(assignee="lambda:backtesting", limit=5)
+work.tasks(limit=5)
 
 # From project state — read if they exist
 # Read RESEARCH_LOG.md, RESEARCH_CATALOG.md

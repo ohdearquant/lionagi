@@ -1,5 +1,5 @@
 ---
-model: codex/gpt-5.5
+model: codex/gpt-5.4-xhigh
 effort: high
 yolo: true
 ---
