@@ -65,6 +65,9 @@ class TestListDefinitionsNPlusOne:
         monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", fake_home / "playbooks")
         monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir})
         monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
+        # Patch DEFAULT_DB_PATH on BOTH the source module and definitions'
+        # local import — _ensure_db() uses the latter (from-import binding).
+        monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
         monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
         return defs_mod
@@ -127,6 +130,7 @@ class TestListDefinitionsNPlusOne:
         monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", fake_home / "playbooks")
         monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir})
         monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
+        monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
         monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
         import aiosqlite
