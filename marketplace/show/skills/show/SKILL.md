@@ -297,11 +297,11 @@ jq -n \
   --save "$SHOW_DIR/$PLAY" \
   --cwd "$WT" \
   --yolo \
+  --bypass \
   --effort <low|medium|high> \
   --team-mode "show_${TOPIC}_${PLAY}"
 EC=$?
 
-# Record exit + ended_at
 tmp=$(mktemp)
 jq --argjson ec "$EC" --arg t "$(date -Iseconds)" \
   '.exit_code=$ec | .ended_at=$t | .status="running_complete"' \
@@ -319,6 +319,7 @@ always recorded, even if the director's shell crashes between fire and wait.
     --save "$SHOW_DIR/$PLAY" \
     --cwd "$WT" \
     --yolo \
+    --bypass \
     --effort <low|medium|high> \
     --team-mode "show_${TOPIC}_${PLAY}"
   ec=$?
