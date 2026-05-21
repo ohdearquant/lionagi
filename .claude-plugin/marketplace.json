@@ -41,7 +41,7 @@
     {
       "name": "devx",
       "source": "./marketplace/devx",
-      "description": "Conventional commit, formatting, CI, PR, summarize, session-start/-summarize"
+      "description": "Conventional commit, formatting, CI, PR, summarize (session-start/session-summarize planned)"
     }
   ],
   "_deferred_bundles": [
