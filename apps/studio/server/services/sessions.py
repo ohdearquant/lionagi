@@ -12,6 +12,9 @@ from ._db import open_db as _open_db
 
 _DB = str(DEFAULT_DB_PATH)
 
+SESSION_TERMINAL_STATUSES = frozenset({"completed", "failed", "aborted"})
+SESSION_DONE_STABLE_SECS = 60.0
+
 
 def _parse_json_col(value: Any) -> Any:
     if isinstance(value, str):
@@ -272,3 +275,36 @@ async def session_exists(session_id: str) -> bool:
         )
         row = await cur.fetchone()
         return row is not None
+
+
+async def get_session_stream_state(session_id: str) -> dict[str, Any] | None:
+    """Scalar read for the SSE done-condition check — avoids the full get_session() round-trip."""
+    if not DEFAULT_DB_PATH.exists():
+        return None
+
+    async with _open_db(_DB) as db:
+        cur = await db.execute(
+            "SELECT updated_at, status FROM sessions WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+    if not row:
+        return None
+    return {
+        "updated_at": row["updated_at"] or 0.0,
+        "status": row["status"] or "completed",  # NULL → "completed" for legacy rows
+    }
+
+
+def is_session_stream_done(state: dict[str, Any] | None, *, now: float) -> bool:
+    """Return True only when the session is in a terminal status AND has been stable >= 60s.
+
+    Both conditions must hold — terminal status alone might be a transient write;
+    stale time alone would close active sessions that haven't received messages recently.
+    """
+    if state is None:
+        return False
+    return (
+        state.get("status") in SESSION_TERMINAL_STATUSES
+        and now - float(state.get("updated_at") or 0.0) > SESSION_DONE_STABLE_SECS
+    )
