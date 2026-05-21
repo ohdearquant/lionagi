@@ -98,6 +98,9 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
                 "last_message_at": s.get("last_message_at"),
                 "started_at": s.get("started_at"),
                 "ended_at": s.get("ended_at"),
+                # ADR-0022: model disclosure on the child sessions list.
+                "model": s.get("model"),
+                "effort": s.get("effort"),
             }
             for s in sessions
         ],

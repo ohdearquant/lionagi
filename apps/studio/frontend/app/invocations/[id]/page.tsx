@@ -121,6 +121,7 @@ export default function InvocationDetailPage() {
               <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
                 <th className="px-3 py-2.5 font-medium">Session</th>
                 <th className="px-3 py-2.5 font-medium">Kind</th>
+                <th className="px-3 py-2.5 font-medium">Model</th>
                 <th className="px-3 py-2.5 font-medium">Status</th>
                 <th className="px-3 py-2.5 font-medium">Started</th>
                 <th className="px-3 py-2.5 font-medium">Last activity</th>
@@ -130,7 +131,7 @@ export default function InvocationDetailPage() {
               {data.sessions.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={5}
+                    colSpan={6}
                     className="px-3 py-8 text-center text-meta text-content-muted"
                   >
                     No sessions spawned under this invocation yet.
@@ -155,6 +156,14 @@ export default function InvocationDetailPage() {
                     </td>
                     <td className="px-3 py-2 align-middle text-content-secondary">
                       {s.invocation_kind ?? "—"}
+                    </td>
+                    <td className="px-3 py-2 align-middle font-mono text-meta text-content-secondary">
+                      {s.model ?? "—"}
+                      {s.effort ? (
+                        <span className="ml-1 text-content-muted">
+                          · {s.effort}
+                        </span>
+                      ) : null}
                     </td>
                     <td className="px-3 py-2 align-middle">
                       <StatusPill value={s.status ?? "pending"} />

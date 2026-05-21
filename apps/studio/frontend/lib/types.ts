@@ -31,6 +31,14 @@ export interface RunSummary {
   last_message_at?: number | null;
   // ADR-0020: optional parent skill orchestration id (from `li invoke`).
   invocation_id?: string | null;
+  // ADR-0022: provenance disclosure. `model` is the resolved
+  // "provider/name" spec, `provider` is the raw provider key, `effort`
+  // is the run's effort level (low/medium/high/xhigh), `agent_hash` is
+  // a 16-char fingerprint of the agent profile content at run time.
+  model?: string | null;
+  provider?: string | null;
+  effort?: string | null;
+  agent_hash?: string | null;
   started_at: number | null;
   ended_at?: number | null;
   created_at?: number | null;

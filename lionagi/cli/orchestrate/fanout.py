@@ -74,6 +74,15 @@ async def _run_fanout(
     )
     _shared: dict = {}
 
+    # ADR-0022: orchestrator default model + effort on the session row.
+    # Per-worker model is written branch-side when build_worker_branch runs.
+    from .._providers import parse_model_spec as _parse_model_spec
+    _orc_ms = (
+        _parse_model_spec(env.default_model_spec) if env.default_model_spec else None
+    )
+    _orc_provider = None
+    if _orc_ms and "/" in _orc_ms.model:
+        _orc_provider = _orc_ms.model.split("/", 1)[0]
     await start_live_persist(
         env,
         invocation_kind="fanout",
@@ -81,6 +90,9 @@ async def _run_fanout(
         agent_name=agent_name,
         artifacts_path=str(env.run.artifact_root),
         invocation_id=invocation_id,
+        model=_orc_ms.model if _orc_ms else None,
+        provider=_orc_provider,
+        effort=env.effort,
     )
 
     inner_kw = dict(

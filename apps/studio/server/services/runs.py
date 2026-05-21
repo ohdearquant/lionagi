@@ -587,6 +587,11 @@ async def list_runs(
             "source_kind": s.get("source_kind", "live"),
             # ADR-0020: parent skill orchestration; null when standalone.
             "invocation_id": s.get("invocation_id"),
+            # ADR-0022: provenance disclosure.
+            "model": s.get("model"),
+            "provider": s.get("provider"),
+            "effort": s.get("effort"),
+            "agent_hash": s.get("agent_hash"),
             "status": s.get("status", "completed"),
             "started_at": s.get("started_at"),
             "ended_at": s.get("ended_at"),

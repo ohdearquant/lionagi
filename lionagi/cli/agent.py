@@ -11,6 +11,7 @@ from lionagi import Branch
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.ln.concurrency import run_async
 from lionagi.protocols.generic.log import DataLoggerConfig
+from lionagi.state import provenance as _provenance
 
 from ._agents import load_agent_profile
 from ._logging import hint, log_error
@@ -125,11 +126,18 @@ async def _run_agent(
     branch_id = str(branch.id)
 
     # Set up live SQLite persist (messages stream into DB as they're added)
+    # ADR-0022: pass the *resolved* provider + model spec for provenance.
+    # ``model_spec`` here is the canonical ``provider/model`` string built
+    # right above this block — no aliases, no defaults yet to apply.
+    resolved_model_spec = _provenance.resolve_model_spec(provider, model)
     live = await _setup_live_persist(
         branch,
         agent_name=agent_name,
         artifacts_path=str(run.artifact_root),
         invocation_id=invocation_id,
+        model=resolved_model_spec,
+        provider=provider,
+        effort=effort,
     )
 
     # ADR-0025: distinguish timed_out / aborted / cancelled / failed so
@@ -203,6 +211,9 @@ async def _setup_live_persist(
     agent_name: str | None = None,
     artifacts_path: str | None = None,
     invocation_id: str | None = None,
+    model: str | None = None,
+    provider: str | None = None,
+    effort: str | None = None,
 ) -> dict | None:
     """Open DB, create session/branch rows, register live message hook.
 
@@ -289,6 +300,14 @@ async def _setup_live_persist(
                     "started_at": time.time(),
                     # ADR-0020: optional skill-level orchestration parent.
                     "invocation_id": invocation_id,
+                    # ADR-0022: resolved provenance — captured at the
+                    # session boundary so historical runs disclose the
+                    # exact model + provider + effort + agent fingerprint
+                    # they used, even if the agent profile changes later.
+                    "model": model,
+                    "provider": provider,
+                    "effort": effort,
+                    "agent_hash": _provenance.agent_definition_hash(agent_name),
                 }
             )
 
@@ -316,6 +335,14 @@ async def _setup_live_persist(
                     "session_id": session_id,
                     "progression_id": branch_prog_id,
                     "system_msg_id": system_msg_id,
+                    # ADR-0022: branch-level provenance — for `li agent`
+                    # the branch shares the session's model/provider,
+                    # but write them on the branch too so flow ops
+                    # (which may differ per-branch) can be queried
+                    # uniformly via the branches table.
+                    "model": model,
+                    "provider": provider,
+                    "agent_name": agent_name,
                 }
             )
 

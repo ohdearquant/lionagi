@@ -60,6 +60,10 @@ async def list_sessions() -> list[dict[str, Any]]:
                 s.ended_at,
                 s.last_message_at,
                 s.invocation_id,
+                s.model,
+                s.provider,
+                s.effort,
+                s.agent_hash,
                 COUNT(DISTINCT b.id) AS branch_count,
                 COALESCE(SUM(
                     json_array_length(p.collection)
@@ -90,6 +94,11 @@ async def list_sessions() -> list[dict[str, Any]]:
             "last_message_at": row["last_message_at"],
             # ADR-0020: optional parent skill orchestration.
             "invocation_id": row["invocation_id"],
+            # ADR-0022: provenance disclosure — resolved values.
+            "model": row["model"],
+            "provider": row["provider"],
+            "effort": row["effort"],
+            "agent_hash": row["agent_hash"],
             "playbook_name": row["playbook_name"],
             "agent_name": row["agent_name"],
             "invocation_kind": row["invocation_kind"],

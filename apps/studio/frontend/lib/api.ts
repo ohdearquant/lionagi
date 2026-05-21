@@ -414,6 +414,9 @@ export interface InvocationSession {
   last_message_at: number | null;
   started_at: number | null;
   ended_at: number | null;
+  // ADR-0022: per-child-session model + effort disclosure.
+  model?: string | null;
+  effort?: string | null;
 }
 
 // ADR-0021: structured skill outputs. `kind` is the dispatch key for
