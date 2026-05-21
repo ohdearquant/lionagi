@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Fragment, Suspense, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Button from "@/components/Button";
 import Duration from "@/components/Duration";
@@ -24,6 +24,44 @@ const STATUS_FILTERS = [
   "aborted",
   "cancelled",
 ] as const;
+
+type ViewMode = "sessions" | "invocations";
+
+interface InvocationGroup {
+  invocation_id: string;
+  sessions: RunSummary[];
+}
+
+function groupByInvocation(runs: RunSummary[]): {
+  groups: InvocationGroup[];
+  ungrouped: RunSummary[];
+} {
+  const map = new Map<string, RunSummary[]>();
+  const ungrouped: RunSummary[] = [];
+  for (const run of runs) {
+    if (run.invocation_id) {
+      const arr = map.get(run.invocation_id) ?? [];
+      arr.push(run);
+      map.set(run.invocation_id, arr);
+    } else {
+      ungrouped.push(run);
+    }
+  }
+  const groups: InvocationGroup[] = Array.from(map.entries()).map(
+    ([invocation_id, sessions]) => ({ invocation_id, sessions }),
+  );
+  return { groups, ungrouped };
+}
+
+function groupStatus(sessions: RunSummary[]): string {
+  if (sessions.some((s) => s.status === "running")) return "running";
+  if (sessions.some((s) => s.status === "failed")) return "failed";
+  if (sessions.some((s) => s.status === "timed_out")) return "timed_out";
+  if (sessions.some((s) => s.status === "aborted")) return "aborted";
+  if (sessions.every((s) => s.status === "done" || s.status === "completed"))
+    return "done";
+  return sessions[0]?.status ?? "pending";
+}
 
 function displayName(run: RunSummary): string {
   if (run.show_topic || run.show_play_name) {
@@ -77,6 +115,51 @@ function SkeletonRow() {
   );
 }
 
+function SessionRow({
+  run,
+  now,
+  indent = false,
+}: {
+  run: RunSummary;
+  now: number;
+  indent?: boolean;
+}) {
+  const prov = provenanceLabel(run);
+  const durSec = durationSeconds(run, now);
+  return (
+    <tr className="border-b border-edge-subtle text-content-secondary transition-colors duration-100 hover:bg-surface-overlay">
+      <td className={`px-3 py-2 ${indent ? "pl-8" : ""}`}>
+        <Link
+          href={`/runs/${run.run_id}`}
+          className="block font-medium text-content-primary transition-colors duration-100 hover:text-status-running"
+        >
+          {displayName(run)}
+        </Link>
+        <span className="font-mono text-meta text-content-muted">
+          {shortRunId(run)}
+        </span>
+      </td>
+      <td className="px-3 py-2">
+        <StatusPill value={run.status} kind="lifecycle" />
+      </td>
+      <td className="px-3 py-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Duration value={durSec} />
+          <span
+            className="rounded px-1 py-0.5 font-mono text-[10px] border border-edge text-content-muted"
+            title={`Source: ${run.source_kind ?? "live"}`}
+          >
+            {prov}
+          </span>
+        </div>
+      </td>
+      <td className="px-3 py-2 text-meta text-content-muted">
+        <Timestamp value={run.updated_at ?? null} />
+      </td>
+    </tr>
+  );
+}
+
 function RunsPageInner() {
   const router = useRouter();
   const pathname = usePathname();
@@ -92,15 +175,24 @@ function RunsPageInner() {
   const [error, setError] = useState<string | null>(null);
   const [playbookInput, setPlaybookInput] = useState(playbook);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  const [viewMode, setViewMode] = useState<ViewMode>("sessions");
+  const [expandedInvocations, setExpandedInvocations] = useState<Set<string>>(
+    new Set(),
+  );
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- sync URL→input: no external system involved, single derived state write
   useEffect(() => setPlaybookInput(playbook), [playbook]);
 
-  function setQuery(next: { page?: number; status?: string[]; playbook?: string }) {
+  function setQuery(next: {
+    page?: number;
+    status?: string[];
+    playbook?: string;
+  }) {
     const params = new URLSearchParams();
     const nextPage = next.page ?? 1;
     const nextStatuses = next.status ?? statuses;
-    const nextPlaybook = next.playbook !== undefined ? next.playbook : playbook;
+    const nextPlaybook =
+      next.playbook !== undefined ? next.playbook : playbook;
     if (nextPage > 1) params.set("page", String(nextPage));
     for (const s of nextStatuses) params.append("status", s);
     if (nextPlaybook) params.set("playbook", nextPlaybook);
@@ -140,7 +232,10 @@ function RunsPageInner() {
   }, [page, statuses.join(","), playbook]);
 
   useEffect(() => {
-    const tick = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 30000);
+    const tick = setInterval(
+      () => setNow(Math.floor(Date.now() / 1000)),
+      30000,
+    );
     return () => clearInterval(tick);
   }, []);
 
@@ -155,9 +250,23 @@ function RunsPageInner() {
     setQuery({ playbook: playbookInput, page: 1 });
   }
 
+  function toggleExpand(id: string) {
+    setExpandedInvocations((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   const runs = data?.runs ?? [];
   const total = data?.total ?? 0;
   const totalPages = data?.total_pages ?? 1;
+
+  const { groups: invocationGroups, ungrouped: ungroupedRuns } = useMemo(
+    () => groupByInvocation(runs),
+    [runs],
+  );
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 animate-page-enter">
@@ -174,38 +283,62 @@ function RunsPageInner() {
         }
       />
 
-      {/* Filter bar */}
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-        <div className="flex items-center gap-1.5">
-          <input
-            type="text"
-            placeholder="Filter by playbook..."
-            value={playbookInput}
-            onChange={(e) => setPlaybookInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && applyPlaybookFilter()}
-            className="h-7 rounded border border-edge bg-surface-raised px-2.5 text-meta text-content-primary placeholder:text-content-muted focus:border-interactive-primary focus:outline-none"
-          />
-          <Button size="sm" variant="secondary" onClick={applyPlaybookFilter}>
-            Search
+      {/* View toggle + Filter bar */}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-1">
+          <Button
+            size="sm"
+            variant="toggle"
+            active={viewMode === "sessions"}
+            onClick={() => setViewMode("sessions")}
+          >
+            Sessions
           </Button>
-          {playbook && (
-            <Button size="sm" variant="ghost" onClick={() => {
-              setPlaybookInput("");
-              setQuery({ playbook: "", page: 1 });
-            }}>
-              Clear
-            </Button>
-          )}
+          <Button
+            size="sm"
+            variant="toggle"
+            active={viewMode === "invocations"}
+            onClick={() => setViewMode("invocations")}
+          >
+            Invocations
+          </Button>
         </div>
-        <div className="flex flex-wrap gap-1">
-          {STATUS_FILTERS.map((s) => (
-            <StatusFilterChip
-              key={s}
-              value={s}
-              active={statuses.includes(s)}
-              onClick={() => toggleStatus(s)}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+          <div className="flex items-center gap-1.5">
+            <input
+              type="text"
+              placeholder="Filter by playbook..."
+              value={playbookInput}
+              onChange={(e) => setPlaybookInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && applyPlaybookFilter()}
+              className="h-7 rounded border border-edge bg-surface-raised px-2.5 text-meta text-content-primary placeholder:text-content-muted focus:border-interactive-primary focus:outline-none"
             />
-          ))}
+            <Button size="sm" variant="secondary" onClick={applyPlaybookFilter}>
+              Search
+            </Button>
+            {playbook && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setPlaybookInput("");
+                  setQuery({ playbook: "", page: 1 });
+                }}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {STATUS_FILTERS.map((s) => (
+              <StatusFilterChip
+                key={s}
+                value={s}
+                active={statuses.includes(s)}
+                onClick={() => toggleStatus(s)}
+              />
+            ))}
+          </div>
         </div>
       </div>
 
@@ -219,9 +352,13 @@ function RunsPageInner() {
         <table className="w-full text-left text-body">
           <thead>
             <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
-              <th className="px-3 py-2.5 font-medium">Run</th>
+              <th className="px-3 py-2.5 font-medium">
+                {viewMode === "invocations" ? "Invocation" : "Run"}
+              </th>
               <th className="px-3 py-2.5 font-medium">Status</th>
-              <th className="px-3 py-2.5 font-medium">Activity</th>
+              <th className="px-3 py-2.5 font-medium">
+                {viewMode === "invocations" ? "Sessions" : "Activity"}
+              </th>
               <th className="px-3 py-2.5 font-medium">Updated</th>
             </tr>
           </thead>
@@ -232,9 +369,89 @@ function RunsPageInner() {
                 <SkeletonRow />
                 <SkeletonRow />
               </>
+            ) : viewMode === "invocations" ? (
+              invocationGroups.length === 0 && ungroupedRuns.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={4}
+                    className="px-3 py-14 text-center text-body text-content-muted"
+                  >
+                    <span className="block mb-1 text-[11px]">No runs found</span>
+                    {(statuses.length > 0 || playbook) && (
+                      <span className="text-meta">
+                        Try adjusting your filters.
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ) : (
+                <>
+                  {invocationGroups.map((group) => {
+                    const isExpanded = expandedInvocations.has(
+                      group.invocation_id,
+                    );
+                    const st = groupStatus(group.sessions);
+                    const latestUpdated = group.sessions.reduce<number | null>(
+                      (acc, s) => {
+                        const u = s.updated_at ?? null;
+                        if (u === null) return acc;
+                        return acc === null || u > acc ? u : acc;
+                      },
+                      null,
+                    );
+                    return (
+                      <Fragment key={group.invocation_id}>
+                        <tr
+                          className="border-b border-edge-subtle bg-surface-overlay/50 text-content-primary cursor-pointer transition-colors duration-100 hover:bg-surface-overlay"
+                          onClick={() => toggleExpand(group.invocation_id)}
+                        >
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-1.5">
+                              <span className="inline-block w-3 text-center font-mono text-[10px] text-content-muted select-none">
+                                {isExpanded ? "▼" : "▶"}
+                              </span>
+                              <span className="font-medium">
+                                Invocation{" "}
+                                <span className="font-mono text-meta text-content-muted">
+                                  {group.invocation_id.slice(-8)}
+                                </span>
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2">
+                            <StatusPill value={st} kind="lifecycle" />
+                          </td>
+                          <td className="px-3 py-2 text-content-secondary">
+                            {group.sessions.length} session
+                            {group.sessions.length !== 1 ? "s" : ""}
+                          </td>
+                          <td className="px-3 py-2 text-meta text-content-muted">
+                            <Timestamp value={latestUpdated} />
+                          </td>
+                        </tr>
+                        {isExpanded &&
+                          group.sessions.map((run) => (
+                            <SessionRow
+                              key={run.run_id}
+                              run={run}
+                              now={now}
+                              indent
+                            />
+                          ))}
+                      </Fragment>
+                    );
+                  })}
+                  {ungroupedRuns.map((run) => (
+                    <SessionRow key={run.run_id} run={run} now={now} />
+                  ))}
+                </>
+              )
             ) : runs.length === 0 ? (
               <tr>
-                <td colSpan={4} className="px-3 py-14 text-center text-body text-content-muted">
+                <td
+                  colSpan={4}
+                  className="px-3 py-14 text-center text-body text-content-muted"
+                >
                   <span className="block mb-1 text-[11px]">No runs found</span>
                   {(statuses.length > 0 || playbook) && (
                     <span className="text-meta">Try adjusting your filters.</span>
@@ -242,45 +459,9 @@ function RunsPageInner() {
                 </td>
               </tr>
             ) : (
-              runs.map((run) => {
-                const prov = provenanceLabel(run);
-                const durSec = durationSeconds(run, now);
-                return (
-                  <tr
-                    key={run.run_id}
-                    className="border-b border-edge-subtle text-content-secondary transition-colors duration-100 hover:bg-surface-overlay"
-                  >
-                    <td className="px-3 py-2">
-                      <Link
-                        href={`/runs/${run.run_id}`}
-                        className="block font-medium text-content-primary transition-colors duration-100 hover:text-status-running"
-                      >
-                        {displayName(run)}
-                      </Link>
-                      <span className="font-mono text-meta text-content-muted">
-                        {shortRunId(run)}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2">
-                      <StatusPill value={run.status} kind="lifecycle" />
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <Duration value={durSec} />
-                        <span
-                          className="rounded px-1 py-0.5 font-mono text-[10px] border border-edge text-content-muted"
-                          title={`Source: ${run.source_kind ?? "live"}`}
-                        >
-                          {prov}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-3 py-2 text-meta text-content-muted">
-                      <Timestamp value={run.updated_at ?? null} />
-                    </td>
-                  </tr>
-                );
-              })
+              runs.map((run) => (
+                <SessionRow key={run.run_id} run={run} now={now} />
+              ))
             )}
           </tbody>
         </table>
@@ -289,7 +470,8 @@ function RunsPageInner() {
       {/* Pagination */}
       <div className="flex items-center justify-between text-meta text-content-muted">
         <span>
-          Page {page} of {totalPages || 1} &mdash; {total} run{total !== 1 ? "s" : ""}
+          Page {page} of {totalPages || 1} &mdash; {total} run
+          {total !== 1 ? "s" : ""}
         </span>
         <div className="flex gap-2">
           <Button

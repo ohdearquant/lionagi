@@ -30,6 +30,7 @@ export default function InvocationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
   const [skillFilter, setSkillFilter] = useState<string>("");
+  const [skillInput, setSkillInput] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
@@ -63,10 +64,6 @@ export default function InvocationsPage() {
   }, [offset, skillFilter, statusFilter]);
 
   const rows = useMemo(() => data?.invocations ?? [], [data]);
-  const skills = useMemo(
-    () => Array.from(new Set(rows.map((r) => r.skill))).sort(),
-    [rows],
-  );
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 animate-page-enter">
@@ -88,21 +85,42 @@ export default function InvocationsPage() {
         <span className="text-meta uppercase tracking-[0.06em] text-content-muted">
           Filters
         </span>
-        <select
-          value={skillFilter}
-          onChange={(e) => {
-            setOffset(0);
-            setSkillFilter(e.target.value);
+        <input
+          type="text"
+          placeholder="Filter by skill..."
+          value={skillInput}
+          onChange={(e) => setSkillInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              setOffset(0);
+              setSkillFilter(skillInput);
+            }
           }}
           className="rounded border border-edge bg-surface-base px-2 py-1 text-body"
+        />
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => {
+            setOffset(0);
+            setSkillFilter(skillInput);
+          }}
         >
-          <option value="">all skills</option>
-          {skills.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
+          Search
+        </Button>
+        {skillFilter && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setSkillInput("");
+              setSkillFilter("");
+              setOffset(0);
+            }}
+          >
+            Clear
+          </Button>
+        )}
         <select
           value={statusFilter}
           onChange={(e) => {
@@ -150,15 +168,17 @@ export default function InvocationsPage() {
                 </td>
               </tr>
             ) : rows.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={6}
-                  className="px-3 py-8 text-center text-meta text-content-muted"
-                >
-                  No invocations yet. Skills track here once they call{" "}
-                  <code className="text-content-primary">li invoke start</code>.
-                </td>
-              </tr>
+              !error ? (
+                <tr>
+                  <td
+                    colSpan={6}
+                    className="px-3 py-8 text-center text-meta text-content-muted"
+                  >
+                    No invocations yet. Skills track here once they call{" "}
+                    <code className="text-content-primary">li invoke start</code>.
+                  </td>
+                </tr>
+              ) : null
             ) : (
               rows.map((inv) => {
                 const dur = durationSeconds(inv.started_at, inv.ended_at, now);
