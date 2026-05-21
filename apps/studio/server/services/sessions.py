@@ -35,7 +35,6 @@ async def list_sessions() -> list[dict[str, Any]]:
     if not DEFAULT_DB_PATH.exists():
         return []
 
-    now = time.time()
     async with aiosqlite.connect(_DB) as db:
         await db.execute("PRAGMA journal_mode = WAL")
         db.row_factory = aiosqlite.Row
@@ -52,6 +51,9 @@ async def list_sessions() -> list[dict[str, Any]]:
                 s.show_topic,
                 s.show_play_name,
                 s.source_kind,
+                s.status,
+                s.started_at,
+                s.ended_at,
                 COUNT(DISTINCT b.id) AS branch_count,
                 COALESCE(SUM(
                     json_array_length(p.collection)
@@ -73,7 +75,11 @@ async def list_sessions() -> list[dict[str, Any]]:
             "updated_at": row["updated_at"] or 0.0,
             "branch_count": row["branch_count"],
             "message_count": row["message_count"],
-            "status": "running" if (now - (row["updated_at"] or 0)) <= 60 else "completed",
+            # F-A1-2 / F-A1-8 (ADR-0017): read status directly from column;
+            # fall back to "completed" only for legacy rows where status is NULL.
+            "status": row["status"] or "completed",
+            "started_at": row["started_at"],
+            "ended_at": row["ended_at"],
             "playbook_name": row["playbook_name"],
             "agent_name": row["agent_name"],
             "invocation_kind": row["invocation_kind"],
@@ -93,9 +99,11 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
         db.row_factory = aiosqlite.Row
 
         cur = await db.execute(
+            # F-A1-4 (ADR-0017): include lifecycle columns in session detail
             """SELECT id, name, created_at, updated_at,
                       playbook_name, agent_name, invocation_kind,
-                      show_topic, show_play_name, artifacts_path, source_kind
+                      show_topic, show_play_name, artifacts_path, source_kind,
+                      status, started_at, ended_at
                FROM sessions WHERE id = ?""",
             (session_id,),
         )
@@ -166,6 +174,15 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
                 }
             )
 
+    # F-A1-4 (ADR-0017): compute duration_ms from lifecycle timestamps
+    started_at = session_row["started_at"]
+    ended_at = session_row["ended_at"]
+    duration_ms = (
+        (ended_at - started_at) * 1000
+        if started_at is not None and ended_at is not None
+        else None
+    )
+
     return {
         "id": session_row["id"],
         "name": session_row["name"],
@@ -178,6 +195,10 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
         "show_play_name": session_row["show_play_name"],
         "artifacts_path": session_row["artifacts_path"],
         "source_kind": session_row["source_kind"] or "live",
+        "status": session_row["status"] or "completed",
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "duration_ms": duration_ms,
         "source_show": source_show,
         "branches": branches,
     }

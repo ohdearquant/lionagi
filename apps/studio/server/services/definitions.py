@@ -196,25 +196,51 @@ async def save_definition(
             )
             await db.db.commit()
 
+    # F-A3-4 (ADR-0016 §"Save semantics"): response field is "saved_at", not "created_at"
     return {
         "kind": kind,
         "name": name,
         "version": version,
-        "created_at": now,
+        "saved_at": now,
         "message": message,
     }
 
 
 async def rollback_definition(kind: str, name: str, target_version: int) -> dict[str, Any] | None:
-    """Restore a previous version: read old content from DB, write to disk, record as new version."""
+    """Restore a previous version: read old content from DB, write to disk, record as new version.
+
+    F-A3-3 (ADR-0016 §"Rollback semantics"): returns
+        { version: N+1, rolled_back_from: current_version, rolled_back_to: N }
+    """
     old = await get_version(kind, name, target_version)
     if not old:
         return None
 
-    return await save_definition(
+    # Capture current version BEFORE the save so we can report rolled_back_from
+    current_version = 0
+    if await _ensure_db():
+        async with aiosqlite.connect(_DB) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT MAX(version) AS v FROM definitions WHERE kind = ? AND name = ?",
+                (kind, name),
+            )
+            row = await cur.fetchone()
+            if row and row["v"] is not None:
+                current_version = row["v"]
+
+    save_result = await save_definition(
         kind, name, old["content"],
         message=f"rollback to v{target_version}",
     )
+
+    return {
+        "version": save_result["version"],
+        "saved_at": save_result["saved_at"],
+        "rolled_back_from": current_version,
+        "rolled_back_to": target_version,
+        "message": save_result["message"],
+    }
 
 
 async def snapshot_current(kind: str | None = None) -> int:

@@ -106,6 +106,13 @@ async def _list_shows_db() -> list[dict[str, Any]]:
             "path": row["show_dir"],
             "play_count": row["play_count"],
             "latest_status": row["status"],
+            # F-A1-5 (ADR-0011 §"Show status provenance"): status_source field.
+            # The status_source column is defined in ADR-0011's schema block but
+            # is absent from the current schema.sql (deferred migration — tracked
+            # separately; adding it requires ALTER TABLE and a backfill pass that
+            # is out of scope for this fix PR).  We derive it in code: db-loaded
+            # rows get "sqlite", filesystem fallback rows get "filesystem".
+            "status_source": "sqlite",
             "last_update": row["latest_play_update"] or row["updated_at"],
             "goal": row["goal"],
             "id": row["id"],
@@ -141,6 +148,8 @@ def _list_shows_fs() -> list[dict[str, Any]]:
                 "path": str(path),
                 "play_count": len(plays),
                 "latest_status": latest_status,
+                # F-A1-5: filesystem-loaded rows carry "filesystem" provenance
+                "status_source": "filesystem",
                 "last_update": last_update,
             }
         )
@@ -390,11 +399,23 @@ async def import_shows() -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
+_SHOW_TERMINAL_STATUSES = frozenset({"completed", "aborted"})
+_SHOW_DONE_STABLE_SECS = 60.0
+
+
 async def watch_show(topic: str) -> AsyncGenerator[str, None]:
+    """SSE stream of file changes under a show directory.
+
+    F-A2-3 (ADR-0006 reconnect semantics): emits ``{"type":"done"}`` when the
+    show status is terminal (completed or aborted) AND no file has changed for
+    60 seconds, then closes.  This matches the session stream's done semantics.
+    """
     topic_dir = safe_path_join(SHOWS_ROOT, topic)
     seen_files: dict[str, tuple[float, int]] = {}
+    last_change: float = time.time()
 
     while True:
+        any_change = False
         for path in sorted(topic_dir.rglob("*")):
             if not path.is_file():
                 continue
@@ -413,5 +434,27 @@ async def watch_show(topic: str) -> AsyncGenerator[str, None]:
             event_type = "new" if previous is None else "change"
             evt = {"type": event_type, "path": key, "size": stat.st_size}
             yield f"data: {json.dumps(evt)}\n\n"
+            last_change = time.time()
+            any_change = True
+
+        # Check for terminal + stable condition (F-A2-3)
+        if not any_change and (time.time() - last_change) >= _SHOW_DONE_STABLE_SECS:
+            # Query current show status from DB (fast path) or filesystem
+            show_status: str | None = None
+            if await _db_available():
+                try:
+                    async with aiosqlite.connect(_DB) as db:
+                        db.row_factory = aiosqlite.Row
+                        cur = await db.execute(
+                            "SELECT status FROM shows WHERE topic = ?", (topic,)
+                        )
+                        row = await cur.fetchone()
+                        if row:
+                            show_status = row["status"]
+                except Exception:
+                    pass
+            if show_status in _SHOW_TERMINAL_STATUSES:
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                return
 
         await asyncio.sleep(0.5)

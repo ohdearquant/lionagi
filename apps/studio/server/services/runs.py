@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import json
-from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
 from lionagi.cli._runs import RUNS_ROOT
-from lionagi.cli._runs import list_runs as _list_runs
 
 from ._path_safety import safe_path_join
+from . import sessions as _sessions_svc
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -496,22 +494,49 @@ def _adapt_detail(
 # ---------------------------------------------------------------------------
 
 
-def list_runs(
-    worker: str | None = None,
+async def list_runs(
+    playbook: str | None = None,
     status: str | None = None,
 ) -> list[dict[str, Any]]:
+    """List runs from SQLite sessions table (F-A1-1, ADR-0004 rewire).
+
+    Each session row is mapped to a RunSummary-shaped dict so routers and
+    app.py see a consistent shape. The ``playbook`` and ``status`` filters
+    match against ``playbook_name`` and ``status`` columns respectively.
+
+    Decision (F-A1-3): stream_run_events() was removed entirely because the
+    ``stream/*.buffer.jsonl`` files it read are explicitly forbidden as a
+    Studio query source by ADR-0004 ("Studio query routes MUST NOT read
+    them"), and the ``lineage`` / messages rows in SQLite are the correct
+    alternative via the sessions SSE endpoint already implemented in
+    routers/sessions.py.  The /api/runs/{id}/events route in routers/runs.py
+    is removed in the same commit.
+    """
+    sessions = await _sessions_svc.list_sessions()
     out = []
-    for run_dir in _list_runs():
-        manifest = run_dir.read_manifest()
-        summary = _adapt_summary(
-            manifest, run_dir.run_id, run_dir.state_root, run_dir.artifact_root
-        )
-        # Apply optional query filters
-        if worker and summary["worker_name"] != worker:
+    for s in sessions:
+        if playbook and s.get("playbook_name") != playbook:
             continue
-        if status and summary["status"] != status:
+        if status and s.get("status") != status:
             continue
-        out.append(summary)
+        out.append({
+            "run_id": s["id"],
+            "id": s["id"],
+            "name": s.get("name"),
+            "playbook_name": s.get("playbook_name"),
+            "agent_name": s.get("agent_name"),
+            "invocation_kind": s.get("invocation_kind"),
+            "show_topic": s.get("show_topic"),
+            "show_play_name": s.get("show_play_name"),
+            "source_kind": s.get("source_kind", "live"),
+            "status": s.get("status", "completed"),
+            "started_at": s.get("started_at"),
+            "ended_at": s.get("ended_at"),
+            "created_at": s.get("created_at"),
+            "updated_at": s.get("updated_at"),
+            "branch_count": s.get("branch_count", 0),
+            "message_count": s.get("message_count", 0),
+        })
     return out
 
 
@@ -560,52 +585,9 @@ def get_run(run_id: str) -> dict[str, Any] | None:
     return _adapt_detail(run_id, state_root, artifact_root, manifest, branches)
 
 
-def stream_run_events(run_id: str) -> AsyncGenerator[str, None] | None:
-    """Return an async generator yielding SSE lines from buffer.jsonl, or None if not live."""
-    if not RUNS_ROOT.exists():
-        return None
-
-    # Validate path component before filesystem access
-    safe_path_join(RUNS_ROOT, run_id)  # raises 404 if unsafe
-
-    state_root = RUNS_ROOT / run_id
-    if not state_root.is_dir():
-        matches = [
-            d for d in RUNS_ROOT.iterdir() if d.is_dir() and d.name.startswith(run_id)
-        ]
-        if not matches:
-            return None
-        state_root = sorted(matches, key=lambda p: p.stat().st_mtime, reverse=True)[0]
-
-    stream_dir = state_root / "stream"
-    if not stream_dir.exists():
-        return None
-
-    buffers = list(stream_dir.glob("*.buffer.jsonl"))
-    if not buffers:
-        return None
-
-    buffer_path = sorted(buffers, key=lambda p: p.stat().st_mtime, reverse=True)[0]
-
-    async def _gen() -> AsyncGenerator[str, None]:
-        try:
-            with buffer_path.open() as fh:
-                for line in fh:
-                    line = line.strip()
-                    if line:
-                        yield f"data: {line}\n\n"
-                while True:
-                    line = fh.readline()
-                    if line:
-                        line = line.strip()
-                        if line:
-                            yield f"data: {line}\n\n"
-                    else:
-                        if not buffer_path.exists():
-                            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                            break
-                        await asyncio.sleep(0.1)
-        except OSError:
-            yield f"data: {json.dumps({'type': 'error', 'msg': 'stream read error'})}\n\n"
-
-    return _gen()
+# stream_run_events() was removed (F-A1-3 / ADR-0004).
+# ADR-0004 §"Run persistence: SQLite only" explicitly forbids Studio from
+# reading stream/*.buffer.jsonl files.  Live monitoring of a run uses the
+# /api/sessions/{id}/stream SSE endpoint (routers/sessions.py) which reads
+# from SQLite messages rows.  The /api/runs/{id}/events route in
+# routers/runs.py has been removed in the same commit.
