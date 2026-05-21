@@ -114,8 +114,8 @@ async def _run_fanout(
         _terminal_status = "aborted"
         raise
     except LionTimeoutError:
-        # Set in the move_on_after branch above; preserve through any
-        # re-raise so finally writes the correct terminal status.
+        # Catches both the move_on_after re-raise above and any
+        # LionTimeoutError from inside _run_fanout_inner itself.
         _terminal_status = "timed_out"
         raise
     except BaseException as exc:
