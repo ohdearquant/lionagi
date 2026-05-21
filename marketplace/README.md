@@ -29,8 +29,13 @@ claude /plugin install devx@lionagi
 | `memory` | Memory recall, MEMORY.md hygiene, auto-memory bootstrap |
 | `kg-bridge` | Bridge lionagi runs/agents to khive knowledge graph |
 | `devx` | Conventional commit, formatting, CI, PR, summarize, session-start/-summarize |
-| `studio` (stub) | Lion Studio dashboard — runs/agents/playbooks/shows monitoring UI with FastAPI backend MCP |
-| `mcp-bundle` (stub) | Lionagi canonical MCP server access for agents |
+
+## Coming soon
+
+| Name | Status |
+|------|--------|
+| `studio` | Deferred: `li studio mcp` is not implemented yet; re-list when the MCP server ships. |
+| `mcp-bundle` | Deferred: skeleton only; re-list when agent skills and real MCP server config land. |
 
 ## Decision record
 
