@@ -14,6 +14,12 @@ export interface RunSummary {
   show_play_name?: string | null;
   source_kind?: string;
   status: string;
+  // ADR-0019: derived health indicator computed at read time from
+  // `last_message_at` and a kind-aware threshold. Non-null only for
+  // `running` sessions that have crossed the threshold; ADR-0024 will
+  // expand this with idle / unresponsive / orphaned / zombie.
+  effective_health?: "stale" | null;
+  last_message_at?: number | null;
   started_at: number | null;
   ended_at?: number | null;
   created_at?: number | null;

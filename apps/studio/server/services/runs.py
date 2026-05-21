@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from pathlib import Path
 from typing import Any
 
@@ -537,8 +538,13 @@ async def list_runs(
     routers/sessions.py.  The /api/runs/{id}/events route in routers/runs.py
     is removed in the same commit.
     """
+    from lionagi.state.staleness import staleness_check
+
     sessions = await _sessions_svc.list_sessions()
     status_set = _normalize_status_filter(status)
+    # One shared "now" so two adjacent sessions can't disagree about
+    # whether the same elapsed time crossed the threshold.
+    now = time.time()
     out = []
     for s in sessions:
         if playbook and playbook.lower() not in (s.get("playbook_name") or "").lower():
@@ -560,6 +566,12 @@ async def list_runs(
             "ended_at": s.get("ended_at"),
             "created_at": s.get("created_at"),
             "updated_at": s.get("updated_at"),
+            # ADR-0019: stored marker + derived label. ``effective_health``
+            # is null for terminal sessions; ADR-0024 expands it with the
+            # full health vocabulary (idle / unresponsive / orphaned /
+            # zombie).
+            "last_message_at": s.get("last_message_at"),
+            "effective_health": staleness_check(s, now=now),
             "branch_count": s.get("branch_count", 0),
             "message_count": s.get("message_count", 0),
         })
