@@ -8,11 +8,7 @@
     "test": "node --experimental-strip-types --experimental-loader ./ts-loader.mjs --test __tests__/**/*.test.ts"
   },
   "dependencies": {
-    "@types/d3-force": "^3.0.10",
     "@types/dagre": "^0.7.54",
-    "d3-drag": "^3.0.0",
-    "d3-force": "^3.0.0",
-    "d3-selection": "^3.0.0",
     "dagre": "^0.8.5",
     "next": "^16.2.6",
     "react": "^19.2.6",
