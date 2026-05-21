@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "lionagi",
   "version": "0.1.0",
-  "description": "Daily-driver agent runtime with Lion Studio dashboard and curated skill plugins",
+  "description": "Daily-driver agent runtime with curated skill plugins for orchestration, research, memory, and development workflows",
   "owner": {
     "name": "Ocean (HaiyangLi)",
     "url": "https://github.com/ohdearquant"
@@ -11,32 +11,32 @@
     {
       "name": "show",
       "source": "./marketplace/show",
-      "description": "Direct multi-play DAGs with critic gating and worktree isolation"
+      "description": "Orchestrate multi-step agent workflows with quality gates and isolated workspaces"
     },
     {
       "name": "play",
       "source": "./marketplace/play",
-      "description": "Author lionagi playbooks for li play / li o flow"
+      "description": "Define and run reusable workflow templates (playbooks) that parameterize agent tasks"
     },
     {
       "name": "orchestrate",
       "source": "./marketplace/orchestrate",
-      "description": "Multi-agent orchestration via li o flow and li o fanout"
+      "description": "Plan and run multi-agent pipelines: fan out to parallel workers or chain agents in dependency order"
     },
     {
       "name": "research",
       "source": "./marketplace/research",
-      "description": "Multi-perspective research with web search, codebase analysis, and synthesis"
+      "description": "Run structured research across multiple viewpoints using web search, codebase analysis, and synthesis"
     },
     {
       "name": "memory",
       "source": "./marketplace/memory",
-      "description": "Memory recall, MEMORY.md hygiene, auto-memory bootstrap"
+      "description": "Persist and recall project context — decisions, patterns, and facts — across sessions"
     },
     {
       "name": "devx",
       "source": "./marketplace/devx",
-      "description": "Conventional commit, formatting, CI, PR, summarize (session-start/session-summarize planned)"
+      "description": "Development workflow skills: conventional commits, formatting, CI checks, PR creation, and session summaries (session-start/session-summarize planned)"
     }
   ],
   "_deferred_bundles": [

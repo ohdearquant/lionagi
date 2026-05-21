@@ -4,7 +4,7 @@ Claude Code marketplace plugins for the lionagi agent runtime. Install only the 
 
 ## What is this?
 
-The lionagi marketplace bundles curated skills, agents, and configuration into installable Claude Code plugins. Each plugin targets a specific capability slice — show direction, research patterns, memory hygiene, the Lion Studio dashboard, and more. The manifest at `../.claude-plugin/marketplace.json` declares all available plugins.
+The lionagi marketplace bundles curated skills, agents, and configuration into installable Claude Code plugins. Each plugin targets a specific capability — structured workflow runs, multi-agent research, memory management, playbook authoring, and multi-agent orchestration. The manifest at `../.claude-plugin/marketplace.json` declares all available plugins.
 
 ## Install
 
@@ -22,12 +22,12 @@ claude /plugin install devx@lionagi
 
 | Name | Description |
 |------|-------------|
-| `show` | Direct multi-play DAGs with critic gating and worktree isolation |
-| `play` | Author lionagi playbooks for li play / li o flow |
-| `orchestrate` | Multi-agent orchestration via li o flow and li o fanout |
-| `research` | Multi-perspective research with web search, codebase analysis, and synthesis |
-| `memory` | Memory recall, MEMORY.md hygiene, auto-memory bootstrap |
-| `devx` | Conventional commit, formatting, CI, PR, summarize, session-start/-summarize |
+| `show` | Orchestrate multi-step agent workflows with quality gates and isolated workspaces |
+| `play` | Define and run reusable workflow templates (playbooks) that parameterize agent tasks |
+| `orchestrate` | Plan and run multi-agent pipelines: fan out to parallel workers or chain agents in dependency order |
+| `research` | Run structured research across multiple viewpoints using web search, codebase analysis, and synthesis |
+| `memory` | Persist and recall project context — decisions, patterns, and facts — across sessions |
+| `devx` | Development workflow skills: conventional commits, formatting, CI checks, PR creation, and session summaries (session-start/session-summarize planned) |
 
 ## Coming soon
 
