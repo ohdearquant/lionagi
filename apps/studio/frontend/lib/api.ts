@@ -352,13 +352,18 @@ export function streamSession(
 ): () => void {
   const source = new EventSource(`${API_BASE}/api/sessions/${encodeURIComponent(id)}/stream`);
   source.onmessage = (msg) => {
+    let event: Record<string, unknown>;
     try {
-      onEvent(JSON.parse(msg.data) as Record<string, unknown>);
+      event = JSON.parse(msg.data) as Record<string, unknown>;
     } catch {
       /* malformed chunk */
+      return;
     }
+    if (event.type === "done") {
+      source.close();
+    }
+    onEvent(event);
   };
-  source.onerror = () => source.close();
   return () => source.close();
 }
 
