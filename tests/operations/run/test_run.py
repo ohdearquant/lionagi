@@ -381,3 +381,98 @@ async def test_run_and_collect_parses_when_response_format_is_set(monkeypatch):
     assert result.value == 42
     assert len(parse_calls) == 1
     assert parse_calls[0] == '{"value": 42}'
+
+
+# ---------------------------------------------------------------------------
+# Timeout enforcement tests — regression for the "timeout silently ignored"
+# bug where ``branch.operate(timeout=N)`` / ``li agent --timeout N`` flowed
+# through ``imodel_kw`` into ``model.create_event(**kw)`` but the streaming
+# loop never wrapped the consumer with ``anyio.fail_after``, so CLI
+# subprocesses (codex, claude_code) ran unbounded.
+# ---------------------------------------------------------------------------
+
+
+def _make_slow_cli_model(chunk_delay: float, n_chunks: int = 100):
+    """A CLI iModel whose stream sleeps between each chunk. Use a long delay
+    + many chunks so the total runtime exceeds any test timeout."""
+    import anyio
+    from lionagi.service.types.stream_chunk import StreamChunk
+
+    m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
+    endpoint_ns = types.SimpleNamespace(
+        is_cli=True,
+        session_id=None,
+        to_dict=lambda: {"type": "fake_cli", "session_id": None},
+    )
+    m.endpoint = endpoint_ns
+    m.streaming_process_func = None
+    captured: dict = {}
+
+    async def create_event(**kw):
+        captured.update(kw)
+        return object()
+
+    m.create_event = create_event
+    m.executor = types.SimpleNamespace(append=AsyncMock(), config={})
+
+    async def stream(api_call=None):
+        for _ in range(n_chunks):
+            await anyio.sleep(chunk_delay)
+            yield StreamChunk(type="text", content="x")
+
+    m.stream = stream
+    return m, captured
+
+
+async def test_run_honors_caller_timeout_on_slow_stream():
+    """When the caller passes ``timeout=N`` via imodel_kw, the stream loop
+    raises TimeoutError once N seconds elapse, even if the upstream provider
+    would otherwise stream forever."""
+    import time
+
+    model, _ = _make_slow_cli_model(chunk_delay=0.5, n_chunks=20)
+    branch = Branch()
+    branch.chat_model = model
+
+    started = time.monotonic()
+    # 0.15s ceiling — first chunk lands at 0.5s, so we MUST hit the timeout
+    # before any chunk arrives; safety budget 1s.
+    with pytest.raises(TimeoutError):
+        async for _ in run(branch, "go", RunParam(imodel_kw={"timeout": 0.15})):
+            pass
+    elapsed = time.monotonic() - started
+
+    # Should fire close to 0.15s, well under the 0.5s first chunk delay.
+    assert elapsed < 0.5, f"timeout fired too late: {elapsed:.2f}s"
+
+
+async def test_run_no_timeout_when_kwarg_absent():
+    """Back-compat: callers that don't supply timeout get the legacy
+    unbounded behaviour (subject to chunk count, not wall clock)."""
+    from lionagi.service.types.stream_chunk import StreamChunk
+
+    model, _ = _make_slow_cli_model(chunk_delay=0.0, n_chunks=3)
+    branch = Branch()
+    branch.chat_model = model
+
+    results = await _collect(run(branch, "go", RunParam()))
+    text_msgs = [r for r in results if isinstance(r, AssistantResponse)]
+    # 3 chunks of "x" → single flushed AssistantResponse with "xxx".
+    assert len(text_msgs) == 1
+    assert text_msgs[0].response == "xxx"
+
+
+async def test_run_strips_timeout_from_create_event_kwargs():
+    """The provider does NOT consume ``timeout``; verify it is popped from
+    kw before create_event sees it (otherwise codex would receive an
+    unexpected kwarg and may crash)."""
+    from lionagi.service.types.stream_chunk import StreamChunk
+
+    model, captured = _make_slow_cli_model(chunk_delay=0.0, n_chunks=1)
+    branch = Branch()
+    branch.chat_model = model
+
+    await _collect(run(branch, "hi", RunParam(imodel_kw={"timeout": 5})))
+    assert "timeout" not in captured, (
+        f"timeout leaked into create_event kwargs: {captured!r}"
+    )
