@@ -116,7 +116,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
   const summary = useMemo(() => extractSummary(show?.show_md ?? null), [show]);
 
   return (
-    <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-6 text-content-primary">
+    <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-6 text-content-primary animate-page-enter">
       <PageHeader
         density="tight"
         breadcrumb={[
@@ -297,9 +297,9 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                         <div className="text-meta uppercase tracking-[0.06em] text-content-muted">
                                           Intent
                                         </div>
-                                        <p className="mt-1 whitespace-pre-wrap text-body text-content-secondary">
-                                          {play.intent}
-                                        </p>
+                                        <div className="mt-1">
+                                          <Markdown className="text-body">{play.intent}</Markdown>
+                                        </div>
                                       </div>
                                     )}
 
@@ -352,9 +352,9 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                             <div className="text-meta uppercase tracking-[0.06em] text-content-muted">
                                               Feedback
                                             </div>
-                                            <p className="mt-1 whitespace-pre-wrap text-body text-content-secondary">
-                                              {play.verdict.feedback}
-                                            </p>
+                                            <div className="mt-1">
+                                              <Markdown className="text-body">{play.verdict.feedback}</Markdown>
+                                            </div>
                                           </div>
                                         )}
                                         {play.verdict.notes && (
@@ -362,9 +362,9 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                             <div className="text-meta uppercase tracking-[0.06em] text-content-muted">
                                               Notes
                                             </div>
-                                            <p className="mt-1 whitespace-pre-wrap text-body text-content-secondary">
-                                              {play.verdict.notes}
-                                            </p>
+                                            <div className="mt-1">
+                                              <Markdown className="text-body">{play.verdict.notes}</Markdown>
+                                            </div>
                                           </div>
                                         )}
                                       </div>
@@ -455,7 +455,7 @@ function ShowSummaryPanel({
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
       {/* Roll-up — always rendered */}
-      <section className="rounded border border-edge bg-surface-raised p-3">
+      <section className="rounded border border-edge bg-surface-raised p-3 shadow-card">
         <h3 className="text-meta uppercase tracking-[0.06em] text-content-muted">Roll-up</h3>
         {rollup ? (
           <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-body">
@@ -487,7 +487,7 @@ function ShowSummaryPanel({
       </section>
 
       {/* Goal / Status */}
-      <section className="rounded border border-edge bg-surface-raised p-3">
+      <section className="rounded border border-edge bg-surface-raised p-3 shadow-card">
         <h3 className="text-meta uppercase tracking-[0.06em] text-content-muted">Plan</h3>
         {showSummary ? (
           <dl className="mt-2 flex flex-col gap-1.5 text-body">
@@ -510,7 +510,7 @@ function ShowSummaryPanel({
       </section>
 
       {/* Blockers / Next action */}
-      <section className="rounded border border-edge bg-surface-raised p-3">
+      <section className="rounded border border-edge bg-surface-raised p-3 shadow-card">
         <h3 className="text-meta uppercase tracking-[0.06em] text-content-muted">Action</h3>
         {hasBlockers || hasNext ? (
           <dl className="mt-2 flex flex-col gap-1.5 text-body">

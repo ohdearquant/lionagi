@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Badge from "@/components/Badge";
+import Markdown from "@/components/Markdown";
 import type { RunMessage, RunStep } from "@/lib/types";
 
 interface RolesBreakdown {
@@ -463,16 +464,18 @@ function OverviewPanel({ summary, lastAssistant, onJumpToConversation }: {
           )}
         </div>
         {lastAssistant?.content ? (
-          <p className="whitespace-pre-wrap text-body leading-snug text-content-primary">
-            {lastAssistant.content.length > 1200 ? lastAssistant.content.slice(0, 1200) + "…" : lastAssistant.content}
-          </p>
+          <>
+            <Markdown className="text-body leading-snug">
+              {lastAssistant.content.length > 1200 ? lastAssistant.content.slice(0, 1200) + "\n\n…" : lastAssistant.content}
+            </Markdown>
+            {lastAssistant.content.length > 1200 && (
+              <button type="button" onClick={onJumpToConversation} className="mt-2 text-meta text-status-running hover:text-status-running/80 transition-colors">
+                View full conversation →
+              </button>
+            )}
+          </>
         ) : (
           <p className="text-body text-content-muted">No final response recorded.</p>
-        )}
-        {lastAssistant?.content && lastAssistant.content.length > 1200 && (
-          <button type="button" onClick={onJumpToConversation} className="mt-2 text-meta text-status-running hover:text-status-running/80">
-            View full conversation →
-          </button>
         )}
       </div>
       <div className="flex flex-col gap-2">
