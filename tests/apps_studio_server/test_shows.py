@@ -25,14 +25,24 @@ def shows_root(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
-def patched_app(shows_root: Path, monkeypatch: pytest.MonkeyPatch):
-    """Return a TestClient whose SHOWS_ROOT is redirected to a tmp directory."""
+def patched_app(shows_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Return a TestClient whose SHOWS_ROOT is redirected to a tmp directory.
+
+    Also redirects DEFAULT_DB_PATH to a non-existent fake DB so that
+    _list_shows_db() returns no rows (forcing the filesystem fallback that
+    reads from the patched SHOWS_ROOT, not the real state.db).
+    """
     import apps.studio.server.config as config_mod
     import apps.studio.server.services.shows as shows_mod
+    import lionagi.state.db as state_db_mod
 
     shows_root.mkdir(parents=True, exist_ok=True)
+    fake_db = tmp_path / "state.db"  # does not exist → _db_available() returns False
     monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(shows_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(shows_mod, "_DB", str(fake_db))
 
     from apps.studio.server.app import app
 
