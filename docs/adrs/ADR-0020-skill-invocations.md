@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS invocations (
   started_at      REAL    NOT NULL,
   ended_at        REAL,
   status          TEXT    NOT NULL DEFAULT 'running' CHECK(
-                    status IN ('running', 'completed', 'failed', 'aborted', 'stale')
+                    status IN ('running', 'completed', 'failed', 'aborted', 'timed_out', 'cancelled')
                   ),
   session_count   INTEGER NOT NULL DEFAULT 0, -- denormalized for list queries
   created_at      REAL    NOT NULL,
@@ -114,12 +114,12 @@ The two are orthogonal:
 | Skill completes | Skill runner | UPDATE `status='completed'`, `ended_at=now()` |
 | Skill fails | Skill runner | UPDATE `status='failed'`, `ended_at=now()` |
 | Skill interrupted | Signal handler | UPDATE `status='aborted'`, `ended_at=now()` |
-| Stale detection | Admin doctor (ADR-0019 §B) | UPDATE `status='stale'` when all child sessions are stale |
+| Timeout | Timeout handler | UPDATE `status='timed_out'`, `ended_at=now()` |
+| Cancelled | Orchestrator / admin | UPDATE `status='cancelled'`, `ended_at=now()` |
 
-Note: `stale` IS a stored status on invocations (unlike sessions where
-it's computed). An invocation whose child sessions are all stale/failed
-and whose process is dead is definitively stale — there's no ambiguity
-about thresholds because the invocation has explicit `ended_at` semantics.
+Note: `stale` is a **health indicator** on invocations (derived, same as
+sessions — see ADR-0024), not a stored status. An invocation whose child
+sessions are all stale/failed surfaces as health `stale` in the dashboard.
 
 ### Write path: who creates invocation records?
 

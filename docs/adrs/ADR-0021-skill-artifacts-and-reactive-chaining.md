@@ -511,3 +511,11 @@ can be built incrementally.
 - `lionagi/cli/orchestrate/flow.py` — FlowControlVerdict (existing pattern)
 - `~/.lionagi/skills/codex-pr-review/SKILL.md` — Verdict production pattern
 - `~/.lionagi/skills/show/SKILL.md` — Gate verdict production pattern
+
+### Prior art
+
+- **autogen Watch Primitives** (`autogen/beta/watch.py`) — EventWatch,
+  CadenceWatch, CronWatch, DelayWatch with AllOf/AnyOf/Sequence composites.
+  The reactive chaining in Part D is sequential-only; Watch supports
+  conditional composition (AllOf = all triggers must fire). Consider
+  composite triggers as a future extension.

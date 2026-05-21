@@ -108,6 +108,29 @@ SESSION_TERMINAL_STATUSES = frozenset({
 All non-`running` statuses are terminal. The SSE done-condition check
 (ADR-0017 `is_session_stream_done`) uses this set.
 
+### Legal transitions
+
+The session status FSM is deterministic. All transitions originate from
+`running`; terminal statuses have no outgoing transitions.
+
+| From | To | Trigger | Who writes |
+|------|----|---------|------------|
+| `running` | `completed` | Normal completion | CLI teardown |
+| `running` | `failed` | Unhandled exception | CLI teardown |
+| `running` | `timed_out` | `TimeoutError` from `anyio.fail_after` | CLI teardown |
+| `running` | `aborted` | `KeyboardInterrupt` / `CancelledError` | CLI teardown |
+| `running` | `cancelled` | Orchestrator / admin decision | Skill runner or admin API |
+
+No transitions between terminal statuses are permitted. The admin
+`TransitionBody` endpoint (ADR-0024) enforces this via
+`can_transition(current, target)` validation — modeled on khive's
+GTD `transition` verb with its Lean4-proven FSM properties.
+
+```python
+def can_transition(current: str, target: str) -> bool:
+    return current == "running" and target in SESSION_TERMINAL_STATUSES
+```
+
 ### Write points (updated from ADR-0017)
 
 ```python
@@ -388,3 +411,12 @@ if status in SESSION_TERMINAL_STATUSES:
 - `lionagi/cli/orchestrate/flow.py` — Flow timeout wrapper
 - `lionagi/state/schema.sql` — Current CHECK constraint
 - `apps/studio/frontend/app/page.tsx` — Dashboard `SLOW_RUN_SECONDS`
+
+### Prior art
+
+- **khive GTD Task FSM** (khive ADR-003) — 7-state FSM with 5 Lean4-proven
+  properties: fsm_validity, terminal_no_transitions, completed_reachable_from_pending,
+  failed/cancelled_reachable, transition_deterministic. The session status
+  transition table above mirrors this pattern.
+- **Claude Code Task Lifecycle** (`Task.ts`) — 5 statuses: pending, running,
+  completed, failed, killed. `killed` maps to our `cancelled` + `aborted`.

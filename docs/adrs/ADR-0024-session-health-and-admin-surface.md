@@ -89,7 +89,7 @@ def classify_session_health(
     status = session.get("status", "completed")
 
     # Terminal sessions
-    if status in ("completed", "failed", "aborted"):
+    if status in ("completed", "failed", "aborted", "timed_out", "cancelled"):
         if has_stale_locks or (has_artifacts and _has_temp_files(session)):
             return SessionHealth.ZOMBIE
         return SessionHealth.HEALTHY  # terminal = done, nothing wrong
@@ -236,7 +236,7 @@ GET  /api/admin/events          # Recent admin events log
 ```python
 class TransitionBody(BaseModel):
     session_ids: list[str]
-    target_status: Literal["failed", "aborted"]
+    target_status: Literal["failed", "aborted", "cancelled"]
     reason: str  # required: why are you transitioning?
 
 # POST /api/admin/transition
@@ -610,3 +610,12 @@ Transitions remain explicit admin actions.
 - `apps/studio/server/routers/admin.py` — Current admin endpoints
 - `apps/studio/frontend/app/admin/page.tsx` — Current admin page
 - `apps/studio/frontend/app/page.tsx` — Current dashboard (client-side health heuristics)
+
+### Prior art
+
+- **NIST SP 800-92** ("Guide to Computer Security Log Management") — The
+  `admin_events` table follows the append-only audit log pattern. Events are
+  insert-only with no UPDATE/DELETE, matching the immutable log architecture.
+- **khive GTD Task FSM** (ADR-003, Lean4-proven) — The `can_transition`
+  validation pattern for `TransitionBody` mirrors khive's `transition` verb
+  with formally verified state machine properties.

@@ -205,3 +205,13 @@ path can extract model from `run.json` → `manifest.model_spec` if present.
 - `lionagi/cli/agent.py` — Session + branch creation
 - `lionagi/cli/orchestrate/flow.py` — FlowOp agent model resolution
 - `lionagi/cli/_providers.py` — `parse_model_spec()` resolution chain
+
+### Prior art
+
+- **W3C PROV-DM** (2013) — The Entity-Activity-Agent triple maps to lionagi's
+  Session-Branch-Message model. Our provenance columns capture a simplified
+  form of the PROV derivation relation.
+- **Buneman-Khanna-Tan 2001** ("Why and Where: A Characterization of Data
+  Provenance", ICDT) — Distinguishes why-provenance (which inputs produced
+  this output) from where-provenance (which source contributed). `agent_hash`
+  captures where-provenance; the branch message chain captures why-provenance.

@@ -381,3 +381,23 @@ window, it moves to `lionagi/hooks/_legacy/`.
 - `lionagi/agent/hooks.py` — Current tool-call hooks
 - `lionagi/agent/config.py` — Current AgentConfig hook registration
 - `lionagi/cli/agent.py` — Current `_on_message` closure
+
+### Prior art
+
+- **Claude Code Hook Registry** (`_references/claude-code/src/utils/hooks.ts`)
+  — Merges three config sources, uses `getMatchingHooks()` with regex pattern
+  matching and `deny>ask>allow` permission precedence. The HookBus design is
+  convergent with this architecture.
+- **autogen Stream** (`autogen/beta/stream.py::MemoryStream`) — Typed event
+  bus with publish/subscribe and condition filters. Per-stream turn lock
+  serializes concurrent calls. Validates the pub/sub event bus approach.
+
+### Open question: dual Middle Protocol
+
+The CLI subprocess path (`run_and_collect`) and the API path (`communicate`)
+are both hook emission sites. CLI agents spawned via `li agent -a reviewer`
+use `run_and_collect` (subprocess streaming); Python API agents use
+`communicate` (one-shot). The HookBus must emit on both paths — the current
+design specifies hook points for the API path but should explicitly address
+the CLI subprocess path where `API_PRE_CALL`/`API_POST_CALL` semantics differ
+(the "call" is a subprocess spawn, not an HTTP request).

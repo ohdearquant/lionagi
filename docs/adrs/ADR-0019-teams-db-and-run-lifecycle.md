@@ -130,7 +130,7 @@ transaction as the progression append). This is cheaper than computing
 #### B2. Staleness heuristic (computed, not stored)
 
 Staleness is a **derived status** computed at read time, not a stored
-column. The runs list and dashboard compute `effective_status` from:
+column. The runs list and dashboard compute `effective_health` from:
 
 ```python
 STALE_THRESHOLDS = {
@@ -142,7 +142,7 @@ STALE_THRESHOLDS = {
 }
 DEFAULT_STALE_THRESHOLD = 6 * 3600  # 6h fallback
 
-def effective_status(session: dict, *, now: float) -> str:
+def effective_health(session: dict, *, now: float) -> str:
     raw = session["status"]
     if raw != "running":
         return raw
@@ -180,7 +180,7 @@ async def transition_stale_sessions(
     """Mark stale running sessions as failed.
 
     Only transitions sessions where:
-    1. effective_status == 'stale' (no message activity past threshold)
+    1. effective_health == 'stale' (no message activity past threshold)
     2. Process is confirmed dead (PID check + ps scan)
 
     Returns list of transitioned session IDs with reason.
@@ -203,21 +203,22 @@ The dashboard gains two new cards from these signals:
 ### Status vocabulary update
 
 The session `status` CHECK constraint is unchanged — `stale` is NOT a DB
-value. The four DB statuses remain: `running`, `completed`, `failed`,
-`aborted`. `stale` exists only in the API response as `effective_status`.
+value. The base DB statuses (`running`, `completed`, `failed`, `aborted`)
+are extended by ADR-0025 with `timed_out` and `cancelled`. `stale` exists
+only in the API response as a derived health indicator (see ADR-0024).
 
 The runs list API response shape adds:
 
 ```json
 {
   "status": "running",
-  "effective_status": "stale",
+  "effective_health": "stale",
   "last_message_at": 1716300000.0,
   "message_count": 42
 }
 ```
 
-Frontend renders `effective_status` for the pill color. Tooltip shows raw
+Frontend renders `effective_health` for the pill color. Tooltip shows raw
 `status` for disambiguation.
 
 ## Consequences
