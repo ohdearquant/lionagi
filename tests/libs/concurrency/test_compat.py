@@ -3,7 +3,6 @@
 
 """Tests for lionagi/ln/concurrency/_compat.py compatibility helpers."""
 
-import pytest
 
 from lionagi.ln.concurrency._compat import (
     BaseExceptionGroup,

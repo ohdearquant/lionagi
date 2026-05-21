@@ -9,7 +9,6 @@ from pydantic import BaseModel
 
 from lionagi.operations.fields import (
     ActionRequestModel,
-    ActionResponseModel,
     Instruct,
     get_default_field,
 )

@@ -5,8 +5,6 @@
 
 import types
 
-import pytest
-
 from lionagi.service.token_budget import TokenBudget, get_context_window
 
 
@@ -125,8 +123,6 @@ import types as _types
 from lionagi.service.token_budget import (
     _get_provider_windows,
     _longest_prefix_match,
-    _provider_cache,
-    get_context_window,
     get_token_budget,
     lookup_context_window,
 )

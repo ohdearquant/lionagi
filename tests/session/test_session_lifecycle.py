@@ -15,12 +15,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.operations.node import Operation
 from lionagi.protocols.generic.event import EventStatus
 from lionagi.protocols.graph.edge import Edge
 from lionagi.protocols.graph.graph import Graph
-from lionagi.protocols.messages import Instruction
 from lionagi.providers.openai.chat.models import OpenAIChatCompletionsRequest
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.connections.endpoint import Endpoint

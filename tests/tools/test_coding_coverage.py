@@ -3,9 +3,6 @@
 
 """Coverage-targeted tests for tools/coding.py — uncovered paths."""
 
-import io
-import struct
-import time
 
 import pytest
 
@@ -392,7 +389,6 @@ async def test_context_evict_action_results_all_kept_when_below_threshold(tmp_pa
 
 
 async def test_context_evict_action_results_removes_old(tmp_path):
-    from lionagi.protocols.messages import ActionRequest, ActionResponse
     from lionagi.session.branch import Branch
 
     b = Branch()
@@ -590,7 +586,6 @@ async def test_sandbox_unknown_action_returns_error(tmp_path, monkeypatch):
 
     # Inject fake session so we pass the session check
     fake_session = MagicMock()
-    import lionagi.tools.coding as coding_mod
 
     # Patch sandbox_discard/diff/etc via the import in the closure
     import lionagi.tools.sandbox as sb_mod

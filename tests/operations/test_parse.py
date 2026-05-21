@@ -7,9 +7,12 @@ import pytest
 from pydantic import BaseModel
 
 from lionagi.ln.fuzzy import FuzzyMatchKeysParams
-from lionagi.operations.parse.parse import _validate_dict_or_model, get_default_call
+from lionagi.operations.parse.parse import (
+    _validate_dict_or_model,
+    get_default_call,
+    prepare_parse_kws,
+)
 from lionagi.operations.parse.parse import parse as _parse
-from lionagi.operations.parse.parse import prepare_parse_kws
 from lionagi.operations.types import ParseParam
 
 

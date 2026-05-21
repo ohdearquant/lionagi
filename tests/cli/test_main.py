@@ -3,7 +3,6 @@
 
 """Tests for lionagi.cli.main — _handle_play_shortcut."""
 
-import pytest
 
 from lionagi.cli.main import _handle_play_shortcut
 

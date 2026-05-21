@@ -14,7 +14,6 @@ This test suite establishes the EXPECTED behavior for edge conditions:
 These tests serve as regression guards and specification for correct behavior.
 """
 
-import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4

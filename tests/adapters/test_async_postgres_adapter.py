@@ -3,7 +3,6 @@
 
 """Tests for lionagi async postgres adapter and availability check."""
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # A9 / A10: check_async_postgres_available

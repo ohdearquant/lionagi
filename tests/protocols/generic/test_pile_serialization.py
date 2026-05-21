@@ -14,15 +14,11 @@ from __future__ import annotations
 import importlib
 import tempfile
 from pathlib import Path
-from uuid import UUID
 
 import pytest
-import pytest_asyncio
 
-from lionagi._errors import ItemNotFoundError, ValidationError
 from lionagi.protocols.generic.element import Element
 from lionagi.protocols.generic.pile import Pile
-from lionagi.protocols.generic.progression import Progression
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers

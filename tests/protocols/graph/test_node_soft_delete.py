@@ -5,14 +5,13 @@
 
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime, timezone
 
 import pytest
 
 from lionagi.ln import compute_hash
 from lionagi.protocols.graph.node import Node
-from lionagi.protocols.graph.node_factory import NodeConfig, create_node
+from lionagi.protocols.graph.node_factory import create_node
 
 
 def _content_hash(content):

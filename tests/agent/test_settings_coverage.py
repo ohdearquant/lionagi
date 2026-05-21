@@ -14,7 +14,6 @@ from lionagi.agent.settings import (
     _make_shell_hook,
     _resolve_hook_spec,
     apply_hooks_from_settings,
-    load_settings,
 )
 
 # ---------------------------------------------------------------------------

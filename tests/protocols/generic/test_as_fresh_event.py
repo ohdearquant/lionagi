@@ -11,7 +11,7 @@ with the original.
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from lionagi.protocols.generic.event import Event, EventStatus
 

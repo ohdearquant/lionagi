@@ -4,9 +4,6 @@
 """Tests for EditorTool: write, edit, and security checks (symlink, path-escape, denied names)."""
 
 import asyncio
-from pathlib import Path
-
-import pytest
 
 from lionagi.protocols.action.tool import Tool
 from lionagi.tools.file.editor import (

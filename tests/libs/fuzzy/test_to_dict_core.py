@@ -17,7 +17,6 @@ from lionagi.ln.fuzzy._to_dict import (
     _object_to_mapping_like,
     _parse_str,
     _preprocess_recursive,
-    to_dict,
 )
 
 # ============================================================================

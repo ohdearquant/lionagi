@@ -2,14 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
-import os
 from unittest.mock import patch
 
 import pytest
 
 from lionagi.protocols.generic.event import EventStatus
 from lionagi.service.connections.api_calling import APICalling
-from lionagi.service.hooks import HookRegistry
 from lionagi.service.imodel import iModel
 
 

@@ -3,7 +3,6 @@
 
 """Tests for AgentConfig: defaults, presets, hooks, and YAML roundtrip."""
 
-import pytest
 
 from lionagi.agent.config import AgentConfig
 

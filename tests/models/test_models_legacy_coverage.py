@@ -71,7 +71,6 @@ class TestFieldModelProperties:
         assert f.annotation is float
 
     def test_annotation_property_any_when_unset(self):
-        from typing import Any
 
         f = FieldModel()
         assert f.annotation is Any
@@ -247,7 +246,6 @@ class TestFieldModelFactoryHelpers:
 
     def test_nullable_annotation_includes_none(self):
         f = FieldModel(base_type=int).as_nullable()
-        import types
 
         ann = f.annotation
         # str | None or Optional[int]

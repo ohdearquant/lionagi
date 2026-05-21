@@ -170,11 +170,29 @@ ignore = [
     "UP007",  # X | Y union syntax needs 3.10+ (already using from __future__)
     "S101",   # assert usage (fine in non-web library)
     "E501",   # line length (handled by formatter)
+    "W293",   # blank line whitespace (handled by formatter)
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "B904", "N"]
+"tests/**" = [
+    "S",      # security rules relaxed in tests
+    "A",      # builtin shadowing (test fixtures reuse names like `exit`, `aiter`)
+    "B",      # bugbear relaxed in tests (assert patterns, loop vars, callables)
+    "E402",   # import after pytest.importorskip (intentional)
+    "E721",   # type comparison (test assertions)
+    "E731",   # lambda assignment (test fixtures)
+    "F401",   # unused imports (import-bridge tests verify importability)
+    "F601",   # repeated dict keys (test fixture patterns)
+    "F841",   # unused variable (test setup patterns)
+    "UP045",  # X | None annotation (3.10 compat)
+    "N",      # naming relaxed in tests
+]
 "cookbooks/**" = ["S101", "B904", "N"]
+"scripts/**" = ["S", "E731"]
+"apps/studio/**" = [
+    "S108",   # /tmp in dev server
+    "B007",   # unused loop vars
+]
 
 [tool.pytest.ini_options]
 addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n auto --dist loadfile --benchmark-disable"

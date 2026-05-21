@@ -14,7 +14,6 @@ Tests cover:
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from pydantic import BaseModel
 
 from lionagi.operations.ReAct.utils import Analysis, PlannedAction, ReActAnalysis
 from lionagi.protocols.generic.event import EventStatus

@@ -11,7 +11,6 @@ These tests ensure complex patterns work correctly:
 4. Multi-phase execution patterns
 """
 
-import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
