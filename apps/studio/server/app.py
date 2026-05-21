@@ -22,6 +22,8 @@ from .routers import (
 )
 from .services import stats as stats_svc
 
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
 app = FastAPI(title="Lion Studio Server")
 
 app.add_middleware(
@@ -36,14 +38,13 @@ app.add_middleware(
 async def require_studio_bearer_token(request: Request, call_next):
     token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
     path = request.url.path
-    # Gate ALL methods on /api/admin/* — GET endpoints must not bypass auth.
-    # Other /api/* paths remain open for read-only access (stats, health, etc.).
-    if (
-        token
-        and path.startswith("/api/admin/")
-        and request.headers.get("authorization") != f"Bearer {token}"
-    ):
-        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    if token and request.headers.get("authorization") != f"Bearer {token}":
+        # Gate ALL methods on /api/admin/* — GET endpoints must not bypass auth.
+        if path.startswith("/api/admin/"):
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        # Gate mutating methods on all other /api/* routes.
+        if path.startswith("/api") and request.method in _MUTATING_METHODS:
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
 
 app.include_router(runs.router, prefix="/api")
