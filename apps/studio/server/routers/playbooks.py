@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, HTTPException
 
@@ -30,7 +30,7 @@ async def create_playbook(name: str) -> dict[str, Any]:
 
 @router.put("/{name}")
 async def update_playbook(
-    name: str, body: dict[str, Any] = Body(...)
+    name: str, body: Annotated[dict[str, Any], Body(...)]
 ) -> dict[str, Any]:
     updated = playbooks_svc.update_playbook(name, body)
     if updated is None:
@@ -46,7 +46,7 @@ async def delete_playbook(name: str) -> dict[str, Any]:
 
 @router.post("/{name}/validate")
 async def validate_playbook(
-    name: str, body: dict[str, Any] = Body(...)
+    name: str, body: Annotated[dict[str, Any], Body(...)]
 ) -> dict[str, Any]:
     return playbooks_svc.validate_playbook(name, body)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,23 @@ import aiosqlite
 
 from lionagi.cli._runs import LIONAGI_HOME
 from lionagi.state.db import DEFAULT_DB_PATH
+from ._path_safety import validate_name_component
+
+# ---------------------------------------------------------------------------
+# Per-(kind, name) concurrency lock — shared across all requests in this
+# process.  Spans the DB write inside StateDB.save_definition() AND the
+# subsequent disk write so that both operations are atomic from the service's
+# perspective.  See "HIGH: definition save current-file race" in ADR-0016.
+# ---------------------------------------------------------------------------
+
+_DEFINITION_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
+_DEFINITION_LOCKS_GUARD = asyncio.Lock()
+
+
+async def _lock_for(kind: str, name: str) -> asyncio.Lock:
+    """Return (or create) the per-(kind, name) asyncio.Lock."""
+    async with _DEFINITION_LOCKS_GUARD:
+        return _DEFINITION_LOCKS.setdefault((kind, name), asyncio.Lock())
 
 _DB = str(DEFAULT_DB_PATH)
 
@@ -91,6 +109,10 @@ async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
 
 async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
     """Get current definition content from disk + version history from DB."""
+    # Validate at service boundary before any filesystem operation.
+    validate_name_component(kind, label="kind")
+    validate_name_component(name, label="name")
+
     base = KIND_DIRS.get(kind)
     if not base:
         return None
@@ -134,6 +156,11 @@ async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
 
 async def get_version(kind: str, name: str, version: int) -> dict[str, Any] | None:
     """Get a specific historical version's content."""
+    # Validate at service boundary — kind/name are used in SQL WHERE clauses
+    # and, indirectly, in any path lookups that build on this function.
+    validate_name_component(kind, label="kind")
+    validate_name_component(name, label="name")
+
     if not await _ensure_db():
         return None
 
@@ -170,35 +197,53 @@ async def save_definition(
     return a success response without a row.  Using StateDB.save_definition()
     ensures correct locking and automatic schema creation on first use.
 
+    Path safety: ``kind`` and ``name`` are validated as safe single-component
+    names before any filesystem operation, rejecting traversal sequences and
+    glob metacharacters (see ``_path_safety.validate_name_component``).
+
+    Race safety: DB write + disk write execute inside a per-(kind, name)
+    asyncio.Lock so concurrent saves for the same definition are serialised
+    across both operations (not just within StateDB).
+
     Returns the new version info.
     """
+    # Validate kind and name at the service boundary — reject traversal
+    # sequences, path separators, NUL, and glob metacharacters.
+    validate_name_component(kind, label="kind")
+    validate_name_component(name, label="name")
+
     base = KIND_DIRS.get(kind)
     if not base:
         raise ValueError(f"Unknown kind: {kind}")
 
-    disk_file = _find_definition_file(base, name)
-    if not disk_file:
-        disk_file = base / f"{name}.md"
-
-    now = time.time()
-
     from lionagi.state.db import StateDB
 
-    # DB write first — StateDB handles schema creation, locking, and retries.
-    # Raises on failure (e.g. unique-version retry exhaustion, schema error).
-    # The caller (router) catches exceptions and propagates as 500.
-    async with StateDB() as db:
-        version = await db.save_definition(
-            kind=kind,
-            name=name,
-            path=_relative_path(disk_file),
-            content=content,
-            message=message,
-        )
+    # Acquire per-(kind, name) lock — spans BOTH the DB write inside
+    # StateDB.save_definition() AND the subsequent disk write so that two
+    # concurrent saves cannot interleave their DB commit + file write.
+    lock = await _lock_for(kind, name)
+    async with lock:
+        disk_file = _find_definition_file(base, name)
+        if not disk_file:
+            disk_file = base / f"{name}.md"
 
-    # Only write to disk after DB row is committed.
-    disk_file.parent.mkdir(parents=True, exist_ok=True)
-    disk_file.write_text(content)
+        now = time.time()
+
+        # DB write first — StateDB handles schema creation, locking, and retries.
+        # Raises on failure (e.g. unique-version retry exhaustion, schema error).
+        # The caller (router) catches exceptions and propagates as 500.
+        async with StateDB() as db:
+            version = await db.save_definition(
+                kind=kind,
+                name=name,
+                path=_relative_path(disk_file),
+                content=content,
+                message=message,
+            )
+
+        # Only write to disk after DB row is committed.
+        disk_file.parent.mkdir(parents=True, exist_ok=True)
+        disk_file.write_text(content)
 
     # F-A3-4 (ADR-0016 §"Save semantics"): response field is "saved_at", not "created_at"
     return {
@@ -216,6 +261,12 @@ async def rollback_definition(kind: str, name: str, target_version: int) -> dict
     F-A3-3 (ADR-0016 §"Rollback semantics"): returns
         { version: N+1, rolled_back_from: current_version, rolled_back_to: N }
     """
+    # Validation is handled inside get_version() and save_definition() calls
+    # below, but validate here too so rollback_definition() itself is safe at
+    # its own boundary.
+    validate_name_component(kind, label="kind")
+    validate_name_component(name, label="name")
+
     old = await get_version(kind, name, target_version)
     if not old:
         return None
@@ -279,18 +330,54 @@ _EXTENSIONS = (".md", ".playbook.yaml", ".yaml")
 
 
 def _find_definition_file(base: Path, name: str) -> Path | None:
-    for ext in _EXTENSIONS:
-        direct = base / f"{name}{ext}"
-        if direct.exists():
-            return direct
+    """Locate the on-disk file for a definition.
 
-    for ext in _EXTENSIONS:
-        nested = base / name / f"{name}{ext}"
-        if nested.exists():
-            return nested
+    ``name`` MUST already be validated by ``validate_name_component`` before
+    this function is called — callers are responsible for that check.
 
+    The original implementation used an unescaped recursive glob
+    (``base.glob(f"**/{name}{ext}")``) which allowed glob metacharacters in
+    *name* to expand across the filesystem.  That glob is replaced by a pair
+    of deterministic literal-path checks followed by a bounded directory scan
+    that uses ``resolved.relative_to(base.resolve())`` to confirm the result
+    stays inside *base*.
+    """
+    base_resolved = base.resolve()
+
+    # Fast path 1: direct child  (base/<name><ext>)
     for ext in _EXTENSIONS:
-        for f in base.glob(f"**/{name}{ext}"):
-            return f
+        candidate = base / f"{name}{ext}"
+        if candidate.exists():
+            # Confirm it stays inside base (defends against late-stage symlinks)
+            try:
+                candidate.resolve().relative_to(base_resolved)
+            except ValueError:
+                continue
+            return candidate
+
+    # Fast path 2: nested subdir  (base/<name>/<name><ext>)
+    for ext in _EXTENSIONS:
+        candidate = base / name / f"{name}{ext}"
+        if candidate.exists():
+            try:
+                candidate.resolve().relative_to(base_resolved)
+            except ValueError:
+                continue
+            return candidate
+
+    # Slow path: scan one level of subdirectories for <name><ext>.
+    # Deliberately NOT using Path.glob() with untrusted input — iterate
+    # literal candidates instead so no metacharacter expansion can occur.
+    for subdir in base.iterdir():
+        if not subdir.is_dir():
+            continue
+        for ext in _EXTENSIONS:
+            candidate = subdir / f"{name}{ext}"
+            if candidate.exists():
+                try:
+                    candidate.resolve().relative_to(base_resolved)
+                except ValueError:
+                    continue
+                return candidate
 
     return None

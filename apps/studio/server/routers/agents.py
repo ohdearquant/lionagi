@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, HTTPException
 
@@ -29,7 +29,7 @@ async def create_agent(name: str) -> dict[str, Any]:
 
 
 @router.put("/{name}")
-async def update_agent(name: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def update_agent(name: str, body: Annotated[dict[str, Any], Body(...)]) -> dict[str, Any]:
     updated = agents_svc.update_agent(name, body)
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
@@ -43,7 +43,7 @@ async def delete_agent(name: str) -> dict[str, Any]:
 
 
 @router.post("/{name}/validate")
-async def validate_agent(name: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def validate_agent(name: str, body: Annotated[dict[str, Any], Body(...)]) -> dict[str, Any]:
     errors: list[str] = []
     if not (body.get("name") or "").strip():
         errors.append("name is required")

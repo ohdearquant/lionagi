@@ -5,6 +5,10 @@ filesystem roots MUST be validated through ``safe_path_join`` before any
 filesystem operation.  This prevents path traversal including URL-encoded
 variants such as ``%2e%2e`` which the ASGI layer decodes before the route
 parameter is populated.
+
+``validate_name_component`` is a stricter guard for definition names (and
+``kind`` values) that additionally rejects glob metacharacters that could be
+fed into ``Path.glob()`` calls.
 """
 
 from __future__ import annotations
@@ -14,6 +18,9 @@ from pathlib import Path
 from fastapi import HTTPException
 
 _DANGEROUS_CHARS = frozenset("/\\\x00")
+# Characters that have special meaning in glob patterns — reject them in
+# definition names so they cannot be weaponised via Path.glob().
+_GLOB_METACHARACTERS = frozenset("*?[]{}~")
 
 
 def safe_path_join(root: Path, component: str) -> Path:
@@ -42,3 +49,27 @@ def safe_path_join(root: Path, component: str) -> Path:
         raise HTTPException(status_code=404, detail="path outside root") from None
 
     return candidate
+
+
+def validate_name_component(value: str, label: str = "name") -> None:
+    """Raise ``HTTPException(422)`` if *value* is not safe as a single path
+    component for a definition name or ``kind`` value.
+
+    Extends ``safe_path_join`` checks with rejection of glob metacharacters
+    so that caller-supplied values cannot be passed to ``Path.glob()``.
+
+    Raises:
+        HTTPException(422): for any unsafe value.
+    """
+    if not value or value.strip() == "":
+        raise HTTPException(status_code=422, detail=f"invalid {label}: empty or whitespace")
+    if value in {".", ".."}:
+        raise HTTPException(status_code=422, detail=f"invalid {label}: reserved component")
+    if any(c in value for c in _DANGEROUS_CHARS):
+        raise HTTPException(
+            status_code=422, detail=f"invalid {label}: contains path separator or NUL"
+        )
+    if any(c in value for c in _GLOB_METACHARACTERS):
+        raise HTTPException(
+            status_code=422, detail=f"invalid {label}: contains glob metacharacter"
+        )
