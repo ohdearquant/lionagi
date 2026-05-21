@@ -111,12 +111,14 @@ def _make_client(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 def test_app_imports():
     from apps.studio.server.app import app
 
     assert app.title == "Lion Studio Server"
 
 
+@pytest.mark.integration
 def test_stats_route(tmp_path, monkeypatch):
     client = _make_client(tmp_path, monkeypatch)
     r = client.get("/api/stats")
@@ -301,3 +303,46 @@ def test_path_traversal_encoded_dotdot_agents(tmp_path, monkeypatch):
     client = _make_client(tmp_path, monkeypatch)
     r = client.get("/api/agents/%2e%2e")
     assert r.status_code == 404
+
+
+@pytest.mark.integration
+def test_agent_update_round_trips_effort_and_provider_model(tmp_path, monkeypatch):
+    import apps.studio.server.services.agents as agents_mod
+
+    agents_root = tmp_path / "agents"
+    agents_root.mkdir()
+    monkeypatch.setattr(agents_mod, "_AGENTS_ROOT", agents_root)
+
+    agent_path = agents_root / "my-agent.md"
+    agent_path.write_text(
+        "---\n"
+        "model: claude/old-model\n"
+        "reasoning_effort: medium\n"
+        "---\n\n"
+        "old body\n"
+    )
+
+    updated = agents_mod.update_agent(
+        "my-agent",
+        {
+            "effort": "high",
+            "model": "claude/claude-sonnet-4-6",
+            "system_prompt": "new body",
+        },
+    )
+
+    assert updated is not None
+    assert updated["effort"] == "high"
+    assert updated["model"] == "claude/claude-sonnet-4-6"
+    assert "reasoning_effort" not in updated
+
+    read_back = agents_mod.get_agent("my-agent")
+    assert read_back is not None
+    assert read_back["effort"] == "high"
+    assert read_back["model"] == "claude/claude-sonnet-4-6"
+    assert "reasoning_effort" not in read_back
+
+    raw = agent_path.read_text()
+    assert "effort: high" in raw
+    assert "reasoning_effort" not in raw
+    assert "model: claude/claude-sonnet-4-6" in raw

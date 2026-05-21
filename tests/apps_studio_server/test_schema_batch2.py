@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 import uuid
 from pathlib import Path
@@ -15,13 +14,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
-
-def _run(coro):
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+from tests.apps_studio_server._helpers import run_async as _run
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +22,7 @@ def _run(coro):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 class TestStatusSourceMigration:
     def test_new_db_has_status_source_column(self, tmp_path):
         """A freshly created StateDB must have status_source on the shows table."""

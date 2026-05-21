@@ -5,20 +5,13 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
-
-def _run(coro):
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+from tests.apps_studio_server._helpers import run_async as _run
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +45,7 @@ class _FakeDB:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 class TestListDefinitionsNPlusOne:
     def _setup(self, tmp_path, monkeypatch, n_agents=3):
         import apps.studio.server.services.definitions as defs_mod

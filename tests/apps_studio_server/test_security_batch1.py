@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -16,18 +15,7 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from fastapi.testclient import TestClient
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _run(coro):
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+from tests.apps_studio_server._helpers import run_async as _run
 
 
 def _make_fake_home(tmp_path: Path) -> Path:
@@ -82,6 +70,7 @@ class TestPublicPath:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 class TestDefinitionsDiskPath:
     def test_list_definitions_disk_path_not_absolute(self, tmp_path, monkeypatch):
         """list_definitions() must not expose absolute disk_path in response."""
@@ -265,6 +254,7 @@ class TestMarketplaceSourcePaths:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 class TestBearerTokenAuth:
     def _get_client(self, monkeypatch) -> TestClient:
         import apps.studio.server.app as app_mod

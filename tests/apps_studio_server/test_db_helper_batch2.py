@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -13,13 +12,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
-
-def _run(coro):
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+from tests.apps_studio_server._helpers import run_async as _run
 
 
 # ---------------------------------------------------------------------------
@@ -28,6 +21,7 @@ def _run(coro):
 
 
 class TestOpenDb:
+    @pytest.mark.integration
     def test_open_db_sets_wal_mode(self, tmp_path):
         """open_db() must switch the connection to WAL journal mode."""
         from apps.studio.server.services._db import open_db
@@ -43,6 +37,7 @@ class TestOpenDb:
         mode = _run(_check())
         assert mode == "wal", f"Expected WAL journal mode, got {mode!r}"
 
+    @pytest.mark.integration
     def test_open_db_sets_busy_timeout(self, tmp_path):
         """open_db() must set busy_timeout = 5000 ms."""
         from apps.studio.server.services._db import open_db
@@ -58,6 +53,7 @@ class TestOpenDb:
         timeout = _run(_check())
         assert timeout == 5000, f"Expected busy_timeout=5000, got {timeout!r}"
 
+    @pytest.mark.integration
     def test_open_db_sets_row_factory(self, tmp_path):
         """open_db() must set row_factory so rows are accessible by column name."""
         import aiosqlite as aio
