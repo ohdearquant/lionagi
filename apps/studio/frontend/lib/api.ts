@@ -416,8 +416,36 @@ export interface InvocationSession {
   ended_at: number | null;
 }
 
+// ADR-0021: structured skill outputs. `kind` is the dispatch key for
+// the frontend renderer; `content` shape depends on the kind.
+export interface ArtifactSummary {
+  id: string;
+  invocation_id: string | null;
+  session_id: string | null;
+  kind: string;
+  name: string;
+  created_at: number;
+  content: Record<string, unknown> | null;
+  file_path: string | null;
+}
+
 export interface InvocationDetail extends InvocationSummary {
   sessions: InvocationSession[];
+  artifacts: ArtifactSummary[];
+}
+
+export async function getArtifact(id: string): Promise<ArtifactSummary> {
+  return fetchJson<ArtifactSummary>(
+    `/api/artifacts/${encodeURIComponent(id)}`,
+  );
+}
+
+export async function listArtifactsForSession(
+  sessionId: string,
+): Promise<{ artifacts: ArtifactSummary[] }> {
+  return fetchJson<{ artifacts: ArtifactSummary[] }>(
+    `/api/artifacts/by-session/${encodeURIComponent(sessionId)}`,
+  );
 }
 
 export interface InvocationListResponse {

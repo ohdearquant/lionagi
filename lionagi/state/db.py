@@ -848,6 +848,79 @@ class StateDB:
         rows = await cur.fetchall()
         return [self._row_to_dict(r) for r in rows]
 
+    # ── Artifacts (ADR-0021) ─────────────────────────────────────────────
+
+    async def insert_artifact(
+        self,
+        *,
+        kind: str,
+        name: str,
+        content: dict[str, Any],
+        invocation_id: str | None = None,
+        session_id: str | None = None,
+        file_path: str | None = None,
+    ) -> str:
+        """Insert one structured skill artifact.
+
+        ``content`` is typically ``SkillOutcome.model_dump()``. Either
+        ``invocation_id`` or ``session_id`` (or both) should be set so
+        the artifact is reachable from a parent; the schema permits NULL
+        on both for unattached blobs (rare; the API doesn't expose this).
+        """
+        if not kind:
+            raise ValueError("artifact kind is required")
+        if not name:
+            raise ValueError("artifact name is required")
+        art_id = uuid.uuid4().hex[:12]
+        await self.db.execute(
+            "INSERT INTO artifacts (id, invocation_id, session_id, "
+            "created_at, kind, name, content, file_path) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                art_id,
+                invocation_id,
+                session_id,
+                time.time(),
+                kind,
+                name,
+                _to_json_column(content),
+                file_path,
+            ),
+        )
+        await self.db.commit()
+        return art_id
+
+    async def list_artifacts_for_invocation(
+        self, invocation_id: str
+    ) -> list[dict[str, Any]]:
+        cur = await self.db.execute(
+            "SELECT * FROM artifacts WHERE invocation_id = ? "
+            "ORDER BY created_at ASC",
+            (invocation_id,),
+        )
+        rows = await cur.fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    async def list_artifacts_for_session(
+        self, session_id: str
+    ) -> list[dict[str, Any]]:
+        cur = await self.db.execute(
+            "SELECT * FROM artifacts WHERE session_id = ? "
+            "ORDER BY created_at ASC",
+            (session_id,),
+        )
+        rows = await cur.fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    async def get_artifact(
+        self, artifact_id: str
+    ) -> dict[str, Any] | None:
+        cur = await self.db.execute(
+            "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
+        )
+        row = await cur.fetchone()
+        return self._row_to_dict(row) if row else None
+
     # ── Admin events (ADR-0024) ─────────────────────────────────────────
 
     async def insert_admin_event(

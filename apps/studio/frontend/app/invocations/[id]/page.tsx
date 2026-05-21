@@ -7,6 +7,7 @@ import PageHeader from "@/components/PageHeader";
 import StatusPill from "@/components/StatusPill";
 import Timestamp from "@/components/Timestamp";
 import Duration from "@/components/Duration";
+import OutcomeRenderer from "@/components/outcomes/OutcomeRenderer";
 import { getInvocation } from "@/lib/api";
 import type { InvocationDetail } from "@/lib/api";
 
@@ -171,6 +172,19 @@ export default function InvocationDetailPage() {
           </table>
         </div>
       </section>
+
+      {data.artifacts.length > 0 ? (
+        <section>
+          <h2 className="mb-2 text-meta uppercase tracking-[0.06em] text-content-muted">
+            Outcomes ({data.artifacts.length})
+          </h2>
+          <div className="space-y-3">
+            {data.artifacts.map((a) => (
+              <OutcomeRenderer key={a.id} artifact={a} />
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {data.node_metadata && Object.keys(data.node_metadata).length > 0 ? (
         <section>

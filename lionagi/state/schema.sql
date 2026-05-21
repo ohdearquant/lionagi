@@ -316,3 +316,29 @@ CREATE INDEX IF NOT EXISTS idx_admin_events_action
   ON admin_events(action);
 CREATE INDEX IF NOT EXISTS idx_admin_events_target
   ON admin_events(target_id) WHERE target_id IS NOT NULL;
+
+-- ── Artifacts (ADR-0021) ─────────────────────────────────────────────────
+-- Structured skill outputs (review verdicts, gate verdicts, CI results,
+-- ...). The split is DB-for-structured, filesystem-for-blobs: `content`
+-- holds the SkillOutcome.model_dump() JSON; `file_path` optionally
+-- points to a large blob (full log, generated artifact, worktree diff).
+-- `kind` is the discriminator the frontend renderer dispatches on.
+
+CREATE TABLE IF NOT EXISTS artifacts (
+  id              TEXT    PRIMARY KEY,
+  invocation_id   TEXT    REFERENCES invocations(id) ON DELETE CASCADE,
+  session_id      TEXT    REFERENCES sessions(id),
+  created_at      REAL    NOT NULL,
+  kind            TEXT    NOT NULL,
+  name            TEXT    NOT NULL,
+  content         JSON    NOT NULL,
+  file_path       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifacts_invocation
+  ON artifacts(invocation_id) WHERE invocation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_artifacts_session
+  ON artifacts(session_id) WHERE session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_artifacts_kind ON artifacts(kind);
+CREATE INDEX IF NOT EXISTS idx_artifacts_created
+  ON artifacts(created_at DESC);

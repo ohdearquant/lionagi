@@ -67,6 +67,12 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
             except json.JSONDecodeError:
                 node_meta = None
         sessions = await db.list_sessions_for_invocation(invocation_id)
+        # ADR-0021: surface structured outcomes alongside child sessions
+        # so the invocation detail page can render verdict / CI / gate
+        # cards inline. Filesystem blobs (file_path) are included by
+        # reference; the frontend renders them as JSON when the kind is
+        # unknown.
+        artifacts = await db.list_artifacts_for_invocation(invocation_id)
     return {
         "id": row["id"],
         "skill": row["skill"],
@@ -95,4 +101,48 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
             }
             for s in sessions
         ],
+        "artifacts": [_serialize_artifact(a) for a in artifacts],
     }
+
+
+def _serialize_artifact(row: dict[str, Any]) -> dict[str, Any]:
+    """Common artifact projection for /api/invocations and /api/artifacts.
+
+    SQLite returns JSON columns as strings; decode here so the frontend
+    gets a real object instead of a doubly-encoded string.
+    """
+    content = row.get("content")
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except json.JSONDecodeError:
+            content = None
+    return {
+        "id": row["id"],
+        "invocation_id": row.get("invocation_id"),
+        "session_id": row.get("session_id"),
+        "kind": row["kind"],
+        "name": row["name"],
+        "created_at": row["created_at"],
+        "content": content,
+        "file_path": row.get("file_path"),
+    }
+
+
+# ── Artifacts (ADR-0021) ──────────────────────────────────────────────────────
+
+
+async def list_artifacts_for_session(session_id: str) -> list[dict[str, Any]]:
+    if not DEFAULT_DB_PATH.exists():
+        return []
+    async with StateDB() as db:
+        rows = await db.list_artifacts_for_session(session_id)
+    return [_serialize_artifact(r) for r in rows]
+
+
+async def get_artifact(artifact_id: str) -> dict[str, Any] | None:
+    if not DEFAULT_DB_PATH.exists():
+        return None
+    async with StateDB() as db:
+        row = await db.get_artifact(artifact_id)
+    return _serialize_artifact(row) if row else None
