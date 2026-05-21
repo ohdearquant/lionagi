@@ -5,7 +5,7 @@ import json
 import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException  # HTTPException used for 404 guards
 from starlette.responses import StreamingResponse
 
 from ..services import sessions as sessions_svc
@@ -28,6 +28,12 @@ async def get_session(session_id: str) -> dict[str, Any]:
 
 @router.get("/{session_id}/stream")
 async def stream_session(session_id: str):
+    # F-A2-4 (ADR-0006): pre-flight 404 guard before opening the stream.
+    # Without this, a non-existent session silently returns no messages and
+    # then waits 60s before emitting done — client hangs with no indication.
+    # The shows router already does this at shows.py:34-35; we mirror that pattern.
+    if not await sessions_svc.session_exists(session_id):
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
     async def generate():
         after_ts: float = 0.0
         last_heartbeat = time.monotonic()

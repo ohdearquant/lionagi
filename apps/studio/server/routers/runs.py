@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from starlette.responses import StreamingResponse
 
 from ..services import runs as runs_svc
 
@@ -12,10 +11,12 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 
 @router.get("/")
 async def list_runs(
-    worker: str | None = Query(default=None, description="Filter by worker name"),
+    # F-A3-7 (ADR-0005): renamed from ?worker= to ?playbook= — "worker" is
+    # not in lionagi's Studio vocabulary per ADR-0005.
+    playbook: str | None = Query(default=None, description="Filter by playbook name"),
     status: str | None = Query(default=None, description="Filter by status"),
 ) -> dict[str, Any]:
-    return {"runs": runs_svc.list_runs(worker=worker, status=status)}
+    return {"runs": await runs_svc.list_runs(playbook=playbook, status=status)}
 
 
 @router.get("/{run_id}")
@@ -26,33 +27,12 @@ async def get_run(run_id: str) -> dict[str, Any]:
     return run
 
 
-@router.get("/{run_id}/events")
-async def run_events(run_id: str):
-    """SSE stream of execution events for a live run."""
-    gen = runs_svc.stream_run_events(run_id)
-    if gen is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Run '{run_id}' has no live event stream",
-        )
-    return StreamingResponse(
-        gen,
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-@router.post("/{run_id}/rerun")
-async def rerun_run(run_id: str) -> dict[str, Any]:
-    # TODO(lift-backend-writes)
-    raise HTTPException(status_code=501, detail="Not implemented")
-
-
-@router.delete("/{run_id}")
-async def delete_run(run_id: str) -> dict[str, Any]:
-    # TODO(lift-backend-writes)
-    raise HTTPException(status_code=501, detail="Not implemented")
+# F-A2-5 (ADR-0008): removed /api/runs/{id}/events SSE route — it read
+# stream/*.buffer.jsonl files forbidden by ADR-0004.  Live monitoring uses
+# /api/sessions/{id}/stream instead.
+#
+# F-A2-5 (ADR-0008 Write Policy): removed POST /{run_id}/rerun and
+# DELETE /{run_id} stub routes.  Run data is explicitly read-only per
+# ADR-0008.  Re-running requires switching to the terminal (`li play ...`).
+# If re-run support is ever reconsidered, it requires an ADR-0008 amendment
+# before the route is added back.

@@ -10,7 +10,7 @@ from .routers import agents, definitions, playbooks, plugins, runs, sessions, sh
 from .services import agents as agents_svc
 from .services import playbooks as playbooks_svc
 from .services import plugins as plugins_svc
-from .services import runs as runs_svc
+from .services import sessions as sessions_svc
 from .services import shows as shows_svc
 from .services import skills as skills_svc
 
@@ -43,7 +43,11 @@ async def get_stats() -> dict[str, Any]:
     return {
         "playbooks": len(playbooks_svc.list_playbooks()),
         "agents": len(agents_svc.list_agents()),
-        "runs": len(runs_svc.list_runs()),
+        # F-A2-1 (ADR-0012 §10): "runs" count must come from SQLite sessions so
+        # the dashboard shows the same number as the Runs list page.  Previously
+        # called runs_svc.list_runs() which read filesystem dirs and returned a
+        # different count than the sessions-backed list endpoint.
+        "runs": len(await sessions_svc.list_sessions()),
         "shows": len(await shows_svc.list_shows()),
         "skills": len(skills_svc.list_skills()),
         "plugins": len(plugins_svc.list_plugins()),
