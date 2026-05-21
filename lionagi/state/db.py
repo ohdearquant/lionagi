@@ -591,7 +591,7 @@ class StateDB:
 
     async def repair_branch_progression(
         self, branch_id: str, new_progression_id: str,
-    ) -> None:
+    ) -> str | None:
         """Backfill ``branches.progression_id`` for a legacy row that has NULL.
 
         Pre-PR DBs may have ``branches.progression_id IS NULL``. The live
@@ -600,33 +600,61 @@ class StateDB:
         that loses branch history. This helper repairs the row by
         pointing it at a freshly-created progression.
 
+        Returns the EFFECTIVE progression id stored on the row: if we
+        won the race, it's ``new_progression_id``; if another concurrent
+        repair landed first, it's whatever the row now points to. The
+        caller MUST use the returned id rather than its locally-generated
+        one, or it will append to an orphan progression while
+        ``branches.progression_id`` points elsewhere.
+
+        Returns None only if the branch row itself does not exist.
+
         Bypasses the ``_BRANCH_COLUMNS`` allowlist on purpose: normal
         runtime must NOT mutate ``progression_id`` (the branch identity
         includes its progression), but a one-shot migration from NULL
         is the explicit exception.
         """
+        # Atomic: the conditional UPDATE either lands our id or no-ops
+        # if a concurrent writer already filled the column. Then read
+        # back the actual stored id so the caller cannot diverge from
+        # the row.
         await self.db.execute(
             "UPDATE branches SET progression_id = ? "
             "WHERE id = ? AND progression_id IS NULL",
             (new_progression_id, branch_id),
         )
+        cur = await self.db.execute(
+            "SELECT progression_id FROM branches WHERE id = ?", (branch_id,),
+        )
+        row = await cur.fetchone()
         await self.db.commit()
+        if row is None:
+            return None
+        return row["progression_id"]
 
     async def repair_session_progression(
         self, session_id: str, new_progression_id: str,
-    ) -> None:
+    ) -> str | None:
         """Backfill ``sessions.progression_id`` for a legacy row that has NULL.
 
-        Parallel to ``repair_branch_progression``; same rationale. Limited
-        to rows where ``progression_id IS NULL`` so a concurrent legitimate
-        progression cannot be overwritten.
+        Parallel to ``repair_branch_progression``: returns the effective
+        progression id stored on the row after the conditional UPDATE,
+        or None if the session row does not exist. Caller MUST adopt
+        the returned id.
         """
         await self.db.execute(
             "UPDATE sessions SET progression_id = ? "
             "WHERE id = ? AND progression_id IS NULL",
             (new_progression_id, session_id),
         )
+        cur = await self.db.execute(
+            "SELECT progression_id FROM sessions WHERE id = ?", (session_id,),
+        )
+        row = await cur.fetchone()
         await self.db.commit()
+        if row is None:
+            return None
+        return row["progression_id"]
 
     async def list_branches(self, session_id: str) -> list[dict[str, Any]]:
         cur = await self.db.execute(

@@ -215,14 +215,24 @@ async def _setup_live_persist(
             # Legacy/pre-PR rows can have NULL progression_id. Without
             # repair, append_to_progression(None, ...) is a silent no-op
             # and the resumed run loses branch (and session) history.
+            # The repair helpers return the EFFECTIVE progression id —
+            # adopt that, not our local candidate, so a concurrent
+            # repair winner cannot leave us writing into an orphan
+            # progression while the row points elsewhere.
             if session_prog_id is None:
-                session_prog_id = str(_uuid.uuid4())
-                await db.create_progression(session_prog_id)
-                await db.repair_session_progression(session_id, session_prog_id)
+                candidate = str(_uuid.uuid4())
+                await db.create_progression(candidate)
+                effective = await db.repair_session_progression(
+                    session_id, candidate,
+                )
+                session_prog_id = effective or candidate
             if branch_prog_id is None:
-                branch_prog_id = str(_uuid.uuid4())
-                await db.create_progression(branch_prog_id)
-                await db.repair_branch_progression(branch_id, branch_prog_id)
+                candidate = str(_uuid.uuid4())
+                await db.create_progression(candidate)
+                effective = await db.repair_branch_progression(
+                    branch_id, candidate,
+                )
+                branch_prog_id = effective or candidate
 
             existing_msg_ids = set(await db.get_progression(branch_prog_id))
         else:

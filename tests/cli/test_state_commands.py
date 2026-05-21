@@ -510,6 +510,93 @@ async def test_doctor_no_running_sessions_returns_zeros(temp_db_path: Path):
     assert result == {"running": 0, "swept": 0, "skipped": 0}
 
 
+async def test_doctor_does_not_overwrite_session_that_completed_post_select(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """R6: ``_doctor`` previously selected victims, then updated by id
+    only — a session that completed (teardown → status='completed')
+    AFTER selection but BEFORE update was overwritten back to 'aborted'.
+
+    The fix folds the ``status='running' AND stale`` predicate into the
+    UPDATE itself so the conditional only fires when the row is STILL
+    stale-running.
+
+    We simulate the race by monkeypatching ``_doctor`` indirectly: we
+    flip one row's status to 'completed' immediately after fetchall but
+    before the UPDATE fires. The race-safety property is exposed
+    cleanly by patching ``StateDB.update_session`` to inject the flip
+    just before doctor's UPDATE runs.
+    """
+    from lionagi.state.db import StateDB as _SDB
+
+    now = time.time()
+    old = now - (48 * 3600)
+
+    async with StateDB() as db:
+        racy = await _seed_session(db, status="running")
+        await db.db.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (old, racy),
+        )
+        truly_stale = await _seed_session(db, status="running")
+        await db.db.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (old, truly_stale),
+        )
+        await db.db.commit()
+
+    # Race injection: patch _doctor's underlying execute to flip `racy`
+    # to 'completed' just before the UPDATE runs.
+    class _RacyConn:
+        def __init__(self, real):
+            self._real = real
+            self._fired = False
+
+        async def execute(self, sql, params=None):
+            # Detect doctor's UPDATE; flip racy first.
+            if (
+                not self._fired
+                and "UPDATE sessions SET status" in sql
+                and "WHERE status = 'running'" in sql
+            ):
+                self._fired = True
+                await self._real.execute(
+                    "UPDATE sessions SET status = 'completed', ended_at = ? "
+                    "WHERE id = ?",
+                    (now, racy),
+                )
+                await self._real.commit()
+            return await self._real.execute(sql, params or ())
+
+        async def commit(self):
+            return await self._real.commit()
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_db_prop = _SDB.db
+
+    def racy_db_getter(self):
+        real = real_db_prop.fget(self)
+        return _RacyConn(real)
+
+    monkeypatch.setattr(_SDB, "db", property(racy_db_getter))
+
+    result = await _doctor(stale_hours=24, dry_run=False)
+
+    # The wrapper is no longer needed for the read-back.
+    monkeypatch.setattr(_SDB, "db", real_db_prop)
+    async with StateDB() as db:
+        s_racy = await db.get_session(racy)
+        s_truly = await db.get_session(truly_stale)
+
+    # Only truly_stale was actually updated; the predicate excluded
+    # racy because its status flipped to 'completed' mid-flight.
+    assert s_racy["status"] == "completed"
+    assert s_truly["status"] == "aborted"
+    assert result["swept"] == 1
+
+
 async def test_doctor_with_failed_new_status(temp_db_path: Path):
     """Operators can pick 'failed' instead of 'aborted'."""
     now = time.time()

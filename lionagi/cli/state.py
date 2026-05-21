@@ -600,16 +600,17 @@ async def _doctor(
     ``StateDB.open()`` only applies pragmas/schema; it does not sweep.
     This command is the operator-explicit recovery path.
 
-    Conservative: we only touch sessions whose ``started_at`` is older
-    than the threshold. A bad threshold can incorrectly close another
-    actively-running CLI process, so the default is generous (24h) and
-    we expose ``--dry-run`` first.
+    Conservative: we only touch sessions whose ``status = 'running'``
+    AND ``(started_at IS NULL OR started_at < cutoff)`` — and the same
+    predicate is folded into the UPDATE so a session that completes
+    after victim selection but before the UPDATE is NOT overwritten
+    (R6 select-then-update race). ``swept`` returns the rowcount of
+    the UPDATE, not the count of pre-selected victims.
 
     Returns ``{"running": N, "swept": M, "skipped": K}``:
     - running: total sessions currently at status='running'
-    - swept: those older than threshold (and reset to ``new_status``
-      when not dry-run)
-    - skipped: running sessions younger than threshold
+    - swept: rows actually updated (post-race-check)
+    - skipped: running sessions younger than threshold at select time
     """
     import time as _time
 
@@ -634,17 +635,26 @@ async def _doctor(
             else:
                 skipped += 1
 
-        if not dry_run and victims:
+        swept_count = 0
+        if dry_run:
+            swept_count = len(victims)
+        elif victims:
+            # Race-safe: re-assert status='running' AND stale predicate
+            # in the UPDATE itself so a session that finished between
+            # select and update is NOT overwritten.
             placeholders = ",".join("?" * len(victims))
-            params = [new_status, _time.time(), *victims]
-            await db.db.execute(
+            params = [new_status, _time.time(), cutoff, *victims]
+            cur = await db.db.execute(
                 f"UPDATE sessions SET status = ?, ended_at = ? "  # noqa: S608
-                f"WHERE id IN ({placeholders})",
+                f"WHERE status = 'running' "
+                f"  AND (started_at IS NULL OR started_at < ?) "
+                f"  AND id IN ({placeholders})",
                 params,
             )
+            swept_count = cur.rowcount or 0
             await db.db.commit()
 
-        return {"running": total, "swept": len(victims), "skipped": skipped}
+        return {"running": total, "swept": swept_count, "skipped": skipped}
 
 
 def _format_bytes(n: int) -> str:

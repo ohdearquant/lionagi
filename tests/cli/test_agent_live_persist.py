@@ -567,6 +567,98 @@ async def test_setup_resume_repairs_null_branch_progression_id(
     await _teardown_live_persist(ctx, status="completed")
 
 
+async def test_repair_branch_progression_returns_existing_id_under_race(
+    temp_db_path: Path,
+):
+    """R6 HIGH-2: when two callers race to repair the same NULL
+    progression_id, the conditional UPDATE only lands one id. The
+    LOSER's repair call must return the WINNING id so the loser does
+    not keep using its locally-generated (orphan) progression.
+
+    Without this, the loser writes to an orphan progression while
+    branches.progression_id points elsewhere — same silent data loss
+    as the original HIGH-2.
+    """
+    import uuid
+
+    branch_id = str(uuid.uuid4())
+    legacy_db = await _legacy_db_with_nullable_progression(temp_db_path)
+    try:
+        session_id = str(uuid.uuid4())
+        sess_prog = str(uuid.uuid4())
+        await legacy_db.create_progression(sess_prog)
+        await legacy_db.db.execute(
+            "INSERT INTO sessions (id, created_at, progression_id, "
+            "updated_at) VALUES (?, ?, ?, ?)",
+            (session_id, 0.0, sess_prog, 0.0),
+        )
+        await legacy_db.db.execute(
+            "INSERT INTO branches (id, created_at, session_id, "
+            "progression_id) VALUES (?, ?, ?, NULL)",
+            (branch_id, 0.0, session_id),
+        )
+        await legacy_db.db.commit()
+    finally:
+        await legacy_db.close()
+
+    # Simulate the race: caller A wins, caller B loses.
+    async with StateDB() as db:
+        winner_id = str(uuid.uuid4())
+        loser_id = str(uuid.uuid4())
+        await db.create_progression(winner_id)
+        await db.create_progression(loser_id)
+
+        # Caller A's repair lands first.
+        effective_a = await db.repair_branch_progression(branch_id, winner_id)
+        assert effective_a == winner_id
+
+        # Caller B repairs second — UPDATE no-ops (column already set),
+        # but the return value MUST be the winner's id, not B's local id.
+        effective_b = await db.repair_branch_progression(branch_id, loser_id)
+        assert effective_b == winner_id, (
+            f"loser must adopt winner's id, got {effective_b!r}"
+        )
+
+        # Spot-check the row really stored the winner's id.
+        b = await db.get_branch(branch_id)
+        assert b["progression_id"] == winner_id
+
+
+async def test_repair_session_progression_returns_existing_id_under_race(
+    temp_db_path: Path,
+):
+    """Same R6 invariant as above, for the session-level repair."""
+    import uuid
+
+    session_id = str(uuid.uuid4())
+    legacy_db = await _legacy_db_with_nullable_progression(temp_db_path)
+    try:
+        await legacy_db.db.execute(
+            "INSERT INTO sessions (id, created_at, progression_id, "
+            "updated_at) VALUES (?, ?, NULL, ?)",
+            (session_id, 0.0, 0.0),
+        )
+        await legacy_db.db.commit()
+    finally:
+        await legacy_db.close()
+
+    async with StateDB() as db:
+        winner_id = str(uuid.uuid4())
+        loser_id = str(uuid.uuid4())
+        await db.create_progression(winner_id)
+        await db.create_progression(loser_id)
+
+        effective_a = await db.repair_session_progression(
+            session_id, winner_id,
+        )
+        assert effective_a == winner_id
+
+        effective_b = await db.repair_session_progression(
+            session_id, loser_id,
+        )
+        assert effective_b == winner_id
+
+
 async def test_setup_resume_repairs_null_session_progression_id(
     temp_db_path: Path,
 ):
