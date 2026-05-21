@@ -203,7 +203,6 @@ async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
         if p.get("reason") == "missing_artifacts"
     ]
     artifact_ids = [e[0] for e in artifact_entries]
-    artifact_cutoff = max((e[1] for e in artifact_entries), default=0) if artifact_entries else 0
 
     pruned = 0
     async with _open_db(_DB) as db:
