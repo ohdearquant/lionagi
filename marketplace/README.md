@@ -10,7 +10,7 @@ The lionagi marketplace bundles curated skills, agents, and configuration into i
 
 ```bash
 # Add the lionagi marketplace to Claude Code
-claude /plugin marketplace add khive-ai/lionagi
+claude /plugin marketplace add ohdearquant/lionagi
 
 # Install a specific plugin
 claude /plugin install show@lionagi

@@ -6,8 +6,8 @@
     "name": "Ocean (HaiyangLi)",
     "url": "https://github.com/ohdearquant"
   },
-  "homepage": "https://github.com/khive-ai/lionagi",
-  "repository": "https://github.com/khive-ai/lionagi",
+  "homepage": "https://github.com/ohdearquant/lionagi",
+  "repository": "https://github.com/ohdearquant/lionagi",
   "license": "Apache-2.0",
   "keywords": ["playbook", "authoring", "flow", "pipeline"]
 }
