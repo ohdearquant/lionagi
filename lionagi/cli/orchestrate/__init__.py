@@ -698,7 +698,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     playbook_name=getattr(args, "playbook", None),
                 )
             )
-        except LionTimeoutError as e:
+        except (TimeoutError, LionTimeoutError) as e:
             log_error(str(e))
             return 124  # ADR-0025: timed_out exits with GNU `timeout` code
         except KeyboardInterrupt:
@@ -913,7 +913,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     playbook_name=playbook_name,
                 )
             )
-        except LionTimeoutError as e:
+        except (TimeoutError, LionTimeoutError) as e:
             log_error(str(e))
             return 124  # ADR-0025: timed_out exits with GNU `timeout` code
         except KeyboardInterrupt:

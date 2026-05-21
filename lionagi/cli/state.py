@@ -111,21 +111,30 @@ _STATUS_MAP = {
     "completed": "completed",
     "failed": "failed",
     "aborted": "aborted",
+    "timed_out": "timed_out",
+    "cancelled": "cancelled",
+    "canceled": "cancelled",
     # common aliases that may appear in run.json
     "success": "completed",
     "error": "failed",
-    "cancelled": "aborted",
-    "canceled": "aborted",
+    "timeout": "timed_out",
+}
+
+_EXIT_CODE_STATUS_MAP = {
+    0: "completed",
+    1: "failed",
+    124: "timed_out",
+    130: "aborted",
+    143: "cancelled",
 }
 
 
 def _derive_import_status(manifest: dict[str, Any]) -> str:
-    """Derive session status from run.json per ADR-0017.
+    """Derive session status from run.json per ADR-0025.
 
     1. If manifest has "status" field → map to session vocabulary.
-    2. If manifest has "exit_code" == 0 → completed.
-    3. If manifest has "exit_code" != 0 → failed.
-    4. Otherwise → completed (conservative default).
+    2. If manifest has "exit_code" → map via ADR-0025 exit code table.
+    3. Otherwise → completed (conservative default).
     """
     raw_status = manifest.get("status")
     if raw_status is not None:
@@ -133,7 +142,7 @@ def _derive_import_status(manifest: dict[str, Any]) -> str:
 
     exit_code = manifest.get("exit_code")
     if exit_code is not None:
-        return "completed" if exit_code == 0 else "failed"
+        return _EXIT_CODE_STATUS_MAP.get(exit_code, "failed")
 
     return "completed"
 
