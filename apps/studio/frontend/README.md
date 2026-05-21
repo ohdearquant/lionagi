@@ -1,6 +1,6 @@
 # Lion Studio Frontend
 
-Next.js 14 frontend for [Lion Studio](https://github.com/khive-ai/lionagi),
+Next.js 16 + React 19 frontend for [Lion Studio](https://github.com/khive-ai/lionagi),
 the internal observability dashboard for lionagi runs, agents, and playbooks.
 Talks to the Lion Studio backend at `process.env.NEXT_PUBLIC_STUDIO_API_BASE`
 (default `http://localhost:8765`).

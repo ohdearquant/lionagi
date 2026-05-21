@@ -200,6 +200,23 @@ re-running the message sweep.
 | Rich session status (mirror play vocabulary) | Sessions don't have gates, merges, or redo cycles; forcing play lifecycle onto sessions is a category error |
 | Compute duration and store it | Derived from two timestamps; storing adds a column that can drift if ended_at is corrected |
 
+## Implementation note — DISPLAY_MAP
+
+`apps/studio/server/services/status_mapping.py` exports `DISPLAY_MAP`: a
+dict that translates raw DB status tokens (`running`, `completed`, `failed`,
+`aborted`, and the play statuses from ADR-0011) into UI-friendly display
+strings. Key constraints:
+
+- **DISPLAY_MAP is a display mapper, NOT a lifecycle gate.** It maps tokens
+  for UI rendering; it is not authoritative for session state transitions.
+  Session writes are validated at the DB layer (CHECK constraints on the
+  `status` column) and at the CLI call sites that write `status=`.
+- Only values present in the ADR-0011 or ADR-0017 CHECK vocabularies appear
+  in the map. Tokens outside the closed vocabularies (`done`, `success`,
+  `cancelled`, `error`, `finished`) are intentionally absent.
+- The `running` key appears in both vocabularies (play and session) and maps
+  to `"running"` in both cases — no conflict.
+
 ## References
 
 - [ADR-0009](ADR-0009-sqlite-state-layer.md) — sessions schema (extended by this ADR)

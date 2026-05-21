@@ -35,6 +35,41 @@ JSON chunks. The browser uses native `EventSource` API — no client library.
 Change detection for show directories uses 500ms polling with `os.stat()`. For
 sessions, new messages after a timestamp cursor are queried from SQLite.
 
+### SSE event contract
+
+Both SSE routes use newline-delimited JSON (`data: {...}\n\n`). The tables below
+document every event type each route emits, including heartbeat cadence.
+
+#### `/api/sessions/{id}/stream` (sessions router)
+
+| Event type | Payload shape | When emitted |
+|------------|--------------|--------------|
+| message | `{...session message fields...}` | Each new message after the cursor timestamp |
+| `heartbeat` | `{"type":"heartbeat"}` | Every 5 s when no message has been emitted |
+| `done` | `{"type":"done"}` | When `sessions.updated_at` is > 60 s old (session quiescent) |
+
+**Heartbeat rationale**: sessions may run for minutes without producing messages
+(e.g., waiting for a slow LLM response). Heartbeats prevent proxies and browser
+connections from timing out and allow the client to distinguish "live but quiet"
+from "server died."
+
+#### `/api/shows/{topic}/stream` (shows service)
+
+| Event type | Payload shape | When emitted |
+|------------|--------------|--------------|
+| `new` | `{"type":"new","path":"<rel>","size":<n>}` | New file detected under the show directory |
+| `change` | `{"type":"change","path":"<rel>","size":<n>}` | Existing file modified (size or mtime changed) |
+| `done` | `{"type":"done"}` | Show status is terminal (`completed` or `aborted`) AND no file changed for 60 s |
+
+**No heartbeat on the shows stream (intentional asymmetry)**: shows emit a `done`
+terminal event when the show reaches a terminal status and stabilises. Clients can
+rely on `done` for completion detection, which bounds the wait to at most 60 s of
+filesystem quiet after the show finishes. A heartbeat is unnecessary because there
+is no long-running silent period between events on a live show — file changes are
+the signal. If the show stalls without going terminal, the client stays connected
+and keeps receiving filesystem-change events as they arrive. This asymmetry is
+deliberate, not drift.
+
 ### Reconnect behavior
 
 SSE auto-reconnects via `EventSource`. The server sends a `{"type":"done"}` event

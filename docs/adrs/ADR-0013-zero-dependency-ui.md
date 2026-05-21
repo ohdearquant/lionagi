@@ -5,8 +5,8 @@
 
 ## Context
 
-Lion Studio's frontend uses Next.js 14 + TypeScript + Tailwind CSS with no UI
-component library (no Radix, no shadcn, no Headless UI). All interactive
+Lion Studio's frontend uses Next.js 16 + React 19 + TypeScript + Tailwind CSS
+with no UI component library (no Radix, no shadcn, no Headless UI). All interactive
 components — Badge, StatusPill, Button, Toast, tabs, accordions, two-pane
 layouts, definition editors — are custom-built with Tailwind.
 
