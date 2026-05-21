@@ -268,7 +268,7 @@ Frontend renders `effective_health` for the pill color. Tooltip shows raw
 - [ADR-0009](ADR-0009-sqlite-state-layer.md) — SQLite state layer (teams table extends this)
 - [ADR-0017](ADR-0017-session-lifecycle-status.md) — Session lifecycle (staleness extends this)
 - [ADR-0012](ADR-0012-studio-execution-lineage.md) — Execution lineage (team linkage extends this)
-- [ChatGPT frontend design review](.khive/workspaces/20260521/chatgpt-frontend-review.md) — Teams page redesign (section 9), member sidebar + activity timeline, message summary/collapse, linked sessions; 60m threshold confirmation (section 2)
+- ChatGPT frontend design review (external, not in repo) — Teams page redesign (section 9), member sidebar + activity timeline, message summary/collapse, linked sessions; 60m threshold confirmation (section 2)
 - `lionagi/cli/team.py` — Current file-based team implementation
 - `apps/studio/server/services/admin.py` — Current phantom session detection
 - `apps/studio/server/services/sessions.py` — Current session queries

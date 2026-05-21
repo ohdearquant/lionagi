@@ -524,7 +524,7 @@ can be built incrementally.
 - [ADR-0009](ADR-0009-sqlite-state-layer.md) — SQLite state layer
 - [ADR-0011](ADR-0011-shows-data-model.md) — Shows data model (plays table)
 - [ADR-0020](ADR-0020-skill-invocations.md) — Skill invocations
-- [ChatGPT frontend design review](.khive/workspaces/20260521/chatgpt-frontend-review.md) — Kind-based outcome rendering (section 4): ReviewVerdict card with severity/categories/blocking findings, GateVerdict checklist, CIResult matrix
+- ChatGPT frontend design review (external, not in repo) — Kind-based outcome rendering (section 4): ReviewVerdict card with severity/categories/blocking findings, GateVerdict checklist, CIResult matrix
 - `lionagi/models/hashable_model.py` — Base model infrastructure
 - `lionagi/cli/orchestrate/flow.py` — FlowControlVerdict (existing pattern)
 - `~/.lionagi/skills/codex-pr-review/SKILL.md` — Verdict production pattern

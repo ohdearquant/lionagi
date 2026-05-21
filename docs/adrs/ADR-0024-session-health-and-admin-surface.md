@@ -605,7 +605,7 @@ Transitions remain explicit admin actions.
 - [ADR-0017](ADR-0017-session-lifecycle-status.md) — Session lifecycle status
 - [ADR-0019](ADR-0019-teams-db-and-run-lifecycle.md) — Run lifecycle + staleness
 - [ADR-0022](ADR-0022-run-step-provenance.md) — Session provenance (model, agent)
-- [ChatGPT frontend design review](.khive/workspaces/20260521/chatgpt-frontend-review.md) — Admin console layout (section 3): action button row, two-column layout, intervention queue columns, transition modal, Resources + Event log side-by-side; dashboard metric cards (section 2): Attention/Active Executions/Outcomes/Latency cards, legacy session chip, 60m threshold
+- ChatGPT frontend design review (external, not in repo) — Admin console layout (section 3): action button row, two-column layout, intervention queue columns, transition modal, Resources + Event log side-by-side; dashboard metric cards (section 2): Attention/Active Executions/Outcomes/Latency cards, legacy session chip, 60m threshold
 - `apps/studio/server/services/admin.py` — Current phantom classification
 - `apps/studio/server/routers/admin.py` — Current admin endpoints
 - `apps/studio/frontend/app/admin/page.tsx` — Current admin page

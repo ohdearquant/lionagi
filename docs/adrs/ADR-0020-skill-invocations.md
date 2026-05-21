@@ -298,7 +298,7 @@ User-created skills (files in `~/.lionagi/skills/`) work the same way.
 - [ADR-0012](ADR-0012-studio-execution-lineage.md) — Execution lineage
 - [ADR-0017](ADR-0017-session-lifecycle-status.md) — Session lifecycle
 - [ADR-0019](ADR-0019-teams-db-and-run-lifecycle.md) — Teams DB + run staleness
-- [ChatGPT frontend design review](.khive/workspaces/20260521/chatgpt-frontend-review.md) — Nav restructure with Runs/Invocations/Sessions/Artifacts sub-tabs (section 1), grouped invocation row design with worst-health aggregation (section 5)
+- ChatGPT frontend design review (external, not in repo) — Nav restructure with Runs/Invocations/Sessions/Artifacts sub-tabs (section 1), grouped invocation row design with worst-health aggregation (section 5)
 - `lionagi/cli/agent.py` — Session creation with invocation_kind
 - `~/.lionagi/skills/show/SKILL.md` — Show skill (orchestrator pattern)
 - `~/.lionagi/skills/codex-pr-review/SKILL.md` — Review skill (round pattern)

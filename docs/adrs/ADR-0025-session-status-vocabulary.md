@@ -410,7 +410,7 @@ if status in SESSION_TERMINAL_STATUSES:
 
 - [ADR-0017](ADR-0017-session-lifecycle-status.md) — Original four-status vocabulary (extended here)
 - [ADR-0024](ADR-0024-session-health-and-admin-surface.md) — Health classification (consumes status)
-- [ChatGPT frontend design review](.khive/workspaces/20260521/chatgpt-frontend-review.md) — Status pill system (section 6): color tokens with hex values and contrast ratios for light/dark mode, pill anatomy spec (height 20px, padding-x 6px, font-size 10-11px, border-radius 999px), legacy pseudo-status treatment, effective state display rules ("do not show blue Running when health is stale")
+- ChatGPT frontend design review (external, not in repo) — Status pill system (section 6): color tokens with hex values and contrast ratios for light/dark mode, pill anatomy spec (height 20px, padding-x 6px, font-size 10-11px, border-radius 999px), legacy pseudo-status treatment, effective state display rules ("do not show blue Running when health is stale")
 - `lionagi/cli/agent.py` — Session teardown with `_terminal_status`
 - `lionagi/cli/orchestrate/__init__.py` — `LionTimeoutError` handling
 - `lionagi/cli/orchestrate/flow.py` — Flow timeout wrapper
