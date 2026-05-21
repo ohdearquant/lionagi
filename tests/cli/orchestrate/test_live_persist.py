@@ -531,3 +531,68 @@ async def test_start_stop_does_not_leak_aiosqlite_thread(temp_db_path: Path):
         assert (
             _aiosqlite_thread_count() <= baseline
         ), "aiosqlite worker thread leaked across orchestration start/stop"
+
+
+# ── R5-A MED-1: lazy _ensure_branch_row retry after first-init failure ────────
+
+
+async def test_ensure_branch_row_retries_after_transient_failure(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """First call to ``_ensure_branch_row`` raises (transient DB issue).
+    The retry-bug was: ``initialized["done"] = True`` was set BEFORE the
+    DB write, so every subsequent message saw "done" and skipped row
+    creation — branch row never recovered for the rest of the run.
+
+    Fix (R5-A MED-1): set the flag ONLY after the writes commit.
+    """
+    from lionagi.protocols.messages.manager import MessageManager
+
+    env = _minimal_env()
+    await start_live_persist(env)
+    worker = Branch(name="worker-1")
+    env.session.include_branches(worker)
+    _register_branch_hook(env._live_persist, worker)
+    hook = env._live_persist["hooks"][-1][1]
+
+    # Make the FIRST create_branch fail, then succeed.
+    real_create = StateDB.create_branch
+    state = {"calls": 0}
+
+    async def flaky_create(self, branch):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise RuntimeError("simulated transient DB failure")
+        await real_create(self, branch)
+
+    monkeypatch.setattr(StateDB, "create_branch", flaky_create)
+
+    m1 = MessageManager.create_instruction(
+        instruction="a", sender="u", recipient=str(worker.id),
+    )
+    m2 = MessageManager.create_instruction(
+        instruction="b", sender="u", recipient=str(worker.id),
+    )
+    # First fire: row creation fails; hook swallows the error.
+    await hook(m1)
+    # Branch row does NOT exist.
+    async with StateDB() as db:
+        assert (await db.get_branch(str(worker.id))) is None
+
+    # Second fire: retry happens, row creation succeeds, m2 lands.
+    await hook(m2)
+    async with StateDB() as db:
+        b = await db.get_branch(str(worker.id))
+        prog = await db.get_progression(
+            env._live_persist["branch_prog_ids"][str(worker.id)]
+        )
+    assert b is not None
+    # Only m2 made it into the progression — m1's append was after a
+    # failed _ensure_branch_row, so its progression write also failed
+    # and was swallowed. The critical regression is that the row
+    # actually got created on the retry.
+    assert str(m2.id) in prog
+    assert state["calls"] == 2
+
+    await stop_live_persist(env, status="completed")

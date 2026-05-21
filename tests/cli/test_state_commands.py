@@ -22,6 +22,7 @@ import pytest
 
 from lionagi.cli.state import (
     _checkpoint,
+    _doctor,
     _format_bytes,
     _list_sessions,
     _print_stats,
@@ -414,3 +415,114 @@ async def test_prune_with_nothing_to_delete_returns_zero(temp_db_path: Path):
 
     async with StateDB() as db:
         assert (await db.get_session(sid)) is not None
+
+
+# ── _doctor (li state doctor) — R5-A MED-2 ───────────────────────────────────
+
+
+async def test_doctor_dry_run_does_not_modify_status(temp_db_path: Path):
+    """``_doctor --dry-run`` reports which sessions WOULD be swept but
+    leaves status='running' untouched.
+    """
+    now = time.time()
+    old = now - (48 * 3600)
+    async with StateDB() as db:
+        stale = await _seed_session(db, status="running")
+        await db.db.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (old, stale),
+        )
+        await db.db.commit()
+        recent = await _seed_session(db, status="running")
+        await db.db.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (now, recent),
+        )
+        await db.db.commit()
+
+    result = await _doctor(stale_hours=24, dry_run=True)
+    assert result["running"] == 2
+    assert result["swept"] == 1
+    assert result["skipped"] == 1
+
+    async with StateDB() as db:
+        s_stale = await db.get_session(stale)
+        s_recent = await db.get_session(recent)
+    # Both still 'running' — dry run did nothing.
+    assert s_stale["status"] == "running"
+    assert s_recent["status"] == "running"
+
+
+async def test_doctor_sweeps_stale_running_sessions_to_aborted(
+    temp_db_path: Path,
+):
+    """Sessions with started_at older than --stale-hours are reset to
+    the configured status (default 'aborted'); fresh ones are left alone.
+    """
+    now = time.time()
+    old = now - (48 * 3600)
+    async with StateDB() as db:
+        stale = await _seed_session(db, status="running")
+        await db.db.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (old, stale),
+        )
+        await db.db.commit()
+        recent = await _seed_session(db, status="running")
+        await db.db.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (now, recent),
+        )
+        await db.db.commit()
+
+    result = await _doctor(stale_hours=24, dry_run=False)
+    assert result["swept"] == 1
+    assert result["skipped"] == 1
+
+    async with StateDB() as db:
+        s_stale = await db.get_session(stale)
+        s_recent = await db.get_session(recent)
+    assert s_stale["status"] == "aborted"
+    assert s_stale["ended_at"] is not None
+    assert s_recent["status"] == "running"
+
+
+async def test_doctor_handles_null_started_at_as_stale(temp_db_path: Path):
+    """A 'running' row with NULL started_at is itself a corruption
+    signal — doctor treats it as stale regardless of threshold.
+    """
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running")
+        await db.db.execute(
+            "UPDATE sessions SET started_at = NULL WHERE id = ?", (sid,),
+        )
+        await db.db.commit()
+
+    result = await _doctor(stale_hours=24, dry_run=False)
+    assert result["swept"] == 1
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    assert s["status"] == "aborted"
+
+
+async def test_doctor_no_running_sessions_returns_zeros(temp_db_path: Path):
+    async with StateDB() as db:
+        await _seed_session(db, status="completed", updated_at=time.time())
+
+    result = await _doctor(stale_hours=24, dry_run=False)
+    assert result == {"running": 0, "swept": 0, "skipped": 0}
+
+
+async def test_doctor_with_failed_new_status(temp_db_path: Path):
+    """Operators can pick 'failed' instead of 'aborted'."""
+    now = time.time()
+    old = now - (48 * 3600)
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running")
+        await db.db.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (old, sid),
+        )
+        await db.db.commit()
+
+    await _doctor(stale_hours=24, dry_run=False, new_status="failed")
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    assert s["status"] == "failed"

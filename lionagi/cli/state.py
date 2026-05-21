@@ -452,8 +452,8 @@ async def _print_stats() -> None:
             "plays",
         ):
             cur = await db.db.execute(
-                f"SELECT COUNT(*) AS n FROM {table}"
-            )  # noqa: S608
+                f"SELECT COUNT(*) AS n FROM {table}"  # noqa: S608
+            )
             row = await cur.fetchone()
             print(f"  {table:<14} {row['n']:>10}")
         print()
@@ -586,6 +586,67 @@ async def _prune(
         }
 
 
+async def _doctor(
+    *,
+    stale_hours: int,
+    dry_run: bool,
+    new_status: str = "aborted",
+) -> dict[str, int]:
+    """Sweep sessions stuck at ``status='running'`` whose ``started_at``
+    is older than ``stale_hours``.
+
+    A SIGKILL or process death between session-open and teardown leaves
+    the session row at ``status='running'`` forever — the next
+    ``StateDB.open()`` only applies pragmas/schema; it does not sweep.
+    This command is the operator-explicit recovery path.
+
+    Conservative: we only touch sessions whose ``started_at`` is older
+    than the threshold. A bad threshold can incorrectly close another
+    actively-running CLI process, so the default is generous (24h) and
+    we expose ``--dry-run`` first.
+
+    Returns ``{"running": N, "swept": M, "skipped": K}``:
+    - running: total sessions currently at status='running'
+    - swept: those older than threshold (and reset to ``new_status``
+      when not dry-run)
+    - skipped: running sessions younger than threshold
+    """
+    import time as _time
+
+    from lionagi.state.db import StateDB
+
+    cutoff = _time.time() - (stale_hours * 3600)
+
+    async with StateDB() as db:
+        cur = await db.db.execute(
+            "SELECT id, started_at FROM sessions WHERE status = 'running'"
+        )
+        rows = await cur.fetchall()
+        total = len(rows)
+        victims: list[str] = []
+        skipped = 0
+        for row in rows:
+            started = row["started_at"]
+            # No started_at on a 'running' row is itself a corruption
+            # signal — treat as stale.
+            if started is None or started < cutoff:
+                victims.append(row["id"])
+            else:
+                skipped += 1
+
+        if not dry_run and victims:
+            placeholders = ",".join("?" * len(victims))
+            params = [new_status, _time.time(), *victims]
+            await db.db.execute(
+                f"UPDATE sessions SET status = ?, ended_at = ? "  # noqa: S608
+                f"WHERE id IN ({placeholders})",
+                params,
+            )
+            await db.db.commit()
+
+        return {"running": total, "swept": len(victims), "skipped": skipped}
+
+
 def _format_bytes(n: int) -> str:
     for unit in ("B", "KiB", "MiB", "GiB"):
         if n < 1024:
@@ -704,6 +765,38 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Print what WOULD be deleted, but don't actually delete.",
     )
 
+    # li state doctor — sweep stale 'running' sessions
+    doctor = state_sub.add_parser(
+        "doctor",
+        help="Sweep sessions stuck at status='running' after a crash.",
+        description=(
+            "A SIGKILL or unclean exit between session-open and teardown "
+            "leaves the session row at status='running' forever. This "
+            "command resets such rows (older than --stale-hours, default "
+            "24) to --new-status (default 'aborted'). Conservative: only "
+            "sessions whose started_at is older than the threshold are "
+            "swept, so an actively-running CLI process is left alone. "
+            "Use --dry-run first."
+        ),
+    )
+    doctor.add_argument(
+        "--stale-hours",
+        type=int,
+        default=24,
+        help="Threshold in hours since started_at (default 24).",
+    )
+    doctor.add_argument(
+        "--new-status",
+        default="aborted",
+        choices=["aborted", "failed"],
+        help="Status to assign swept sessions (default 'aborted').",
+    )
+    doctor.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what WOULD be swept, but don't update rows.",
+    )
+
 
 def run_state(args: argparse.Namespace) -> int:
     """Dispatch `li state` subcommands."""
@@ -755,6 +848,23 @@ def run_state(args: argparse.Namespace) -> int:
             f"{prefix} {result['sessions']} session(s), "
             f"{result['branches']} branch(es), "
             f"{result['messages']} orphan message(s)"
+        )
+        return 0
+
+    if args.state_command == "doctor":
+        result = run_async(
+            _doctor(
+                stale_hours=args.stale_hours,
+                dry_run=args.dry_run,
+                new_status=args.new_status,
+            )
+        )
+        prefix = "(dry-run) would sweep" if args.dry_run else "swept"
+        print(
+            f"running={result['running']}, "
+            f"{prefix}={result['swept']} → {args.new_status}, "
+            f"skipped_recent={result['skipped']} "
+            f"(threshold: {args.stale_hours}h)"
         )
         return 0
 

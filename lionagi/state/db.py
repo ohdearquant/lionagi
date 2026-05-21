@@ -589,6 +589,45 @@ class StateDB:
         )
         await self.db.commit()
 
+    async def repair_branch_progression(
+        self, branch_id: str, new_progression_id: str,
+    ) -> None:
+        """Backfill ``branches.progression_id`` for a legacy row that has NULL.
+
+        Pre-PR DBs may have ``branches.progression_id IS NULL``. The live
+        hook then calls ``append_to_progression(None, msg_id)`` which is
+        an ``UPDATE progressions ... WHERE id = NULL`` — a silent no-op
+        that loses branch history. This helper repairs the row by
+        pointing it at a freshly-created progression.
+
+        Bypasses the ``_BRANCH_COLUMNS`` allowlist on purpose: normal
+        runtime must NOT mutate ``progression_id`` (the branch identity
+        includes its progression), but a one-shot migration from NULL
+        is the explicit exception.
+        """
+        await self.db.execute(
+            "UPDATE branches SET progression_id = ? "
+            "WHERE id = ? AND progression_id IS NULL",
+            (new_progression_id, branch_id),
+        )
+        await self.db.commit()
+
+    async def repair_session_progression(
+        self, session_id: str, new_progression_id: str,
+    ) -> None:
+        """Backfill ``sessions.progression_id`` for a legacy row that has NULL.
+
+        Parallel to ``repair_branch_progression``; same rationale. Limited
+        to rows where ``progression_id IS NULL`` so a concurrent legitimate
+        progression cannot be overwritten.
+        """
+        await self.db.execute(
+            "UPDATE sessions SET progression_id = ? "
+            "WHERE id = ? AND progression_id IS NULL",
+            (new_progression_id, session_id),
+        )
+        await self.db.commit()
+
     async def list_branches(self, session_id: str) -> list[dict[str, Any]]:
         cur = await self.db.execute(
             "SELECT * FROM branches WHERE session_id = ? ORDER BY created_at",

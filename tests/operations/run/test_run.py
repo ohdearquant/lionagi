@@ -246,6 +246,59 @@ async def test_run_stream_persist_writes_final_state_and_removes_buffer(tmp_path
     assert model.streaming_process_func is None
 
 
+async def test_run_stream_persist_snapshot_dir_routes_snapshot_separately(
+    tmp_path,
+):
+    """R5-A HIGH-1: snapshot_dir routes the branch snapshot JSON to a
+    different directory than the streaming buffer. Used by the CLI so
+    the snapshot lands in branches_dir (where find_branch looks) while
+    the .buffer.jsonl stays in stream_dir.
+    """
+    stream_dir = tmp_path / "stream"
+    branches_dir = tmp_path / "branches"
+    stream_dir.mkdir()
+    branches_dir.mkdir()
+
+    model, _ = _make_fake_cli_model([StreamChunk(type="text", content="done")])
+    branch = Branch()
+    branch.chat_model = model
+
+    param = RunParam(
+        stream_persist=True,
+        persist_dir=stream_dir,
+        snapshot_dir=branches_dir,
+    )
+    await _collect(run(branch, "persist-me", param))
+
+    # Snapshot landed in branches_dir, NOT stream_dir.
+    branch_snaps = list(branches_dir.glob("*.json"))
+    stream_snaps = list(stream_dir.glob("*.json"))
+    assert branch_snaps, "snapshot should be in branches_dir"
+    assert not stream_snaps, (
+        "no snapshot should land in stream_dir when snapshot_dir is set"
+    )
+    # The snapshot is named after the branch id.
+    assert branch_snaps[0].name == f"{branch.id}.json"
+
+
+async def test_run_stream_persist_snapshot_dir_default_falls_back_to_persist_dir(
+    tmp_path,
+):
+    """When snapshot_dir is None (default), the snapshot lands in
+    persist_dir — backwards-compatible behavior for non-CLI callers.
+    """
+    model, _ = _make_fake_cli_model([StreamChunk(type="text", content="done")])
+    branch = Branch()
+    branch.chat_model = model
+
+    param = RunParam(stream_persist=True, persist_dir=tmp_path)
+    # snapshot_dir defaults to a sentinel/None — fallback uses persist_dir
+    await _collect(run(branch, "persist-me", param))
+
+    # Snapshot is in persist_dir
+    assert list(tmp_path.glob("*.json"))
+
+
 # ---------------------------------------------------------------------------
 # P0/P1 tests — run_and_collect()
 # ---------------------------------------------------------------------------

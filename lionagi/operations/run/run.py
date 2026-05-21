@@ -52,9 +52,12 @@ async def run(
     bfp = None
 
     if param.stream_persist:
-        # Placeholder: branch log with initial state
+        # Branch snapshot lives in snapshot_dir (when set) so it lands
+        # where find_branch() looks; the streaming buffer always lives
+        # next to the rest of the run-time chunks under persist_dir.
+        snapshot_dir = param.snapshot_dir or param.persist_dir
         fp = await acreate_path(
-            param.persist_dir,
+            snapshot_dir,
             str(branch.id),
             ".json",
             file_exist_ok=True,
@@ -201,8 +204,9 @@ async def run(
 
         # Consolidate: always persist branch state on any exit
         if param.stream_persist:
+            snapshot_dir = param.snapshot_dir or param.persist_dir
             fp = await acreate_path(
-                param.persist_dir,
+                snapshot_dir,
                 str(branch.id),
                 ".json",
                 file_exist_ok=True,

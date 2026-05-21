@@ -132,7 +132,12 @@ async def _run_agent(
         res = await branch.operate(
             instruction=prompt,
             stream_persist=True,
+            # Streaming chunks land in stream_dir/<id>.buffer.jsonl;
+            # the canonical branch snapshot lands in branches_dir/<id>.json
+            # so ``find_branch()`` (which only searches branches_dir)
+            # can resolve ``li agent -r <branch_id>``.
             persist_dir=str(run.stream_dir),
+            snapshot_dir=str(run.branches_dir),
             timeout=timeout,
             **({"repo": cwd} if cwd else {}),
         )
@@ -200,10 +205,25 @@ async def _setup_live_persist(
         # Check for existing branch (resume case)
         existing_branch = await db.get_branch(branch_id)
         if existing_branch:
+            import uuid as _uuid
+
             session_id = existing_branch["session_id"]
             existing_session = await db.get_session(session_id)
             session_prog_id = existing_session["progression_id"]
             branch_prog_id = existing_branch["progression_id"]
+
+            # Legacy/pre-PR rows can have NULL progression_id. Without
+            # repair, append_to_progression(None, ...) is a silent no-op
+            # and the resumed run loses branch (and session) history.
+            if session_prog_id is None:
+                session_prog_id = str(_uuid.uuid4())
+                await db.create_progression(session_prog_id)
+                await db.repair_session_progression(session_id, session_prog_id)
+            if branch_prog_id is None:
+                branch_prog_id = str(_uuid.uuid4())
+                await db.create_progression(branch_prog_id)
+                await db.repair_branch_progression(branch_id, branch_prog_id)
+
             existing_msg_ids = set(await db.get_progression(branch_prog_id))
         else:
             import time

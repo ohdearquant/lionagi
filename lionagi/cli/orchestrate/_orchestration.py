@@ -434,11 +434,14 @@ def finalize_orchestration(
     extras: dict | None = None,
     emit_hints: bool = True,
 ) -> tuple[list[tuple[str, str, str]], str]:
-    """Phase G — update last-branch pointer and emit resume hints.
+    """Phase G — persist branch snapshots + last-branch pointer + hints.
 
-    Runs in SQLite-only mode (ADR-0004): branch state is persisted by the
-    live SQLite hooks during execution; this finalizer does NOT write
-    ``branches/*.json`` snapshots and does NOT write ``run.json``.
+    Branch state persists via the live SQLite hooks during execution (ADR-0004),
+    but the resume hints emitted here say ``li agent -r <id>`` — which routes
+    through ``find_branch()`` and currently looks for
+    ``runs/<run>/branches/<id>.json``. We write one canonical snapshot per
+    branch so the hint resolves. The cost is a single small JSON write per
+    branch at exit; the run-time message stream itself stays SQLite-only.
 
     Parameters
     ----------
@@ -458,13 +461,30 @@ def finalize_orchestration(
     -------
     (branch_ids, orc_branch_id) where branch_ids is
     ``[(provider, branch_id, name), ...]`` derived from the in-memory
-    session (no disk side effects).
+    session.
     """
-    # Derive branch identifiers from the in-memory session — no JSON writes.
+    import logging
+
+    # Ensure branches_dir exists (allocate_run did, but be defensive).
+    env.run.ensure_state_dirs()
+    log = logging.getLogger("lionagi.cli")
+
     branch_ids: list[tuple[str, str, str]] = []
     for branch in env.session.branches:
         provider = branch.chat_model.endpoint.config.provider
         branch_ids.append((provider, str(branch.id), branch.name))
+
+        # Write the resume snapshot. Failure here must NOT abort the
+        # finalize — the run already completed; missing JSON only
+        # affects ``li agent -r`` for this branch.
+        try:
+            snap_path = env.run.branch_path(str(branch.id))
+            snap_path.write_text(json.dumps(branch.to_dict(), default=str))
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "finalize: branch snapshot write failed for %s: %s",
+                branch.id, exc, exc_info=True,
+            )
 
     orc_branch_id = str(env.orc_branch.id)
     save_last_branch_pointer(env.run.run_id, orc_branch_id)
@@ -567,6 +587,8 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
     (since this function may be called from sync build_worker_branch
     where we can't await DB operations).
     """
+    import asyncio
+
     db = ctx["db"]
     session_id = ctx["session_id"]
     session_prog_id = ctx["session_prog_id"]
@@ -575,40 +597,48 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
     branch_prog_id = str(uuid.uuid4())
     ctx["branch_prog_ids"][branch_id] = branch_prog_id
     initialized = {"done": False}
+    init_lock = asyncio.Lock()
 
     async def _ensure_branch_row():
+        # Serialize concurrent first messages on the same branch so
+        # only one of them runs the DB writes. The flag flips to True
+        # ONLY after the writes commit — a transient failure leaves
+        # initialized=False so the next message retries.
         if initialized["done"]:
             return
-        initialized["done"] = True
+        async with init_lock:
+            if initialized["done"]:
+                return
 
-        await db.create_progression(branch_prog_id)
+            await db.create_progression(branch_prog_id)
 
-        branch_dict = branch.to_dict(mode="db")
-        node_meta = branch_dict.get("node_metadata") or {}
-        if isinstance(node_meta, str):
-            node_meta = json.loads(node_meta)
-        if "chat_model" in branch_dict:
-            node_meta["chat_model"] = branch_dict["chat_model"]
-        node_meta = json.loads(json.dumps(node_meta, default=str))
+            branch_dict = branch.to_dict(mode="db")
+            node_meta = branch_dict.get("node_metadata") or {}
+            if isinstance(node_meta, str):
+                node_meta = json.loads(node_meta)
+            if "chat_model" in branch_dict:
+                node_meta["chat_model"] = branch_dict["chat_model"]
+            node_meta = json.loads(json.dumps(node_meta, default=str))
 
-        system_msg_id = None
-        if branch.system:
-            sys_dict = branch.system.to_dict(mode="db")
-            system_msg_id = sys_dict["id"]
-            await db.insert_message(sys_dict)
+            system_msg_id = None
+            if branch.system:
+                sys_dict = branch.system.to_dict(mode="db")
+                system_msg_id = sys_dict["id"]
+                await db.insert_message(sys_dict)
 
-        await db.create_branch(
-            {
-                "id": branch_id,
-                "created_at": branch_dict["created_at"],
-                "node_metadata": node_meta,
-                "user": branch_dict.get("user"),
-                "name": branch_dict.get("name"),
-                "session_id": session_id,
-                "progression_id": branch_prog_id,
-                "system_msg_id": system_msg_id,
-            }
-        )
+            await db.create_branch(
+                {
+                    "id": branch_id,
+                    "created_at": branch_dict["created_at"],
+                    "node_metadata": node_meta,
+                    "user": branch_dict.get("user"),
+                    "name": branch_dict.get("name"),
+                    "session_id": session_id,
+                    "progression_id": branch_prog_id,
+                    "system_msg_id": system_msg_id,
+                }
+            )
+            initialized["done"] = True
 
     async def _on_message(msg):
         # Live-persist failures are logged (not raised) so a DB write

@@ -447,3 +447,173 @@ async def test_setup_teardown_does_not_leak_aiosqlite_thread(
         assert (
             _aiosqlite_thread_count() <= baseline
         ), "aiosqlite worker thread leaked across setup/teardown cycle"
+
+
+# ── R5-A HIGH-2: NULL progression_id resume repair ────────────────────────────
+
+
+async def _legacy_db_with_nullable_progression(
+    db_path: Path,
+) -> StateDB:
+    """Open a DB and rebuild branches+sessions tables with NULLABLE
+    progression_id, mimicking the legacy schema pre-PR. The current
+    schema declares those columns NOT NULL, so we can only reach the
+    repair path by relaxing the constraint in test setup.
+    """
+    state = StateDB(db_path)
+    await state.open()
+    # Drop FK enforcement for the rebuild (we'll re-enable after).
+    await state.db.execute("PRAGMA foreign_keys = OFF")
+    # Recreate branches with NULLABLE progression_id.
+    await state.db.executescript(
+        """
+        DROP TABLE IF EXISTS branches;
+        CREATE TABLE branches (
+          id TEXT PRIMARY KEY,
+          created_at REAL NOT NULL,
+          node_metadata JSON,
+          user TEXT,
+          name TEXT,
+          session_id TEXT NOT NULL,
+          progression_id TEXT,
+          system_msg_id TEXT
+        );
+        DROP TABLE IF EXISTS sessions;
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          created_at REAL NOT NULL,
+          node_metadata JSON,
+          name TEXT,
+          user TEXT,
+          progression_id TEXT,
+          first_msg_id TEXT,
+          last_msg_id TEXT,
+          updated_at REAL NOT NULL,
+          playbook_name TEXT,
+          agent_name TEXT,
+          invocation_kind TEXT,
+          show_topic TEXT,
+          show_play_name TEXT,
+          artifacts_path TEXT,
+          source_kind TEXT,
+          status TEXT,
+          started_at REAL,
+          ended_at REAL
+        );
+        """
+    )
+    await state.db.execute("PRAGMA foreign_keys = ON")
+    await state.db.commit()
+    return state
+
+
+async def test_setup_resume_repairs_null_branch_progression_id(
+    temp_db_path: Path,
+):
+    """A legacy branch row with progression_id NULL must be repaired on
+    resume: setup creates a fresh progression, points the row at it,
+    and seeds existing_msg_ids from the (now non-empty) progression
+    so future hook calls dedupe correctly.
+
+    Without repair, append_to_progression(None, msg_id) is a no-op and
+    branch history is silently lost (R5-A HIGH-2).
+    """
+    import uuid
+
+    from lionagi.protocols.messages.manager import MessageManager
+
+    branch = Branch(name="b1")
+    branch_id = str(branch.id)
+    session_id = str(uuid.uuid4())
+    sess_prog = str(uuid.uuid4())
+
+    # Build a legacy-shaped DB and insert the NULL-progression branch.
+    legacy_db = await _legacy_db_with_nullable_progression(temp_db_path)
+    try:
+        await legacy_db.create_progression(sess_prog)
+        await legacy_db.db.execute(
+            "INSERT INTO sessions (id, created_at, progression_id, "
+            "updated_at, status) VALUES (?, ?, ?, ?, ?)",
+            (session_id, 0.0, sess_prog, 0.0, "completed"),
+        )
+        await legacy_db.db.execute(
+            "INSERT INTO branches (id, created_at, session_id, "
+            "progression_id) VALUES (?, ?, ?, NULL)",
+            (branch_id, 0.0, session_id),
+        )
+        await legacy_db.db.commit()
+    finally:
+        await legacy_db.close()
+
+    ctx = await _setup_live_persist(branch)
+    assert ctx is not None
+    # Resume detected the existing branch and produced a NON-NULL
+    # progression id (the repair created a fresh one).
+    assert ctx["branch_prog_id"] is not None
+    assert ctx["session_id"] == session_id
+
+    # Fire a message — branch progression now actually receives it.
+    msg = MessageManager.create_instruction(
+        instruction="post-repair", sender="u", recipient=str(branch.id),
+    )
+    await ctx["hook"](msg)
+
+    async with StateDB() as db:
+        b = await db.get_branch(branch_id)
+        bprog = await db.get_progression(b["progression_id"])
+    assert b["progression_id"] is not None
+    assert str(msg.id) in bprog
+
+    await _teardown_live_persist(ctx, status="completed")
+
+
+async def test_setup_resume_repairs_null_session_progression_id(
+    temp_db_path: Path,
+):
+    """Same as above but for the session-level progression — a legacy
+    session row with NULL progression_id must be repaired so the
+    session-wide message timeline isn't lost.
+    """
+    import uuid
+
+    from lionagi.protocols.messages.manager import MessageManager
+
+    branch = Branch(name="b1")
+    branch_id = str(branch.id)
+    session_id = str(uuid.uuid4())
+    branch_prog = str(uuid.uuid4())
+
+    legacy_db = await _legacy_db_with_nullable_progression(temp_db_path)
+    try:
+        await legacy_db.create_progression(branch_prog)
+        # Session row with NULL progression_id.
+        await legacy_db.db.execute(
+            "INSERT INTO sessions (id, created_at, progression_id, "
+            "updated_at) VALUES (?, ?, NULL, ?)",
+            (session_id, 0.0, 0.0),
+        )
+        # Branch row with a valid branch progression.
+        await legacy_db.db.execute(
+            "INSERT INTO branches (id, created_at, session_id, "
+            "progression_id) VALUES (?, ?, ?, ?)",
+            (branch_id, 0.0, session_id, branch_prog),
+        )
+        await legacy_db.db.commit()
+    finally:
+        await legacy_db.close()
+
+    ctx = await _setup_live_persist(branch)
+    assert ctx["session_prog_id"] is not None
+
+    msg = MessageManager.create_instruction(
+        instruction="hi", sender="u", recipient=str(branch.id),
+    )
+    await ctx["hook"](msg)
+
+    async with StateDB() as db:
+        s = await db.get_session(session_id)
+        sprog = await db.get_progression(s["progression_id"])
+    assert s["progression_id"] is not None
+    assert str(msg.id) in sprog
+
+    await _teardown_live_persist(ctx, status="completed")

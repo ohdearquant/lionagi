@@ -68,6 +68,14 @@ class ChatParam(MorphParam):
 class RunParam(ChatParam):
     stream_persist: bool = False
     persist_dir: str | Path = LIONAGI_HOME / "logs" / "runs"
+    # Optional separate destination for the branch snapshot JSON. When
+    # set, the streaming buffer (.buffer.jsonl) still lands in
+    # ``persist_dir`` but the canonical ``{branch_id}.json`` snapshot
+    # lands here. The CLI uses this so the snapshot lives under
+    # ``runs/<run>/branches/`` where ``find_branch()`` looks, while
+    # the buffer stays under ``runs/<run>/stream/``. When None the
+    # snapshot falls back to ``persist_dir`` (pre-PR behavior).
+    snapshot_dir: str | Path | None = None
 
 
 @dataclass(slots=True, frozen=True, init=False)
