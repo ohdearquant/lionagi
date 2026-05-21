@@ -117,7 +117,7 @@ export default function AdminPage() {
       />
 
       {error && (
-        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-content-primary">
           {error}
         </div>
       )}
@@ -192,7 +192,7 @@ export default function AdminPage() {
                       </div>
                     </td>
                     <td className="px-3 py-2">
-                      <span className="rounded border border-status-error/40 bg-status-error-bg px-1.5 py-0.5 text-meta text-status-error">
+                      <span className="rounded border border-status-error/40 bg-status-error-bg px-1.5 py-0.5 text-meta text-content-primary">
                         {reasonLabel(p.reason)}
                       </span>
                     </td>
