@@ -268,3 +268,90 @@ class TestUpdatePlaybookValidation:
 
         # File must be untouched
         assert pb_path.read_text() == original_content
+
+
+class TestUpdatePlaybookSpecFieldValidation:
+    """#1013 spec-field gap: workers/max_ops/effort must be validated on PUT."""
+
+    def _make_playbook(self, tmp_path: Path, name: str) -> Path:
+        path = tmp_path / f"{name}.playbook.yaml"
+        path.write_text("description: test\n")
+        return path
+
+    def test_workers_out_of_range_raises_value_error(self, tmp_path, monkeypatch):
+        """workers: 999 must be rejected — this was the exact failure scenario."""
+        import apps.studio.server.services.playbooks as svc
+
+        monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
+        self._make_playbook(tmp_path, "pb-workers")
+
+        with pytest.raises(ValueError, match="workers"):
+            svc.update_playbook("pb-workers", {"workers": 999})
+
+    def test_workers_out_of_range_returns_422_via_router(self, tmp_path, monkeypatch):
+        """PUT with workers: 999 must return HTTP 422 with 'workers' in the error."""
+        import apps.studio.server.services.playbooks as svc
+
+        monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
+        self._make_playbook(tmp_path, "pb-workers2")
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from apps.studio.server.routers.playbooks import router
+
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app, raise_server_exceptions=False)
+
+        resp = client.put("/playbooks/pb-workers2", json={"workers": 999})
+        assert resp.status_code == 422
+        assert "workers" in resp.text
+
+    def test_workers_valid_range_accepted(self, tmp_path, monkeypatch):
+        """workers: 4 is in [1, 32] and must not raise."""
+        import apps.studio.server.services.playbooks as svc
+
+        monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
+        self._make_playbook(tmp_path, "pb-workers3")
+
+        result = svc.update_playbook("pb-workers3", {"workers": 4})
+        assert result is not None
+
+    def test_max_ops_out_of_range_raises(self, tmp_path, monkeypatch):
+        """max-ops: 999 (YAML hyphenated form) must be rejected after key normalization."""
+        import apps.studio.server.services.playbooks as svc
+
+        monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
+        self._make_playbook(tmp_path, "pb-maxops")
+
+        with pytest.raises(ValueError, match="max_ops"):
+            # Hyphenated key as YAML would produce it
+            svc.update_playbook("pb-maxops", {"max-ops": 999})
+
+    def test_invalid_effort_raises(self, tmp_path, monkeypatch):
+        """effort: 'turbo' is not a valid effort level."""
+        import apps.studio.server.services.playbooks as svc
+
+        monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
+        self._make_playbook(tmp_path, "pb-effort")
+
+        with pytest.raises(ValueError, match="effort"):
+            svc.update_playbook("pb-effort", {"effort": "turbo"})
+
+    def test_valid_effort_accepted(self, tmp_path, monkeypatch):
+        """effort: 'high' is a valid effort level."""
+        import apps.studio.server.services.playbooks as svc
+
+        monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
+        self._make_playbook(tmp_path, "pb-effort2")
+
+        result = svc.update_playbook("pb-effort2", {"effort": "high"})
+        assert result is not None
+
+    def test_validate_playbook_returns_error_for_bad_workers(self, tmp_path, monkeypatch):
+        """validate_playbook() endpoint must report spec errors in {ok, errors}."""
+        import apps.studio.server.services.playbooks as svc
+
+        result = svc.validate_playbook("any", {"workers": 0})
+        assert not result["ok"]
+        assert any("workers" in e for e in result["errors"])
