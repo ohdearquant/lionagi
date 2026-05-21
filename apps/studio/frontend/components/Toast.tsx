@@ -1,13 +1,6 @@
 "use client";
 
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -106,9 +99,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const startDismiss = useCallback(
     (id: number) => {
       // mark as dismissing (triggers CSS slide-out)
-      setToasts((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, dismissing: true } : t)),
-      );
+      setToasts((prev) => prev.map((t) => (t.id === id ? { ...t, dismissing: true } : t)));
       // remove from DOM after transition completes
       const cleanupTimer = setTimeout(() => remove(id), 320);
       timers.current.set(id, cleanupTimer);

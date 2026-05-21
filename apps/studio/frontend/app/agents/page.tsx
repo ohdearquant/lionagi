@@ -11,10 +11,7 @@ import {
   rollbackDefinition,
   getDefinitionVersion,
 } from "@/lib/api";
-import type {
-  DefinitionDetail,
-  DefinitionVersion,
-} from "@/lib/api";
+import type { DefinitionDetail, DefinitionVersion } from "@/lib/api";
 import type { AgentProfile, AgentProfileSummary } from "@/lib/types";
 
 function messageFromError(error: unknown): string {
@@ -125,9 +122,7 @@ function AgentList({
                   </span>
                 </div>
                 {agent.description ? (
-                  <p className="mt-1 truncate text-meta text-content-muted">
-                    {agent.description}
-                  </p>
+                  <p className="mt-1 truncate text-meta text-content-muted">{agent.description}</p>
                 ) : null}
               </button>
             );
@@ -295,18 +290,18 @@ function AgentDetail({ agentName, agentProfile }: AgentDetailProps) {
 
   if (!def) return null;
 
-  const displayContent = previewVersion ? previewVersion.content : (editing ? editContent : def.content);
+  const displayContent = previewVersion
+    ? previewVersion.content
+    : editing
+      ? editContent
+      : def.content;
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
       {/* Top bar */}
       <div className="flex shrink-0 items-center gap-3 border-b border-edge px-4 py-2">
-        <h2 className="font-mono text-label font-semibold text-content-primary">
-          {agentName}
-        </h2>
-        {agentProfile?.provider ? (
-          <Badge tone="default">{agentProfile.provider}</Badge>
-        ) : null}
+        <h2 className="font-mono text-label font-semibold text-content-primary">{agentName}</h2>
+        {agentProfile?.provider ? <Badge tone="default">{agentProfile.provider}</Badge> : null}
         {agentProfile?.model ? (
           <span className="font-mono text-meta text-content-muted">{agentProfile.model}</span>
         ) : null}
@@ -325,11 +320,7 @@ function AgentDetail({ agentName, agentProfile }: AgentDetailProps) {
               >
                 {rollingBack ? "Restoring..." : "Restore this version"}
               </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setPreviewVersion(null)}
-              >
+              <Button variant="secondary" size="sm" onClick={() => setPreviewVersion(null)}>
                 Back to current
               </Button>
             </>
@@ -342,12 +333,7 @@ function AgentDetail({ agentName, agentProfile }: AgentDetailProps) {
                 placeholder="Commit message (optional)"
                 className="w-48 rounded border border-edge bg-surface-input px-2 py-1 text-meta text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none"
               />
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={handleSave}
-                disabled={saving}
-              >
+              <Button variant="primary" size="sm" onClick={handleSave} disabled={saving}>
                 {saving ? "Saving..." : "Save"}
               </Button>
               <Button variant="secondary" size="sm" onClick={handleCancelEdit}>
@@ -469,9 +455,7 @@ function VersionHistory({
                       <span className="ml-1 text-meta text-content-muted">(current)</span>
                     ) : null}
                   </span>
-                  <span className="text-meta text-content-muted">
-                    {relativeTime(v.created_at)}
-                  </span>
+                  <span className="text-meta text-content-muted">{relativeTime(v.created_at)}</span>
                 </div>
                 {v.message ? (
                   <p className="mt-0.5 truncate text-meta text-content-muted" title={v.message}>
@@ -614,10 +598,7 @@ export default function AgentsPage() {
     : null;
 
   return (
-    <div
-      className="flex"
-      style={{ height: "calc(100vh - 44px)" }}
-    >
+    <div className="flex" style={{ height: "calc(100vh - 44px)" }}>
       {/* Left pane: ~280px */}
       <div className="w-[280px] shrink-0">
         <AgentList
@@ -632,10 +613,7 @@ export default function AgentsPage() {
 
       {/* Right pane: fill remainder */}
       <div className="flex min-w-0 flex-1 bg-surface-base">
-        <AgentDetail
-          agentName={selectedName}
-          agentProfile={fallbackProfile}
-        />
+        <AgentDetail agentName={selectedName} agentProfile={fallbackProfile} />
       </div>
     </div>
   );

@@ -1,14 +1,8 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
-export type ButtonVariant =
-  | "primary"
-  | "secondary"
-  | "ghost"
-  | "danger"
-  | "toggle";
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "toggle";
 
-export interface ButtonProps
-  extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "className"> {
+export interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "className"> {
   variant?: ButtonVariant;
   size?: "sm" | "md" | "lg";
   // For toggle variants, indicates the "on" state.

@@ -10,9 +10,9 @@ export interface BadgeProps {
 }
 
 const toneClasses: Record<BadgeTone, string> = {
-  ok:      "border-status-success/40 bg-status-success-bg text-status-success",
+  ok: "border-status-success/40 bg-status-success-bg text-status-success",
   running: "border-status-running/40 bg-status-running-bg text-status-running",
-  failed:  "border-status-error/40   bg-status-error-bg   text-status-error",
+  failed: "border-status-error/40   bg-status-error-bg   text-status-error",
   pending: "border-status-warning/40 bg-status-warning-bg text-status-warning",
   blocked: "border-status-selected/40 bg-status-selected-bg text-status-selected",
   default: "border-edge bg-surface-overlay text-content-secondary",

@@ -34,7 +34,10 @@ export default function Duration({ value, fallback, className }: DurationProps) 
   // with explanatory tooltip rather than expose the broken number.
   if (value < 0) {
     return (
-      <span className={[cls, "text-content-muted"].join(" ")} title="timestamp missing or out of order">
+      <span
+        className={[cls, "text-content-muted"].join(" ")}
+        title="timestamp missing or out of order"
+      >
         {fallback ?? "—"}
       </span>
     );

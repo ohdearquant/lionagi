@@ -131,9 +131,7 @@ export default function RunsPage() {
                   <td className="px-3 py-2 tabular-nums">{s.branch_count}</td>
                   <td className="px-3 py-2 tabular-nums">{s.message_count}</td>
                   <td className="px-3 py-2">
-                    <Badge tone={s.status === "running" ? "running" : "ok"}>
-                      {s.status}
-                    </Badge>
+                    <Badge tone={s.status === "running" ? "running" : "ok"}>{s.status}</Badge>
                   </td>
                   <td className="px-3 py-2 text-meta text-content-muted">
                     {s.status === "running" ? timeSince(s.updated_at) : formatTime(s.updated_at)}

@@ -43,7 +43,8 @@ function extractSummary(showMd: string | null): Record<string, string> {
   if (!showMd) return {};
   const out: Record<string, string> = {};
   const lines = showMd.split("\n").slice(0, 60);
-  const labelRe = /^\s*(?:[-*]\s*)?\**\s*(Goal|Status|Blockers?|Next action|Next steps?|Owner|Started|Updated|Progress)\**\s*:\s*(.+?)\s*$/i;
+  const labelRe =
+    /^\s*(?:[-*]\s*)?\**\s*(Goal|Status|Blockers?|Next action|Next steps?|Owner|Started|Updated|Progress)\**\s*:\s*(.+?)\s*$/i;
   for (const line of lines) {
     const m = line.match(labelRe);
     if (m) {
@@ -104,7 +105,9 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
   const rollup = useMemo(() => {
     if (!show) return null;
     const failed = show.plays.filter(
-      (p) => p.verdict?.gate_passed === false || (typeof p.meta.exit_code === "number" && p.meta.exit_code !== 0),
+      (p) =>
+        p.verdict?.gate_passed === false ||
+        (typeof p.meta.exit_code === "number" && p.meta.exit_code !== 0),
     );
     const running = show.plays.filter(
       (p) => p.meta.status === "running" || p.meta.status === "pending",
@@ -198,10 +201,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
             {/* Right: plays table — sticky on large screens */}
             <section className="flex min-w-0 flex-col gap-2 lg:sticky lg:top-16 lg:self-start lg:max-h-[calc(100vh-7rem)]">
               <h2 className="text-label font-semibold text-content-primary">
-                Plays{" "}
-                <span className="tabular-nums text-content-muted">
-                  ({show.plays.length})
-                </span>
+                Plays <span className="tabular-nums text-content-muted">({show.plays.length})</span>
               </h2>
               {show.plays.length === 0 ? (
                 <div className="rounded border border-edge bg-surface-raised px-3 py-10 text-center text-body text-content-muted">
@@ -239,17 +239,28 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                               <td className="px-3 py-2">
                                 <StatusPill value={play.meta.status} kind="lifecycle" />
                               </td>
-                              <td className="max-w-[10rem] truncate px-3 py-2 font-mono text-meta text-content-muted" title={play.meta.branch}>
+                              <td
+                                className="max-w-[10rem] truncate px-3 py-2 font-mono text-meta text-content-muted"
+                                title={play.meta.branch}
+                              >
                                 {middleEllipsis(play.meta.branch, 18)}
                               </td>
                               <td className="px-3 py-2 tabular-nums">
                                 <div className="flex flex-wrap items-center gap-1">
                                   <span className="text-body">{play.meta.exit_code ?? "—"}</span>
                                   {flag === "exit_mismatch" && (
-                                    <StatusPill value="exit mismatch" tone="failed" kind="verdict" />
+                                    <StatusPill
+                                      value="exit mismatch"
+                                      tone="failed"
+                                      kind="verdict"
+                                    />
                                   )}
                                   {flag === "missing_exit" && (
-                                    <StatusPill value="missing exit" tone="pending" kind="verdict" />
+                                    <StatusPill
+                                      value="missing exit"
+                                      tone="pending"
+                                      kind="verdict"
+                                    />
                                   )}
                                 </div>
                               </td>
@@ -290,7 +301,6 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                               <tr className="bg-surface-overlay">
                                 <td colSpan={8} className="px-4 py-3">
                                   <div className="flex flex-col gap-3">
-
                                     {/* Intent */}
                                     {play.intent && (
                                       <div>
@@ -324,15 +334,23 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                     {/* Duration / Exit / Attempt stats row */}
                                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-body text-content-secondary">
                                       <span>
-                                        <span className="text-meta uppercase tracking-[0.06em] text-content-muted mr-1">Duration</span>
+                                        <span className="text-meta uppercase tracking-[0.06em] text-content-muted mr-1">
+                                          Duration
+                                        </span>
                                         <Duration value={dur} />
                                       </span>
                                       <span>
-                                        <span className="text-meta uppercase tracking-[0.06em] text-content-muted mr-1">Exit</span>
-                                        <span className="tabular-nums">{play.meta.exit_code ?? "—"}</span>
+                                        <span className="text-meta uppercase tracking-[0.06em] text-content-muted mr-1">
+                                          Exit
+                                        </span>
+                                        <span className="tabular-nums">
+                                          {play.meta.exit_code ?? "—"}
+                                        </span>
                                       </span>
                                       <span>
-                                        <span className="text-meta uppercase tracking-[0.06em] text-content-muted mr-1">Attempt</span>
+                                        <span className="text-meta uppercase tracking-[0.06em] text-content-muted mr-1">
+                                          Attempt
+                                        </span>
                                         <span className="tabular-nums">{play.meta.attempt}</span>
                                       </span>
                                     </div>
@@ -341,7 +359,9 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                     {play.verdict && (
                                       <div className="flex flex-col gap-1.5">
                                         <div className="flex items-center gap-2">
-                                          <span className="text-meta uppercase tracking-[0.06em] text-content-muted">Gate</span>
+                                          <span className="text-meta uppercase tracking-[0.06em] text-content-muted">
+                                            Gate
+                                          </span>
                                           <StatusPill
                                             kind="verdict"
                                             value={play.verdict.gate_passed ? "passed" : "rejected"}
@@ -353,7 +373,9 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                               Feedback
                                             </div>
                                             <div className="mt-1">
-                                              <Markdown className="text-body">{play.verdict.feedback}</Markdown>
+                                              <Markdown className="text-body">
+                                                {play.verdict.feedback}
+                                              </Markdown>
                                             </div>
                                           </div>
                                         )}
@@ -363,7 +385,9 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                               Notes
                                             </div>
                                             <div className="mt-1">
-                                              <Markdown className="text-body">{play.verdict.notes}</Markdown>
+                                              <Markdown className="text-body">
+                                                {play.verdict.notes}
+                                              </Markdown>
                                             </div>
                                           </div>
                                         )}
@@ -390,7 +414,9 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                           <div>
                                             <div className="flex items-center justify-between text-meta uppercase tracking-[0.06em] text-content-muted">
                                               <span>Meta</span>
-                                              <CopyButton text={JSON.stringify(play.meta, null, 2)} />
+                                              <CopyButton
+                                                text={JSON.stringify(play.meta, null, 2)}
+                                              />
                                             </div>
                                             <pre className="mt-1 overflow-auto rounded border border-edge bg-surface-raised p-2 font-mono text-meta text-content-secondary">
                                               {JSON.stringify(play.meta, null, 2)}
@@ -400,7 +426,9 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                             <div>
                                               <div className="flex items-center justify-between text-meta uppercase tracking-[0.06em] text-content-muted">
                                                 <span>Verdict</span>
-                                                <CopyButton text={JSON.stringify(play.verdict, null, 2)} />
+                                                <CopyButton
+                                                  text={JSON.stringify(play.verdict, null, 2)}
+                                                />
                                               </div>
                                               <pre className="mt-1 overflow-auto rounded border border-edge bg-surface-raised p-2 font-mono text-meta text-content-secondary">
                                                 {JSON.stringify(play.verdict, null, 2)}
@@ -410,7 +438,6 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                         </div>
                                       )}
                                     </div>
-
                                   </div>
                                 </td>
                               </tr>
@@ -459,11 +486,20 @@ function ShowSummaryPanel({
         <h3 className="text-meta uppercase tracking-[0.06em] text-content-muted">Roll-up</h3>
         {rollup ? (
           <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-body">
-            <SummaryRow label="Plays" value={<span className="tabular-nums">{rollup.total}</span>} />
+            <SummaryRow
+              label="Plays"
+              value={<span className="tabular-nums">{rollup.total}</span>}
+            />
             <SummaryRow
               label="Running"
               value={
-                <span className={rollup.running.length > 0 ? "text-status-running tabular-nums" : "text-content-muted tabular-nums"}>
+                <span
+                  className={
+                    rollup.running.length > 0
+                      ? "text-status-running tabular-nums"
+                      : "text-content-muted tabular-nums"
+                  }
+                >
                   {rollup.running.length}
                 </span>
               }
@@ -471,14 +507,22 @@ function ShowSummaryPanel({
             <SummaryRow
               label="Failed"
               value={
-                <span className={rollup.failed.length > 0 ? "text-status-error tabular-nums" : "text-content-muted tabular-nums"}>
+                <span
+                  className={
+                    rollup.failed.length > 0
+                      ? "text-status-error tabular-nums"
+                      : "text-content-muted tabular-nums"
+                  }
+                >
                   {rollup.failed.length}
                 </span>
               }
             />
             <SummaryRow
               label="Merged"
-              value={<span className="tabular-nums text-content-secondary">{rollup.merged.length}</span>}
+              value={
+                <span className="tabular-nums text-content-secondary">{rollup.merged.length}</span>
+              }
             />
           </dl>
         ) : (
@@ -497,14 +541,10 @@ function ShowSummaryPanel({
         ) : (
           <p className="mt-2 text-body text-content-muted">
             Add{" "}
-            <code className="rounded bg-surface-overlay px-1 text-content-secondary">
-              Goal:
-            </code>{" "}
-            /{" "}
-            <code className="rounded bg-surface-overlay px-1 text-content-secondary">
-              Status:
-            </code>{" "}
-            lines near the top of <code className="text-content-secondary">_show.md</code> to surface them here.
+            <code className="rounded bg-surface-overlay px-1 text-content-secondary">Goal:</code> /{" "}
+            <code className="rounded bg-surface-overlay px-1 text-content-secondary">Status:</code>{" "}
+            lines near the top of <code className="text-content-secondary">_show.md</code> to
+            surface them here.
           </p>
         )}
       </section>
@@ -536,22 +576,12 @@ function SummaryRow({ label, value }: { label: string; value: React.ReactNode })
   );
 }
 
-function SummaryBlock({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone?: "failed";
-}) {
+function SummaryBlock({ label, value, tone }: { label: string; value: string; tone?: "failed" }) {
   return (
     <div>
       <dt className="text-meta uppercase tracking-[0.06em] text-content-muted">{label}</dt>
       <dd
-        className={`text-body ${
-          tone === "failed" ? "text-status-error" : "text-content-primary"
-        }`}
+        className={`text-body ${tone === "failed" ? "text-status-error" : "text-content-primary"}`}
       >
         {value}
       </dd>

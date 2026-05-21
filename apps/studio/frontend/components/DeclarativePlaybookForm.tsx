@@ -23,8 +23,7 @@ const SELECT_CLS =
   "w-full rounded border border-edge bg-surface-input px-3 py-1.5 text-body text-content-primary focus:border-interactive-primary focus:outline-none";
 const TEXTAREA_CLS =
   "w-full resize-y rounded border border-edge bg-surface-input px-3 py-2 font-mono text-body text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none";
-const CHECKBOX_LABEL =
-  "flex items-center gap-2 text-meta text-content-secondary";
+const CHECKBOX_LABEL = "flex items-center gap-2 text-meta text-content-secondary";
 
 export default function DeclarativePlaybookForm({
   initial,
@@ -42,16 +41,13 @@ export default function DeclarativePlaybookForm({
     [form, onSave],
   );
 
-  const updateArg = useCallback(
-    (index: number, patch: Partial<DeclarativeArgSpec>) => {
-      setForm((prev) => {
-        const next = [...prev.args];
-        next[index] = { ...next[index], ...patch };
-        return { ...prev, args: next };
-      });
-    },
-    [],
-  );
+  const updateArg = useCallback((index: number, patch: Partial<DeclarativeArgSpec>) => {
+    setForm((prev) => {
+      const next = [...prev.args];
+      next[index] = { ...next[index], ...patch };
+      return { ...prev, args: next };
+    });
+  }, []);
 
   const addArg = useCallback(() => {
     setForm((prev) => ({
@@ -199,10 +195,18 @@ export default function DeclarativePlaybookForm({
             <table className="w-full text-meta">
               <thead className="bg-surface-raised">
                 <tr>
-                  <th className="px-2 py-1.5 text-left font-semibold text-content-secondary">Name</th>
-                  <th className="px-2 py-1.5 text-left font-semibold text-content-secondary">Type</th>
-                  <th className="px-2 py-1.5 text-left font-semibold text-content-secondary">Default</th>
-                  <th className="px-2 py-1.5 text-left font-semibold text-content-secondary">Help</th>
+                  <th className="px-2 py-1.5 text-left font-semibold text-content-secondary">
+                    Name
+                  </th>
+                  <th className="px-2 py-1.5 text-left font-semibold text-content-secondary">
+                    Type
+                  </th>
+                  <th className="px-2 py-1.5 text-left font-semibold text-content-secondary">
+                    Default
+                  </th>
+                  <th className="px-2 py-1.5 text-left font-semibold text-content-secondary">
+                    Help
+                  </th>
                   <th className="w-10 px-2 py-1.5"></th>
                 </tr>
               </thead>
@@ -305,9 +309,7 @@ export default function DeclarativePlaybookForm({
         <Button type="submit" variant="primary" disabled={saving || !isValid}>
           {saving ? "Saving..." : "Save changes"}
         </Button>
-        {!isValid ? (
-          <span className="text-meta text-content-muted">Prompt is required</span>
-        ) : null}
+        {!isValid ? <span className="text-meta text-content-muted">Prompt is required</span> : null}
       </div>
     </form>
   );

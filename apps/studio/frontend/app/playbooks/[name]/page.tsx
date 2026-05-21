@@ -134,10 +134,7 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
     <div className="flex h-[calc(100vh-56px)] flex-col">
       {/* Top bar */}
       <div className="flex items-center gap-3 border-b border-edge bg-surface-nav px-4 py-2">
-        <Link
-          href="/playbooks"
-          className="text-meta text-content-muted hover:text-content-primary"
-        >
+        <Link href="/playbooks" className="text-meta text-content-muted hover:text-content-primary">
           playbooks
         </Link>
         <span className="text-meta text-content-muted">/</span>
@@ -213,13 +210,15 @@ function PlaybookEmptyState({
   return (
     <div className="flex max-w-xl flex-col gap-4 rounded-lg border border-edge bg-surface-raised p-6 text-center">
       <div className="flex items-center justify-center gap-2 text-content-muted">
-        <span aria-hidden className="text-2xl">◇</span>
+        <span aria-hidden className="text-2xl">
+          ◇
+        </span>
       </div>
       <div>
         <h2 className="text-label font-semibold text-content-primary">No steps defined yet</h2>
         <p className="mt-1 text-body text-content-secondary">
-          This playbook uses the declarative agent + prompt format. Run it with defaults or open
-          the editor to author steps as a graph.
+          This playbook uses the declarative agent + prompt format. Run it with defaults or open the
+          editor to author steps as a graph.
         </p>
       </div>
       <div className="flex flex-wrap justify-center gap-2">

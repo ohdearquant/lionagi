@@ -31,7 +31,11 @@ export default function PageHeader({
   const pad = density === "tight" ? "pb-3" : "pb-5";
 
   return (
-    <header className={["flex flex-col gap-2 border-b border-edge", pad, className].filter(Boolean).join(" ")}>
+    <header
+      className={["flex flex-col gap-2 border-b border-edge", pad, className]
+        .filter(Boolean)
+        .join(" ")}
+    >
       {breadcrumb && breadcrumb.length > 0 ? (
         <nav className="flex items-center gap-1 text-meta text-content-muted">
           <span>/</span>
@@ -56,9 +60,7 @@ export default function PageHeader({
         ) : null}
       </div>
 
-      {subtitle ? (
-        <p className="text-body text-content-muted truncate">{subtitle}</p>
-      ) : null}
+      {subtitle ? <p className="text-body text-content-muted truncate">{subtitle}</p> : null}
     </header>
   );
 }

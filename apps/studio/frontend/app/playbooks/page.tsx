@@ -56,18 +56,14 @@ function PlaybookList({
       </div>
 
       {/* Error */}
-      {error ? (
-        <div className="px-3 py-2 text-meta text-status-error">{error}</div>
-      ) : null}
+      {error ? <div className="px-3 py-2 text-meta text-status-error">{error}</div> : null}
 
       {/* List */}
       <nav className="flex-1 overflow-y-auto">
         {loading && items.length === 0 ? (
           <p className="px-3 py-4 text-meta text-content-muted">Loading…</p>
         ) : items.length === 0 ? (
-          <p className="px-3 py-4 text-meta text-content-muted">
-            No playbooks found.
-          </p>
+          <p className="px-3 py-4 text-meta text-content-muted">No playbooks found.</p>
         ) : (
           items.map((item) => {
             const isSelected = item.name === selected;
@@ -155,16 +151,10 @@ function VersionHistory({
                 ].join(" ")}
               >
                 <div className="flex items-center gap-1.5">
-                  <span className="font-mono text-meta text-content-secondary">
-                    v{v.version}
-                  </span>
-                  {isCurrent ? (
-                    <Badge tone="ok">current</Badge>
-                  ) : null}
+                  <span className="font-mono text-meta text-content-secondary">v{v.version}</span>
+                  {isCurrent ? <Badge tone="ok">current</Badge> : null}
                 </div>
-                <span className="text-meta text-content-muted">
-                  {formatTime(v.created_at)}
-                </span>
+                <span className="text-meta text-content-muted">{formatTime(v.created_at)}</span>
                 {v.message ? (
                   <span
                     className="text-meta text-content-muted"
@@ -377,20 +367,12 @@ function PlaybookDetail({ name }: { name: string }) {
         <span className="text-meta text-content-muted">
           v{isViewingOld ? viewingVersion : detail.version}
         </span>
-        {isViewingOld ? (
-          <Badge tone="pending">viewing old version</Badge>
-        ) : null}
+        {isViewingOld ? <Badge tone="pending">viewing old version</Badge> : null}
 
         <div className="ml-auto flex items-center gap-2">
-          {runError ? (
-            <span className="text-meta text-status-error">{runError}</span>
-          ) : null}
-          {saveError ? (
-            <span className="text-meta text-status-error">{saveError}</span>
-          ) : null}
-          {saveSuccess ? (
-            <span className="text-meta text-status-success">Saved</span>
-          ) : null}
+          {runError ? <span className="text-meta text-status-error">{runError}</span> : null}
+          {saveError ? <span className="text-meta text-status-error">{saveError}</span> : null}
+          {saveSuccess ? <span className="text-meta text-status-success">Saved</span> : null}
 
           {editing ? (
             <>
@@ -412,12 +394,7 @@ function PlaybookDetail({ name }: { name: string }) {
               >
                 Cancel
               </Button>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={handleSave}
-                disabled={saving}
-              >
+              <Button variant="primary" size="sm" onClick={handleSave} disabled={saving}>
                 {saving ? "Saving…" : "Save"}
               </Button>
             </>
@@ -480,9 +457,7 @@ function PlaybookDetail({ name }: { name: string }) {
             />
           ) : (
             <pre className="flex-1 overflow-auto bg-surface-base px-4 py-3 font-mono text-meta text-content-secondary">
-              {displayedContent || (
-                <span className="text-content-muted">(empty)</span>
-              )}
+              {displayedContent || <span className="text-content-muted">(empty)</span>}
             </pre>
           )}
         </div>
@@ -563,11 +538,7 @@ export default function PlaybooksPage() {
         error={listError}
       />
 
-      {selected ? (
-        <PlaybookDetail name={selected} />
-      ) : (
-        <EmptyDetail />
-      )}
+      {selected ? <PlaybookDetail name={selected} /> : <EmptyDetail />}
     </div>
   );
 }

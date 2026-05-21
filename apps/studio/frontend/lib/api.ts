@@ -17,8 +17,7 @@ import type {
   WorkerSummary,
 } from "./types";
 
-export const API_BASE =
-  process.env.NEXT_PUBLIC_STUDIO_API_BASE ?? "http://localhost:8765";
+export const API_BASE = process.env.NEXT_PUBLIC_STUDIO_API_BASE ?? "http://localhost:8765";
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, init);
@@ -30,13 +29,9 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 // ─── Runs ─────────────────────────────────────────────────────────────────────
 
-export async function listRuns(
-  params?: Record<string, string>,
-): Promise<{ runs: RunSummary[] }> {
+export async function listRuns(params?: Record<string, string>): Promise<{ runs: RunSummary[] }> {
   const query =
-    params && Object.keys(params).length > 0
-      ? `?${new URLSearchParams(params).toString()}`
-      : "";
+    params && Object.keys(params).length > 0 ? `?${new URLSearchParams(params).toString()}` : "";
   return fetchJson<{ runs: RunSummary[] }>(`/api/runs${query}`);
 }
 
@@ -45,10 +40,9 @@ export async function getRun(runId: string): Promise<RunDetail> {
 }
 
 export async function rerunRun(runId: string): Promise<{ run_id: string }> {
-  return fetchJson<{ run_id: string }>(
-    `/api/runs/${encodeURIComponent(runId)}/rerun`,
-    { method: "POST" },
-  );
+  return fetchJson<{ run_id: string }>(`/api/runs/${encodeURIComponent(runId)}/rerun`, {
+    method: "POST",
+  });
 }
 
 // ─── Workers (playbooks) ──────────────────────────────────────────────────────
@@ -110,9 +104,7 @@ function parseGraphFromPlaybook(pb: PlaybookDetail): WorkerGraph {
 }
 
 export async function listWorkers(): Promise<{ workers: WorkerSummary[] }> {
-  const data = await fetchJson<{ playbooks: PlaybookListEntry[] }>(
-    "/api/playbooks",
-  );
+  const data = await fetchJson<{ playbooks: PlaybookListEntry[] }>("/api/playbooks");
   return {
     workers: (data.playbooks ?? []).map((p) => ({
       name: p.name,
@@ -125,9 +117,7 @@ export async function listWorkers(): Promise<{ workers: WorkerSummary[] }> {
 }
 
 export async function getWorkerGraph(name: string): Promise<WorkerGraph> {
-  const data = await fetchJson<PlaybookDetail>(
-    `/api/playbooks/${encodeURIComponent(name)}`,
-  );
+  const data = await fetchJson<PlaybookDetail>(`/api/playbooks/${encodeURIComponent(name)}`);
   return parseGraphFromPlaybook(data);
 }
 
@@ -135,10 +125,7 @@ export async function getWorkerRaw(name: string): Promise<WorkerRaw> {
   return fetchJson<WorkerRaw>(`/api/playbooks/${encodeURIComponent(name)}`);
 }
 
-export async function createWorker(
-  name: string,
-  data: WorkerFormData,
-): Promise<unknown> {
+export async function createWorker(name: string, data: WorkerFormData): Promise<unknown> {
   return fetchJson<unknown>(`/api/playbooks/${encodeURIComponent(name)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -146,10 +133,7 @@ export async function createWorker(
   });
 }
 
-export async function updateWorker(
-  name: string,
-  data: WorkerFormData,
-): Promise<unknown> {
+export async function updateWorker(name: string, data: WorkerFormData): Promise<unknown> {
   return fetchJson<unknown>(`/api/playbooks/${encodeURIComponent(name)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -267,10 +251,9 @@ export async function updatePlaybook(
 // runs the playbook with its default configuration. Input binding and
 // worktree customisation belong in `li play`.
 export async function startRun(workerName: string): Promise<{ run_id: string }> {
-  return fetchJson<{ run_id: string }>(
-    `/api/playbooks/${encodeURIComponent(workerName)}/run`,
-    { method: "POST" },
-  );
+  return fetchJson<{ run_id: string }>(`/api/playbooks/${encodeURIComponent(workerName)}/run`, {
+    method: "POST",
+  });
 }
 
 // ─── Agents ───────────────────────────────────────────────────────────────────
@@ -283,10 +266,7 @@ export async function getAgent(name: string): Promise<AgentProfile> {
   return fetchJson<AgentProfile>(`/api/agents/${encodeURIComponent(name)}`);
 }
 
-export async function createAgent(
-  name: string,
-  data: AgentProfile,
-): Promise<unknown> {
+export async function createAgent(name: string, data: AgentProfile): Promise<unknown> {
   return fetchJson<unknown>(`/api/agents/${encodeURIComponent(name)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -294,10 +274,7 @@ export async function createAgent(
   });
 }
 
-export async function updateAgent(
-  name: string,
-  data: AgentProfile,
-): Promise<unknown> {
+export async function updateAgent(name: string, data: AgentProfile): Promise<unknown> {
   return fetchJson<unknown>(`/api/agents/${encodeURIComponent(name)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -315,13 +292,8 @@ export async function getShow(topic: string): Promise<ShowDetail> {
   return fetchJson<ShowDetail>(`/api/shows/${encodeURIComponent(topic)}`);
 }
 
-export function streamShow(
-  topic: string,
-  onEvent: (event: ShowEvent) => void,
-): () => void {
-  const source = new EventSource(
-    `${API_BASE}/api/shows/${encodeURIComponent(topic)}/stream`,
-  );
+export function streamShow(topic: string, onEvent: (event: ShowEvent) => void): () => void {
+  const source = new EventSource(`${API_BASE}/api/shows/${encodeURIComponent(topic)}/stream`);
   source.onmessage = (message) => {
     onEvent(JSON.parse(message.data) as ShowEvent);
   };
@@ -377,9 +349,7 @@ export function streamSession(
   id: string,
   onEvent: (event: Record<string, unknown>) => void,
 ): () => void {
-  const source = new EventSource(
-    `${API_BASE}/api/sessions/${encodeURIComponent(id)}/stream`,
-  );
+  const source = new EventSource(`${API_BASE}/api/sessions/${encodeURIComponent(id)}/stream`);
   source.onmessage = (msg) => {
     try {
       onEvent(JSON.parse(msg.data) as Record<string, unknown>);
@@ -426,10 +396,7 @@ export async function listDefinitions(
   return fetchJson<{ definitions: DefinitionSummary[] }>(`/api/definitions${query}`);
 }
 
-export async function getDefinition(
-  kind: string,
-  name: string,
-): Promise<DefinitionDetail> {
+export async function getDefinition(kind: string, name: string): Promise<DefinitionDetail> {
   return fetchJson<DefinitionDetail>(
     `/api/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`,
   );
@@ -472,9 +439,7 @@ export async function rollbackDefinition(
   );
 }
 
-export async function snapshotDefinitions(
-  kind?: string,
-): Promise<{ snapshots_created: number }> {
+export async function snapshotDefinitions(kind?: string): Promise<{ snapshots_created: number }> {
   const query = kind ? `?kind=${encodeURIComponent(kind)}` : "";
   return fetchJson<{ snapshots_created: number }>(`/api/definitions/snapshot${query}`, {
     method: "POST",

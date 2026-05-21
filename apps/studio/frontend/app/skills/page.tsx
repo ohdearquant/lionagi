@@ -30,7 +30,9 @@ export default function SkillsPage() {
       .finally(() => {
         if (active) setLoading(false);
       });
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -50,7 +52,9 @@ export default function SkillsPage() {
       .finally(() => {
         if (active) setDetailLoading(false);
       });
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [selected]);
 
   const filtered = filter
@@ -104,9 +108,7 @@ export default function SkillsPage() {
               >
                 <span className="text-body font-medium text-content-primary">{s.name}</span>
                 {s.description && (
-                  <span className="line-clamp-2 text-meta text-content-muted">
-                    {s.description}
-                  </span>
+                  <span className="line-clamp-2 text-meta text-content-muted">{s.description}</span>
                 )}
               </button>
             ))
@@ -136,7 +138,9 @@ export default function SkillsPage() {
               {detail.allowed_tools.length > 0 && (
                 <div className="flex flex-wrap gap-1">
                   {detail.allowed_tools.map((t) => (
-                    <Badge key={t} tone="default">{t}</Badge>
+                    <Badge key={t} tone="default">
+                      {t}
+                    </Badge>
                   ))}
                 </div>
               )}

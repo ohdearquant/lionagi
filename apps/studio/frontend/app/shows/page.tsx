@@ -73,9 +73,7 @@ export default function ShowsPage() {
         id: "last_update",
         header: "Last Update",
         accessor: (row) => (
-          <span className="text-meta text-content-muted">
-            {formatLastUpdate(row.last_update)}
-          </span>
+          <span className="text-meta text-content-muted">{formatLastUpdate(row.last_update)}</span>
         ),
         sortValue: (row) =>
           typeof row.last_update === "number"
@@ -105,9 +103,7 @@ export default function ShowsPage() {
         columns={columns}
         emptyMessage={loading ? "Loading shows..." : "No shows found."}
         getRowKey={(row) => row.topic}
-        onRowClick={(row) =>
-          router.push(`/shows/${encodeURIComponent(row.topic)}`)
-        }
+        onRowClick={(row) => router.push(`/shows/${encodeURIComponent(row.topic)}`)}
       />
     </main>
   );

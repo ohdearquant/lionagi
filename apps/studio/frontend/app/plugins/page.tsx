@@ -78,20 +78,20 @@ function PluginList({
             >
               <span className="text-body font-medium text-content-primary">{p.name}</span>
               {p.description && (
-                <span className="line-clamp-2 text-meta text-content-muted">
-                  {p.description}
-                </span>
+                <span className="line-clamp-2 text-meta text-content-muted">{p.description}</span>
               )}
               <div className="flex flex-wrap items-center gap-1 pt-0.5">
                 {p.skill_count > 0 && (
-                  <Badge tone="default">{p.skill_count} skill{p.skill_count !== 1 ? "s" : ""}</Badge>
+                  <Badge tone="default">
+                    {p.skill_count} skill{p.skill_count !== 1 ? "s" : ""}
+                  </Badge>
                 )}
                 {p.agent_count > 0 && (
-                  <Badge tone="default">{p.agent_count} agent{p.agent_count !== 1 ? "s" : ""}</Badge>
+                  <Badge tone="default">
+                    {p.agent_count} agent{p.agent_count !== 1 ? "s" : ""}
+                  </Badge>
                 )}
-                <Badge tone={p.source === "marketplace" ? "ok" : "default"}>
-                  {p.source}
-                </Badge>
+                <Badge tone={p.source === "marketplace" ? "ok" : "default"}>{p.source}</Badge>
               </div>
             </button>
           ))
@@ -194,13 +194,13 @@ function SkillSubPane({ pluginName, skillNames }: SkillSubPaneProps) {
         ) : (
           <>
             <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-edge px-4 py-2.5">
-              <h3 className="text-label font-semibold text-content-primary">
-                {skillDetail.name}
-              </h3>
+              <h3 className="text-label font-semibold text-content-primary">{skillDetail.name}</h3>
               {skillDetail.allowed_tools.length > 0 && (
                 <div className="flex flex-wrap gap-1">
                   {skillDetail.allowed_tools.map((t) => (
-                    <Badge key={t} tone="default">{t}</Badge>
+                    <Badge key={t} tone="default">
+                      {t}
+                    </Badge>
                   ))}
                 </div>
               )}
@@ -400,9 +400,7 @@ function PluginDetailPane({ pluginName }: PluginDetailPaneProps) {
       <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-edge px-4 py-2.5">
         <h1 className="text-label font-semibold text-content-primary">{detail.name}</h1>
         <Badge tone="default">v{detail.version}</Badge>
-        <Badge tone={detail.source === "marketplace" ? "ok" : "default"}>
-          {detail.source}
-        </Badge>
+        <Badge tone={detail.source === "marketplace" ? "ok" : "default"}>{detail.source}</Badge>
         <span
           className="ml-auto truncate font-mono text-meta text-content-muted"
           title={detail.path}
@@ -443,9 +441,7 @@ function PluginDetailPane({ pluginName }: PluginDetailPaneProps) {
         {visibleTab === "skills" && (
           <SkillSubPane pluginName={detail.name} skillNames={detail.skills} />
         )}
-        {visibleTab === "agents" && (
-          <AgentSubPane agentRefs={detail.agents} />
-        )}
+        {visibleTab === "agents" && <AgentSubPane agentRefs={detail.agents} />}
         {visibleTab === "hooks" && detail.hooks && (
           <div className="flex-1 overflow-y-auto px-4 py-3">
             <pre className="whitespace-pre-wrap break-words rounded border border-edge bg-surface-base p-4 font-mono text-body text-content-secondary leading-relaxed">

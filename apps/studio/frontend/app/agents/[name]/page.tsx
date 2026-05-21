@@ -143,16 +143,8 @@ export default function AgentDetailPage({ params }: { params: Promise<{ name: st
             <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-meta">
               <SummaryChip label="Provider" value={agent.provider || "—"} mono />
               <SummaryChip label="Model" value={agent.model || "—"} mono />
-              <SummaryChip
-                label="Permission"
-                value={agent.permission_mode || "default"}
-                mono
-              />
-              <SummaryChip
-                label="Effort"
-                value={agent.reasoning_effort || "none"}
-                mono
-              />
+              <SummaryChip label="Permission" value={agent.permission_mode || "default"} mono />
+              <SummaryChip label="Effort" value={agent.reasoning_effort || "none"} mono />
               {/* path is informational — show as muted */}
               {agent.path ? (
                 <SummaryChip label="Source" value={agent.path} mono className="max-w-[28rem]" />
@@ -198,10 +190,7 @@ function SummaryChip({
     <div className={["flex min-w-0 items-center gap-1.5", className].filter(Boolean).join(" ")}>
       <span className="uppercase tracking-[0.06em] text-content-muted">{label}</span>
       <span
-        className={[
-          "truncate text-content-primary",
-          mono ? "font-mono" : "",
-        ].join(" ")}
+        className={["truncate text-content-primary", mono ? "font-mono" : ""].join(" ")}
         title={value}
       >
         {value}

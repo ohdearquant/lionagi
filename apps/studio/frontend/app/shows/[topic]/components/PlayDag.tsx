@@ -40,7 +40,12 @@ function parseShowMdDeps(showMd: string | null | undefined): Map<string, string[
 }
 
 function statusColor(status: string): string {
-  if (status === "merged" || status === "completed" || status === "done" || status === "director-managed-complete") {
+  if (
+    status === "merged" ||
+    status === "completed" ||
+    status === "done" ||
+    status === "director-managed-complete"
+  ) {
     return "var(--status-success)";
   }
   if (status === "running" || status === "pending" || status === "director-managed") {

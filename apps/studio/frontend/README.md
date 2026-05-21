@@ -7,19 +7,19 @@ Talks to the Lion Studio backend at `process.env.NEXT_PUBLIC_STUDIO_API_BASE`
 
 ## Routes
 
-| Route                     | View                                                                                                           |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `/`                       | Redirects to `/playbooks`.                                                                                     |
-| `/playbooks`              | Playbook table sourced from `~/.lionagi/playbooks/*.playbook.yaml`, with status and metadata.                  |
-| `/playbooks/[name]`       | Playbook detail with YAML view and step DAG visualization.                                                     |
-| `/playbooks/[name]/edit`  | Edit an existing playbook YAML.                                                                                |
-| `/playbooks/new`          | Author a new playbook YAML.                                                                                    |
-| `/agents`                 | Agent profile table sourced from `~/.lionagi/agents/*.md`.                                                     |
-| `/agents/[name]`          | Agent profile detail with frontmatter, body, and edit link.                                                    |
-| `/agents/[name]/edit`     | Edit an existing agent profile.                                                                                |
-| `/agents/new`             | Author a new agent profile.                                                                                    |
-| `/runs`                   | Runs table from `~/.lionagi/runs/{id}/run.json`, with cost/duration/status filters.                            |
-| `/runs/[id]`              | Run detail with branch timelines, messages, API calls, DAG visualization, and live SSE stream for active runs. |
+| Route                    | View                                                                                                           |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `/`                      | Redirects to `/playbooks`.                                                                                     |
+| `/playbooks`             | Playbook table sourced from `~/.lionagi/playbooks/*.playbook.yaml`, with status and metadata.                  |
+| `/playbooks/[name]`      | Playbook detail with YAML view and step DAG visualization.                                                     |
+| `/playbooks/[name]/edit` | Edit an existing playbook YAML.                                                                                |
+| `/playbooks/new`         | Author a new playbook YAML.                                                                                    |
+| `/agents`                | Agent profile table sourced from `~/.lionagi/agents/*.md`.                                                     |
+| `/agents/[name]`         | Agent profile detail with frontmatter, body, and edit link.                                                    |
+| `/agents/[name]/edit`    | Edit an existing agent profile.                                                                                |
+| `/agents/new`            | Author a new agent profile.                                                                                    |
+| `/runs`                  | Runs table from `~/.lionagi/runs/{id}/run.json`, with cost/duration/status filters.                            |
+| `/runs/[id]`             | Run detail with branch timelines, messages, API calls, DAG visualization, and live SSE stream for active runs. |
 
 ## Foundation
 

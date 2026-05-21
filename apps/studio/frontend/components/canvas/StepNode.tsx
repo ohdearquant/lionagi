@@ -90,10 +90,14 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
           {data.label}
         </span>
         {status === "completed" && (
-          <span className="shrink-0 text-meta" style={{ color: "var(--status-success)" }}>✓</span>
+          <span className="shrink-0 text-meta" style={{ color: "var(--status-success)" }}>
+            ✓
+          </span>
         )}
         {status === "failed" && (
-          <span className="shrink-0 text-meta" style={{ color: "var(--status-error)" }}>✕</span>
+          <span className="shrink-0 text-meta" style={{ color: "var(--status-error)" }}>
+            ✕
+          </span>
         )}
       </div>
 
@@ -115,7 +119,9 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         </div>
       )}
 
-      {(data.durationSeconds != null || (data.errorCount ?? 0) > 0 || (data.toolCallCount ?? 0) > 0) && (
+      {(data.durationSeconds != null ||
+        (data.errorCount ?? 0) > 0 ||
+        (data.toolCallCount ?? 0) > 0) && (
         <div className="mt-1.5 flex items-center gap-2 text-meta tabular-nums">
           {data.durationSeconds != null && data.durationSeconds >= 0 ? (
             <span className="text-content-muted">{formatStepDuration(data.durationSeconds)}</span>

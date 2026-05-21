@@ -1,13 +1,7 @@
 import type { ReactNode } from "react";
 
 export type StatusKind = "lifecycle" | "verdict" | "integration" | "role" | "neutral";
-export type StatusTone =
-  | "ok"
-  | "running"
-  | "failed"
-  | "pending"
-  | "blocked"
-  | "neutral";
+export type StatusTone = "ok" | "running" | "failed" | "pending" | "blocked" | "neutral";
 
 export interface StatusPillProps {
   // Raw machine string (e.g. "director-managed-complete"). Used to derive
@@ -96,9 +90,7 @@ function humanize(value: string): string {
   const key = value.toLowerCase().trim();
   if (LABEL_OVERRIDES[key]) return LABEL_OVERRIDES[key];
   // Convert snake_case / kebab-case to Title Case with single spaces
-  return key
-    .replace(/[_-]+/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+  return key.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 // ─── Icon glyphs (text, not SVG — fits monospace UI) ────────────────────────
@@ -148,8 +140,7 @@ export default function StatusPill({
 }: StatusPillProps) {
   const resolvedTone = tone ?? toneFromValue(value);
   const resolvedLabel = label ?? (value ? humanize(value) : "");
-  const resolvedIcon =
-    icon === null ? null : (icon ?? ICON_BY_KIND[kind][resolvedTone] ?? null);
+  const resolvedIcon = icon === null ? null : (icon ?? ICON_BY_KIND[kind][resolvedTone] ?? null);
 
   return (
     <span

@@ -22,43 +22,57 @@ interface Props {
 }
 
 // Status palette — resolved via CSS vars set in globals.css per theme
-const STATUS: Record<
-  StepStatus,
-  { bg: string; border: string; label: string; dot: string }
-> = {
-  pending:   { bg: "var(--dag-pending-bg)",   border: "var(--dag-pending-border)",   label: "var(--dag-pending-label)",   dot: "var(--dag-pending-dot)"   },
-  running:   { bg: "var(--dag-running-bg)",   border: "var(--dag-running-border)",   label: "var(--dag-running-label)",   dot: "var(--dag-running-dot)"   },
-  completed: { bg: "var(--dag-completed-bg)", border: "var(--dag-completed-border)", label: "var(--dag-completed-label)", dot: "var(--dag-completed-dot)" },
-  failed:    { bg: "var(--dag-failed-bg)",    border: "var(--dag-failed-border)",    label: "var(--dag-failed-label)",    dot: "var(--dag-failed-dot)"    },
+const STATUS: Record<StepStatus, { bg: string; border: string; label: string; dot: string }> = {
+  pending: {
+    bg: "var(--dag-pending-bg)",
+    border: "var(--dag-pending-border)",
+    label: "var(--dag-pending-label)",
+    dot: "var(--dag-pending-dot)",
+  },
+  running: {
+    bg: "var(--dag-running-bg)",
+    border: "var(--dag-running-border)",
+    label: "var(--dag-running-label)",
+    dot: "var(--dag-running-dot)",
+  },
+  completed: {
+    bg: "var(--dag-completed-bg)",
+    border: "var(--dag-completed-border)",
+    label: "var(--dag-completed-label)",
+    dot: "var(--dag-completed-dot)",
+  },
+  failed: {
+    bg: "var(--dag-failed-bg)",
+    border: "var(--dag-failed-border)",
+    label: "var(--dag-failed-label)",
+    dot: "var(--dag-failed-dot)",
+  },
 };
 
 // Role tags — muted, low-saturation tones only
 const ROLE_COLOR: Record<string, string> = {
-  researcher:   "#5a7a5a",
-  explorer:     "#5a7a5a",
-  implementer:  "#4a6080",
-  reviewer:     "#4a7070",
-  critic:       "#7a6040",
-  analyst:      "#5a5880",
-  architect:    "#3d6878",
+  researcher: "#5a7a5a",
+  explorer: "#5a7a5a",
+  implementer: "#4a6080",
+  reviewer: "#4a7070",
+  critic: "#7a6040",
+  analyst: "#5a5880",
+  architect: "#3d6878",
   orchestrator: "#6a4a78",
-  tester:       "#3d7060",
+  tester: "#3d7060",
 };
 
 const DEFAULT_ROLE_COLOR = "#4a4a4a";
 
 const NODE_W = 180;
 const NODE_H = 46;
-const GAP_X  = 22;
-const GAP_Y  = 52;
-const PAD_X  = 28;
-const PAD_Y  = 20;
+const GAP_X = 22;
+const GAP_Y = 52;
+const PAD_X = 28;
+const PAD_Y = 20;
 
 // Topological layer assignment (Kahn's algorithm)
-function buildLayers(
-  nodes: WorkerStepNode[],
-  edges: WorkerLinkEdge[],
-): string[][] {
+function buildLayers(nodes: WorkerStepNode[], edges: WorkerLinkEdge[]): string[][] {
   const adj: Record<string, Set<string>> = {};
   const inDeg: Record<string, number> = {};
 
@@ -154,14 +168,12 @@ export default function ExecutionDag({
   const completedSet = new Set(
     executionSteps.filter((s) => s.status === "completed").map((s) => s.step),
   );
-  const failedSet = new Set(
-    executionSteps.filter((s) => s.status === "failed").map((s) => s.step),
-  );
+  const failedSet = new Set(executionSteps.filter((s) => s.status === "failed").map((s) => s.step));
 
   function getStatus(nodeId: string): StepStatus {
-    if (nodeId === currentStep)    return "running";
-    if (completedSet.has(nodeId))  return "completed";
-    if (failedSet.has(nodeId))     return "failed";
+    if (nodeId === currentStep) return "running";
+    if (completedSet.has(nodeId)) return "completed";
+    if (failedSet.has(nodeId)) return "failed";
     return "pending";
   }
 
@@ -229,13 +241,10 @@ export default function ExecutionDag({
   const svgH = isHoriz
     ? Math.max(maxLayerCount * (NODE_H + GAP_Y) - GAP_Y + PAD_Y * 2, 80)
     : Math.max(layers.length * (NODE_H + GAP_Y) - GAP_Y + PAD_Y * 2, 100);
-  const pos = isHoriz
-    ? buildPositionsHoriz(layers, svgH)
-    : buildPositions(layers, svgW);
+  const pos = isHoriz ? buildPositionsHoriz(layers, svgH) : buildPositions(layers, svgW);
 
   // Running edge: dashes for in-progress source→target
-  const isEdgeActive = (e: WorkerLinkEdge) =>
-    e.source === currentStep || e.target === currentStep;
+  const isEdgeActive = (e: WorkerLinkEdge) => e.source === currentStep || e.target === currentStep;
 
   return (
     <div
@@ -255,36 +264,15 @@ export default function ExecutionDag({
       >
         <defs>
           {/* Pending edge arrowhead */}
-          <marker
-            id="arr-pending"
-            markerWidth="7"
-            markerHeight="6"
-            refX="6"
-            refY="3"
-            orient="auto"
-          >
+          <marker id="arr-pending" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto">
             <path d="M0,0 L7,3 L0,6 Z" fill="var(--dag-edge-pending)" />
           </marker>
           {/* Completed edge arrowhead */}
-          <marker
-            id="arr-done"
-            markerWidth="7"
-            markerHeight="6"
-            refX="6"
-            refY="3"
-            orient="auto"
-          >
+          <marker id="arr-done" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto">
             <path d="M0,0 L7,3 L0,6 Z" fill="var(--dag-edge-done)" opacity="0.7" />
           </marker>
           {/* Running edge arrowhead */}
-          <marker
-            id="arr-running"
-            markerWidth="7"
-            markerHeight="6"
-            refX="6"
-            refY="3"
-            orient="auto"
-          >
+          <marker id="arr-running" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto">
             <path d="M0,0 L7,3 L0,6 Z" fill="var(--dag-running-border)" />
           </marker>
         </defs>
@@ -292,11 +280,11 @@ export default function ExecutionDag({
         {/* Edges */}
         {edges.map((e, i) => {
           const from = pos[e.source];
-          const to   = pos[e.target];
+          const to = pos[e.target];
           if (!from || !to) return null;
 
-          const done    = completedSet.has(e.source);
-          const active  = isEdgeActive(e);
+          const done = completedSet.has(e.source);
+          const active = isEdgeActive(e);
           let path: string;
           if (isHoriz) {
             const x1 = from.x + NODE_W;
@@ -320,7 +308,7 @@ export default function ExecutionDag({
               ? "var(--dag-edge-done)"
               : "var(--dag-edge-pending)";
           const strokeWidth = done || active ? 2 : 1.5;
-          const markerEnd   = active
+          const markerEnd = active
             ? "url(#arr-running)"
             : done
               ? "url(#arr-done)"
@@ -355,11 +343,11 @@ export default function ExecutionDag({
           const p = pos[node.id];
           if (!p) return null;
 
-          const status     = getStatus(node.id);
-          const colors     = STATUS[status];
-          const isHovered  = hoveredNode === node.id;
+          const status = getStatus(node.id);
+          const colors = STATUS[status];
+          const isHovered = hoveredNode === node.id;
           const isSelected = selectedNode === node.id;
-          const roleColor  = ROLE_COLOR[node.role] ?? DEFAULT_ROLE_COLOR;
+          const roleColor = ROLE_COLOR[node.role] ?? DEFAULT_ROLE_COLOR;
 
           // Label: wider node → more room, cap at 22 chars
           const maxLabelChars = 22;
@@ -369,13 +357,12 @@ export default function ExecutionDag({
               : node.label;
 
           // Status indicator: small filled circle, top-right corner
-          const DOT_R  = 4;
-          const dotCX  = p.x + NODE_W - DOT_R - 6;
-          const dotCY  = p.y + DOT_R + 5;
+          const DOT_R = 4;
+          const dotCX = p.x + NODE_W - DOT_R - 6;
+          const dotCY = p.y + DOT_R + 5;
 
           // Status icon text (✓ / × / … inside dot area)
-          const statusGlyph =
-            status === "completed" ? "✓" : status === "failed" ? "×" : null;
+          const statusGlyph = status === "completed" ? "✓" : status === "failed" ? "×" : null;
 
           return (
             <g
@@ -393,10 +380,7 @@ export default function ExecutionDag({
                 setHoveredNode(node.id);
                 const svg = (evt.currentTarget as SVGGElement).closest("svg");
                 const svgRect = svg?.getBoundingClientRect();
-                setTooltipNode(svgRect
-                  ? { id: node.id, x: p.x + NODE_W / 2, y: p.y }
-                  : null
-                );
+                setTooltipNode(svgRect ? { id: node.id, x: p.x + NODE_W / 2, y: p.y } : null);
               }}
               onMouseLeave={() => {
                 setHoveredNode(null);
@@ -518,66 +502,65 @@ export default function ExecutionDag({
         })}
 
         {/* Tooltip — rendered last so it's on top */}
-        {tooltipNode && (() => {
-          const node = nodes.find((n) => n.id === tooltipNode.id);
-          const p    = node ? pos[node.id] : null;
-          if (!node || !p) return null;
-          const assignTail = node.assignment
-            ? node.assignment.split("/").pop() ?? ""
-            : null;
-          const tipW  = 160;
-          const tipH  = assignTail ? 46 : 34;
-          const tipX  = Math.min(p.x, svgW - tipW - 4);
-          const tipY  = p.y - tipH - 6;
-          return (
-            <g style={{ pointerEvents: "none" }}>
-              <rect
-                x={tipX}
-                y={Math.max(tipY, 2)}
-                width={tipW}
-                height={tipH}
-                rx={4}
-                fill="var(--surface-overlay, #1e1e2e)"
-                stroke="var(--dag-hover-border)"
-                strokeWidth={1}
-                opacity={0.97}
-              />
-              <text
-                x={tipX + 8}
-                y={Math.max(tipY, 2) + 14}
-                fontSize={10}
-                fontWeight={600}
-                fontFamily="ui-monospace, 'Cascadia Code', monospace"
-                fill="var(--content-primary, #e2e2e9)"
-              >
-                {node.label}
-              </text>
-              {node.role && (
+        {tooltipNode &&
+          (() => {
+            const node = nodes.find((n) => n.id === tooltipNode.id);
+            const p = node ? pos[node.id] : null;
+            if (!node || !p) return null;
+            const assignTail = node.assignment ? (node.assignment.split("/").pop() ?? "") : null;
+            const tipW = 160;
+            const tipH = assignTail ? 46 : 34;
+            const tipX = Math.min(p.x, svgW - tipW - 4);
+            const tipY = p.y - tipH - 6;
+            return (
+              <g style={{ pointerEvents: "none" }}>
+                <rect
+                  x={tipX}
+                  y={Math.max(tipY, 2)}
+                  width={tipW}
+                  height={tipH}
+                  rx={4}
+                  fill="var(--surface-overlay, #1e1e2e)"
+                  stroke="var(--dag-hover-border)"
+                  strokeWidth={1}
+                  opacity={0.97}
+                />
                 <text
                   x={tipX + 8}
-                  y={Math.max(tipY, 2) + 27}
-                  fontSize={9}
+                  y={Math.max(tipY, 2) + 14}
+                  fontSize={10}
+                  fontWeight={600}
                   fontFamily="ui-monospace, 'Cascadia Code', monospace"
-                  fill={ROLE_COLOR[node.role] ?? DEFAULT_ROLE_COLOR}
-                  opacity={0.9}
+                  fill="var(--content-primary, #e2e2e9)"
                 >
-                  {node.role}
+                  {node.label}
                 </text>
-              )}
-              {assignTail && (
-                <text
-                  x={tipX + 8}
-                  y={Math.max(tipY, 2) + 40}
-                  fontSize={8}
-                  fontFamily="ui-monospace, 'Cascadia Code', monospace"
-                  fill="var(--content-muted, #888)"
-                >
-                  {assignTail.length > 20 ? assignTail.slice(0, 19) + "…" : assignTail}
-                </text>
-              )}
-            </g>
-          );
-        })()}
+                {node.role && (
+                  <text
+                    x={tipX + 8}
+                    y={Math.max(tipY, 2) + 27}
+                    fontSize={9}
+                    fontFamily="ui-monospace, 'Cascadia Code', monospace"
+                    fill={ROLE_COLOR[node.role] ?? DEFAULT_ROLE_COLOR}
+                    opacity={0.9}
+                  >
+                    {node.role}
+                  </text>
+                )}
+                {assignTail && (
+                  <text
+                    x={tipX + 8}
+                    y={Math.max(tipY, 2) + 40}
+                    fontSize={8}
+                    fontFamily="ui-monospace, 'Cascadia Code', monospace"
+                    fill="var(--content-muted, #888)"
+                  >
+                    {assignTail.length > 20 ? assignTail.slice(0, 19) + "…" : assignTail}
+                  </text>
+                )}
+              </g>
+            );
+          })()}
       </svg>
     </div>
   );

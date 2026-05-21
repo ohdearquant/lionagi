@@ -61,7 +61,8 @@ function normalizeForm(profile: AgentProfile): AgentProfile {
   if (!provider) {
     const model = profile.model ?? "";
     if (model.startsWith("claude") || model.includes("claude/")) provider = "claude_code";
-    else if (model.startsWith("gpt") || model.startsWith("o3") || model.startsWith("o4")) provider = "codex";
+    else if (model.startsWith("gpt") || model.startsWith("o3") || model.startsWith("o4"))
+      provider = "codex";
     else if (model.startsWith("gemini")) provider = "gemini_code";
     else provider = "claude_code";
   }
@@ -280,9 +281,7 @@ export default function AgentProfileForm({
           {saving ? "Saving..." : mode === "create" ? "Create Agent" : "Save Changes"}
         </Button>
         {!isValid ? (
-          <span className="text-meta text-content-muted">
-            Name, provider, and model required
-          </span>
+          <span className="text-meta text-content-muted">Name, provider, and model required</span>
         ) : null}
       </div>
     </form>

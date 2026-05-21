@@ -19,7 +19,15 @@ interface Stats {
 }
 
 const RUNNING_STATES = new Set(["running", "executing", "in_progress", "director-managed", "open"]);
-const FAILED_STATES = new Set(["failed", "error", "failure", "timeout", "timed_out", "cancelled", "canceled"]);
+const FAILED_STATES = new Set([
+  "failed",
+  "error",
+  "failure",
+  "timeout",
+  "timed_out",
+  "cancelled",
+  "canceled",
+]);
 const COMPLETED_STATES = new Set([
   "completed",
   "done",
@@ -168,10 +176,16 @@ export default function DashboardPage() {
       {stats ? (
         <div className="flex flex-wrap items-center gap-x-5 gap-y-1 rounded border border-edge bg-surface-overlay px-4 py-2.5 text-meta text-content-muted">
           <span className="uppercase tracking-[0.08em] text-content-muted">Inventory</span>
-          <Link href="/playbooks" className="transition-colors duration-100 hover:text-content-primary">
+          <Link
+            href="/playbooks"
+            className="transition-colors duration-100 hover:text-content-primary"
+          >
             <span className="tabular-nums text-content-secondary">{stats.playbooks}</span> playbooks
           </Link>
-          <Link href="/agents" className="transition-colors duration-100 hover:text-content-primary">
+          <Link
+            href="/agents"
+            className="transition-colors duration-100 hover:text-content-primary"
+          >
             <span className="tabular-nums text-content-secondary">{stats.agents}</span> agents
           </Link>
           <Link href="/runs" className="transition-colors duration-100 hover:text-content-primary">
@@ -199,11 +213,7 @@ export default function DashboardPage() {
               </span>
             </div>
           ) : (
-            <RunsTable
-              runs={buckets.attention}
-              emptyText=""
-              now={now}
-            />
+            <RunsTable runs={buckets.attention} emptyText="" now={now} />
           )}
         </section>
 
@@ -265,15 +275,7 @@ export default function DashboardPage() {
   );
 }
 
-function SectionHeader({
-  title,
-  count,
-  href,
-}: {
-  title: string;
-  count: number;
-  href: string;
-}) {
+function SectionHeader({ title, count, href }: { title: string; count: number; href: string }) {
   return (
     <div className="mb-2.5 flex items-center justify-between">
       <div className="flex items-center gap-2">

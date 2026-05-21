@@ -31,10 +31,7 @@ export default function NewAgentPage() {
   return (
     <main className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 py-6 text-content-primary">
       <header className="flex flex-col gap-2 border-b border-edge pb-4">
-        <Link
-          href="/agents"
-          className="text-meta text-content-muted hover:text-content-primary"
-        >
+        <Link href="/agents" className="text-meta text-content-muted hover:text-content-primary">
           / agents
         </Link>
         <h1 className="text-xl font-semibold text-content-primary">New Agent</h1>

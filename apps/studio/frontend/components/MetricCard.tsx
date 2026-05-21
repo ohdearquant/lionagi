@@ -64,20 +64,18 @@ export default function MetricCard({
         <span className="truncate">{label}</span>
       </div>
       <div className="mt-2 flex items-baseline gap-2">
-        <div className={`text-2xl font-semibold tabular-nums tracking-tight ${TONE_VALUE_TEXT[tone]}`}>
+        <div
+          className={`text-2xl font-semibold tabular-nums tracking-tight ${TONE_VALUE_TEXT[tone]}`}
+        >
           {value}
         </div>
         {delta ? (
-          <div
-            className={`text-meta tabular-nums ${DELTA_CLASS[delta.tone ?? "neutral"]}`}
-          >
+          <div className={`text-meta tabular-nums ${DELTA_CLASS[delta.tone ?? "neutral"]}`}>
             {delta.text}
           </div>
         ) : null}
       </div>
-      {hint ? (
-        <div className="mt-1 text-meta text-content-muted truncate">{hint}</div>
-      ) : null}
+      {hint ? <div className="mt-1 text-meta text-content-muted truncate">{hint}</div> : null}
     </>
   );
 
@@ -86,18 +84,14 @@ export default function MetricCard({
       <button
         type="button"
         onClick={onClick}
-        className={[base, TONE_BORDER[tone], interactiveCls, className]
-          .filter(Boolean)
-          .join(" ")}
+        className={[base, TONE_BORDER[tone], interactiveCls, className].filter(Boolean).join(" ")}
       >
         {content}
       </button>
     );
   }
   return (
-    <section
-      className={[base, TONE_BORDER[tone], className].filter(Boolean).join(" ")}
-    >
+    <section className={[base, TONE_BORDER[tone], className].filter(Boolean).join(" ")}>
       {content}
     </section>
   );

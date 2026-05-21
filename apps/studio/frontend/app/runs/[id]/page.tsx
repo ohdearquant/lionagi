@@ -48,7 +48,13 @@ function branchToRunStep(branch: SessionBranch, status: string): RunStep {
 
     if (kind === "system") {
       const text = String(content.system_message ?? content.system ?? content.guidance ?? "");
-      if (text) runMessages.push({ role: "system", content: text, sender: m.sender ?? "", timestamp: m.timestamp });
+      if (text)
+        runMessages.push({
+          role: "system",
+          content: text,
+          sender: m.sender ?? "",
+          timestamp: m.timestamp,
+        });
       continue;
     }
 
@@ -79,7 +85,7 @@ function branchToRunStep(branch: SessionBranch, status: string): RunStep {
       const respMsg = respId ? responseById.get(respId) : null;
       if (respMsg) pairedResponseIds.add(respMsg.id);
 
-      const respContent = respMsg ? (respMsg.content ?? {}) as Record<string, unknown> : {};
+      const respContent = respMsg ? ((respMsg.content ?? {}) as Record<string, unknown>) : {};
       const output = respMsg ? String(respContent.output ?? "") : "";
 
       const summary = Object.entries(args)
@@ -200,7 +206,9 @@ interface OverviewData {
 function OverviewSection({ data }: { data: OverviewData }) {
   const stats: Array<{ label: string; value: string; tone?: "ok" | "error" }> = [
     { label: "Status", value: data.status },
-    ...(data.durationSec != null ? [{ label: "Duration", value: formatDuration(data.durationSec) }] : []),
+    ...(data.durationSec != null
+      ? [{ label: "Duration", value: formatDuration(data.durationSec) }]
+      : []),
     { label: "Branches", value: String(data.branchCount) },
     { label: "Messages", value: String(data.messageCount) },
     { label: "Tool calls", value: String(data.toolCallCount) },
@@ -245,7 +253,9 @@ function OverviewSection({ data }: { data: OverviewData }) {
           <div className="mt-3 flex flex-wrap gap-3 border-t border-edge-subtle pt-3">
             {provenance.map((p) => (
               <div key={p.label} className="flex items-center gap-1.5">
-                <span className="text-[9px] uppercase tracking-wide text-content-muted">{p.label}</span>
+                <span className="text-[9px] uppercase tracking-wide text-content-muted">
+                  {p.label}
+                </span>
                 <span className="font-mono text-meta text-content-secondary">{p.value}</span>
               </div>
             ))}
@@ -348,14 +358,19 @@ function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
             const isOpen = expandedGroups.has(fn);
             const first = errs[0];
             return (
-              <div key={fn} className="rounded border border-l-2 border-edge border-l-status-error bg-surface-raised">
+              <div
+                key={fn}
+                className="rounded border border-l-2 border-edge border-l-status-error bg-surface-raised"
+              >
                 <button
                   type="button"
                   onClick={() => toggleGroup(fn)}
                   className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-surface-overlay"
                 >
                   <span className="mt-0.5 text-body text-content-muted">{isOpen ? "▾" : "▸"}</span>
-                  <span className="font-mono text-[11px] font-semibold text-status-error">{fn}</span>
+                  <span className="font-mono text-[11px] font-semibold text-status-error">
+                    {fn}
+                  </span>
                   <span className="rounded bg-status-error-bg px-1.5 py-0 font-mono text-[9px] text-status-error">
                     ×{errs.length}
                   </span>
@@ -363,7 +378,15 @@ function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
                     first in{" "}
                     <span className="font-mono text-content-secondary">{first.branch}</span>
                     {first.timestamp != null && (
-                      <> · {new Date(first.timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</>
+                      <>
+                        {" "}
+                        ·{" "}
+                        {new Date(first.timestamp * 1000).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                          second: "2-digit",
+                        })}
+                      </>
                     )}
                   </span>
                   {!isOpen && first.output && (
@@ -380,16 +403,24 @@ function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
                           <span className="font-mono text-content-secondary">{err.branch}</span>
                           {err.timestamp != null && (
                             <span className="text-content-muted">
-                              {new Date(err.timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                              {new Date(err.timestamp * 1000).toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                                second: "2-digit",
+                              })}
                             </span>
                           )}
                         </div>
                         {err.summary && (
-                          <p className="truncate font-mono text-[10px] text-content-secondary">$ {err.summary}</p>
+                          <p className="truncate font-mono text-[10px] text-content-secondary">
+                            $ {err.summary}
+                          </p>
                         )}
                         {err.output && (
                           <pre className="max-h-32 overflow-auto rounded border border-status-error/20 bg-status-error-bg p-2 font-mono text-[10px] leading-relaxed text-status-error">
-                            {err.output.length > 1500 ? err.output.slice(0, 1500) + "\n…[truncated]" : err.output}
+                            {err.output.length > 1500
+                              ? err.output.slice(0, 1500) + "\n…[truncated]"
+                              : err.output}
                           </pre>
                         )}
                       </div>
@@ -525,7 +556,12 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
             ...prev,
             branches: [
               ...prev.branches,
-              { id: branchId, name: branchId.slice(0, 8), created_at: msg.timestamp, messages: [msg] },
+              {
+                id: branchId,
+                name: branchId.slice(0, 8),
+                created_at: msg.timestamp,
+                messages: [msg],
+              },
             ],
           };
         });
@@ -619,9 +655,18 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
       <main className="flex items-center justify-center py-20">
         <div className="flex flex-col items-center gap-3">
           <div className="flex gap-1">
-            <span className="block h-2 w-2 rounded-full bg-content-muted opacity-60 animate-bounce" style={{ animationDelay: "0ms" }} />
-            <span className="block h-2 w-2 rounded-full bg-content-muted opacity-60 animate-bounce" style={{ animationDelay: "150ms" }} />
-            <span className="block h-2 w-2 rounded-full bg-content-muted opacity-60 animate-bounce" style={{ animationDelay: "300ms" }} />
+            <span
+              className="block h-2 w-2 rounded-full bg-content-muted opacity-60 animate-bounce"
+              style={{ animationDelay: "0ms" }}
+            />
+            <span
+              className="block h-2 w-2 rounded-full bg-content-muted opacity-60 animate-bounce"
+              style={{ animationDelay: "150ms" }}
+            />
+            <span
+              className="block h-2 w-2 rounded-full bg-content-muted opacity-60 animate-bounce"
+              style={{ animationDelay: "300ms" }}
+            />
           </div>
           <p className="text-meta text-content-muted">Loading session…</p>
         </div>
@@ -650,9 +695,18 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
     toolCallCount,
     errorCount: errors.length,
     // These may be null/undefined for sessions without enriched metadata
-    showTopic: (session as unknown as Record<string, unknown>).show_topic as string | null | undefined,
-    showPlayName: (session as unknown as Record<string, unknown>).show_play_name as string | null | undefined,
-    playbookName: (session as unknown as Record<string, unknown>).playbook_name as string | null | undefined,
+    showTopic: (session as unknown as Record<string, unknown>).show_topic as
+      | string
+      | null
+      | undefined,
+    showPlayName: (session as unknown as Record<string, unknown>).show_play_name as
+      | string
+      | null
+      | undefined,
+    playbookName: (session as unknown as Record<string, unknown>).playbook_name as
+      | string
+      | null
+      | undefined,
   };
 
   const navSections: NavSection[] = [
@@ -666,7 +720,10 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
     <div className="flex min-h-screen w-full flex-col bg-surface-base text-content-primary animate-page-enter">
       {/* Header */}
       <header className="sticky top-11 z-30 flex items-center gap-3 border-b border-edge bg-surface-base px-3 py-1.5 xl:px-4">
-        <Link href="/runs" className="shrink-0 text-sm text-content-secondary hover:text-content-primary">
+        <Link
+          href="/runs"
+          className="shrink-0 text-sm text-content-secondary hover:text-content-primary"
+        >
           ← runs
         </Link>
         <span className="text-content-muted">/</span>
@@ -702,17 +759,24 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
               <dl className="flex flex-col gap-1">
                 <div className="flex items-start justify-between gap-2">
                   <dt className="shrink-0 text-[10px] text-content-secondary">ID</dt>
-                  <dd className="min-w-0 truncate text-right font-mono text-[10px] text-content-primary" title={session.id}>
+                  <dd
+                    className="min-w-0 truncate text-right font-mono text-[10px] text-content-primary"
+                    title={session.id}
+                  >
                     {session.id.slice(0, 12)}…
                   </dd>
                 </div>
                 <div className="flex items-start justify-between gap-2">
                   <dt className="shrink-0 text-[10px] text-content-secondary">Started</dt>
-                  <dd className="text-right text-[10px] text-content-primary">{formatTime(session.created_at)}</dd>
+                  <dd className="text-right text-[10px] text-content-primary">
+                    {formatTime(session.created_at)}
+                  </dd>
                 </div>
                 <div className="flex items-start justify-between gap-2">
                   <dt className="shrink-0 text-[10px] text-content-secondary">Branches</dt>
-                  <dd className="text-right text-[10px] text-content-primary">{session.branches.length}</dd>
+                  <dd className="text-right text-[10px] text-content-primary">
+                    {session.branches.length}
+                  </dd>
                 </div>
                 <div className="flex items-start justify-between gap-2">
                   <dt className="shrink-0 text-[10px] text-content-secondary">Messages</dt>
