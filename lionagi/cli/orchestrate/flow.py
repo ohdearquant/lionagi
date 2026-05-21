@@ -473,24 +473,30 @@ async def _run_flow(
         dry_run=dry_run,
         show_graph=show_graph,
     )
+    # ADR-0025: distinguish timed_out / aborted / cancelled / failed.
     _terminal_status = "completed"
     try:
         if timeout:
             with move_on_after(timeout) as cancel_scope:
                 result = await _run_flow_inner(model_spec, prompt, **inner_kw)
             if cancel_scope.cancelled_caught:
-                _terminal_status = "aborted"
+                _terminal_status = "timed_out"
                 raise LionTimeoutError(f"Flow timed out after {timeout}s")
             return result
         return await _run_flow_inner(model_spec, prompt, **inner_kw)
     except KeyboardInterrupt:
         _terminal_status = "aborted"
         raise
+    except LionTimeoutError:
+        # Set in the move_on_after branch above; preserve through any
+        # re-raise so finally writes the correct terminal status.
+        _terminal_status = "timed_out"
+        raise
     except BaseException as exc:
         from lionagi.ln.concurrency import get_cancelled_exc_class
 
         if isinstance(exc, get_cancelled_exc_class()):
-            _terminal_status = "aborted"
+            _terminal_status = "cancelled"
         else:
             _terminal_status = "failed"
         raise

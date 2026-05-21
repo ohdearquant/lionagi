@@ -12,8 +12,13 @@ from ._path_safety import public_path, safe_path_join
 
 _STATUS_ALIASES: dict[str, set[str]] = {
     "done": {"done", "completed", "success", "finished"},
-    "cancelled": {"cancelled", "canceled", "aborted"},
-    "canceled": {"cancelled", "canceled", "aborted"},
+    # ADR-0025: cancelled (system/orchestrator) and aborted (Ctrl-C) are
+    # operationally distinct; only collapse the US/UK spelling.
+    "cancelled": {"cancelled", "canceled"},
+    "canceled": {"cancelled", "canceled"},
+    "aborted": {"aborted", "aborted_after_finish"},
+    "timed_out": {"timed_out", "timeout"},
+    "timeout": {"timed_out", "timeout"},
     "pending": {"pending", "prepared"},
 }
 

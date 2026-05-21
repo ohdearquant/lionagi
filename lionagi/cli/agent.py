@@ -8,6 +8,7 @@ import argparse
 import json
 
 from lionagi import Branch
+from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.ln.concurrency import run_async
 from lionagi.protocols.generic.log import DataLoggerConfig
 
@@ -37,10 +38,12 @@ async def _run_agent(
     cwd: str | None = None,
     timeout: int | None = None,
     fast: bool = False,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str]:
     """Execute one agent turn (new or resumed).
 
-    Returns (result, provider, branch_id).
+    Returns (result, provider, branch_id, terminal_status). ``terminal_status``
+    is one of ``ADR-0025`` ``SESSION_TERMINAL_STATUSES`` and drives the CLI
+    exit-code mapping in :func:`run_agent`.
     """
     if resume and continue_last:
         raise ValueError(
@@ -127,6 +130,9 @@ async def _run_agent(
         artifacts_path=str(run.artifact_root),
     )
 
+    # ADR-0025: distinguish timed_out / aborted / cancelled / failed so
+    # operators can tell "retry with more time" from "investigate" from
+    # "user pressed Ctrl-C" from "orchestrator cascaded a cancel."
     _terminal_status = "completed"
     try:
         res = await branch.operate(
@@ -144,8 +150,8 @@ async def _run_agent(
     except KeyboardInterrupt:
         _terminal_status = "aborted"
         raise
-    except TimeoutError:
-        _terminal_status = "failed"
+    except (TimeoutError, LionTimeoutError):
+        _terminal_status = "timed_out"
         from lionagi.cli._logging import warn
         warn(f"agent timed out after {timeout}s")
         res = None
@@ -153,7 +159,7 @@ async def _run_agent(
         from lionagi.ln.concurrency import get_cancelled_exc_class
 
         if isinstance(exc, get_cancelled_exc_class()):
-            _terminal_status = "aborted"
+            _terminal_status = "cancelled"
         else:
             _terminal_status = "failed"
         raise
@@ -175,7 +181,18 @@ async def _run_agent(
     # Save branch pointer for --continue-last / -r resume
     save_last_branch_pointer(run.run_id, branch_id)
 
-    return res or "", provider, branch_id
+    return res or "", provider, branch_id, _terminal_status
+
+
+# ADR-0025 exit-code mapping. UNIX conventions: 124 matches GNU coreutils
+# ``timeout``; 130 / 143 = 128 + signal number (SIGINT / SIGTERM).
+_EXIT_CODE_BY_TERMINAL_STATUS: dict[str, int] = {
+    "completed": 0,
+    "failed": 1,
+    "timed_out": 124,
+    "aborted": 130,
+    "cancelled": 143,
+}
 
 
 async def _setup_live_persist(
@@ -464,7 +481,11 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run_agent(args: argparse.Namespace) -> int:
-    """Dispatch agent command."""
+    """Dispatch agent command.
+
+    Exit codes follow ADR-0025: 0 completed, 1 failed, 124 timed_out,
+    130 aborted (Ctrl-C), 143 cancelled (system / orchestrator).
+    """
     has_model = args.model is not None or args.agent is not None
     if not has_model and not (args.resume or args.continue_last):
         log_error(
@@ -472,25 +493,37 @@ def run_agent(args: argparse.Namespace) -> int:
         )
         return 1
 
-    result, provider, branch_id = run_async(
-        _run_agent(
-            args.model,
-            args.prompt,
-            yolo=args.yolo,
-            verbose=args.verbose,
-            theme=args.theme,
-            resume=args.resume,
-            continue_last=args.continue_last,
-            effort=args.effort,
-            agent_name=args.agent,
-            cwd=args.cwd,
-            timeout=args.timeout,
-            fast=args.fast,
+    try:
+        result, provider, branch_id, terminal_status = run_async(
+            _run_agent(
+                args.model,
+                args.prompt,
+                yolo=args.yolo,
+                verbose=args.verbose,
+                theme=args.theme,
+                resume=args.resume,
+                continue_last=args.continue_last,
+                effort=args.effort,
+                agent_name=args.agent,
+                cwd=args.cwd,
+                timeout=args.timeout,
+                fast=args.fast,
+            )
         )
-    )
+    except KeyboardInterrupt:
+        # Teardown inside ``_run_agent`` already recorded
+        # ``status='aborted'`` under a shielded scope before re-raising.
+        return _EXIT_CODE_BY_TERMINAL_STATUS["aborted"]
+    except BaseException as exc:
+        from lionagi.ln.concurrency import get_cancelled_exc_class
+
+        if isinstance(exc, get_cancelled_exc_class()):
+            return _EXIT_CODE_BY_TERMINAL_STATUS["cancelled"]
+        raise
+
     if not args.verbose:
         # The final response is user-facing result output — stdout, not a log.
         print(f"\n{result}" if result is not None else "", flush=True)
 
     hint(f'\n[to resume] li agent -r {branch_id} "..."')
-    return 0 if result is not None else 1
+    return _EXIT_CODE_BY_TERMINAL_STATUS.get(terminal_status, 1)

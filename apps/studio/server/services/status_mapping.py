@@ -10,23 +10,15 @@ Do not use this map for lifecycle validation or session state-machine transition
 
 from __future__ import annotations
 
-# F-A1-7 (ADR-0011, ADR-0017): DISPLAY_MAP must only contain values present
-# in the closed ADR vocabularies.
+# F-A1-7 (ADR-0011, ADR-0017, ADR-0025): DISPLAY_MAP must only contain
+# values present in the closed ADR vocabularies.
 #
 # ADR-0011 plays.status CHECK vocabulary (11 values):
 #   pending, prepared, running, running_complete, gated, gate_failed,
 #   redoing, merged, escalated, blocked, aborted_after_finish
 #
-# ADR-0017 sessions.status CHECK vocabulary (4 values):
-#   running, completed, failed, aborted
-#
-# Removed entries that appeared in neither ADR vocabulary:
-#   "done"      → not in any ADR CHECK constraint
-#   "success"   → not in any ADR CHECK constraint
-#   "finished"  → not in any ADR CHECK constraint
-#   "error"     → not in any ADR CHECK constraint
-#   "cancelled" → not in any ADR CHECK constraint (ADR uses "aborted")
-#   "canceled"  → not in any ADR CHECK constraint (ADR uses "aborted")
+# ADR-0025 sessions.status vocabulary (6 values; supersedes ADR-0017):
+#   running, completed, failed, timed_out, aborted, cancelled
 DISPLAY_MAP: dict[str, str] = {
     # play statuses (ADR-0011)
     "pending": "pending",
@@ -40,10 +32,12 @@ DISPLAY_MAP: dict[str, str] = {
     "escalated": "escalated",
     "blocked": "blocked",
     "aborted_after_finish": "aborted",
-    # session statuses (ADR-0017)
+    # session statuses (ADR-0025)
     "completed": "completed",
     "failed": "failed",
+    "timed_out": "timed_out",
     "aborted": "aborted",
+    "cancelled": "cancelled",
 }
 
 
