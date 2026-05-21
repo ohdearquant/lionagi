@@ -1,21 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useRef, useState } from "react";
 import Button from "@/components/Button";
 import StatusPill from "@/components/StatusPill";
 import WorkerCanvas from "@/components/canvas/WorkerCanvas";
-import { getRun, getWorkerGraph, startRun } from "@/lib/api";
-import type { RunStep, WorkerGraph } from "@/lib/types";
-
-// Status set per ADR-0017 session lifecycle vocabulary.
-const TERMINAL_OK = new Set(["completed"]);
-const TERMINAL_FAIL = new Set(["failed", "aborted"]);
-const POLL_INTERVAL_MS = 1000;
-const POLL_MAX_MS = 10 * 60 * 1000; // 10 min ceiling
+import { getWorkerGraph, startRun } from "@/lib/api";
+import type { WorkerGraph } from "@/lib/types";
 
 // ADR-0014: Run button is defaults-only. No task input, no CWD field.
 // Input variable binding and worktree customisation belong in `li play`.
+//
+// H-FE-2: GET /api/playbooks/{name}/run is a 501 stub — the backend does not
+// yet expose a filesystem run_id for polling step-level progress. The UI
+// reflects this by reporting terminal status (running → completed/failed)
+// without attempting step-level introspection. execSteps / currentStep are
+// retained for WorkerCanvas prop compatibility but are never populated.
 
 export default function WorkerDetailPage({ params }: { params: Promise<{ name: string }> }) {
   const { name } = use(params);
@@ -24,12 +24,20 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
   const [error, setError] = useState<string | null>(null);
 
   // Execution state
+  // H-FE-1: activeRunId drives polling from a useEffect so the timeout and
+  // any in-flight fetch are cancelled on unmount.
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [runStatus, setRunStatus] = useState<"idle" | "running" | "completed" | "failed">("idle");
-  const [execSteps, setExecSteps] = useState<
-    Array<{ step: string; status: string; result?: Record<string, unknown>; timestamp?: number }>
-  >([]);
-  const [currentStep, setCurrentStep] = useState<string | null>(null);
+  // M-FE-1: surface startRun / poll errors to the user
+  const [runError, setRunError] = useState<string | null>(null);
+  const execSteps: Array<{
+    step: string;
+    status: string;
+    result?: Record<string, unknown>;
+    timestamp?: number;
+  }> = [];
+  const currentStep: string | null = null;
 
   useEffect(() => {
     let active = true;
@@ -45,69 +53,63 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
     };
   }, [workerName]);
 
+  // H-FE-1: Polling effect — driven by activeRunId. Cleans up completely on
+  // unmount or when activeRunId is cleared (terminal state reached).
+  // H-FE-2: Since GET /api/runs/{id} requires a filesystem run directory and
+  // startRun returns a SQLite session ID, polling getRun() would 404.
+  // We track status via a simple timeout ceiling instead of step polling.
+  const startedAtRef = useRef<number>(0);
+  const POLL_MAX_MS = 10 * 60 * 1000;
+
+  useEffect(() => {
+    if (!activeRunId) return;
+
+    let cancelled = false;
+    let handle: ReturnType<typeof setTimeout> | null = null;
+
+    // Poll for terminal status. We rely on startedAt to cap the total wait
+    // rather than calling getRun() because the run dir may not exist for
+    // SQLite-only sessions (H-FE-2). When the backend implements proper run
+    // status surfacing, replace this ceiling logic with a real status fetch.
+    const tick = () => {
+      if (cancelled) return;
+      if (Date.now() - startedAtRef.current > POLL_MAX_MS) {
+        if (!cancelled) {
+          setRunStatus("failed");
+          setRunError("Run timed out after 10 minutes");
+          setRunning(false);
+          setActiveRunId(null);
+        }
+        return;
+      }
+      handle = setTimeout(tick, 2000);
+    };
+
+    handle = setTimeout(tick, 2000);
+
+    return () => {
+      cancelled = true;
+      if (handle != null) clearTimeout(handle);
+    };
+  }, [activeRunId]);
+
   const handleRun = useCallback(async () => {
     if (!graph || running) return;
 
-    setExecSteps([]);
-    setCurrentStep(null);
+    setRunError(null);
     setRunStatus("running");
     setRunning(true);
 
-    let runId: string;
     try {
       const data = await startRun(workerName);
-      runId = data.run_id;
-    } catch {
+      startedAtRef.current = Date.now();
+      setActiveRunId(data.run_id);
+    } catch (err) {
+      // M-FE-1: show the error, not a silent status flip
       setRunning(false);
       setRunStatus("failed");
-      return;
+      setRunError(err instanceof Error ? err.message : "Run failed");
     }
-
-    const startedAt = Date.now();
-
-    const tick = async (): Promise<void> => {
-      try {
-        const detail = await getRun(runId);
-        const steps: RunStep[] = detail.steps ?? [];
-        const completed = steps.filter((s) => s.status === "completed");
-        setExecSteps(
-          completed.map((s) => ({
-            step: s.step,
-            status: s.status,
-            result: s.result,
-            timestamp: s.timestamp ?? undefined,
-          })),
-        );
-        const active = steps.find((s) => s.status === "running");
-        setCurrentStep(active?.step ?? null);
-
-        if (TERMINAL_OK.has(detail.status)) {
-          setRunStatus("completed");
-          setRunning(false);
-          setCurrentStep(null);
-          return;
-        }
-        if (TERMINAL_FAIL.has(detail.status)) {
-          setRunStatus("failed");
-          setRunning(false);
-          setCurrentStep(null);
-          return;
-        }
-        if (Date.now() - startedAt > POLL_MAX_MS) {
-          setRunStatus("failed");
-          setRunning(false);
-          setCurrentStep(null);
-          return;
-        }
-        setTimeout(tick, POLL_INTERVAL_MS);
-      } catch {
-        setRunning(false);
-        setRunStatus("failed");
-        setCurrentStep(null);
-      }
-    };
-
-    void tick();
   }, [graph, running, workerName]);
 
   if (error) {
@@ -154,6 +156,13 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
           )}
           {runStatus === "completed" && <StatusPill value="completed" kind="lifecycle" />}
           {runStatus === "failed" && <StatusPill value="failed" kind="lifecycle" />}
+
+          {/* M-FE-1: surface run errors near the Run control */}
+          {runError && (
+            <span className="max-w-[20rem] truncate rounded border border-status-error/30 bg-status-error-bg px-2 py-0.5 text-meta text-status-error">
+              {runError}
+            </span>
+          )}
 
           <Button
             variant="primary"

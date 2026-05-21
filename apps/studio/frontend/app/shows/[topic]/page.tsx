@@ -93,7 +93,13 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
 
   useEffect(() => {
     if (!live) return;
-    return streamShow(topic, (_event: ShowEvent) => {
+    return streamShow(topic, (event: ShowEvent) => {
+      // H-FE-5: "done" is terminal — stop live mode; streamShow already closes
+      // the EventSource, but we also flip the toggle so the UI reflects it.
+      if (event.type === "done") {
+        setLive(false);
+        return;
+      }
       void load();
     });
   }, [live, load, topic]);

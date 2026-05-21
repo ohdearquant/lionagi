@@ -46,15 +46,17 @@ const STUCK_RUN_SECONDS = 30 * 60;
 
 function durationSeconds(run: RunSummary, nowSec: number): number | null {
   if (run.started_at == null) return null;
-  const end = run.finished_at ?? nowSec;
+  // H-FE-3: use ended_at (SQLite field) instead of stale finished_at
+  const end = run.ended_at ?? nowSec;
   return end - run.started_at;
 }
 
 function isInRange(run: RunSummary, windowSec: number | null, nowSec: number): boolean {
   if (!windowSec) return true;
-  // a run is "in range" if it started or finished within the window
+  // a run is "in range" if it started or ended within the window
   if (run.started_at != null && nowSec - run.started_at <= windowSec) return true;
-  if (run.finished_at != null && nowSec - run.finished_at <= windowSec) return true;
+  // H-FE-3: use ended_at (SQLite field) instead of stale finished_at
+  if (run.ended_at != null && nowSec - run.ended_at <= windowSec) return true;
   return false;
 }
 
@@ -337,7 +339,8 @@ function RunsTable({
                   </Link>
                 </td>
                 <td className="px-3 py-2 text-content-secondary truncate max-w-[12rem]">
-                  {run.worker_name || "—"}
+                  {/* H-FE-3: playbook_name replaces stale worker_name */}
+                  {run.playbook_name || run.agent_name || "—"}
                 </td>
                 <td className="px-3 py-2">
                   <StatusPill value={run.status} kind="lifecycle" />

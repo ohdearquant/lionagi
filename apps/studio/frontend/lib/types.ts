@@ -1,16 +1,25 @@
 // ─── Run types ───────────────────────────────────────────────────────────────
 
+// H-FE-3: RunSummary matches the actual SQLite-session response shape from
+// list_runs() (services/runs.py). Fields worker_name/finished_at were stale
+// filesystem-run remnants; the real fields are playbook_name/ended_at etc.
 export interface RunSummary {
   run_id: string;
-  state_root: string;
-  artifact_root: string;
-  worker_name: string;
-  task: string;
+  id?: string;
+  name?: string | null;
+  playbook_name?: string | null;
+  agent_name?: string | null;
+  invocation_kind?: string | null;
+  show_topic?: string | null;
+  show_play_name?: string | null;
+  source_kind?: string;
   status: string;
-  step_count: number;
   started_at: number | null;
-  finished_at: number | null;
-  model?: string;
+  ended_at?: number | null;
+  created_at?: number | null;
+  updated_at?: number | null;
+  branch_count?: number;
+  message_count?: number;
 }
 
 export interface RunMessage {
@@ -38,13 +47,14 @@ export interface RunDetail {
   run_id: string;
   state_root: string;
   artifact_root: string;
-  worker_name: string;
-  task: string;
+  worker_name?: string;
+  task?: string;
   status: string;
   error: string | null;
   cwd: string | null;
   started_at: number | null;
-  finished_at: number | null;
+  finished_at?: number | null;
+  ended_at?: number | null;
   steps?: RunStep[];
   graph: { nodes: WorkerStepNode[]; edges: WorkerLinkEdge[] };
   manifest: Record<string, unknown>;
@@ -210,6 +220,8 @@ export interface ShowDetail {
   show_md: string | null;
   goal?: string | null;
   status?: string;
+  // M-FE-2: status_source added by backend agent (H-BE-3)
+  status_source?: "sqlite" | "filesystem";
   plays: Array<{
     name: string;
     meta: PlayMeta;
@@ -222,8 +234,10 @@ export interface ShowDetail {
   }>;
 }
 
+// H-FE-5: "done" is the terminal SSE event emitted by shows.py:456-458.
+// The EventSource MUST be closed when this event arrives.
 export interface ShowEvent {
-  type: "new" | "change" | "delete";
-  path: string;
+  type: "new" | "change" | "delete" | "done";
+  path?: string;
   size?: number;
 }

@@ -292,10 +292,16 @@ export async function getShow(topic: string): Promise<ShowDetail> {
   return fetchJson<ShowDetail>(`/api/shows/${encodeURIComponent(topic)}`);
 }
 
+// H-FE-5: terminal {"type":"done"} event from shows.py:456-458 MUST close
+// the EventSource. Caller receives the event then the source is closed.
 export function streamShow(topic: string, onEvent: (event: ShowEvent) => void): () => void {
   const source = new EventSource(`${API_BASE}/api/shows/${encodeURIComponent(topic)}/stream`);
   source.onmessage = (message) => {
-    onEvent(JSON.parse(message.data) as ShowEvent);
+    const event = JSON.parse(message.data) as ShowEvent;
+    onEvent(event);
+    if (event.type === "done") {
+      source.close();
+    }
   };
   return () => source.close();
 }
@@ -428,13 +434,20 @@ export async function saveDefinition(
   );
 }
 
+// H-FE-4: version is a query param per ADR-0016 and definitions.py:58-63,
+// not a path segment. Return type updated to include full rollback response.
 export async function rollbackDefinition(
   kind: string,
   name: string,
   version: number,
-): Promise<{ version: number }> {
-  return fetchJson<{ version: number }>(
-    `/api/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}/rollback/${version}`,
+): Promise<{
+  version: number;
+  saved_at: number;
+  rolled_back_from: number;
+  rolled_back_to: number;
+}> {
+  return fetchJson(
+    `/api/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}/rollback?version=${version}`,
     { method: "POST" },
   );
 }
