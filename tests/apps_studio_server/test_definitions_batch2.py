@@ -52,6 +52,7 @@ class _FakeDB:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 class TestListDefinitionsNPlusOne:
     def _setup(self, tmp_path, monkeypatch, n_agents=3):
         import apps.studio.server.services.definitions as defs_mod

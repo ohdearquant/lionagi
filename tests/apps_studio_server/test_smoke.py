@@ -111,12 +111,14 @@ def _make_client(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 def test_app_imports():
     from apps.studio.server.app import app
 
     assert app.title == "Lion Studio Server"
 
 
+@pytest.mark.integration
 def test_stats_route(tmp_path, monkeypatch):
     client = _make_client(tmp_path, monkeypatch)
     r = client.get("/api/stats")

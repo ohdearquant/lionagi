@@ -29,6 +29,7 @@ def _run(coro):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 class TestStatusSourceMigration:
     def test_new_db_has_status_source_column(self, tmp_path):
         """A freshly created StateDB must have status_source on the shows table."""

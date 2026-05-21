@@ -189,12 +189,12 @@ timeout_method = "thread"
 markers = [
     "performance: marks tests as performance benchmarks",
     "slow: marks tests as slow (> 1 second)",
-    "integration: marks tests as integration tests",
+    "integration: exercises multiple Studio server components, FastAPI TestClient, SQLite, or filesystem state",
     "unit: marks tests as unit tests",
     "asyncio: marks tests as async",
     "property: marks tests as property-based tests",
     "migration: marks tests as migration/compatibility tests",
-    "network: marks tests requiring network calls",
+    "network: requires network access",
 ]
 filterwarnings = [
     # Ignore Pydantic deprecation warnings from external datamodel-code-generator

@@ -82,6 +82,7 @@ class TestPublicPath:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 class TestDefinitionsDiskPath:
     def test_list_definitions_disk_path_not_absolute(self, tmp_path, monkeypatch):
         """list_definitions() must not expose absolute disk_path in response."""
@@ -265,6 +266,7 @@ class TestMarketplaceSourcePaths:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 class TestBearerTokenAuth:
     def _get_client(self, monkeypatch) -> TestClient:
         import apps.studio.server.app as app_mod
