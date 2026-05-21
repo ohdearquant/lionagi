@@ -89,21 +89,28 @@ async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
                 "updated_at": f.stat().st_mtime,
             }
 
-            if await _ensure_db():
-                async with aiosqlite.connect(_DB) as db:
-                    await db.execute("PRAGMA journal_mode = WAL")
-                    db.row_factory = aiosqlite.Row
-                    cur = await db.execute(
-                        "SELECT MAX(version) as v, MAX(created_at) as ts FROM definitions WHERE kind = ? AND name = ?",
-                        (k, name),
-                    )
-                    row = await cur.fetchone()
-                    if row and row["v"] is not None:
-                        entry["has_versions"] = True
-                        entry["version"] = row["v"]
-                        entry["updated_at"] = row["ts"] or entry["updated_at"]
-
             result.append(entry)
+
+    # Batch-enrich all entries with version info in one DB round-trip (#989).
+    if result and await _ensure_db():
+        conditions = " OR ".join("(kind = ? AND name = ?)" for _ in result)
+        params = [value for item in result for value in (item["kind"], item["name"])]
+        async with aiosqlite.connect(_DB) as db:
+            await db.execute("PRAGMA journal_mode = WAL")
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                f"SELECT kind, name, MAX(version) AS v, MAX(created_at) AS ts"
+                f" FROM definitions WHERE {conditions} GROUP BY kind, name",
+                params,
+            )
+            rows = await cur.fetchall()
+        versions = {(row["kind"], row["name"]): row for row in rows}
+        for entry in result:
+            row = versions.get((entry["kind"], entry["name"]))
+            if row and row["v"] is not None:
+                entry["has_versions"] = True
+                entry["version"] = row["v"]
+                entry["updated_at"] = row["ts"] or entry["updated_at"]
 
     return result
 
