@@ -1,6 +1,6 @@
 # show
 
-Structured content review orchestration with play-gate, show-final-gate, and critic gating.
+General DAG orchestration of multi-play workflows, with play-gate, show-final-gate, and critic gating.
 
 ## What's inside
 
