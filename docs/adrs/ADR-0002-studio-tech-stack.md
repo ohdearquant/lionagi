@@ -10,7 +10,7 @@ a Python API backend. The selection criteria are: DAG visualisation support, lan
 with lionagi (Python), SSE streaming compatibility, and minimal net-new code for problems with
 existing open-source solutions.
 
-Two frontend approaches were evaluated: a custom React 19 + Vite setup, and Next.js 14 with a
+Two frontend approaches were evaluated: a custom React 19 + Vite setup, and Next.js with a
 curated set of UI libraries. For the backend, FastAPI on a fixed port was compared against Flask
 and a raw Starlette app.
 
@@ -18,11 +18,11 @@ and a raw Starlette app.
 
 Lion Studio uses:
 
-- **Frontend**: Next.js 14 + TypeScript + Tailwind CSS + ReactFlow + dagre
+- **Frontend**: Next.js 16 + React 19 + TypeScript + Tailwind CSS + ReactFlow + dagre
 - **Backend**: Python + FastAPI + uvicorn, port 8765
 
 ReactFlow with dagre layout is the industry-standard solution for interactive DAG visualisation
-in React; reproducing this from scratch offers no benefit. Next.js 14 provides SSR, API routes,
+in React; reproducing this from scratch offers no benefit. Next.js 16 provides SSR, API routes,
 and a mature build system. Tailwind keeps styling co-located without a CSS build step.
 
 FastAPI with Starlette's `StreamingResponse` is the natural SSE backend for a Python codebase:
@@ -42,8 +42,6 @@ and introduces redundant engineering for capabilities the chosen stack provides 
 - Port 8765 is consistent across all Studio documentation and tooling.
 
 **Negative**
-- Next.js 14 is not the latest version; upgrading is deferred to a later milestone but adds
-  future toil.
 - `npm install` requires `--legacy-peer-deps` due to an ESLint 9 / `@eslint/js` 10 peer conflict
   in the dependency tree (see Appendix A).
 - TypeScript symbol names (`WorkerFormData`, `listWorkers`) reflect an earlier naming layer;
@@ -53,9 +51,16 @@ and introduces redundant engineering for capabilities the chosen stack provides 
 
 | Alternative | Why Rejected |
 |-------------|--------------|
-| Vite + React 19 (build from scratch) | DAG viz, runs polling, and agent editor are already solved problems — reimplementing them yields no capability advantage |
+| Vite + React 19 (build from scratch) | DAG viz, runs polling, and agent editor are already solved problems — reimplementing them yields no capability advantage. Next.js 16 provides SSR, mature build tooling, and the same React 19 runtime without the bespoke setup. |
 | Lift lionag2's AG-UI + Vite stack | lionag2 has no CLI-provider concept; lionagi's claude/codex/gemini CLI providers are load-bearing for the daily-driver use case |
 | Flask instead of FastAPI | Sync-first; wrapping async SSE streaming adds friction; Pydantic integration is not native |
+
+### Stack upgrades since v1
+
+- **(2026-05-20)**: Migrated from Next.js 14 → 16 and React 18 → 19. The upgrade was deliberate:
+  Next.js 16 is the stable current release, and React 19 ships with it; deferral was no longer
+  necessary. The `--legacy-peer-deps` requirement still applies (ESLint peer conflict is not
+  resolved by the Next.js version bump).
 
 ## References
 
@@ -69,9 +74,9 @@ and introduces redundant engineering for capabilities the chosen stack provides 
 
 The frontend dependency tree has a pre-existing peer conflict: `@eslint/js@10` (required by
 `eslint-config-next`) conflicts with `eslint@9`'s peer expectations. Running `npm install`
-without `--legacy-peer-deps` fails with a peer resolution error. Next.js 14 is retained
-intentionally (not upgraded), so this flag is the accepted workaround until a Next.js upgrade
-play resolves the conflict. Every `npm install` in CI and local setup MUST include the flag.
+without `--legacy-peer-deps` fails with a peer resolution error. This conflict was not resolved
+by the Next.js 14 → 16 upgrade; the flag remains the accepted workaround. Every `npm install`
+in CI and local setup MUST include the flag.
 
 Source: `_show.md:148-149`
 
