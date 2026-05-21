@@ -31,7 +31,7 @@ export default function TimeRangeChips({ value, onChange, className }: TimeRange
       role="tablist"
       aria-label="Time range"
       className={[
-        "inline-flex items-center gap-1 rounded-md border border-edge bg-surface-raised p-0.5",
+        "inline-flex items-center gap-0.5 rounded border border-edge bg-surface-overlay p-0.5 shadow-card",
         className,
       ]
         .filter(Boolean)
