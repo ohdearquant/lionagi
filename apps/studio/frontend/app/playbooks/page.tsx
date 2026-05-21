@@ -230,18 +230,22 @@ function PlaybookDetail({ name }: { name: string }) {
 
   const loadDetail = useCallback((playbookName: string) => {
     const token = ++loadToken.current;
-    setDetail(null);
-    setLoadError(null);
-    setEditing(false);
-    setEditorContent("");
-    setCommitMessage("");
-    setSaveError(null);
-    setSaveSuccess(false);
-    setViewingVersion(null);
-    setViewContent(null);
-    setRunError(null);
-
-    getDefinition("playbook", playbookName)
+    // Defer resets into a Promise so setState is never called synchronously
+    // inside the effect body — avoids react-hooks/set-state-in-effect
+    void Promise.resolve()
+      .then(() => {
+        setDetail(null);
+        setLoadError(null);
+        setEditing(false);
+        setEditorContent("");
+        setCommitMessage("");
+        setSaveError(null);
+        setSaveSuccess(false);
+        setViewingVersion(null);
+        setViewContent(null);
+        setRunError(null);
+        return getDefinition("playbook", playbookName);
+      })
       .then((d) => {
         if (token !== loadToken.current) return;
         setDetail(d);

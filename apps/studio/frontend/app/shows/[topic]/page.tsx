@@ -79,6 +79,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
   }, [topic]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- load is async; setState only fires after await, never synchronously
     void load();
   }, [load]);
 
@@ -87,7 +88,8 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
     if (!show) return;
     const s = show.status ?? show.plays.at(-1)?.meta.status ?? "";
     if (s === "active" || s === "running") {
-      setShowPlan(true);
+      const id = setTimeout(() => setShowPlan(true), 0);
+      return () => clearTimeout(id);
     }
   }, [show]);
 

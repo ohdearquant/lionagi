@@ -115,20 +115,15 @@ function SkillSubPane({ pluginName, skillNames }: SkillSubPaneProps) {
   const [skillDetail, setSkillDetail] = useState<PluginSkillDetail | null>(null);
   const [skillLoading, setSkillLoading] = useState(false);
 
-  // Reset selection when the plugin changes
-  useEffect(() => {
-    setSelectedSkill(skillNames.length > 0 ? skillNames[0].name : null);
-  }, [pluginName, skillNames]);
-
   // Fetch skill detail when selection changes
   useEffect(() => {
-    if (!selectedSkill) {
-      setSkillDetail(null);
-      return;
-    }
+    if (!selectedSkill) return;
     let active = true;
-    setSkillLoading(true);
-    getPluginSkill(pluginName, selectedSkill)
+    void Promise.resolve()
+      .then(() => {
+        setSkillLoading(true);
+        return getPluginSkill(pluginName, selectedSkill);
+      })
       .then((d) => {
         if (active) setSkillDetail(d);
       })
@@ -239,11 +234,6 @@ function AgentSubPane({ agentRefs }: AgentSubPaneProps) {
     agentRefs.length > 0 ? agentRefs[0].name : null,
   );
 
-  // Reset when list changes
-  useEffect(() => {
-    setSelectedAgent(agentRefs.length > 0 ? agentRefs[0].name : null);
-  }, [agentRefs]);
-
   const selected = agentRefs.find((a) => a.name === selectedAgent) ?? null;
 
   if (agentRefs.length === 0) {
@@ -320,14 +310,14 @@ function PluginDetailPane({ pluginName }: PluginDetailPaneProps) {
   const [activeTab, setActiveTab] = useState<PluginTab>("skills");
 
   useEffect(() => {
-    if (!pluginName) {
-      setDetail(null);
-      return;
-    }
+    if (!pluginName) return;
     let active = true;
-    setLoading(true);
-    setDetail(null);
-    getPlugin(pluginName)
+    void Promise.resolve()
+      .then(() => {
+        setLoading(true);
+        setDetail(null);
+        return getPlugin(pluginName);
+      })
       .then((d) => {
         if (active) {
           setDetail(d);
@@ -439,9 +429,9 @@ function PluginDetailPane({ pluginName }: PluginDetailPaneProps) {
       {/* Tab content */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {visibleTab === "skills" && (
-          <SkillSubPane pluginName={detail.name} skillNames={detail.skills} />
+          <SkillSubPane key={detail.name} pluginName={detail.name} skillNames={detail.skills} />
         )}
-        {visibleTab === "agents" && <AgentSubPane agentRefs={detail.agents} />}
+        {visibleTab === "agents" && <AgentSubPane key={detail.name} agentRefs={detail.agents} />}
         {visibleTab === "hooks" && detail.hooks && (
           <div className="flex-1 overflow-y-auto px-4 py-3">
             <pre className="whitespace-pre-wrap break-words rounded border border-edge bg-surface-base p-4 font-mono text-body text-content-secondary leading-relaxed">

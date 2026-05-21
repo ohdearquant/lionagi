@@ -38,6 +38,7 @@ function ThemeToggle() {
   const [dark, setDark] = useState(false);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- SSR hydration guard: reads DOM class unavailable during server render
     setDark(document.documentElement.classList.contains("dark"));
   }, []);
 

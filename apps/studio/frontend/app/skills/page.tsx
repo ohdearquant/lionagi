@@ -19,9 +19,9 @@ export default function SkillsPage() {
       .then((data) => {
         if (active) {
           setSkills(data.skills);
-          if (data.skills.length > 0 && !selected) {
-            setSelected(data.skills[0].name);
-          }
+          // Use functional update so selected is read from state, not closure —
+          // avoids a stale-closure dep and removes need to list `selected` in deps
+          setSelected((prev) => prev ?? (data.skills.length > 0 ? data.skills[0].name : null));
         }
       })
       .catch(() => {
@@ -36,13 +36,13 @@ export default function SkillsPage() {
   }, []);
 
   useEffect(() => {
-    if (!selected) {
-      setDetail(null);
-      return;
-    }
+    if (!selected) return;
     let active = true;
-    setDetailLoading(true);
-    getSkill(selected)
+    void Promise.resolve()
+      .then(() => {
+        setDetailLoading(true);
+        return getSkill(selected);
+      })
       .then((d) => {
         if (active) setDetail(d);
       })

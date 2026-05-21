@@ -71,7 +71,7 @@ export default function DeclarativePlaybookForm({
       <section className="flex flex-col gap-3">
         <div>
           <h2 className={SECTION_LABEL}>Basics</h2>
-          <p className={SECTION_DESC}>What this playbook does and how it's invoked</p>
+          <p className={SECTION_DESC}>What this playbook does and how it&apos;s invoked</p>
         </div>
 
         <div className="flex flex-col gap-1">
@@ -104,7 +104,7 @@ export default function DeclarativePlaybookForm({
       <section className="flex flex-col gap-3">
         <div>
           <h2 className={SECTION_LABEL}>Execution</h2>
-          <p className={SECTION_DESC}>Which agent runs this and how it's configured</p>
+          <p className={SECTION_DESC}>Which agent runs this and how it&apos;s configured</p>
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">

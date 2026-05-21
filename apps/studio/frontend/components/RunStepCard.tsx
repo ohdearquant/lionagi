@@ -178,7 +178,7 @@ export default function RunStepCard({
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [expandedTools, setExpandedTools] = useState<Set<number>>(new Set());
 
-  const messages = step.messages ?? [];
+  const messages = useMemo(() => step.messages ?? [], [step.messages]);
   const result = (step.result ?? {}) as StepResult;
   const roles = (result.roles ?? {}) as RolesBreakdown;
 
@@ -818,7 +818,13 @@ function MessageFeed({
   onToggleTool,
   stepKey = "",
 }: MessageFeedProps) {
-  let respCounter = 0;
+  // Precompute per-message assistant ordinals before JSX to avoid mutation during render
+  const assistantOrdinals: number[] = new Array(messages.length);
+  let ordinalCount = 0;
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].role === "assistant") ordinalCount += 1;
+    assistantOrdinals[i] = ordinalCount;
+  }
 
   return (
     <div className="flex flex-col">
@@ -835,14 +841,14 @@ function MessageFeed({
           return <UserBlock key={i} content={m.content || ""} timestamp={m.timestamp} />;
         }
         if (m.role === "assistant") {
-          respCounter += 1;
+          const ordinal = assistantOrdinals[i];
           return (
             <AssistantBlock
               key={i}
-              anchorId={`step-${stepKey}-r${respCounter - 1}`}
+              anchorId={`step-${stepKey}-r${ordinal - 1}`}
               content={m.content || ""}
               timestamp={m.timestamp}
-              ordinal={respCounter}
+              ordinal={ordinal}
             />
           );
         }

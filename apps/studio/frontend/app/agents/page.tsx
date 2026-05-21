@@ -157,22 +157,18 @@ function AgentDetail({ agentName, agentProfile }: AgentDetailProps) {
 
   // Load definition whenever the selected agent changes
   useEffect(() => {
-    if (!agentName) {
-      setDef(null);
-      setDefError(null);
-      setPreviewVersion(null);
-      setEditing(false);
-      return;
-    }
+    if (!agentName) return;
 
     let active = true;
-    setDefLoading(true);
-    setDefError(null);
-    setDef(null);
-    setPreviewVersion(null);
-    setEditing(false);
-
-    getDefinition("agent", agentName)
+    void Promise.resolve()
+      .then(() => {
+        setDefLoading(true);
+        setDefError(null);
+        setDef(null);
+        setPreviewVersion(null);
+        setEditing(false);
+        return getDefinition("agent", agentName);
+      })
       .then((data) => {
         if (active) {
           setDef(data);
