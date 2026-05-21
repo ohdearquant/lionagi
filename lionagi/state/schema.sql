@@ -112,7 +112,13 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- ── Activity (ADR-0019) ────────────────────────────────────────────
   -- Bumped on every message INSERT so staleness_check() can answer
   -- "is this running session still active?" without scanning messages.
-  last_message_at REAL
+  last_message_at REAL,
+  -- ── Skill invocation (ADR-0020) ────────────────────────────────────
+  -- Optional FK to the higher-order skill orchestration (e.g. /show or
+  -- /codex-pr-review) that spawned this session. NULL when the CLI
+  -- ran standalone. Orthogonal to invocation_kind, which describes the
+  -- CLI primitive (agent / play / flow / fanout / show-play).
+  invocation_id   TEXT    REFERENCES invocations(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_updated
@@ -121,6 +127,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_updated
 -- activity) skip the full table scan.
 CREATE INDEX IF NOT EXISTS idx_sessions_status_last_msg
   ON sessions(status, last_message_at) WHERE status = 'running';
+-- ADR-0020: grouped runs view fetches all sessions for an invocation.
+CREATE INDEX IF NOT EXISTS idx_sessions_invocation
+  ON sessions(invocation_id) WHERE invocation_id IS NOT NULL;
 
 -- ── Branches ──────────────────────────────────────────────────────────────
 -- A progression with identity.  Branch config (provider, model,
@@ -259,3 +268,30 @@ CREATE INDEX IF NOT EXISTS idx_team_msgs_team ON team_messages(team_id);
 CREATE INDEX IF NOT EXISTS idx_team_msgs_created ON team_messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_team_msgs_session ON team_messages(session_id)
   WHERE session_id IS NOT NULL;
+
+-- ── Invocations (ADR-0020) ───────────────────────────────────────────────
+-- Skill-level orchestration records. One invocation row per /show,
+-- /codex-pr-review, etc., aggregating the N sessions that the skill
+-- spawned. invocation_id is FK'd from sessions; invocation_kind on
+-- sessions remains the CLI primitive (agent/play/flow/...).
+
+CREATE TABLE IF NOT EXISTS invocations (
+  id              TEXT    PRIMARY KEY,
+  skill           TEXT    NOT NULL,
+  plugin          TEXT,
+  prompt          TEXT,
+  started_at      REAL    NOT NULL,
+  ended_at        REAL,
+  status          TEXT    NOT NULL DEFAULT 'running' CHECK(
+                    status IN ('running', 'completed', 'failed',
+                               'timed_out', 'aborted', 'cancelled')
+                  ),
+  session_count   INTEGER NOT NULL DEFAULT 0,
+  created_at      REAL    NOT NULL,
+  updated_at      REAL    NOT NULL,
+  node_metadata   JSON
+);
+
+CREATE INDEX IF NOT EXISTS idx_invocations_skill ON invocations(skill);
+CREATE INDEX IF NOT EXISTS idx_invocations_status ON invocations(status);
+CREATE INDEX IF NOT EXISTS idx_invocations_updated ON invocations(updated_at DESC);

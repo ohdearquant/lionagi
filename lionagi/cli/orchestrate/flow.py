@@ -418,6 +418,7 @@ async def _run_flow(
     show_graph: bool = False,
     fast: bool = False,
     playbook_name: str | None = None,
+    invocation_id: str | None = None,
     **legacy_kwargs,
 ) -> str:
     """Auto-DAG flow: orchestrator plans DAG → engine executes with deps.
@@ -459,6 +460,7 @@ async def _run_flow(
         playbook_name=playbook_name,
         agent_name=agent_name,
         artifacts_path=str(env.run.artifact_root),
+        invocation_id=invocation_id,
     )
 
     inner_kw = dict(

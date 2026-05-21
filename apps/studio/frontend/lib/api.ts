@@ -388,6 +388,72 @@ export function streamSession(
   return () => source.close();
 }
 
+// ─── Invocations (ADR-0020) ───────────────────────────────────────────────────
+
+export interface InvocationSummary {
+  id: string;
+  skill: string;
+  plugin: string | null;
+  prompt: string | null;
+  started_at: number;
+  ended_at: number | null;
+  status: string;
+  session_count: number;
+  created_at: number;
+  updated_at: number;
+  node_metadata: Record<string, unknown> | null;
+}
+
+export interface InvocationSession {
+  id: string;
+  name: string | null;
+  agent_name: string | null;
+  playbook_name: string | null;
+  invocation_kind: string | null;
+  status: string | null;
+  last_message_at: number | null;
+  started_at: number | null;
+  ended_at: number | null;
+}
+
+export interface InvocationDetail extends InvocationSummary {
+  sessions: InvocationSession[];
+}
+
+export interface InvocationListResponse {
+  invocations: InvocationSummary[];
+  limit: number;
+  offset: number;
+  has_next: boolean;
+}
+
+export interface InvocationListParams {
+  skill?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function listInvocations(
+  params?: InvocationListParams,
+): Promise<InvocationListResponse> {
+  const query = new URLSearchParams();
+  if (params?.skill) query.set("skill", params.skill);
+  if (params?.status) query.set("status", params.status);
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  if (params?.offset !== undefined) query.set("offset", String(params.offset));
+  const qs = query.toString();
+  return fetchJson<InvocationListResponse>(
+    `/api/invocations/${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export async function getInvocation(id: string): Promise<InvocationDetail> {
+  return fetchJson<InvocationDetail>(
+    `/api/invocations/${encodeURIComponent(id)}`,
+  );
+}
+
 // ─── Definitions (versioned md files via SQLite) ──────────────────────────────
 
 export interface DefinitionSummary {

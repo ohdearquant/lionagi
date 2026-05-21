@@ -55,6 +55,7 @@ async def _run_fanout(
     agent_name: str | None = None,
     fast: bool = False,
     playbook_name: str | None = None,
+    invocation_id: str | None = None,
 ) -> str:
     """Three-phase fan-out: decompose → fan out → synthesize."""
     env = setup_orchestration(
@@ -79,6 +80,7 @@ async def _run_fanout(
         playbook_name=playbook_name,
         agent_name=agent_name,
         artifacts_path=str(env.run.artifact_root),
+        invocation_id=invocation_id,
     )
 
     inner_kw = dict(

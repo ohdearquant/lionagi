@@ -561,6 +561,8 @@ async def list_runs(
             "show_topic": s.get("show_topic"),
             "show_play_name": s.get("show_play_name"),
             "source_kind": s.get("source_kind", "live"),
+            # ADR-0020: parent skill orchestration; null when standalone.
+            "invocation_id": s.get("invocation_id"),
             "status": s.get("status", "completed"),
             "started_at": s.get("started_at"),
             "ended_at": s.get("ended_at"),

@@ -696,6 +696,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     agent_name=args.agent,
                     fast=getattr(args, "fast", False),
                     playbook_name=getattr(args, "playbook", None),
+                    invocation_id=getattr(args, "invocation", None),
                 )
             )
         except LionTimeoutError as e:
@@ -911,6 +912,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     show_graph=getattr(args, "show_graph", False),
                     fast=getattr(args, "fast", False),
                     playbook_name=playbook_name,
+                    invocation_id=getattr(args, "invocation", None),
                 )
             )
         except LionTimeoutError as e:
