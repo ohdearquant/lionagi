@@ -7,7 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from lionagi import Branch
+from lionagi import Branch, iModel
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.ln.concurrency import run_async
 from lionagi.protocols.generic.log import DataLoggerConfig
@@ -96,6 +96,13 @@ async def _run_agent(
         chat_model = build_chat_model(
             provider, model, yolo, verbose, theme, effort, fast
         )
+        # Extract the post-clamp effort so sessions.effort stores the value
+        # that was actually sent to the provider (e.g. "max"→"xhigh" for codex).
+        if isinstance(chat_model, iModel):
+            _ep_kwargs = chat_model.endpoint.config.kwargs or {}
+            _kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+            if _kwarg and _kwarg in _ep_kwargs:
+                effort = _ep_kwargs[_kwarg]
         branch = Branch(
             chat_model=chat_model,
             log_config=DataLoggerConfig(auto_save_on_exit=False),

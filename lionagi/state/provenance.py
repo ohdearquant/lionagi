@@ -22,23 +22,20 @@ _AGENT_HASH_LEN = 16
 def agent_definition_hash(agent_name: str | None) -> str | None:
     """Return a short SHA-256 fingerprint of an agent profile's content.
 
-    Searches the standard locations (``~/.lionagi/agents/<name>/<name>.md``
-    then ``~/.lionagi/agents/<name>.md``) — same lookup order as
-    :func:`lionagi.cli._agents.load_agent_profile`. Returns ``None`` when
-    the agent name is missing or no profile is found; callers should
-    write ``None`` to ``sessions.agent_hash`` in that case.
+    Uses the same resolution order as
+    :func:`lionagi.cli._agents.load_agent_profile`: project-local
+    ``.lionagi/agents/`` directories first (git root, then cwd walk),
+    then ``~/.lionagi/agents/``. Returns ``None`` when the agent name is
+    missing or no profile is found; callers should write ``None`` to
+    ``sessions.agent_hash`` in that case.
     """
     if not agent_name:
         return None
-    from lionagi.cli._runs import LIONAGI_HOME
+    from lionagi.cli._agents import _find_lionagi_dirs, _resolve_profile_path
 
-    base = LIONAGI_HOME / "agents"
-    candidates = (
-        base / agent_name / f"{agent_name}.md",
-        base / f"{agent_name}.md",
-    )
-    for path in candidates:
-        if path.exists():
+    for d in _find_lionagi_dirs():
+        path = _resolve_profile_path(d / "agents", agent_name)
+        if path is not None:
             return _hash_file(path)
     return None
 

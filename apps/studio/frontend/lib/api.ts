@@ -357,6 +357,12 @@ export interface SessionDetail {
   created_at: number;
   updated_at: number;
   branches: SessionBranch[];
+  // ADR-0022: provenance disclosure — mirrors what list_sessions() exposes.
+  model?: string | null;
+  provider?: string | null;
+  effort?: string | null;
+  agent_hash?: string | null;
+  invocation_id?: string | null;
 }
 
 export async function listSessions(): Promise<{ sessions: SessionSummary[] }> {

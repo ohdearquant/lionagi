@@ -117,10 +117,12 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
     async with _open_db(_DB) as db:
         cur = await db.execute(
             # F-A1-4 (ADR-0017): include lifecycle columns in session detail
+            # ADR-0022: include provenance columns (model/provider/effort/agent_hash)
             """SELECT id, name, created_at, updated_at,
                       playbook_name, agent_name, invocation_kind,
                       show_topic, show_play_name, artifacts_path, source_kind,
-                      status, started_at, ended_at
+                      status, started_at, ended_at,
+                      model, provider, effort, agent_hash, invocation_id
                FROM sessions WHERE id = ?""",
             (session_id,),
         )
@@ -218,6 +220,12 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
         "duration_ms": duration_ms,
         "source_show": source_show,
         "branches": branches,
+        # ADR-0022: provenance disclosure — same fields exposed on list_sessions().
+        "model": session_row["model"],
+        "provider": session_row["provider"],
+        "effort": session_row["effort"],
+        "agent_hash": session_row["agent_hash"],
+        "invocation_id": session_row["invocation_id"],
     }
 
 
