@@ -15,17 +15,3 @@ Required future work:
 - Call the guard in `lionagi/providers/ag2/nlip/models.py` before posting to
   the NLIP endpoint.
 - Cover DNS rebinding and IPv6 unique-local ranges.
-
-## #990 - status_source schema and migration
-
-Deferred: the required schema and migration sources are `lionagi/state/schema.sql`
-and `lionagi/state/db.py`. Those are outside the allowed Studio backend scope for
-this play. `docs/adrs/ADR-0011-shows-data-model.md` acknowledges the migration
-is pending.
-
-Required future work:
-- Add `status_source TEXT NOT NULL DEFAULT 'unknown'` column to the `shows` table
-  in `lionagi/state/schema.sql`.
-- Add a migration entry in `lionagi/state/db.py:_MIGRATION_COLUMNS` for the
-  `shows` table so existing rows are backfilled to `"unknown"`.
-- Add a round-trip migration test.
