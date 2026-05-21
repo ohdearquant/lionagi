@@ -53,6 +53,13 @@ const config: Config = {
           tester: "var(--role-tester)",
         },
       },
+      boxShadow: {
+        card: "var(--shadow-card)",
+        "card-hover": "var(--shadow-card-hover)",
+      },
+      borderRadius: {
+        DEFAULT: "6px",
+      },
     },
   },
   plugins: [],
