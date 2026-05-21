@@ -192,3 +192,117 @@ def test_hook_point_vocabulary():
         "message.add",
         "artifact.created",
     }
+
+
+# ── FIX 1: on() validates HookPoint ─────────────────────────────────────────
+
+
+def test_on_string_valid_point_registers():
+    bus = HookBus()
+    calls: list[str] = []
+
+    async def h(**kw):
+        calls.append("fired")
+
+    bus.on("session.start", h)
+    assert bus.handlers_for(HookPoint.SESSION_START) == [h]
+
+
+def test_on_invalid_string_raises_value_error():
+    bus = HookBus()
+
+    async def h(**kw):
+        pass
+
+    with pytest.raises(ValueError):
+        bus.on("session.starts", h)  # typo — not a valid HookPoint
+
+
+def test_off_invalid_string_raises_value_error():
+    bus = HookBus()
+
+    async def h(**kw):
+        pass
+
+    with pytest.raises(ValueError):
+        bus.off("session.starts", h)
+
+
+def test_handlers_for_invalid_string_raises_value_error():
+    bus = HookBus()
+
+    with pytest.raises(ValueError):
+        bus.handlers_for("session.starts")
+
+
+# ── FIX 2: blocking_emit propagates exceptions for TOOL_PRE ──────────────────
+
+
+async def test_blocking_emit_propagates_exception():
+    bus = HookBus()
+
+    async def guard(**kw):
+        raise PermissionError("blocked")
+
+    bus.on(HookPoint.TOOL_PRE, guard)
+
+    with pytest.raises(PermissionError, match="blocked"):
+        await bus.blocking_emit(HookPoint.TOOL_PRE, tool_name="rm")
+
+
+async def test_emit_tool_pre_propagates_exception():
+    """emit() on TOOL_PRE must propagate — it routes through blocking_emit."""
+    bus = HookBus()
+
+    async def guard(**kw):
+        raise PermissionError("blocked via emit")
+
+    bus.on(HookPoint.TOOL_PRE, guard)
+
+    with pytest.raises(PermissionError, match="blocked via emit"):
+        await bus.emit(HookPoint.TOOL_PRE, tool_name="rm")
+
+
+async def test_blocking_emit_stop_hook_short_circuits_without_error():
+    bus = HookBus()
+    calls: list[str] = []
+
+    async def stopper(**kw):
+        calls.append("stopper")
+        raise StopHook
+
+    async def never(**kw):  # pragma: no cover
+        calls.append("never")
+
+    bus.on(HookPoint.TOOL_PRE, stopper)
+    bus.on(HookPoint.TOOL_PRE, never)
+    # StopHook must not propagate out of blocking_emit.
+    await bus.blocking_emit(HookPoint.TOOL_PRE, tool_name="ls")
+    assert calls == ["stopper"]
+
+
+# ── FIX 3: handlers snapshotted before dispatch ───────────────────────────────
+
+
+async def test_emit_handler_registered_during_emit_does_not_fire():
+    """A handler registered *during* an emit cycle must not fire that cycle."""
+    bus = HookBus()
+    calls: list[str] = []
+
+    async def first(**kw):
+        calls.append("first")
+        # Register a new handler mid-dispatch.
+        bus.on(HookPoint.SESSION_START, late)
+
+    async def late(**kw):
+        calls.append("late")
+
+    bus.on(HookPoint.SESSION_START, first)
+    await bus.emit(HookPoint.SESSION_START, session_id="s")
+
+    # Only "first" fired; "late" was registered after the snapshot.
+    assert calls == ["first"]
+
+    # On the NEXT emit, "late" should fire.
+    await bus.emit(HookPoint.SESSION_START, session_id="s")
+    assert "late" in calls

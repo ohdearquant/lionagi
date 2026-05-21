@@ -94,16 +94,36 @@ async def persist_message(
     *,
     message: dict[str, Any],
     session_id: str,
+    branch_id: str | None = None,
+    branch_progression_id: str | None = None,
+    session_progression_id: str | None = None,
+    # Legacy alias kept for callers predating the dual-progression split.
     progression_id: str | None = None,
     **_unused: Any,
 ) -> None:
-    """ADR-0019 + ADR-0009 message persistence path."""
+    """ADR-0019 + ADR-0009 message persistence path.
+
+    Appends to both ``branch_progression_id`` and
+    ``session_progression_id`` when provided. For system messages
+    (``message["role"] == "system"``) also updates the branch row's
+    ``system_msg_id`` pointer so the branch always knows its current
+    system prompt.
+
+    ``progression_id`` is a legacy alias for ``branch_progression_id``
+    kept for backward compatibility.
+    """
     from lionagi.state.db import StateDB
+
+    effective_branch_prog = branch_progression_id or progression_id
 
     async with StateDB() as db:
         await db.insert_message(message)
-        if progression_id is not None:
-            await db.append_to_progression(progression_id, message["id"])
+        if effective_branch_prog is not None:
+            await db.append_to_progression(effective_branch_prog, message["id"])
+        if session_progression_id is not None:
+            await db.append_to_progression(session_progression_id, message["id"])
+        if message.get("role") == "system" and branch_id is not None:
+            await db.update_branch(branch_id, system_msg_id=message["id"])
         await db.touch_session_activity(session_id)
 
 

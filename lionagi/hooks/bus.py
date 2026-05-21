@@ -17,12 +17,13 @@ Isolation invariants (enforced by convention, not code):
   keeps going).
 * ``TOOL_PRE`` is the one hook point where a handler may legitimately
   raise to block the underlying operation (e.g., destructive-command
-  guard). That contract lives with the caller of ``emit``, not the bus.
+  guard). The bus enforces this via :meth:`HookBus.blocking_emit`, which
+  propagates handler exceptions to the caller instead of swallowing them.
 """
 
 from __future__ import annotations
 
-import asyncio
+import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from enum import Enum
@@ -71,6 +72,13 @@ class StopHook(Exception):  # noqa: N818 — control-flow signal, not an error
     """
 
 
+def _normalize_point(point: HookPoint | str) -> HookPoint:
+    """Coerce ``point`` to a :class:`HookPoint`, raising ``ValueError`` for unknowns."""
+    if isinstance(point, HookPoint):
+        return point
+    return HookPoint(point)  # raises ValueError for unknown values
+
+
 class HookBus:
     """Per-session pub/sub bus for the eleven :class:`HookPoint` events.
 
@@ -79,40 +87,84 @@ class HookBus:
     skipped — the user-facing operation is never blocked. This trades
     strict error propagation for the operational invariant that
     persistence side-effects must never break the agent loop.
+
+    ``TOOL_PRE`` is the exception: emit() routes it through
+    :meth:`blocking_emit` so that a guard handler raising (e.g.
+    ``PermissionError``) actually blocks the tool call.
     """
 
     def __init__(self) -> None:
         self._handlers: dict[HookPoint, list[HookHandler]] = {}
 
-    def on(self, point: HookPoint, handler: HookHandler) -> None:
-        """Register ``handler`` to fire on ``point``. Order preserved."""
+    def on(self, point: HookPoint | str, handler: HookHandler) -> None:
+        """Register ``handler`` to fire on ``point``. Order preserved.
+
+        Accepts a string hook-point value (e.g. ``"session.start"``) and
+        normalises it to a :class:`HookPoint`. Raises ``ValueError`` for
+        unrecognised strings.
+        """
+        point = _normalize_point(point)
         self._handlers.setdefault(point, []).append(handler)
 
-    def off(self, point: HookPoint, handler: HookHandler) -> None:
+    def off(self, point: HookPoint | str, handler: HookHandler) -> None:
         """Unregister ``handler``. No-op if not registered."""
+        point = _normalize_point(point)
         handlers = self._handlers.get(point, [])
         if handler in handlers:
             handlers.remove(handler)
 
-    def handlers_for(self, point: HookPoint) -> list[HookHandler]:
+    def handlers_for(self, point: HookPoint | str) -> list[HookHandler]:
         """Public read of the registered handlers for ``point``.
 
         Useful for testing / introspection. Returns a shallow copy so
         callers can't mutate the bus by mutating the returned list.
         """
+        point = _normalize_point(point)
         return list(self._handlers.get(point, []))
 
-    async def emit(self, point: HookPoint, /, **kwargs: Any) -> None:
+    async def blocking_emit(self, point: HookPoint | str, /, **kwargs: Any) -> None:
+        """Fire all handlers for ``point``, propagating exceptions.
+
+        Unlike :meth:`emit`, handler exceptions are NOT swallowed —
+        they propagate to the caller. Intended for ``TOOL_PRE`` where a
+        guard handler raising ``PermissionError`` (or similar) should
+        actually abort the tool call.
+
+        :class:`StopHook` still short-circuits remaining handlers without
+        propagating as an error.
+        """
+        point = _normalize_point(point)
+        handlers = list(self._handlers.get(point, []))
+        for handler in handlers:
+            try:
+                result = handler(**kwargs)
+                if inspect.isawaitable(result):
+                    await result
+            except StopHook:
+                return
+            # All other exceptions propagate — no except clause here.
+
+    async def emit(self, point: HookPoint | str, /, **kwargs: Any) -> None:
         """Fire all handlers for ``point`` sequentially with ``kwargs``.
 
         Handler exceptions are logged + swallowed. ``StopHook`` short-
         circuits remaining handlers on this point only.
+
+        ``TOOL_PRE`` is routed through :meth:`blocking_emit` so guard
+        handlers can block the operation by raising.
         """
-        for handler in self._handlers.get(point, []):
+        point = _normalize_point(point)
+        if point is HookPoint.TOOL_PRE:
+            await self.blocking_emit(point, **kwargs)
+            return
+        # Snapshot handlers before dispatch so a handler registered during
+        # this emit cycle does not fire in the current cycle.
+        handlers = list(self._handlers.get(point, []))
+        for handler in handlers:
             try:
                 result = handler(**kwargs)
                 # Allow sync handlers too — await only if needed.
-                if asyncio.iscoroutine(result):
+                if inspect.isawaitable(result):
                     await result
             except StopHook:
                 return
