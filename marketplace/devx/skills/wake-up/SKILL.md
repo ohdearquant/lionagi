@@ -6,7 +6,7 @@ description: >
   resuming after idle, after context compaction, or as a self-recurring
   background loop. The standard operating procedure for any lambda.
 argument-hint: '[--interval MINUTES] [--stop]'
-allowed-tools: [Bash, Read, Write, Glob, Grep, mcp__khive__communication, mcp__khive__work, mcp__khive__waves, mcp__khive__memory]
+allowed-tools: [Bash, Read, Write, Glob, Grep, mcp__khive__inbox, mcp__khive__list, mcp__khive__next, mcp__khive__orient, mcp__khive__check, mcp__khive__remind, mcp__khive__recall, mcp__khive__send, mcp__khive__log]
 ---
 
 # Lambda Wake-Up

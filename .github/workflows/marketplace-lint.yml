@@ -38,11 +38,17 @@ jobs:
           ! rg --hidden '/Users/' marketplace/ .claude-plugin/ \
             $([ -d skills ] && echo 'skills/') 2>/dev/null
 
-      - name: yolo without bypass
-        # Non-blocking warning: li play --yolo without --bypass present on the same line
+      - name: Deprecated grouped MCP verb forms
+        # Catch mcp__khive__(memory|graph|work|communication) — replaced by direct verbs
         run: |
-          ! rg --hidden 'li play.*--yolo(?!.*--bypass)' -P marketplace/ .claude-plugin/ \
-            $([ -d skills ] && echo 'skills/') 2>/dev/null || true
+          ! rg --hidden 'mcp__khive__(memory|graph|work|communication)\(' marketplace/ .claude-plugin/ \
+            $([ -d skills ] && echo 'skills/') 2>/dev/null
+
+      - name: yolo without bypass
+        # Blocking: li play --yolo without --bypass on the same line
+        run: |
+          ! rg --hidden -P 'li play.*--yolo(?!.*--bypass)' marketplace/ .claude-plugin/ \
+            $([ -d skills ] && echo 'skills/') 2>/dev/null
 
       - name: Validate marketplace manifests
         run: python3 marketplace/scripts/validate_manifests.py

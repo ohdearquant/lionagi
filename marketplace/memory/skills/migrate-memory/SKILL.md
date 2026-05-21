@@ -79,6 +79,8 @@ elif [ -d "$REPO_MEMORY_DIR" ] && [ "${#CLAUDE_MEMORY_DIRS[@]}" -gt 0 ]; then
   printf 'Re-run with --target /absolute/path/to/memory.\n' >&2
   printf 'Candidates:\n  %s\n' "$REPO_MEMORY_DIR" "${CLAUDE_MEMORY_DIRS[@]}" >&2
   exit 2
+elif [ -d "$REPO_MEMORY_DIR" ]; then
+  MEMORY_DIR="$(cd "$REPO_MEMORY_DIR" && pwd -P)"
 elif [ "${#CLAUDE_MEMORY_DIRS[@]}" -eq 1 ]; then
   MEMORY_DIR="$(cd "${CLAUDE_MEMORY_DIRS[0]}" && pwd -P)"
 elif [ "${#CLAUDE_MEMORY_DIRS[@]}" -gt 1 ]; then

@@ -33,4 +33,4 @@ A future play will wire these into a `li mcp serve` entrypoint and update `plugi
 uv pip install lionagi
 ```
 
-The MCP server entry in `plugin.json` is a TODO stub pending the `li mcp serve` implementation.
+No MCP server entry is shipped until `li mcp serve` is implemented.
