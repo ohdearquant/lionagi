@@ -77,7 +77,7 @@ export default function DashboardPage() {
     }
 
     void load();
-    const interval = setInterval(load, 10000);
+    const interval = setInterval(load, 30000); // ADR-0006: 30s interval
     const tick = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 30000);
     return () => {
       active = false;
