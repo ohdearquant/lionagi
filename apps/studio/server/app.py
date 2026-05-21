@@ -12,6 +12,7 @@ from .routers import (
     admin,
     agents,
     definitions,
+    invocations,
     playbooks,
     plugins,
     runs,
@@ -57,6 +58,7 @@ app.include_router(skills.router, prefix="/api")
 app.include_router(plugins.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(teams.router, prefix="/api")
+app.include_router(invocations.router, prefix="/api")
 
 
 @app.get("/health")

@@ -362,3 +362,16 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Timeout in seconds.",
     )
+    # ADR-0020: opt-in skill-orchestration grouping. Set by a skill via
+    # ``li invoke start``; threaded through to the session row so the
+    # Studio /invocations page can show 14 sessions under one /show row.
+    parser.add_argument(
+        "--invocation",
+        dest="invocation",
+        metavar="ID",
+        default=None,
+        help=(
+            "Parent invocation id (from `li invoke start`). Groups this "
+            "session under a skill orchestration record. Optional."
+        ),
+    )

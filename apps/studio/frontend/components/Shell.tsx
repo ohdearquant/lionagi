@@ -15,6 +15,7 @@ const navItems: NavItem[] = [
   { label: "Agents", href: "/agents" },
   { label: "Plugins", href: "/plugins" },
   { label: "Shows", href: "/shows" },
+  { label: "Invocations", href: "/invocations" },
   { label: "Runs", href: "/runs" },
   { label: "Teams", href: "/teams" },
   { label: "Admin", href: "/admin" },

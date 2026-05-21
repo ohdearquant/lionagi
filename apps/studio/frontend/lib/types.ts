@@ -20,6 +20,8 @@ export interface RunSummary {
   // expand this with idle / unresponsive / orphaned / zombie.
   effective_health?: "stale" | null;
   last_message_at?: number | null;
+  // ADR-0020: optional parent skill orchestration id (from `li invoke`).
+  invocation_id?: string | null;
   started_at: number | null;
   ended_at?: number | null;
   created_at?: number | null;

@@ -508,6 +508,7 @@ async def start_live_persist(
     playbook_name: str | None = None,
     agent_name: str | None = None,
     artifacts_path: str | None = None,
+    invocation_id: str | None = None,
 ) -> None:
     """Open state.db, create session row, register hooks on existing branches.
 
@@ -549,6 +550,8 @@ async def start_live_persist(
                 "artifacts_path": artifacts_path,
                 "status": "running",
                 "started_at": time.time(),
+                # ADR-0020: optional skill orchestration parent
+                "invocation_id": invocation_id,
             }
         )
 

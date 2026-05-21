@@ -59,6 +59,7 @@ async def list_sessions() -> list[dict[str, Any]]:
                 s.started_at,
                 s.ended_at,
                 s.last_message_at,
+                s.invocation_id,
                 COUNT(DISTINCT b.id) AS branch_count,
                 COALESCE(SUM(
                     json_array_length(p.collection)
@@ -87,6 +88,8 @@ async def list_sessions() -> list[dict[str, Any]]:
             "ended_at": row["ended_at"],
             # ADR-0019: caller (runs service) feeds this to staleness_check.
             "last_message_at": row["last_message_at"],
+            # ADR-0020: optional parent skill orchestration.
+            "invocation_id": row["invocation_id"],
             "playbook_name": row["playbook_name"],
             "agent_name": row["agent_name"],
             "invocation_kind": row["invocation_kind"],

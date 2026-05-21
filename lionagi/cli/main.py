@@ -20,6 +20,7 @@ import sys
 
 from ._logging import configure_cli_logging, log_error
 from .agent import add_agent_subparser, run_agent
+from .invoke import add_invoke_subparser, run_invoke
 from .orchestrate import (
     add_orchestrate_subparser,
     inject_playbook_schema_into_parser,
@@ -149,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     add_team_subparser(sub)
     add_studio_subparser(sub)
     add_state_subparser(sub)
+    add_invoke_subparser(sub)
 
     # If the user is invoking `li o flow -p NAME`, inject the playbook's
     # declared args as flags on the flow sub-parser BEFORE argparse runs,
@@ -171,6 +173,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "state":
         return run_state(args)
+
+    if args.command == "invoke":
+        return run_invoke(args)
 
     parser.print_help()
     return 1
