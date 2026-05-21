@@ -52,9 +52,9 @@ export default function MetricCard({
   const interactive = !!onClick;
 
   const base =
-    "min-w-0 rounded border bg-surface-raised p-4 transition-colors text-left";
+    "min-w-0 rounded border bg-surface-raised p-4 shadow-card transition-all duration-150 text-left";
   const interactiveCls = interactive
-    ? "hover:border-edge-strong cursor-pointer focus:outline-none focus:ring-1 focus:ring-interactive-primary"
+    ? "hover:border-edge-strong hover:shadow-card-hover cursor-pointer focus:outline-none focus:ring-2 focus:ring-interactive-primary focus:ring-offset-1 focus:ring-offset-surface-base"
     : "";
 
   const content = (
@@ -64,7 +64,7 @@ export default function MetricCard({
         <span className="truncate">{label}</span>
       </div>
       <div className="mt-2 flex items-baseline gap-2">
-        <div className={`text-2xl font-semibold tabular-nums ${TONE_VALUE_TEXT[tone]}`}>
+        <div className={`text-2xl font-semibold tabular-nums tracking-tight ${TONE_VALUE_TEXT[tone]}`}>
           {value}
         </div>
         {delta ? (

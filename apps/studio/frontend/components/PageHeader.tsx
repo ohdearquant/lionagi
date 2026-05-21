@@ -28,7 +28,7 @@ export default function PageHeader({
   density = "loose",
   className,
 }: PageHeaderProps) {
-  const pad = density === "tight" ? "pb-3" : "pb-4";
+  const pad = density === "tight" ? "pb-3" : "pb-5";
 
   return (
     <header className={["flex flex-col gap-2 border-b border-edge", pad, className].filter(Boolean).join(" ")}>
@@ -44,20 +44,20 @@ export default function PageHeader({
         </nav>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <h1 className="font-mono text-xl font-semibold text-content-primary truncate">
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+          <h1 className="font-mono text-xl font-semibold tracking-tight text-content-primary truncate">
             {title}
           </h1>
-          {badges ? <div className="flex items-center gap-2">{badges}</div> : null}
+          {badges ? <div className="flex shrink-0 items-center gap-2">{badges}</div> : null}
         </div>
         {actions ? (
-          <div className="ml-auto flex items-center gap-2 flex-wrap">{actions}</div>
+          <div className="flex shrink-0 items-center gap-2 flex-wrap">{actions}</div>
         ) : null}
       </div>
 
       {subtitle ? (
-        <p className="text-body text-content-secondary truncate">{subtitle}</p>
+        <p className="text-body text-content-muted truncate">{subtitle}</p>
       ) : null}
     </header>
   );

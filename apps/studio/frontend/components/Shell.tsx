@@ -84,17 +84,18 @@ export default function Shell({ children }: ShellProps) {
 
   return (
     <div className="min-h-screen bg-surface-base text-content-primary">
-      <header className="sticky top-0 z-40 border-b border-edge bg-surface-nav">
+      <header className="sticky top-0 z-40 border-b border-edge bg-surface-nav" style={{ boxShadow: "var(--shadow-header)" }}>
         <div className="flex h-11 w-full items-stretch gap-5 px-4">
           {/* Brand: monogram + wordmark */}
           <Link
             href="/"
             title="Dashboard"
-            className="group flex shrink-0 items-center gap-2.5 self-center"
+            className="group flex shrink-0 items-center gap-2 self-center"
           >
             <span
               aria-hidden="true"
-              className="flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-emerald-500 to-teal-600 text-[11px] font-bold text-white shadow-sm transition-transform group-hover:scale-105"
+              className="flex h-6 w-6 items-center justify-center rounded bg-gradient-to-br from-emerald-500 to-teal-600 text-[11px] font-bold text-white transition-transform duration-150 group-hover:scale-105"
+              style={{ boxShadow: "0 1px 3px rgba(16,185,129,0.35)" }}
             >
               L
             </span>
@@ -103,7 +104,7 @@ export default function Shell({ children }: ShellProps) {
                 Lion Studio
               </span>
               <span className="hidden text-[9px] font-medium uppercase tracking-[0.12em] text-content-muted sm:inline">
-                Playbook Orchestration
+                Orchestration
               </span>
             </span>
           </Link>
@@ -118,7 +119,7 @@ export default function Shell({ children }: ShellProps) {
                   href={item.href}
                   aria-current={active ? "page" : undefined}
                   className={[
-                    "relative flex items-center whitespace-nowrap px-2.5 text-[12px] font-medium transition-colors",
+                    "relative flex items-center whitespace-nowrap px-2.5 text-[12px] font-medium transition-colors duration-150",
                     active
                       ? "text-content-primary"
                       : "text-content-muted hover:text-content-secondary",
@@ -126,7 +127,7 @@ export default function Shell({ children }: ShellProps) {
                 >
                   {item.label}
                   {active && (
-                    <span className="absolute inset-x-2 bottom-0 h-[2px] rounded-t bg-interactive-primary" />
+                    <span className="absolute inset-x-2.5 bottom-0 h-[2px] rounded-t bg-interactive-primary" />
                   )}
                 </Link>
               );

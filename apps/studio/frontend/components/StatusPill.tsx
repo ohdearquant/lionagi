@@ -155,7 +155,7 @@ export default function StatusPill({
     <span
       title={typeof value === "string" ? value : undefined}
       className={[
-        "inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-meta font-medium",
+        "inline-flex max-w-full items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none tracking-wide",
         TONE_CLASS[resolvedTone],
         className,
       ]
@@ -163,7 +163,7 @@ export default function StatusPill({
         .join(" ")}
     >
       {resolvedIcon ? (
-        <span className="text-[9px] leading-none">{resolvedIcon}</span>
+        <span className="text-[9px] leading-none shrink-0">{resolvedIcon}</span>
       ) : null}
       <span className="truncate">{resolvedLabel}</span>
     </span>

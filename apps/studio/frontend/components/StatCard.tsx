@@ -26,7 +26,7 @@ export default function StatCard({
   return (
     <section
       className={[
-        "min-w-0 rounded border border-edge bg-surface-raised p-4 transition-colors hover:border-edge-strong",
+        "min-w-0 rounded border border-edge bg-surface-raised p-4 shadow-card transition-all duration-150 hover:border-edge-strong hover:shadow-card-hover",
         className,
       ]
         .filter(Boolean)
@@ -35,9 +35,11 @@ export default function StatCard({
       <div className="truncate text-meta uppercase tracking-[0.08em] text-content-muted">
         {label}
       </div>
-      <div className="mt-3 truncate text-3xl font-semibold text-content-primary">{value}</div>
+      <div className="mt-3 truncate text-3xl font-semibold tabular-nums tracking-tight text-content-primary">
+        {value}
+      </div>
       {delta !== undefined && delta !== null ? (
-        <div className={`mt-2 truncate text-body ${deltaClasses[deltaTone]}`}>{delta}</div>
+        <div className={`mt-1.5 truncate text-body ${deltaClasses[deltaTone]}`}>{delta}</div>
       ) : null}
     </section>
   );

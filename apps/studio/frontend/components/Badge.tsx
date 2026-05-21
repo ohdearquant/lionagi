@@ -62,7 +62,7 @@ export default function Badge({ children, tone, value, className }: BadgeProps) 
   return (
     <span
       className={[
-        "inline-flex max-w-full items-center rounded-full border px-2 py-0.5 text-meta font-medium",
+        "inline-flex max-w-full items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none tracking-wide",
         toneClasses[resolvedTone],
         className,
       ]

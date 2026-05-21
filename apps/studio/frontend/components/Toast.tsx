@@ -62,26 +62,27 @@ function Toast({ item, onRemove }: { item: ToastItem; onRemove: (id: number) => 
       role="alert"
       aria-live="polite"
       className={[
-        "flex items-start gap-2.5 rounded border border-edge bg-surface-raised px-3 py-2.5 shadow-md",
+        "flex items-start gap-2.5 rounded border border-edge bg-surface-raised px-3 py-2.5",
         "text-body text-content-primary",
-        "min-w-[220px] max-w-[340px]",
+        "min-w-[220px] max-w-[360px]",
         borderColor(item.type),
         // slide in from right; slide out when dismissing
-        "transition-all duration-300",
+        "transition-all duration-200 ease-out",
         item.dismissing
-          ? "translate-x-8 opacity-0"
-          : "translate-x-0 opacity-100",
+          ? "translate-x-6 opacity-0 scale-95"
+          : "translate-x-0 opacity-100 scale-100",
       ].join(" ")}
+      style={{ boxShadow: "var(--shadow-card-hover)" }}
     >
-      <span className={`shrink-0 font-bold text-[12px] mt-0.5 ${iconColor(item.type)}`}>
+      <span className={`shrink-0 font-bold text-[11px] mt-0.5 ${iconColor(item.type)}`}>
         {iconGlyph(item.type)}
       </span>
-      <span className="flex-1 break-words">{item.message}</span>
+      <span className="flex-1 break-words leading-relaxed">{item.message}</span>
       <button
         type="button"
         aria-label="Dismiss"
         onClick={() => onRemove(item.id)}
-        className="ml-1 shrink-0 text-content-muted hover:text-content-primary transition-colors text-[11px] leading-none mt-0.5"
+        className="ml-0.5 shrink-0 text-content-muted hover:text-content-primary transition-colors duration-100 text-[10px] leading-none mt-0.5"
       >
         ✕
       </button>

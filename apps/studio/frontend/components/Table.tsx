@@ -145,7 +145,7 @@ export default function Table<T>({
   };
 
   return (
-    <div className="overflow-x-auto rounded border border-edge bg-surface-raised">
+    <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
       <table className="min-w-full table-fixed border-collapse text-body">
         <thead className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
           <tr>
@@ -159,7 +159,7 @@ export default function Table<T>({
                   key={id}
                   scope="col"
                   className={[
-                    "px-3 py-2 font-medium",
+                    "px-3 py-2.5 font-medium",
                     column.align === "right" ? "text-right" : "text-left",
                     column.className,
                     column.headerClassName,
@@ -175,7 +175,7 @@ export default function Table<T>({
                         active ? (sort.direction === "asc" ? "ascending" : "descending") : "none"
                       }
                       className={[
-                        "inline-flex max-w-full items-center gap-1 hover:text-content-primary",
+                        "inline-flex max-w-full items-center gap-1 transition-colors duration-100 hover:text-content-primary",
                         active ? "text-content-primary" : "text-content-muted",
                       ].join(" ")}
                     >
@@ -207,7 +207,7 @@ export default function Table<T>({
               role={onRowClick ? "button" : undefined}
               tabIndex={onRowClick ? 0 : undefined}
               className={[
-                "border-b border-edge-subtle text-content-secondary",
+                "border-b border-edge-subtle text-content-secondary transition-colors duration-100",
                 onRowClick ? "cursor-pointer hover:bg-surface-overlay" : "",
                 rowClassName?.(row, index),
               ]
@@ -224,7 +224,7 @@ export default function Table<T>({
                   <td
                     key={id}
                     className={[
-                      "px-3 py-2 align-top",
+                      "px-3 py-2 align-middle",
                       column.align === "right" ? "text-right" : "text-left",
                       column.className,
                       column.cellClassName,
@@ -248,9 +248,9 @@ export default function Table<T>({
             <tr>
               <td
                 colSpan={columns.length}
-                className="px-3 py-10 text-center text-body text-content-muted"
+                className="px-3 py-12 text-center text-body text-content-muted"
               >
-                {emptyMessage}
+                <span className="block text-[11px] text-content-muted">{emptyMessage}</span>
               </td>
             </tr>
           ) : null}
