@@ -487,9 +487,9 @@ async def _run_flow(
     except KeyboardInterrupt:
         _terminal_status = "aborted"
         raise
-    except LionTimeoutError:
+    except (TimeoutError, LionTimeoutError):
         # Catches both the move_on_after re-raise above and any
-        # LionTimeoutError from inside _run_flow_inner itself.
+        # timeout from inside _run_flow_inner itself.
         _terminal_status = "timed_out"
         raise
     except BaseException as exc:

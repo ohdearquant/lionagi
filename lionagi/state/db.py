@@ -365,16 +365,13 @@ class StateDB:
 
         await self.db.execute("PRAGMA foreign_keys = OFF")
         try:
-            await self.db.execute(
-                "ALTER TABLE sessions RENAME TO sessions__adr0025_old"
-            )
-            # Recreate without the CHECK. Column definitions intentionally
-            # match the new schema.sql; the executescript that follows
-            # _drop_legacy_session_status_check is a no-op for this table
-            # (CREATE TABLE IF NOT EXISTS).
+            # Use sessions_new pattern to avoid FK rewrites: SQLite's
+            # ALTER TABLE RENAME rewrites child-table FK references
+            # (branches, plays) to point at the renamed table. Creating
+            # a _new table, copying, then swapping avoids that.
             await self.db.execute(
                 """
-                CREATE TABLE sessions (
+                CREATE TABLE sessions_new (
                   id              TEXT    PRIMARY KEY,
                   created_at      REAL    NOT NULL,
                   node_metadata   JSON,
@@ -404,14 +401,24 @@ class StateDB:
                 )
                 """
             )
-            # col_list is built from PRAGMA table_info(); identifiers only.
-            insert_sql = f"INSERT INTO sessions ({col_list}) SELECT {col_list} FROM sessions__adr0025_old"  # noqa: S608
+            # Build SELECT with COALESCE for updated_at — legacy DBs
+            # may have NULL values from _reconcile_columns additions.
+            select_cols = []
+            for c in cols:
+                if c == "updated_at":
+                    select_cols.append(
+                        "COALESCE(updated_at, created_at, strftime('%s','now')) AS updated_at"
+                    )
+                else:
+                    select_cols.append(c)
+            select_list = ", ".join(select_cols)
+            insert_sql = f"INSERT INTO sessions_new ({col_list}) SELECT {select_list} FROM sessions"  # noqa: S608
             await self.db.execute(insert_sql)
-            await self.db.execute("DROP TABLE sessions__adr0025_old")
+            await self.db.execute("DROP TABLE sessions")
+            await self.db.execute(
+                "ALTER TABLE sessions_new RENAME TO sessions"
+            )
             for idx_sql in index_sqls:
-                # Some legacy index DDL uses "IF NOT EXISTS"; some
-                # doesn't. Either way the index was dropped with the old
-                # table, so re-CREATE always succeeds.
                 await self.db.execute(idx_sql)
             await self.db.commit()
         finally:
