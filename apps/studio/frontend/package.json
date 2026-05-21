@@ -5,7 +5,12 @@
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start -p 3000",
-    "test": "node --experimental-strip-types --experimental-loader ./ts-loader.mjs --test __tests__/**/*.test.ts"
+    "test": "node --experimental-strip-types --experimental-loader ./ts-loader.mjs --test __tests__/**/*.test.ts",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@types/dagre": "^0.7.54",

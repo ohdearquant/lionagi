@@ -36,3 +36,23 @@ repos:
       - id: markdownlint-cli2
         args: ["--config", ".markdownlint.json"]
         files: ^(docs/|README\.md|AGENT\.md|CLAUDE\.md|CHANGELOG\.md)
+
+  # Studio frontend: ESLint (Next.js + TS) + Prettier on staged files.
+  # Skipped if node_modules/ is absent (e.g. fresh checkout); enable with:
+  #   npm install --prefix apps/studio/frontend
+  - repo: local
+    hooks:
+      - id: studio-frontend-eslint
+        name: studio-frontend-eslint
+        language: system
+        entry: apps/studio/frontend/scripts/precommit-eslint.sh
+        files: ^apps/studio/frontend/.*\.(ts|tsx|js|jsx|mjs|cjs)$
+        exclude: ^apps/studio/frontend/(node_modules|\.next|out|dist)/
+        pass_filenames: true
+      - id: studio-frontend-prettier
+        name: studio-frontend-prettier
+        language: system
+        entry: apps/studio/frontend/scripts/precommit-prettier.sh
+        files: ^apps/studio/frontend/.*\.(ts|tsx|js|jsx|mjs|cjs|json|css|md)$
+        exclude: ^apps/studio/frontend/(node_modules|\.next|out|dist)/
+        pass_filenames: true
