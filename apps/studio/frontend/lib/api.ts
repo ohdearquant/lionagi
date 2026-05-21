@@ -443,6 +443,7 @@ export async function rollbackDefinition(
   saved_at: number;
   rolled_back_from: number;
   rolled_back_to: number;
+  message: string | null;
 }> {
   return fetchJson(
     `/api/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}/rollback?version=${version}`,

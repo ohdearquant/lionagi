@@ -9,6 +9,7 @@ import aiosqlite
 
 from lionagi.cli._runs import LIONAGI_HOME
 from lionagi.state.db import DEFAULT_DB_PATH
+
 from ._path_safety import validate_name_component
 
 # ---------------------------------------------------------------------------
@@ -335,49 +336,49 @@ def _find_definition_file(base: Path, name: str) -> Path | None:
     ``name`` MUST already be validated by ``validate_name_component`` before
     this function is called — callers are responsible for that check.
 
+    Security model:
+    - Path injection is prevented by ``validate_name_component(name)`` which
+      rejects ``..``, path separators, glob metacharacters, NUL, and empty/
+      whitespace strings BEFORE this function is called.
+    - The lexical candidate paths are constructed by joining ``base`` with the
+      already-validated ``name``, so they are guaranteed to be children of
+      ``base`` without resolving symlinks.
+    - Symlinks MAY point outside ``base`` (e.g. ``~/.lionagi/agents/*.md``
+      symlinked from ``firm/agents/``).  This is intentional and supported —
+      the agent service also write-throughs symlinks.  We do NOT validate
+      ``candidate.resolve()`` against ``base.resolve()`` because that breaks
+      every symlinked agent definition.
+
     The original implementation used an unescaped recursive glob
     (``base.glob(f"**/{name}{ext}")``) which allowed glob metacharacters in
-    *name* to expand across the filesystem.  That glob is replaced by a pair
-    of deterministic literal-path checks followed by a bounded directory scan
-    that uses ``resolved.relative_to(base.resolve())`` to confirm the result
-    stays inside *base*.
+    *name* to expand across the filesystem.  That glob is replaced by
+    deterministic literal-path checks that do not interpret ``name`` as a
+    pattern, keeping the fix while allowing symlink targets anywhere.
     """
-    base_resolved = base.resolve()
-
     # Fast path 1: direct child  (base/<name><ext>)
     for ext in _EXTENSIONS:
         candidate = base / f"{name}{ext}"
         if candidate.exists():
-            # Confirm it stays inside base (defends against late-stage symlinks)
-            try:
-                candidate.resolve().relative_to(base_resolved)
-            except ValueError:
-                continue
             return candidate
 
     # Fast path 2: nested subdir  (base/<name>/<name><ext>)
     for ext in _EXTENSIONS:
         candidate = base / name / f"{name}{ext}"
         if candidate.exists():
-            try:
-                candidate.resolve().relative_to(base_resolved)
-            except ValueError:
-                continue
             return candidate
 
     # Slow path: scan one level of subdirectories for <name><ext>.
     # Deliberately NOT using Path.glob() with untrusted input — iterate
     # literal candidates instead so no metacharacter expansion can occur.
+    # Guard against a missing base directory (e.g. fresh LIONAGI_HOME).
+    if not base.exists():
+        return None
     for subdir in base.iterdir():
         if not subdir.is_dir():
             continue
         for ext in _EXTENSIONS:
             candidate = subdir / f"{name}{ext}"
             if candidate.exists():
-                try:
-                    candidate.resolve().relative_to(base_resolved)
-                except ValueError:
-                    continue
                 return candidate
 
     return None

@@ -38,14 +38,44 @@ versioning works, and what rollback means.
 the current state.
 
 When Studio saves a definition:
-1. Write the new content to the file on disk.
-2. Insert a new row in `definitions` with the content, incremented version number,
+1. Validate `kind` and `name` (see "Route parameter validation" below).
+2. Acquire the per-`(kind, name)` in-process lock (`_DEFINITION_LOCKS`).
+3. Insert a new row in `definitions` with the content, incremented version number,
    and timestamp.
+4. Write the new content to the file on disk.
+5. Release the lock.
+
+The DB write happens **before** the disk write. If the DB write fails, the
+exception propagates and the disk file is **not** modified. If the disk write
+fails after a successful DB write, the DB row exists but the disk file may be
+stale — the next save will reconcile them.
 
 When a file is edited outside Studio (in a text editor, by the CLI, by git):
 the disk version is current. Studio's version history may be behind — this is
 acceptable. The next Studio edit will create a new version from whatever is
 on disk.
+
+### Route parameter validation
+
+All definition routes validate `kind` and `name` before any filesystem or DB
+operation. Invalid values return **422 Unprocessable Entity**.
+
+`kind` must be one of the supported definition kinds: `agent`, `playbook`.
+
+`name` must be a non-empty single path component. The following are rejected:
+- Path separators: `/`, `\`
+- NUL byte: `\x00`
+- Dot components: `.`, `..`
+- Glob metacharacters: `*`, `?`, `[`, `]`, `{`, `}`, `~`
+- Empty string or whitespace-only strings
+
+The validation is implemented in `services/_path_safety.py:validate_name_component()`.
+It is called at the top of `get_definition()`, `get_version()`, `save_definition()`,
+and `rollback_definition()`.
+
+Note: symlinked definition files (e.g. `~/.lionagi/agents/*.md` → `firm/agents/`)
+are fully supported. Security relies on validating the route `name` parameter,
+not on restricting symlink targets.
 
 ### Save semantics
 
@@ -53,11 +83,20 @@ on disk.
 POST /api/definitions/{kind}/{name}
   body: { content: string, message?: string }
   →
-  1. Write content to disk path
-  2. INSERT INTO definitions (kind, name, path, content, version, created_at, message)
+  1. validate_name_component(kind), validate_name_component(name)
+  2. acquire _DEFINITION_LOCKS[(kind, name)]
+  3. INSERT INTO definitions (kind, name, path, content, version, created_at, message)
      VALUES (kind, name, path, content, max(version)+1, now(), message)
-  3. Return { version: N, saved_at: timestamp }
+     -- DB failure raises; disk is NOT modified
+  4. write content to disk path (mkdir -p if needed)
+  5. release lock
+  6. Return { version: N, saved_at: timestamp, message: string|null }
 ```
+
+`_DEFINITION_LOCKS` is an in-process `asyncio.Lock` per `(kind, name)` pair.
+It serialises concurrent saves within a single uvicorn worker. It is **not** a
+cross-process lock; multiple uvicorn worker processes or external CLI writes can
+still race. For the current single-user, localhost deployment this is acceptable.
 
 Version numbers are monotonic per `(kind, name)`. Current version = `MAX(version)`.
 
@@ -69,9 +108,8 @@ Definition identity is `(kind, name)`. This is unique because marketplace agents
 POST /api/definitions/{kind}/{name}/rollback?version=N
   →
   1. SELECT content FROM definitions WHERE kind=? AND name=? AND version=?
-  2. Write that content to disk
-  3. INSERT new definitions row with version = max(version)+1 and the restored content
-  4. Return {
+  2. Call save_definition() with the restored content — DB write first, then disk
+  3. Return {
        version: N+1,            -- new version number assigned to the restored content
        saved_at: <float>,       -- unix timestamp of the restore write (same as a save)
        rolled_back_from: <int>, -- version that was current before the rollback
@@ -80,9 +118,10 @@ POST /api/definitions/{kind}/{name}/rollback?version=N
      }
 ```
 
-Rollback creates a NEW version (not a delete). The version history is append-only.
-Version N+1's content equals version N's content, but it is a new entry with a
-new timestamp.
+Rollback delegates to `save_definition()` and therefore inherits DB-first semantics:
+if the DB write fails, the disk file is not modified. Rollback creates a NEW version
+(not a delete). The version history is append-only. Version N+1's content equals
+version N's content, but it is a new entry with a new timestamp.
 
 ### Conflict posture
 
@@ -104,10 +143,15 @@ Studio is open, (3) git provides the ultimate conflict resolution layer.
 
 **Negative**
 - Disk and SQLite can drift if a write to one succeeds and the other fails.
-  Mitigation: disk write first (canonical), SQLite second (history). If SQLite
-  fails, the file is still saved — just version history is incomplete.
+  Mitigation: DB write first (data integrity gate). If the DB write fails the
+  exception propagates and disk is not touched. If the disk write fails after a
+  successful DB commit, the DB row exists without a matching file update — the
+  next save will reconcile. SQLite is the version-history record; disk is the
+  canonical runtime file.
 - No notification when an external edit makes SQLite history stale. The next
   Studio load shows disk content, which may differ from the latest SQLite version.
+- `_DEFINITION_LOCKS` serialises concurrent saves only within a single process.
+  Multiple uvicorn workers or external CLI writers are not covered.
 
 ## Alternatives Considered
 

@@ -104,8 +104,7 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
       cancelled = true;
       if (handle != null) clearTimeout(handle);
     };
-  // POLL_MAX_MS is a module-scope constant — stable reference, not a dep.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // POLL_MAX_MS is a module-scope constant hoisted to module scope — not a dep.
   }, [activeRunId]);
 
   const handleRun = useCallback(async () => {

@@ -166,8 +166,9 @@ def _make_patched_client(tmp_path, monkeypatch):
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
 
-    from apps.studio.server.app import app
     from fastapi.testclient import TestClient
+
+    from apps.studio.server.app import app
 
     return TestClient(app)
 
@@ -438,8 +439,9 @@ def test_save_definition_db_failure_returns_500_from_router(tmp_path, monkeypatc
 
     monkeypatch.setattr(state_db_mod.StateDB, "save_definition", _failing_save)
 
-    from apps.studio.server.app import app
     from fastapi.testclient import TestClient
+
+    from apps.studio.server.app import app
 
     client = TestClient(app, raise_server_exceptions=False)
     r = client.post(
@@ -447,3 +449,157 @@ def test_save_definition_db_failure_returns_500_from_router(tmp_path, monkeypatc
         json={"content": "# content"},
     )
     assert r.status_code == 500, f"Expected 500, got {r.status_code}"
+
+
+# ---------------------------------------------------------------------------
+# HIGH-R3-BE-1: symlinked agent definitions must be readable + writable
+# ---------------------------------------------------------------------------
+
+
+def test_get_definition_follows_symlink(tmp_path, monkeypatch):
+    """get_definition() must return content from a symlinked file.
+
+    Regression test for HIGH-R3-BE-1: the R3 bounded scan used
+    candidate.resolve().relative_to(base.resolve()) to validate results, which
+    unconditionally rejected symlinks whose targets live outside base (the
+    common case for ~/.lionagi/agents/*.md → firm/agents/*.md).
+
+    Fix: security is maintained by validate_name_component() on the route
+    parameter, not by resolving symlink targets.
+    """
+    import apps.studio.server.services.definitions as defs_mod
+    import lionagi.cli._runs as cli_runs_mod
+    import lionagi.state.db as state_db_mod
+
+    # Set up an "external" target directory (simulates firm/agents/)
+    external_dir = tmp_path / "firm" / "agents"
+    external_dir.mkdir(parents=True)
+    target_file = external_dir / "test-link.md"
+    target_file.write_text("# Linked Agent\nContent from external location.")
+
+    fake_home = tmp_path / "lionagi_home"
+    fake_home.mkdir()
+    agents_dir = fake_home / "agents"
+    agents_dir.mkdir()
+    playbooks_dir = fake_home / "playbooks"
+    playbooks_dir.mkdir()
+    fake_db = tmp_path / "state.db"
+
+    # Create a symlink inside agents_dir pointing outside it
+    symlink = agents_dir / "test-link.md"
+    symlink.symlink_to(target_file)
+
+    monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
+    monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
+    monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
+
+    result = _run(defs_mod.get_definition("agent", "test-link"))
+
+    assert result is not None, "get_definition must not return None for a symlinked agent"
+    assert result["content"] == "# Linked Agent\nContent from external location."
+    assert result["name"] == "test-link"
+
+
+def test_save_definition_writes_through_symlink(tmp_path, monkeypatch):
+    """save_definition() must update the symlink target, not create a new file.
+
+    Regression test for HIGH-R3-BE-1: after the fix, saving a definition whose
+    current disk file is a symlink must write the target file (the symlink
+    already exists, _find_definition_file returns it, and write_text follows
+    symlinks by default on POSIX).
+    """
+    import apps.studio.server.services.definitions as defs_mod
+    import lionagi.cli._runs as cli_runs_mod
+    import lionagi.state.db as state_db_mod
+
+    external_dir = tmp_path / "firm" / "agents"
+    external_dir.mkdir(parents=True)
+    target_file = external_dir / "test-link.md"
+    target_file.write_text("# Original content")
+
+    fake_home = tmp_path / "lionagi_home"
+    fake_home.mkdir()
+    agents_dir = fake_home / "agents"
+    agents_dir.mkdir()
+    playbooks_dir = fake_home / "playbooks"
+    playbooks_dir.mkdir()
+    fake_db = tmp_path / "state.db"
+
+    symlink = agents_dir / "test-link.md"
+    symlink.symlink_to(target_file)
+
+    monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
+    monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
+    monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
+
+    result = _run(defs_mod.save_definition("agent", "test-link", "# Updated content"))
+
+    assert result["version"] >= 1
+    # The symlink target must have been updated (write_text follows the link)
+    assert target_file.read_text() == "# Updated content", (
+        "save_definition must write through the symlink to the target file"
+    )
+    # The symlink itself must still be a symlink (not replaced with a regular file)
+    assert symlink.is_symlink(), "symlink must remain a symlink after save"
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM-R3-BE-2: missing kind directory must not 500
+# ---------------------------------------------------------------------------
+
+
+def test_find_definition_file_missing_base_returns_none(tmp_path):
+    """_find_definition_file must return None (not raise) when base dir is absent.
+
+    Regression test for MEDIUM-R3-BE-2: the slow path called base.iterdir()
+    without an existence check, causing FileNotFoundError on a fresh home where
+    the kind directory has not yet been created.
+    """
+    from apps.studio.server.services.definitions import _find_definition_file
+
+    missing_base = tmp_path / "does_not_exist"
+    # Must not raise FileNotFoundError
+    result = _find_definition_file(missing_base, "my-agent")
+    assert result is None
+
+
+def test_save_definition_fresh_home_no_kind_dir(tmp_path, monkeypatch):
+    """POST to a fresh home where agents/ doesn't exist must succeed (not 500).
+
+    Regression test for MEDIUM-R3-BE-2: save_definition() calls
+    _find_definition_file before mkdir, so a missing kind dir triggered a
+    FileNotFoundError in the slow-path iterdir.  After the fix, it returns None
+    and falls back to the default disk_file path, then creates the directory.
+    """
+    import apps.studio.server.services.definitions as defs_mod
+    import lionagi.cli._runs as cli_runs_mod
+    import lionagi.state.db as state_db_mod
+
+    fake_home = tmp_path / "lionagi_home"
+    fake_home.mkdir()
+    # Deliberately do NOT create agents/ or playbooks/
+    agents_dir = fake_home / "agents"
+    playbooks_dir = fake_home / "playbooks"
+    fake_db = tmp_path / "state.db"
+
+    monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
+    monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
+    monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
+
+    # Must succeed even though agents_dir doesn't exist yet
+    result = _run(defs_mod.save_definition("agent", "my-agent", "# content"))
+
+    assert result["version"] >= 1
+    assert (agents_dir / "my-agent.md").exists(), "agents/ dir and file must be created"
