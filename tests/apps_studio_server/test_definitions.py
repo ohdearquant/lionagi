@@ -5,28 +5,11 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _run(coro):
-    # Python 3.10+: asyncio.get_event_loop() raises in a fresh thread.
-    # CI under xdist starts each worker without a loop, so we create one
-    # per call and close it cleanly. Local pytest-asyncio runs were
-    # masking this — they pre-create the loop.
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+from tests.apps_studio_server._helpers import run_async as _run
 
 
 # ---------------------------------------------------------------------------
