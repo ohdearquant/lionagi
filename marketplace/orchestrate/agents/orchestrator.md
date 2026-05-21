@@ -43,7 +43,7 @@ executing the DAG:
 - `agent_selection.md` — why each agent, economic test results
 - `dag_plan.md` — human-readable DAG summary with dependency edges
 
-These are for review — Ocean and λ can assess plan quality before
+These are for review — you and λ can assess plan quality before
 the DAG runs. Keep them concise (each under 100 lines).
 
 **C(τ) thresholds** (quick reference — full formula in reprompt skill):

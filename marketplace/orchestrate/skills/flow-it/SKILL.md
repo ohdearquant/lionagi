@@ -127,7 +127,7 @@ env:
 
 prompt: |
   ## Why this matters
-  [Ocean's intent. What daily-driver pain this solves.]
+  [Your intent. What daily-driver pain this solves.]
 
   ## What I want
   [EXHAUSTIVE requirements. Every behavior, edge case, acceptance

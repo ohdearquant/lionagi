@@ -20,7 +20,7 @@ Use ChatGPT Deep Research as a parallel breadth-exploration engine, with Claude 
 - Starting a new ChatGPT research round (R1, R5, R6, ...)
 - Evaluating incoming ChatGPT responses
 - Updating the research progression after a round completes
-- Ocean says "next round", "send prompts", "evaluate responses", "drill into X"
+- User says "next round", "send prompts", "evaluate responses", "drill into X"
 - New asset class or strategy exploration
 - Literature review on a specific quant topic
 - Competitive analysis across a broad space
@@ -153,7 +153,7 @@ ls .khive/workspaces/YYYYMMDD/chatgpt-responses/
 ls .khive/workspaces/YYYYMMDD/evaluations/
 ```
 
-Present status table to Ocean. Ask what to do or proceed if standing orders say "keep the steam going."
+Present status table to the user. Ask what to do or proceed if standing orders say "keep the steam going."
 
 ### Phase 1: Drill Agents (parallel, max 5)
 
@@ -201,7 +201,7 @@ For each prompt, specify:
 - **Follow-up** (send in same ChatGPT conversation) vs **New session** (self-contained)
 - Which prior response to paste as context (if follow-up)
 
-Present to Ocean: "Ready for Batch 1. [N] prompts. Fire when ready."
+Present to the user: "Ready for Batch 1. [N] prompts. Fire when ready."
 
 ### Phase 3: Evaluate Responses (parallel, max 5)
 
@@ -259,7 +259,7 @@ After ALL evaluators complete, compile a **cross-response analysis**:
 4. **Action items**: ranked by leverage (what to do NOW vs later)
 5. **What's dead**: strategies/approaches killed by this round's findings
 
-Present to Ocean as a concise summary.
+Present to the user as a concise summary.
 
 ### Phase 5: Update Research Progression
 
@@ -278,7 +278,7 @@ Write `.khive/workspaces/YYYYMMDD/HANDOFF_R{N+1}_PLANNING.md`:
 2. R{N+1} prompt candidates (ranked by value)
 3. Execution plan for next session
 4. Data collection status
-5. Standing orders from Ocean
+5. Standing orders from the user
 
 ---
 
