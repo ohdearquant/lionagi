@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import Button from "@/components/Button";
 import StatusPill from "@/components/StatusPill";
-import WorkerCanvas from "@/components/canvas/WorkerCanvas";
 import { getWorkerGraph, startRun } from "@/lib/api";
 import type { WorkerGraph } from "@/lib/types";
+
+const WorkerCanvas = dynamic(() => import("@/components/canvas/WorkerCanvas"), { ssr: false });
 
 // ADR-0014: Run button is defaults-only. No task input, no CWD field.
 // Input variable binding and worktree customisation belong in `li play`.

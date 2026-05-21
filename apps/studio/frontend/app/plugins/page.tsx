@@ -1,10 +1,12 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 import Badge from "@/components/Badge";
-import Markdown from "@/components/Markdown";
 import { listPlugins, getPlugin, getPluginSkill } from "@/lib/api";
 import type { PluginSummary, PluginDetail, PluginSkillDetail } from "@/lib/api";
+
+const Markdown = dynamic(() => import("@/components/Markdown"), { ssr: false });
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

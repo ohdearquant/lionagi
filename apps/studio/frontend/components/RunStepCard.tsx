@@ -1,9 +1,11 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 import Badge from "@/components/Badge";
-import Markdown from "@/components/Markdown";
 import type { RunMessage, RunStep } from "@/lib/types";
+
+const Markdown = dynamic(() => import("@/components/Markdown"), { ssr: false });
 
 interface RolesBreakdown {
   system?: number;

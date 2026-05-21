@@ -1,16 +1,18 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import React, { use, useCallback, useEffect, useMemo, useState } from "react";
 import Button from "@/components/Button";
 import Duration from "@/components/Duration";
-import Markdown from "@/components/Markdown";
 import PageHeader from "@/components/PageHeader";
 import StatusPill from "@/components/StatusPill";
 import Timestamp from "@/components/Timestamp";
 import { getShow, streamShow } from "@/lib/api";
 import type { PlayMeta, ShowDetail, ShowEvent } from "@/lib/types";
-import PlayDag from "./components/PlayDag";
+
+const Markdown = dynamic(() => import("@/components/Markdown"), { ssr: false });
+const PlayDag = dynamic(() => import("./components/PlayDag"), { ssr: false });
 
 type Play = ShowDetail["plays"][number];
 
