@@ -54,7 +54,7 @@ function StatusFilterChip({
 function SkeletonRow() {
   return (
     <tr className="border-b border-edge-subtle">
-      {[60, 28, 28, 52, 48].map((w, i) => (
+      {[60, 28, 28, 52].map((w, i) => (
         <td key={i} className="px-3 py-2.5">
           <div
             className="skeleton h-3 rounded"
@@ -81,6 +81,9 @@ function RunsPageInner() {
   const [error, setError] = useState<string | null>(null);
   const [playbookInput, setPlaybookInput] = useState(playbook);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- sync URL→input: no external system involved, single derived state write
+  useEffect(() => setPlaybookInput(playbook), [playbook]);
 
   function setQuery(next: { page?: number; status?: string[]; playbook?: string }) {
     const params = new URLSearchParams();

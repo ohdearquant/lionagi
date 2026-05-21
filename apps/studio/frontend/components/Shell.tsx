@@ -175,7 +175,7 @@ export default function Shell({ children }: ShellProps) {
         </div>
       </header>
 
-      <div id="main-content" className="w-full">{children}</div>
+      <div id="main-content" tabIndex={-1} className="w-full">{children}</div>
     </div>
   );
 }

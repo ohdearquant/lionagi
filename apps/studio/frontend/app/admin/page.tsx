@@ -155,7 +155,7 @@ export default function AdminPage() {
         {loading ? (
           <div className="py-8 text-center text-meta text-content-muted">Loading...</div>
         ) : phantoms.length === 0 ? (
-          <div className="rounded border border-status-success/25 bg-status-success-bg px-4 py-4 text-body text-status-success shadow-card">
+          <div className="rounded border border-status-success/25 bg-status-success-bg px-4 py-4 text-body text-content-primary shadow-card">
             No phantom sessions detected.
           </div>
         ) : (

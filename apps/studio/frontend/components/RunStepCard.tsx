@@ -360,7 +360,7 @@ export default function RunStepCard({
         <div id={`step-${step.step}-body`} className="border-t border-edge">
           {/* Tab bar */}
           <div role="tablist" aria-label="Step details" className="sticky top-0 z-10 flex items-center gap-0 border-b border-edge bg-surface-base/95 px-2 backdrop-blur">
-            <TabButton id="overview" active={tab} onSelect={setTab} label="Overview" panelId={`step-${step.step}-panel-overview`} />
+            <TabButton id="overview" active={tab} onSelect={setTab} label="Overview" panelId={`step-${step.step}-panel-overview`} buttonId={`step-${step.step}-tab-overview`} />
             <TabButton
               id="files"
               active={tab}
@@ -368,6 +368,7 @@ export default function RunStepCard({
               label="Files"
               count={summary.files.length}
               panelId={`step-${step.step}-panel-files`}
+              buttonId={`step-${step.step}-tab-files`}
             />
             <TabButton
               id="commands"
@@ -376,6 +377,7 @@ export default function RunStepCard({
               label="Commands"
               count={summary.toolCount}
               panelId={`step-${step.step}-panel-commands`}
+              buttonId={`step-${step.step}-tab-commands`}
             />
             <TabButton
               id="errors"
@@ -385,6 +387,7 @@ export default function RunStepCard({
               count={summary.failedCount}
               tone={summary.failedCount > 0 ? "error" : undefined}
               panelId={`step-${step.step}-panel-errors`}
+              buttonId={`step-${step.step}-tab-errors`}
             />
             <TabButton
               id="conversation"
@@ -393,6 +396,7 @@ export default function RunStepCard({
               label="Conversation"
               count={messages.length}
               panelId={`step-${step.step}-panel-conversation`}
+              buttonId={`step-${step.step}-tab-conversation`}
             />
             {tab === "conversation" && assistantList.length > 0 && (
               <button
@@ -412,7 +416,7 @@ export default function RunStepCard({
           </div>
 
           {tab === "overview" && (
-            <div role="tabpanel" id={`step-${step.step}-panel-overview`}>
+            <div role="tabpanel" id={`step-${step.step}-panel-overview`} aria-labelledby={`step-${step.step}-tab-overview`}>
               <OverviewPanel
                 summary={summary}
                 lastAssistant={lastAssistant}
@@ -422,25 +426,25 @@ export default function RunStepCard({
           )}
 
           {tab === "files" && (
-            <div role="tabpanel" id={`step-${step.step}-panel-files`}>
+            <div role="tabpanel" id={`step-${step.step}-panel-files`} aria-labelledby={`step-${step.step}-tab-files`}>
               <FilesPanel files={summary.files} />
             </div>
           )}
 
           {tab === "commands" && (
-            <div role="tabpanel" id={`step-${step.step}-panel-commands`}>
+            <div role="tabpanel" id={`step-${step.step}-panel-commands`} aria-labelledby={`step-${step.step}-tab-commands`}>
               <CommandsPanel commands={summary.commands} />
             </div>
           )}
 
           {tab === "errors" && (
-            <div role="tabpanel" id={`step-${step.step}-panel-errors`}>
+            <div role="tabpanel" id={`step-${step.step}-panel-errors`} aria-labelledby={`step-${step.step}-tab-errors`}>
               <ErrorsPanel failed={summary.failedTools} />
             </div>
           )}
 
           {tab === "conversation" && (
-            <div role="tabpanel" id={`step-${step.step}-panel-conversation`}>
+            <div role="tabpanel" id={`step-${step.step}-panel-conversation`} aria-labelledby={`step-${step.step}-tab-conversation`}>
               <div className="flex flex-wrap items-center gap-1.5 border-b border-edge px-2 py-1">
                 <span className="text-[9px] uppercase tracking-wide text-content-muted">
                   filter:
@@ -496,6 +500,7 @@ function TabButton({
   count,
   tone,
   panelId,
+  buttonId,
 }: {
   id: TabId;
   active: TabId;
@@ -504,11 +509,13 @@ function TabButton({
   count?: number;
   tone?: "error";
   panelId: string;
+  buttonId: string;
 }) {
   const isActive = id === active;
   return (
     <button
       type="button"
+      id={buttonId}
       role="tab"
       aria-selected={isActive}
       aria-controls={panelId}

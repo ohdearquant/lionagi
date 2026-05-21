@@ -83,8 +83,16 @@ export default function TeamsPage() {
               teams.map((team) => (
                 <tr
                   key={team.id}
-                  className="cursor-pointer border-b border-edge-subtle text-content-secondary transition-colors duration-100 hover:bg-surface-overlay"
+                  tabIndex={0}
+                  role="link"
+                  className="cursor-pointer border-b border-edge-subtle text-content-secondary transition-colors duration-100 hover:bg-surface-overlay focus:outline-none focus:ring-1 focus:ring-inset focus:ring-interactive-primary"
                   onClick={() => router.push(`/teams/${encodeURIComponent(team.id)}`)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      router.push(`/teams/${encodeURIComponent(team.id)}`);
+                    }
+                  }}
                 >
                   <td className="px-3 py-2">
                     <div className="font-medium text-content-primary">{team.name}</div>
