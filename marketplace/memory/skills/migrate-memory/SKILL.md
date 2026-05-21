@@ -99,6 +99,8 @@ case "$MEMORY_DIR" in
   *) printf 'ERROR: refusing unexpected memory target: %s\n' "$MEMORY_DIR" >&2; exit 2 ;;
 esac
 
+[ -f "$MEMORY_DIR/MEMORY.md" ] || { echo "ERROR: no MEMORY.md found in $MEMORY_DIR"; exit 1; }
+
 BACKUP_DIR="${MEMORY_DIR}.bak.$(date +%s)"
 cp -r "$MEMORY_DIR" "$BACKUP_DIR"
 printf 'Backup created: %s\n' "$BACKUP_DIR"

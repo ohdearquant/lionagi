@@ -90,7 +90,11 @@ def main() -> int:
 
                 # Per-plugin plugin.json validation
                 per_plugin_json = source_dir / ".claude-plugin" / "plugin.json"
-                if per_plugin_json.exists():
+                if not per_plugin_json.exists():
+                    print(f"FAIL [{name}]: Listed source '{plugin['source']}' has no .claude-plugin/plugin.json")
+                    plugin_ok = False
+                    failures += 1
+                else:
                     with per_plugin_json.open() as pf:
                         per_plugin = json.load(pf)
                     for field in PER_PLUGIN_REQUIRED:
