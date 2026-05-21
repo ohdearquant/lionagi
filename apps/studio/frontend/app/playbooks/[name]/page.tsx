@@ -5,8 +5,14 @@ import { use, useCallback, useEffect, useState } from "react";
 import Button from "@/components/Button";
 import StatusPill from "@/components/StatusPill";
 import WorkerCanvas from "@/components/canvas/WorkerCanvas";
-import { getWorkerGraph, startRun, runEventsUrl } from "@/lib/api";
-import type { WorkerGraph } from "@/lib/types";
+import { getRun, getWorkerGraph, startRun } from "@/lib/api";
+import type { RunStep, WorkerGraph } from "@/lib/types";
+
+// Status set per ADR-0017 session lifecycle vocabulary.
+const TERMINAL_OK = new Set(["completed"]);
+const TERMINAL_FAIL = new Set(["failed", "aborted"]);
+const POLL_INTERVAL_MS = 1000;
+const POLL_MAX_MS = 10 * 60 * 1000; // 10 min ceiling
 
 // ADR-0014: Run button is defaults-only. No task input, no CWD field.
 // Input variable binding and worktree customisation belong in `li play`.
@@ -47,53 +53,61 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
     setRunStatus("running");
     setRunning(true);
 
+    let runId: string;
     try {
       const data = await startRun(workerName);
-      const evtSource = new EventSource(runEventsUrl(data.run_id));
-
-      evtSource.onmessage = (event) => {
-        const parsed = JSON.parse(event.data);
-
-        if (parsed.type === "run_started") {
-          setCurrentStep(parsed.entry_step);
-        } else if (parsed.type === "step_completed") {
-          setExecSteps((prev) => [
-            ...prev,
-            {
-              step: parsed.step,
-              status: "completed",
-              result: parsed.result,
-              timestamp: parsed.timestamp,
-            },
-          ]);
-          setCurrentStep(null);
-        } else if (parsed.type === "run_completed") {
-          setRunStatus("completed");
-          setRunning(false);
-          setCurrentStep(null);
-          evtSource.close();
-        } else if (parsed.type === "run_failed") {
-          setRunStatus("failed");
-          setRunning(false);
-          setCurrentStep(null);
-          evtSource.close();
-        } else if (parsed.type === "done" || parsed.type === "timeout") {
-          setRunning(false);
-          setCurrentStep(null);
-          evtSource.close();
-        }
-      };
-
-      evtSource.onerror = () => {
-        setRunning(false);
-        setCurrentStep(null);
-        setRunStatus("failed");
-        evtSource.close();
-      };
+      runId = data.run_id;
     } catch {
       setRunning(false);
       setRunStatus("failed");
+      return;
     }
+
+    const startedAt = Date.now();
+
+    const tick = async (): Promise<void> => {
+      try {
+        const detail = await getRun(runId);
+        const steps: RunStep[] = detail.steps ?? [];
+        const completed = steps.filter((s) => s.status === "completed");
+        setExecSteps(
+          completed.map((s) => ({
+            step: s.step,
+            status: s.status,
+            result: s.result,
+            timestamp: s.timestamp ?? undefined,
+          })),
+        );
+        const active = steps.find((s) => s.status === "running");
+        setCurrentStep(active?.step ?? null);
+
+        if (TERMINAL_OK.has(detail.status)) {
+          setRunStatus("completed");
+          setRunning(false);
+          setCurrentStep(null);
+          return;
+        }
+        if (TERMINAL_FAIL.has(detail.status)) {
+          setRunStatus("failed");
+          setRunning(false);
+          setCurrentStep(null);
+          return;
+        }
+        if (Date.now() - startedAt > POLL_MAX_MS) {
+          setRunStatus("failed");
+          setRunning(false);
+          setCurrentStep(null);
+          return;
+        }
+        setTimeout(tick, POLL_INTERVAL_MS);
+      } catch {
+        setRunning(false);
+        setRunStatus("failed");
+        setCurrentStep(null);
+      }
+    };
+
+    void tick();
   }, [graph, running, workerName]);
 
   if (error) {
