@@ -19,6 +19,7 @@ from ._providers import (
     PROVIDER_EFFORT_KWARG,
     PROVIDER_FAST_KWARGS,
     PROVIDER_YOLO_KWARGS,
+    PROVIDERS_NO_EFFORT,
     add_common_cli_args,
     build_chat_model,
     parse_model_spec,
@@ -102,7 +103,12 @@ async def _run_agent(
             _ep_kwargs = chat_model.endpoint.config.kwargs or {}
             _kwarg = PROVIDER_EFFORT_KWARG.get(provider)
             if _kwarg and _kwarg in _ep_kwargs:
+                # Post-clamp: store what was actually sent.
                 effort = _ep_kwargs[_kwarg]
+            elif provider in PROVIDERS_NO_EFFORT:
+                # Provider does not accept effort; do not persist the
+                # requested value — it was never sent.
+                effort = None
         branch = Branch(
             chat_model=chat_model,
             log_config=DataLoggerConfig(auto_save_on_exit=False),

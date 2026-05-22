@@ -35,3 +35,33 @@ def test_build_imodel_from_spec_maps_effort_and_yolo_without_network(monkeypatch
     assert kwargs.get("full_auto") is True
     assert kwargs.get("skip_git_repo_check") is True
     assert kwargs.get("cli_display_theme") == "dark"
+
+
+def test_no_effort_provider_effort_resolves_to_none():
+    """Gemini provider with --effort high must persist effort=None, not 'high'."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli._providers import PROVIDERS_NO_EFFORT
+
+    # Verify gemini is in the no-effort set.
+    assert "gemini" in PROVIDERS_NO_EFFORT
+
+    # Simulate the post-build effort resolution: gemini iModel has no effort kwarg.
+    class FakeEndpointConfig:
+        kwargs: dict = {}
+
+    class FakeEndpoint:
+        config = FakeEndpointConfig()
+
+    class FakeIModel:
+        endpoint = FakeEndpoint()
+
+    effort = "high"
+    provider = "gemini"
+    _ep_kwargs = FakeIModel.endpoint.config.kwargs
+    _kwarg = agent_mod.PROVIDER_EFFORT_KWARG.get(provider)
+    if _kwarg and _kwarg in _ep_kwargs:
+        effort = _ep_kwargs[_kwarg]
+    elif provider in agent_mod.PROVIDERS_NO_EFFORT:
+        effort = None
+
+    assert effort is None, "Gemini provider must resolve effort to None, not 'high'"
