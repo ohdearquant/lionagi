@@ -248,3 +248,71 @@ async def test_bash_tool_popen_failure_returns_execution_error(monkeypatch):
     assert resp.return_code == -1
     assert "Execution error" in resp.stderr
     assert "no exec" in resp.stderr
+
+
+# ---------------------------------------------------------------------------
+# C3: MagicMock pid guard — os.killpg must not be called with non-int pid
+# ---------------------------------------------------------------------------
+
+
+async def test_bash_tool_timeout_mock_pid_calls_kill_not_killpg(monkeypatch):
+    """MagicMock proc.pid must not reach os.killpg (would target PID 1 on CI)."""
+    import subprocess
+    from unittest.mock import MagicMock
+
+    import lionagi.tools.code.bash as bash_mod
+
+    mock_proc = MagicMock()
+    # Set pid to a MagicMock object — isinstance(pid, int) returns False,
+    # so the guard routes to proc.kill() instead of os.killpg().
+    mock_proc.pid = MagicMock()
+    mock_proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 0.01), None]
+    mock_proc.kill = MagicMock()
+
+    killpg_calls = []
+
+    def fake_popen(*args, **kwargs):
+        return mock_proc
+
+    monkeypatch.setattr(bash_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(bash_mod.os, "killpg", lambda *a: killpg_calls.append(a))
+
+    tool = BashTool()
+    resp = await tool.handle_request(BashRequest(command="sleep 60", timeout=10))
+
+    assert killpg_calls == [], "os.killpg must not be called when proc.pid is not int > 1"
+    mock_proc.kill.assert_called_once()
+    assert resp.timed_out is True
+
+
+@pytest.mark.parametrize("invalid_pid", [None, 0, 1, -1, True, False])
+async def test_bash_tool_timeout_invalid_pid_calls_kill_not_killpg(monkeypatch, invalid_pid):
+    """Lock in the `> 1` half of the guard against accidental removal.
+
+    Mirrors the coding.py parametrization. killpg(0) → current pgroup;
+    killpg(1) → init/CI runner; both catastrophic if the guard regresses.
+    """
+    import subprocess
+    from unittest.mock import MagicMock
+
+    import lionagi.tools.code.bash as bash_mod
+
+    mock_proc = MagicMock()
+    mock_proc.pid = invalid_pid
+    mock_proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 0.01), None]
+    mock_proc.kill = MagicMock()
+
+    killpg_calls = []
+
+    def fake_popen(*args, **kwargs):
+        return mock_proc
+
+    monkeypatch.setattr(bash_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(bash_mod.os, "killpg", lambda *a: killpg_calls.append(a))
+
+    tool = BashTool()
+    resp = await tool.handle_request(BashRequest(command="sleep 60", timeout=10))
+
+    assert killpg_calls == [], f"os.killpg must not be called for pid={invalid_pid!r}"
+    mock_proc.kill.assert_called_once()
+    assert resp.timed_out is True

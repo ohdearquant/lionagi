@@ -159,11 +159,11 @@ def _subprocess_sync(
         proc.wait(timeout=timeout_sec)
     except subprocess.TimeoutExpired:
         # Finding 4: kill the entire process group, not just the leader
-        with contextlib.suppress(ProcessLookupError, OSError):
-            try:
+        if isinstance(proc.pid, int) and proc.pid > 1:
+            with contextlib.suppress(ProcessLookupError, OSError):
                 os.killpg(proc.pid, signal.SIGKILL)
-            except AttributeError:
-                proc.kill()
+        else:
+            proc.kill()
         proc.wait()
         t_out.join(timeout=1)
         t_err.join(timeout=1)
