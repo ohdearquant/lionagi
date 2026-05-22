@@ -71,6 +71,7 @@ const TONE_BY_VALUE: Record<string, StatusTone> = {
   received: "pending",
   waiting: "pending",
   scheduled: "pending",
+  stale: "pending",
   // lifecycle (terminal mixed)
   "director-managed-complete": "ok",
   // gating
