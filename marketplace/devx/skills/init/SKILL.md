@@ -46,7 +46,6 @@ Check required tools are installed:
 | `uv` | Python | `uv --version` |
 | `gh` | PRs/Issues | `gh --version` |
 | `deno` | Docs/TS | `deno --version` |
-| `khived` | Khive daemon | `khived status` |
 
 Report missing tools with install instructions.
 
@@ -72,11 +71,6 @@ pnpm install --frozen-lockfile
 uv run pre-commit install
 ```
 
-**Lambda setup** (if `.khive/lambda.yaml` exists):
-```bash
-~/.khive/bin/generate-claude "$(pwd)"
-```
-
 ### 4. Verify
 
 Run a quick check to ensure everything works:
@@ -91,11 +85,10 @@ uv run python -c "print('Python OK')"
 ### 5. Report
 
 ```
-init: tools ✓ (git, cargo, uv, gh, khived)
+init: tools ✓ (git, cargo, uv, gh)
 init: rust ✓ (cargo check)
 init: python ✓ (uv sync)
 init: pre-commit ✓ (hooks installed)
-init: lambda ✓ (.claude/ generated)
 ```
 
 ## Important Rules

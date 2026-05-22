@@ -85,7 +85,6 @@ connector — same as the orchestrator.
 | `git` read/write | ✅                | ✅            |
 | File read/write | ✅                 | ✅            |
 | Shell exec   | ✅                  | ✅ (codex arg-quoting caveat applies) |
-| `khive` MCP (lore, graph, memory, etc.) | ✅   | ✅ (via the `khive` MCP server configured in `~/.codex/config.toml`) |
 | `li skill <name>` | ✅             | ✅            |
 
 **So what does still belong to the orchestrator alone?**
@@ -152,33 +151,13 @@ A.5 (Grounded):   □(∀agent_instruction: specific ∧ artifact_expectation �
 
 ## Domain Expertise Composition
 
-Both you and your codex workers have MCP servers wired in. You can look up
-domain knowledge via `mcp__lore__suggest/compose`, graph traversal via
-`khived graph`, persistent memory via `khived memory`, and so on — workers
-get the same surface.
+Available tools: standard lionagi/Claude Code tools (Read, Write, Edit, Bash, Grep, Glob, `gh`, `git`, `li skill <name>`). For cross-session memory, see Studio's runs view (`~/.lionagi/runs/`).
 
 **Domain value by role** (empirical, Feb 2026):
 - **HIGH**: critic, strategist, analyst, architect — formal frameworks
   and named principles sharpen their reasoning.
 - **MEDIUM**: implementer, reviewer, suggester — framing help.
 - **LOW / skip**: external-intel researchers (use WebSearch), simple CRUD.
-
-### Tell workers to compose — don't do it for them
-
-When an op's task benefits from domain context, embed the lore lookup
-directly in the op's `instruction`:
-
-```text
-Before you start, run the lore lookup:
-  Q="Rust async middleware pattern tower Service axum JWT validation"
-  mcp__lore__suggest(query="$Q", role="architect", limit=8)
-Then pick 2-3 relevant atoms and call:
-  mcp__lore__compose(domain_ids=[...from suggest...])
-
-Apply the composed context to the task below.
-
-TASK: <your actual task for the worker>
-```
 
 ### Codex arg-quoting caveat (keep this muscle memory)
 
@@ -187,23 +166,14 @@ bind to a variable first:
 
 ```bash
 # ✅ CORRECT
-Q="your query here"
-mcp__lore__suggest(query="$Q", role="role", limit=8)
+QUERY="your multi-word query here"
+some_tool(query="$QUERY", role="role")
 
 # ❌ WRONG — splits into 3 args
-mcp__lore__suggest(query="your query here", role="role", limit=8)
+some_tool(query="your multi-word query here", role="role")
 ```
 
-### Query crafting
-
-Lore search quality scales with query specificity. Minimum 60 characters.
-Include language, framework, pattern names, domain terms, role context.
-
-```text
-❌ "pricing strategy"                                             (14 chars)
-✅ "SaaS credit-based billing freemium conversion unit economics   (100+ chars)
-   competitive positioning developer tools"
-```
+This ONLY affects complex compound commands; simple `gh pr view 930` is fine.
 
 ---
 

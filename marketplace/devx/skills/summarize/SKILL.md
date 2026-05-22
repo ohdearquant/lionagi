@@ -177,7 +177,7 @@ debugging techniques, file organization decisions, naming conventions.
 ## Key Principles
 
 - **Fast > thorough**: This is a checkpoint, not a dissertation. 2-5 minutes max.
-- **Memory-first**: Always store to memory. File is optional.
+- **File-first**: Always write a checkpoint file at `.khive/notes/checkpoints/`. Optional: if khive MCP is available, also persist to memory for cross-session recall.
 - **Continue after**: This skill does NOT end the session.
 - **Compound**: Multiple checkpoints per session is fine — they build a trail.
 - **Searchable**: Use clear prefixes (CHECKPOINT, PATTERN, DECISION, LESSON) for future recall.
@@ -188,7 +188,7 @@ debugging techniques, file organization decisions, naming conventions.
 
 - Writing a full session summary (use `/session-summarize` for that)
 - Spending >5 minutes on the checkpoint
-- Skipping memory storage and only writing a file
+- Skipping the checkpoint file because khive is unavailable — the file is the required primary output
 - Not capturing the user's guidance when given
 - Generic summaries without specifics ("worked on stuff")
 - Over-capturing: not every line of code matters

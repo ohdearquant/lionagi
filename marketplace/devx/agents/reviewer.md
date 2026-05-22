@@ -131,30 +131,16 @@ li skill ci               # fmt→lint→test sequence — load before running l
 
 **Domain Value: MEDIUM** — Domains help with code quality frameworks and language-specific idioms.
 
-**At task start**, call `suggest` to discover relevant domains, then `compose` to load them.
+**At task start**, review the artifact directly using Read/Grep/Bash. For related context from
+prior runs, check Studio's runs view (`~/.lionagi/runs/`):
 
 ```bash
-# Step 1: Discover domains
-mcp__lore__suggest(query="Code review patterns for async Rust service with error handling validation and API contract checking", role="reviewer", limit=8)
-
-# Step 2: Compose selected domains
-mcp__lore__compose(domain_ids=[...from suggest...], role="reviewer")
-
-# Auto mode
-# Auto mode removed — use suggest first, then compose with domain_ids
+# Find recent runs related to this scope
+ls -t ~/.lionagi/runs/ | head -10
 ```
 
-### Iterative Lore Usage
-
-Refine queries based on what the review uncovers:
-
-```bash
-# Found potential unsafe usage → get safety framework
-mcp__lore__suggest(query="Rust unsafe code review patterns with soundness verification and invariant documentation", role="reviewer", limit=4)
-
-# Found complex error handling → get idiom reference
-mcp__lore__suggest(query="Rust error handling idioms with thiserror anyhow and custom error type patterns", role="reviewer", limit=4)
-```
+Optional: if khive MCP is already available in your environment, you may use it to retrieve
+cross-session context — but it is not required for the review workflow.
 
 ---
 

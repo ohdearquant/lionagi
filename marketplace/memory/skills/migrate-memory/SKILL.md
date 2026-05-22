@@ -5,7 +5,7 @@ description: >
   migrate to khive recall. Suggest when: MEMORY.md exceeds 150 lines, memory files
   accumulate, or user asks to organize/clean memory.
 argument-hint: '[--target /absolute/path/to/memory]'
-allowed-tools: [Read, Write, Edit, Glob, Grep, Bash, mcp__khive__remember, mcp__khive__recall, mcp__khive__delete, Agent]
+allowed-tools: [Read, Write, Edit, Glob, Grep, Bash, Agent]
 ---
 
 # Memory Organization & Migration
@@ -25,12 +25,11 @@ and optionally migrate content to khive persistent memory.
 ```
 MEMORY.md (index, <200 lines) ← loaded every session
   └→ *.md files (detail) ← loaded on demand via links
-  └→ khive memory (semantic search) ← recalled via mcp__khive__recall()
 ```
 
-All three layers coexist. MEMORY.md is the routing table — it tells Leo
-what exists and where to find detail. Individual files hold the content.
-khive memory is for cross-session semantic search.
+MEMORY.md is the routing table — it tells the agent what exists and where to find
+detail. Individual files hold the content. Optional: if khive MCP is available,
+memory can also be stored there for cross-session semantic recall.
 
 ## What stays in MEMORY.md (always loaded)
 
@@ -49,7 +48,7 @@ khive memory is for cross-session semantic search.
 - Feedback with context (why + how to apply)
 - Reference data (API keys, restaurant lists, device IDs)
 
-## What goes in khive memory (optional)
+## What goes in khive memory (optional — requires khive MCP)
 
 - Cross-session learnings (KEY_INSIGHT)
 - Session summaries (episodic)
@@ -153,21 +152,6 @@ Techniques:
 - No dangling references
 - Key info (health, people, commitments) still present
 
-### Phase 6: Optional khive migration
-
-If khive memory is available and desired:
-
-```python
-mcp__khive__remember(
-  content="[name]: [content]",
-  memory_type="semantic|episodic",
-  importance=0.70-0.85,
-  source="auto-memory-migration-YYYYMMDD"
-)
-```
-
-Tag with consistent `source` for rollback. There is no `forget_batch` verb; to undo a khive migration, recall by the migration `source`, record the returned IDs, and delete those IDs with `mcp__khive__delete(type="memory", id="...")`.
-
 ## Recovery
 
 The inventory phase creates `BACKUP_DIR="${MEMORY_DIR}.bak.$(date +%s)"` before
@@ -190,14 +174,6 @@ cp -r "$BACKUP_DIR" "$MEMORY_DIR"
 # 4. Verify the restored index and links.
 wc -l "$MEMORY_DIR/MEMORY.md"
 find "$MEMORY_DIR" -maxdepth 1 -name '*.md' -print | sort
-```
-
-If khive memories were migrated too, recall by the migration source and delete
-only those returned memory IDs:
-
-```python
-mcp__khive__recall(query="auto-memory-migration-YYYYMMDD", source="auto-memory-migration-YYYYMMDD", limit=100)
-mcp__khive__delete(type="memory", id="<returned-memory-id>")
 ```
 
 ## Quality Gates

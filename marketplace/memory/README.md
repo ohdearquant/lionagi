@@ -4,10 +4,10 @@ MEMORY.md hygiene and auto-memory bootstrap for Claude Code sessions.
 
 ## What's inside
 
-- **skills/migrate-memory** — Maintains the auto-memory space: prunes stale files,
-  condenses the MEMORY.md index (kept under 200 lines), and optionally migrates
-  content to khive persistent memory. Quality gates: all files read before deletion,
-  no orphaned files, key sections preserved.
+- **skills/migrate-memory** — Maintains the auto-memory space: prunes stale files
+  and condenses the MEMORY.md index (kept under 200 lines). Requires only standard
+  Claude Code file tools (Read, Write, Edit, Glob, Grep, Bash). Quality gates: all
+  files read before deletion, no orphaned files, key sections preserved.
 
 ## Deferred (v2.1)
 
