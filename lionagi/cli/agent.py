@@ -16,13 +16,12 @@ from lionagi.state import provenance as _provenance
 from ._agents import load_agent_profile
 from ._logging import hint, log_error
 from ._providers import (
-    PROVIDER_EFFORT_KWARG,
     PROVIDER_FAST_KWARGS,
     PROVIDER_YOLO_KWARGS,
-    PROVIDERS_NO_EFFORT,
     add_common_cli_args,
     build_chat_model,
     parse_model_spec,
+    resolve_persisted_effort,
 )
 from ._runs import allocate_run, find_branch, load_last_branch, save_last_branch_pointer
 
@@ -97,25 +96,11 @@ async def _run_agent(
         chat_model = build_chat_model(
             provider, model, yolo, verbose, theme, effort, fast
         )
-        # Extract the post-clamp effort so sessions.effort stores the value
-        # that was actually sent to the provider (e.g. "max"→"xhigh" for codex).
-        # build_chat_model() returns iModel only when extra flags (yolo, verbose,
-        # theme, or a recognized effort kwarg) are present.  For providers like
-        # gemini that have no entry in PROVIDER_EFFORT_KWARG, no effort kwarg is
-        # added, extra stays empty, and a plain string is returned — so the
-        # isinstance branch is never entered.  The PROVIDERS_NO_EFFORT reset
-        # must therefore be independent of the iModel guard.
-        if isinstance(chat_model, iModel):
-            _ep_kwargs = chat_model.endpoint.config.kwargs or {}
-            _kwarg = PROVIDER_EFFORT_KWARG.get(provider)
-            if _kwarg and _kwarg in _ep_kwargs:
-                # Post-clamp: store what was actually sent.
-                effort = _ep_kwargs[_kwarg]
-
-        # Independent of iModel-vs-string: a no-effort provider must persist
-        # None regardless of what build_chat_model() returned.
-        if provider in PROVIDERS_NO_EFFORT:
-            effort = None
+        # Resolve the effort value to persist: captures post-clamp values
+        # (e.g. "max"→"xhigh" for codex) and forces None for providers that
+        # don't accept an effort kwarg at all (e.g. gemini).  The helper is
+        # independent of whether build_chat_model() returned iModel or str.
+        effort = resolve_persisted_effort(provider, chat_model, effort)
         branch = Branch(
             chat_model=chat_model,
             log_config=DataLoggerConfig(auto_save_on_exit=False),

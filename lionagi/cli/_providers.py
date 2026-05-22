@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from lionagi import iModel
 
@@ -69,6 +70,15 @@ PROVIDERS_NO_EFFORT: frozenset[str] = frozenset(
         "gemini-cli",
         "gemini",
     }
+)
+
+# Module-level invariant: a provider cannot be in both sets simultaneously.
+# A future maintainer adding a provider to the wrong set gets an ImportError
+# at startup instead of silent effort-kwarg corruption at runtime.
+assert PROVIDERS_NO_EFFORT.isdisjoint(PROVIDER_EFFORT_KWARG), (
+    "Provider classification conflict: "
+    f"{PROVIDERS_NO_EFFORT & PROVIDER_EFFORT_KWARG!r} "
+    "appear in both PROVIDERS_NO_EFFORT and PROVIDER_EFFORT_KWARG"
 )
 
 # ── Per-provider yolo kwargs ──────────────────────────────────────────────
@@ -298,6 +308,33 @@ def build_chat_model(
             **extra,
         )
     return f"{provider}/{model}"
+
+
+def resolve_persisted_effort(
+    provider: str,
+    chat_model: Any,
+    requested_effort: str | None,
+) -> str | None:
+    """Return the effort value to persist for this provider+model+request.
+
+    - For iModel chat_model with a known PROVIDER_EFFORT_KWARG: return the
+      post-clamp value the runtime actually sent.
+    - For any provider in PROVIDERS_NO_EFFORT: return None (no effort sent).
+    - Otherwise: return requested_effort unchanged.
+
+    The PROVIDERS_NO_EFFORT reset is independent of the iModel check so that
+    gemini (and other no-effort providers) always persist None even when
+    build_chat_model returns a plain string rather than an iModel.
+    """
+    effort = requested_effort
+    if isinstance(chat_model, iModel):
+        _ep_kwargs = chat_model.endpoint.config.kwargs or {}
+        _kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+        if _kwarg and _kwarg in _ep_kwargs:
+            effort = _ep_kwargs[_kwarg]
+    if provider in PROVIDERS_NO_EFFORT:
+        effort = None
+    return effort
 
 
 def resolve_model_spec(spec: str) -> tuple[str, str]:

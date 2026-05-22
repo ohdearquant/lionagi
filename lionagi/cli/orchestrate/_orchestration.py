@@ -38,7 +38,7 @@ from lionagi.state import provenance as _provenance
 
 from .._agents import AgentProfile, load_agent_profile
 from .._logging import hint
-from .._providers import PROVIDER_EFFORT_KWARG, PROVIDERS_NO_EFFORT, build_imodel_from_spec
+from .._providers import build_imodel_from_spec, resolve_persisted_effort
 from .._runs import RunDir, allocate_run, save_last_branch_pointer
 
 
@@ -273,15 +273,10 @@ def setup_orchestration(
         theme=theme,
         fast=fast,
     )
-    # Extract the post-clamp effort so env.effort (and thus sessions.effort)
-    # stores the value actually sent to the provider (e.g. "max"→"xhigh" for codex).
-    _orc_ep_kwargs = orc_imodel.endpoint.config.kwargs or {}
+    # Resolve the effort value to persist: captures post-clamp values
+    # (e.g. "max"→"xhigh" for codex) and forces None for no-effort providers.
     _orc_provider = orc_imodel.endpoint.config.provider
-    _orc_effort_kwarg = PROVIDER_EFFORT_KWARG.get(_orc_provider)
-    if _orc_effort_kwarg and _orc_effort_kwarg in _orc_ep_kwargs:
-        effort = _orc_ep_kwargs[_orc_effort_kwarg]
-    elif _orc_provider in PROVIDERS_NO_EFFORT:
-        effort = None
+    effort = resolve_persisted_effort(_orc_provider, orc_imodel, effort)
     if cwd:
         orc_imodel.endpoint.config.kwargs.setdefault("repo", Path(cwd))
 
