@@ -10,7 +10,7 @@ The lionagi marketplace bundles curated skills, agents, and configuration into i
 
 - Claude Code CLI (v1.x+)
 - lionagi installed: `pip install lionagi` (>= 0.26.0)
-- No other dependencies required for the 5 catalog plugins.
+- No other dependencies required for the 4 catalog plugins.
 
 ## Install
 
@@ -23,7 +23,6 @@ claude /plugin install show@lionagi
 claude /plugin install devx@lionagi
 claude /plugin install orchestrate@lionagi
 claude /plugin install play@lionagi
-claude /plugin install memory@lionagi
 ```
 
 ## Where to start
@@ -31,7 +30,8 @@ claude /plugin install memory@lionagi
 - **New to lionagi?** Install `devx` first — it covers commit, fmt, ci, pr, and init.
 - **Orchestrating multi-step workflows?** Install `show` + `orchestrate`.
 - **Authoring playbooks?** Install `play`.
-- **Maintaining MEMORY.md?** Install `memory` (note: memory-recall is deferred to v2.1; migrate-memory is available now).
+
+The `memory` plugin (MEMORY.md hygiene + cross-session recall) is deferred to v2.1 pending a lionagi-native rewrite against `~/.lionagi/runs/`.
 
 ## Plugins
 
@@ -41,7 +41,6 @@ claude /plugin install memory@lionagi
 | `play` | Author lionagi playbooks — the YAML files that li play and li o flow use to define and invoke reusable agent workflows. |
 | `orchestrate` | Multi-agent DAG orchestration via li o flow and li o fanout: write flow specs, validate them, fire parallel agents, and monitor execution. |
 | `devx` | Development workflow skills: conventional commits, formatting, CI checks, PR creation, and session summaries. |
-| `memory` | Maintain the auto-memory space: prune stale files, condense MEMORY.md, and keep project context navigable across sessions. |
 
 ## Decision record
 

@@ -27,16 +27,12 @@
       "name": "devx",
       "source": "./marketplace/devx",
       "description": "Development workflow skills: conventional commits, formatting, CI checks, PR creation, and session summaries."
-    },
-    {
-      "name": "memory",
-      "source": "./marketplace/memory",
-      "description": "Maintain the auto-memory space: prune stale files, condense MEMORY.md, and keep project context navigable across sessions."
     }
   ],
   "_deferred_plugins": [
     "kg-bridge — bridge between lionagi runs and a knowledge graph; requires implementation",
     "studio — Studio MCP server access; deferred until li studio MCP server ships",
-    "mcp-bundle — canonical MCP server bundle; deferred until agent MCP skills land"
+    "mcp-bundle — canonical MCP server bundle; deferred until agent MCP skills land",
+    "memory — MEMORY.md hygiene + cross-session recall; deferred to v2.1 pending lionagi-native rewrite against ~/.lionagi/runs/"
   ]
 }
