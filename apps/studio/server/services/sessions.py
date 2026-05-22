@@ -147,7 +147,7 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
         )
 
         branch_cur = await db.execute(
-            "SELECT id, name, created_at, progression_id FROM branches WHERE session_id = ? ORDER BY created_at",
+            "SELECT id, name, created_at, progression_id, model, provider, agent_name FROM branches WHERE session_id = ? ORDER BY created_at",
             (session_id,),
         )
         branch_rows = await branch_cur.fetchall()
@@ -190,6 +190,9 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
                     "name": br["name"],
                     "created_at": br["created_at"],
                     "messages": messages,
+                    "model": br["model"],
+                    "provider": br["provider"],
+                    "agent_name": br["agent_name"],
                 }
             )
 
@@ -197,9 +200,7 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
     started_at = session_row["started_at"]
     ended_at = session_row["ended_at"]
     duration_ms = (
-        (ended_at - started_at) * 1000
-        if started_at is not None and ended_at is not None
-        else None
+        (ended_at - started_at) * 1000 if started_at is not None and ended_at is not None else None
     )
 
     return {
@@ -229,9 +230,7 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
     }
 
 
-async def get_session_messages_after(
-    session_id: str, after_ts: float
-) -> list[dict[str, Any]]:
+async def get_session_messages_after(session_id: str, after_ts: float) -> list[dict[str, Any]]:
     if not DEFAULT_DB_PATH.exists():
         return []
 

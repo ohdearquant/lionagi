@@ -349,6 +349,9 @@ export interface SessionBranch {
   name: string;
   created_at: number;
   messages: SessionMessage[];
+  model?: string | null;
+  provider?: string | null;
+  agent_name?: string | null;
 }
 
 export interface SessionDetail {

@@ -53,6 +53,7 @@ def _clamp_claude_effort(effort: str, model: str) -> str:
 
 # provider name → kwarg name for effort
 PROVIDER_EFFORT_KWARG: dict[str, str] = {
+    "claude-code": "effort",
     "claude_code": "effort",
     "claude": "effort",
     "codex": "reasoning_effort",
@@ -172,11 +173,7 @@ def _normalize_model_name(model: str, provider_hint: str | None = None) -> str:
     """Normalize bare model name (no provider prefix)."""
     if provider_hint and provider_hint in _CLAUDE_PROVIDER_NAMES:
         for prefix in _CLAUDE_MODEL_PREFIXES:
-            if (
-                model.startswith(prefix)
-                and model != prefix
-                and not model.startswith("claude-")
-            ):
+            if model.startswith(prefix) and model != prefix and not model.startswith("claude-"):
                 return f"claude-{model}"
     return model
 
@@ -210,9 +207,7 @@ def parse_model_spec(spec: str) -> ModelSpec:
                 f"Provider '{provider_raw}' does not support effort levels. "
                 f"Remove '-{effort}' from '{spec}'."
             )
-        return ModelSpec(
-            model=_normalize_model(model_clean, provider_raw), effort=effort
-        )
+        return ModelSpec(model=_normalize_model(model_clean, provider_raw), effort=effort)
 
     return ModelSpec(model=_normalize_model(spec, provider_raw), effort=None)
 
@@ -333,12 +328,8 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
             "Does not change model or reasoning effort."
         ),
     )
-    parser.add_argument(
-        "-v", "--verbose", action="store_true", help="Stream real-time output."
-    )
-    parser.add_argument(
-        "--theme", choices=("light", "dark"), default=None, help="Terminal theme."
-    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Stream real-time output.")
+    parser.add_argument("--theme", choices=("light", "dark"), default=None, help="Terminal theme.")
     parser.add_argument(
         "--effort",
         metavar="LEVEL",
