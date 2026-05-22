@@ -38,6 +38,7 @@ async def _run_agent(
     cwd: str | None = None,
     timeout: int | None = None,
     fast: bool = False,
+    invocation_id: str | None = None,
 ) -> tuple[str, str, str, str]:
     """Execute one agent turn (new or resumed).
 
@@ -128,6 +129,7 @@ async def _run_agent(
         branch,
         agent_name=agent_name,
         artifacts_path=str(run.artifact_root),
+        invocation_id=invocation_id,
     )
 
     # ADR-0025: distinguish timed_out / aborted / cancelled / failed so
@@ -200,6 +202,7 @@ async def _setup_live_persist(
     *,
     agent_name: str | None = None,
     artifacts_path: str | None = None,
+    invocation_id: str | None = None,
 ) -> dict | None:
     """Open DB, create session/branch rows, register live message hook.
 
@@ -284,6 +287,8 @@ async def _setup_live_persist(
                     "artifacts_path": artifacts_path,
                     "status": "running",
                     "started_at": time.time(),
+                    # ADR-0020: optional skill-level orchestration parent.
+                    "invocation_id": invocation_id,
                 }
             )
 
@@ -338,6 +343,12 @@ async def _setup_live_persist(
                     await db.append_to_progression(branch_prog_id, msg_id)
                     await db.append_to_progression(session_prog_id, msg_id)
                     ctx["new_msg_ids"].append(msg_id)
+                # ADR-0019: activity heartbeat for staleness detection.
+                # Done after the progression append so callers see the
+                # bump only once the message is committed.
+                await db.touch_session_activity(
+                    session_id, at=msg_dict.get("created_at")
+                )
                 # ADR-0009: branches.system_msg_id must track the CURRENT
                 # system message. If the runtime replaces the system mid-run
                 # (set_system), update the pointer so Studio's O(1) lookup
@@ -508,6 +519,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 cwd=args.cwd,
                 timeout=args.timeout,
                 fast=args.fast,
+                invocation_id=getattr(args, "invocation", None),
             )
         )
     except KeyboardInterrupt:

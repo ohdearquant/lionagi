@@ -508,6 +508,7 @@ async def start_live_persist(
     playbook_name: str | None = None,
     agent_name: str | None = None,
     artifacts_path: str | None = None,
+    invocation_id: str | None = None,
 ) -> None:
     """Open state.db, create session row, register hooks on existing branches.
 
@@ -549,6 +550,8 @@ async def start_live_persist(
                 "artifacts_path": artifacts_path,
                 "status": "running",
                 "started_at": time.time(),
+                # ADR-0020: optional skill orchestration parent
+                "invocation_id": invocation_id,
             }
         )
 
@@ -651,6 +654,10 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
             await db.insert_message(msg_dict)
             await db.append_to_progression(branch_prog_id, msg_id)
             await db.append_to_progression(session_prog_id, msg_id)
+            # ADR-0019: activity heartbeat for staleness detection.
+            await db.touch_session_activity(
+                session_id, at=msg_dict.get("created_at")
+            )
             # ADR-0009: keep branches.system_msg_id pointing at the
             # current system if the runtime replaces it mid-flow.
             if msg_dict.get("role") == "system":

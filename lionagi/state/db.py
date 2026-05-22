@@ -35,6 +35,34 @@ _SESSION_COLUMNS = frozenset(
         "status",
         "started_at",
         "ended_at",
+        # ADR-0019: activity marker for staleness detection. Bumped on
+        # every message INSERT so a session that hasn't produced output
+        # in N hours is detectably stale without scanning ``messages``.
+        "last_message_at",
+        # ADR-0020: optional FK to the skill orchestration that spawned
+        # this session (e.g. a /show invocation grouping its plays).
+        "invocation_id",
+    }
+)
+
+# ADR-0020: invocation lifecycle vocabulary — narrower than session
+# status (no 'aborted_after_finish') but otherwise shares the ADR-0025
+# terminal set. The schema CHECK is in schema.sql; this set lets the
+# Python helpers validate updates symmetrically.
+_INVOCATION_STATUSES = frozenset(
+    {"running", "completed", "failed", "timed_out", "aborted", "cancelled"}
+)
+_INVOCATION_COLUMNS = frozenset(
+    {
+        "skill",
+        "plugin",
+        "prompt",
+        "started_at",
+        "ended_at",
+        "status",
+        "session_count",
+        "updated_at",
+        "node_metadata",
     }
 )
 
@@ -297,6 +325,10 @@ class StateDB:
             ("status", "TEXT"),
             ("started_at", "REAL"),
             ("ended_at", "REAL"),
+            # ADR-0019: activity marker for staleness detection.
+            ("last_message_at", "REAL"),
+            # ADR-0020: optional FK to invocations table.
+            ("invocation_id", "TEXT"),
         ],
         "branches": [
             ("system_msg_id", "TEXT"),
@@ -397,7 +429,9 @@ class StateDB:
                                   ),
                   status          TEXT,
                   started_at      REAL,
-                  ended_at        REAL
+                  ended_at        REAL,
+                  last_message_at REAL,
+                  invocation_id   TEXT
                 )
                 """
             )
@@ -591,8 +625,8 @@ class StateDB:
                progression_id, first_msg_id, last_msg_id, updated_at,
                playbook_name, agent_name, invocation_kind, show_topic,
                show_play_name, artifacts_path, source_kind,
-               status, started_at, ended_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               status, started_at, ended_at, last_message_at, invocation_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session["id"],
                 session.get("created_at", now),
@@ -615,8 +649,23 @@ class StateDB:
                 session.get("status"),
                 session.get("started_at"),
                 session.get("ended_at"),
+                # ADR-0019: initialize last_message_at to session start so
+                # a freshly-created session that has produced no messages
+                # yet isn't immediately classified stale.
+                session.get("last_message_at", session.get("started_at", now)),
+                # ADR-0020: optional FK to invocations(id). NULL when the
+                # session was spawned standalone (no `li invoke start`).
+                session.get("invocation_id"),
             ),
         )
+        # ADR-0020: keep invocations.session_count in sync so list queries
+        # don't need a JOIN.
+        if session.get("invocation_id"):
+            await self.db.execute(
+                "UPDATE invocations SET session_count = session_count + 1, "
+                "updated_at = ? WHERE id = ?",
+                (now, session["invocation_id"]),
+            )
         await self.db.commit()
 
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
@@ -625,6 +674,24 @@ class StateDB:
         )
         row = await cur.fetchone()
         return self._row_to_dict(row) if row else None
+
+    async def touch_session_activity(
+        self, session_id: str, *, at: float | None = None
+    ) -> None:
+        """Bump ``last_message_at`` (and ``updated_at``) for staleness signal.
+
+        ADR-0019: stored at write time so the runs list and dashboard can
+        compute staleness with one indexed read instead of scanning
+        messages. ``at`` lets the caller pass the message timestamp for
+        precision; callers without one let it default to ``time.time()``.
+        """
+        ts = at if at is not None else time.time()
+        await self.db.execute(
+            "UPDATE sessions SET last_message_at = ?, updated_at = ? "
+            "WHERE id = ?",
+            (ts, ts, session_id),
+        )
+        await self.db.commit()
 
     async def update_session(self, session_id: str, **fields: Any) -> None:
         _validate_columns(fields, _SESSION_COLUMNS)
@@ -681,6 +748,112 @@ class StateDB:
             cur = await self.db.execute("SELECT COUNT(*) AS n FROM sessions")
         row = await cur.fetchone()
         return row["n"]
+
+    # ── Invocations (ADR-0020) ──────────────────────────────────────────
+
+    async def create_invocation(self, invocation: dict[str, Any]) -> None:
+        """Insert an invocation row (skill-level orchestration record).
+
+        Called by ``li invoke start``. Required keys: ``id``, ``skill``,
+        ``started_at``. Optional: ``plugin``, ``prompt``, ``status``,
+        ``node_metadata``.
+        """
+        status = invocation.get("status", "running")
+        _validate_enum(
+            "status",
+            status,
+            _INVOCATION_STATUSES,
+            adr="ADR-0020",
+            nullable=False,
+        )
+        now = time.time()
+        await self.db.execute(
+            """INSERT OR IGNORE INTO invocations
+               (id, skill, plugin, prompt, started_at, ended_at, status,
+                session_count, created_at, updated_at, node_metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                invocation["id"],
+                invocation["skill"],
+                invocation.get("plugin"),
+                invocation.get("prompt"),
+                invocation["started_at"],
+                invocation.get("ended_at"),
+                status,
+                invocation.get("session_count", 0),
+                invocation.get("created_at", now),
+                invocation.get("updated_at", now),
+                _to_json_column(invocation.get("node_metadata")),
+            ),
+        )
+        await self.db.commit()
+
+    async def update_invocation(
+        self, invocation_id: str, **fields: Any
+    ) -> None:
+        _validate_columns(fields, _INVOCATION_COLUMNS)
+        if "status" in fields:
+            _validate_enum(
+                "status",
+                fields["status"],
+                _INVOCATION_STATUSES,
+                adr="ADR-0020",
+                nullable=False,
+            )
+        if "node_metadata" in fields:
+            fields["node_metadata"] = _to_json_column(fields["node_metadata"])
+        fields["updated_at"] = time.time()
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [invocation_id]
+        # columns validated above; SQL is identifier-only interpolation.
+        update_sql = f"UPDATE invocations SET {sets} WHERE id = ?"  # noqa: S608
+        await self.db.execute(update_sql, vals)
+        await self.db.commit()
+
+    async def get_invocation(
+        self, invocation_id: str
+    ) -> dict[str, Any] | None:
+        cur = await self.db.execute(
+            "SELECT * FROM invocations WHERE id = ?", (invocation_id,)
+        )
+        row = await cur.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    async def list_invocations(
+        self,
+        *,
+        skill: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM invocations"
+        conds: list[str] = []
+        params: list[Any] = []
+        if skill:
+            conds.append("skill = ?")
+            params.append(skill)
+        if status:
+            conds.append("status = ?")
+            params.append(status)
+        if conds:
+            query += " WHERE " + " AND ".join(conds)
+        query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        cur = await self.db.execute(query, params)
+        rows = await cur.fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    async def list_sessions_for_invocation(
+        self, invocation_id: str
+    ) -> list[dict[str, Any]]:
+        cur = await self.db.execute(
+            "SELECT * FROM sessions WHERE invocation_id = ? "
+            "ORDER BY created_at ASC",
+            (invocation_id,),
+        )
+        rows = await cur.fetchall()
+        return [self._row_to_dict(r) for r in rows]
 
     # ── Branches ───────────────────────────────────────────────────────
 
