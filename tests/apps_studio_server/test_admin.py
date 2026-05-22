@@ -113,3 +113,202 @@ def test_admin_prune_rejects_empty_body(tmp_path, monkeypatch):
     client = _make_client(tmp_path, monkeypatch, db_path)
     r = client.post("/api/admin/prune", json={})
     assert r.status_code == 422
+
+
+# ─── ADR-0024: /api/admin/health + /api/admin/transition ─────────────────────
+
+
+def test_admin_health_reports_status_and_health_buckets(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _run(_seed_running_session(db_path, str(uuid.uuid4())))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+    r = client.get("/api/admin/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert "sessions" in body
+    sess = body["sessions"]
+    assert "by_status" in sess
+    assert "by_health" in sess
+    # Seeded one running session.
+    assert sess["by_status"].get("running") == 1
+    # All ADR-0024 health buckets sum to total.
+    assert sum(sess["by_health"].values()) == sess["total"]
+
+
+def test_admin_transition_marks_running_session_failed(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    _run(_seed_running_session(db_path, sid))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.post(
+        "/api/admin/transition",
+        json={
+            "session_ids": [sid],
+            "target_status": "failed",
+            "reason": "manual cleanup after restart",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["transitioned"] == [sid]
+    assert body["skipped"] == []
+    assert body["event_id"]  # admin_events row written
+
+    # Verify DB state changed.
+    async def _check():
+        async with StateDB(db_path) as db:
+            row = await db.get_session(sid)
+            assert row["status"] == "failed"
+            assert row["ended_at"] is not None
+            events = await db.list_admin_events(action="transition")
+            assert len(events) == 1
+            assert events[0]["actor"] == "admin"
+
+    _run(_check())
+
+
+def test_admin_transition_rejects_invalid_target(tmp_path, monkeypatch):
+    """ADR-0025: admin operators cannot mark sessions completed or timed_out."""
+    db_path = tmp_path / "state.db"
+    client = _make_client(tmp_path, monkeypatch, db_path)
+    r = client.post(
+        "/api/admin/transition",
+        json={
+            "session_ids": ["any"],
+            "target_status": "completed",  # not in admin-allowed set
+            "reason": "test",
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_admin_transition_skips_non_running(tmp_path, monkeypatch):
+    """Already-terminal sessions are reported as skipped, not silently no-op."""
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    _run(_seed_running_session(db_path, sid))
+
+    async def _terminal():
+        async with StateDB(db_path) as db:
+            await db.update_session(sid, status="completed")
+
+    _run(_terminal())
+
+    client = _make_client(tmp_path, monkeypatch, db_path)
+    r = client.post(
+        "/api/admin/transition",
+        json={
+            "session_ids": [sid],
+            "target_status": "failed",
+            "reason": "test",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["transitioned"] == []
+    assert len(body["skipped"]) == 1
+    assert body["skipped"][0]["session_id"] == sid
+
+
+def test_admin_transition_requires_reason(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    client = _make_client(tmp_path, monkeypatch, db_path)
+    r = client.post(
+        "/api/admin/transition",
+        json={
+            "session_ids": ["x"],
+            "target_status": "failed",
+            "reason": "",
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_admin_transition_rejects_healthy_session(tmp_path, monkeypatch):
+    """ADR-0024 health guard: fresh running session with recent activity → 422."""
+    import apps.studio.server.services.admin as admin_mod
+
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    _run(_seed_running_session(db_path, sid))
+
+    # Simulate a live process so the classifier returns HEALTHY
+    # (idle_seconds ≈ 0, process alive → HEALTHY).
+    monkeypatch.setattr(admin_mod, "_live_process_matches", lambda *_: True)
+
+    client = _make_client(tmp_path, monkeypatch, db_path)
+    r = client.post(
+        "/api/admin/transition",
+        json={
+            "session_ids": [sid],
+            "target_status": "failed",
+            "reason": "cleanup attempt",
+        },
+    )
+    assert r.status_code == 422
+    assert "healthy" in r.json()["detail"].lower()
+
+
+# ─── ADR-0024/FIX-2: health guard re-evaluated per session, not pre-computed ──
+
+
+def test_admin_transition_guard_re_evaluates_health_per_call(tmp_path, monkeypatch):
+    """Health guard reads current session state on each transition_sessions call.
+
+    Bumping last_message_at between two calls changes the health classification;
+    the guard must use the freshest DB state each time (not a pre-computed snapshot).
+    This verifies the merged per-session classify+UPDATE loop correctly re-reads
+    state, minimizing the TOCTOU window between health check and destructive write.
+    """
+    import apps.studio.server.services.admin as admin_mod
+
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    _run(_seed_running_session(db_path, sid))
+
+    # Simulate a live process so health is driven by activity threshold.
+    monkeypatch.setattr(admin_mod, "_live_process_matches", lambda *_: True)
+
+    # Set last_message_at to ~2h ago and kind=agent (threshold=6h).
+    # idle_seconds=2h > IDLE_THRESHOLD(1h) but < 6h → IDLE → refused.
+    async def _set_idle():
+        async with StateDB(db_path) as db:
+            await db.db.execute(
+                "UPDATE sessions SET last_message_at = ?, invocation_kind = ? WHERE id = ?",
+                (time.time() - 7200, "agent", sid),
+            )
+            await db.db.commit()
+
+    _run(_set_idle())
+
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    # First call: IDLE → refused.
+    r1 = client.post(
+        "/api/admin/transition",
+        json={"session_ids": [sid], "target_status": "failed", "reason": "cleanup"},
+    )
+    assert r1.status_code == 422
+    assert "idle" in r1.json()["detail"].lower()
+
+    # Bump last_message_at past the 6h agent threshold → UNRESPONSIVE → allowed.
+    async def _bump_past_threshold():
+        async with StateDB(db_path) as db:
+            await db.db.execute(
+                "UPDATE sessions SET last_message_at = ? WHERE id = ?",
+                (time.time() - 7 * 3600, sid),
+            )
+            await db.db.commit()
+
+    _run(_bump_past_threshold())
+
+    # Second call: guard re-evaluates from current DB state → succeeds.
+    r2 = client.post(
+        "/api/admin/transition",
+        json={"session_ids": [sid], "target_status": "failed", "reason": "cleanup"},
+    )
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["transitioned"] == [sid]
+    assert body["skipped"] == []

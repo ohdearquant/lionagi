@@ -143,6 +143,266 @@ async def doctor(*, stale_hours: float = 1.0) -> dict[str, Any]:
     }
 
 
+# ─── ADR-0024: graduated health + transition (additive) ──────────────────────
+
+
+async def health_report() -> dict[str, Any]:
+    """Composite session health snapshot for the admin console.
+
+    Layers ADR-0024's ``classify_session_health`` over the existing
+    phantom checks: process liveness comes from the same PID/ps scan
+    that ``doctor`` uses; artifacts/locks come from the run directory.
+    Terminal sessions are classified too (so we can spot zombies left
+    behind by past crashes).
+    """
+    from collections import Counter
+
+    from lionagi.state.health import (
+        SessionHealth,
+        classify_session_health,
+    )
+
+    if not DEFAULT_DB_PATH.exists():
+        return {
+            "sessions": {"total": 0, "by_status": {}, "by_health": {}, "unhealthy": []},
+            "db": db_health(),
+            "diagnostic_run_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    now = time.time()
+    async with _open_db(_DB) as db:
+        cur = await db.execute(
+            """
+            SELECT s.id, s.name, s.status, s.invocation_kind, s.agent_name,
+                   s.playbook_name, s.started_at, s.ended_at, s.updated_at,
+                   s.last_message_at, s.artifacts_path,
+                   COALESCE(SUM(json_array_length(p.collection)), 0) AS message_count
+            FROM sessions s
+            LEFT JOIN branches b ON b.session_id = s.id
+            LEFT JOIN progressions p ON p.id = b.progression_id
+            GROUP BY s.id
+            ORDER BY s.updated_at DESC
+            """
+        )
+        rows = await cur.fetchall()
+
+    by_status: Counter[str] = Counter()
+    by_health: Counter[str] = Counter()
+    unhealthy: list[dict[str, Any]] = []
+
+    for row in rows:
+        # Convert sqlite3.Row to dict for the pure classifier.
+        sess = {k: row[k] for k in row.keys()}
+        status = sess.get("status") or "completed"
+        by_status[status] += 1
+
+        artifacts = _artifacts_path(row)
+        has_artifacts = artifacts is not None and artifacts.exists()
+        has_stale_locks = False
+        if artifacts is not None and artifacts.exists():
+            # Lock check is cheap (one glob) but only matters for
+            # candidate-zombie terminal sessions and stale-process
+            # running ones. Skip for clearly-healthy active ones.
+            cutoff = now - 3600
+            has_stale_locks = (
+                _find_stale_lock(artifacts, cutoff=cutoff) is not None
+            )
+
+        if status == "running":
+            process_alive = _live_process_matches(row["id"], artifacts)
+        else:
+            # Terminal session — process_alive is moot; classifier only
+            # uses it on the running branch.
+            process_alive = False
+
+        health = classify_session_health(
+            sess,
+            now=now,
+            process_alive=process_alive,
+            has_artifacts=has_artifacts,
+            has_stale_locks=has_stale_locks,
+        )
+        by_health[health.value] += 1
+
+        # "Unhealthy" = anything that warrants operator attention.
+        if health not in (SessionHealth.HEALTHY, SessionHealth.IDLE):
+            last_activity = (
+                sess.get("last_message_at")
+                or sess.get("updated_at")
+                or sess.get("started_at")
+                or 0
+            )
+            unhealthy.append(
+                {
+                    "session_id": row["id"],
+                    "name": sess.get("name") or sess.get("playbook_name")
+                    or sess.get("agent_name") or "",
+                    "health": health.value,
+                    "status": status,
+                    "invocation_kind": sess.get("invocation_kind"),
+                    "agent_name": sess.get("agent_name"),
+                    "playbook_name": sess.get("playbook_name"),
+                    "last_message_at": sess.get("last_message_at"),
+                    "idle_seconds": now - last_activity if last_activity else None,
+                    "process_alive": process_alive,
+                    "message_count": sess.get("message_count") or 0,
+                }
+            )
+
+    return {
+        "sessions": {
+            "total": sum(by_status.values()),
+            "by_status": dict(by_status),
+            "by_health": dict(by_health),
+            "unhealthy": unhealthy,
+        },
+        "db": db_health(),
+        "diagnostic_run_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# ADR-0025: admin operators cannot mark sessions completed/timed_out —
+# those are system-determined. Mirror the Python guard from db.py here
+# so the API rejects the request before touching the DB.
+_ADMIN_TRANSITION_TARGETS: frozenset[str] = frozenset(
+    {"failed", "aborted", "cancelled"}
+)
+
+
+async def transition_sessions(
+    session_ids: list[str],
+    *,
+    target_status: str,
+    reason: str,
+    actor: str = "admin",
+) -> dict[str, Any]:
+    """Mark running sessions terminal with an audit-log entry.
+
+    ADR-0024 §B replaces the blunt "prune" with "transition": the session
+    row + messages + artifacts are preserved for debugging. Guards:
+
+    * ``target_status`` must be in ``ADMIN_TRANSITION_TARGETS``.
+    * Only ``running`` sessions are touched; already-terminal ones are
+      reported in ``skipped`` so the caller can warn the operator.
+    * HEALTHY and IDLE sessions are refused with ValueError (→ 422) to
+      prevent accidental termination of active sessions (ADR-0024 health
+      guard).
+    * The DB update is conditional on ``status='running'`` in the WHERE
+      clause to close the TOCTOU window between the pre-check read and the
+      write.
+    """
+    if target_status not in _ADMIN_TRANSITION_TARGETS:
+        raise ValueError(
+            f"target_status must be one of {sorted(_ADMIN_TRANSITION_TARGETS)}; "
+            f"got {target_status!r}"
+        )
+    if not reason or not reason.strip():
+        raise ValueError("reason is required")
+    if not session_ids:
+        return {"transitioned": [], "skipped": [], "event_id": None}
+    if not DEFAULT_DB_PATH.exists():
+        return {"transitioned": [], "skipped": session_ids, "event_id": None}
+
+    from lionagi.state.db import StateDB
+    from lionagi.state.health import SessionHealth, classify_session_health
+
+    transitioned: list[str] = []
+    skipped: list[dict[str, str]] = []
+    now = time.time()
+
+    async with StateDB() as db:
+        # Health guard + UPDATE merged into one loop per session.
+        # Re-classify each session immediately before the UPDATE to minimize
+        # the TOCTOU window between the guard read and the destructive write.
+        for sid in session_ids:
+            current = await db.get_session(sid)
+            if current is None:
+                skipped.append({"session_id": sid, "reason": "not_found"})
+                continue
+            if current.get("status") != "running":
+                skipped.append(
+                    {"session_id": sid, "reason": f"not_running:{current.get('status')}"}
+                )
+                continue
+            artifacts = _artifacts_path(current)
+            has_artifacts = artifacts is not None and artifacts.exists()
+            has_stale_locks = (
+                _find_stale_lock(artifacts, cutoff=now - 3600) is not None
+                if artifacts is not None and artifacts.exists()
+                else False
+            )
+            process_alive = _live_process_matches(current["id"], artifacts)
+            health = classify_session_health(
+                current,
+                now=now,
+                process_alive=process_alive,
+                has_artifacts=has_artifacts,
+                has_stale_locks=has_stale_locks,
+            )
+            if health in (SessionHealth.HEALTHY, SessionHealth.IDLE):
+                raise ValueError(
+                    f"Session {sid!r} is {health.value} — transition refused. "
+                    "Only unhealthy sessions may be force-transitioned."
+                )
+
+            # UPDATE immediately after the health check to minimize the race
+            # window. The WHERE status='running' guard closes the residual
+            # TOCTOU: rowcount==0 means a concurrent transition already won.
+            cur = await db.db.execute(
+                "UPDATE sessions SET status=?, ended_at=?, updated_at=? "
+                "WHERE id=? AND status='running'",
+                (target_status, now, now, sid),
+            )
+            await db.db.commit()
+            if cur.rowcount == 0:
+                existing = await db.get_session(sid)
+                if existing is None:
+                    skipped.append({"session_id": sid, "reason": "not_found"})
+                else:
+                    skipped.append(
+                        {
+                            "session_id": sid,
+                            "reason": f"not_running:{existing.get('status')}",
+                        }
+                    )
+                continue
+            transitioned.append(sid)
+
+        event_id = await db.insert_admin_event(
+            action="transition",
+            target_id=None,
+            actor=actor,
+            details={
+                "target_status": target_status,
+                "reason": reason,
+                "transitioned": transitioned,
+                "skipped": skipped,
+            },
+        )
+
+    return {
+        "transitioned": transitioned,
+        "skipped": skipped,
+        "event_id": event_id,
+    }
+
+
+async def list_admin_events(
+    *,
+    action: str | None = None,
+    target_id: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    if not DEFAULT_DB_PATH.exists():
+        return []
+    from lionagi.state.db import StateDB
+
+    async with StateDB() as db:
+        return await db.list_admin_events(
+            action=action, target_id=target_id, limit=limit
+        )
+
+
 async def prune_sessions(session_ids: list[str]) -> int:
     """Delete sessions by explicit ID list (intentional admin action; unconditional)."""
     seen: dict[str, None] = {}
