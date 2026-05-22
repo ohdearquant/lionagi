@@ -38,6 +38,8 @@ class GroqAudioTranscriptionEndpoint(Endpoint):
 
     async def _call(self, payload: dict, headers: dict, **kwargs):
         """Encode audio as multipart/form-data."""
+        self._assert_ssrf_safe_url()
+
         import aiohttp
 
         file_data: bytes | None = kwargs.pop("file", None)

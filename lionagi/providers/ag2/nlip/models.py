@@ -5,13 +5,17 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
+
+from lionagi.ln._ssrf import is_ssrf_safe
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "AG2NlipRequest",
+    "_assert_nlip_url_safe",
     "call_nlip_remote",
 ]
 
@@ -21,6 +25,31 @@ class AG2NlipRequest(BaseModel):
 
     messages: list[dict[str, Any]] = Field(default_factory=list)
     prompt: str = ""
+
+
+def _assert_nlip_url_safe(url: str) -> None:
+    """Validate *url* for scheme and SSRF safety before any NLIP connection.
+
+    Shared by :func:`call_nlip_remote` and :func:`build_group_chat` so that
+    every code path that hands a caller-supplied URL to a remote NLIP agent
+    goes through the same guard.
+
+    Raises:
+        PermissionError: If the hostname resolves to a private or reserved IP
+            address (SSRF guard).
+        ValueError: If the URL scheme is not http or https.
+    """
+    _parsed = urlparse(url)
+    if _parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"NLIP URL has unsupported scheme {_parsed.scheme!r}. "
+            "Only http and https are allowed."
+        )
+    if not is_ssrf_safe(_parsed.hostname or ""):
+        raise PermissionError(
+            "SSRF guard: NLIP URL blocked — hostname resolves to a private "
+            f"or reserved IP address: {url!r}"
+        )
 
 
 async def call_nlip_remote(
@@ -33,7 +62,14 @@ async def call_nlip_remote(
     """Call a remote NLIP endpoint using AG2's NlipRemoteAgent.
 
     Falls back to direct httpx if nlip_sdk is not installed.
+
+    Raises:
+        PermissionError: If the hostname resolves to a private or reserved IP
+            address (SSRF guard).
+        ValueError: If the URL scheme is not http/https.
     """
+    # SSRF guard: reject calls to private/reserved IP ranges.
+    _assert_nlip_url_safe(url)
     try:
         return await _call_nlip_sdk(url, messages, timeout, max_retries)
     except ImportError:
@@ -80,11 +116,7 @@ async def _call_nlip_sdk(
 
                 data = response.json()
                 nlip_response = NLIP_Message.model_validate(data)
-                content = (
-                    nlip_response.content
-                    if isinstance(nlip_response.content, str)
-                    else ""
-                )
+                content = nlip_response.content if isinstance(nlip_response.content, str) else ""
 
                 return {
                     "content": content,
@@ -99,9 +131,7 @@ async def _call_nlip_sdk(
             except httpx.ConnectError:
                 if attempt == max_retries - 1:
                     raise
-                logger.warning(
-                    "NLIP connect failed (attempt %d/%d)", attempt + 1, max_retries
-                )
+                logger.warning("NLIP connect failed (attempt %d/%d)", attempt + 1, max_retries)
 
     return {"content": "", "context": None, "input_required": None}
 

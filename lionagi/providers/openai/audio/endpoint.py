@@ -53,6 +53,8 @@ class OpenaiAudioSpeechEndpoint(Endpoint):
 
     async def _call(self, payload: dict, headers: dict, **kwargs):
         """Override to return raw bytes instead of parsed JSON."""
+        self._assert_ssrf_safe_url()
+
         import aiohttp
 
         async with self._create_http_session() as session:
@@ -119,6 +121,8 @@ class OpenaiAudioTranscriptionEndpoint(Endpoint):
 
     async def _call(self, payload: dict, headers: dict, **kwargs):
         """Encode audio as multipart/form-data and POST to the transcription endpoint."""
+        self._assert_ssrf_safe_url()
+
         import aiohttp
 
         file_data: bytes | None = kwargs.pop("file", None)

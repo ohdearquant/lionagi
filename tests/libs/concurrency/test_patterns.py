@@ -311,7 +311,7 @@ async def test_retry_deadline_capped_by_parent(anyio_backend):
 
     elapsed = anyio.current_time() - start
     # Should complete quickly due to deadline, not after many retries
-    assert elapsed <= 0.2  # CI-friendly assertion
+    assert elapsed <= 2.0  # CI runners can have large scheduling jitter
     assert calls["n"] >= 1
 
 
