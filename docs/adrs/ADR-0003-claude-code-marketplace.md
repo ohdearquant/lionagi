@@ -23,8 +23,8 @@ marketplace/<plugin>/agents/             # bundled agent profiles (added in late
 
 ## v2 Catalog (Current — Phase 0, 2026-05-21)
 
-Five plugins are in the active catalog. No external dependencies beyond the lionagi
-package are required for any of the five.
+Four plugins are in the active catalog. No external dependencies beyond the lionagi
+package are required for any of the four.
 
 | Plugin | Scope |
 |--------|-------|
@@ -32,7 +32,6 @@ package are required for any of the five.
 | `play` | Author lionagi playbooks for li play / li o flow |
 | `orchestrate` | Multi-agent orchestration via li o flow and li o fanout |
 | `devx` | Conventional commit, formatting, CI, PR, summarize, session-start/-summarize |
-| `memory` | MEMORY.md hygiene and auto-memory bootstrap (`migrate-memory` only) |
 
 ### Deleted plugins (v1 → v2)
 
@@ -47,10 +46,10 @@ package are required for any of the five.
 |--------|--------|--------|
 | `studio` | Depends on FastAPI backend route contracts (ADR-0004) not yet implemented. No standalone value without the backend. | v2.1 after ADR-0004 stabilises |
 | `mcp-bundle` | Depends on the lionagi canonical MCP server, which is not yet in a shippable state. | v2.1 alongside `studio` |
-| `memory-recall` (skill in `memory`) | Previous implementation called `mcp__khive__recall` / `mcp__khive__search`, violating the no-external-deps goal. Will be rewritten against `~/.lionagi/runs/` and Studio APIs. | v2.1 |
+| `memory` | Both shipped skills had hard khive-MCP dependencies that violated the no-external-deps goal: `memory-recall` called `mcp__khive__recall` / `mcp__khive__search`, and `migrate-memory` described optional khive memory sync that was awkward without it. The whole plugin will be rewritten against `~/.lionagi/runs/` and Studio APIs. | v2.1 |
 
-The `_deferred_plugins` block in `.claude-plugin/marketplace.json` records `studio` and
-`mcp-bundle` so they are not silently forgotten.
+The `_deferred_plugins` block in `.claude-plugin/marketplace.json` records `studio`,
+`mcp-bundle`, and `memory` so they are not silently forgotten.
 
 This play establishes the skeleton (manifests, directory structure, README, this ADR). Plugin content (skills, agents, MCP server configuration) is added in three subsequent plays: `marketplace-plugins-core`, `marketplace-plugins-knowledge`, and `marketplace-plugins-app`.
 
@@ -82,9 +81,9 @@ shipped in Phase 0 and why the remaining four were removed or deferred.
 - Clear ownership boundary: each plugin directory is a self-contained unit that external contributors or downstream forks can understand and extend.
 
 **Negative**
-- More manifests to maintain: root `marketplace.json` plus five `plugin.json` files (v2) must stay in sync as plugin names or descriptions change.
+- More manifests to maintain: root `marketplace.json` plus four `plugin.json` files (v2) must stay in sync as plugin names or descriptions change.
 - Skills authored in `firm/resources/skills/` (canonical) must be copied or symlinked into `marketplace/<plugin>/skills/` for external installs — two places to update per skill change.
-- The `plugin.json` schema is not yet finalized by Anthropic; field names or required keys may shift before GA, requiring a sweep across all five manifests.
+- The `plugin.json` schema is not yet finalized by Anthropic; field names or required keys may shift before GA, requiring a sweep across all four manifests.
 - `studio` and `mcp-bundle` are deferred to v2.1 and no longer ship standalone manifests in Phase 0; they are recorded only in the `_deferred_plugins` block of the root manifest.
 
 ## Alternatives Considered
