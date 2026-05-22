@@ -7,7 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from lionagi import Branch, iModel
+from lionagi import Branch
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.ln.concurrency import run_async
 from lionagi.protocols.generic.log import DataLoggerConfig
@@ -22,6 +22,7 @@ from ._providers import (
     add_common_cli_args,
     build_chat_model,
     parse_model_spec,
+    resolve_persisted_effort,
 )
 from ._runs import allocate_run, find_branch, load_last_branch, save_last_branch_pointer
 
@@ -96,13 +97,11 @@ async def _run_agent(
         chat_model = build_chat_model(
             provider, model, yolo, verbose, theme, effort, fast
         )
-        # Extract the post-clamp effort so sessions.effort stores the value
-        # that was actually sent to the provider (e.g. "max"→"xhigh" for codex).
-        if isinstance(chat_model, iModel):
-            _ep_kwargs = chat_model.endpoint.config.kwargs or {}
-            _kwarg = PROVIDER_EFFORT_KWARG.get(provider)
-            if _kwarg and _kwarg in _ep_kwargs:
-                effort = _ep_kwargs[_kwarg]
+        # Resolve the effort value to persist: captures post-clamp values
+        # (e.g. "max"→"xhigh" for codex) and forces None for providers that
+        # don't accept an effort kwarg at all (e.g. gemini).  The helper is
+        # independent of whether build_chat_model() returned iModel or str.
+        effort = resolve_persisted_effort(provider, chat_model, effort)
         branch = Branch(
             chat_model=chat_model,
             log_config=DataLoggerConfig(auto_save_on_exit=False),
