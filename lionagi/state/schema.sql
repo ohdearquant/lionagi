@@ -316,3 +316,56 @@ CREATE INDEX IF NOT EXISTS idx_admin_events_action
   ON admin_events(action);
 CREATE INDEX IF NOT EXISTS idx_admin_events_target
   ON admin_events(target_id) WHERE target_id IS NOT NULL;
+
+-- ── Artifacts (ADR-0021) ─────────────────────────────────────────────────
+-- Structured skill outputs (review verdicts, gate verdicts, CI results,
+-- ...). The split is DB-for-structured, filesystem-for-blobs: `content`
+-- holds the SkillOutcome.model_dump() JSON; `file_path` optionally
+-- points to a large blob (full log, generated artifact, worktree diff).
+-- `kind` is the discriminator the frontend renderer dispatches on.
+
+CREATE TABLE IF NOT EXISTS artifacts (
+  id              TEXT    PRIMARY KEY,
+  invocation_id   TEXT    REFERENCES invocations(id) ON DELETE CASCADE,
+  session_id      TEXT    REFERENCES sessions(id),
+  created_at      REAL    NOT NULL,
+  updated_at      REAL    NOT NULL DEFAULT (strftime('%s','now')),
+  kind            TEXT    NOT NULL,
+  name            TEXT    NOT NULL,
+  content         JSON    NOT NULL,
+  file_path       TEXT
+);
+
+-- Natural uniqueness keys for idempotent upserts. INSERT OR REPLACE must
+-- NOT be used — it deletes then re-inserts, generating a new id and
+-- breaking external references. Use ON CONFLICT DO UPDATE instead.
+-- SQLite treats NULLs as distinct in UNIQUE indexes, so a single
+-- 4-column index on (invocation_id, session_id, kind, name) fails
+-- when either FK is NULL. Four partial indexes cover every reachable
+-- artifact shape without the NULL-distinctness pitfall.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_natural_key_inv_only
+  ON artifacts(invocation_id, kind, name)
+  WHERE invocation_id IS NOT NULL AND session_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_natural_key_ses_only
+  ON artifacts(session_id, kind, name)
+  WHERE session_id IS NOT NULL AND invocation_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_natural_key_both
+  ON artifacts(invocation_id, session_id, kind, name)
+  WHERE invocation_id IS NOT NULL AND session_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_natural_key_unattached
+  ON artifacts(kind, name)
+  WHERE invocation_id IS NULL AND session_id IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_artifacts_invocation
+  ON artifacts(invocation_id) WHERE invocation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_artifacts_session
+  ON artifacts(session_id) WHERE session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_artifacts_kind ON artifacts(kind);
+CREATE INDEX IF NOT EXISTS idx_artifacts_created
+  ON artifacts(created_at DESC);
+-- Composite indexes that match the ORDER BY shape of the two list
+-- queries — avoids a temp B-tree for the sort step.
+CREATE INDEX IF NOT EXISTS idx_artifacts_invocation_time
+  ON artifacts(invocation_id, created_at) WHERE invocation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_artifacts_session_time
+  ON artifacts(session_id, created_at) WHERE session_id IS NOT NULL;

@@ -80,6 +80,7 @@ const TONE_BY_VALUE: Record<string, StatusTone> = {
   // verdict
   passed: "ok",
   approved: "ok",
+  approve_with_suggestions: "ok",
   rejected: "failed",
   "approve-with-fixes": "pending",
   // integration
@@ -116,6 +117,7 @@ const TONE_BY_TAXONOMY: Record<StatusTaxonomy, Record<string, StatusTone>> = {
   verdict: {
     approve: "ok",
     approved: "ok",
+    approve_with_suggestions: "ok",
     "approve-with-fixes": "pending",
     request_changes: "pending",
     reject: "failed",
@@ -145,6 +147,7 @@ const LABEL_OVERRIDES: Record<string, string> = {
   running_complete: "Run complete",
   merged_and_pushed: "Merged + pushed",
   in_progress: "In progress",
+  approve_with_suggestions: "Approve w/ suggestions",
   "approve-with-fixes": "Approve w/ fixes",
   timed_out: "Timed out",
   needs_review: "Needs review",

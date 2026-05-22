@@ -11,6 +11,7 @@ from .config import CORS_ORIGINS
 from .routers import (
     admin,
     agents,
+    artifacts,
     definitions,
     invocations,
     playbooks,
@@ -59,6 +60,7 @@ app.include_router(plugins.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(teams.router, prefix="/api")
 app.include_router(invocations.router, prefix="/api")
+app.include_router(artifacts.router, prefix="/api")
 
 
 @app.get("/health")
