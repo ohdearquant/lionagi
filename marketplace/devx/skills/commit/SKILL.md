@@ -7,9 +7,9 @@ description: >
 allowed-tools: [Bash, Read, Glob, Grep]
 ---
 
-# khive commit
+# lionagi commit
 
-Smart git commit workflow. All commits go through khive.
+Smart git commit workflow.
 
 ## When to Use
 
@@ -21,10 +21,10 @@ Smart git commit workflow. All commits go through khive.
 
 ### 1. Read Config
 
-Check for `.khive/commit.toml` in the project root:
+Check for `.lionagi/commit.toml` in the project root:
 
 ```toml
-# .khive/commit.toml (optional — sensible defaults if missing)
+# .lionagi/commit.toml (optional — sensible defaults if missing)
 default_push = true
 allow_empty_commits = false
 conventional_commit_types = [
@@ -45,8 +45,8 @@ steps = [
 
 # Git identity fallback
 [identity]
-name = "khive-bot"
-email = "khive-bot@example.com"
+name = "lionagi-bot"
+email = "lionagi-bot@example.com"
 ```
 
 ### 2. Assess Changes
@@ -62,7 +62,7 @@ NEVER use `git add -A` blindly — review what's being added.
 
 ### 3. Run Pre-Commit Checks
 
-If `.khive/commit.toml` has `[pre_commit]` enabled, run each step:
+If `.lionagi/commit.toml` has `[pre_commit]` enabled, run each step:
 
 - **Auto-detect stacks**: Only run checks for stacks present in the project
   - `rust`: if `Cargo.toml` exists

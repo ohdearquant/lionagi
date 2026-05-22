@@ -32,30 +32,29 @@ A.5 (Intent):      □(Verify_against: flow_YAML("Why_this_matters" ∧ "Accepta
 
 See protocols/core_invariants.md and protocols/orchestration.md for ○ pattern enforcement.
 
-## Domain Expertise Composition
+## Anchor Findings to Named Frameworks
 
-Domain composition is HIGH VALUE for critic agents -- formal frameworks and principles from domains
-transform generic critique into structurally grounded adversarial review. Named principles (e.g.
-prospect theory, OWASP Top 10, CAP theorem) give each finding a theoretical anchor, turning
-"this feels wrong" into "this violates X, causing Y."
+Generic critique ("this feels wrong") is weak. Structurally grounded critique ("this violates
+prospect theory's loss aversion" / "OWASP A03 injection class" / "CAP-theorem partition trade")
+gives each finding a theoretical anchor.
 
-**At task start**, call `suggest` to discover relevant domains, then `compose` to load them.
+Recall the relevant frameworks for the artifact type before you start:
 
-```python
-mcp__lore__suggest(query="Critically review {artifact_type} for {risk_areas} checking {quality_aspects}", role="critic", limit=8)
-mcp__lore__compose(domain_ids=[...from suggest...], role="critic")
-# Auto mode:
-# Auto mode removed — use suggest first, then compose with domain_ids
-```
+- **Security review**: OWASP Top 10, CWE classes, threat-modeling primitives (STRIDE, kill chain)
+- **Distributed systems**: CAP, FLP impossibility, end-to-end principle, partition tolerance
+- **Product/strategy**: prospect theory, anchoring, unit economics, blast-radius framing
+- **Compliance**: SOC2, GDPR, HIPAA, PCI-DSS controls
+- **Code quality**: SOLID, Hyrum's law, Postel's law, principle of least astonishment
 
-### Query Crafting (60-70+ chars, keyword-rich)
-
-Include domain-specific keywords: security/injection/OWASP, race-condition/deadlock, CAP-theorem/blast-radius, prospect-theory/unit-economics, SOC2/GDPR. Minimum 60 chars. Vague queries ("Review code") return useless atoms.
+Don't invent unfamiliar frameworks. If you don't know a principle, say so plainly rather than
+hallucinating one. Optional: if the operator has cross-session memory available (e.g. via a
+separate khive/MCP integration), use it for prior-case retrieval — but this skill ships without
+that dependency and works fully on first-principles critique.
 
 ### Domain Utility Feedback
 
 After completing a task, include a brief domain assessment in your output to calibrate future
-suggestions. This helps the orchestrator and future critics know which domains paid off.
+work. This helps the orchestrator and future critics know which frameworks paid off.
 
 ```kpp
 domain_utility: HIGH | Prospect theory and value metric frameworks grounded 3 of 5 critical findings in named principles
@@ -149,7 +148,7 @@ Before acting, shell out — `body=$(li skill <name>)` — and fold the body int
 | Auditing khive Rust codebase | `li skill khive-audit` | Output format, severity rubric, per-crate stats |
 | Any khive Rust work | `li skill khive-rust` | Baseline discipline before touching the monorepo |
 | Unsafe blocks in foundation crates | `li skill unsafe-audit` | TCB compliance + documentation rubric |
-| Stuck after 2+ retries on a finding | `li skill reprompt` | Escalation heuristics |
+| Stuck after 2+ retries on a finding | Escalate to orchestrator with full context | Orchestrator re-plans with updated complexity assessment |
 
 ---
 

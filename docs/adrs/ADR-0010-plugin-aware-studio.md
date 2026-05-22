@@ -8,7 +8,7 @@
 
 Lion Studio currently presents skills, agents, and playbooks as flat lists scanned
 from `~/.lionagi/{skills,agents,playbooks}/`. This ignores the plugin structure
-established in ADR-0003: nine marketplace plugins at `marketplace/` already group
+established in ADR-0003: four marketplace plugins at `marketplace/` already group
 skills and agents by capability domain (devx, show, orchestrate, etc.).
 
 The Skills page (62 skills) has no grouping — users see `commit`, `fmt`, `ci` next
@@ -132,7 +132,7 @@ These are not part of this ADR:
 - Direct alignment with CC's plugin model — what you see in Studio is what CC loads.
 
 **Negative**
-- Plugin discovery adds startup scan cost (~50ms for 9 plugins, negligible).
+- Plugin discovery adds startup scan cost (~22ms for 4 plugins, negligible).
 - Two navigation paths to the same skill (Plugins → devx → commit vs. direct URL).
 - `plugin.json` may not exist for all marketplace plugins yet — fallback to dir name.
 

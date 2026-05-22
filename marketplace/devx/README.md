@@ -11,9 +11,7 @@ Developer-experience skill bundle for lionagi — conventional commits, CI, form
 | `/commit` | Run a conventional commit workflow with pre-commit checks, staging review, and optional push. |
 | `/pr` | Create GitHub PRs with branch push, conventional titles, and PR metadata setup. |
 | `/summarize` | Capture mid-session context, decisions, patterns, and next steps without ending the session. |
-| `/wake-up` | Run the lambda wake-up heartbeat: check inbox, forum, tasks, health gates, and progress work. |
 | `/init` | Bootstrap a development environment by detecting stacks, installing dependencies, and setting up hooks. |
-| `/status` | Show sub-lambda dashboard state: task queues, build health, blockers, idle state, and delegation readiness. |
 
 ## Agents
 

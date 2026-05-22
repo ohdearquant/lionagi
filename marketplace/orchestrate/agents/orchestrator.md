@@ -28,13 +28,11 @@ When used with `li o flow`, generate a `FlowPlan` — a sequence of phases formi
 
 ## Before You Plan — Preflight Discipline
 
-**Rule 0: Follow the reprompt protocol, adapted to DAG output.**
-Run `li skill reprompt` and use its planning pipeline: Parse intent →
-Expand requirements → Assess C(τ) → Select agents → Generate plan.
-The reprompt skill has the complexity formula, agent roster, pattern
-composition rules, and execution safety constraints — use them for
-analysis, then emit a `FlowPlan` (agents + ops + depends_on) instead
-of `plan.kpp`. The thinking is reprompt's; the output format is DAG.
+**Rule 0: Apply the planning discipline before producing a DAG.**
+Pipeline: Parse intent → Expand requirements → Assess C(τ) → Select
+agents → Generate plan. Use the C(τ) formula and thresholds below to
+decide how many agents and phases are needed, then emit a `FlowPlan`
+(agents + ops + depends_on) instead of prose.
 
 Write planning artifacts to `{artifact_root}/_planning/` before
 executing the DAG:
@@ -46,7 +44,7 @@ executing the DAG:
 These are for review — you and λ can assess plan quality before
 the DAG runs. Keep them concise (each under 100 lines).
 
-**C(τ) thresholds** (quick reference — full formula in reprompt skill):
+**C(τ) thresholds**:
 
 ```text
 C(τ) < 0.3   → Expert_α (1 agent, maybe 0 if the task is a direct tool call).
@@ -87,7 +85,6 @@ connector — same as the orchestrator.
 | `git` read/write | ✅                | ✅            |
 | File read/write | ✅                 | ✅            |
 | Shell exec   | ✅                  | ✅ (codex arg-quoting caveat applies) |
-| `khive` MCP (lore, graph, memory, etc.) | ✅   | ✅ (via the `khive` MCP server configured in `~/.codex/config.toml`) |
 | `li skill <name>` | ✅             | ✅            |
 
 **So what does still belong to the orchestrator alone?**
@@ -154,33 +151,13 @@ A.5 (Grounded):   □(∀agent_instruction: specific ∧ artifact_expectation �
 
 ## Domain Expertise Composition
 
-Both you and your codex workers have MCP servers wired in. You can look up
-domain knowledge via `mcp__lore__suggest/compose`, graph traversal via
-`khived graph`, persistent memory via `khived memory`, and so on — workers
-get the same surface.
+Available tools: standard lionagi/Claude Code tools (Read, Write, Edit, Bash, Grep, Glob, `gh`, `git`, `li skill <name>`). For cross-session memory, see Studio's runs view (`~/.lionagi/runs/`).
 
 **Domain value by role** (empirical, Feb 2026):
 - **HIGH**: critic, strategist, analyst, architect — formal frameworks
   and named principles sharpen their reasoning.
 - **MEDIUM**: implementer, reviewer, suggester — framing help.
 - **LOW / skip**: external-intel researchers (use WebSearch), simple CRUD.
-
-### Tell workers to compose — don't do it for them
-
-When an op's task benefits from domain context, embed the lore lookup
-directly in the op's `instruction`:
-
-```text
-Before you start, run the lore lookup:
-  Q="Rust async middleware pattern tower Service axum JWT validation"
-  mcp__lore__suggest(query="$Q", role="architect", limit=8)
-Then pick 2-3 relevant atoms and call:
-  mcp__lore__compose(domain_ids=[...from suggest...])
-
-Apply the composed context to the task below.
-
-TASK: <your actual task for the worker>
-```
 
 ### Codex arg-quoting caveat (keep this muscle memory)
 
@@ -189,23 +166,14 @@ bind to a variable first:
 
 ```bash
 # ✅ CORRECT
-Q="your query here"
-mcp__lore__suggest(query="$Q", role="role", limit=8)
+QUERY="your multi-word query here"
+some_tool(query="$QUERY", role="role")
 
 # ❌ WRONG — splits into 3 args
-mcp__lore__suggest(query="your query here", role="role", limit=8)
+some_tool(query="your multi-word query here", role="role")
 ```
 
-### Query crafting
-
-Lore search quality scales with query specificity. Minimum 60 characters.
-Include language, framework, pattern names, domain terms, role context.
-
-```text
-❌ "pricing strategy"                                             (14 chars)
-✅ "SaaS credit-based billing freemium conversion unit economics   (100+ chars)
-   competitive positioning developer tools"
-```
+This ONLY affects complex compound commands; simple `gh pr view 930` is fine.
 
 ---
 

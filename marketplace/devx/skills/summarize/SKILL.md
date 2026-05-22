@@ -5,7 +5,7 @@ description: >
   progress made but session continues, approaching context limits, switching topics, checkpoint
   learnings, significant decisions made, patterns emerge, or session is winding down.
   Lighter than /session-summarize — stores to memory and continues.
-allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, mcp__khive__remember, mcp__khive__recall]
+allowed-tools: [Bash, Read, Write, Edit, Glob, Grep]
 ---
 
 # Summarize (Mid-Session)
@@ -34,20 +34,31 @@ Scan recent work to identify:
 - Files modified
 - Open threads / next steps
 
-### 2. Store to Memory
+### 2. Write Checkpoint File
 
-Store the summary as episodic memory:
+Write `./notes/checkpoints/checkpoint_YYYYMMDD_HHMMSS_{topic}.md` (or `$LIONAGI_NOTES_DIR` if set)
+with frontmatter (timestamp, topic, status: continuing) and sections: Progress, Decisions (table
+with rationale + alternatives), Learnings, Next Steps.
 
-```python
-mcp__khive__remember(
-    content="""CHECKPOINT: {topic}
+Checkpoint template:
+
+```markdown
+---
+timestamp: 2026-05-21T22:30:00Z
+topic: {topic}
+status: continuing
+---
+
+# CHECKPOINT: {topic}
 
 ## Accomplished
 - {achievement 1}
 - {achievement 2}
 
 ## Decisions
-- {decision}: {rationale}
+| Decision | Chose | Over | Rationale |
+|---|---|---|---|
+| {decision} | {choice} | {alternatives} | {why} |
 
 ## User's Guidance
 - "{quote}" — context: {why it matters}
@@ -61,39 +72,17 @@ mcp__khive__remember(
 
 ## Next Steps
 - {what to do next}
-""",
-    memory_type="episodic",
-    importance=0.85,
-)
 ```
 
-For particularly important insights, store separately as semantic memory:
+### 3. Continue Working
 
-```python
-mcp__khive__remember(
-    content="PATTERN: {pattern_name} — {description}. Use when: {conditions}. Example: {brief example}.",
-    memory_type="semantic",
-    importance=0.9,
-)
-```
-
-### 3. Optionally Write Checkpoint File
-
-For substantial milestones, write `.khive/notes/checkpoints/checkpoint_YYYYMMDD_HHMMSS_{topic}.md`
-with frontmatter (timestamp, lambda_id, topic, status: continuing) and sections: Progress,
-Decisions (table with rationale + alternatives), Learnings, Next Steps.
-
-### 4. Continue Working
-
-After storing, resume work. Reference the checkpoint if needed:
-
-```python
-mcp__khive__recall(query="CHECKPOINT {topic}", limit=3)
-```
+After writing the checkpoint, resume work. Future sessions can grep the checkpoints dir for
+context: `grep -r "CHECKPOINT: {topic}" ./notes/checkpoints/`.
 
 ## Proactive Capture Triggers
 
-Fire a `memory.remember` call immediately when any of these occur — don't wait for the user to ask:
+Write a brief checkpoint note or append to the checkpoint file immediately when any of these
+occur — don't wait for the user to ask:
 
 | Trigger | Action |
 |---|---|
@@ -117,22 +106,18 @@ Want me to store this? (or run full /session-summarize)
 
 ## Decision & Pattern Capture
 
-### Memory templates for inline capture
+### Inline capture templates
+
+Write a one-liner to the checkpoint file:
 
 **Decision** (architecture choice, approach selection, trade-off):
-```python
-mcp__khive__remember(
-    content="Decision: {what}. Chose {choice} over {alternatives}. Rationale: {why}.",
-    memory_type="episodic", importance=0.85,
-)
+```
+Decision: {what}. Chose {choice} over {alternatives}. Rationale: {why}.
 ```
 
 **Lesson learned** (unexpected failure or success):
-```python
-mcp__khive__remember(
-    content="Lesson: {what_learned}. Context: {situation}. Applies when: {conditions}.",
-    memory_type="semantic", importance=0.9,
-)
+```
+Lesson: {what_learned}. Context: {situation}. Applies when: {conditions}.
 ```
 
 ### What's worth capturing
@@ -164,18 +149,18 @@ debugging techniques, file organization decisions, naming conventions.
 ## Key Principles
 
 - **Fast > thorough**: This is a checkpoint, not a dissertation. 2-5 minutes max.
-- **Memory-first**: Always store to memory. File is optional.
+- **File-first**: Always write a checkpoint file at `./notes/checkpoints/`. That's the storage.
 - **Continue after**: This skill does NOT end the session.
 - **Compound**: Multiple checkpoints per session is fine — they build a trail.
-- **Searchable**: Use clear prefixes (CHECKPOINT, PATTERN, DECISION, LESSON) for future recall.
+- **Searchable**: Use clear prefixes (CHECKPOINT, PATTERN, DECISION, LESSON) for future grep.
 - **Silent capture**: Don't interrupt the user's flow. Capture at natural breaks, not mid-thought.
-- **Don't duplicate**: Check if pattern already stored before adding.
+- **Don't duplicate**: Check if pattern already captured before appending.
 
 ## Anti-Patterns
 
 - Writing a full session summary (use `/session-summarize` for that)
 - Spending >5 minutes on the checkpoint
-- Skipping memory storage and only writing a file
+- Skipping the checkpoint file
 - Not capturing the user's guidance when given
 - Generic summaries without specifics ("worked on stuff")
 - Over-capturing: not every line of code matters
