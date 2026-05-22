@@ -6,22 +6,28 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
-# Create mock ollama module — module-level so test methods can reference it by name
+# Create mock ollama module — module-level so test methods can reference it by name.
+# NOT installed into sys.modules here; the fixture below owns that lifetime.
 mock_ollama = MagicMock()
 mock_ollama.__spec__ = MagicMock()  # Required for importlib.util.find_spec
-
-# Pre-seed sys.modules before lionagi imports so endpoint detection works
-sys.modules["ollama"] = mock_ollama
 
 from lionagi.service.connections.endpoint_config import EndpointConfig
 
 
 @pytest.fixture(autouse=True, scope="module")
 def _patch_ollama_module():
-    """Ensure sys.modules["ollama"] is set for the module and torn down after."""
+    """Install the ollama mock into sys.modules for the duration of this module.
+
+    Captures any pre-existing real 'ollama' entry and restores it on teardown
+    so the mock never leaks to other test modules collected in the same session.
+    """
+    _prior = sys.modules.get("ollama")
     sys.modules["ollama"] = mock_ollama
     yield mock_ollama
-    sys.modules.pop("ollama", None)
+    if _prior is None:
+        sys.modules.pop("ollama", None)
+    else:
+        sys.modules["ollama"] = _prior
 
 
 def _get_ollama_config(
