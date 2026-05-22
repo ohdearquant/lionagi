@@ -248,3 +248,67 @@ def test_admin_transition_rejects_healthy_session(tmp_path, monkeypatch):
     )
     assert r.status_code == 422
     assert "healthy" in r.json()["detail"].lower()
+
+
+# ─── ADR-0024/FIX-2: health guard re-evaluated per session, not pre-computed ──
+
+
+def test_admin_transition_guard_re_evaluates_health_per_call(tmp_path, monkeypatch):
+    """Health guard reads current session state on each transition_sessions call.
+
+    Bumping last_message_at between two calls changes the health classification;
+    the guard must use the freshest DB state each time (not a pre-computed snapshot).
+    This verifies the merged per-session classify+UPDATE loop correctly re-reads
+    state, minimizing the TOCTOU window between health check and destructive write.
+    """
+    import apps.studio.server.services.admin as admin_mod
+
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    _run(_seed_running_session(db_path, sid))
+
+    # Simulate a live process so health is driven by activity threshold.
+    monkeypatch.setattr(admin_mod, "_live_process_matches", lambda *_: True)
+
+    # Set last_message_at to ~2h ago and kind=agent (threshold=6h).
+    # idle_seconds=2h > IDLE_THRESHOLD(1h) but < 6h → IDLE → refused.
+    async def _set_idle():
+        async with StateDB(db_path) as db:
+            await db.db.execute(
+                "UPDATE sessions SET last_message_at = ?, invocation_kind = ? WHERE id = ?",
+                (time.time() - 7200, "agent", sid),
+            )
+            await db.db.commit()
+
+    _run(_set_idle())
+
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    # First call: IDLE → refused.
+    r1 = client.post(
+        "/api/admin/transition",
+        json={"session_ids": [sid], "target_status": "failed", "reason": "cleanup"},
+    )
+    assert r1.status_code == 422
+    assert "idle" in r1.json()["detail"].lower()
+
+    # Bump last_message_at past the 6h agent threshold → UNRESPONSIVE → allowed.
+    async def _bump_past_threshold():
+        async with StateDB(db_path) as db:
+            await db.db.execute(
+                "UPDATE sessions SET last_message_at = ? WHERE id = ?",
+                (time.time() - 7 * 3600, sid),
+            )
+            await db.db.commit()
+
+    _run(_bump_past_threshold())
+
+    # Second call: guard re-evaluates from current DB state → succeeds.
+    r2 = client.post(
+        "/api/admin/transition",
+        json={"session_ids": [sid], "target_status": "failed", "reason": "cleanup"},
+    )
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["transitioned"] == [sid]
+    assert body["skipped"] == []

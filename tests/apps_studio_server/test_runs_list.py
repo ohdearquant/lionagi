@@ -109,3 +109,51 @@ def test_runs_list_invalid_page_rejected(tmp_path, monkeypatch):
     client = _make_client(tmp_path, monkeypatch, db_path)
     r = client.get("/api/runs?page=0")
     assert r.status_code == 422
+
+
+# ─── ADR-0024/FIX-1: UNRESPONSIVE maps to 'stale' in runs list ───────────────
+
+
+async def _seed_running_session_with_activity(
+    db_path: Path, session_id: str, last_message_at: float, invocation_kind: str = "agent"
+) -> None:
+    async with StateDB(db_path) as db:
+        pid = str(uuid.uuid4())
+        await db.create_progression(pid)
+        await db.create_session({
+            "id": session_id,
+            "progression_id": pid,
+            "name": "test-stale",
+            "status": "running",
+            "invocation_kind": invocation_kind,
+            "started_at": last_message_at,
+            "last_message_at": last_message_at,
+        })
+
+
+def test_runs_list_threshold_crossing_session_reports_stale_not_unresponsive(
+    tmp_path, monkeypatch
+):
+    """Running session past its kind-aware threshold → effective_health='stale'.
+
+    The full ADR-0024 classifier returns UNRESPONSIVE (process alive + past
+    threshold), but the dashboard frontend counts effective_health==='stale'.
+    The runs list MUST map UNRESPONSIVE → 'stale' so the dashboard counter
+    stays correct.
+    """
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    # last_message_at = 7h ago; agent threshold = 6h → UNRESPONSIVE without fix
+    old_activity = time.time() - 7 * 3600
+    _run(_seed_running_session_with_activity(db_path, sid, last_message_at=old_activity))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs")
+    assert r.status_code == 200
+    runs = r.json()["runs"]
+    target = next((run for run in runs if run["id"] == sid), None)
+    assert target is not None, "seeded session not found in runs list"
+    assert target["effective_health"] == "stale", (
+        f"expected 'stale', got {target['effective_health']!r}; "
+        "UNRESPONSIVE must be mapped to 'stale' for dashboard compatibility"
+    )

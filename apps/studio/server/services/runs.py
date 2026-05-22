@@ -538,7 +538,7 @@ async def list_runs(
     routers/sessions.py.  The /api/runs/{id}/events route in routers/runs.py
     is removed in the same commit.
     """
-    from lionagi.state.health import classify_session_health
+    from lionagi.state.health import SessionHealth, classify_session_health
 
     sessions = await _sessions_svc.list_sessions()
     status_set = _normalize_status_filter(status)
@@ -565,6 +565,16 @@ async def list_runs(
             has_artifacts=bool(s.get("artifacts_path")),
             has_stale_locks=False,
         )
+        # UNRESPONSIVE and STALE both mean "past activity threshold, needs
+        # operator attention". The runs list assumes process_alive=True so
+        # it never emits STALE naturally; the dashboard frontend counts
+        # effective_health === 'stale'. Map UNRESPONSIVE → 'stale' so the
+        # dashboard counter stays correct without requiring a frontend change.
+        effective_health = (
+            SessionHealth.STALE.value
+            if health == SessionHealth.UNRESPONSIVE
+            else health.value
+        )
         out.append({
             "run_id": s["id"],
             "id": s["id"],
@@ -584,7 +594,7 @@ async def list_runs(
             "updated_at": s.get("updated_at"),
             # ADR-0019/0024: activity marker + derived health label.
             "last_message_at": s.get("last_message_at"),
-            "effective_health": health.value,
+            "effective_health": effective_health,
             "branch_count": s.get("branch_count", 0),
             "message_count": s.get("message_count", 0),
         })

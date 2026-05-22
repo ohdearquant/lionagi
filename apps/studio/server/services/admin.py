@@ -311,11 +311,18 @@ async def transition_sessions(
     now = time.time()
 
     async with StateDB() as db:
-        # Health guard: refuse to transition sessions that are still healthy
-        # or merely idle — those should be left to complete normally.
+        # Health guard + UPDATE merged into one loop per session.
+        # Re-classify each session immediately before the UPDATE to minimize
+        # the TOCTOU window between the guard read and the destructive write.
         for sid in session_ids:
             current = await db.get_session(sid)
-            if current is None or current.get("status") != "running":
+            if current is None:
+                skipped.append({"session_id": sid, "reason": "not_found"})
+                continue
+            if current.get("status") != "running":
+                skipped.append(
+                    {"session_id": sid, "reason": f"not_running:{current.get('status')}"}
+                )
                 continue
             artifacts = _artifacts_path(current)
             has_artifacts = artifacts is not None and artifacts.exists()
@@ -338,11 +345,9 @@ async def transition_sessions(
                     "Only unhealthy sessions may be force-transitioned."
                 )
 
-        # Atomic UPDATE: the WHERE clause guards against a concurrent
-        # terminal transition that races between the health pre-check and
-        # this write.  rowcount==0 means the session was never running (or
-        # was already transitioned) — look up the current state to explain.
-        for sid in session_ids:
+            # UPDATE immediately after the health check to minimize the race
+            # window. The WHERE status='running' guard closes the residual
+            # TOCTOU: rowcount==0 means a concurrent transition already won.
             cur = await db.db.execute(
                 "UPDATE sessions SET status=?, ended_at=?, updated_at=? "
                 "WHERE id=? AND status='running'",
