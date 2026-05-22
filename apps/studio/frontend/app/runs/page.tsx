@@ -53,6 +53,31 @@ function groupByInvocation(runs: RunSummary[]): {
   return { groups, ungrouped };
 }
 
+// Health severity for invocation group rollup — worst-child wins.
+// Ranks match staleness_check() output + ADR-0024 vocabulary expansion.
+const HEALTH_RANK: Record<string, number> = {
+  idle: 1,
+  stale: 2,
+  unresponsive: 3,
+  orphaned: 4,
+  zombie: 5,
+};
+
+function worstHealth(sessions: RunSummary[]): string | null {
+  let worst: string | null = null;
+  let worstRank = 0;
+  for (const s of sessions) {
+    const h = s.effective_health ?? null;
+    if (h === null) continue;
+    const rank = HEALTH_RANK[h] ?? 1;
+    if (rank > worstRank) {
+      worst = h;
+      worstRank = rank;
+    }
+  }
+  return worst;
+}
+
 function groupStatus(sessions: RunSummary[]): string {
   if (sessions.some((s) => s.status === "running")) return "running";
   if (sessions.some((s) => s.status === "failed")) return "failed";
@@ -140,7 +165,12 @@ function SessionRow({
         </span>
       </td>
       <td className="px-3 py-2">
-        <StatusPill value={run.status} kind="lifecycle" />
+        <div className="flex items-center gap-1 flex-wrap">
+          <StatusPill value={run.status} kind="lifecycle" />
+          {run.effective_health && (
+            <StatusPill value={run.effective_health} kind="neutral" tone="pending" />
+          )}
+        </div>
       </td>
       <td className="px-3 py-2">
         <div className="flex items-center gap-2 flex-wrap">
@@ -204,10 +234,15 @@ function RunsPageInner() {
     let active = true;
 
     async function load() {
+      // TODO(ADR-0020): server-side invocation pagination — paginate by invocation
+      // parent (session_count aggregate) so page boundaries never split a group.
+      // Until then, fetch the full dataset in invocations mode and group client-side.
+      const effectivePage = viewMode === "invocations" ? 1 : page;
+      const effectivePerPage = viewMode === "invocations" ? 5000 : perPage;
       try {
         const result = await listRuns({
-          page,
-          per_page: perPage,
+          page: effectivePage,
+          per_page: effectivePerPage,
           status: statuses.length > 0 ? statuses : undefined,
           playbook: playbook || undefined,
         });
@@ -229,7 +264,7 @@ function RunsPageInner() {
       clearInterval(interval);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, statuses.join(","), playbook]);
+  }, [page, statuses.join(","), playbook, viewMode]);
 
   useEffect(() => {
     const tick = setInterval(
@@ -391,6 +426,7 @@ function RunsPageInner() {
                       group.invocation_id,
                     );
                     const st = groupStatus(group.sessions);
+                    const health = worstHealth(group.sessions);
                     const latestUpdated = group.sessions.reduce<number | null>(
                       (acc, s) => {
                         const u = s.updated_at ?? null;
@@ -419,7 +455,12 @@ function RunsPageInner() {
                             </div>
                           </td>
                           <td className="px-3 py-2">
-                            <StatusPill value={st} kind="lifecycle" />
+                            <div className="flex items-center gap-1 flex-wrap">
+                              <StatusPill value={st} kind="lifecycle" />
+                              {health && (
+                                <StatusPill value={health} kind="neutral" tone="pending" />
+                              )}
+                            </div>
                           </td>
                           <td className="px-3 py-2 text-content-secondary">
                             {group.sessions.length} session
@@ -467,8 +508,8 @@ function RunsPageInner() {
         </table>
       </div>
 
-      {/* Pagination */}
-      <div className="flex items-center justify-between text-meta text-content-muted">
+      {/* Pagination — hidden in invocations mode (full dataset loaded client-side) */}
+      {viewMode === "sessions" && <div className="flex items-center justify-between text-meta text-content-muted">
         <span>
           Page {page} of {totalPages || 1} &mdash; {total} run
           {total !== 1 ? "s" : ""}
@@ -491,7 +532,7 @@ function RunsPageInner() {
             Next
           </Button>
         </div>
-      </div>
+      </div>}
     </main>
   );
 }
