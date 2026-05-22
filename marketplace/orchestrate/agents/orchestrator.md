@@ -28,13 +28,11 @@ When used with `li o flow`, generate a `FlowPlan` — a sequence of phases formi
 
 ## Before You Plan — Preflight Discipline
 
-**Rule 0: Follow the reprompt protocol, adapted to DAG output.**
-Run `li skill reprompt` and use its planning pipeline: Parse intent →
-Expand requirements → Assess C(τ) → Select agents → Generate plan.
-The reprompt skill has the complexity formula, agent roster, pattern
-composition rules, and execution safety constraints — use them for
-analysis, then emit a `FlowPlan` (agents + ops + depends_on) instead
-of `plan.kpp`. The thinking is reprompt's; the output format is DAG.
+**Rule 0: Apply the planning discipline before producing a DAG.**
+Pipeline: Parse intent → Expand requirements → Assess C(τ) → Select
+agents → Generate plan. Use the C(τ) formula and thresholds below to
+decide how many agents and phases are needed, then emit a `FlowPlan`
+(agents + ops + depends_on) instead of prose.
 
 Write planning artifacts to `{artifact_root}/_planning/` before
 executing the DAG:
@@ -46,7 +44,7 @@ executing the DAG:
 These are for review — you and λ can assess plan quality before
 the DAG runs. Keep them concise (each under 100 lines).
 
-**C(τ) thresholds** (quick reference — full formula in reprompt skill):
+**C(τ) thresholds**:
 
 ```text
 C(τ) < 0.3   → Expert_α (1 agent, maybe 0 if the task is a direct tool call).

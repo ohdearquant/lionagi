@@ -44,7 +44,7 @@ Skills fall into three categories by how they interact with the run layer:
 
 | Category | Examples | Run pattern |
 |----------|----------|-------------|
-| **Orchestrators** | `/show`, `/codex-pr-review`, `/reprompt` | Spawn N sessions over minutes-to-hours, with gating and adaptation |
+| **Orchestrators** | `/show`, `/codex-pr-review` | Spawn N sessions over minutes-to-hours, with gating and adaptation |
 | **Single-shot** | `/ci`, `/fmt`, `/commit`, `/pr` | Zero or one session; mostly shell commands, no `li play/agent` |
 | **Read-only** | `/status`, `/summarize` | No sessions; pure query or text generation |
 
@@ -229,7 +229,7 @@ Each orchestrator skill defines its own schema:
 |-------|---------------|
 | `/show` | `{topic, goal, plays: [{name, status, attempt}], waves: [...]}` |
 | `/codex-pr-review` | `{pr_number, rounds: [{round, verdict, resume_id}]}` |
-| `/reprompt` | `{original_prompt, refined_prompt, agents_planned}` |
+| (future orchestrator skills) | `{skill-specific fields}` |
 
 This is unstructured JSON — no schema enforcement. Skills write what they
 need for resume and display. Studio renders it as best-effort JSON view

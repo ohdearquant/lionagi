@@ -5,7 +5,7 @@ description: >
   progress made but session continues, approaching context limits, switching topics, checkpoint
   learnings, significant decisions made, patterns emerge, or session is winding down.
   Lighter than /session-summarize — stores to memory and continues.
-allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, mcp__khive__remember, mcp__khive__recall]
+allowed-tools: [Bash, Read, Write, Edit, Glob, Grep]
 ---
 
 # Summarize (Mid-Session)
@@ -34,11 +34,18 @@ Scan recent work to identify:
 - Files modified
 - Open threads / next steps
 
-### 2. Store to Memory
+### 2. Write Checkpoint File
 
-Store the summary as episodic memory:
+Write `.khive/notes/checkpoints/checkpoint_YYYYMMDD_HHMMSS_{topic}.md` with frontmatter (timestamp,
+topic, status: continuing) and sections: Progress, Decisions (table with rationale + alternatives),
+Learnings, Next Steps. This is the primary storage target and requires no external dependencies.
+
+### 2a. Optional: Cross-Session Memory (requires khive MCP)
+
+If khive MCP is installed, also store the summary as episodic memory for cross-session recall:
 
 ```python
+# Optional — install khive MCP to enable cross-session memory
 mcp__khive__remember(
     content="""CHECKPOINT: {topic}
 
@@ -70,6 +77,7 @@ mcp__khive__remember(
 For particularly important insights, store separately as semantic memory:
 
 ```python
+# Optional — install khive MCP to enable cross-session memory
 mcp__khive__remember(
     content="PATTERN: {pattern_name} — {description}. Use when: {conditions}. Example: {brief example}.",
     memory_type="semantic",
@@ -77,23 +85,18 @@ mcp__khive__remember(
 )
 ```
 
-### 3. Optionally Write Checkpoint File
+### 3. Continue Working
 
-For substantial milestones, write `.khive/notes/checkpoints/checkpoint_YYYYMMDD_HHMMSS_{topic}.md`
-with frontmatter (timestamp, lambda_id, topic, status: continuing) and sections: Progress,
-Decisions (table with rationale + alternatives), Learnings, Next Steps.
-
-### 4. Continue Working
-
-After storing, resume work. Reference the checkpoint if needed:
+After writing the checkpoint, resume work. If khive MCP is installed, recall context with:
 
 ```python
+# Optional — requires khive MCP
 mcp__khive__recall(query="CHECKPOINT {topic}", limit=3)
 ```
 
 ## Proactive Capture Triggers
 
-Fire a `memory.remember` call immediately when any of these occur — don't wait for the user to ask:
+Write a brief checkpoint note or append to the checkpoint file immediately when any of these occur — don't wait for the user to ask. If khive MCP is installed, also call `mcp__khive__remember`:
 
 | Trigger | Action |
 |---|---|
@@ -117,10 +120,16 @@ Want me to store this? (or run full /session-summarize)
 
 ## Decision & Pattern Capture
 
-### Memory templates for inline capture
+### Inline capture templates
+
+Write a one-liner to the checkpoint file. If khive MCP is installed, also store to memory:
 
 **Decision** (architecture choice, approach selection, trade-off):
+```
+Decision: {what}. Chose {choice} over {alternatives}. Rationale: {why}.
+```
 ```python
+# Optional — requires khive MCP
 mcp__khive__remember(
     content="Decision: {what}. Chose {choice} over {alternatives}. Rationale: {why}.",
     memory_type="episodic", importance=0.85,
@@ -128,7 +137,11 @@ mcp__khive__remember(
 ```
 
 **Lesson learned** (unexpected failure or success):
+```
+Lesson: {what_learned}. Context: {situation}. Applies when: {conditions}.
+```
 ```python
+# Optional — requires khive MCP
 mcp__khive__remember(
     content="Lesson: {what_learned}. Context: {situation}. Applies when: {conditions}.",
     memory_type="semantic", importance=0.9,

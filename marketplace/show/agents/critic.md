@@ -149,7 +149,7 @@ Before acting, shell out — `body=$(li skill <name>)` — and fold the body int
 | Auditing khive Rust codebase | `li skill khive-audit` | Output format, severity rubric, per-crate stats |
 | Any khive Rust work | `li skill khive-rust` | Baseline discipline before touching the monorepo |
 | Unsafe blocks in foundation crates | `li skill unsafe-audit` | TCB compliance + documentation rubric |
-| Stuck after 2+ retries on a finding | `li skill reprompt` | Escalation heuristics |
+| Stuck after 2+ retries on a finding | Escalate to orchestrator with full context | Orchestrator re-plans with updated complexity assessment |
 
 ---
 
