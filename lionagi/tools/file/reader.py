@@ -192,15 +192,10 @@ def _open_sync(
     allowed_url_hosts: frozenset[str],
 ) -> ReaderResponse:
     """Finding 9: validate path/URL before passing to docling."""
-    try:
-        from docling.document_converter import DocumentConverter
-    except ImportError:
-        return ReaderResponse(
-            success=False,
-            error="docling not installed. Run: pip install lionagi[reader]",
-        )
-
     # Finding 9: split URL vs local file handling
+    # NOTE: docling import is intentionally deferred until AFTER all URL/SSRF
+    # validation so that the security checks remain testable without the
+    # optional docling dependency installed.
     parsed = urlparse(path)
     if parsed.scheme in ("http", "https", "ftp"):
         if parsed.scheme != "https" or (parsed.hostname or "") not in allowed_url_hosts:
@@ -233,6 +228,14 @@ def _open_sync(
         except OSError:
             pass
         validated_path = str(p)
+
+    try:
+        from docling.document_converter import DocumentConverter
+    except ImportError:
+        return ReaderResponse(
+            success=False,
+            error="docling not installed. Run: pip install lionagi[reader]",
+        )
 
     try:
         converter = DocumentConverter()

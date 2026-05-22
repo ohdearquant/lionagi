@@ -57,6 +57,7 @@ def test_public_ips_safe(ip):
         "169.254.0.1",  # link-local
         "127.0.0.1",  # loopback
         "127.255.255.255",  # loopback boundary
+        "0.0.0.0",  # bind-all exact address (MEDIUM 2 regression)
         "0.0.0.1",  # bind-all range
         "100.64.0.1",  # CGN (RFC 6598)
     ],
@@ -78,11 +79,26 @@ def test_private_ipv4_blocked(ip):
         "fc00::1",  # IPv6 unique local
         "fd00::1",  # IPv6 unique local
         "fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",  # boundary
+        "fe80::1",  # IPv6 link-local (HIGH 1 regression)
+        "ff02::1",  # IPv6 multicast all-nodes (HIGH 1 regression)
+        "ff00::1",  # IPv6 multicast range start (HIGH 1 regression)
     ],
 )
 def test_private_ipv6_blocked(ip):
     with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo(ip)):
         assert is_ssrf_safe("evil.internal") is False
+
+
+def test_ipv6_link_local_scoped_blocked():
+    """fe80::1%lo0 — scoped link-local. Python strips the scope before parsing."""
+    # Python's ipaddress.ip_address strips the scope ID (e.g. %lo0) when
+    # socket.getaddrinfo returns the raw IP string. The raw IP returned by
+    # getaddrinfo on most platforms is the unscoped form ("fe80::1"), so we
+    # test that the unscoped form is correctly blocked. Scoped forms returned
+    # as "fe80::1%lo0" would cause ipaddress.ip_address to raise ValueError,
+    # which the guard's except-ValueError branch already handles (fail-closed).
+    with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("fe80::1")):
+        assert is_ssrf_safe("link-local.example.com") is False
 
 
 # ---------------------------------------------------------------------------

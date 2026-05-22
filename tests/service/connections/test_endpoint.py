@@ -61,9 +61,7 @@ class TestEndpoint:
 
     def test_endpoint_initialization_invalid_config_type(self):
         """Test endpoint initialization with invalid config type raises ValueError (line 47)."""
-        with pytest.raises(
-            ValueError, match="Config must be a dict, EndpointConfig, or None"
-        ):
+        with pytest.raises(ValueError, match="Config must be a dict, EndpointConfig, or None"):
             Endpoint(config="invalid_config_type")
 
     def test_request_options_setter(self, openai_config):
@@ -94,9 +92,7 @@ class TestEndpoint:
         endpoint = Endpoint(config=openai_config)
         request = {"messages": [{"role": "user", "content": "test"}]}
 
-        payload, headers = endpoint.create_payload(
-            request, temperature=0.9, max_tokens=500
-        )
+        payload, headers = endpoint.create_payload(request, temperature=0.9, max_tokens=500)
 
         assert payload["temperature"] == 0.9
         assert payload["max_tokens"] == 500
@@ -139,9 +135,7 @@ class TestEndpoint:
             sessions_created.append(session)
             return session
 
-        with patch.object(
-            endpoint, "_create_http_session", side_effect=mock_create_session
-        ):
+        with patch.object(endpoint, "_create_http_session", side_effect=mock_create_session):
             # Simulate multiple concurrent requests
             tasks = []
             for _ in range(3):
@@ -152,9 +146,7 @@ class TestEndpoint:
 
         # Verify each call created its own session
         assert len(sessions_created) == 3
-        assert all(
-            session is not sessions_created[0] for session in sessions_created[1:]
-        )
+        assert all(session is not sessions_created[0] for session in sessions_created[1:])
 
     def test_create_payload_openai(self, openai_config):
         """Test payload creation for OpenAI endpoint."""
@@ -252,19 +244,14 @@ class TestEndpoint:
             return {
                 "id": f"response-{payload['messages'][0]['content']}",
                 "choices": [
-                    {
-                        "message": {
-                            "content": f"Response to {payload['messages'][0]['content']}"
-                        }
-                    }
+                    {"message": {"content": f"Response to {payload['messages'][0]['content']}"}}
                 ],
             }
 
         with patch.object(endpoint, "call", side_effect=mock_request_with_delay):
             # Create multiple concurrent requests
             requests = [
-                {"messages": [{"role": "user", "content": f"Message {i}"}]}
-                for i in range(3)
+                {"messages": [{"role": "user", "content": f"Message {i}"}]} for i in range(3)
             ]
 
             tasks = []
@@ -632,8 +619,7 @@ class TestEndpoint:
         assert restored_endpoint.retry_config is not None
         assert restored_endpoint.circuit_breaker is not None
         assert (
-            restored_endpoint.retry_config.max_retries
-            == original_endpoint.retry_config.max_retries
+            restored_endpoint.retry_config.max_retries == original_endpoint.retry_config.max_retries
         )
 
     def test_endpoint_create_payload_filters_non_api_params_without_request_options(
@@ -684,9 +670,7 @@ class TestEndpoint:
             content_type="application/json",
             api_key="test-key",
         )
-        endpoint = Endpoint(
-            config, circuit_breaker=circuit_breaker, retry_config=retry_config
-        )
+        endpoint = Endpoint(config, circuit_breaker=circuit_breaker, retry_config=retry_config)
 
         async def fake_call(payload, headers, **kwargs):
             return {"result": "ok"}
@@ -695,10 +679,90 @@ class TestEndpoint:
             return await func(*args, **kwargs)
 
         with patch.object(endpoint, "_call", fake_call):
-            with patch.object(
-                circuit_breaker, "execute", side_effect=fake_execute
-            ) as mock_execute:
+            with patch.object(circuit_breaker, "execute", side_effect=fake_execute) as mock_execute:
                 result = await endpoint.call({"messages": []}, cache_control=False)
 
         assert result == {"result": "ok"}
         assert mock_execute.called
+
+
+# ---------------------------------------------------------------------------
+# SSRF guard at Endpoint transport boundary (HIGH 2 regression tests)
+# ---------------------------------------------------------------------------
+
+
+class TestEndpointSSRFGuard:
+    """Endpoint._call_aiohttp and _stream_aiohttp must block SSRF URLs."""
+
+    def _make_endpoint(self, base_url: str) -> Endpoint:
+        config = EndpointConfig(
+            name="test_chat",
+            provider="test_provider",
+            endpoint="chat/completions",
+            base_url=base_url,
+            auth_type="bearer",
+            content_type="application/json",
+            api_key="test-key",
+        )
+        return Endpoint(config=config)
+
+    @pytest.mark.asyncio
+    async def test_call_aiohttp_blocks_private_ip(self):
+        """_call_aiohttp raises PermissionError for private base_url."""
+        endpoint = self._make_endpoint("http://169.254.169.254")
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=False):
+            with pytest.raises(PermissionError, match="SSRF guard"):
+                await endpoint._call_aiohttp(payload={}, headers={})
+
+    @pytest.mark.asyncio
+    async def test_call_aiohttp_allows_public_ip(self):
+        """_call_aiohttp does NOT raise for a public base_url."""
+        endpoint = self._make_endpoint("https://api.openai.com/v1")
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.closed = False
+        mock_response.json = AsyncMock(return_value={"ok": True})
+        mock_response.release = AsyncMock()
+
+        mock_session = AsyncMock()
+        mock_session.request = AsyncMock(return_value=mock_response)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", return_value=mock_session):
+                result = await endpoint._call_aiohttp(payload={}, headers={})
+        assert result == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_stream_aiohttp_blocks_private_ip(self):
+        """_stream_aiohttp raises PermissionError for private base_url."""
+        endpoint = self._make_endpoint("http://192.168.1.1")
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=False):
+            with pytest.raises(PermissionError, match="SSRF guard"):
+                # consume the async generator to trigger the check
+                async for _ in endpoint._stream_aiohttp(payload={}, headers={}):
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_imodel_base_url_blocked(self):
+        """iModel(base_url='http://169.254.169.254') is blocked at transport layer."""
+        from lionagi.service.imodel import iModel
+
+        model = iModel(
+            provider="openai",
+            model="gpt-4o-mini",
+            base_url="http://169.254.169.254",
+            api_key="test",
+        )
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=False):
+            with pytest.raises(PermissionError, match="SSRF guard"):
+                await model.endpoint._call_aiohttp(payload={}, headers={})
+
+    @pytest.mark.asyncio
+    async def test_endpoint_ssrf_blocks_link_local_ipv6(self):
+        """Endpoint rejects fe80:: base URLs (IPv6 link-local, HIGH 1 + HIGH 2 combined)."""
+        endpoint = self._make_endpoint("http://[fe80::1]")
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=False):
+            with pytest.raises(PermissionError, match="SSRF guard"):
+                await endpoint._call_aiohttp(payload={}, headers={})

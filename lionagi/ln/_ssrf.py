@@ -34,6 +34,8 @@ import socket
 #   ::1/128     IPv6 loopback
 #   fc00::/7    IPv6 unique local (fc00:: and fd00:: ranges)
 #   ::ffff:0:0/96  IPv4-mapped IPv6 catch-all (belt-and-suspenders)
+#   fe80::/10   IPv6 link-local (SLAAC; scoped service exposure via %iface)
+#   ff00::/8    IPv6 multicast (defense-in-depth; no legitimate server targets)
 _BLOCKED_NETS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
     ipaddress.ip_network(cidr)
     for cidr in [
@@ -47,6 +49,8 @@ _BLOCKED_NETS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
         "::1/128",
         "fc00::/7",
         "::ffff:0:0/96",
+        "fe80::/10",
+        "ff00::/8",
     ]
 ]
 

@@ -94,11 +94,7 @@ class Endpoint:
             headers.update(extra_headers)
 
         # Convert request to dict if it's a BaseModel
-        request = (
-            request
-            if isinstance(request, dict)
-            else request.model_dump(exclude_none=True)
-        )
+        request = request if isinstance(request, dict) else request.model_dump(exclude_none=True)
 
         # Start with config defaults
         payload = self.config.kwargs.copy()
@@ -180,9 +176,7 @@ class Endpoint:
             payload = request if isinstance(request, dict) else request.model_dump()
             headers = extra_headers or {}
         else:
-            payload, headers = self.create_payload(
-                request, extra_headers=extra_headers, **kwargs
-            )
+            payload, headers = self.create_payload(request, extra_headers=extra_headers, **kwargs)
 
         # Apply resilience patterns if configured
         call_func = self._call
@@ -200,9 +194,7 @@ class Endpoint:
             if self.retry_config:
                 # If both are configured, apply circuit breaker to the retry-wrapped function
                 if not cache_control:
-                    return await self.circuit_breaker.execute(
-                        call_func, payload, headers, **kwargs
-                    )
+                    return await self.circuit_breaker.execute(call_func, payload, headers, **kwargs)
             else:
                 # If only circuit breaker is configured, apply it directly
                 if not cache_control:
@@ -220,9 +212,7 @@ class Endpoint:
             async def _cached_call(payload: dict, headers: dict, **kwargs):
                 # Apply resilience patterns to cached call if configured
                 if self.circuit_breaker and self.retry_config:
-                    return await self.circuit_breaker.execute(
-                        call_func, payload, headers, **kwargs
-                    )
+                    return await self.circuit_breaker.execute(call_func, payload, headers, **kwargs)
                 if self.circuit_breaker:
                     return await self.circuit_breaker.execute(
                         self._call, payload, headers, **kwargs
@@ -252,6 +242,18 @@ class Endpoint:
         Returns:
             The response from the endpoint.
         """
+        from urllib.parse import urlparse
+
+        from lionagi.ln._ssrf import is_ssrf_safe
+
+        parsed = urlparse(self.config.full_url)
+        hostname = parsed.hostname or ""
+        if not is_ssrf_safe(hostname):
+            raise PermissionError(
+                f"SSRF guard: request to {hostname!r} is blocked "
+                "(hostname resolves to a private or reserved IP address)"
+            )
+
         import aiohttp
         import backoff
 
@@ -275,11 +277,11 @@ class Endpoint:
                         # Try to get error details from response body
                         try:
                             error_body = await response.json()
-                            error_message = f"Request failed with status {response.status}: {error_body}"
-                        except Exception:
                             error_message = (
-                                f"Request failed with status {response.status}"
+                                f"Request failed with status {response.status}: {error_body}"
                             )
+                        except Exception:
+                            error_message = f"Request failed with status {response.status}"
 
                         raise aiohttp.ClientResponseError(
                             request_info=response.request_info,
@@ -336,9 +338,7 @@ class Endpoint:
         payload, headers = self.create_payload(request, extra_headers, **kwargs)
 
         # Direct streaming without context manager
-        async for chunk in self._stream_aiohttp(
-            payload=payload, headers=headers, **kwargs
-        ):
+        async for chunk in self._stream_aiohttp(payload=payload, headers=headers, **kwargs):
             yield chunk
 
     async def _stream_aiohttp(self, payload: dict, headers: dict, **kwargs):
@@ -353,6 +353,18 @@ class Endpoint:
         Yields:
             Streaming chunks from the API.
         """
+        from urllib.parse import urlparse
+
+        from lionagi.ln._ssrf import is_ssrf_safe
+
+        parsed = urlparse(self.config.full_url)
+        hostname = parsed.hostname or ""
+        if not is_ssrf_safe(hostname):
+            raise PermissionError(
+                f"SSRF guard: request to {hostname!r} is blocked "
+                "(hostname resolves to a private or reserved IP address)"
+            )
+
         # Ensure stream is enabled
         payload["stream"] = True
 
@@ -504,9 +516,7 @@ class Endpoint:
         if typ == "content_block_delta":
             delta = event.get("delta", {})
             if delta.get("type") in {"text_delta", "thinking_delta"}:
-                chunk_type = (
-                    "thinking" if delta.get("type") == "thinking_delta" else "text"
-                )
+                chunk_type = "thinking" if delta.get("type") == "thinking_delta" else "text"
                 return StreamChunk(
                     type=chunk_type,
                     content=delta.get("text") or delta.get("thinking", ""),
@@ -545,12 +555,8 @@ class Endpoint:
 
     def to_dict(self):
         return {
-            "retry_config": (
-                self.retry_config.to_dict() if self.retry_config else None
-            ),
-            "circuit_breaker": (
-                self.circuit_breaker.to_dict() if self.circuit_breaker else None
-            ),
+            "retry_config": (self.retry_config.to_dict() if self.retry_config else None),
+            "circuit_breaker": (self.circuit_breaker.to_dict() if self.circuit_breaker else None),
             "config": self.config.model_dump(exclude_none=True),
         }
 
