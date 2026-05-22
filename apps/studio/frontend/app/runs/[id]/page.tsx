@@ -132,7 +132,8 @@ function branchToRunStep(branch: SessionBranch, status: string): RunStep {
     step: branch.name || branch.id.slice(0, 8),
     status,
     result: {
-      agent: branch.name || branch.id.slice(0, 8),
+      agent: branch.agent_name ?? branch.name ?? branch.id.slice(0, 8),
+      model: branch.model ?? branch.provider ?? null,
       message_count: runMessages.length,
       roles: rolesCounts,
     },

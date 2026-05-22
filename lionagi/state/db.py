@@ -42,6 +42,12 @@ _SESSION_COLUMNS = frozenset(
         # ADR-0020: optional FK to the skill orchestration that spawned
         # this session (e.g. a /show invocation grouping its plays).
         "invocation_id",
+        # ADR-0022: provenance disclosure — resolved model spec, provider,
+        # effort, and the agent profile content hash at invocation time.
+        "model",
+        "provider",
+        "effort",
+        "agent_hash",
     }
 )
 
@@ -109,6 +115,10 @@ _BRANCH_COLUMNS = frozenset(
         "user",
         "node_metadata",
         "system_msg_id",
+        # ADR-0022: per-branch provenance for multi-model flows.
+        "model",
+        "provider",
+        "agent_name",
     }
 )
 
@@ -329,9 +339,18 @@ class StateDB:
             ("last_message_at", "REAL"),
             # ADR-0020: optional FK to invocations table.
             ("invocation_id", "TEXT"),
+            # ADR-0022: provenance disclosure columns.
+            ("model", "TEXT"),
+            ("provider", "TEXT"),
+            ("effort", "TEXT"),
+            ("agent_hash", "TEXT"),
         ],
         "branches": [
             ("system_msg_id", "TEXT"),
+            # ADR-0022: per-branch provenance.
+            ("model", "TEXT"),
+            ("provider", "TEXT"),
+            ("agent_name", "TEXT"),
         ],
         "shows": [
             ("status_source", "TEXT NOT NULL DEFAULT 'unknown'"),
@@ -436,7 +455,11 @@ class StateDB:
                   started_at      REAL,
                   ended_at        REAL,
                   last_message_at REAL,
-                  invocation_id   TEXT
+                  invocation_id   TEXT,
+                  model           TEXT,
+                  provider        TEXT,
+                  effort          TEXT,
+                  agent_hash      TEXT
                 )
                 """
             )
@@ -630,8 +653,10 @@ class StateDB:
                progression_id, first_msg_id, last_msg_id, updated_at,
                playbook_name, agent_name, invocation_kind, show_topic,
                show_play_name, artifacts_path, source_kind,
-               status, started_at, ended_at, last_message_at, invocation_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               status, started_at, ended_at, last_message_at, invocation_id,
+               model, provider, effort, agent_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?)""",
             (
                 session["id"],
                 session.get("created_at", now),
@@ -661,6 +686,14 @@ class StateDB:
                 # ADR-0020: optional FK to invocations(id). NULL when the
                 # session was spawned standalone (no `li invoke start`).
                 session.get("invocation_id"),
+                # ADR-0022: resolved provenance — model/provider/effort
+                # are the values the runtime actually used, not the user
+                # input. agent_hash is the SHA-256 of the agent profile
+                # content at invocation time (drift detection).
+                session.get("model"),
+                session.get("provider"),
+                session.get("effort"),
+                session.get("agent_hash"),
             ),
         )
         # ADR-0020: keep invocations.session_count in sync so list queries
@@ -1038,8 +1071,8 @@ class StateDB:
     async def create_branch(self, branch: dict[str, Any]) -> None:
         await self.db.execute(
             """INSERT OR IGNORE INTO branches (id, created_at, node_metadata, user, name,
-               session_id, progression_id, system_msg_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               session_id, progression_id, system_msg_id, model, provider, agent_name)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 branch["id"],
                 branch.get("created_at", time.time()),
@@ -1049,6 +1082,10 @@ class StateDB:
                 branch["session_id"],
                 branch["progression_id"],
                 branch.get("system_msg_id"),
+                # ADR-0022: per-branch resolved provenance.
+                branch.get("model"),
+                branch.get("provider"),
+                branch.get("agent_name"),
             ),
         )
         await self.db.commit()

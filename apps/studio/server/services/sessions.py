@@ -60,6 +60,10 @@ async def list_sessions() -> list[dict[str, Any]]:
                 s.ended_at,
                 s.last_message_at,
                 s.invocation_id,
+                s.model,
+                s.provider,
+                s.effort,
+                s.agent_hash,
                 COUNT(DISTINCT b.id) AS branch_count,
                 COALESCE(SUM(
                     json_array_length(p.collection)
@@ -90,6 +94,11 @@ async def list_sessions() -> list[dict[str, Any]]:
             "last_message_at": row["last_message_at"],
             # ADR-0020: optional parent skill orchestration.
             "invocation_id": row["invocation_id"],
+            # ADR-0022: provenance disclosure — resolved values.
+            "model": row["model"],
+            "provider": row["provider"],
+            "effort": row["effort"],
+            "agent_hash": row["agent_hash"],
             "playbook_name": row["playbook_name"],
             "agent_name": row["agent_name"],
             "invocation_kind": row["invocation_kind"],
@@ -108,10 +117,12 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
     async with _open_db(_DB) as db:
         cur = await db.execute(
             # F-A1-4 (ADR-0017): include lifecycle columns in session detail
+            # ADR-0022: include provenance columns (model/provider/effort/agent_hash)
             """SELECT id, name, created_at, updated_at,
                       playbook_name, agent_name, invocation_kind,
                       show_topic, show_play_name, artifacts_path, source_kind,
-                      status, started_at, ended_at
+                      status, started_at, ended_at,
+                      model, provider, effort, agent_hash, invocation_id
                FROM sessions WHERE id = ?""",
             (session_id,),
         )
@@ -136,7 +147,7 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
         )
 
         branch_cur = await db.execute(
-            "SELECT id, name, created_at, progression_id FROM branches WHERE session_id = ? ORDER BY created_at",
+            "SELECT id, name, created_at, progression_id, model, provider, agent_name FROM branches WHERE session_id = ? ORDER BY created_at",
             (session_id,),
         )
         branch_rows = await branch_cur.fetchall()
@@ -179,6 +190,9 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
                     "name": br["name"],
                     "created_at": br["created_at"],
                     "messages": messages,
+                    "model": br["model"],
+                    "provider": br["provider"],
+                    "agent_name": br["agent_name"],
                 }
             )
 
@@ -186,9 +200,7 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
     started_at = session_row["started_at"]
     ended_at = session_row["ended_at"]
     duration_ms = (
-        (ended_at - started_at) * 1000
-        if started_at is not None and ended_at is not None
-        else None
+        (ended_at - started_at) * 1000 if started_at is not None and ended_at is not None else None
     )
 
     return {
@@ -209,12 +221,16 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
         "duration_ms": duration_ms,
         "source_show": source_show,
         "branches": branches,
+        # ADR-0022: provenance disclosure — same fields exposed on list_sessions().
+        "model": session_row["model"],
+        "provider": session_row["provider"],
+        "effort": session_row["effort"],
+        "agent_hash": session_row["agent_hash"],
+        "invocation_id": session_row["invocation_id"],
     }
 
 
-async def get_session_messages_after(
-    session_id: str, after_ts: float
-) -> list[dict[str, Any]]:
+async def get_session_messages_after(session_id: str, after_ts: float) -> list[dict[str, Any]]:
     if not DEFAULT_DB_PATH.exists():
         return []
 

@@ -34,11 +34,23 @@ from typing import Any
 from lionagi import Branch, Session
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
+from lionagi.state import provenance as _provenance
 
 from .._agents import AgentProfile, load_agent_profile
 from .._logging import hint
-from .._providers import build_imodel_from_spec
+from .._providers import PROVIDER_EFFORT_KWARG, build_imodel_from_spec
 from .._runs import RunDir, allocate_run, save_last_branch_pointer
+
+
+def _resolve_session_model(
+    provider: str | None, model: str | None
+) -> str | None:
+    """ADR-0022: canonical 'provider/model' for the session.model column.
+
+    Thin wrapper over :func:`provenance.resolve_model_spec` so callers
+    don't repeat the import. Returns None when both args are None.
+    """
+    return _provenance.resolve_model_spec(provider, model)
 
 __all__ = (
     "OrchestrationEnv",
@@ -261,6 +273,13 @@ def setup_orchestration(
         theme=theme,
         fast=fast,
     )
+    # Extract the post-clamp effort so env.effort (and thus sessions.effort)
+    # stores the value actually sent to the provider (e.g. "max"→"xhigh" for codex).
+    _orc_ep_kwargs = orc_imodel.endpoint.config.kwargs or {}
+    _orc_provider = orc_imodel.endpoint.config.provider
+    _orc_effort_kwarg = PROVIDER_EFFORT_KWARG.get(_orc_provider)
+    if _orc_effort_kwarg and _orc_effort_kwarg in _orc_ep_kwargs:
+        effort = _orc_ep_kwargs[_orc_effort_kwarg]
     if cwd:
         orc_imodel.endpoint.config.kwargs.setdefault("repo", Path(cwd))
 
@@ -509,6 +528,9 @@ async def start_live_persist(
     agent_name: str | None = None,
     artifacts_path: str | None = None,
     invocation_id: str | None = None,
+    model: str | None = None,
+    provider: str | None = None,
+    effort: str | None = None,
 ) -> None:
     """Open state.db, create session row, register hooks on existing branches.
 
@@ -552,6 +574,13 @@ async def start_live_persist(
                 "started_at": time.time(),
                 # ADR-0020: optional skill orchestration parent
                 "invocation_id": invocation_id,
+                # ADR-0022: orchestrator-level provenance. For multi-model
+                # flows the per-branch model is the actual; this is the
+                # "primary" / "default" that the runs list shows.
+                "model": _resolve_session_model(provider, model),
+                "provider": provider,
+                "effort": effort,
+                "agent_hash": _provenance.agent_definition_hash(agent_name),
             }
         )
 
@@ -629,6 +658,27 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
                 system_msg_id = sys_dict["id"]
                 await db.insert_message(sys_dict)
 
+            # ADR-0022: per-branch provenance — pulled from the runtime
+            # endpoint config so multi-model flows correctly disclose what
+            # *each* branch actually used, not the orchestrator default.
+            br_model: str | None = None
+            br_provider: str | None = None
+            try:
+                ep_cfg = branch.chat_model.endpoint.config
+                br_provider = getattr(ep_cfg, "provider", None)
+                br_model_raw = (ep_cfg.kwargs or {}).get("model")
+                br_model = _provenance.resolve_model_spec(
+                    br_provider, br_model_raw
+                )
+            except Exception as _provenance_exc:  # noqa: BLE001
+                # Provenance is best-effort — never block the branch row.
+                import logging
+
+                logging.getLogger("lionagi.cli").debug(
+                    "branch provenance lookup failed for %s: %s",
+                    branch_id,
+                    _provenance_exc,
+                )
             await db.create_branch(
                 {
                     "id": branch_id,
@@ -639,6 +689,11 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
                     "session_id": session_id,
                     "progression_id": branch_prog_id,
                     "system_msg_id": system_msg_id,
+                    "model": br_model,
+                    "provider": br_provider,
+                    # branch.name is the agent role within the flow
+                    # ("r1", "critic", "explorer", ...).
+                    "agent_name": branch_dict.get("name"),
                 }
             )
             initialized["done"] = True

@@ -349,6 +349,9 @@ export interface SessionBranch {
   name: string;
   created_at: number;
   messages: SessionMessage[];
+  model?: string | null;
+  provider?: string | null;
+  agent_name?: string | null;
 }
 
 export interface SessionDetail {
@@ -357,6 +360,12 @@ export interface SessionDetail {
   created_at: number;
   updated_at: number;
   branches: SessionBranch[];
+  // ADR-0022: provenance disclosure — mirrors what list_sessions() exposes.
+  model?: string | null;
+  provider?: string | null;
+  effort?: string | null;
+  agent_hash?: string | null;
+  invocation_id?: string | null;
 }
 
 export async function listSessions(): Promise<{ sessions: SessionSummary[] }> {
@@ -414,6 +423,9 @@ export interface InvocationSession {
   last_message_at: number | null;
   started_at: number | null;
   ended_at: number | null;
+  // ADR-0022: per-child-session model + effort disclosure.
+  model?: string | null;
+  effort?: string | null;
 }
 
 // ADR-0021: structured skill outputs. `kind` is the dispatch key for
