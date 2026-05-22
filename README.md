@@ -161,7 +161,7 @@ uv add "lionagi[all]"       # Everything
 
 ## Claude Code Marketplace
 
-The lionagi marketplace provides installable Claude Code plugins for the lionagi agent runtime. Each plugin adds a focused set of skills and agents for a specific workflow: structured show runs, research pipelines, memory management, playbook authoring, and multi-agent orchestration.
+The lionagi marketplace provides installable Claude Code plugins for the lionagi agent runtime. Each plugin adds a focused set of skills and agents for a specific workflow: structured show runs, memory management, playbook authoring, developer tooling, and multi-agent orchestration.
 
 **Install:**
 

@@ -84,7 +84,7 @@ shipped in Phase 0 and why the remaining four were removed or deferred.
 **Negative**
 - More manifests to maintain: root `marketplace.json` plus five `plugin.json` files (v2) must stay in sync as plugin names or descriptions change.
 - Skills authored in `firm/resources/skills/` (canonical) must be copied or symlinked into `marketplace/<plugin>/skills/` for external installs — two places to update per skill change.
-- The `plugin.json` schema is not yet finalized by Anthropic; field names or required keys may shift before GA, requiring a sweep across all nine manifests.
+- The `plugin.json` schema is not yet finalized by Anthropic; field names or required keys may shift before GA, requiring a sweep across all five manifests.
 - `studio` and `mcp-bundle` are deferred to v2.1 and no longer ship standalone manifests in Phase 0; they are recorded only in the `_deferred_plugins` block of the root manifest.
 
 ## Alternatives Considered

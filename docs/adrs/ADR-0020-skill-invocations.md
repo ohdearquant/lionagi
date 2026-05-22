@@ -46,7 +46,7 @@ Skills fall into three categories by how they interact with the run layer:
 |----------|----------|-------------|
 | **Orchestrators** | `/show`, `/codex-pr-review`, `/reprompt` | Spawn N sessions over minutes-to-hours, with gating and adaptation |
 | **Single-shot** | `/ci`, `/fmt`, `/commit`, `/pr` | Zero or one session; mostly shell commands, no `li play/agent` |
-| **Read-only** | `/status`, `/memory-recall`, `/summarize` | No sessions; pure query or text generation |
+| **Read-only** | `/status`, `/summarize` | No sessions; pure query or text generation |
 
 Only **orchestrator** skills need invocation tracking. Single-shot and
 read-only skills don't produce session trees worth grouping.

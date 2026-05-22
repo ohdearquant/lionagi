@@ -54,7 +54,7 @@ Example: `_Supersedes [ADR-0001](ADR-0001-lion-studio-internal-app.md)._`
 |-----|-------|--------|
 | [ADR-0001](ADR-0001-lion-studio-internal-app.md) | Lion Studio as internal monorepo app | Accepted |
 | [ADR-0002](ADR-0002-studio-tech-stack.md) | Lion Studio tech stack | Accepted |
-| [ADR-0003](ADR-0003-claude-code-marketplace.md) | Claude Code marketplace | Accepted |
+| [ADR-0003](ADR-0003-claude-code-marketplace.md) | Claude Code marketplace | Amended (v2 catalog) |
 | [ADR-0004](ADR-0004-filesystem-data-layer.md) | Data layer — filesystem + SQLite hybrid | Accepted |
 | [ADR-0005](ADR-0005-workers-playbooks-rename.md) | Playbooks naming convention | Accepted |
 | [ADR-0006](ADR-0006-sse-live-streaming.md) | Live update transport — SSE + interval refresh | Accepted |

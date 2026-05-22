@@ -5,7 +5,7 @@
 
 ## Context
 
-Each of lionagi's nine marketplace plugins (see ADR-0003) has a `plugin.json` manifest under
+Each of lionagi's five marketplace plugins (see ADR-0003) has a `plugin.json` manifest under
 `.claude-plugin/`. The Claude Code plugin loader must discover which skills and agent profiles
 each plugin provides. Two approaches exist: explicit enumeration (listing files in `plugin.json`)
 or implicit auto-discovery from directory layout.
@@ -38,7 +38,7 @@ arrays) would create a redundancy that lags the actual directory contents.
 
 **Negative**
 - Auto-discovery behavior is undocumented by Anthropic and may change before GA. If the CC
-  loader stops auto-discovering from directory layout, all nine plugins break silently — there
+  loader stops auto-discovering from directory layout, all five plugins break silently — there
   is no explicit manifest to fall back on.
 - This ADR is the only record of the assumption. Consumers who read only `plugin.json` will
   not see the skill/agent inventory.
