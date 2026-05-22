@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
+from lionagi.ln._ssrf import is_ssrf_safe
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
 
@@ -78,8 +79,7 @@ class ReaderRequest(BaseModel):
     limit: int | None = Field(
         None,
         description=(
-            "Maximum number of lines to return. "
-            "Used for 'read' and cached reads. Defaults to 2000."
+            "Maximum number of lines to return. Used for 'read' and cached reads. Defaults to 2000."
         ),
     )
     recursive: bool | None = Field(
@@ -126,9 +126,7 @@ def _read_sync(
         return ReaderResponse(success=False, error=str(e))
 
     if p.is_symlink():
-        return ReaderResponse(
-            success=False, error=f"Refusing to read symlink: {path!r}"
-        )
+        return ReaderResponse(success=False, error=f"Refusing to read symlink: {path!r}")
     if not p.exists():
         return ReaderResponse(success=False, error=f"File not found: {path}")
     if not p.is_file():
@@ -138,9 +136,7 @@ def _read_sync(
         with open(p, "rb") as fbin:
             chunk = fbin.read(8192)
         if b"\x00" in chunk:
-            return ReaderResponse(
-                success=False, error=f"Binary file not supported: {path}"
-            )
+            return ReaderResponse(success=False, error=f"Binary file not supported: {path}")
     except OSError as e:
         return ReaderResponse(success=False, error=f"Cannot open file: {e}")
 
@@ -212,6 +208,12 @@ def _open_sync(
                 success=False,
                 error=f"URL conversion not allowed: {path!r}. Only configured https hosts.",
             )
+        # SSRF guard: hostname passed the allowlist but must also resolve to a public IP.
+        if not is_ssrf_safe(parsed.hostname or ""):
+            return ReaderResponse(
+                success=False,
+                error="URL blocked: hostname resolves to a private or reserved IP address.",
+            )
         validated_path = path
     else:
         # local file: validate workspace containment, extension, and size
@@ -227,9 +229,7 @@ def _open_sync(
             )
         try:
             if p.stat().st_size > _MAX_DOC_BYTES:
-                return ReaderResponse(
-                    success=False, error="Document exceeds 50 MB size limit."
-                )
+                return ReaderResponse(success=False, error="Document exceeds 50 MB size limit.")
         except OSError:
             pass
         validated_path = str(p)
