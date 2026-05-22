@@ -1,46 +1,42 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "lionagi",
-  "version": "0.1.0",
-  "description": "Daily-driver agent runtime with curated skill plugins for orchestration, research, memory, and development workflows",
+  "version": "0.2.0",
+  "description": "lionagi Claude Code plugins — agent orchestration, playbook authoring, and development workflows",
   "owner": {
-    "name": "Ocean (HaiyangLi)",
+    "name": "HaiyangLi",
     "url": "https://github.com/ohdearquant"
   },
   "plugins": [
     {
       "name": "show",
       "source": "./marketplace/show",
-      "description": "Orchestrate multi-step agent workflows with quality gates and isolated workspaces"
+      "description": "Orchestrate multi-play workflows: decompose a goal into li-play invocations, gate each output, and adapt the plan based on results."
     },
     {
       "name": "play",
       "source": "./marketplace/play",
-      "description": "Define and run reusable workflow templates (playbooks) that parameterize agent tasks"
+      "description": "Author lionagi playbooks — the YAML files that li play and li o flow use to define and invoke reusable agent workflows."
     },
     {
       "name": "orchestrate",
       "source": "./marketplace/orchestrate",
-      "description": "Plan and run multi-agent pipelines: fan out to parallel workers or chain agents in dependency order"
-    },
-    {
-      "name": "research",
-      "source": "./marketplace/research",
-      "description": "Run structured research across multiple viewpoints using web search, codebase analysis, and synthesis"
-    },
-    {
-      "name": "memory",
-      "source": "./marketplace/memory",
-      "description": "Persist and recall project context — decisions, patterns, and facts — across sessions"
+      "description": "Multi-agent DAG orchestration via li o flow and li o fanout: write flow specs, validate them, fire parallel agents, and monitor execution."
     },
     {
       "name": "devx",
       "source": "./marketplace/devx",
-      "description": "Development workflow skills: conventional commits, formatting, CI checks, PR creation, and session summaries (session-start/session-summarize planned)"
+      "description": "Development workflow skills: conventional commits, formatting, CI checks, PR creation, and session summaries."
+    },
+    {
+      "name": "memory",
+      "source": "./marketplace/memory",
+      "description": "Maintain the auto-memory space: prune stale files, condense MEMORY.md, and keep project context navigable across sessions."
     }
   ],
-  "_deferred_bundles": [
-    "studio (TODO: li studio mcp not yet implemented; re-list when MCP server ships)",
-    "mcp-bundle (TODO: skeleton only; re-list when agent skills land)"
+  "_deferred_plugins": [
+    "kg-bridge — bridge between lionagi runs and a knowledge graph; requires implementation",
+    "studio — Studio MCP server access; deferred until li studio MCP server ships",
+    "mcp-bundle — canonical MCP server bundle; deferred until agent MCP skills land"
   ]
 }

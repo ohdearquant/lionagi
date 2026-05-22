@@ -83,7 +83,7 @@ $HOME/khive-work/shows/<topic>/
     <agent_id>/<file>      li play's per-agent artifact dirs (see Artifact path note)
 ```
 
-Note: `$HOME/khive-work/...` is a show-local convention I (Ocean) adopted for
+Note: `$HOME/khive-work/...` is a show-local convention adopted for
 the `show` skill. It is intentionally separate from per-repo `khive-<layer>/`
 worktrees used by long-lived sub-lambdas (foundation-work, platform-work,
 etc.) which are layer-scoped, not topic-scoped.
