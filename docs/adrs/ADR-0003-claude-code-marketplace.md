@@ -1,7 +1,8 @@
 # ADR-0003: Claude Code Marketplace
 
-**Status**: Accepted
+**Status**: Amended (v2 catalog — see below)
 **Date**: 2026-05-19
+**Amended**: 2026-05-21
 
 ## Context
 
@@ -20,7 +21,42 @@ marketplace/<plugin>/skills/             # bundled skills (added in later plays)
 marketplace/<plugin>/agents/             # bundled agent profiles (added in later plays)
 ```
 
-Nine plugins cover the full capability surface by scope:
+## v2 Catalog (Current — Phase 0, 2026-05-21)
+
+Five plugins are in the active catalog. No external dependencies beyond the lionagi
+package are required for any of the five.
+
+| Plugin | Scope |
+|--------|-------|
+| `show` | Direct multi-play DAGs with critic gating and worktree isolation |
+| `play` | Author lionagi playbooks for li play / li o flow |
+| `orchestrate` | Multi-agent orchestration via li o flow and li o fanout |
+| `devx` | Conventional commit, formatting, CI, PR, summarize, session-start/-summarize |
+| `memory` | MEMORY.md hygiene and auto-memory bootstrap (`migrate-memory` only) |
+
+### Deleted plugins (v1 → v2)
+
+| Plugin | Reason |
+|--------|--------|
+| `research` | Contains private trading IP that cannot be shipped in a public package. Removed entirely; no replacement planned in the public catalog. |
+| `kg-bridge` | Tight coupling to khive MCP server. lionagi's public marketplace must not depend on khive internals. Removed; khive users can configure the bridge manually. |
+
+### Deferred plugins (v2.1+)
+
+| Plugin | Reason | Target |
+|--------|--------|--------|
+| `studio` | Depends on FastAPI backend route contracts (ADR-0004) not yet implemented. No standalone value without the backend. | v2.1 after ADR-0004 stabilises |
+| `mcp-bundle` | Depends on the lionagi canonical MCP server, which is not yet in a shippable state. | v2.1 alongside `studio` |
+| `memory-recall` (skill in `memory`) | Previous implementation called `mcp__khive__recall` / `mcp__khive__search`, violating the no-external-deps goal. Will be rewritten against `~/.lionagi/runs/` and Studio APIs. | v2.1 |
+
+The `_deferred_plugins` block in `.claude-plugin/marketplace.json` records `studio` and
+`mcp-bundle` so they are not silently forgotten.
+
+This play establishes the skeleton (manifests, directory structure, README, this ADR). Plugin content (skills, agents, MCP server configuration) is added in three subsequent plays: `marketplace-plugins-core`, `marketplace-plugins-knowledge`, and `marketplace-plugins-app`.
+
+## v1 Historical Catalog (2026-05-19, superseded)
+
+The original decision described a nine-plugin catalog:
 
 | Plugin | Scope |
 |--------|-------|
@@ -34,7 +70,8 @@ Nine plugins cover the full capability surface by scope:
 | `studio` | Lion Studio dashboard — runs/agents/playbooks/shows monitoring UI with FastAPI backend MCP |
 | `mcp-bundle` | Lionagi canonical MCP server access for agents |
 
-This play establishes the skeleton (manifests, directory structure, README, this ADR). Plugin content (skills, agents, MCP server configuration) is added in three subsequent plays: `marketplace-plugins-core`, `marketplace-plugins-knowledge`, and `marketplace-plugins-app`.
+This nine-plugin catalog was the initial intent. The v2 amendment above records what
+shipped in Phase 0 and why the remaining four were removed or deferred.
 
 ## Consequences
 
@@ -45,10 +82,10 @@ This play establishes the skeleton (manifests, directory structure, README, this
 - Clear ownership boundary: each plugin directory is a self-contained unit that external contributors or downstream forks can understand and extend.
 
 **Negative**
-- More manifests to maintain: root `marketplace.json` plus nine `plugin.json` files must stay in sync as plugin names or descriptions change.
+- More manifests to maintain: root `marketplace.json` plus five `plugin.json` files (v2) must stay in sync as plugin names or descriptions change.
 - Skills authored in `firm/resources/skills/` (canonical) must be copied or symlinked into `marketplace/<plugin>/skills/` for external installs — two places to update per skill change.
 - The `plugin.json` schema is not yet finalized by Anthropic; field names or required keys may shift before GA, requiring a sweep across all nine manifests.
-- `studio` and `mcp-bundle` manifests are intentionally incomplete stubs until the FastAPI route contracts from ADR-0004 are implemented; downstream consumers of those plugins will see empty capability until `marketplace-plugins-app` lands.
+- `studio` and `mcp-bundle` are deferred to v2.1 and no longer ship standalone manifests in Phase 0; they are recorded only in the `_deferred_plugins` block of the root manifest.
 
 ## Alternatives Considered
 
