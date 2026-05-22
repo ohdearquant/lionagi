@@ -4,6 +4,7 @@ import warnings
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 from pydantic.fields import FieldInfo
 
 from lionagi.models.field_model import FieldModel
@@ -129,9 +130,7 @@ class TestFieldModelMethods:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             d = f.to_dict()
-            assert any(
-                issubclass(warning.category, DeprecationWarning) for warning in w
-            )
+            assert any(issubclass(warning.category, DeprecationWarning) for warning in w)
         assert isinstance(d, dict)
 
     def test_metadata_dict_returns_dict(self):
@@ -234,12 +233,7 @@ class TestFieldModelFactoryHelpers:
         assert fe.extract_metadata("exclude") is True
 
     def test_chaining_helpers(self):
-        f = (
-            FieldModel(base_type=int)
-            .as_nullable()
-            .with_description("an int")
-            .with_default(0)
-        )
+        f = FieldModel(base_type=int).as_nullable().with_description("an int").with_default(0)
         assert f.is_nullable
         assert f.extract_metadata("description") == "an int"
         assert f.extract_metadata("default") == 0
@@ -438,7 +432,7 @@ class TestOperableModelSerialization:
 
 class TestOperableModelConfig:
     def test_extra_fields_forbidden(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             SimpleModel(nonexistent_field="oops")
 
     def test_model_fields_structure(self):

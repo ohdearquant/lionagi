@@ -9,7 +9,7 @@ All tests use mocked iModels -- no real API calls are made.
 import asyncio
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
@@ -149,9 +149,7 @@ class TestCodeReviewCrew:
         assert result.severity == "high"
 
         # Empty issues list is valid
-        clean = ReviewResult(
-            issues=[], severity="low", recommendation="Code looks good."
-        )
+        clean = ReviewResult(issues=[], severity="low", recommendation="Code looks good.")
         assert len(clean.issues) == 0
 
     def test_builder_exists(self):
@@ -187,9 +185,9 @@ class TestClaimExtraction:
         Claim(text="t", source="s", confidence=1.0)
 
         # Invalid values
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             Claim(text="t", source="s", confidence=1.5)
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             Claim(text="t", source="s", confidence=-0.1)
 
     def test_branch_with_extraction_system_prompt(self):
@@ -366,7 +364,7 @@ class TestHRAutomation:
         assert len(evaluation.strengths) == 2
 
         # Score bounds
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             CandidateEvaluation(
                 name="X",
                 score=101,
@@ -374,7 +372,7 @@ class TestHRAutomation:
                 concerns=[],
                 recommendation="No",
             )
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             CandidateEvaluation(
                 name="X",
                 score=-1,
@@ -409,9 +407,7 @@ class TestHRAutomation:
         )
 
         # Step 1: screening
-        screen_result = await screener.communicate(
-            "Review this resume: 5 years Python experience."
-        )
+        screen_result = await screener.communicate("Review this resume: 5 years Python experience.")
         assert screen_result is not None
 
         # Step 2: evaluation using screening result as context

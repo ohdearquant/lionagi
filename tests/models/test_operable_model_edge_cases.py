@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from lionagi.models.field_model import FieldModel
 from lionagi.models.operable_model import OperableModel
@@ -187,7 +187,7 @@ class TestOperableModelNewModel:
         m.add_field("val", value=1, annotation=int)
         FrozenCls = m.new_model("Frozen", use_fields={"val"}, frozen=True)
         instance = FrozenCls(val=5)
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             instance.val = 10
 
     def test_new_model_without_name(self):

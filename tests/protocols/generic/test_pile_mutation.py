@@ -15,7 +15,7 @@ import importlib
 
 import pytest
 
-from lionagi._errors import ValidationError
+from lionagi._errors import ItemExistsError, ValidationError
 from lionagi.protocols.generic.element import Element
 from lionagi.protocols.generic.pile import Pile
 
@@ -168,22 +168,22 @@ class TestNonInPlaceSetOps:
             _ = p ^ [self.a1]
 
     def test_or_raises_due_to_items_kwarg_bug(self):
-        """Non-in-place union raises ValidationError due to wrong kwarg."""
+        """Non-in-place union raises ValueError from _validate_progression length mismatch."""
         p1 = Pile(collections=[self.a0])
         p2 = Pile(collections=[self.a1])
-        with pytest.raises(Exception):  # pydantic ValidationError or ValueError
+        with pytest.raises(ValueError):  # _validate_progression length mismatch
             _ = p1 | p2
 
     def test_and_raises_due_to_items_kwarg_bug(self):
         p1 = Pile(collections=[self.a0])
         p2 = Pile(collections=[self.a1])
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             _ = p1 & p2
 
     def test_xor_raises_due_to_items_kwarg_bug(self):
         p1 = Pile(collections=[self.a0])
         p2 = Pile(collections=[self.a1])
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             _ = p1 ^ p2
 
 
@@ -341,7 +341,7 @@ class TestSetItem:
         new = Item(value=existing.value)
         # Force new to have same id (clone the id)
         # We can't change the id (frozen), so just confirm existing raises
-        with pytest.raises(Exception):
+        with pytest.raises(ItemExistsError):
             pile_3[existing.id] = existing
 
     def test_setitem_invalid_index_raises(self, pile_3):
@@ -382,7 +382,7 @@ class TestInsert:
         assert values == [0, 1, 99, 2, 3, 4]
 
     def test_insert_duplicate_raises(self, pile_3, three_items):
-        with pytest.raises(Exception):  # ItemExistsError
+        with pytest.raises(ItemExistsError):
             pile_3.insert(0, three_items[0])
 
 

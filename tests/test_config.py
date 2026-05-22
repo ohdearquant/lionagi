@@ -7,7 +7,7 @@ import os
 from unittest.mock import patch
 
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from lionagi.config import AppSettings, CacheConfig, settings
 
@@ -71,7 +71,7 @@ class TestAppSettings:
 
     def test_frozen_settings(self):
         """Test settings are frozen and cannot be modified."""
-        with pytest.raises(Exception):  # ValidationError from Pydantic
+        with pytest.raises(ValidationError):  # ValidationError from Pydantic
             settings.OPENAI_DEFAULT_MODEL = "gpt-5"
 
     def test_default_values(self):
@@ -130,15 +130,9 @@ class TestAppSettings:
         # Testing that the field can be None or SecretStr
         config = AppSettings()
         # API keys can be None or SecretStr depending on environment
-        assert config.OPENAI_API_KEY is None or isinstance(
-            config.OPENAI_API_KEY, SecretStr
-        )
-        assert config.ANTHROPIC_API_KEY is None or isinstance(
-            config.ANTHROPIC_API_KEY, SecretStr
-        )
-        assert config.PERPLEXITY_API_KEY is None or isinstance(
-            config.PERPLEXITY_API_KEY, SecretStr
-        )
+        assert config.OPENAI_API_KEY is None or isinstance(config.OPENAI_API_KEY, SecretStr)
+        assert config.ANTHROPIC_API_KEY is None or isinstance(config.ANTHROPIC_API_KEY, SecretStr)
+        assert config.PERPLEXITY_API_KEY is None or isinstance(config.PERPLEXITY_API_KEY, SecretStr)
 
 
 class TestGetSecret:
@@ -210,9 +204,7 @@ class TestEnvironmentVariableLoading:
 
     def test_case_insensitive_loading(self):
         """Test case-insensitive environment variable loading."""
-        with patch.dict(
-            os.environ, {"openai_default_model": "custom-model"}, clear=False
-        ):
+        with patch.dict(os.environ, {"openai_default_model": "custom-model"}, clear=False):
             config = AppSettings()
             assert config.OPENAI_DEFAULT_MODEL == "custom-model"
 
@@ -251,7 +243,7 @@ class TestSettingsIntegration:
     def test_settings_is_frozen_instance(self):
         """Test global settings instance is frozen."""
         assert isinstance(settings, AppSettings)
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             settings.OPENAI_DEFAULT_MODEL = "new-model"
 
     def test_cache_config_from_settings(self):

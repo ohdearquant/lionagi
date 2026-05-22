@@ -180,7 +180,7 @@ class TestGetProgression:
 
     def test_get_missing_uuid_raises(self):
         flow = Flow()
-        with pytest.raises(Exception):
+        with pytest.raises(ItemNotFoundError):
             flow.get_progression(uuid4())
 
 

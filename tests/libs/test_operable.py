@@ -1,5 +1,7 @@
 """Tests for lionagi/ln/types/operable.py"""
 
+import dataclasses
+
 import pytest
 
 from lionagi.ln.types import Operable, Spec, Unset
@@ -144,7 +146,7 @@ class TestOperable:
         """Test that Operable is immutable."""
         spec1 = Spec(str, name="field1")
         operable = Operable((spec1,))
-        with pytest.raises(Exception):  # FrozenInstanceError or similar
+        with pytest.raises(dataclasses.FrozenInstanceError):  # frozen dataclass (not pydantic)
             operable.name = "new_name"
 
     def test_type_validation(self):
