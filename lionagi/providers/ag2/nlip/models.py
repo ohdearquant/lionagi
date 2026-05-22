@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "AG2NlipRequest",
+    "_assert_nlip_url_safe",
     "call_nlip_remote",
 ]
 
@@ -24,6 +25,31 @@ class AG2NlipRequest(BaseModel):
 
     messages: list[dict[str, Any]] = Field(default_factory=list)
     prompt: str = ""
+
+
+def _assert_nlip_url_safe(url: str) -> None:
+    """Validate *url* for scheme and SSRF safety before any NLIP connection.
+
+    Shared by :func:`call_nlip_remote` and :func:`build_group_chat` so that
+    every code path that hands a caller-supplied URL to a remote NLIP agent
+    goes through the same guard.
+
+    Raises:
+        PermissionError: If the hostname resolves to a private or reserved IP
+            address (SSRF guard).
+        ValueError: If the URL scheme is not http or https.
+    """
+    _parsed = urlparse(url)
+    if _parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"NLIP URL has unsupported scheme {_parsed.scheme!r}. "
+            "Only http and https are allowed."
+        )
+    if not is_ssrf_safe(_parsed.hostname or ""):
+        raise PermissionError(
+            "SSRF guard: NLIP URL blocked — hostname resolves to a private "
+            f"or reserved IP address: {url!r}"
+        )
 
 
 async def call_nlip_remote(
@@ -38,21 +64,12 @@ async def call_nlip_remote(
     Falls back to direct httpx if nlip_sdk is not installed.
 
     Raises:
-        ValueError: If the URL scheme is not http/https, or if the hostname
-            resolves to a private or reserved IP address (SSRF guard).
+        PermissionError: If the hostname resolves to a private or reserved IP
+            address (SSRF guard).
+        ValueError: If the URL scheme is not http/https.
     """
     # SSRF guard: reject calls to private/reserved IP ranges.
-    _parsed = urlparse(url)
-    if _parsed.scheme not in ("http", "https"):
-        raise ValueError(
-            f"call_nlip_remote: unsupported scheme {_parsed.scheme!r}. "
-            "Only http and https are allowed."
-        )
-    if not is_ssrf_safe(_parsed.hostname or ""):
-        raise ValueError(
-            "call_nlip_remote: URL blocked — hostname resolves to a private "
-            f"or reserved IP address: {url!r}"
-        )
+    _assert_nlip_url_safe(url)
     try:
         return await _call_nlip_sdk(url, messages, timeout, max_retries)
     except ImportError:

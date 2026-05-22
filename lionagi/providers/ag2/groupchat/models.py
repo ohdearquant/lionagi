@@ -180,6 +180,12 @@ def build_group_chat(
 
     for agent_spec in spec.agents:
         if agent_spec.nlip_url:
+            # SSRF guard: validate the caller-supplied URL before handing it
+            # to NlipRemoteAgent, which opens its own HTTP connection and
+            # bypasses the Endpoint transport guards.
+            from lionagi.providers.ag2.nlip.models import _assert_nlip_url_safe
+
+            _assert_nlip_url_safe(agent_spec.nlip_url)
             try:
                 from autogen.agentchat.contrib.nlip_agent import NlipRemoteAgent
 
