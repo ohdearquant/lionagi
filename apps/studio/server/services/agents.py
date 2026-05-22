@@ -34,9 +34,7 @@ def _normalize_frontmatter(fm: dict[str, Any]) -> dict[str, Any]:
         if "effort" not in normalized:
             normalized["effort"] = normalized["reasoning_effort"]
         normalized.pop("reasoning_effort", None)
-        _log.warning(
-            "Agent frontmatter key 'reasoning_effort' is deprecated; use 'effort'"
-        )
+        _log.warning("Agent frontmatter key 'reasoning_effort' is deprecated; use 'effort'")
     return normalized
 
 
@@ -106,8 +104,12 @@ def get_agent(name: str) -> dict[str, Any] | None:
     # Preserve optional fields present in frontmatter. `effort` is canonical;
     # `reasoning_effort` is accepted only as a legacy read fallback.
     for optional_key in (
-        "permission_mode", "effort", "description",
-        "yolo", "fast_mode", "lion_system",
+        "permission_mode",
+        "effort",
+        "description",
+        "yolo",
+        "fast_mode",
+        "lion_system",
     ):
         if optional_key in fm:
             result[optional_key] = fm[optional_key]
@@ -186,11 +188,7 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
 
     if fm:
         fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
-        new_text = (
-            f"---\n{fm_text}\n---\n\n{new_body}\n"
-            if new_body
-            else f"---\n{fm_text}\n---\n"
-        )
+        new_text = f"---\n{fm_text}\n---\n\n{new_body}\n" if new_body else f"---\n{fm_text}\n---\n"
     else:
         new_text = f"{new_body}\n" if new_body else ""
 

@@ -9,6 +9,7 @@ Covers:
 3. reasoning_effort→effort migration in get_agent().
 4. model without provider prefix round-trips through update_agent().
 """
+
 from __future__ import annotations
 
 import textwrap
@@ -66,6 +67,45 @@ def test_get_agent_surfaces_yolo_and_fast_mode(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Test 1b: lion_system surfaces in get_agent() response (MEDIUM-2 codex finding)
+# ---------------------------------------------------------------------------
+
+
+def test_get_agent_surfaces_lion_system(tmp_path, monkeypatch):
+    """An agent .md with lion_system: false round-trips via get_agent().
+
+    lion_system was added to _KNOWN_FRONTMATTER_KEYS and get_agent() but was
+    not covered by the existing round-trip tests — this is the regression the
+    PR description targets (contract drift between agents.py and cli/_agents.py).
+    """
+    from apps.studio.server.services.agents import get_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    md = root / "sysagent.md"
+    _write_agent_md(
+        md,
+        """\
+        ---
+        provider: claude
+        model: claude-sonnet-4-6
+        yolo: false
+        fast_mode: false
+        lion_system: false
+        ---
+        System prompt here.
+        """,
+    )
+
+    result = get_agent("sysagent")
+
+    assert result is not None
+    assert result.get("lion_system") is False
+    # Ensure yolo and fast_mode still surface alongside lion_system
+    assert result.get("yolo") is False
+    assert result.get("fast_mode") is False
+
+
+# ---------------------------------------------------------------------------
 # Test 2: update_agent() writes yolo field to disk and get_agent() reads it back
 # ---------------------------------------------------------------------------
 
@@ -97,6 +137,40 @@ def test_update_agent_writes_yolo_field(tmp_path, monkeypatch):
     fresh = get_agent("myagent")
     assert fresh is not None
     assert fresh.get("yolo") is False
+
+
+# ---------------------------------------------------------------------------
+# Test 2b: update_agent() writes lion_system field to disk (MEDIUM-2 codex finding)
+# ---------------------------------------------------------------------------
+
+
+def test_update_agent_writes_lion_system_field(tmp_path, monkeypatch):
+    """update_agent(name, {'lion_system': True}) persists lion_system: true and get_agent() reads it."""
+    from apps.studio.server.services.agents import get_agent, update_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    md = root / "sysagent2.md"
+    _write_agent_md(
+        md,
+        """\
+        ---
+        provider: claude
+        model: claude-sonnet-4-6
+        lion_system: false
+        ---
+        System prompt here.
+        """,
+    )
+
+    updated = update_agent("sysagent2", {"lion_system": True})
+
+    assert updated is not None
+    assert updated.get("lion_system") is True
+
+    # Confirm disk state via independent get_agent() call
+    fresh = get_agent("sysagent2")
+    assert fresh is not None
+    assert fresh.get("lion_system") is True
 
 
 # ---------------------------------------------------------------------------
