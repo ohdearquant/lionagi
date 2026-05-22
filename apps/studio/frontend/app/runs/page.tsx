@@ -268,6 +268,7 @@ function RunsPageInner() {
                             ? run.effective_health
                             : run.status
                         }
+                        title={run.status}
                         kind="lifecycle"
                       />
                     </td>
