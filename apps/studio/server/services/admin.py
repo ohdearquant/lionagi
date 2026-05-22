@@ -86,9 +86,7 @@ def _find_stale_lock(root: Path, *, cutoff: float) -> Path | None:
     return None
 
 
-def _classify_phantom(
-    row: Any, *, now: float, stale_seconds: float
-) -> PhantomReason | None:
+def _classify_phantom(row: Any, *, now: float, stale_seconds: float) -> PhantomReason | None:
     ap = _artifacts_path(row)
     if ap and not ap.exists():
         return "missing_artifacts"
@@ -204,9 +202,7 @@ async def health_report() -> dict[str, Any]:
             # candidate-zombie terminal sessions and stale-process
             # running ones. Skip for clearly-healthy active ones.
             cutoff = now - 3600
-            has_stale_locks = (
-                _find_stale_lock(artifacts, cutoff=cutoff) is not None
-            )
+            has_stale_locks = _find_stale_lock(artifacts, cutoff=cutoff) is not None
 
         if status == "running":
             process_alive = _live_process_matches(row["id"], artifacts)
@@ -227,16 +223,15 @@ async def health_report() -> dict[str, Any]:
         # "Unhealthy" = anything that warrants operator attention.
         if health not in (SessionHealth.HEALTHY, SessionHealth.IDLE):
             last_activity = (
-                sess.get("last_message_at")
-                or sess.get("updated_at")
-                or sess.get("started_at")
-                or 0
+                sess.get("last_message_at") or sess.get("updated_at") or sess.get("started_at") or 0
             )
             unhealthy.append(
                 {
                     "session_id": row["id"],
-                    "name": sess.get("name") or sess.get("playbook_name")
-                    or sess.get("agent_name") or "",
+                    "name": sess.get("name")
+                    or sess.get("playbook_name")
+                    or sess.get("agent_name")
+                    or "",
                     "health": health.value,
                     "status": status,
                     "invocation_kind": sess.get("invocation_kind"),
@@ -264,9 +259,7 @@ async def health_report() -> dict[str, Any]:
 # ADR-0025: admin operators cannot mark sessions completed/timed_out —
 # those are system-determined. Mirror the Python guard from db.py here
 # so the API rejects the request before touching the DB.
-_ADMIN_TRANSITION_TARGETS: frozenset[str] = frozenset(
-    {"failed", "aborted", "cancelled"}
-)
+_ADMIN_TRANSITION_TARGETS: frozenset[str] = frozenset({"failed", "aborted", "cancelled"})
 
 
 async def transition_sessions(
@@ -324,6 +317,9 @@ async def transition_sessions(
                     {"session_id": sid, "reason": f"not_running:{current.get('status')}"}
                 )
                 continue
+            # Snapshot health-relevant timestamps for the atomic WHERE below.
+            _snap_last_msg = current.get("last_message_at")
+            _snap_updated = current.get("updated_at")
             artifacts = _artifacts_path(current)
             has_artifacts = artifacts is not None and artifacts.exists()
             has_stale_locks = (
@@ -350,14 +346,34 @@ async def transition_sessions(
             # TOCTOU: rowcount==0 means a concurrent transition already won.
             cur = await db.db.execute(
                 "UPDATE sessions SET status=?, ended_at=?, updated_at=? "
-                "WHERE id=? AND status='running'",
-                (target_status, now, now, sid),
+                "WHERE id=? AND status='running'"
+                "  AND (last_message_at IS ? OR last_message_at = ?)"
+                "  AND (updated_at      IS ? OR updated_at      = ?)",
+                (
+                    target_status,
+                    now,
+                    now,
+                    sid,
+                    _snap_last_msg,
+                    _snap_last_msg,
+                    _snap_updated,
+                    _snap_updated,
+                ),
             )
             await db.db.commit()
             if cur.rowcount == 0:
                 existing = await db.get_session(sid)
                 if existing is None:
                     skipped.append({"session_id": sid, "reason": "not_found"})
+                elif existing.get("status") == "running":
+                    # Status is still running but timestamps changed between
+                    # snapshot and UPDATE — a concurrent heartbeat raced us.
+                    skipped.append(
+                        {
+                            "session_id": sid,
+                            "reason": "changed_since_snapshot",
+                        }
+                    )
                 else:
                     skipped.append(
                         {
@@ -398,9 +414,7 @@ async def list_admin_events(
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
-        return await db.list_admin_events(
-            action=action, target_id=target_id, limit=limit
-        )
+        return await db.list_admin_events(action=action, target_id=target_id, limit=limit)
 
 
 async def prune_sessions(session_ids: list[str]) -> int:
@@ -455,9 +469,7 @@ async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
 
     # Split by reason so each group gets the appropriate WHERE guard.
     stale_ids = [
-        p["session_id"]
-        for p in phantoms
-        if p.get("reason") in ("process_dead", "stale_lock")
+        p["session_id"] for p in phantoms if p.get("reason") in ("process_dead", "stale_lock")
     ]
     artifact_entries = [
         {
