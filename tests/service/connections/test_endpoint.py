@@ -222,13 +222,14 @@ class TestEndpoint:
         def mock_session_class(*args, **kwargs):
             return mock_session
 
-        with patch("aiohttp.ClientSession", side_effect=mock_session_class):
-            request = {
-                "messages": [{"role": "user", "content": "test"}],
-                "model": "gpt-4.1-mini",
-            }
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch("aiohttp.ClientSession", side_effect=mock_session_class):
+                request = {
+                    "messages": [{"role": "user", "content": "test"}],
+                    "model": "gpt-4.1-mini",
+                }
 
-            await endpoint.call(request)
+                await endpoint.call(request)
 
         # Verify session was cleaned up via context manager
         assert len(exit_called) == 1
@@ -513,17 +514,18 @@ class TestEndpoint:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock()
 
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            request = {"messages": [{"role": "user", "content": "test"}]}
-            chunks = []
-            async for chunk in endpoint.stream(request):
-                chunks.append(chunk)
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch("aiohttp.ClientSession", return_value=mock_session):
+                request = {"messages": [{"role": "user", "content": "test"}]}
+                chunks = []
+                async for chunk in endpoint.stream(request):
+                    chunks.append(chunk)
 
-            # Should get 3 non-empty lines converted to StreamChunk objects.
-            assert len(chunks) == 3
-            assert all(isinstance(chunk, StreamChunk) for chunk in chunks)
-            assert [chunk.type for chunk in chunks] == ["text", "text", "text"]
-            assert [chunk.content for chunk in chunks] == ["line1", "line2", "line3"]
+        # Should get 3 non-empty lines converted to StreamChunk objects.
+        assert len(chunks) == 3
+        assert all(isinstance(chunk, StreamChunk) for chunk in chunks)
+        assert [chunk.type for chunk in chunks] == ["text", "text", "text"]
+        assert [chunk.content for chunk in chunks] == ["line1", "line2", "line3"]
 
     @pytest.mark.asyncio
     async def test_stream_aiohttp_ignores_sse_control_lines(self, openai_config):
@@ -548,9 +550,10 @@ class TestEndpoint:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock()
 
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            request = {"messages": [{"role": "user", "content": "test"}]}
-            chunks = [chunk async for chunk in endpoint.stream(request)]
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch("aiohttp.ClientSession", return_value=mock_session):
+                request = {"messages": [{"role": "user", "content": "test"}]}
+                chunks = [chunk async for chunk in endpoint.stream(request)]
 
         assert [chunk.type for chunk in chunks] == ["text", "result"]
         assert chunks[0].content == "hi"
@@ -766,3 +769,98 @@ class TestEndpointSSRFGuard:
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=False):
             with pytest.raises(PermissionError, match="SSRF guard"):
                 await endpoint._call_aiohttp(payload={}, headers={})
+
+
+# ---------------------------------------------------------------------------
+# Provider _call() override regression tests (HIGH: bypass via direct HTTP)
+# ---------------------------------------------------------------------------
+
+
+class TestProviderCallOverrideSSRFGuard:
+    """Provider endpoints that override _call() must invoke _assert_ssrf_safe_url().
+
+    Each test uses a metadata/private base_url and verifies that PermissionError
+    is raised BEFORE any network I/O (mocked is_ssrf_safe returns False).
+    """
+
+    @pytest.mark.asyncio
+    async def test_openai_tts_blocks_private_base_url(self):
+        """OpenaiAudioSpeechEndpoint._call must reject private base_url."""
+        from lionagi.providers.openai.audio.endpoint import OpenaiAudioSpeechEndpoint
+        from lionagi.service.connections.endpoint_config import EndpointConfig
+
+        config = EndpointConfig(
+            name="openai_audio_speech",
+            provider="openai",
+            endpoint="audio/speech",
+            base_url="http://169.254.169.254",
+            api_key="test-key",
+        )
+        endpoint = OpenaiAudioSpeechEndpoint(config=config)
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=False):
+            with pytest.raises(PermissionError, match="SSRF guard"):
+                await endpoint._call(payload={"input": "hi", "voice": "nova"}, headers={})
+
+    @pytest.mark.asyncio
+    async def test_openai_stt_blocks_private_base_url(self):
+        """OpenaiAudioTranscriptionEndpoint._call must reject private base_url."""
+        from lionagi.providers.openai.audio.endpoint import (
+            OpenaiAudioTranscriptionEndpoint,
+        )
+        from lionagi.service.connections.endpoint_config import EndpointConfig
+
+        config = EndpointConfig(
+            name="openai_audio_transcription",
+            provider="openai",
+            endpoint="audio/transcriptions",
+            base_url="http://10.0.0.1",
+            api_key="test-key",
+        )
+        endpoint = OpenaiAudioTranscriptionEndpoint(config=config)
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=False):
+            with pytest.raises(PermissionError, match="SSRF guard"):
+                await endpoint._call(payload={"model": "whisper-1"}, headers={})
+
+    @pytest.mark.asyncio
+    async def test_openai_image_edit_blocks_private_base_url(self):
+        """OpenaiImageEditEndpoint._call must reject private base_url."""
+        from lionagi.providers.openai.images.endpoint import OpenaiImageEditEndpoint
+        from lionagi.service.connections.endpoint_config import EndpointConfig
+
+        config = EndpointConfig(
+            name="openai_image_edit",
+            provider="openai",
+            endpoint="images/edits",
+            base_url="http://192.168.1.100",
+            api_key="test-key",
+        )
+        endpoint = OpenaiImageEditEndpoint(config=config)
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=False):
+            with pytest.raises(PermissionError, match="SSRF guard"):
+                await endpoint._call(
+                    payload={"prompt": "add rainbow"}, headers={}, image=b"\x89PNG"
+                )
+
+    @pytest.mark.asyncio
+    async def test_groq_stt_blocks_private_base_url(self):
+        """GroqAudioTranscriptionEndpoint._call must reject private base_url."""
+        from lionagi.providers.groq.audio_transcription.endpoint import (
+            GroqAudioTranscriptionEndpoint,
+        )
+        from lionagi.service.connections.endpoint_config import EndpointConfig
+
+        config = EndpointConfig(
+            name="groq_audio_transcription",
+            provider="groq",
+            endpoint="audio/transcriptions",
+            base_url="http://127.0.0.1",
+            api_key="test-key",
+        )
+        endpoint = GroqAudioTranscriptionEndpoint(config=config)
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=False):
+            with pytest.raises(PermissionError, match="SSRF guard"):
+                await endpoint._call(payload={"model": "whisper-large-v3"}, headers={})

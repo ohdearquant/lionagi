@@ -145,6 +145,24 @@ class Endpoint:
 
         return (payload, headers)
 
+    def _assert_ssrf_safe_url(self) -> None:
+        """Raise PermissionError if self.config.full_url resolves to a blocked address.
+
+        Call this before any direct HTTP I/O in provider _call() overrides that do
+        not route through _call_aiohttp() or _stream_aiohttp().
+        """
+        from urllib.parse import urlparse
+
+        from lionagi.ln._ssrf import is_ssrf_safe
+
+        parsed = urlparse(self.config.full_url)
+        hostname = parsed.hostname or ""
+        if not is_ssrf_safe(hostname):
+            raise PermissionError(
+                f"SSRF guard: request to {hostname!r} is blocked "
+                "(hostname resolves to a private or reserved IP address)"
+            )
+
     async def _call(self, payload: dict, headers: dict, **kwargs):
         return await self._call_aiohttp(payload=payload, headers=headers, **kwargs)
 
@@ -242,17 +260,7 @@ class Endpoint:
         Returns:
             The response from the endpoint.
         """
-        from urllib.parse import urlparse
-
-        from lionagi.ln._ssrf import is_ssrf_safe
-
-        parsed = urlparse(self.config.full_url)
-        hostname = parsed.hostname or ""
-        if not is_ssrf_safe(hostname):
-            raise PermissionError(
-                f"SSRF guard: request to {hostname!r} is blocked "
-                "(hostname resolves to a private or reserved IP address)"
-            )
+        self._assert_ssrf_safe_url()
 
         import aiohttp
         import backoff
@@ -353,17 +361,7 @@ class Endpoint:
         Yields:
             Streaming chunks from the API.
         """
-        from urllib.parse import urlparse
-
-        from lionagi.ln._ssrf import is_ssrf_safe
-
-        parsed = urlparse(self.config.full_url)
-        hostname = parsed.hostname or ""
-        if not is_ssrf_safe(hostname):
-            raise PermissionError(
-                f"SSRF guard: request to {hostname!r} is blocked "
-                "(hostname resolves to a private or reserved IP address)"
-            )
+        self._assert_ssrf_safe_url()
 
         # Ensure stream is enabled
         payload["stream"] = True

@@ -15,6 +15,14 @@ short TTL could change (DNS rebinding).  This is an accepted residual risk for
 the current implementation.  If DNS rebinding becomes a concrete threat,
 implement a custom ``httpx.AsyncHTTPTransport`` that pins the resolved address.
 
+IPv4-compatible IPv6 residual risk
+-----------------------------------
+The deprecated IPv4-compatible IPv6 form ``::a.b.c.d`` (distinct from the
+IPv4-mapped form ``::ffff:a.b.c.d``) is not unmapped before checking and is
+therefore treated as a public IPv6 address by this guard.  ``::169.254.169.254``
+would pass the check.  This is the same risk class as DNS rebinding and is
+accepted for the current implementation.
+
 CWE reference: CWE-918.
 """
 
