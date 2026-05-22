@@ -4,6 +4,7 @@
 """Additional coverage for load_pydantic_model_from_schema."""
 
 import pytest
+from pydantic import ValidationError
 
 from lionagi.libs.schema import load_pydantic_model_from_schema as lpms
 from lionagi.libs.schema.load_pydantic_model_from_schema import (
@@ -118,9 +119,7 @@ class TestPrimitiveAndNested:
     def test_type_list_with_array(self):
         schema = {
             "type": "object",
-            "properties": {
-                "ls": {"type": ["array", "null"], "items": {"type": "integer"}}
-            },
+            "properties": {"ls": {"type": ["array", "null"], "items": {"type": "integer"}}},
         }
         cls = load_pydantic_model_from_schema(schema, "M")
         assert cls(ls=[1, 2]).ls == [1, 2]
@@ -201,9 +200,7 @@ class TestRequiredAndDefault:
         schema = {
             "type": "object",
             "required": ["n"],
-            "properties": {
-                "n": {"type": "integer", "default": 7, "description": "num"}
-            },
+            "properties": {"n": {"type": "integer", "default": 7, "description": "num"}},
         }
         cls = load_pydantic_model_from_schema(schema, "M")
         inst = cls()
@@ -216,7 +213,7 @@ class TestRequiredAndDefault:
             "properties": {"n": {"type": "integer", "description": "must"}},
         }
         cls = load_pydantic_model_from_schema(schema, "M")
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             cls()  # missing required
         assert cls(n=1).n == 1
 

@@ -5,6 +5,7 @@ import os
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.connections.endpoint import Endpoint
@@ -67,9 +68,7 @@ class TestServiceIntegration:
             ("none", None, None, None),  # No auth case
         ],
     )
-    def test_header_factory_comprehensive(
-        self, auth_type, api_key, expected_key, expected_value
-    ):
+    def test_header_factory_comprehensive(self, auth_type, api_key, expected_key, expected_value):
         """Test comprehensive header factory functionality."""
         headers = HeaderFactory.get_header(auth_type=auth_type, api_key=api_key)
 
@@ -84,9 +83,7 @@ class TestServiceIntegration:
 
     def test_match_endpoint_openai(self):
         """Test endpoint matching for OpenAI."""
-        endpoint = match_endpoint(
-            provider="openai", endpoint="chat", model="gpt-4.1-mini"
-        )
+        endpoint = match_endpoint(provider="openai", endpoint="chat", model="gpt-4.1-mini")
 
         assert endpoint.config.provider == "openai"
         # Note: openai_compatible may be set differently by the match_endpoint function
@@ -144,9 +141,7 @@ class TestServiceIntegration:
         assert api_call.payload["model"] == "gpt-4.1-mini"
         assert api_call.payload["temperature"] == 0.7
 
-    def test_endpoint_url_construction(
-        self, openai_endpoint_config, anthropic_endpoint_config
-    ):
+    def test_endpoint_url_construction(self, openai_endpoint_config, anthropic_endpoint_config):
         """Test URL construction for different endpoints."""
         # OpenAI endpoint
         openai_endpoint = Endpoint(config=openai_endpoint_config)
@@ -204,7 +199,7 @@ class TestServiceErrorHandling:
 
     def test_endpoint_config_missing_required_fields(self):
         """Test endpoint config raises error with missing required fields."""
-        with pytest.raises(Exception):  # Pydantic ValidationError
+        with pytest.raises(ValidationError):  # Pydantic ValidationError
             EndpointConfig(name="test")  # Missing provider, endpoint, base_url
 
     def test_endpoint_config_invalid_url(self):
@@ -377,9 +372,7 @@ class TestServiceEdgeCases:
 
     def test_header_factory_with_special_characters_in_key(self):
         """Test header factory with special characters in API key."""
-        headers = HeaderFactory.get_header(
-            auth_type="bearer", api_key="test-key-!@#$%^&*()"
-        )
+        headers = HeaderFactory.get_header(auth_type="bearer", api_key="test-key-!@#$%^&*()")
         assert headers["Authorization"] == "Bearer test-key-!@#$%^&*()"
 
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})

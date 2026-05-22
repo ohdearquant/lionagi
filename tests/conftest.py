@@ -169,8 +169,8 @@ def anthropic_imodel():
 
 
 @pytest.fixture
-def mock_response():
-    """Standard mock API response for testing."""
+def mock_sync_response():
+    """Standard mock API response for testing (sync shape, for non-service tests)."""
     from unittest.mock import MagicMock
 
     response = MagicMock()

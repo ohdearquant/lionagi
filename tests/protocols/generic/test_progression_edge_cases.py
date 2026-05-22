@@ -94,7 +94,7 @@ class TestProgressionAppend:
 
     def test_append_invalid_raises(self):
         p = Progression()
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             p.append("not-a-uuid")
 
 
@@ -236,8 +236,9 @@ class TestProgressionDelItem:
         assert ids[1] not in p
 
     def test_delitem_missing_raises(self):
+        # __delitem__ takes int|slice — passing UUID raises TypeError
         p = Progression(order=[uuid4()])
-        with pytest.raises(Exception):
+        with pytest.raises(TypeError):
             del p[uuid4()]
 
 
@@ -375,7 +376,7 @@ class TestProgressionCountIndex:
 
     def test_index_missing_raises(self):
         p = Progression(order=[uuid4()])
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             p.index(uuid4())
 
 

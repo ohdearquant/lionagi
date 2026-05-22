@@ -125,7 +125,7 @@ class TestFlowGetProgression:
 
     def test_get_missing_name_raises(self):
         f = Flow()
-        with pytest.raises(Exception):
+        with pytest.raises(ItemNotFoundError):
             f.get_progression("nope")
 
 

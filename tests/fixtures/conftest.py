@@ -120,20 +120,3 @@ def performance_benchmark():
             return get_benchmarks()
 
     return BenchmarkRecorder()
-
-
-@pytest.fixture(autouse=True)
-def setup_test_environment():
-    """
-    Auto-used fixture to set up test environment for each test.
-
-    This ensures consistent test environment setup and cleanup.
-    """
-    # Setup phase
-    # Can be used to set environment variables, configure logging, etc.
-
-    yield
-
-    # Teardown phase
-    # Clean up any test artifacts, reset state, etc.
-    pass

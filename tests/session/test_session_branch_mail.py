@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from lionagi._errors import ItemNotFoundError
 from lionagi.operations.node import Operation
 from lionagi.protocols.generic.event import EventStatus
 from lionagi.protocols.graph.edge import Edge
@@ -77,9 +78,7 @@ def make_mock_branch(name: str = "TestBranch") -> Branch:
         return fake_call
 
     mock_invoke = AsyncMock(side_effect=_fake_invoke)
-    mock_chat_model = iModel(
-        provider="openai", model="gpt-4.1-mini", api_key="test_key"
-    )
+    mock_chat_model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
     mock_chat_model.invoke = mock_invoke
 
     branch.chat_model = mock_chat_model
@@ -211,7 +210,7 @@ class TestBranchManagement:
         """Test getting non-existent branch raises error."""
         session = Session()
 
-        with pytest.raises(Exception):  # ItemNotFoundError
+        with pytest.raises(ItemNotFoundError):
             session.get_branch("nonexistent")
 
     def test_get_branch_with_default_value(self):

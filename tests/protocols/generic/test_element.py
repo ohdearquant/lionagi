@@ -77,8 +77,8 @@ def test_element_from_dict():
 
 
 def test_invalid_UUID_validation():
-    with pytest.raises(Exception):
-        UUID.validate("invalid-uuid")
+    with pytest.raises(ValueError):
+        UUID("invalid-uuid")
 
 
 def test_element_metadata_class_mismatch():

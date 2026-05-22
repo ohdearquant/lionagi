@@ -6,12 +6,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
-# Create mock ollama module for all tests
+# Create mock ollama module — module-level so test methods can reference it by name
 mock_ollama = MagicMock()
 mock_ollama.__spec__ = MagicMock()  # Required for importlib.util.find_spec
+
+# Pre-seed sys.modules before lionagi imports so endpoint detection works
 sys.modules["ollama"] = mock_ollama
 
 from lionagi.service.connections.endpoint_config import EndpointConfig
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _patch_ollama_module():
+    """Ensure sys.modules["ollama"] is set for the module and torn down after."""
+    sys.modules["ollama"] = mock_ollama
+    yield mock_ollama
+    sys.modules.pop("ollama", None)
 
 
 def _get_ollama_config(
@@ -141,9 +151,7 @@ class TestOllamaPayloadCreation:
             reasoning_effort: str = "medium"
 
         endpoint = OllamaChatEndpoint()
-        request = TestRequest(
-            model="llama2", messages=[{"role": "user", "content": "test"}]
-        )
+        request = TestRequest(model="llama2", messages=[{"role": "user", "content": "test"}])
 
         payload, headers = endpoint.create_payload(request)
 
@@ -331,9 +339,7 @@ class TestOllamaCall:
                 "messages": [{"role": "user", "content": "hello"}],
             }
 
-            with caplog.at_level(
-                "DEBUG", logger="lionagi.providers.ollama.chat.endpoint"
-            ):
+            with caplog.at_level("DEBUG", logger="lionagi.providers.ollama.chat.endpoint"):
                 await endpoint.call(request)
 
             assert "not found locally" in caplog.text
@@ -360,9 +366,7 @@ class TestOllamaConfig:
         """Test _get_ollama_config with custom parameters."""
         # _get_ollama_config is defined at the module level in this test file
 
-        config = _get_ollama_config(
-            base_url="http://custom-host:9999/v1", name="custom_ollama"
-        )
+        config = _get_ollama_config(base_url="http://custom-host:9999/v1", name="custom_ollama")
 
         assert config.base_url == "http://custom-host:9999/v1"
         assert config.name == "custom_ollama"

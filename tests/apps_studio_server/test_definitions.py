@@ -9,6 +9,7 @@ import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
+# _run kept for non-integration sync test paths (e.g. ValueError checks without fastapi)
 from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -17,7 +18,8 @@ from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
 
 @pytest.mark.integration
-def test_save_definition_creates_db_row_and_file(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_save_definition_creates_db_row_and_file(tmp_path, monkeypatch):
     """save_definition() with a missing (fresh) DB path must create the DB,
     insert a row, then write the file.  It must NOT return success without a
     row in the definitions table.
@@ -44,10 +46,8 @@ def test_save_definition_creates_db_row_and_file(tmp_path, monkeypatch):
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
 
-    result = _run(
-        defs_mod.save_definition(
-            "agent", "test-agent", "# Test Agent\nGuidance here.", "initial save"
-        )
+    result = await defs_mod.save_definition(
+        "agent", "test-agent", "# Test Agent\nGuidance here.", "initial save"
     )
 
     # DB file must exist now (StateDB created it)
@@ -67,23 +67,21 @@ def test_save_definition_creates_db_row_and_file(tmp_path, monkeypatch):
     # Verify the DB row was actually inserted
     import aiosqlite
 
-    async def _check_db():
-        async with aiosqlite.connect(str(fake_db)) as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                "SELECT version, name, kind FROM definitions"
-                " WHERE kind = 'agent' AND name = 'test-agent'"
-            )
-            rows = await cur.fetchall()
-        return rows
+    async with aiosqlite.connect(str(fake_db)) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT version, name, kind FROM definitions"
+            " WHERE kind = 'agent' AND name = 'test-agent'"
+        )
+        rows = await cur.fetchall()
 
-    rows = _run(_check_db())
     assert len(rows) == 1, "Exactly one DB row must exist after save"
     assert rows[0]["version"] == 1
 
 
 @pytest.mark.integration
-def test_save_definition_increments_version(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_save_definition_increments_version(tmp_path, monkeypatch):
     """Calling save_definition() twice for the same (kind, name) must increment version."""
     import apps.studio.server.services.definitions as defs_mod
     import lionagi.cli._runs as cli_runs_mod
@@ -105,14 +103,15 @@ def test_save_definition_increments_version(tmp_path, monkeypatch):
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
 
-    r1 = _run(defs_mod.save_definition("agent", "my-agent", "v1 content"))
-    r2 = _run(defs_mod.save_definition("agent", "my-agent", "v2 content"))
+    r1 = await defs_mod.save_definition("agent", "my-agent", "v1 content")
+    r2 = await defs_mod.save_definition("agent", "my-agent", "v2 content")
 
     assert r1["version"] == 1
     assert r2["version"] == 2
 
 
-def test_save_definition_unknown_kind_raises(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_save_definition_unknown_kind_raises(tmp_path, monkeypatch):
     """save_definition() with an unknown kind must raise ValueError (not return success)."""
     import apps.studio.server.services.definitions as defs_mod
     import lionagi.cli._runs as cli_runs_mod
@@ -128,7 +127,7 @@ def test_save_definition_unknown_kind_raises(tmp_path, monkeypatch):
     )
 
     with pytest.raises(ValueError, match="Unknown kind"):
-        _run(defs_mod.save_definition("skill", "my-skill", "content"))
+        await defs_mod.save_definition("skill", "my-skill", "content")
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +238,8 @@ def test_rollback_definition_rejects_unsafe_name(encoded_name, tmp_path, monkeyp
 
 
 @pytest.mark.parametrize("name", ["my-agent", "my_agent", "myagent", "agent-123"])
-def test_save_definition_accepts_safe_names(name, tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_save_definition_accepts_safe_names(name, tmp_path, monkeypatch):
     """Normal safe names must not be rejected by the validation layer."""
     import apps.studio.server.services.definitions as defs_mod
     import lionagi.cli._runs as cli_runs_mod
@@ -262,13 +262,14 @@ def test_save_definition_accepts_safe_names(name, tmp_path, monkeypatch):
     )
     (fake_home / "playbooks").mkdir()
 
-    result = _run(defs_mod.save_definition("agent", name, "# content"))
+    result = await defs_mod.save_definition("agent", name, "# content")
     assert result["version"] >= 1
     assert result["name"] == name
 
 
 @pytest.mark.parametrize("kind", ["agent", "playbook"])
-def test_save_definition_accepts_valid_kinds(kind, tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_save_definition_accepts_valid_kinds(kind, tmp_path, monkeypatch):
     """Valid kind values ('agent', 'playbook') must pass the validation gate."""
     import apps.studio.server.services.definitions as defs_mod
     import lionagi.cli._runs as cli_runs_mod
@@ -290,7 +291,7 @@ def test_save_definition_accepts_valid_kinds(kind, tmp_path, monkeypatch):
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
 
-    result = _run(defs_mod.save_definition(kind, "test-def", "# content"))
+    result = await defs_mod.save_definition(kind, "test-def", "# content")
     assert result["version"] >= 1
 
 
@@ -300,7 +301,8 @@ def test_save_definition_accepts_valid_kinds(kind, tmp_path, monkeypatch):
 
 
 @pytest.mark.integration
-def test_concurrent_save_disk_reflects_highest_version(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_concurrent_save_disk_reflects_highest_version(tmp_path, monkeypatch):
     """Two concurrent save_definition() calls for the same (kind, name) must
     leave the disk file with the content of the HIGHER committed version.
 
@@ -341,7 +343,7 @@ def test_concurrent_save_disk_reflects_highest_version(tmp_path, monkeypatch):
         )
         return r1, r2
 
-    r1, r2 = _run(_run_concurrent())
+    r1, r2 = await _run_concurrent()
 
     versions = sorted([r1["version"], r2["version"]])
     assert versions == [1, 2], f"Expected versions [1, 2], got {versions}"
@@ -366,7 +368,8 @@ def test_concurrent_save_disk_reflects_highest_version(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_save_definition_db_failure_does_not_write_file(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_save_definition_db_failure_does_not_write_file(tmp_path, monkeypatch):
     """When StateDB.save_definition() raises, the service must NOT write the
     disk file and must propagate the exception (so the router can return 500).
     """
@@ -397,7 +400,7 @@ def test_save_definition_db_failure_does_not_write_file(tmp_path, monkeypatch):
     monkeypatch.setattr(state_db_mod.StateDB, "save_definition", _failing_save)
 
     with pytest.raises(RuntimeError, match="simulated DB write failure"):
-        _run(defs_mod.save_definition("agent", "db-fail-agent", "# content"))
+        await defs_mod.save_definition("agent", "db-fail-agent", "# content")
 
     # No disk file must have been written.
     for candidate in agents_dir.iterdir():
@@ -450,7 +453,8 @@ def test_save_definition_db_failure_returns_500_from_router(tmp_path, monkeypatc
 # ---------------------------------------------------------------------------
 
 
-def test_get_definition_follows_symlink(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_get_definition_follows_symlink(tmp_path, monkeypatch):
     """get_definition() must return content from a symlinked file.
 
     Regression test for HIGH-R3-BE-1: the R3 bounded scan used
@@ -491,14 +495,15 @@ def test_get_definition_follows_symlink(tmp_path, monkeypatch):
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
 
-    result = _run(defs_mod.get_definition("agent", "test-link"))
+    result = await defs_mod.get_definition("agent", "test-link")
 
     assert result is not None, "get_definition must not return None for a symlinked agent"
     assert result["content"] == "# Linked Agent\nContent from external location."
     assert result["name"] == "test-link"
 
 
-def test_save_definition_writes_through_symlink(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_save_definition_writes_through_symlink(tmp_path, monkeypatch):
     """save_definition() must update the symlink target, not create a new file.
 
     Regression test for HIGH-R3-BE-1: after the fix, saving a definition whose
@@ -534,7 +539,7 @@ def test_save_definition_writes_through_symlink(tmp_path, monkeypatch):
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
 
-    result = _run(defs_mod.save_definition("agent", "test-link", "# Updated content"))
+    result = await defs_mod.save_definition("agent", "test-link", "# Updated content")
 
     assert result["version"] >= 1
     # The symlink target must have been updated (write_text follows the link)
@@ -565,7 +570,8 @@ def test_find_definition_file_missing_base_returns_none(tmp_path):
     assert result is None
 
 
-def test_save_definition_fresh_home_no_kind_dir(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_save_definition_fresh_home_no_kind_dir(tmp_path, monkeypatch):
     """POST to a fresh home where agents/ doesn't exist must succeed (not 500).
 
     Regression test for MEDIUM-R3-BE-2: save_definition() calls
@@ -593,7 +599,7 @@ def test_save_definition_fresh_home_no_kind_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
 
     # Must succeed even though agents_dir doesn't exist yet
-    result = _run(defs_mod.save_definition("agent", "my-agent", "# content"))
+    result = await defs_mod.save_definition("agent", "my-agent", "# content")
 
     assert result["version"] >= 1
     assert (agents_dir / "my-agent.md").exists(), "agents/ dir and file must be created"

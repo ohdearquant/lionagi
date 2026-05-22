@@ -146,7 +146,7 @@ def test_to_dict_nested_dataclasses():
 
 def test_to_dict_error_without_suppress():
     """Test error propagation without suppress"""
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         to_dict("{invalid json}", suppress=False)
 
 

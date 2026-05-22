@@ -53,7 +53,7 @@ class TestToUuidUtility:
 
     def test_invalid_string_raises_error(self):
         """Invalid UUID string raises appropriate error."""
-        with pytest.raises(Exception):  # ValueError
+        with pytest.raises(ValueError):
             to_uuid("not-a-uuid")
 
     def test_consistency_with_idtype_validate(self):
