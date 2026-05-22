@@ -336,6 +336,11 @@ class StateDB:
         "shows": [
             ("status_source", "TEXT NOT NULL DEFAULT 'unknown'"),
         ],
+        "artifacts": [
+            # Nullable in ALTER TABLE because expressions aren't valid
+            # column defaults there; insert_artifact() always sets this.
+            ("updated_at", "REAL"),
+        ],
     }
 
     async def _reconcile_columns(self) -> None:
@@ -850,6 +855,42 @@ class StateDB:
 
     # ── Artifacts (ADR-0021) ─────────────────────────────────────────────
 
+    async def _find_artifact_id(
+        self,
+        *,
+        kind: str,
+        name: str,
+        invocation_id: str | None,
+        session_id: str | None,
+    ) -> str | None:
+        """Return the artifact id matching the natural key, or None."""
+        if invocation_id is not None and session_id is not None:
+            cur = await self.db.execute(
+                "SELECT id FROM artifacts "
+                "WHERE invocation_id = ? AND session_id = ? AND kind = ? AND name = ?",
+                (invocation_id, session_id, kind, name),
+            )
+        elif invocation_id is not None:
+            cur = await self.db.execute(
+                "SELECT id FROM artifacts "
+                "WHERE invocation_id = ? AND session_id IS NULL AND kind = ? AND name = ?",
+                (invocation_id, kind, name),
+            )
+        elif session_id is not None:
+            cur = await self.db.execute(
+                "SELECT id FROM artifacts "
+                "WHERE session_id = ? AND invocation_id IS NULL AND kind = ? AND name = ?",
+                (session_id, kind, name),
+            )
+        else:
+            cur = await self.db.execute(
+                "SELECT id FROM artifacts "
+                "WHERE invocation_id IS NULL AND session_id IS NULL AND kind = ? AND name = ?",
+                (kind, name),
+            )
+        row = await cur.fetchone()
+        return row["id"] if row else None
+
     async def insert_artifact(
         self,
         *,
@@ -860,32 +901,41 @@ class StateDB:
         session_id: str | None = None,
         file_path: str | None = None,
     ) -> str:
-        """Insert one structured skill artifact.
+        """Upsert one structured skill artifact; return its stable id.
 
         ``content`` is typically ``SkillOutcome.model_dump()``. Either
         ``invocation_id`` or ``session_id`` (or both) should be set so
         the artifact is reachable from a parent; the schema permits NULL
         on both for unattached blobs (rare; the API doesn't expose this).
+
+        INSERT OR REPLACE must not be used — it deletes then re-inserts,
+        generating a new id and silently breaking external FK references.
+        We SELECT the existing id first and UPDATE in place; a new id is
+        only minted when no matching row exists.
         """
         if not kind:
             raise ValueError("artifact kind is required")
         if not name:
             raise ValueError("artifact name is required")
+        now = time.time()
+        content_json = _to_json_column(content)
+        existing_id = await self._find_artifact_id(
+            kind=kind, name=name, invocation_id=invocation_id, session_id=session_id
+        )
+        if existing_id:
+            await self.db.execute(
+                "UPDATE artifacts SET content = ?, file_path = ?, updated_at = ? "
+                "WHERE id = ?",
+                (content_json, file_path, now, existing_id),
+            )
+            await self.db.commit()
+            return existing_id
         art_id = uuid.uuid4().hex[:12]
         await self.db.execute(
-            "INSERT OR REPLACE INTO artifacts (id, invocation_id, session_id, "
-            "created_at, kind, name, content, file_path) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                art_id,
-                invocation_id,
-                session_id,
-                time.time(),
-                kind,
-                name,
-                _to_json_column(content),
-                file_path,
-            ),
+            "INSERT INTO artifacts "
+            "(id, invocation_id, session_id, created_at, updated_at, kind, name, content, file_path) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (art_id, invocation_id, session_id, now, now, kind, name, content_json, file_path),
         )
         await self.db.commit()
         return art_id

@@ -132,7 +132,7 @@ async def test_artifacts_cascade_when_invocation_deleted(db: StateDB):
 
 
 async def test_insert_artifact_is_idempotent(db: StateDB):
-    """INSERT OR REPLACE keeps count at 1 when the same natural key is reused."""
+    """Upsert keeps count at 1 when the same natural key is reused."""
     inv = await _make_invocation(db)
     for _ in range(2):
         await db.insert_artifact(
@@ -143,6 +143,24 @@ async def test_insert_artifact_is_idempotent(db: StateDB):
         )
     rows = await db.list_artifacts_for_invocation(inv["id"])
     assert len(rows) == 1
+
+
+async def test_insert_artifact_preserves_id_on_upsert(db: StateDB):
+    """Second insert with the same natural key must return the original id."""
+    inv = await _make_invocation(db)
+    first_id = await db.insert_artifact(
+        invocation_id=inv["id"],
+        kind="review_verdict",
+        name="Round 1",
+        content={"verdict": "REQUEST_CHANGES"},
+    )
+    second_id = await db.insert_artifact(
+        invocation_id=inv["id"],
+        kind="review_verdict",
+        name="Round 1",
+        content={"verdict": "APPROVE"},
+    )
+    assert first_id == second_id, "upsert must not generate a new id on conflict"
 
 
 async def test_insert_artifact_idempotent_updates_content(db: StateDB):

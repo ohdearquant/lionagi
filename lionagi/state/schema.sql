@@ -329,16 +329,19 @@ CREATE TABLE IF NOT EXISTS artifacts (
   invocation_id   TEXT    REFERENCES invocations(id) ON DELETE CASCADE,
   session_id      TEXT    REFERENCES sessions(id),
   created_at      REAL    NOT NULL,
+  updated_at      REAL    NOT NULL DEFAULT (strftime('%s','now')),
   kind            TEXT    NOT NULL,
   name            TEXT    NOT NULL,
   content         JSON    NOT NULL,
   file_path       TEXT
 );
 
--- Natural uniqueness keys for idempotent inserts (INSERT OR REPLACE).
+-- Natural uniqueness keys for idempotent upserts. INSERT OR REPLACE must
+-- NOT be used — it deletes then re-inserts, generating a new id and
+-- breaking external references. Use ON CONFLICT DO UPDATE instead.
 -- SQLite treats NULLs as distinct in UNIQUE indexes, so a single
 -- 4-column index on (invocation_id, session_id, kind, name) fails
--- when either FK is NULL. Three partial indexes cover every reachable
+-- when either FK is NULL. Four partial indexes cover every reachable
 -- artifact shape without the NULL-distinctness pitfall.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_natural_key_inv_only
   ON artifacts(invocation_id, kind, name)
@@ -349,6 +352,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_natural_key_ses_only
 CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_natural_key_both
   ON artifacts(invocation_id, session_id, kind, name)
   WHERE invocation_id IS NOT NULL AND session_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_natural_key_unattached
+  ON artifacts(kind, name)
+  WHERE invocation_id IS NULL AND session_id IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_artifacts_invocation
   ON artifacts(invocation_id) WHERE invocation_id IS NOT NULL;
