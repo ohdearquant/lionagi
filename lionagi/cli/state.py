@@ -424,7 +424,10 @@ async def _import_teams() -> dict[str, int]:
             for msg in data.get("messages") or []:
                 msg_id = msg.get("id") or uuid.uuid4().hex[:12]
                 to = msg.get("to") or []
-                recipient = "all" if to == ["*"] else ",".join(to) or "all"
+                if isinstance(to, str):
+                    recipient = to or "all"
+                else:
+                    recipient = "all" if to == ["*"] else ",".join(to) or "all"
                 content = msg.get("content") or ""
                 ts_raw = msg.get("timestamp")
                 # JSON stores ISO timestamps; the DB stores REAL epoch

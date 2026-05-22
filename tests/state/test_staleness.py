@@ -146,17 +146,30 @@ async def test_touch_session_activity_bumps_last_message_at(db: StateDB):
 
 async def test_touch_session_activity_with_explicit_at(db: StateDB):
     s = await _make_session(db, status="running", invocation_kind="agent")
-    pinned = 1_700_000_000.0
+    # Monotonic: use a future timestamp so the MAX guard doesn't reject it.
+    pinned = time.time() + 1_000
     await db.touch_session_activity(s["id"], at=pinned)
     row = await db.get_session(s["id"])
     assert row["last_message_at"] == pinned
+
+
+async def test_touch_session_activity_monotonic(db: StateDB):
+    """Past timestamps must not regress last_message_at (PR #1049 fix)."""
+    s = await _make_session(db, status="running", invocation_kind="agent")
+    row = await db.get_session(s["id"])
+    original = row["last_message_at"]
+    # A timestamp in the past must not overwrite the current value.
+    await db.touch_session_activity(s["id"], at=original - 10_000)
+    row = await db.get_session(s["id"])
+    assert row["last_message_at"] == original
 
 
 async def test_touch_updates_updated_at_too(db: StateDB):
     """updated_at and last_message_at move together so list ordering stays
     consistent with activity, not just lifecycle writes."""
     s = await _make_session(db, status="running", invocation_kind="agent")
-    pinned = 1_700_000_000.0
+    # Monotonic: use a future timestamp so the MAX guard doesn't reject it.
+    pinned = time.time() + 1_000
     await db.touch_session_activity(s["id"], at=pinned)
     row = await db.get_session(s["id"])
     assert row["updated_at"] == pinned

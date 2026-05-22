@@ -725,7 +725,9 @@ class StateDB:
         """
         ts = at if at is not None else time.time()
         await self.db.execute(
-            "UPDATE sessions SET last_message_at = ?, updated_at = ? "
+            "UPDATE sessions "
+            "SET last_message_at = MAX(COALESCE(last_message_at, 0), ?), "
+            "    updated_at      = MAX(COALESCE(updated_at, 0), ?) "
             "WHERE id = ?",
             (ts, ts, session_id),
         )
