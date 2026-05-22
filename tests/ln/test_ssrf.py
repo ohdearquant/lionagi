@@ -172,10 +172,8 @@ def test_localhost_blocked():
 # ---------------------------------------------------------------------------
 
 
-def test_reader_ssrf_guard_blocks_metadata_url(monkeypatch):
+async def test_reader_ssrf_guard_blocks_metadata_url(monkeypatch):
     """ReaderTool rejects SSRF even when hostname is in the allowlist."""
-    import asyncio
-
     import lionagi.tools.file.reader as reader_mod
     from lionagi.tools.file.reader import ReaderRequest, ReaderTool
 
@@ -184,10 +182,8 @@ def test_reader_ssrf_guard_blocks_metadata_url(monkeypatch):
     # Monkeypatch is_ssrf_safe to simulate DNS-resolving to 169.254.169.254
     monkeypatch.setattr(reader_mod, "is_ssrf_safe", lambda h: False)
 
-    result = asyncio.get_event_loop().run_until_complete(
-        tool.handle_request(
-            ReaderRequest(action="open", path="https://metadata.example.com/file.pdf")
-        )
+    result = await tool.handle_request(
+        ReaderRequest(action="open", path="https://metadata.example.com/file.pdf")
     )
     assert result.success is False
     assert "blocked" in result.error.lower()
