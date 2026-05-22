@@ -282,6 +282,28 @@ def test_subprocess_sync_timeout_returns_timed_out():
     assert result["returncode"] == -1
 
 
+def test_subprocess_sync_timeout_mock_pid_calls_kill_not_killpg(monkeypatch):
+    """MagicMock proc.pid must not reach os.killpg (would target PID 1 on CI)."""
+    import subprocess
+    from unittest.mock import MagicMock, patch
+
+    mock_proc = MagicMock()
+    # Set pid to a MagicMock object — isinstance(pid, int) returns False,
+    # so the guard routes to proc.kill() instead of os.killpg().
+    mock_proc.pid = MagicMock()
+    # First wait() raises TimeoutExpired; second wait() (after kill) returns normally
+    mock_proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 0.01), None]
+    mock_proc.kill = MagicMock()
+
+    killpg_calls = []
+    with patch("subprocess.Popen", return_value=mock_proc), \
+         patch("os.killpg", side_effect=lambda *a: killpg_calls.append(a)):
+        _subprocess_sync(["sleep", "60"], False, 0.01, None)
+
+    assert killpg_calls == [], "os.killpg must not be called when proc.pid is not int > 1"
+    mock_proc.kill.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # CodingToolkit.to_tool: raises NotImplementedError
 # ---------------------------------------------------------------------------

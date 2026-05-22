@@ -503,11 +503,11 @@ def _subprocess_sync(cmd, shell: bool, timeout_s: float, cwd: str | None) -> dic
     try:
         proc.wait(timeout=timeout_s)
     except subprocess.TimeoutExpired:
-        with contextlib.suppress(ProcessLookupError, OSError):
-            try:
+        if isinstance(proc.pid, int) and proc.pid > 1:
+            with contextlib.suppress(ProcessLookupError, OSError):
                 os.killpg(proc.pid, signal.SIGKILL)
-            except AttributeError:
-                proc.kill()
+        else:
+            proc.kill()
         proc.wait()
         t_out.join(timeout=1)
         t_err.join(timeout=1)
