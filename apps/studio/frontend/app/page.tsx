@@ -111,12 +111,22 @@ export default function DashboardPage() {
       const d = durationSeconds(r, now);
       return d != null && d > STUCK_RUN_SECONDS;
     });
+    // ADR-0019: stale = running, but no message activity past the
+    // kind-aware threshold. Distinct from "stuck" (duration-based) — a
+    // 30-agent flow that's actively producing messages for 9 hours is
+    // stuck-eligible but not stale.
+    const stale = running.filter((r) => r.effective_health === "stale");
 
-    // Needs attention rows: failed / stuck / needs review / blocked
+    // Needs attention rows: failed / stale / stuck / needs review.
+    // Stale ranks above stuck because no-activity is a stronger signal
+    // than "running a long time."
     const attention = [
       ...failed,
-      ...stuck.filter((s) => !failed.includes(s)),
-      ...needsReview.filter((n) => !failed.includes(n) && !stuck.includes(n)),
+      ...stale.filter((s) => !failed.includes(s)),
+      ...stuck.filter((s) => !failed.includes(s) && !stale.includes(s)),
+      ...needsReview.filter(
+        (n) => !failed.includes(n) && !stale.includes(n) && !stuck.includes(n),
+      ),
     ]
       .sort((a, b) => (b.started_at ?? 0) - (a.started_at ?? 0))
       .slice(0, 8);
@@ -125,7 +135,7 @@ export default function DashboardPage() {
       .sort((a, b) => (b.started_at ?? 0) - (a.started_at ?? 0))
       .slice(0, 8);
 
-    return { scoped, running, failed, completed, needsReview, slow, stuck, attention, recent };
+    return { scoped, running, failed, completed, needsReview, slow, stuck, stale, attention, recent };
   }, [allRuns, windowSec, now]);
 
   const rangeLabel = range === "all" ? "all time" : range;
@@ -146,13 +156,24 @@ export default function DashboardPage() {
       )}
 
       {/* Operational stat cards */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <MetricCard
           label="Running now"
           value={buckets.running.length}
           hint={buckets.stuck.length > 0 ? `${buckets.stuck.length} stuck >${STUCK_RUN_SECONDS / 60}m` : `${rangeLabel}`}
           tone={buckets.running.length > 0 ? "running" : "neutral"}
           icon={buckets.running.length > 0 ? "◐" : "○"}
+        />
+        <MetricCard
+          label="Stale"
+          value={buckets.stale.length}
+          hint={
+            buckets.stale.length > 0
+              ? "no activity past threshold"
+              : "all running runs active"
+          }
+          tone={buckets.stale.length > 0 ? "pending" : "neutral"}
+          icon={buckets.stale.length > 0 ? "◴" : "·"}
         />
         <MetricCard
           label={`Failed (${rangeLabel})`}
@@ -348,7 +369,15 @@ function RunsTable({
                   {run.playbook_name || run.agent_name || "—"}
                 </td>
                 <td className="px-3 py-2">
-                  <StatusPill value={run.status} kind="lifecycle" />
+                  <StatusPill
+                    value={
+                      run.effective_health && run.effective_health !== run.status
+                        ? run.effective_health
+                        : run.status
+                    }
+                    title={run.status}
+                    kind="lifecycle"
+                  />
                 </td>
                 <td className="px-3 py-2 tabular-nums text-right">
                   <Duration value={durationSeconds(run, now)} />

@@ -15,6 +15,9 @@ export interface StatusPillProps {
   // Override the icon glyph (use sparingly — defaults come from kind+tone)
   icon?: ReactNode | null;
   className?: string;
+  // Explicit tooltip text — overrides the automatic value-based title.
+  // Use to show the raw status when value has been replaced by effective_health.
+  title?: string;
 }
 
 // ─── Tone resolution ────────────────────────────────────────────────────────
@@ -43,6 +46,9 @@ const TONE_BY_VALUE: Record<string, StatusTone> = {
   // signals "retry with more time," not "investigate."
   timed_out: "pending",
   timeout: "pending",
+  // ADR-0019: stale = running but no recent activity. Amber pill signals
+  // "may need attention," not failure.
+  stale: "pending",
   // ADR-0025: aborted = user pressed Ctrl-C; cancelled = system/
   // orchestrator killed the task. Both render neutral (gray) — the
   // distinction matters for automation, not visual scanning.
@@ -143,6 +149,7 @@ export default function StatusPill({
   tone,
   icon,
   className,
+  title,
 }: StatusPillProps) {
   const resolvedTone = tone ?? toneFromValue(value);
   const resolvedLabel = label ?? (value ? humanize(value) : "");
@@ -150,7 +157,7 @@ export default function StatusPill({
 
   return (
     <span
-      title={typeof value === "string" ? value : undefined}
+      title={title ?? (typeof value === "string" ? value : undefined)}
       className={[
         "inline-flex max-w-full items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none tracking-wide",
         TONE_CLASS[resolvedTone],

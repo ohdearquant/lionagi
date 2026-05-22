@@ -1,0 +1,193 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+"""ADR-0019 staleness detection tests.
+
+Covers: kind-aware thresholds, terminal sessions are non-stale,
+last_message_at preferred over updated_at, touch_session_activity()
+heartbeat.
+"""
+
+from __future__ import annotations
+
+import time
+import uuid
+
+import pytest
+
+from lionagi.state.db import StateDB
+from lionagi.state.staleness import (
+    DEFAULT_STALE_THRESHOLD,
+    STALE_THRESHOLDS,
+    staleness_check,
+    threshold_for_kind,
+)
+
+
+@pytest.fixture
+async def db():
+    state = StateDB(":memory:")
+    await state.open()
+    yield state
+    await state.close()
+
+
+def _uid() -> str:
+    return str(uuid.uuid4())
+
+
+async def _make_session(db: StateDB, **fields) -> dict:
+    prog_id = _uid()
+    await db.create_progression(prog_id)
+    session = {"id": _uid(), "progression_id": prog_id, **fields}
+    await db.create_session(session)
+    return session
+
+
+# ── staleness_check pure logic ─────────────────────────────────────────────────
+
+
+def test_running_under_threshold_is_active():
+    now = 1_000_000.0
+    session = {
+        "status": "running",
+        "invocation_kind": "agent",
+        "last_message_at": now - 1_000,  # ~17 minutes ago, well under 6h
+    }
+    assert staleness_check(session, now=now) is None
+
+
+def test_running_over_agent_threshold_is_stale():
+    now = 1_000_000.0
+    session = {
+        "status": "running",
+        "invocation_kind": "agent",
+        "last_message_at": now - (6 * 3600 + 60),  # 6h 1m
+    }
+    assert staleness_check(session, now=now) == "stale"
+
+
+def test_flow_threshold_is_more_lenient_than_agent():
+    """A 9h-quiet single agent is stale; a 9h-quiet flow is still active."""
+    now = 1_000_000.0
+    nine_hours_ago = now - (9 * 3600)
+    agent = {
+        "status": "running",
+        "invocation_kind": "agent",
+        "last_message_at": nine_hours_ago,
+    }
+    flow = {
+        "status": "running",
+        "invocation_kind": "flow",
+        "last_message_at": nine_hours_ago,
+    }
+    assert staleness_check(agent, now=now) == "stale"
+    assert staleness_check(flow, now=now) is None
+
+
+def test_terminal_status_is_not_stale():
+    """ADR-0019 defers terminal-session classification to ADR-0024's health."""
+    now = 1_000_000.0
+    for status in ("completed", "failed", "timed_out", "aborted", "cancelled"):
+        s = {
+            "status": status,
+            "invocation_kind": "agent",
+            "last_message_at": now - (100 * 3600),
+        }
+        assert staleness_check(s, now=now) is None, f"{status!r} should not be stale"
+
+
+def test_unknown_invocation_kind_falls_back_to_default():
+    now = 1_000_000.0
+    session = {
+        "status": "running",
+        "invocation_kind": "mystery-kind",
+        "last_message_at": now - (DEFAULT_STALE_THRESHOLD + 60),
+    }
+    assert staleness_check(session, now=now) == "stale"
+
+
+def test_missing_last_message_at_falls_back_to_updated_at():
+    now = 1_000_000.0
+    session = {
+        "status": "running",
+        "invocation_kind": "agent",
+        "last_message_at": None,
+        "updated_at": now - (6 * 3600 + 60),
+    }
+    assert staleness_check(session, now=now) == "stale"
+
+
+def test_session_with_no_activity_columns_is_stale():
+    """Legacy rows with neither last_message_at nor updated_at — definitely dead."""
+    now = 1_000_000.0
+    session = {"status": "running", "invocation_kind": "agent"}
+    assert staleness_check(session, now=now) == "stale"
+
+
+def test_threshold_for_kind_returns_expected_values():
+    assert threshold_for_kind("agent") == 6 * 3600
+    assert threshold_for_kind("flow") == 12 * 3600
+    assert threshold_for_kind(None) == DEFAULT_STALE_THRESHOLD
+    assert threshold_for_kind("mystery-kind") == DEFAULT_STALE_THRESHOLD
+
+
+# ── touch_session_activity DB heartbeat ────────────────────────────────────────
+
+
+async def test_touch_session_activity_bumps_last_message_at(db: StateDB):
+    s = await _make_session(db, status="running", invocation_kind="agent")
+    before = time.time()
+    await db.touch_session_activity(s["id"])
+    after = time.time()
+    row = await db.get_session(s["id"])
+    assert before <= row["last_message_at"] <= after
+
+
+async def test_touch_session_activity_with_explicit_at(db: StateDB):
+    pinned = 1_700_000_000.0
+    # Seed the session before `pinned` so the monotonic MAX lets it advance.
+    s = await _make_session(db, status="running", invocation_kind="agent", started_at=pinned - 1)
+    await db.touch_session_activity(s["id"], at=pinned)
+    row = await db.get_session(s["id"])
+    assert row["last_message_at"] == pinned
+
+
+async def test_touch_session_activity_is_monotonic(db: StateDB):
+    """A backward-in-time touch must not regress last_message_at or updated_at."""
+    # Pin both time columns below the forward touch so MAX lets them advance.
+    s = await _make_session(db, status="running", invocation_kind="agent",
+                            started_at=100.0, updated_at=100.0)
+    await db.touch_session_activity(s["id"], at=200.0)
+    await db.touch_session_activity(s["id"], at=150.0)  # backward — must not regress
+    row = await db.get_session(s["id"])
+    assert row["last_message_at"] == 200.0
+    assert row["updated_at"] == 200.0
+
+
+async def test_touch_updates_updated_at_too(db: StateDB):
+    """updated_at and last_message_at move together so list ordering stays
+    consistent with activity, not just lifecycle writes."""
+    pinned = 1_700_000_000.0
+    # Pin both time columns before `pinned` so the monotonic MAX lets them advance.
+    s = await _make_session(db, status="running", invocation_kind="agent",
+                            started_at=pinned - 1, updated_at=pinned - 1)
+    await db.touch_session_activity(s["id"], at=pinned)
+    row = await db.get_session(s["id"])
+    assert row["updated_at"] == pinned
+
+
+# ── ADR scope check: thresholds dict shape ────────────────────────────────────
+
+
+def test_thresholds_cover_all_invocation_kinds():
+    """ADR-0012 invocation_kind vocabulary must all have explicit thresholds.
+
+    A missing kind silently falls back to DEFAULT_STALE_THRESHOLD, which
+    is correct *behavior* but indicates the ADR was updated without
+    updating thresholds. Catch the drift here.
+    """
+    from lionagi.state.db import _INVOCATION_KINDS
+
+    missing = _INVOCATION_KINDS - STALE_THRESHOLDS.keys()
+    assert not missing, f"invocation_kinds without explicit threshold: {missing}"

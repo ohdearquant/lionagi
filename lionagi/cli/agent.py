@@ -338,6 +338,12 @@ async def _setup_live_persist(
                     await db.append_to_progression(branch_prog_id, msg_id)
                     await db.append_to_progression(session_prog_id, msg_id)
                     ctx["new_msg_ids"].append(msg_id)
+                # ADR-0019: activity heartbeat for staleness detection.
+                # Done after the progression append so callers see the
+                # bump only once the message is committed.
+                await db.touch_session_activity(
+                    session_id, at=msg_dict.get("created_at")
+                )
                 # ADR-0009: branches.system_msg_id must track the CURRENT
                 # system message. If the runtime replaces the system mid-run
                 # (set_system), update the pointer so Studio's O(1) lookup

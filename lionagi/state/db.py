@@ -35,6 +35,10 @@ _SESSION_COLUMNS = frozenset(
         "status",
         "started_at",
         "ended_at",
+        # ADR-0019: activity marker for staleness detection. Bumped on
+        # every message INSERT so a session that hasn't produced output
+        # in N hours is detectably stale without scanning ``messages``.
+        "last_message_at",
     }
 )
 
@@ -297,6 +301,8 @@ class StateDB:
             ("status", "TEXT"),
             ("started_at", "REAL"),
             ("ended_at", "REAL"),
+            # ADR-0019: activity marker for staleness detection.
+            ("last_message_at", "REAL"),
         ],
         "branches": [
             ("system_msg_id", "TEXT"),
@@ -397,7 +403,8 @@ class StateDB:
                                   ),
                   status          TEXT,
                   started_at      REAL,
-                  ended_at        REAL
+                  ended_at        REAL,
+                  last_message_at REAL
                 )
                 """
             )
@@ -591,8 +598,8 @@ class StateDB:
                progression_id, first_msg_id, last_msg_id, updated_at,
                playbook_name, agent_name, invocation_kind, show_topic,
                show_play_name, artifacts_path, source_kind,
-               status, started_at, ended_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               status, started_at, ended_at, last_message_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session["id"],
                 session.get("created_at", now),
@@ -615,6 +622,10 @@ class StateDB:
                 session.get("status"),
                 session.get("started_at"),
                 session.get("ended_at"),
+                # ADR-0019: initialize last_message_at to session start so
+                # a freshly-created session that has produced no messages
+                # yet isn't immediately classified stale.
+                session.get("last_message_at", session.get("started_at", now)),
             ),
         )
         await self.db.commit()
@@ -625,6 +636,26 @@ class StateDB:
         )
         row = await cur.fetchone()
         return self._row_to_dict(row) if row else None
+
+    async def touch_session_activity(
+        self, session_id: str, *, at: float | None = None
+    ) -> None:
+        """Bump ``last_message_at`` (and ``updated_at``) for staleness signal.
+
+        ADR-0019: stored at write time so the runs list and dashboard can
+        compute staleness with one indexed read instead of scanning
+        messages. ``at`` lets the caller pass the message timestamp for
+        precision; callers without one let it default to ``time.time()``.
+        """
+        ts = at if at is not None else time.time()
+        await self.db.execute(
+            "UPDATE sessions "
+            "SET last_message_at = MAX(COALESCE(last_message_at, 0), ?), "
+            "    updated_at = MAX(COALESCE(updated_at, 0), ?) "
+            "WHERE id = ?",
+            (ts, ts, session_id),
+        )
+        await self.db.commit()
 
     async def update_session(self, session_id: str, **fields: Any) -> None:
         _validate_columns(fields, _SESSION_COLUMNS)
