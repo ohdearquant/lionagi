@@ -99,16 +99,23 @@ async def _run_agent(
         )
         # Extract the post-clamp effort so sessions.effort stores the value
         # that was actually sent to the provider (e.g. "max"→"xhigh" for codex).
+        # build_chat_model() returns iModel only when extra flags (yolo, verbose,
+        # theme, or a recognized effort kwarg) are present.  For providers like
+        # gemini that have no entry in PROVIDER_EFFORT_KWARG, no effort kwarg is
+        # added, extra stays empty, and a plain string is returned — so the
+        # isinstance branch is never entered.  The PROVIDERS_NO_EFFORT reset
+        # must therefore be independent of the iModel guard.
         if isinstance(chat_model, iModel):
             _ep_kwargs = chat_model.endpoint.config.kwargs or {}
             _kwarg = PROVIDER_EFFORT_KWARG.get(provider)
             if _kwarg and _kwarg in _ep_kwargs:
                 # Post-clamp: store what was actually sent.
                 effort = _ep_kwargs[_kwarg]
-            elif provider in PROVIDERS_NO_EFFORT:
-                # Provider does not accept effort; do not persist the
-                # requested value — it was never sent.
-                effort = None
+
+        # Independent of iModel-vs-string: a no-effort provider must persist
+        # None regardless of what build_chat_model() returned.
+        if provider in PROVIDERS_NO_EFFORT:
+            effort = None
         branch = Branch(
             chat_model=chat_model,
             log_config=DataLoggerConfig(auto_save_on_exit=False),

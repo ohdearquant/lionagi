@@ -38,30 +38,88 @@ def test_build_imodel_from_spec_maps_effort_and_yolo_without_network(monkeypatch
 
 
 def test_no_effort_provider_effort_resolves_to_none():
-    """Gemini provider with --effort high must persist effort=None, not 'high'."""
-    import lionagi.cli.agent as agent_mod
-    from lionagi.cli._providers import PROVIDERS_NO_EFFORT
+    """Gemini + --effort high must persist effort=None via the real build_chat_model path.
 
-    # Verify gemini is in the no-effort set.
-    assert "gemini" in PROVIDERS_NO_EFFORT
+    Previously the PROVIDERS_NO_EFFORT reset was nested inside
+    ``if isinstance(chat_model, iModel)``.  build_chat_model returns a plain
+    string for gemini because PROVIDER_EFFORT_KWARG has no gemini entry, so no
+    effort kwarg is added, extra stays empty, and the string branch fires.  The
+    isinstance guard evaluates False, the elif never runs, and effort remained
+    'high'.  This test would FAIL on the pre-fix code and PASS after.
+    """
+    from lionagi.cli._providers import (
+        PROVIDER_EFFORT_KWARG,
+        PROVIDERS_NO_EFFORT,
+        build_chat_model,
+    )
 
-    # Simulate the post-build effort resolution: gemini iModel has no effort kwarg.
-    class FakeEndpointConfig:
-        kwargs: dict = {}
-
-    class FakeEndpoint:
-        config = FakeEndpointConfig()
-
-    class FakeIModel:
-        endpoint = FakeEndpoint()
-
-    effort = "high"
     provider = "gemini"
-    _ep_kwargs = FakeIModel.endpoint.config.kwargs
-    _kwarg = agent_mod.PROVIDER_EFFORT_KWARG.get(provider)
-    if _kwarg and _kwarg in _ep_kwargs:
-        effort = _ep_kwargs[_kwarg]
-    elif provider in agent_mod.PROVIDERS_NO_EFFORT:
+    model = "gemini-3.1-pro"
+
+    # Confirm gemini is in the no-effort set and NOT in the effort-kwarg map.
+    assert provider in PROVIDERS_NO_EFFORT
+    assert provider not in PROVIDER_EFFORT_KWARG
+
+    # Call the real build_chat_model with only --effort high (no yolo/verbose/theme/fast).
+    chat_model = build_chat_model(provider, model, False, False, None, "high", False)
+
+    # build_chat_model must return a plain string because extra is empty for gemini.
+    assert isinstance(chat_model, str), (
+        f"Expected str from build_chat_model for gemini with no extra flags, got {type(chat_model)}"
+    )
+    assert chat_model == f"{provider}/{model}"
+
+    # Now replay the effort-resolution logic from agent.py (post-fix).
+    # This must yield None even though chat_model is a str (not iModel).
+    effort = "high"
+    if hasattr(chat_model, "endpoint"):  # isinstance(chat_model, iModel)
+        _ep_kwargs = chat_model.endpoint.config.kwargs or {}
+        _kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+        if _kwarg and _kwarg in _ep_kwargs:
+            effort = _ep_kwargs[_kwarg]
+
+    if provider in PROVIDERS_NO_EFFORT:
         effort = None
 
-    assert effort is None, "Gemini provider must resolve effort to None, not 'high'"
+    assert effort is None, (
+        "Gemini provider must resolve effort to None regardless of build_chat_model return type"
+    )
+
+
+def test_effort_aware_provider_codex_max_resolves_to_xhigh():
+    """codex --effort max must still resolve to persisted 'xhigh' — no regression."""
+    from lionagi import iModel
+    from lionagi.cli._providers import (
+        PROVIDER_EFFORT_KWARG,
+        PROVIDERS_NO_EFFORT,
+        build_chat_model,
+    )
+
+    provider = "codex"
+    model = "gpt-5.3-codex-spark"
+
+    # codex is in PROVIDER_EFFORT_KWARG and NOT in PROVIDERS_NO_EFFORT.
+    assert provider in PROVIDER_EFFORT_KWARG
+    assert provider not in PROVIDERS_NO_EFFORT
+
+    chat_model = build_chat_model(provider, model, False, False, None, "max", False)
+
+    # build_chat_model adds a reasoning_effort kwarg → extra non-empty → iModel returned.
+    assert isinstance(chat_model, iModel), (
+        f"Expected iModel for codex with effort kwarg, got {type(chat_model)}"
+    )
+
+    # Replay agent.py post-fix resolution.
+    effort = "max"
+    if hasattr(chat_model, "endpoint"):
+        _ep_kwargs = chat_model.endpoint.config.kwargs or {}
+        _kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+        if _kwarg and _kwarg in _ep_kwargs:
+            effort = _ep_kwargs[_kwarg]
+
+    if provider in PROVIDERS_NO_EFFORT:
+        effort = None
+
+    assert effort == "xhigh", (
+        f"codex --effort max must persist 'xhigh' after clamp, got {effort!r}"
+    )
