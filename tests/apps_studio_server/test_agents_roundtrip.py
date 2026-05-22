@@ -106,6 +106,97 @@ def test_get_agent_surfaces_lion_system(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Tests 1c/1d/1e: absent bool fields emit CLI defaults (round-2 MEDIUM finding)
+# ---------------------------------------------------------------------------
+
+
+def test_get_agent_lion_system_defaults_true(tmp_path, monkeypatch):
+    """get_agent() on a profile WITHOUT lion_system: key returns lion_system: True.
+
+    The CLI treats absent lion_system as True (lionagi/cli/_agents.py:180,
+    lionagi/agent/config.py:53). Studio must emit the same default so callers
+    see consistent behaviour regardless of whether the key is present.
+    """
+    from apps.studio.server.services.agents import get_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    md = root / "no_lionsys.md"
+    _write_agent_md(
+        md,
+        """\
+        ---
+        provider: claude
+        model: claude-sonnet-4-6
+        ---
+        Body without lion_system key.
+        """,
+    )
+
+    result = get_agent("no_lionsys")
+
+    assert result is not None
+    assert result.get("lion_system") is True, (
+        "lion_system absent from frontmatter must default to True (CLI parity)"
+    )
+
+
+def test_get_agent_yolo_defaults_false(tmp_path, monkeypatch):
+    """get_agent() on a profile WITHOUT yolo: key returns yolo: False.
+
+    The CLI defaults yolo to False (lionagi/cli/_agents.py:191).
+    """
+    from apps.studio.server.services.agents import get_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    md = root / "no_yolo.md"
+    _write_agent_md(
+        md,
+        """\
+        ---
+        provider: claude
+        model: claude-sonnet-4-6
+        ---
+        Body without yolo key.
+        """,
+    )
+
+    result = get_agent("no_yolo")
+
+    assert result is not None
+    assert result.get("yolo") is False, (
+        "yolo absent from frontmatter must default to False (CLI parity)"
+    )
+
+
+def test_get_agent_fast_mode_defaults_false(tmp_path, monkeypatch):
+    """get_agent() on a profile WITHOUT fast_mode: key returns fast_mode: False.
+
+    The CLI defaults fast_mode to False (lionagi/cli/_agents.py:192).
+    """
+    from apps.studio.server.services.agents import get_agent
+
+    root = _make_agents_root(tmp_path, monkeypatch)
+    md = root / "no_fastmode.md"
+    _write_agent_md(
+        md,
+        """\
+        ---
+        provider: claude
+        model: claude-sonnet-4-6
+        ---
+        Body without fast_mode key.
+        """,
+    )
+
+    result = get_agent("no_fastmode")
+
+    assert result is not None
+    assert result.get("fast_mode") is False, (
+        "fast_mode absent from frontmatter must default to False (CLI parity)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Test 2: update_agent() writes yolo field to disk and get_agent() reads it back
 # ---------------------------------------------------------------------------
 

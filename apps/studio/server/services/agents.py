@@ -101,16 +101,17 @@ def get_agent(name: str) -> dict[str, Any] | None:
         "guidance": fm.get("guidance") or None,
     }
 
-    # Preserve optional fields present in frontmatter. `effort` is canonical;
-    # `reasoning_effort` is accepted only as a legacy read fallback.
-    for optional_key in (
-        "permission_mode",
-        "effort",
-        "description",
-        "yolo",
-        "fast_mode",
-        "lion_system",
-    ):
+    # Bool fields: always emit the CLI default so Studio's API response matches
+    # what the CLI resolves for absent keys (lionagi/cli/_agents.py:180-192,
+    # lionagi/agent/config.py:52-53).
+    result["yolo"] = bool(fm.get("yolo", False))
+    result["fast_mode"] = bool(fm.get("fast_mode", False))
+    result["lion_system"] = bool(fm.get("lion_system", True))
+
+    # Preserve remaining optional fields only when present in frontmatter.
+    # `effort` is canonical; `reasoning_effort` is accepted only as a legacy
+    # read fallback.
+    for optional_key in ("permission_mode", "effort", "description"):
         if optional_key in fm:
             result[optional_key] = fm[optional_key]
 
