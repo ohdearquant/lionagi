@@ -7,7 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from lionagi import Branch, iModel
+from lionagi import Branch
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.ln.concurrency import run_async
 from lionagi.protocols.generic.log import DataLoggerConfig
@@ -16,6 +16,7 @@ from lionagi.state import provenance as _provenance
 from ._agents import load_agent_profile
 from ._logging import hint, log_error
 from ._providers import (
+    PROVIDER_EFFORT_KWARG,
     PROVIDER_FAST_KWARGS,
     PROVIDER_YOLO_KWARGS,
     add_common_cli_args,

@@ -75,11 +75,14 @@ PROVIDERS_NO_EFFORT: frozenset[str] = frozenset(
 # Module-level invariant: a provider cannot be in both sets simultaneously.
 # A future maintainer adding a provider to the wrong set gets an ImportError
 # at startup instead of silent effort-kwarg corruption at runtime.
-assert PROVIDERS_NO_EFFORT.isdisjoint(PROVIDER_EFFORT_KWARG), (
-    "Provider classification conflict: "
-    f"{PROVIDERS_NO_EFFORT & PROVIDER_EFFORT_KWARG!r} "
-    "appear in both PROVIDERS_NO_EFFORT and PROVIDER_EFFORT_KWARG"
-)
+# Using raise RuntimeError (not assert) so the check survives `python -O`.
+_overlap = PROVIDERS_NO_EFFORT & set(PROVIDER_EFFORT_KWARG)
+if _overlap:
+    raise RuntimeError(
+        f"Provider classification conflict: {_overlap!r} appear in both "
+        "PROVIDERS_NO_EFFORT and PROVIDER_EFFORT_KWARG"
+    )
+del _overlap
 
 # ── Per-provider yolo kwargs ──────────────────────────────────────────────
 
