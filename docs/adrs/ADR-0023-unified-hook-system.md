@@ -154,7 +154,7 @@ class StopHook(Exception):
 | `TOOL_PRE` | `tool_name`, `action`, `args`, `branch_id` | Branch tool dispatch |
 | `TOOL_POST` | `tool_name`, `action`, `args`, `result`, `branch_id` | Branch tool dispatch |
 | `TOOL_ERROR` | `tool_name`, `action`, `args`, `error`, `branch_id` | Branch tool dispatch |
-| `MESSAGE_ADD` | `message`, `branch_id`, `session_id`, `progression_id` | Branch.add_message() |
+| `MESSAGE_ADD` | `message`, `session_id`, `branch_id`, `branch_progression_id`, `session_progression_id` | Branch.add_message() |
 | `ARTIFACT_CREATED` | `artifact`, `invocation_id`, `session_id` | Skill output |
 
 ### Built-in handlers
@@ -184,14 +184,23 @@ async def persist_session_start(*, session_id, model, provider, effort,
             started_at=time.time(),
         )
 
-async def persist_message(*, message, session_id, branch_id,
-                           progression_id, **kw):
-    """Write message to state.db + update last_message_at."""
+async def persist_message(*, message, session_id, branch_id=None,
+                           branch_progression_id=None,
+                           session_progression_id=None,
+                           progression_id=None,  # legacy alias
+                           **kw):
+    """Write message to state.db, append to both progressions, update system_msg_id."""
     from lionagi.state.db import StateDB
-    async with StateDB.open() as db:
+    effective_branch_prog = branch_progression_id or progression_id
+    async with StateDB() as db:
         await db.insert_message(message)
-        await db.append_to_progression(progression_id, message["id"])
-        await db.update_session(session_id, last_message_at=time.time())
+        if effective_branch_prog is not None:
+            await db.append_to_progression(effective_branch_prog, message["id"])
+        if session_progression_id is not None:
+            await db.append_to_progression(session_progression_id, message["id"])
+        if message.get("role") == "system" and branch_id is not None:
+            await db.update_branch(branch_id, system_msg_id=message["id"])
+        await db.touch_session_activity(session_id)
 
 async def persist_branch_provenance(*, branch_id, model, provider,
                                      agent_name, **kw):
