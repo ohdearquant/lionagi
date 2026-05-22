@@ -1,8 +1,8 @@
 site_name: LionAGI
 site_description: Orchestrate multi-agent AI workflows from the command line or Python
 site_url: https://lionagi.ai/
-repo_url: https://github.com/khive-ai/lionagi
-repo_name: khive-ai/lionagi
+repo_url: https://github.com/ohdearquant/lionagi
+repo_name: ohdearquant/lionagi
 edit_uri: edit/main/docs/
 copyright: Copyright &copy; 2024-2026 Ocean Li and LionAGI Contributors
 
@@ -90,7 +90,7 @@ markdown_extensions:
   - pymdownx.magiclink:
       normalize_issue_symbols: true
       repo_url_shorthand: true
-      user: khive-ai
+      user: ohdearquant
       repo: lionagi
   - pymdownx.mark
   - pymdownx.smartsymbols
@@ -129,7 +129,7 @@ plugins:
       enable_creation_date: true
       type: iso_datetime
   - git-committers:
-      repository: khive-ai/lionagi
+      repository: ohdearquant/lionagi
       branch: main
       enabled: false
   - autorefs
@@ -186,7 +186,28 @@ nav:
       - Team Coordination: cookbook/team-coordination.md
       - Resumable Background: cookbook/resumable-background.md
 
-  - CLI Reference: cli-reference.md
+  - CLI:
+      - cli/index.md
+      - li agent: cli/agent.md
+      - li orchestrate: cli/orchestrate.md
+      - li team: cli/team.md
+      - li play: cli/play.md
+      - li studio: cli/studio.md
+      - li state: cli/state.md
+      - li invoke: cli/invoke.md
+      - li skill: cli/skill.md
+
+  - Studio:
+      - studio/index.md
+      - Setup: studio/setup.md
+      - Features: studio/features.md
+
+  - Marketplace:
+      - marketplace/index.md
+      - devx: marketplace/devx.md
+      - orchestrate: marketplace/orchestrate.md
+      - show: marketplace/show.md
+      - play: marketplace/play.md
 
   - API:
       - api/index.md
@@ -196,6 +217,9 @@ nav:
       - iModel: api/imodel.md
       - Flow: api/flow.md
       - Team: api/team.md
+      - Agent Config: api/agent-config.md
+      - Sandbox: api/sandbox.md
+      - Note: api/note.md
 
   - Reference:
       - Advanced: reference/advanced.md
@@ -215,7 +239,7 @@ extra:
     default: stable
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/khive-ai/lionagi
+      link: https://github.com/ohdearquant/lionagi
       name: GitHub
     - icon: fontawesome/brands/discord
       link: https://discord.gg/lionagi
