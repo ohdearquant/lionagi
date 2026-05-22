@@ -101,11 +101,12 @@ CREATE TABLE IF NOT EXISTS sessions (
                     source_kind IS NULL
                     OR source_kind IN ('live', 'imported_fs')
                   ),
-  -- ── Lifecycle (ADR-0017) ───────────────────────────────────────────
-  status          TEXT CHECK(
-                    status IS NULL
-                    OR status IN ('running', 'completed', 'failed', 'aborted')
-                  ),
+  -- ── Lifecycle (ADR-0025, supersedes ADR-0017) ─────────────────────
+  -- No CHECK constraint: ADR-0025 makes Python the source of truth for
+  -- session.status (VALID_SESSION_STATUSES in lionagi/state/db.py). The
+  -- six-value vocabulary (running, completed, failed, timed_out, aborted,
+  -- cancelled) can evolve without a SQLite table rebuild.
+  status          TEXT,
   started_at      REAL,
   ended_at        REAL
 );

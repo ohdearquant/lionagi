@@ -13,14 +13,14 @@ import type { DbStats, StudioStats } from "@/lib/api";
 import type { RunSummary, ShowSummary } from "@/lib/types";
 
 const RUNNING_STATES = new Set(["running", "executing", "in_progress", "director-managed", "open"]);
+// ADR-0025: timed_out / aborted / cancelled are NOT failures. Timeout is
+// a deliberate bound (amber, retry); aborted = Ctrl-C, cancelled = system
+// cancellation (both neutral). Keeping them out of FAILED_STATES so the
+// "Failed" dashboard card only counts actual errors.
 const FAILED_STATES = new Set([
   "failed",
   "error",
   "failure",
-  "timeout",
-  "timed_out",
-  "cancelled",
-  "canceled",
 ]);
 const COMPLETED_STATES = new Set([
   "completed",
@@ -32,11 +32,12 @@ const COMPLETED_STATES = new Set([
 ]);
 const NEEDS_REVIEW_STATES = new Set(["needs_review", "blocked", "gated"]);
 
-// Heuristic: a "slow" completed run is anything > 30 minutes. Tuned so the
-// metric flags actual outliers, not every routine multi-minute job.
-const SLOW_RUN_SECONDS = 30 * 60;
-// Heuristic: a "stuck" running run hasn't finished after 30 minutes from start.
-const STUCK_RUN_SECONDS = 30 * 60;
+// ADR-0025: thresholds tuned for actual operational reality. Typical
+// `li play` runs are 45-90 min; 30 min flagged nearly every flow as
+// "slow" — useless signal. 60 min flags only the real outliers.
+const SLOW_RUN_SECONDS = 60 * 60;
+// A "stuck" running run hasn't finished after 60 minutes from start.
+const STUCK_RUN_SECONDS = 60 * 60;
 
 function durationSeconds(run: RunSummary, nowSec: number): number | null {
   if (run.started_at == null) return null;

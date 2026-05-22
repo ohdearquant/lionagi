@@ -39,10 +39,16 @@ const TONE_BY_VALUE: Record<string, StatusTone> = {
   failed: "failed",
   failure: "failed",
   error: "failed",
-  timed_out: "failed",
-  timeout: "failed",
-  cancelled: "failed",
-  canceled: "failed",
+  // ADR-0025: timeout is a deliberate bound, not an error. Amber pill
+  // signals "retry with more time," not "investigate."
+  timed_out: "pending",
+  timeout: "pending",
+  // ADR-0025: aborted = user pressed Ctrl-C; cancelled = system/
+  // orchestrator killed the task. Both render neutral (gray) — the
+  // distinction matters for automation, not visual scanning.
+  aborted: "neutral",
+  cancelled: "neutral",
+  canceled: "neutral",
   // lifecycle (waiting)
   pending: "pending",
   queued: "pending",

@@ -84,10 +84,41 @@ _BRANCH_COLUMNS = frozenset(
     }
 )
 
-# ADR-0017: closed status vocabulary for sessions. Mirrored by the schema
-# CHECK constraint (lionagi/state/schema.sql); validated here so callers
-# get a clear ``ValueError`` instead of an opaque sqlite IntegrityError.
-_SESSION_STATUSES = frozenset({"running", "completed", "failed", "aborted"})
+# ADR-0025: expanded closed status vocabulary for sessions. The SQLite
+# CHECK constraint is removed (see schema.sql); Python is the source of
+# truth so we get a clear ``ValueError`` instead of an opaque sqlite
+# IntegrityError, and the vocabulary can evolve without table rebuilds.
+#
+# The six values distinguish operational follow-up actions:
+#   - timed_out: deliberate bound hit ("retry with more time")
+#   - failed:    unexpected error ("investigate")
+#   - aborted:   user pressed Ctrl-C (no follow-up needed)
+#   - cancelled: system/orchestrator cancelled (cascade or admin decision)
+VALID_SESSION_STATUSES = frozenset(
+    {"running", "completed", "failed", "timed_out", "aborted", "cancelled"}
+)
+SESSION_TERMINAL_STATUSES = frozenset(
+    {"completed", "failed", "timed_out", "aborted", "cancelled"}
+)
+# Admin/operator transitions cannot mark a session "completed" or
+# "timed_out" — those are system-determined outcomes.
+ADMIN_TRANSITION_TARGETS = frozenset({"failed", "aborted", "cancelled"})
+
+# Legacy alias retained for any internal call sites that still import the
+# private name. New code should use ``VALID_SESSION_STATUSES``.
+_SESSION_STATUSES = VALID_SESSION_STATUSES
+
+
+def can_transition(current: str | None, target: str) -> bool:
+    """Return True iff a session may move from ``current`` to ``target``.
+
+    Mirrors khive's GTD ``can_transition`` (Lean4-proven FSM properties):
+    transitions only originate from ``running``; terminal states have no
+    outgoing transitions.
+    """
+    if current != "running":
+        return False
+    return target in SESSION_TERMINAL_STATUSES
 
 # ADR-0012: closed provenance vocabularies. Validated alongside status
 # so dashboards/filters can't be polluted with arbitrary text.
@@ -144,10 +175,10 @@ def _to_json_column(value: Any) -> Any:
 def _validate_session_status(status: Any) -> None:
     if status is None:
         return
-    if status not in _SESSION_STATUSES:
+    if status not in VALID_SESSION_STATUSES:
         raise ValueError(
             f"Invalid session status {status!r}; "
-            f"ADR-0017 vocabulary is {sorted(_SESSION_STATUSES)}"
+            f"ADR-0025 vocabulary is {sorted(VALID_SESSION_STATUSES)}"
         )
 
 
@@ -235,6 +266,10 @@ class StateDB:
         # succeed. This is a forward-only migration; all migrated
         # columns are nullable or have an INSERT-time default.
         await self._reconcile_columns()
+        # ADR-0025: existing DBs created under ADR-0017 carry a 4-value
+        # CHECK on sessions.status. Drop the constraint via table rebuild
+        # before the new vocabulary (timed_out / cancelled) is written.
+        await self._drop_legacy_session_status_check()
         schema = _SCHEMA_PATH.read_text()
         lines = [
             ln
@@ -289,6 +324,105 @@ class StateDB:
                         f"ALTER TABLE {table} ADD COLUMN {name} {defn}"
                     )
         await self.db.commit()
+
+    # Substring that appears in the ADR-0017 CHECK clause but not in the
+    # ADR-0025 schema (the new schema has no CHECK on sessions.status).
+    _LEGACY_SESSION_STATUS_CHECK_MARKER = "'running', 'completed', 'failed', 'aborted'"
+
+    async def _drop_legacy_session_status_check(self) -> None:
+        """Rebuild ``sessions`` if it still carries the ADR-0017 CHECK.
+
+        SQLite cannot ``ALTER TABLE ... DROP CONSTRAINT``; the only path
+        is the documented "rename → CREATE new → INSERT SELECT → DROP
+        old" pattern. This runs at most once per database — subsequent
+        opens find no marker and skip the rebuild.
+        """
+        cur = await self.db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'"
+        )
+        row = await cur.fetchone()
+        if row is None or row["sql"] is None:
+            # Table doesn't exist yet — schema.sql will CREATE it without
+            # the legacy CHECK. Nothing to migrate.
+            return
+        create_sql: str = row["sql"]
+        if self._LEGACY_SESSION_STATUS_CHECK_MARKER not in create_sql:
+            return
+
+        # Capture indexes so we can recreate them after the swap. SQLite
+        # auto-drops indexes attached to a dropped table.
+        idx_cur = await self.db.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='index' AND tbl_name='sessions' AND sql IS NOT NULL"
+        )
+        index_sqls = [r["sql"] for r in await idx_cur.fetchall()]
+
+        # Discover the actual live columns (may include ALTER-added
+        # columns not present in any historical CREATE TABLE statement).
+        info_cur = await self.db.execute("PRAGMA table_info(sessions)")
+        cols = [r["name"] for r in await info_cur.fetchall()]
+        col_list = ", ".join(cols)
+
+        await self.db.execute("PRAGMA foreign_keys = OFF")
+        try:
+            # Use sessions_new pattern to avoid FK rewrites: SQLite's
+            # ALTER TABLE RENAME rewrites child-table FK references
+            # (branches, plays) to point at the renamed table. Creating
+            # a _new table, copying, then swapping avoids that.
+            await self.db.execute(
+                """
+                CREATE TABLE sessions_new (
+                  id              TEXT    PRIMARY KEY,
+                  created_at      REAL    NOT NULL,
+                  node_metadata   JSON,
+                  name            TEXT,
+                  user            TEXT,
+                  progression_id  TEXT    NOT NULL REFERENCES progressions(id),
+                  first_msg_id    TEXT    REFERENCES messages(id),
+                  last_msg_id     TEXT    REFERENCES messages(id),
+                  updated_at      REAL    NOT NULL,
+                  playbook_name   TEXT,
+                  agent_name      TEXT,
+                  invocation_kind TEXT CHECK(
+                                    invocation_kind IS NULL
+                                    OR invocation_kind IN
+                                      ('agent', 'play', 'flow', 'fanout', 'show-play')
+                                  ),
+                  show_topic      TEXT,
+                  show_play_name  TEXT,
+                  artifacts_path  TEXT,
+                  source_kind     TEXT    DEFAULT 'live' CHECK(
+                                    source_kind IS NULL
+                                    OR source_kind IN ('live', 'imported_fs')
+                                  ),
+                  status          TEXT,
+                  started_at      REAL,
+                  ended_at        REAL
+                )
+                """
+            )
+            # Build SELECT with COALESCE for updated_at — legacy DBs
+            # may have NULL values from _reconcile_columns additions.
+            select_cols = []
+            for c in cols:
+                if c == "updated_at":
+                    select_cols.append(
+                        "COALESCE(updated_at, created_at, strftime('%s','now')) AS updated_at"
+                    )
+                else:
+                    select_cols.append(c)
+            select_list = ", ".join(select_cols)
+            insert_sql = f"INSERT INTO sessions_new ({col_list}) SELECT {select_list} FROM sessions"  # noqa: S608
+            await self.db.execute(insert_sql)
+            await self.db.execute("DROP TABLE sessions")
+            await self.db.execute(
+                "ALTER TABLE sessions_new RENAME TO sessions"
+            )
+            for idx_sql in index_sqls:
+                await self.db.execute(idx_sql)
+            await self.db.commit()
+        finally:
+            await self.db.execute("PRAGMA foreign_keys = ON")
 
     # ── Schema version ─────────────────────────────────────────────────
 

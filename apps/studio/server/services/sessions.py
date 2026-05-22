@@ -11,7 +11,9 @@ from ._db import open_db as _open_db
 
 _DB = str(DEFAULT_DB_PATH)
 
-SESSION_TERMINAL_STATUSES = frozenset({"completed", "failed", "aborted"})
+SESSION_TERMINAL_STATUSES = frozenset(
+    {"completed", "failed", "timed_out", "aborted", "cancelled"}
+)
 SESSION_DONE_STABLE_SECS = 60.0
 
 

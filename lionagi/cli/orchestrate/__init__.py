@@ -698,9 +698,17 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     playbook_name=getattr(args, "playbook", None),
                 )
             )
-        except LionTimeoutError as e:
+        except (TimeoutError, LionTimeoutError) as e:
             log_error(str(e))
-            return 1
+            return 124  # ADR-0025: timed_out exits with GNU `timeout` code
+        except KeyboardInterrupt:
+            return 130  # ADR-0025: aborted (SIGINT)
+        except BaseException as exc:
+            from lionagi.ln.concurrency import get_cancelled_exc_class
+
+            if isinstance(exc, get_cancelled_exc_class()):
+                return 143  # ADR-0025: cancelled (SIGTERM)
+            raise
         if not args.verbose:
             print(output)
         return 0
@@ -905,9 +913,17 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     playbook_name=playbook_name,
                 )
             )
-        except LionTimeoutError as e:
+        except (TimeoutError, LionTimeoutError) as e:
             log_error(str(e))
-            return 1
+            return 124  # ADR-0025: timed_out exits with GNU `timeout` code
+        except KeyboardInterrupt:
+            return 130  # ADR-0025: aborted (SIGINT)
+        except BaseException as exc:
+            from lionagi.ln.concurrency import get_cancelled_exc_class
+
+            if isinstance(exc, get_cancelled_exc_class()):
+                return 143  # ADR-0025: cancelled (SIGTERM)
+            raise
         if not args.verbose:
             print(output)
         return 0

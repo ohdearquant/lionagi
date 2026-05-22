@@ -94,13 +94,14 @@ async def _run_fanout(
         _shared=_shared,
     )
 
+    # ADR-0025: distinguish timed_out / aborted / cancelled / failed.
     _terminal_status = "completed"
     try:
         if timeout:
             with move_on_after(timeout) as cancel_scope:
                 result = await _run_fanout_inner(model_spec, prompt, **inner_kw)
             if cancel_scope.cancelled_caught:
-                _terminal_status = "aborted"
+                _terminal_status = "timed_out"
                 n_saved = len(_shared.get("saved_workers", []))
                 msg = f"Fanout timed out after {timeout}s"
                 if n_saved:
@@ -112,11 +113,16 @@ async def _run_fanout(
     except KeyboardInterrupt:
         _terminal_status = "aborted"
         raise
+    except (TimeoutError, LionTimeoutError):
+        # Catches both the move_on_after re-raise above and any
+        # timeout from inside _run_fanout_inner itself.
+        _terminal_status = "timed_out"
+        raise
     except BaseException as exc:
         from lionagi.ln.concurrency import get_cancelled_exc_class
 
         if isinstance(exc, get_cancelled_exc_class()):
-            _terminal_status = "aborted"
+            _terminal_status = "cancelled"
         else:
             _terminal_status = "failed"
         raise

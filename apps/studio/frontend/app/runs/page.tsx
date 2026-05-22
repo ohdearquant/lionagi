@@ -12,7 +12,18 @@ import { listRuns } from "@/lib/api";
 import type { RunListResponse } from "@/lib/api";
 import type { RunSummary } from "@/lib/types";
 
-const STATUS_FILTERS = ["pending", "running", "done", "failed", "cancelled"] as const;
+// ADR-0025: six-value session vocabulary (running/completed/failed/
+// timed_out/aborted/cancelled). "done" stays as an alias for completed
+// for backward-compat with show + play rows.
+const STATUS_FILTERS = [
+  "pending",
+  "running",
+  "done",
+  "failed",
+  "timed_out",
+  "aborted",
+  "cancelled",
+] as const;
 
 function displayName(run: RunSummary): string {
   if (run.show_topic || run.show_play_name) {
