@@ -8,7 +8,7 @@
 
 Orchestrate multi-agent AI workflows from the command line or Python.
 
-[Docs](https://khive-ai.github.io/lionagi/) |
+[Docs](https://ohdearquant.github.io/lionagi/) |
 [Discord](https://discord.gg/JDj9ENhUE8) |
 [PyPI](https://pypi.org/project/lionagi/) |
 [Changelog](CHANGELOG.md)
