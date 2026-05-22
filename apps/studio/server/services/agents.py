@@ -105,7 +105,10 @@ def get_agent(name: str) -> dict[str, Any] | None:
 
     # Preserve optional fields present in frontmatter. `effort` is canonical;
     # `reasoning_effort` is accepted only as a legacy read fallback.
-    for optional_key in ("permission_mode", "effort", "description"):
+    for optional_key in (
+        "permission_mode", "effort", "description",
+        "yolo", "fast_mode", "lion_system",
+    ):
         if optional_key in fm:
             result[optional_key] = fm[optional_key]
 
@@ -125,6 +128,9 @@ _KNOWN_FRONTMATTER_KEYS = (
     "guidance",
     "permission_mode",
     "effort",
+    "yolo",
+    "fast_mode",
+    "lion_system",
 )
 
 

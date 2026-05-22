@@ -324,6 +324,9 @@ async def transition_sessions(
                     {"session_id": sid, "reason": f"not_running:{current.get('status')}"}
                 )
                 continue
+            # Snapshot health-relevant timestamps for the atomic WHERE below.
+            _snap_last_msg = current.get("last_message_at")
+            _snap_updated = current.get("updated_at")
             artifacts = _artifacts_path(current)
             has_artifacts = artifacts is not None and artifacts.exists()
             has_stale_locks = (
@@ -350,8 +353,15 @@ async def transition_sessions(
             # TOCTOU: rowcount==0 means a concurrent transition already won.
             cur = await db.db.execute(
                 "UPDATE sessions SET status=?, ended_at=?, updated_at=? "
-                "WHERE id=? AND status='running'",
-                (target_status, now, now, sid),
+                "WHERE id=? AND status='running'"
+                "  AND (last_message_at IS ? OR last_message_at = ?)"
+                "  AND (updated_at      IS ? OR updated_at      = ?)",
+                (
+                    target_status, now, now,
+                    sid,
+                    _snap_last_msg, _snap_last_msg,
+                    _snap_updated, _snap_updated,
+                ),
             )
             await db.db.commit()
             if cur.rowcount == 0:
