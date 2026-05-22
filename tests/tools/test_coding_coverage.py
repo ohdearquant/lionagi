@@ -304,6 +304,31 @@ def test_subprocess_sync_timeout_mock_pid_calls_kill_not_killpg(monkeypatch):
     mock_proc.kill.assert_called_once()
 
 
+@pytest.mark.parametrize("invalid_pid", [None, 0, 1, -1, True, False])
+def test_subprocess_sync_timeout_invalid_pid_calls_kill_not_killpg(invalid_pid):
+    """Lock in the `> 1` half of the guard against accidental removal.
+
+    None/0/1/-1/False all fail isinstance(int) or fail > 1; True is int but == 1.
+    All must route to proc.kill() — killpg(0) would target current pgroup;
+    killpg(1) would target init/CI runner.
+    """
+    import subprocess
+    from unittest.mock import MagicMock, patch
+
+    mock_proc = MagicMock()
+    mock_proc.pid = invalid_pid
+    mock_proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 0.01), None]
+    mock_proc.kill = MagicMock()
+
+    killpg_calls = []
+    with patch("subprocess.Popen", return_value=mock_proc), \
+         patch("os.killpg", side_effect=lambda *a: killpg_calls.append(a)):
+        _subprocess_sync(["sleep", "60"], False, 0.01, None)
+
+    assert killpg_calls == [], f"os.killpg must not be called for pid={invalid_pid!r}"
+    mock_proc.kill.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # CodingToolkit.to_tool: raises NotImplementedError
 # ---------------------------------------------------------------------------
