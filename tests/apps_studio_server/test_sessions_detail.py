@@ -19,7 +19,6 @@ aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
 from lionagi.state.db import StateDB  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Shared test data
 # ---------------------------------------------------------------------------

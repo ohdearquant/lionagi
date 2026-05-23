@@ -92,7 +92,11 @@ class TestDetectProject:
 
     def test_lionagi_repo_detection(self):
         """Smoke test: detect_project from the actual lionagi repo should find config.toml."""
-        name, source = detect_project(Path("/Users/lion/projects/lionagi"))
+        repo_root = Path(__file__).resolve().parents[2]
+        config_toml = repo_root / ".lionagi" / "config.toml"
+        if not config_toml.exists():
+            pytest.skip(".lionagi/config.toml not present in checkout")
+        name, source = detect_project(repo_root)
         assert name == "lionagi"
         assert source == "config_toml"
 
