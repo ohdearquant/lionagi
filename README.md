@@ -20,19 +20,17 @@ Orchestrate multi-agent AI workflows from the command line or Python.
 Lion Studio is the built-in web UI for managing and operating your agent workflows. Projects, schedules, playbooks, shows, and runs — all in one place.
 
 ```bash
-# Install with studio extras
-uv add "lionagi[studio]"
+pip install lionagi
 
-# Start the backend API server
-li studio                    # http://localhost:8765
+# Option 1: Docker (recommended — one command, no Node.js needed)
+li studio                       # auto-pulls ghcr.io/ohdearquant/lion-studio
+                                # UI → http://localhost:3000  API → http://localhost:8765
 
-# Start the frontend (in a separate terminal)
-cd apps/studio/frontend
-npm install                  # first time only
-npm run dev                  # http://localhost:3000
+# Option 2: From source (for development)
+git clone https://github.com/ohdearquant/lionagi.git && cd lionagi
+pip install ".[studio]"
+li studio --dev                 # starts backend + frontend with hot reload
 ```
-
-The backend serves the REST API; the frontend is a Next.js app that talks to it. Both need to be running.
 
 ## What's New in 0.26
 

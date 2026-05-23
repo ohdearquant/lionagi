@@ -22,7 +22,7 @@ import type {
   WorkerSummary,
 } from "./types";
 
-export const API_BASE = process.env.NEXT_PUBLIC_STUDIO_API_BASE ?? "http://localhost:8765";
+export const API_BASE = process.env.NEXT_PUBLIC_STUDIO_API_BASE ?? "";
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, init);
