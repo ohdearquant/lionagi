@@ -22,7 +22,19 @@ import type {
   WorkerSummary,
 } from "./types";
 
-export const API_BASE = process.env.NEXT_PUBLIC_STUDIO_API_BASE ?? "";
+function resolveApiBase(): string {
+  const env = process.env.NEXT_PUBLIC_STUDIO_API_BASE;
+  if (env !== undefined) return env;
+  if (typeof window !== "undefined") {
+    const port = window.location.port;
+    if (port && port !== "8765") {
+      return `${window.location.protocol}//localhost:8765`;
+    }
+  }
+  return "";
+}
+
+export const API_BASE = resolveApiBase();
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, init);
@@ -454,9 +466,7 @@ export interface InvocationDetail extends InvocationSummary {
 }
 
 export async function getArtifact(id: string): Promise<ArtifactSummary> {
-  return fetchJson<ArtifactSummary>(
-    `/api/artifacts/${encodeURIComponent(id)}`,
-  );
+  return fetchJson<ArtifactSummary>(`/api/artifacts/${encodeURIComponent(id)}`);
 }
 
 export async function listArtifactsForSession(
@@ -490,15 +500,11 @@ export async function listInvocations(
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset !== undefined) query.set("offset", String(params.offset));
   const qs = query.toString();
-  return fetchJson<InvocationListResponse>(
-    `/api/invocations/${qs ? `?${qs}` : ""}`,
-  );
+  return fetchJson<InvocationListResponse>(`/api/invocations/${qs ? `?${qs}` : ""}`);
 }
 
 export async function getInvocation(id: string): Promise<InvocationDetail> {
-  return fetchJson<InvocationDetail>(
-    `/api/invocations/${encodeURIComponent(id)}`,
-  );
+  return fetchJson<InvocationDetail>(`/api/invocations/${encodeURIComponent(id)}`);
 }
 
 // ─── Definitions (versioned md files via SQLite) ──────────────────────────────
@@ -560,15 +566,24 @@ export async function saveDefinition(
   name: string,
   content: string,
   message?: string,
-): Promise<{ kind: string; name: string; version: number; saved_at: number; message: string | null }> {
-  return fetchJson<{ kind: string; name: string; version: number; saved_at: number; message: string | null }>(
-    `/api/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content, message }),
-    },
-  );
+): Promise<{
+  kind: string;
+  name: string;
+  version: number;
+  saved_at: number;
+  message: string | null;
+}> {
+  return fetchJson<{
+    kind: string;
+    name: string;
+    version: number;
+    saved_at: number;
+    message: string | null;
+  }>(`/api/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content, message }),
+  });
 }
 
 // H-FE-4: version is a query param per ADR-0016 and definitions.py:58-63,
@@ -796,7 +811,10 @@ export type TeamDetail = Record<string, unknown> & {
   created_at?: string | number | null;
 };
 
-export async function listTeams(params?: { limit?: number; offset?: number }): Promise<TeamListResponse> {
+export async function listTeams(params?: {
+  limit?: number;
+  offset?: number;
+}): Promise<TeamListResponse> {
   const query = new URLSearchParams();
   if (params?.limit != null) query.set("limit", String(params.limit));
   if (params?.offset != null) query.set("offset", String(params.offset));
@@ -859,7 +877,9 @@ export async function getSchedule(id: string): Promise<ScheduleDetail> {
   return fetchJson<ScheduleDetail>(`/api/schedules/${encodeURIComponent(id)}`);
 }
 
-export async function createSchedule(data: Record<string, unknown>): Promise<{ id: string; name: string }> {
+export async function createSchedule(
+  data: Record<string, unknown>,
+): Promise<{ id: string; name: string }> {
   return fetchJson<{ id: string; name: string }>("/api/schedules/", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
