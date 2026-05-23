@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from typing import ClassVar
@@ -911,6 +912,32 @@ async def _run_flow_inner(
             progress(f"  ✓ {name} done ({elapsed:.1f}s)")
         elif status == "failed":
             progress(f"  ✗ {name} FAILED ({elapsed:.1f}s)")
+
+    # Persist DAG graph to SQLite early so Studio shows it during execution
+    _early_graph = {
+        "agents": [
+            {"id": aid, "name": agent_id_to_name[aid], "model": agent_model_by_id[aid]}
+            for aid in agents_by_id
+        ],
+        "operations": [
+            {"id": op.id, "agent_id": op.agent_id, "control": op.control, "depends_on": op.depends_on or []}
+            for op in plan.operations
+        ],
+    }
+    env._finalize_extras = _early_graph
+    ctx = getattr(env, "_live_persist", None)
+    if ctx and ctx.get("db"):
+        import asyncio as _aio
+
+        async def _persist_graph():
+            try:
+                await ctx["db"].update_session(
+                    ctx["session_id"], node_metadata=json.dumps(_early_graph)
+                )
+            except Exception:
+                pass
+
+        _aio.ensure_future(_persist_graph())
 
     # Execute regular ops
     t_exec = time.monotonic()
