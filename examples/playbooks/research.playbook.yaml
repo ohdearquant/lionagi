@@ -1,0 +1,117 @@
+name: research
+description: Technical research — parallel web researchers, analyst synthesis, critic validation.
+argument-hint: '[--depth DEPTH]'
+
+model: claude-code/opus-4-7
+agent: orchestrator
+effort: high
+max-ops: 20
+show-graph: true
+
+args:
+  depth:
+    type: str
+    default: standard
+    help: "research depth: quick (10 min, top sources only) | standard | deep (exhaustive, 30+ min)"
+
+prompt: |
+  Conduct a technical research investigation on the topic below.
+  This is READ-ONLY — do not modify any code or files in the project.
+
+  Topic:  {input}
+  Depth:  {depth}
+
+  ─────────────────────────────────────────────
+  DEPTH GUIDE
+  ─────────────────────────────────────────────
+  quick    → 3-5 primary sources, high-level landscape, key trade-offs.
+             Suitable for "what is X and should we use it?" questions.
+  standard → 8-15 sources, current state of the art, concrete comparisons,
+             one or two worked examples. Suitable for design decisions.
+  deep     → 20+ sources including primary papers, benchmarks, known failure
+             modes, community discussion, production postmortems. Suitable
+             for architectural commitments or novel implementations.
+
+  ─────────────────────────────────────────────
+  PHASE 1 — PARALLEL RESEARCH THREADS
+  ─────────────────────────────────────────────
+  Spawn three sub-agents in parallel. Each focuses on a distinct slice:
+
+  [web-researcher]
+  Search the open web for the most current information on the topic.
+  Prioritise:
+  - Official documentation and changelogs.
+  - Peer-reviewed papers or technical reports (arXiv, ACM, IEEE, USENIX).
+  - Widely-cited blog posts from engineering teams (HN front page tier).
+  - GitHub discussions, issues, and READMEs of leading implementations.
+  Every claim MUST cite a URL or paper reference. No unsourced assertions.
+
+  [landscape-researcher]
+  Map the solution space:
+  - What are the main approaches, libraries, or tools in this area?
+  - How do they compare on: maturity, performance, developer experience,
+    licence, community size, and maintenance activity?
+  - What are the known limitations or failure modes of each?
+  - Which are used in production at scale and by whom?
+  - What is the trend: growing adoption, stable, or declining?
+  Produce a comparison table covering at least three options.
+
+  [current-state-researcher]
+  Assess the current state in the project's codebase (read-only):
+  - Does the project already use any of the tools or techniques in the topic?
+  - Are there existing patterns that a new implementation should follow?
+  - Are there constraints (language, runtime, dependencies) that limit options?
+  - What does the existing code suggest about the team's preferences?
+  Read relevant source files and report what you find. If the project has
+  no code relevant to the topic, say so explicitly.
+
+  ─────────────────────────────────────────────
+  PHASE 2 — ANALYST SYNTHESIS
+  ─────────────────────────────────────────────
+  After all three researchers return, an analyst sub-agent synthesises:
+  - Resolves contradictions between researchers (cite which source wins and why).
+  - Identifies the two or three most viable options for this project given
+    the constraints found in Phase 1.
+  - Produces the final structured report (see format below).
+
+  ─────────────────────────────────────────────
+  PHASE 3 — CRITIC VALIDATION
+  ─────────────────────────────────────────────
+  A critic sub-agent reviews the analyst's output:
+  - Challenges any claim not backed by a cited source.
+  - Flags any recommendation that ignores a significant trade-off.
+  - Checks that the project-specific constraints were respected.
+  - Either confirms the report or requests specific revisions.
+
+  The critic runs AFTER the analyst, not in parallel with Phase 1.
+
+  ─────────────────────────────────────────────
+  FINAL REPORT FORMAT
+  ─────────────────────────────────────────────
+
+  ## Research: <topic>
+
+  ### Executive Summary
+  <3-5 sentences. What is the topic, why it matters, and the top recommendation.>
+
+  ### Landscape
+
+  | Option | Maturity | Performance | Licence | Adoption | Notes |
+  |--------|----------|-------------|---------|----------|-------|
+  | ...    | ...      | ...         | ...     | ...      | ...   |
+
+  ### Current State in This Project
+  <What the codebase already does. "None" if nothing relevant was found.>
+
+  ### Key Findings
+  <Numbered list of 5-10 findings, each citing at least one source.>
+
+  ### Trade-offs
+  <For the top two or three options: what you gain and what you give up.>
+
+  ### Recommendation
+  <Single clear recommendation with rationale. If the question does not
+   admit a single answer, give a decision tree.>
+
+  ### Sources
+  <Numbered reference list: title, URL or paper ID, date accessed.>

@@ -50,11 +50,73 @@ If both are present, `args:` wins.
 
 ## Examples in this directory
 
+### Starter examples
+
 - `minimal.playbook.yaml` — prompt only, no args, positional appended
 - `audit.playbook.yaml` — typed `args:` schema with defaults + template
 - `chatgpt-orchestrate.playbook.yaml` — CC-compatible `argument-hint`
 - `persistent-chat.playbook.yaml` — uses `team_attach:` for a thread that
   accumulates history across invocations
+
+### Production playbooks
+
+These are fully-documented, multi-phase playbooks ready for real projects.
+Copy them to `~/.lionagi/playbooks/` and run them immediately.
+
+- `feature.playbook.yaml` — End-to-end feature implementation.
+  Phases: codebase scan → design → tests-first → implement → critic gate.
+  Enforces no-stub policy and requires all tests to pass before finishing.
+  ```
+  li play feature "add rate limiting to the API endpoints"
+  li play feature --scope auth "add password reset flow"
+  ```
+
+- `pr-review.playbook.yaml` — Multi-perspective PR review.
+  Parallel specialists (correctness, security, architecture, tests, perf)
+  followed by critic synthesis. Optionally posts findings to GitHub.
+  Produces APPROVE / APPROVE-WITH-FIXES / REJECT verdict with severity table.
+  ```
+  li play pr-review 42
+  li play pr-review --repo acme/backend --focus security --comment substantive 42
+  li play pr-review --depth deep --focus all 137
+  ```
+
+- `test-coverage.playbook.yaml` — Iterative coverage improvement.
+  Audits baseline, selects lowest-coverage modules, writes tests, verifies,
+  and repeats until the target percentage is reached or gains saturate.
+  Language-agnostic (detects pytest, vitest, jest, go test, etc.).
+  ```
+  li play test-coverage "the payments module"
+  li play test-coverage --target 90 --focus src/auth "the auth layer"
+  ```
+
+- `research.playbook.yaml` — Technical research, read-only.
+  Three parallel researchers (web, landscape, current codebase state)
+  followed by an analyst and a critic. Every claim must cite a source.
+  ```
+  li play research "vector database options for semantic search"
+  li play research --depth deep "WebAssembly runtimes for plugin sandboxing"
+  li play research --depth quick "OpenTelemetry vs Prometheus for metrics"
+  ```
+
+- `resolve-issues.playbook.yaml` — Autonomous issue resolution.
+  Fetches GitHub issues by label, runs parallel root-cause analysis,
+  implements minimal fixes on a shared branch, adds regression tests,
+  and posts update comments. Never closes issues or merges — human review required.
+  ```
+  li play resolve-issues "my-org/my-repo"
+  li play resolve-issues --labels "bug,regression" --limit 3 "my-org/my-repo"
+  ```
+
+- `doc-alignment.playbook.yaml` — Documentation generation and alignment.
+  Three modes: audit (gap report, read-only), generate (write missing docs
+  from code), align (update existing docs after code changes). Writes
+  READMEs, CLAUDE.md extensions, ADRs, and config specs as appropriate.
+  ```
+  li play doc-alignment --mode audit "the entire project"
+  li play doc-alignment --mode generate --scope src/payments "new payments module"
+  li play doc-alignment --mode align "after the v2 API refactor"
+  ```
 
 ## Team modes
 

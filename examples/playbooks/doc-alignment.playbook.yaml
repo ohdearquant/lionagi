@@ -1,0 +1,183 @@
+name: doc-alignment
+description: Documentation generation and alignment — generate new docs, align after changes, or audit coverage.
+argument-hint: '[--root ABSPATH] [--mode MODE] [--scope MODULE]'
+
+model: claude-code/opus-4-7
+agent: orchestrator
+effort: high
+max-ops: 25
+show-graph: true
+
+args:
+  root:
+    type: str
+    default: ""
+    help: "absolute path to the project root (defaults to the current working directory)"
+  mode:
+    type: str
+    default: auto
+    help: "operation mode: auto (detect from context) | generate (new docs) | align (update after changes) | audit (read-only gap report)"
+  scope:
+    type: str
+    default: all
+    help: "limit work to a specific module or subdirectory name; 'all' = whole project"
+
+prompt: |
+  Manage project documentation according to the chosen mode.
+  No code changes — only documentation files are written.
+
+  Subject:    {input}
+  Project root: {root}
+  Mode:       {mode}
+  Scope:      {scope}
+
+  ─────────────────────────────────────────────
+  STEP 0 — ORIENT
+  ─────────────────────────────────────────────
+  1. Determine the project root:
+     - If {root} is provided, use it as-is.
+     - Otherwise use the current working directory.
+
+  2. Detect the project type by reading:
+     - pyproject.toml / setup.py / setup.cfg  → Python
+     - package.json                            → Node / TypeScript
+     - go.mod                                 → Go
+     - Cargo.toml                             → Rust
+     - pom.xml / build.gradle                 → Java / Kotlin
+     - Other files as appropriate.
+
+  3. Discover existing documentation:
+     - List all .md files in the project.
+     - Note which modules or packages have a README, docstrings, or inline
+       comments, and which do not.
+     - Identify any existing CLAUDE.md, CONTRIBUTING.md, CHANGELOG.md,
+       or ADR directory.
+
+  4. If mode is "auto", decide which mode applies:
+     - "generate" if the subject mentions a new module with no docs.
+     - "align"    if the subject mentions recent code changes.
+     - "audit"    if the subject asks for a gap report or coverage check.
+
+  ─────────────────────────────────────────────
+  MODE: AUDIT (read-only)
+  ─────────────────────────────────────────────
+  Survey documentation coverage and produce a gap report. No files are
+  written.
+
+  For each module or package in scope:
+  - Does a README exist? Is it current with the code?
+  - Do public functions and classes have docstrings?
+  - Are configuration options documented?
+  - Is there a CLAUDE.md or equivalent agent-facing guide?
+  - Are non-obvious architectural decisions captured in ADRs or comments?
+
+  Score each module: GOOD / PARTIAL / MISSING.
+
+  Output the gap report (see Final Report Format).
+  Stop here — do not write any files.
+
+  ─────────────────────────────────────────────
+  MODE: GENERATE (new docs from code)
+  ─────────────────────────────────────────────
+  Generate documentation for modules that lack it. Read the source code
+  first — do not invent behaviour.
+
+  For each module in scope with MISSING or PARTIAL coverage:
+
+  1. Read every source file in the module.
+  2. Understand the public API: what functions/classes are exported and
+     what they do (from the code, not from names alone).
+  3. Identify the module's purpose within the larger project.
+  4. Write the appropriate doc type (see Doc Types below).
+
+  DOC TYPES
+  ─────────
+  README.md (for each package or top-level module):
+  - What it does (2-3 sentences).
+  - Installation or setup requirements specific to this module.
+  - Quick-start example with real code.
+  - Public API surface (function signatures with types and one-line
+    descriptions).
+  - Known limitations or caveats.
+
+  CLAUDE.md (agent-facing guide, if the project uses AI agents):
+  - Architecture overview: layers, key classes, data flow.
+  - Commands for building, testing, and running.
+  - What NOT to change without reading specific files first.
+  - Common pitfalls seen in past sessions.
+  Write only if the project root already has a CLAUDE.md — extend it
+  rather than creating a new one unless the scope is a new top-level
+  subdirectory.
+
+  ADR (Architecture Decision Record, for significant design choices):
+  Write an ADR only if you observe a non-obvious architectural decision
+  in the code that has no explanation anywhere. Place it in docs/adr/ or
+  the directory where existing ADRs live.
+  Template:
+    # ADR-NNN: <title>
+    ## Status: Accepted
+    ## Context
+    ## Decision
+    ## Consequences
+
+  Config specs (for any configuration file with undocumented fields):
+  Annotate the config file with inline comments, or produce a
+  docs/configuration.md describing every option, its type, default,
+  and effect.
+
+  ─────────────────────────────────────────────
+  MODE: ALIGN (update after code changes)
+  ─────────────────────────────────────────────
+  Bring existing documentation up to date with recent code changes.
+
+  1. Identify what changed: read git log or the subject description to
+     understand which modules were modified.
+  2. For each changed module, read both the current source code AND the
+     existing documentation.
+  3. Find discrepancies:
+     - Documented functions that were renamed, removed, or whose behaviour
+       changed.
+     - New public functions or classes with no documentation.
+     - Configuration options added or removed.
+     - Examples that no longer compile or run correctly.
+  4. Update the documentation to match the code. Do not update the code
+     to match the documentation.
+  5. If an existing README mentions a version number or release date,
+     update it to reflect the current state.
+  6. Do not rewrite sections that are still accurate — only touch what
+     has drifted.
+
+  ─────────────────────────────────────────────
+  QUALITY CHECKS (apply to GENERATE and ALIGN)
+  ─────────────────────────────────────────────
+  Before finalising:
+  - Every code example must be syntactically correct for the detected
+    language. Run a syntax check if possible.
+  - Function signatures in docs must match the actual source.
+  - No placeholder text (e.g. "TODO", "replace this", "<description>").
+  - Links to other files must be relative and must point to files that exist.
+
+  ─────────────────────────────────────────────
+  FINAL REPORT FORMAT
+  ─────────────────────────────────────────────
+
+  ## Documentation Report
+
+  **Mode**: {mode}
+  **Scope**: {scope}
+
+  ### Coverage Summary
+
+  | Module | README | Docstrings | Config Docs | ADR | Status  |
+  |--------|--------|------------|-------------|-----|---------|
+  | ...    | yes/no | yes/partial/no | yes/no | yes/no | GOOD/PARTIAL/MISSING |
+
+  ### Files Written
+  <List of absolute file paths created or modified. Empty if audit mode.>
+
+  ### Remaining Gaps
+  <Any documentation that was out of scope or could not be written without
+   human input (e.g., a design decision whose rationale only the author knows).>
+
+  ### Recommendations
+  <Up to three suggestions for improving documentation quality or process.>
