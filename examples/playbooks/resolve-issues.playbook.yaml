@@ -1,0 +1,133 @@
+name: resolve-issues
+description: Autonomous issue resolution — triage, root-cause, implement fixes, test, critic gate.
+argument-hint: '[--labels LABELS] [--limit N]'
+
+model: claude-code/opus-4-7
+agent: orchestrator
+effort: high
+max-ops: 35
+show-graph: true
+
+args:
+  labels:
+    type: str
+    default: bug
+    help: "comma-separated GitHub labels to filter issues (e.g. 'bug,regression')"
+  limit:
+    type: int
+    default: 5
+    help: "maximum number of issues to process in this run"
+
+prompt: |
+  Resolve open GitHub issues for this repository. Work in phases.
+  Do NOT close issues — prepare fix branches for human review and merge.
+
+  Repository scope: {input}
+  Labels filter:   {labels}
+  Issue limit:     {limit}
+
+  ─────────────────────────────────────────────
+  PHASE 0 — FETCH AND TRIAGE
+  ─────────────────────────────────────────────
+  1. Fetch open issues matching the label filter:
+       gh issue list --label "{labels}" --limit {limit} --json number,title,body,labels,comments
+
+  2. For each issue, read the full body and any comments to understand:
+     - What the reported problem is.
+     - Steps to reproduce (if provided).
+     - Any error messages or stack traces.
+     - Prior discussion about root cause or proposed fixes.
+
+  3. Triage: score each issue on two axes:
+     - Reproducibility: can you reproduce it from the description alone?
+       (clear / likely / unclear)
+     - Scope: how many files are likely touched?
+       (small ≤ 3 files / medium 4-10 / large > 10)
+
+  4. Prioritise: fix small+clear issues first, then medium+likely.
+     Skip large or unclear issues — add a comment explaining why and move on.
+     Use `gh issue comment <number> --body "..."` for the explanation.
+
+  ─────────────────────────────────────────────
+  PHASE 1 — ROOT CAUSE ANALYSIS (parallel)
+  ─────────────────────────────────────────────
+  For each issue selected in Phase 0, spawn a root-cause sub-agent:
+
+  Each sub-agent MUST:
+  - Read every source file that plausibly relates to the issue.
+  - Locate the exact line(s) where the bug originates.
+  - Confirm by tracing the execution path from the trigger to the failure.
+  - If the root cause cannot be located, report "UNLOCATABLE" with evidence
+    and skip this issue (do not guess).
+  - Propose a minimal fix — the smallest change that addresses the root
+    cause without introducing unrelated changes.
+
+  All root-cause agents run in parallel. Collect their results before Phase 2.
+
+  ─────────────────────────────────────────────
+  PHASE 2 — BRANCH AND IMPLEMENT
+  ─────────────────────────────────────────────
+  All issues in this batch go on a SINGLE feature branch. Create it now:
+    git checkout -b fix/batch-{today_date}
+
+  Where {today_date} is today's date in YYYYMMDD format.
+
+  For each issue with a confirmed root cause:
+  1. Apply the minimal fix proposed by the root-cause agent.
+  2. Add or extend a test that:
+     - Reproduces the bug (fails before the fix is applied).
+     - Passes after the fix.
+     - Is named after the issue: test_issue_<number>_<slug>.
+  3. Run the existing test suite. All tests (not just the new one) must pass.
+  4. If any existing test breaks, fix it or document why the breakage is
+     intentional (e.g., the old behaviour was the bug).
+
+  Commit each issue fix separately with a message:
+    fix(#<number>): <one-line description>
+
+  ─────────────────────────────────────────────
+  PHASE 3 — CRITIC GATE
+  ─────────────────────────────────────────────
+  After all fixes are committed, a critic sub-agent reviews the full diff
+  on the branch (`git diff main...HEAD` or equivalent):
+
+  - Does each fix address only the stated root cause?
+  - Is there any regression risk not covered by new tests?
+  - Are commit messages accurate?
+  - Is there any dead code or debug output left in?
+
+  The critic either signs off or requests specific revisions. All revisions
+  must be made before Phase 4.
+
+  ─────────────────────────────────────────────
+  PHASE 4 — REPORT
+  ─────────────────────────────────────────────
+  Produce a summary and, for each fixed issue, post a comment on GitHub:
+    gh issue comment <number> --body "..."
+
+  Comment template per issue:
+  > Fixed in branch `fix/batch-{today_date}` (commit <sha>).
+  > Root cause: <one sentence>.
+  > Change: <file>:<line> — <what changed>.
+  > Test added: <test name>.
+  > Awaiting review and merge.
+
+  Do NOT close the issue. Do NOT merge the branch. Human review is required.
+
+  ─────────────────────────────────────────────
+  FINAL REPORT FORMAT
+  ─────────────────────────────────────────────
+
+  ## Issue Resolution Batch
+
+  **Branch**: fix/batch-{today_date}
+
+  | Issue | Title | Status | Root Cause (one line) | Test Added |
+  |-------|-------|--------|----------------------|------------|
+  | #...  | ...   | FIXED  | ...                  | yes        |
+  | #...  | ...   | SKIPPED| <reason>             | n/a        |
+
+  **Next steps for the reviewer**:
+  1. Inspect the branch: `git checkout fix/batch-{today_date}`
+  2. Run the test suite.
+  3. Merge when satisfied: `gh pr create --base main --head fix/batch-{today_date}`

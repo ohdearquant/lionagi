@@ -22,10 +22,23 @@ import type {
   WorkerSummary,
 } from "./types";
 
-export const API_BASE = process.env.NEXT_PUBLIC_STUDIO_API_BASE ?? "";
+function resolveApiBase(): string {
+  const env = process.env.NEXT_PUBLIC_STUDIO_API_BASE;
+  if (env !== undefined) return env;
+  if (typeof window !== "undefined") {
+    const port = window.location.port;
+    if (port && port !== "8765") {
+      return `${window.location.protocol}//localhost:8765`;
+    }
+  }
+  return "";
+}
+
+export const API_BASE = resolveApiBase();
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, init);
+  const url = `${API_BASE}${path}`;
+  const response = await fetch(url, { redirect: "follow", ...init });
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`);
   }
@@ -126,7 +139,7 @@ function parseGraphFromPlaybook(pb: PlaybookDetail): WorkerGraph {
 }
 
 export async function listWorkers(): Promise<{ workers: WorkerSummary[] }> {
-  const data = await fetchJson<{ playbooks: PlaybookListEntry[] }>("/api/playbooks");
+  const data = await fetchJson<{ playbooks: PlaybookListEntry[] }>("/api/playbooks/");
   return {
     workers: (data.playbooks ?? []).map((p) => ({
       name: p.name,
@@ -281,7 +294,7 @@ export async function startRun(workerName: string): Promise<{ run_id: string }> 
 // ─── Agents ───────────────────────────────────────────────────────────────────
 
 export async function listAgents(): Promise<{ agents: AgentProfileSummary[] }> {
-  return fetchJson<{ agents: AgentProfileSummary[] }>("/api/agents");
+  return fetchJson<{ agents: AgentProfileSummary[] }>("/api/agents/");
 }
 
 export async function getAgent(name: string): Promise<AgentProfile> {
@@ -307,7 +320,7 @@ export async function updateAgent(name: string, data: AgentProfile): Promise<unk
 // ─── Shows ────────────────────────────────────────────────────────────────────
 
 export async function listShows(): Promise<ShowSummary[]> {
-  return fetchJson<ShowSummary[]>("/api/shows");
+  return fetchJson<ShowSummary[]>("/api/shows/");
 }
 
 export async function getShow(topic: string): Promise<ShowDetail> {
@@ -376,7 +389,7 @@ export interface SessionDetail {
 }
 
 export async function listSessions(): Promise<{ sessions: SessionSummary[] }> {
-  return fetchJson<{ sessions: SessionSummary[] }>("/api/sessions");
+  return fetchJson<{ sessions: SessionSummary[] }>("/api/sessions/");
 }
 
 export async function getSession(id: string): Promise<SessionDetail> {
@@ -454,9 +467,7 @@ export interface InvocationDetail extends InvocationSummary {
 }
 
 export async function getArtifact(id: string): Promise<ArtifactSummary> {
-  return fetchJson<ArtifactSummary>(
-    `/api/artifacts/${encodeURIComponent(id)}`,
-  );
+  return fetchJson<ArtifactSummary>(`/api/artifacts/${encodeURIComponent(id)}`);
 }
 
 export async function listArtifactsForSession(
@@ -490,15 +501,11 @@ export async function listInvocations(
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset !== undefined) query.set("offset", String(params.offset));
   const qs = query.toString();
-  return fetchJson<InvocationListResponse>(
-    `/api/invocations/${qs ? `?${qs}` : ""}`,
-  );
+  return fetchJson<InvocationListResponse>(`/api/invocations/${qs ? `?${qs}` : ""}`);
 }
 
 export async function getInvocation(id: string): Promise<InvocationDetail> {
-  return fetchJson<InvocationDetail>(
-    `/api/invocations/${encodeURIComponent(id)}`,
-  );
+  return fetchJson<InvocationDetail>(`/api/invocations/${encodeURIComponent(id)}`);
 }
 
 // ─── Definitions (versioned md files via SQLite) ──────────────────────────────
@@ -560,15 +567,24 @@ export async function saveDefinition(
   name: string,
   content: string,
   message?: string,
-): Promise<{ kind: string; name: string; version: number; saved_at: number; message: string | null }> {
-  return fetchJson<{ kind: string; name: string; version: number; saved_at: number; message: string | null }>(
-    `/api/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content, message }),
-    },
-  );
+): Promise<{
+  kind: string;
+  name: string;
+  version: number;
+  saved_at: number;
+  message: string | null;
+}> {
+  return fetchJson<{
+    kind: string;
+    name: string;
+    version: number;
+    saved_at: number;
+    message: string | null;
+  }>(`/api/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content, message }),
+  });
 }
 
 // H-FE-4: version is a query param per ADR-0016 and definitions.py:58-63,
@@ -615,7 +631,7 @@ export interface SkillDetail {
 }
 
 export async function listSkills(): Promise<{ skills: SkillSummary[] }> {
-  return fetchJson<{ skills: SkillSummary[] }>("/api/skills");
+  return fetchJson<{ skills: SkillSummary[] }>("/api/skills/");
 }
 
 export async function getSkill(name: string): Promise<SkillDetail> {
@@ -672,7 +688,7 @@ export interface PluginSkillDetail {
 }
 
 export async function listPlugins(): Promise<{ plugins: PluginSummary[] }> {
-  return fetchJson<{ plugins: PluginSummary[] }>("/api/plugins");
+  return fetchJson<{ plugins: PluginSummary[] }>("/api/plugins/");
 }
 
 export async function getPlugin(name: string): Promise<PluginDetail> {
@@ -734,7 +750,7 @@ export interface ProjectListResponse {
 }
 
 export async function listProjects(): Promise<ProjectListResponse> {
-  return fetchJson<ProjectListResponse>("/api/projects");
+  return fetchJson<ProjectListResponse>("/api/projects/");
 }
 
 export async function getProject(name: string): Promise<ProjectDetail> {
@@ -747,7 +763,7 @@ export async function createProject(data: {
   description?: string;
   path?: string;
 }): Promise<unknown> {
-  return fetchJson<unknown>("/api/projects", {
+  return fetchJson<unknown>("/api/projects/", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -796,7 +812,10 @@ export type TeamDetail = Record<string, unknown> & {
   created_at?: string | number | null;
 };
 
-export async function listTeams(params?: { limit?: number; offset?: number }): Promise<TeamListResponse> {
+export async function listTeams(params?: {
+  limit?: number;
+  offset?: number;
+}): Promise<TeamListResponse> {
   const query = new URLSearchParams();
   if (params?.limit != null) query.set("limit", String(params.limit));
   if (params?.offset != null) query.set("offset", String(params.offset));
@@ -833,7 +852,7 @@ export interface StudioStats {
 }
 
 export async function getStats(): Promise<StudioStats> {
-  return fetchJson<StudioStats>("/api/stats");
+  return fetchJson<StudioStats>("/api/stats/");
 }
 
 // ─── Schedules (ADR-0027) ───────────────────────────────────────────────────
@@ -859,7 +878,9 @@ export async function getSchedule(id: string): Promise<ScheduleDetail> {
   return fetchJson<ScheduleDetail>(`/api/schedules/${encodeURIComponent(id)}`);
 }
 
-export async function createSchedule(data: Record<string, unknown>): Promise<{ id: string; name: string }> {
+export async function createSchedule(
+  data: Record<string, unknown>,
+): Promise<{ id: string; name: string }> {
   return fetchJson<{ id: string; name: string }>("/api/schedules/", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

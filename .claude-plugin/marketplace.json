@@ -1,38 +1,17 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "lionagi",
-  "version": "0.2.0",
-  "description": "lionagi Claude Code plugins — agent orchestration, playbook authoring, and development workflows",
+  "version": "1.0.0",
+  "description": "lionagi Claude Code plugin — multi-agent orchestration, playbook authoring, show workflows, and Lion Studio integration",
   "owner": {
     "name": "HaiyangLi",
     "url": "https://github.com/ohdearquant"
   },
   "plugins": [
     {
-      "name": "show",
-      "source": "./marketplace/show",
-      "description": "Orchestrate multi-play workflows: decompose a goal into li-play invocations, gate each output, and adapt the plan based on results."
-    },
-    {
-      "name": "play",
-      "source": "./marketplace/play",
-      "description": "Author lionagi playbooks — the YAML files that li play and li o flow use to define and invoke reusable agent workflows."
-    },
-    {
       "name": "orchestrate",
       "source": "./marketplace/orchestrate",
-      "description": "Multi-agent DAG orchestration via li o flow and li o fanout: write flow specs, validate them, fire parallel agents, and monitor execution."
-    },
-    {
-      "name": "devx",
-      "source": "./marketplace/devx",
-      "description": "Development workflow skills: conventional commits, formatting, CI checks, PR creation, and session summaries."
+      "description": "Multi-agent orchestration for lionagi: plan DAG workflows, author playbooks, run multi-play shows with quality gates."
     }
-  ],
-  "_deferred_plugins": [
-    "kg-bridge — bridge between lionagi runs and a knowledge graph; requires implementation",
-    "studio — Studio MCP server access; deferred until li studio MCP server ships",
-    "mcp-bundle — canonical MCP server bundle; deferred until agent MCP skills land",
-    "memory — MEMORY.md hygiene + cross-session recall; deferred to v2.1 pending lionagi-native rewrite against ~/.lionagi/runs/"
   ]
 }

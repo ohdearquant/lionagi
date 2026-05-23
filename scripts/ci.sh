@@ -170,11 +170,22 @@ sys.exit(rc)
 
   echo "  validating manifests..."
   if _has_cmd python3; then
-    python3 "$MARKETPLACE_DIR/scripts/validate_manifests.py"
+    python3 "$MARKETPLACE_DIR/scripts/validate_manifests.py" || rc=1
   elif _has_cmd python; then
-    python "$MARKETPLACE_DIR/scripts/validate_manifests.py"
+    python "$MARKETPLACE_DIR/scripts/validate_manifests.py" || rc=1
   else
     echo "  SKIP: no python for manifest validation"
+  fi
+
+  echo "  linting skill content..."
+  if _has_cmd uv; then
+    uv run python "$MARKETPLACE_DIR/scripts/lint_skills.py" || rc=1
+  elif _has_cmd python3; then
+    python3 "$MARKETPLACE_DIR/scripts/lint_skills.py" || rc=1
+  elif _has_cmd python; then
+    python "$MARKETPLACE_DIR/scripts/lint_skills.py" || rc=1
+  else
+    echo "  SKIP: no python for skill content lint"
   fi
 
   [ $rc -eq 0 ] && echo "  marketplace lint: PASS" || { echo "  marketplace lint: FAIL"; return 1; }

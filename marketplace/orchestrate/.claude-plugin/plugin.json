@@ -1,13 +1,13 @@
 {
   "name": "orchestrate",
-  "description": "Plan and run multi-agent pipelines: fan out to parallel workers or chain agents in dependency order",
-  "version": "0.1.0",
+  "description": "Multi-agent orchestration for lionagi: plan DAG workflows, author playbooks, run multi-play shows with quality gates, and monitor execution in Lion Studio.",
+  "version": "1.0.0",
   "author": {
-    "name": "Ocean (HaiyangLi)",
+    "name": "HaiyangLi",
     "url": "https://github.com/ohdearquant"
   },
   "homepage": "https://github.com/ohdearquant/lionagi",
   "repository": "https://github.com/ohdearquant/lionagi",
   "license": "Apache-2.0",
-  "keywords": ["multi-agent", "fanout", "flow", "dag"]
+  "keywords": ["multi-agent", "orchestration", "dag", "playbook", "show", "lionagi"]
 }

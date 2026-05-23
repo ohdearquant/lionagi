@@ -10,47 +10,53 @@ from pathlib import Path
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 
 
-def add_studio_subparser(subparsers: argparse._SubParsersAction) -> None:
-    studio_parser = subparsers.add_parser("studio", help="Lion Studio server")
-    studio_sub = studio_parser.add_subparsers(dest="studio_action")
-    studio_sub.required = False
-
-    start_parser = studio_sub.add_parser("start", help="Start Lion Studio")
-    start_parser.add_argument(
+def _add_studio_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
         "--port",
         type=int,
         default=None,
         help="Backend API port (default: LIONAGI_STUDIO_PORT env or 8765)",
     )
-    start_parser.add_argument(
+    parser.add_argument(
         "--host",
         default="127.0.0.1",
         help="Host to bind (default: 127.0.0.1)",
     )
-    start_parser.add_argument(
+    parser.add_argument(
         "--frontend-port",
         type=int,
         default=3000,
         dest="frontend_port",
         help="Frontend port (default: 3000)",
     )
-    start_parser.add_argument(
+    parser.add_argument(
         "--no-frontend",
         action="store_true",
         dest="no_frontend",
         help="Only start the backend API server",
     )
-    start_parser.add_argument(
+    parser.add_argument(
         "--dev",
         action="store_true",
-        help="Run frontend in dev mode (requires repo clone)",
+        help="Run frontend in dev mode (hot-reload, no build step)",
     )
-    start_parser.add_argument(
+    parser.add_argument(
         "--no-docker",
         action="store_true",
         dest="no_docker",
         help="Don't use Docker even if available",
     )
+
+
+def add_studio_subparser(subparsers: argparse._SubParsersAction) -> None:
+    studio_parser = subparsers.add_parser("studio", help="Lion Studio server")
+    _add_studio_flags(studio_parser)
+
+    studio_sub = studio_parser.add_subparsers(dest="studio_action")
+    studio_sub.required = False
+
+    start_parser = studio_sub.add_parser("start", help="Start Lion Studio")
+    _add_studio_flags(start_parser)
 
 
 def run_studio(args: argparse.Namespace) -> int:
@@ -84,9 +90,7 @@ def _studio_start(args: argparse.Namespace) -> int:
 
     port_from_env = os.environ.get("LIONAGI_STUDIO_PORT")
     port: int = (
-        getattr(args, "port", None)
-        or (int(port_from_env) if port_from_env else None)
-        or 8765
+        getattr(args, "port", None) or (int(port_from_env) if port_from_env else None) or 8765
     )
     host: str = getattr(args, "host", "127.0.0.1")
     no_frontend: bool = getattr(args, "no_frontend", False)
@@ -153,11 +157,17 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
     try:
         subprocess.run(  # noqa: S603
             [  # noqa: S607
-                "docker", "run", "--rm",
-                "-p", f"{api_port}:8765",
-                "-p", f"{frontend_port}:3000",
-                "-v", f"{lionagi_home}:/root/.lionagi",
-                "--name", "lion-studio",
+                "docker",
+                "run",
+                "--rm",
+                "-p",
+                f"{api_port}:8765",
+                "-p",
+                f"{frontend_port}:3000",
+                "-v",
+                f"{lionagi_home}:/root/.lionagi",
+                "--name",
+                "lion-studio",
                 _STUDIO_IMAGE,
             ],
         )
@@ -184,7 +194,10 @@ def _start_local(
         return 1
 
     if not shutil.which("node"):
-        print("Error: Node.js required for local frontend. Install from https://nodejs.org/", file=sys.stderr)
+        print(
+            "Error: Node.js required for local frontend. Install from https://nodejs.org/",
+            file=sys.stderr,
+        )
         return 1
 
     frontend_proc = _launch_frontend(frontend_dir, frontend_port, port, dev_mode)
@@ -192,13 +205,20 @@ def _start_local(
     if frontend_proc:
         print(f"Lion Studio UI:  http://{host}:{frontend_port}")
     print(f"Lion Studio API: http://{host}:{port}")
+    print("Press Ctrl+C to stop")
 
     try:
         uvicorn.run("apps.studio.server.app:app", host=host, port=port)
+    except KeyboardInterrupt:
+        print("\nStopping Lion Studio...")
     finally:
         if frontend_proc:
             frontend_proc.terminate()
-            frontend_proc.wait()
+            try:
+                frontend_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                frontend_proc.kill()
+                frontend_proc.wait()
     return 0
 
 
@@ -252,6 +272,7 @@ def _launch_frontend(
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
     except FileNotFoundError:
         print("Warning: npx not found.", file=sys.stderr)
