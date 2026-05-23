@@ -19,7 +19,6 @@
 | `dry_run` | bool | `--dry-run` | Plan the DAG without executing it. |
 | `show_graph` | bool | `--show-graph` | Render a DAG visualisation after planning. |
 | `save` | str | `--save` | Directory to write artifact output to. |
-| `yolo` | bool | `--yolo` | Auto-approve all tool calls without prompting. |
 | `prompt` | str | — | Template string. May contain `{input}` and `{arg_name}` placeholders. |
 | `args` | dict | dynamic flags | Typed argument schema. Each key becomes a CLI flag. |
 
@@ -117,7 +116,8 @@ flag wins).
 
 `file`, `playbook`, `agent`, `with_synthesis`, `max_concurrent`, `output`, `save`,
 `team_mode`, `team_attach`, `dry_run`, `show_graph`, `background`, `bare`, `max_ops`,
-`yolo`, `verbose`, `theme`, `effort`, `cwd`, `timeout`
+`yolo`, `bypass`, `verbose`, `theme`, `fast`, `effort`, `cwd`, `timeout`,
+`invocation`, `project`
 
 ---
 
@@ -148,6 +148,10 @@ per playbook.
 Valid range is 0–50 (0 = unlimited). Values above 50 are rejected at spec validation.
 If you need large plans, leave `max_ops: 0` and rely on the 200-op hard cap in the
 engine.
+
+**CLI-only flags cannot be set in YAML**
+`yolo`, `bypass`, `output`, `background`, `fast`, `verbose`, and `theme` are CLI-only.
+Specifying them in YAML has no effect — always pass them on the command line.
 
 ---
 
