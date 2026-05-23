@@ -39,7 +39,7 @@ COPY apps/studio/__init__.py ./apps/studio/__init__.py
 COPY --from=frontend-build /build/.next ./apps/studio/frontend/.next
 COPY --from=frontend-build /build/node_modules ./apps/studio/frontend/node_modules
 COPY --from=frontend-build /build/package.json ./apps/studio/frontend/package.json
-COPY --from=frontend-build /build/public ./apps/studio/frontend/public
+COPY --from=frontend-build /build/next.config.mjs ./apps/studio/frontend/next.config.mjs
 
 VOLUME /root/.lionagi
 
