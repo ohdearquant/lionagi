@@ -904,17 +904,64 @@ async def _run_flow_inner(
             "depends_on": op.depends_on or [],
         }
 
+    # Track operation execution segments for Studio rendering.
+    # Each entry: {op_id, branch_id, branch_name, status, started_at, ended_at}
+    _op_segments: list[dict] = []
+
     # Progress callback for real-time status + branch lifecycle
     def _progress(op_id, name, status, elapsed):
         if status == "started":
             progress(f"  ▶ {name} started")
             _update_branch_status(name, "running")
+            _record_segment(op_id, name, "running")
         elif status == "completed":
             progress(f"  ✓ {name} done ({elapsed:.1f}s)")
             _update_branch_status(name, "completed")
+            _record_segment(op_id, name, "completed")
         elif status == "failed":
             progress(f"  ✗ {name} FAILED ({elapsed:.1f}s)")
             _update_branch_status(name, "failed")
+            _record_segment(op_id, name, "failed")
+
+    def _record_segment(op_id: str, branch_name: str, new_status: str):
+        branch = next((b for b in env.session.branches if b.name == branch_name), None)
+        branch_id = str(branch.id) if branch else ""
+        now = time.time()
+        if new_status == "running":
+            _op_segments.append({
+                "op_id": op_id,
+                "branch_id": branch_id,
+                "branch_name": branch_name,
+                "status": "running",
+                "started_at": now,
+                "ended_at": None,
+            })
+        else:
+            for seg in reversed(_op_segments):
+                if seg["op_id"] == op_id:
+                    seg["status"] = new_status
+                    seg["ended_at"] = now
+                    break
+        _persist_segments()
+
+    def _persist_segments():
+        ctx = getattr(env, "_live_persist", None)
+        if not ctx or not ctx.get("db"):
+            return
+        extras = getattr(env, "_finalize_extras", {}) or {}
+        extras["segments"] = _op_segments
+        env._finalize_extras = extras
+        import asyncio as _aio
+
+        async def _do():
+            try:
+                await ctx["db"].update_session(
+                    ctx["session_id"], node_metadata=json.dumps(extras)
+                )
+            except Exception:
+                pass
+
+        _aio.ensure_future(_do())
 
     def _update_branch_status(branch_name: str, new_status: str):
         ctx = getattr(env, "_live_persist", None)

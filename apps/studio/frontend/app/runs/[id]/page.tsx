@@ -614,16 +614,40 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
   };
 
   const sessionStatus = done ? "completed" : live ? "running" : "completed";
-  const steps = useMemo(
-    () =>
-      session
-        ? session.branches.map((b) => {
-            const bStatus = (b as unknown as Record<string, unknown>).status as string | null;
-            return branchToRunStep(b, bStatus || sessionStatus);
-          })
-        : [],
-    [session, sessionStatus],
-  );
+
+  // Segments from session metadata — maps op executions to branch time windows
+  const segments = useMemo(() => {
+    if (!session) return [] as Array<{ op_id: string; branch_id: string; branch_name: string; status: string; started_at: number | null; ended_at: number | null }>;
+    const raw = (session as unknown as Record<string, unknown>).segments;
+    return (Array.isArray(raw) ? raw : []) as Array<{ op_id: string; branch_id: string; branch_name: string; status: string; started_at: number | null; ended_at: number | null }>;
+  }, [session]);
+
+  const steps = useMemo(() => {
+    if (!session) return [];
+    const result: RunStep[] = [];
+
+    for (const b of session.branches) {
+      const bStatus = (b as unknown as Record<string, unknown>).status as string | null;
+      const branchSegs = segments.filter((s) => s.branch_id === b.id);
+
+      if (branchSegs.length <= 1) {
+        result.push(branchToRunStep(b, bStatus || sessionStatus));
+      } else {
+        for (const seg of branchSegs) {
+          const segMsgs = b.messages.filter((m) => {
+            const ts = m.timestamp;
+            if (ts == null) return false;
+            const after = seg.started_at == null || ts >= seg.started_at;
+            const before = seg.ended_at == null || ts <= seg.ended_at + 1;
+            return after && before;
+          });
+          const segBranch = { ...b, messages: segMsgs, name: `${b.name || b.id.slice(0, 8)} [${seg.op_id}]` };
+          result.push(branchToRunStep(segBranch, seg.status || bStatus || sessionStatus));
+        }
+      }
+    }
+    return result;
+  }, [session, sessionStatus, segments]);
 
   // Extract errors across all branches
   const errors = useMemo(() => {

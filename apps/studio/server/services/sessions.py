@@ -17,6 +17,16 @@ SESSION_TERMINAL_STATUSES = frozenset(
 SESSION_DONE_STABLE_SECS = 60.0
 
 
+def _parse_metadata(raw: str | None) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    try:
+        meta = json.loads(raw) if isinstance(raw, str) else raw
+        return meta if isinstance(meta, dict) else None
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
 def _graph_from_metadata(raw: str | None) -> dict[str, Any] | None:
     """Build a DAG graph from session node_metadata (agents + operations)."""
     if not raw:
@@ -284,6 +294,7 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
         "agent_hash": session_row["agent_hash"],
         "invocation_id": session_row["invocation_id"],
         "graph": _graph_from_metadata(session_row["node_metadata"]),
+        "segments": (_parse_metadata(session_row["node_metadata"]) or {}).get("segments"),
     }
 
 
