@@ -78,7 +78,7 @@ Then run lint:
 uv run ruff check . && uv run mypy .
 
 # Or use the lionagi CI skill
-/ci
+the project CI pipeline (fmt + lint + test)
 ```
 
 ## Multi-Cycle Pattern
@@ -98,7 +98,7 @@ Cycle 3: Error handling
 Cycle 4: Integration
   RED → test_integration → GREEN → wire together → REFACTOR
 
-Final: Run full suite + lint to verify everything (/ci)
+Final: Run full suite + lint to verify everything (the project CI pipeline (fmt + lint + test))
 ```
 
 ## Parallel Agent TDD

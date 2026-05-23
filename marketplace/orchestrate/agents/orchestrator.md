@@ -1,5 +1,5 @@
 ---
-model: claude-code/opus-4-6
+model: claude-code/opus-4-7
 effort: high
 yolo: true
 ---

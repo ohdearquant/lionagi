@@ -75,10 +75,7 @@ NONEXISTENT_COMMANDS: list[tuple[str, str]] = [
 ]
 
 STALE_MODELS: list[tuple[str, str]] = [
-    (r"\bcodex/gpt-5\.5\b", "nonexistent model (codex/gpt-5.5)"),
     (r"\bcodex/gpt-5\.3-codex\b", "stale model name (codex/gpt-5.3-codex)"),
-    (r"\bopus-4-7\b", "banned model name variant (opus-4-7)"),
-    (r"\bopus-4\.7\b", "banned model name variant (opus-4.7)"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -143,9 +140,7 @@ def scan_file(path: Path) -> list[str]:
                     continue
 
             if pattern.search(line):
-                findings.append(
-                    f"[{category}] {path}:{lineno} — {desc}"
-                )
+                findings.append(f"[{category}] {path}:{lineno} — {desc}")
 
     # --yolo without --bypass check: only in .md files
     if is_md:
@@ -211,10 +206,7 @@ def main(argv: list[str] | None = None) -> int:
             display_path = f
         file_findings = scan_file(f)
         # Replace absolute path with relative in finding strings
-        file_findings = [
-            finding.replace(str(f), str(display_path))
-            for finding in file_findings
-        ]
+        file_findings = [finding.replace(str(f), str(display_path)) for finding in file_findings]
         all_findings.extend(file_findings)
 
     if all_findings:

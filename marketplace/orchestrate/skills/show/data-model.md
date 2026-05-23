@@ -8,7 +8,7 @@ Shows and plays are first-class entities in `state.db` (SQLite).
 shows table:
   id, topic, goal, repo, base_branch, integration_branch
   status: active | completed | aborted | imported
-  show_dir, created_at, updated_at
+  show_dir, status_source, created_at, updated_at
 
 plays table:
   id, show_id, name, playbook, effort
@@ -18,6 +18,7 @@ plays table:
   attempt (1 or 2), session_id, started_at, ended_at, exit_code
   worktree, branch, merge_sha, merged_at
   gate_passed, gate_feedback, depends_on (JSON array), sort_order
+  created_at, updated_at
 ```
 
 Source: `lionagi/state/schema.sql` line ~218.

@@ -4,7 +4,7 @@ description: >
   Mid-session context capture and proactive decision/pattern capture. Use when: significant
   progress made but session continues, approaching context limits, switching topics, checkpoint
   learnings, significant decisions made, patterns emerge, or session is winding down.
-  Lighter than /session-summarize — captures progress and continues.
+  Lighter than a full session summary — captures progress and continues.
 allowed-tools: [Bash, Read, Write, Edit, Glob, Grep]
 ---
 
@@ -20,7 +20,7 @@ Capture context, learnings, and progress without ending the session. Write a che
 - After completing a multi-step task, before starting the next
 - Patterns or decisions have emerged that should be recorded
 
-**Not** for session-ending summaries — use `/session-summarize` for that.
+**Not** for session-ending summaries — use a full session summary for that.
 
 ## Proactive Capture Triggers
 
@@ -32,7 +32,7 @@ Fire a capture immediately when any of these occur:
 | **Pattern discovered** | Note the pattern with "when to use" conditions |
 | **Significant work completed** | Capture what was done + outcome |
 | **Problem solved** | Record approach + what worked / what didn't |
-| **Session winding down** | Offer to run `/session-summarize` or auto-capture key points |
+| **Session winding down** | Offer to run a full session summary or auto-capture key points |
 | **Topic switch** | Quick checkpoint before context shifts |
 
 **Session wind-down signals**: "thanks", "that's it", "done for now", long pause after significant
@@ -59,7 +59,7 @@ file organization decisions, naming conventions.
 
 ## Anti-Patterns
 
-- Writing a full session summary mid-session (use `/session-summarize`)
+- Writing a full session summary mid-session (use a full session summary)
 - Spending >5 minutes on the checkpoint
 - Only commenting in-line without writing a retrievable file
 - Generic summaries without specifics ("worked on stuff")
