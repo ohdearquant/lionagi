@@ -68,7 +68,7 @@ function PluginList({
         ) : (
           filtered.map((p) => (
             <button
-              key={p.name}
+              key={`${p.source}:${p.name}`}
               type="button"
               onClick={() => onSelect(p.name)}
               className={[

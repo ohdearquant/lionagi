@@ -1,12 +1,15 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { use, useEffect, useMemo, useRef, useState } from "react";
 import Badge from "@/components/Badge";
 import RunStepCard from "@/components/RunStepCard";
 import { getSession, streamSession } from "@/lib/api";
 import type { SessionDetail, SessionBranch, SessionMessage } from "@/lib/api";
-import type { RunMessage, RunStep } from "@/lib/types";
+import type { RunMessage, RunStep, WorkerGraph } from "@/lib/types";
+
+const WorkerCanvas = dynamic(() => import("@/components/canvas/WorkerCanvas"), { ssr: false });
 
 function formatTime(ts: number): string {
   return new Date(ts * 1000).toLocaleString();
@@ -498,6 +501,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
   const { id } = use(params);
 
   const [session, setSession] = useState<SessionDetail | null>(null);
+  const [runGraph, setRunGraph] = useState<WorkerGraph | null>(null);
   const [live, setLive] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -513,11 +517,17 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
         if (s.branches.length <= 3) {
           setExpandedSteps(new Set(s.branches.map((b) => b.name || b.id.slice(0, 8))));
         } else {
-          // First branch only
           const first = s.branches[0];
           if (first) {
             setExpandedSteps(new Set([first.name || first.id.slice(0, 8)]));
           }
+        }
+        const graph = (s as unknown as Record<string, unknown>).graph as
+          | { nodes: WorkerGraph["nodes"]; edges: WorkerGraph["edges"] }
+          | null
+          | undefined;
+        if (graph && graph.nodes && graph.nodes.length > 0) {
+          setRunGraph({ name: s.name || id, description: "", nodes: graph.nodes, edges: graph.edges });
         }
       })
       .catch((e: unknown) => setError(String(e)));
@@ -579,7 +589,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
 
   // Track active section on scroll
   useEffect(() => {
-    const sectionIds = ["overview", "branches", "errors", "files"];
+    const sectionIds = ["overview", "dag", "branches", "errors", "files"];
     const onScroll = () => {
       for (const sid of [...sectionIds].reverse()) {
         const el = document.getElementById(sid);
@@ -713,6 +723,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
 
   const navSections: NavSection[] = [
     { id: "overview", label: "Overview" },
+    ...(runGraph ? [{ id: "dag", label: "DAG", count: runGraph.nodes.length }] : []),
     { id: "branches", label: "Branches", count: session.branches.length },
     { id: "errors", label: "Errors", count: errors.length, errorTone: errors.length > 0 },
     { id: "files", label: "Files", count: files.length },
@@ -793,6 +804,23 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
         <main className="min-w-0 flex-1">
           <div className="flex flex-col gap-8">
             <OverviewSection data={overviewData} />
+            {runGraph && (
+              <div id="dag" className="scroll-mt-24">
+                <SectionHeader label="Execution DAG" count={runGraph.nodes.length} />
+                <div className="h-[420px] rounded border border-edge bg-surface-raised shadow-card overflow-hidden">
+                  <WorkerCanvas
+                    graph={runGraph}
+                    editable={false}
+                    execSteps={steps.map((s) => ({
+                      step: s.step,
+                      status: s.status,
+                      result: s.result,
+                      timestamp: s.timestamp ?? undefined,
+                    }))}
+                  />
+                </div>
+              </div>
+            )}
             <BranchesSection
               steps={steps}
               live={live}

@@ -462,13 +462,12 @@ def finalize_orchestration(
     Parameters
     ----------
     kind
-        Pattern kind (``"fanout"`` | ``"flow"``). Reserved for callers
-        that want to log/render the result; not written to disk.
+        Pattern kind (``"fanout"`` | ``"flow"``).
     prompt
-        Original user prompt. Reserved for caller diagnostics; not written
-        to disk.
+        Original user prompt.
     extras
-        Pattern-specific extras. Reserved; not written to disk.
+        Pattern-specific extras (agents, operations). Persisted to SQLite
+        session node_metadata so Studio can render the execution DAG.
     emit_hints
         When True, print ``[to resume] li agent -r <id> "..."`` for the
         orchestrator and each worker branch.
@@ -501,6 +500,9 @@ def finalize_orchestration(
                 "finalize: branch snapshot write failed for %s: %s",
                 branch.id, exc, exc_info=True,
             )
+
+    if extras:
+        env._finalize_extras = extras
 
     orc_branch_id = str(env.orc_branch.id)
     save_last_branch_pointer(env.run.run_id, orc_branch_id)
@@ -758,6 +760,11 @@ async def stop_live_persist(
         if all_msgs:
             update_kwargs["first_msg_id"] = all_msgs[0]
             update_kwargs["last_msg_id"] = all_msgs[-1]
+
+        extras = getattr(env, "_finalize_extras", None)
+        if extras:
+            update_kwargs["node_metadata"] = json.dumps(extras)
+
         await db.update_session(ctx["session_id"], **update_kwargs)
 
         # Remove ALL matching registrations of each hook (list.remove

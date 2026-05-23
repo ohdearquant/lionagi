@@ -17,6 +17,48 @@ SESSION_TERMINAL_STATUSES = frozenset(
 SESSION_DONE_STABLE_SECS = 60.0
 
 
+def _graph_from_metadata(raw: str | None) -> dict[str, Any] | None:
+    """Build a DAG graph from session node_metadata (agents + operations)."""
+    if not raw:
+        return None
+    try:
+        meta = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(meta, dict):
+        return None
+    agents = meta.get("agents") or []
+    operations = meta.get("operations") or []
+    if not operations:
+        return None
+    agent_map = {a["id"]: a for a in agents if isinstance(a, dict) and "id" in a}
+    nodes = []
+    edges = []
+    for op in operations:
+        if not isinstance(op, dict) or "id" not in op:
+            continue
+        agent = agent_map.get(op.get("agent_id", ""), {})
+        nodes.append({
+            "id": op["id"],
+            "label": op["id"],
+            "role": agent.get("name", ""),
+            "assignment": agent.get("model", ""),
+            "prompt": "",
+            "capacity": 1,
+            "timeout": None,
+            "inputs": op.get("depends_on", []),
+            "outputs": [],
+        })
+        for dep in op.get("depends_on", []):
+            edges.append({
+                "id": f"e-{dep}-{op['id']}",
+                "source": dep,
+                "target": op["id"],
+                "mode": "simple",
+            })
+    return {"nodes": nodes, "edges": edges} if nodes else None
+
+
 def _parse_json_col(value: Any) -> Any:
     if isinstance(value, str):
         try:
@@ -122,7 +164,8 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
                       playbook_name, agent_name, invocation_kind,
                       show_topic, show_play_name, artifacts_path, source_kind,
                       status, started_at, ended_at,
-                      model, provider, effort, agent_hash, invocation_id
+                      model, provider, effort, agent_hash, invocation_id,
+                      node_metadata
                FROM sessions WHERE id = ?""",
             (session_id,),
         )
@@ -227,6 +270,7 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
         "effort": session_row["effort"],
         "agent_hash": session_row["agent_hash"],
         "invocation_id": session_row["invocation_id"],
+        "graph": _graph_from_metadata(session_row["node_metadata"]),
     }
 
 
