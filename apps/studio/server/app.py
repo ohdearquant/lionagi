@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -16,7 +17,9 @@ from .routers import (
     invocations,
     playbooks,
     plugins,
+    projects,
     runs,
+    schedules,
     sessions,
     shows,
     skills,
@@ -26,7 +29,17 @@ from .services import stats as stats_svc
 
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
-app = FastAPI(title="Lion Studio Server")
+
+@asynccontextmanager
+async def lifespan(app_instance):
+    from .scheduler.engine import scheduler
+
+    await scheduler.start()
+    yield
+    await scheduler.stop()
+
+
+app = FastAPI(title="Lion Studio Server", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -61,6 +74,8 @@ app.include_router(admin.router, prefix="/api")
 app.include_router(teams.router, prefix="/api")
 app.include_router(invocations.router, prefix="/api")
 app.include_router(artifacts.router, prefix="/api")
+app.include_router(projects.router, prefix="/api")
+app.include_router(schedules.router, prefix="/api")
 
 
 @app.get("/health")

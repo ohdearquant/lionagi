@@ -837,7 +837,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
             {runGraph && (
               <div id="dag" className="scroll-mt-24">
                 <SectionHeader label="Execution DAG" count={runGraph.nodes.length} />
-                <div className="h-[420px] rounded border border-edge bg-surface-raised shadow-card overflow-hidden">
+                <div className="h-[320px] rounded border border-edge bg-surface-raised shadow-card overflow-hidden">
                   <WorkerCanvas
                     graph={runGraph}
                     editable={false}

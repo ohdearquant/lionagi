@@ -13,12 +13,32 @@ Orchestrate multi-agent AI workflows from the command line or Python.
 [PyPI](https://pypi.org/project/lionagi/) |
 [Changelog](CHANGELOG.md)
 
-## What's New in 0.23
+## Lion Studio
 
+![Lion Studio — run detail with execution DAG, branches, and multi-agent orchestration](assets/studio.png)
+
+Lion Studio is the built-in web UI for managing and operating your agent workflows. Projects, schedules, playbooks, shows, and runs — all in one place.
+
+```bash
+pip install lionagi
+
+# Option 1: Docker (recommended — one command, no Node.js needed)
+li studio                       # auto-pulls ghcr.io/ohdearquant/lion-studio
+                                # UI → http://localhost:3000  API → http://localhost:8765
+
+# Option 2: From source (for development)
+git clone https://github.com/ohdearquant/lionagi.git && cd lionagi
+pip install ".[studio]"
+li studio --dev                 # starts backend + frontend with hot reload
+```
+
+## What's New in 0.26
+
+- **Lion Studio** — web UI for orchestrating agent workflows: projects, scheduled runs, execution DAGs, branch inspection, and multi-agent monitoring.
+- **Project management (ADR-0026)** — per-repo `.lionagi/config.toml` for project identity. Sessions auto-group by project. `--project NAME` flag on all CLI commands.
+- **Scheduled runs (ADR-0027)** — cron, interval, and GitHub-poll triggers with DAG-based conditional chains (`on_fail`/`on_success`). Studio becomes an active operator, not just a monitor.
 - **Agent infrastructure** — `AgentConfig` presets (`.coding()`, `.research()`) with built-in permission policies, hooks, and tool registration via `create_agent()`.
 - **Sandbox tool** — `SandboxSession` uses git worktrees for isolated editing: `create()` → edit → `diff()` → `commit()` → `merge()` or `discard()`.
-- **New providers** — DeepSeek (`DEEPSEEK_API_KEY`) and Pi (via [Pi Code CLI](https://pi.ai)) are now supported as CLI agent backends.
-- **Settings merge** — global `~/.lionagi/settings.yaml` and per-project `.lionagi/settings.yaml` are merged automatically at startup.
 
 ## Install
 

@@ -3,7 +3,7 @@ import dagre from "dagre";
 import type { Node, Edge } from "reactflow";
 
 const NODE_WIDTH = 210;
-const NODE_HEIGHT = 80;
+const NODE_HEIGHT = 64;
 
 export function getLayoutedElements(
   nodes: Node[],
@@ -14,10 +14,10 @@ export function getLayoutedElements(
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({
     rankdir: direction,
-    nodesep: 60,
-    ranksep: 120,
-    marginx: 40,
-    marginy: 40,
+    nodesep: 36,
+    ranksep: 90,
+    marginx: 28,
+    marginy: 24,
   });
 
   for (const node of nodes) {

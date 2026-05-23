@@ -17,8 +17,9 @@ async def list_runs(
     # F-A3-7 (ADR-0005): renamed from ?worker= to ?playbook= — "worker" is
     # not in lionagi's Studio vocabulary per ADR-0005.
     playbook: str | None = Query(default=None, description="Case-insensitive playbook contains filter"),
+    project: str | None = Query(default=None, description="Exact project name filter (ADR-0026)"),
 ) -> dict[str, Any]:
-    runs = await runs_svc.list_runs(playbook=playbook, status=status)
+    runs = await runs_svc.list_runs(playbook=playbook, status=status, project=project)
     return runs_svc.paginate_runs(runs, page=page, per_page=per_page)
 
 

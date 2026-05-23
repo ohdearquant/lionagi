@@ -4,8 +4,13 @@ import type {
   DeclarativeArgSpec,
   DeclarativePlaybookData,
   PlaybookFormat,
+  ProjectDetail,
+  ProjectSummary,
   RunDetail,
   RunSummary,
+  ScheduleDetail,
+  ScheduleRunSummary,
+  ScheduleSummary,
   ShowDetail,
   ShowEvent,
   ShowSummary,
@@ -17,7 +22,7 @@ import type {
   WorkerSummary,
 } from "./types";
 
-export const API_BASE = process.env.NEXT_PUBLIC_STUDIO_API_BASE ?? "http://localhost:8765";
+export const API_BASE = process.env.NEXT_PUBLIC_STUDIO_API_BASE ?? "";
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, init);
@@ -34,6 +39,7 @@ export interface RunListParams {
   per_page?: number;
   status?: string[];
   playbook?: string;
+  project?: string;
 }
 
 export interface RunListResponse {
@@ -51,6 +57,7 @@ export async function listRuns(params?: RunListParams): Promise<RunListResponse>
   if (params?.page != null) query.set("page", String(params.page));
   if (params?.per_page != null) query.set("per_page", String(params.per_page));
   if (params?.playbook) query.set("playbook", params.playbook);
+  if (params?.project) query.set("project", params.project);
   for (const value of params?.status ?? []) query.append("status", value);
   const suffix = query.toString() ? `?${query.toString()}` : "";
   return fetchJson<RunListResponse>(`/api/runs${suffix}`);
@@ -719,6 +726,51 @@ export async function pruneAdmin(body: AdminPruneRequest): Promise<{ pruned: num
   });
 }
 
+// ─── Projects (ADR-0026) ──────────────────────────────────────────────────────
+
+export interface ProjectListResponse {
+  projects: ProjectSummary[];
+  unassigned_count: number;
+}
+
+export async function listProjects(): Promise<ProjectListResponse> {
+  return fetchJson<ProjectListResponse>("/api/projects");
+}
+
+export async function getProject(name: string): Promise<ProjectDetail> {
+  return fetchJson<ProjectDetail>(`/api/projects/${encodeURIComponent(name)}`);
+}
+
+export async function createProject(data: {
+  name: string;
+  github?: string;
+  description?: string;
+  path?: string;
+}): Promise<unknown> {
+  return fetchJson<unknown>("/api/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateProject(
+  name: string,
+  data: { github?: string; description?: string; path?: string },
+): Promise<unknown> {
+  return fetchJson<unknown>(`/api/projects/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteProject(name: string): Promise<unknown> {
+  return fetchJson<unknown>(`/api/projects/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
 // ─── Teams ────────────────────────────────────────────────────────────────────
 
 export interface TeamSummary {
@@ -782,4 +834,79 @@ export interface StudioStats {
 
 export async function getStats(): Promise<StudioStats> {
   return fetchJson<StudioStats>("/api/stats");
+}
+
+// ─── Schedules (ADR-0027) ───────────────────────────────────────────────────
+
+export interface ScheduleListResponse {
+  schedules: ScheduleSummary[];
+}
+
+export async function listSchedules(params?: {
+  enabled?: boolean;
+  trigger_type?: string;
+  project?: string;
+}): Promise<ScheduleListResponse> {
+  const query = new URLSearchParams();
+  if (params?.enabled !== undefined) query.set("enabled", String(params.enabled));
+  if (params?.trigger_type) query.set("trigger_type", params.trigger_type);
+  if (params?.project) query.set("project", params.project);
+  const qs = query.toString();
+  return fetchJson<ScheduleListResponse>(`/api/schedules/${qs ? `?${qs}` : ""}`);
+}
+
+export async function getSchedule(id: string): Promise<ScheduleDetail> {
+  return fetchJson<ScheduleDetail>(`/api/schedules/${encodeURIComponent(id)}`);
+}
+
+export async function createSchedule(data: Record<string, unknown>): Promise<{ id: string; name: string }> {
+  return fetchJson<{ id: string; name: string }>("/api/schedules/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateSchedule(id: string, data: Record<string, unknown>): Promise<unknown> {
+  return fetchJson<unknown>(`/api/schedules/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteSchedule(id: string): Promise<unknown> {
+  return fetchJson<unknown>(`/api/schedules/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function enableSchedule(id: string): Promise<unknown> {
+  return fetchJson<unknown>(`/api/schedules/${encodeURIComponent(id)}/enable`, {
+    method: "POST",
+  });
+}
+
+export async function disableSchedule(id: string): Promise<unknown> {
+  return fetchJson<unknown>(`/api/schedules/${encodeURIComponent(id)}/disable`, {
+    method: "POST",
+  });
+}
+
+export async function triggerSchedule(id: string): Promise<{ run_id: string }> {
+  return fetchJson<{ run_id: string }>(`/api/schedules/${encodeURIComponent(id)}/trigger`, {
+    method: "POST",
+  });
+}
+
+export async function listScheduleRuns(
+  scheduleId: string,
+  params?: { status?: string; limit?: number; offset?: number },
+): Promise<{ runs: ScheduleRunSummary[]; has_next: boolean }> {
+  const query = new URLSearchParams();
+  if (params?.status) query.set("status", params.status);
+  if (params?.limit != null) query.set("limit", String(params.limit));
+  if (params?.offset != null) query.set("offset", String(params.offset));
+  const qs = query.toString();
+  return fetchJson(`/api/schedules/${encodeURIComponent(scheduleId)}/runs${qs ? `?${qs}` : ""}`);
 }

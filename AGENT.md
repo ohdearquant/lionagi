@@ -34,7 +34,7 @@ CI runs on Python 3.10, 3.11, 3.12, 3.13. Async mode is auto-detected.
 - `lionagi/service/` — iModel, provider connections, rate limiting
 - `lionagi/ln/` — concurrency utils (alcall, bcall), fuzzy JSON, sentinels
 - `lionagi/tools/` — tool interfaces and built-ins
-- `lionagi/cli/` — `li` command; `cli/orchestrate/` (flow, fanout); `cli/_runs.py` (RunDir); `cli/_logging.py`; `cli/team.py`
+- `lionagi/cli/` — `li` command; `cli/orchestrate/` (flow, fanout); `cli/_runs.py` (RunDir); `cli/_logging.py`; `cli/team.py`; `cli/schedule.py` (`li schedule`); `cli/_project.py` (project detection)
 - `tests/` — mirrors package structure
 - `benchmarks/` — micro-benchmark runners and baselines
 
@@ -153,3 +153,51 @@ config.permission_policy = policy
 ```
 
 **Settings** — place `.lionagi/settings.yaml` in the project root to override defaults. Global settings live at `~/.lionagi/settings.yaml`; project settings win on conflict.
+
+**Project identity** — place `.lionagi/config.toml` in the repo root (committed, no secrets) to declare the project name:
+
+```toml
+[project]
+name = "lionagi"
+github = "ohdearquant/lionagi"
+```
+
+This is separate from `settings.yaml` (which is gitignored/local). The detection cascade at session creation (`lionagi/cli/_project.py`):
+1. Walk up from cwd → read `.lionagi/config.toml` → `[project].name`
+2. Check `project_overrides` in `~/.lionagi/settings.yaml` (key = `org/repo` remote or absolute path prefix)
+3. Parse git remote URL → derive `org/repo` as fallback
+4. Non-git directory → `null` (shown as "Unassigned" in Studio)
+
+## Scheduled Runs
+
+Lion Studio can fire agent work on a schedule. The scheduler engine runs in-process inside the Studio server (`apps/studio/server/scheduler/engine.py`) and ticks every 30 seconds.
+
+**CLI** (`lionagi/cli/schedule.py`):
+
+```bash
+li schedule list                                      # List all schedules
+li schedule create nightly --trigger cron \
+    --cron "0 0 * * *" --action play \
+    --playbook perf-opt                               # Cron schedule
+li schedule create pr-review --trigger github \
+    --repo ohdearquant/lionagi --poll 300 \
+    --action flow --model claude/sonnet \
+    --prompt "Review PR #{{pr_number}}"               # GitHub poll schedule
+li schedule enable <name>                             # Enable
+li schedule disable <name>                            # Disable (no delete)
+li schedule trigger <name>                            # Fire immediately
+li schedule delete <name>                             # Remove
+li schedule runs <name>                               # Execution history
+```
+
+The CLI writes directly to `state.db` — Studio server does not need to be running for CRUD. Schedules only fire while the Studio server is running.
+
+**Trigger types**: `cron` (5-field), `interval` (seconds), `github_poll` (polls PR events, cursor-based, ETag-cached).
+
+**Action kinds**: `agent`, `flow`, `fanout`, `play` — each maps to the corresponding `li` subcommand, spawned via `asyncio.create_subprocess_exec`.
+
+**Conditional chains**: Each schedule action can define `on_fail` / `on_success` as nested action definitions. Exit code 0 follows `on_success`; non-zero follows `on_fail`. Chain depth capped at 10.
+
+**Agent tools** (`lionagi/tools/schedule.py`): `schedule_create`, `schedule_cancel`, `schedule_list` — register on any Branch so agents can schedule/cancel their own follow-up work.
+
+**New tables in `state.db`**: `schedules` (one row per definition) and `schedule_runs` (one row per firing). Each fire creates an `invocations` row; child sessions link via `LIONAGI_INVOCATION_ID` env var.

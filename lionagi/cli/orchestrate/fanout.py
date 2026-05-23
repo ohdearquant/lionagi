@@ -56,6 +56,7 @@ async def _run_fanout(
     fast: bool = False,
     playbook_name: str | None = None,
     invocation_id: str | None = None,
+    project: str | None = None,
 ) -> str:
     """Three-phase fan-out: decompose → fan out → synthesize."""
     env = setup_orchestration(
@@ -93,6 +94,7 @@ async def _run_fanout(
         model=_orc_ms.model if _orc_ms else None,
         provider=_orc_provider,
         effort=env.effort,
+        project=project,
     )
 
     inner_kw = dict(

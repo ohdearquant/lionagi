@@ -78,12 +78,16 @@ Modules: chat, parse, operate, ReAct, select, interpret, communicate, run, act. 
 
 - `cli/agent.py` — `li agent`: one-shot or resumed turn
 - `cli/team.py` — `li team`: inbox (`~/.lionagi/teams/{id}.json`), concurrent writes via `fcntl.flock`
+- `cli/schedule.py` — `li schedule`: CRUD + manual trigger for scheduled runs (see ADR-0027)
+- `cli/_project.py` — `detect_project(cwd)`: returns `(project_name, project_source)` via detection cascade (see ADR-0026)
 - `cli/orchestrate/` — `li o fanout` / `li o flow`:
   - `flow.py` — FlowAgent + FlowOp DAG. `--team-mode` enables `li team` routing mid-pipeline.
   - `_common.py` — `AgentRequest` schema + `TEAM_COORD_SECTION` worker prompt template
   - `fanout.py` — flat parallel workers · `_orchestration.py` — shared setup/finalize
 
 `FlowAgent`, `FlowOp`, `FlowPlan`, `FlowControlVerdict` use `Field(description=...)` — schema-driven prompting.
+
+Project detection runs at every session creation site (`cli/agent.py`, `cli/orchestrate/_orchestration.py`, `cli/state.py`). The resolved `project` and `project_source` columns are written to the `sessions` table and displayed in Studio.
 
 ### Persistence (`lionagi/cli/_runs.py`)
 

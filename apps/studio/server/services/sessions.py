@@ -119,6 +119,8 @@ async def list_sessions() -> list[dict[str, Any]]:
                 s.provider,
                 s.effort,
                 s.agent_hash,
+                s.project,
+                s.project_source,
                 COUNT(DISTINCT b.id) AS branch_count,
                 COALESCE(SUM(
                     json_array_length(p.collection)
@@ -160,6 +162,9 @@ async def list_sessions() -> list[dict[str, Any]]:
             "show_topic": row["show_topic"],
             "show_play_name": row["show_play_name"],
             "source_kind": row["source_kind"] or "live",
+            # ADR-0026: project detection.
+            "project": row["project"],
+            "project_source": row["project_source"],
         }
         for row in rows
     ]
@@ -178,7 +183,7 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
                       show_topic, show_play_name, artifacts_path, source_kind,
                       status, started_at, ended_at,
                       model, provider, effort, agent_hash, invocation_id,
-                      node_metadata
+                      node_metadata, project, project_source
                FROM sessions WHERE id = ?""",
             (session_id,),
         )
@@ -293,6 +298,9 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
         "effort": session_row["effort"],
         "agent_hash": session_row["agent_hash"],
         "invocation_id": session_row["invocation_id"],
+        # ADR-0026: project detection.
+        "project": session_row["project"],
+        "project_source": session_row["project_source"],
         "graph": _graph_from_metadata(session_row["node_metadata"]),
         "segments": (_parse_metadata(session_row["node_metadata"]) or {}).get("segments"),
     }

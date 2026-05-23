@@ -522,6 +522,7 @@ def _adapt_detail(
 async def list_runs(
     playbook: str | None = None,
     status: str | list[str] | None = None,
+    project: str | None = None,
 ) -> list[dict[str, Any]]:
     """List runs from SQLite sessions table (F-A1-1, ADR-0004 rewire).
 
@@ -548,6 +549,8 @@ async def list_runs(
     out = []
     for s in sessions:
         if playbook and playbook.lower() not in (s.get("playbook_name") or "").lower():
+            continue
+        if project and s.get("project") != project:
             continue
         if status_set and s.get("status") not in status_set:
             continue
@@ -602,6 +605,9 @@ async def list_runs(
             "effective_health": effective_health,
             "branch_count": s.get("branch_count", 0),
             "message_count": s.get("message_count", 0),
+            # ADR-0026: project detection.
+            "project": s.get("project"),
+            "project_source": s.get("project_source"),
         })
     return out
 

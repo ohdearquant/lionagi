@@ -12,6 +12,7 @@ dependencies = [
     "aiohttp>=3.13.0",
     "anyio>=4.10.0",
     "backoff>=2.1.0",
+    "croniter>=1.4",
     "json-repair>=0.58.0",
     "msgspec>=0.20.0",
     "pydantic>=2.8.0",
