@@ -904,14 +904,39 @@ async def _run_flow_inner(
             "depends_on": op.depends_on or [],
         }
 
-    # Progress callback for real-time status
+    # Progress callback for real-time status + branch lifecycle
     def _progress(op_id, name, status, elapsed):
         if status == "started":
             progress(f"  ▶ {name} started")
+            _update_branch_status(name, "running")
         elif status == "completed":
             progress(f"  ✓ {name} done ({elapsed:.1f}s)")
+            _update_branch_status(name, "completed")
         elif status == "failed":
             progress(f"  ✗ {name} FAILED ({elapsed:.1f}s)")
+            _update_branch_status(name, "failed")
+
+    def _update_branch_status(branch_name: str, new_status: str):
+        ctx = getattr(env, "_live_persist", None)
+        if not ctx or not ctx.get("db"):
+            return
+        branch = next((b for b in env.session.branches if b.name == branch_name), None)
+        if not branch:
+            return
+        import asyncio as _aio
+
+        async def _do():
+            try:
+                kw = {"status": new_status}
+                if new_status == "running":
+                    kw["started_at"] = time.time()
+                elif new_status in ("completed", "failed"):
+                    kw["ended_at"] = time.time()
+                await ctx["db"].update_branch(str(branch.id), **kw)
+            except Exception:
+                pass
+
+        _aio.ensure_future(_do())
 
     # Persist DAG graph to SQLite early so Studio shows it during execution
     _early_graph = {
@@ -927,17 +952,12 @@ async def _run_flow_inner(
     env._finalize_extras = _early_graph
     ctx = getattr(env, "_live_persist", None)
     if ctx and ctx.get("db"):
-        import asyncio as _aio
-
-        async def _persist_graph():
-            try:
-                await ctx["db"].update_session(
-                    ctx["session_id"], node_metadata=json.dumps(_early_graph)
-                )
-            except Exception:
-                pass
-
-        _aio.ensure_future(_persist_graph())
+        try:
+            await ctx["db"].update_session(
+                ctx["session_id"], node_metadata=json.dumps(_early_graph)
+            )
+        except Exception:
+            pass
 
     # Execute regular ops
     t_exec = time.monotonic()

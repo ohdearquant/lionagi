@@ -38,6 +38,9 @@ def _graph_from_metadata(raw: str | None) -> dict[str, Any] | None:
         if not isinstance(op, dict) or "id" not in op:
             continue
         agent = agent_map.get(op.get("agent_id", ""), {})
+        depends_on = op.get("depends_on", [])
+        if not isinstance(depends_on, list):
+            depends_on = []
         nodes.append({
             "id": op["id"],
             "label": op["id"],
@@ -46,10 +49,10 @@ def _graph_from_metadata(raw: str | None) -> dict[str, Any] | None:
             "prompt": "",
             "capacity": 1,
             "timeout": None,
-            "inputs": op.get("depends_on", []),
+            "inputs": depends_on,
             "outputs": [],
         })
-        for dep in op.get("depends_on", []):
+        for dep in depends_on:
             edges.append({
                 "id": f"e-{dep}-{op['id']}",
                 "source": dep,
@@ -189,10 +192,16 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
             else None
         )
 
-        branch_cur = await db.execute(
-            "SELECT id, name, created_at, progression_id, model, provider, agent_name FROM branches WHERE session_id = ? ORDER BY created_at",
-            (session_id,),
-        )
+        try:
+            branch_cur = await db.execute(
+                "SELECT id, name, created_at, progression_id, model, provider, agent_name, status, started_at, ended_at FROM branches WHERE session_id = ? ORDER BY created_at",
+                (session_id,),
+            )
+        except Exception:
+            branch_cur = await db.execute(
+                "SELECT id, name, created_at, progression_id, model, provider, agent_name FROM branches WHERE session_id = ? ORDER BY created_at",
+                (session_id,),
+            )
         branch_rows = await branch_cur.fetchall()
 
         branches = []
@@ -227,6 +236,7 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
                         by_id = {r["id"]: _format_message(r) for r in msg_rows}
                         messages = [by_id[mid] for mid in msg_ids if mid in by_id]
 
+            br_keys = br.keys()
             branches.append(
                 {
                     "id": br["id"],
@@ -236,6 +246,9 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
                     "model": br["model"],
                     "provider": br["provider"],
                     "agent_name": br["agent_name"],
+                    "status": br["status"] if "status" in br_keys else None,
+                    "started_at": br["started_at"] if "started_at" in br_keys else None,
+                    "ended_at": br["ended_at"] if "ended_at" in br_keys else None,
                 }
             )
 

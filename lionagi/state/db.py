@@ -119,6 +119,9 @@ _BRANCH_COLUMNS = frozenset(
         "model",
         "provider",
         "agent_name",
+        "status",
+        "started_at",
+        "ended_at",
     }
 )
 
@@ -351,6 +354,9 @@ class StateDB:
             ("model", "TEXT"),
             ("provider", "TEXT"),
             ("agent_name", "TEXT"),
+            ("status", "TEXT"),
+            ("started_at", "REAL"),
+            ("ended_at", "REAL"),
         ],
         "shows": [
             ("status_source", "TEXT NOT NULL DEFAULT 'unknown'"),

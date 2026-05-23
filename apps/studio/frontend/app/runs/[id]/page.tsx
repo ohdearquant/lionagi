@@ -613,10 +613,16 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
     });
   };
 
-  const branchStatus = done ? "completed" : live ? "running" : "completed";
+  const sessionStatus = done ? "completed" : live ? "running" : "completed";
   const steps = useMemo(
-    () => (session ? session.branches.map((b) => branchToRunStep(b, branchStatus)) : []),
-    [session, branchStatus],
+    () =>
+      session
+        ? session.branches.map((b) => {
+            const bStatus = (b as unknown as Record<string, unknown>).status as string | null;
+            return branchToRunStep(b, bStatus || sessionStatus);
+          })
+        : [],
+    [session, sessionStatus],
   );
 
   // Extract errors across all branches
