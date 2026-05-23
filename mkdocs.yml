@@ -200,6 +200,7 @@ nav:
   - Reference:
       - Advanced: reference/advanced.md
       - Providers: reference/providers.md
+      - Migrate Logs: reference/migrate-logs.md
       - Troubleshooting: reference/troubleshooting.md
 
   - Migration:
