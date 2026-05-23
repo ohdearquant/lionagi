@@ -170,7 +170,7 @@ def test_delete_non_studio_project_returns_403(tmp_path, monkeypatch):
         async with StateDB(fake_db) as db:
             await db.register_project("auto-detected", "git_remote")
 
-    asyncio.get_event_loop().run_until_complete(_seed())
+    asyncio.run(_seed())
 
     client = _make_client(tmp_path, monkeypatch)
     r = client.delete("/api/projects/auto-detected")
