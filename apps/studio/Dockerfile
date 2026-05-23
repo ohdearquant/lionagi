@@ -11,7 +11,7 @@ FROM node:22-slim AS frontend-build
 
 WORKDIR /build
 COPY apps/studio/frontend/package.json apps/studio/frontend/package-lock.json* ./
-RUN npm ci --prefer-offline 2>/dev/null || npm install
+RUN npm ci --legacy-peer-deps 2>/dev/null || npm install --legacy-peer-deps
 COPY apps/studio/frontend/ ./
 ENV NEXT_PUBLIC_STUDIO_API_BASE=""
 RUN npm run build
