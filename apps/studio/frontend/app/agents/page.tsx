@@ -114,96 +114,87 @@ function FrontmatterEditForm({ content, onChange }: FrontmatterEditFormProps) {
     <div className="flex flex-1 flex-col overflow-hidden">
       {/* Frontmatter form */}
       <div className="shrink-0 border-b border-edge px-4 py-3">
-        <div className="mb-2 text-meta font-medium uppercase tracking-[0.06em] text-content-muted">
-          Frontmatter
-        </div>
-        <div className="flex flex-wrap gap-x-6 gap-y-3">
-          {/* model */}
-          <label className="flex flex-col gap-1">
-            <span className="text-meta uppercase tracking-[0.06em] text-content-muted">Model</span>
-            <input
-              type="text"
-              value={typeof fm.model === "string" ? fm.model : ""}
-              onChange={(e) => setField("model", e.target.value || undefined)}
-              placeholder="e.g. claude-sonnet-4-5"
-              className="rounded border border-edge bg-surface-input px-2 py-1 font-mono text-meta text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none w-52"
-            />
-          </label>
+        <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
+          {/* Model + Effort group */}
+          <div className="flex items-end gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">Model</span>
+              <input
+                type="text"
+                value={typeof fm.model === "string" ? fm.model : ""}
+                onChange={(e) => setField("model", e.target.value || undefined)}
+                placeholder="e.g. codex/gpt-5.5"
+                className="w-44 rounded border border-edge bg-surface-input px-2 py-1.5 font-mono text-meta text-content-primary placeholder-content-muted/50 focus:border-interactive-primary focus:outline-none focus:ring-1 focus:ring-interactive-primary/30"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">Effort</span>
+              <select
+                value={typeof fm.effort === "string" ? fm.effort : ""}
+                onChange={(e) => setField("effort", e.target.value || undefined)}
+                className="rounded border border-edge bg-surface-input px-2 py-1.5 text-meta text-content-primary focus:border-interactive-primary focus:outline-none focus:ring-1 focus:ring-interactive-primary/30"
+              >
+                {EFFORT_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>
+                    {opt || "—"}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
 
-          {/* effort */}
-          <label className="flex flex-col gap-1">
-            <span className="text-meta uppercase tracking-[0.06em] text-content-muted">Effort</span>
-            <select
-              value={typeof fm.effort === "string" ? fm.effort : ""}
-              onChange={(e) => setField("effort", e.target.value || undefined)}
-              className="rounded border border-edge bg-surface-input px-2 py-1 text-meta text-content-primary focus:border-interactive-primary focus:outline-none"
-            >
-              {EFFORT_OPTIONS.map((opt) => (
-                <option key={opt} value={opt}>
-                  {opt || "—"}
-                </option>
-              ))}
-            </select>
-          </label>
+          {/* Divider */}
+          <div className="hidden sm:block h-8 w-px bg-edge" />
 
-          {/* permission_mode */}
-          <label className="flex flex-col gap-1">
-            <span className="text-meta uppercase tracking-[0.06em] text-content-muted">
-              Permission Mode
-            </span>
-            <select
-              value={typeof fm.permission_mode === "string" ? fm.permission_mode : ""}
-              onChange={(e) => setField("permission_mode", e.target.value || undefined)}
-              className="rounded border border-edge bg-surface-input px-2 py-1 text-meta text-content-primary focus:border-interactive-primary focus:outline-none"
-            >
-              {PERMISSION_MODE_OPTIONS.map((opt) => (
-                <option key={opt} value={opt}>
-                  {opt || "—"}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {/* yolo */}
-          <label className="flex flex-col gap-1">
-            <span className="text-meta uppercase tracking-[0.06em] text-content-muted">Yolo</span>
-            <div className="flex items-center h-[30px]">
+          {/* Permission + toggles group */}
+          <div className="flex items-end gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">Permission</span>
+              <select
+                value={typeof fm.permission_mode === "string" ? fm.permission_mode : ""}
+                onChange={(e) => setField("permission_mode", e.target.value || undefined)}
+                className="rounded border border-edge bg-surface-input px-2 py-1.5 text-meta text-content-primary focus:border-interactive-primary focus:outline-none focus:ring-1 focus:ring-interactive-primary/30"
+              >
+                {PERMISSION_MODE_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>
+                    {opt || "—"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-1.5 h-[34px] cursor-pointer select-none">
               <input
                 type="checkbox"
                 checked={fm.yolo === true}
                 onChange={(e) => setField("yolo", e.target.checked || undefined)}
-                className="h-4 w-4 rounded border-edge accent-interactive-primary"
+                className="h-3.5 w-3.5 rounded border-edge accent-interactive-primary"
               />
-            </div>
-          </label>
-
-          {/* lion_system */}
-          <label className="flex flex-col gap-1">
-            <span className="text-meta uppercase tracking-[0.06em] text-content-muted">
-              Lion System
-            </span>
-            <div className="flex items-center h-[30px]">
+              <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">Yolo</span>
+            </label>
+            <label className="flex items-center gap-1.5 h-[34px] cursor-pointer select-none">
               <input
                 type="checkbox"
                 checked={fm.lion_system === true}
                 onChange={(e) => setField("lion_system", e.target.checked || undefined)}
-                className="h-4 w-4 rounded border-edge accent-interactive-primary"
+                className="h-3.5 w-3.5 rounded border-edge accent-interactive-primary"
               />
-            </div>
-          </label>
+              <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">Lion System</span>
+            </label>
+          </div>
         </div>
       </div>
 
       {/* Body textarea */}
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div className="shrink-0 px-4 pt-2 pb-1 text-meta font-medium uppercase tracking-[0.06em] text-content-muted">
+      <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+        <div className="shrink-0 pt-2 pb-1 text-meta font-medium uppercase tracking-[0.06em] text-content-muted">
           Body
         </div>
         <textarea
           value={body}
           onChange={(e) => setBody(e.target.value)}
           spellCheck={false}
-          className="flex-1 resize-none bg-surface-base px-4 pb-4 font-mono text-meta text-content-primary focus:outline-none"
+          className="flex-1 min-h-[300px] resize-y rounded border border-edge bg-surface-input p-3 font-mono text-meta leading-relaxed text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none focus:ring-1 focus:ring-interactive-primary/30"
+          placeholder="Agent body (markdown)..."
         />
       </div>
     </div>
@@ -649,7 +640,7 @@ function VersionHistory({
   const sorted = [...versions].sort((a, b) => b.version - a.version);
 
   return (
-    <div className="flex w-56 shrink-0 flex-col border-l border-edge">
+    <div className={`flex shrink-0 flex-col border-l border-edge transition-all ${sorted.length === 0 ? "w-36" : "w-56"}`}>
       <div className="border-b border-edge px-3 py-2">
         <span className="text-meta font-medium uppercase tracking-[0.06em] text-content-muted">
           Version History
