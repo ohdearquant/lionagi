@@ -26,7 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Install lionagi
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md LICENSE ./
 COPY lionagi/ ./lionagi/
 RUN pip install --no-cache-dir ".[studio]"
 
