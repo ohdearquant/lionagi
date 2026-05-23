@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import Button from "@/components/Button";
 import Badge from "@/components/Badge";
+import Markdown from "@/components/Markdown";
 import {
   listAgents,
   getDefinition,
@@ -13,6 +14,201 @@ import {
 } from "@/lib/api";
 import type { DefinitionDetail, DefinitionVersion } from "@/lib/api";
 import type { AgentProfile, AgentProfileSummary } from "@/lib/types";
+
+// ─── Frontmatter parsing ──────────────────────────────────────────────────────
+
+interface ParsedFrontmatter {
+  model?: string;
+  effort?: string;
+  yolo?: boolean;
+  permission_mode?: string;
+  lion_system?: boolean;
+  [key: string]: unknown;
+}
+
+interface ParsedContent {
+  frontmatter: ParsedFrontmatter;
+  body: string;
+  hasFrontmatter: boolean;
+}
+
+function parseFrontmatter(raw: string): ParsedContent {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(raw.trimStart());
+  if (!match) {
+    return { frontmatter: {}, body: raw, hasFrontmatter: false };
+  }
+  const yamlText = match[1];
+  const body = match[2] ?? "";
+  const frontmatter: ParsedFrontmatter = {};
+
+  for (const line of yamlText.split("\n")) {
+    const colon = line.indexOf(":");
+    if (colon === -1) continue;
+    const key = line.slice(0, colon).trim();
+    const val = line.slice(colon + 1).trim();
+    if (!key) continue;
+    // Parse booleans and strings — no external YAML lib needed for flat frontmatter
+    if (val === "true") {
+      frontmatter[key] = true;
+    } else if (val === "false") {
+      frontmatter[key] = false;
+    } else if (val === "" || val === "null" || val === "~") {
+      frontmatter[key] = undefined;
+    } else {
+      // Strip optional surrounding quotes
+      frontmatter[key] = val.replace(/^["']|["']$/g, "");
+    }
+  }
+
+  return { frontmatter, body, hasFrontmatter: true };
+}
+
+function serializeFrontmatter(fm: ParsedFrontmatter): string {
+  const lines: string[] = [];
+  for (const [key, value] of Object.entries(fm)) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === "boolean") {
+      lines.push(`${key}: ${value}`);
+    } else {
+      lines.push(`${key}: ${String(value)}`);
+    }
+  }
+  return `---\n${lines.join("\n")}\n---\n`;
+}
+
+function reconstructContent(fm: ParsedFrontmatter, body: string): string {
+  return serializeFrontmatter(fm) + body;
+}
+
+// ─── Edit form for frontmatter + body ────────────────────────────────────────
+
+interface FrontmatterEditFormProps {
+  content: string;
+  onChange: (newContent: string) => void;
+}
+
+const EFFORT_OPTIONS = ["", "low", "medium", "high", "xhigh", "max"];
+const PERMISSION_MODE_OPTIONS = ["", "default", "acceptEdits", "bypassPermissions"];
+
+function FrontmatterEditForm({ content, onChange }: FrontmatterEditFormProps) {
+  const { frontmatter: initialFm, body: initialBody, hasFrontmatter } = parseFrontmatter(content);
+
+  const [fm, setFm] = useState<ParsedFrontmatter>(initialFm);
+  const [body, setBody] = useState(initialBody);
+
+  // Sync upward whenever fm or body changes
+  useEffect(() => {
+    if (hasFrontmatter || Object.keys(fm).length > 0) {
+      onChange(reconstructContent(fm, body));
+    } else {
+      onChange(body);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fm, body]);
+
+  function setField(key: keyof ParsedFrontmatter, value: unknown) {
+    setFm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  return (
+    <div className="flex flex-1 flex-col overflow-hidden">
+      {/* Frontmatter form */}
+      <div className="shrink-0 border-b border-edge px-4 py-3">
+        <div className="mb-2 text-meta font-medium uppercase tracking-[0.06em] text-content-muted">
+          Frontmatter
+        </div>
+        <div className="flex flex-wrap gap-x-6 gap-y-3">
+          {/* model */}
+          <label className="flex flex-col gap-1">
+            <span className="text-meta uppercase tracking-[0.06em] text-content-muted">Model</span>
+            <input
+              type="text"
+              value={typeof fm.model === "string" ? fm.model : ""}
+              onChange={(e) => setField("model", e.target.value || undefined)}
+              placeholder="e.g. claude-sonnet-4-5"
+              className="rounded border border-edge bg-surface-input px-2 py-1 font-mono text-meta text-content-primary placeholder-content-muted focus:border-interactive-primary focus:outline-none w-52"
+            />
+          </label>
+
+          {/* effort */}
+          <label className="flex flex-col gap-1">
+            <span className="text-meta uppercase tracking-[0.06em] text-content-muted">Effort</span>
+            <select
+              value={typeof fm.effort === "string" ? fm.effort : ""}
+              onChange={(e) => setField("effort", e.target.value || undefined)}
+              className="rounded border border-edge bg-surface-input px-2 py-1 text-meta text-content-primary focus:border-interactive-primary focus:outline-none"
+            >
+              {EFFORT_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt || "—"}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {/* permission_mode */}
+          <label className="flex flex-col gap-1">
+            <span className="text-meta uppercase tracking-[0.06em] text-content-muted">
+              Permission Mode
+            </span>
+            <select
+              value={typeof fm.permission_mode === "string" ? fm.permission_mode : ""}
+              onChange={(e) => setField("permission_mode", e.target.value || undefined)}
+              className="rounded border border-edge bg-surface-input px-2 py-1 text-meta text-content-primary focus:border-interactive-primary focus:outline-none"
+            >
+              {PERMISSION_MODE_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt || "—"}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {/* yolo */}
+          <label className="flex flex-col gap-1">
+            <span className="text-meta uppercase tracking-[0.06em] text-content-muted">Yolo</span>
+            <div className="flex items-center h-[30px]">
+              <input
+                type="checkbox"
+                checked={fm.yolo === true}
+                onChange={(e) => setField("yolo", e.target.checked || undefined)}
+                className="h-4 w-4 rounded border-edge accent-interactive-primary"
+              />
+            </div>
+          </label>
+
+          {/* lion_system */}
+          <label className="flex flex-col gap-1">
+            <span className="text-meta uppercase tracking-[0.06em] text-content-muted">
+              Lion System
+            </span>
+            <div className="flex items-center h-[30px]">
+              <input
+                type="checkbox"
+                checked={fm.lion_system === true}
+                onChange={(e) => setField("lion_system", e.target.checked || undefined)}
+                className="h-4 w-4 rounded border-edge accent-interactive-primary"
+              />
+            </div>
+          </label>
+        </div>
+      </div>
+
+      {/* Body textarea */}
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="shrink-0 px-4 pt-2 pb-1 text-meta font-medium uppercase tracking-[0.06em] text-content-muted">
+          Body
+        </div>
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          spellCheck={false}
+          className="flex-1 resize-none bg-surface-base px-4 pb-4 font-mono text-meta text-content-primary focus:outline-none"
+        />
+      </div>
+    </div>
+  );
+}
 
 function messageFromError(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
@@ -365,16 +561,12 @@ function AgentDetail({ agentName, agentProfile }: AgentDetailProps) {
               Loading version...
             </div>
           ) : editing ? (
-            <textarea
-              value={editContent}
-              onChange={(e) => setEditContent(e.target.value)}
-              spellCheck={false}
-              className="flex-1 resize-none bg-surface-base p-4 font-mono text-meta text-content-primary focus:outline-none"
+            <FrontmatterEditForm
+              content={editContent}
+              onChange={setEditContent}
             />
           ) : (
-            <pre className="flex-1 overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-meta text-content-secondary">
-              {displayContent}
-            </pre>
+            <StructuredContentView content={displayContent} />
           )}
         </div>
 
@@ -387,6 +579,49 @@ function AgentDetail({ agentName, agentProfile }: AgentDetailProps) {
           onRestoreVersion={handleRestoreVersion}
           rollingBack={rollingBack}
         />
+      </div>
+    </div>
+  );
+}
+
+// ─── Structured view: frontmatter chips + rendered markdown body ──────────────
+
+function StructuredContentView({ content }: { content: string }) {
+  const { frontmatter: fm, body, hasFrontmatter } = parseFrontmatter(content);
+
+  // Collect non-empty frontmatter fields to display as chips
+  const chips: Array<{ label: string; value: string }> = [];
+  if (fm.model) chips.push({ label: "Model", value: String(fm.model) });
+  if (fm.effort) chips.push({ label: "Effort", value: String(fm.effort) });
+  if (fm.permission_mode) chips.push({ label: "Permission", value: String(fm.permission_mode) });
+  if (fm.yolo === true) chips.push({ label: "Yolo", value: "true" });
+  if (fm.lion_system === true) chips.push({ label: "Lion System", value: "true" });
+  // Any other frontmatter keys not already covered
+  const knownKeys = new Set(["model", "effort", "permission_mode", "yolo", "lion_system"]);
+  for (const [k, v] of Object.entries(fm)) {
+    if (!knownKeys.has(k) && v !== undefined && v !== null) {
+      chips.push({ label: k, value: String(v) });
+    }
+  }
+
+  return (
+    <div className="flex flex-1 flex-col overflow-auto">
+      {hasFrontmatter && chips.length > 0 ? (
+        <div className="shrink-0 border-b border-edge px-4 py-3">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-meta">
+            {chips.map((chip) => (
+              <SummaryChip key={chip.label} label={chip.label} value={chip.value} />
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="flex-1 overflow-auto p-4">
+        {body.trim() ? (
+          <Markdown>{body}</Markdown>
+        ) : (
+          <p className="text-meta text-content-muted italic">No body content.</p>
+        )}
       </div>
     </div>
   );
