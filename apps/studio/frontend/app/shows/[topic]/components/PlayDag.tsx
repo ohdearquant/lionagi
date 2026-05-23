@@ -69,11 +69,12 @@ export default function PlayDag({ plays, showMd }: PlayDagProps) {
         background: "var(--surface-raised)",
         border: `1px solid ${statusColor(play.meta.status)}`,
         color: "var(--content-primary)",
-        fontSize: 11,
+        fontSize: 10,
         fontFamily: "monospace",
-        width: 200,
-        borderRadius: 6,
-        padding: "6px 10px",
+        width: 180,
+        borderRadius: 5,
+        padding: "4px 8px",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.12)",
       },
     }));
 
@@ -110,12 +111,12 @@ export default function PlayDag({ plays, showMd }: PlayDagProps) {
   }, [plays, showMd]);
 
   return (
-    <div style={{ height: 280 }} className="rounded border border-edge bg-surface-base">
+    <div style={{ height: 220 }} className="rounded border border-edge bg-surface-base">
       <ReactFlow
         nodes={nodes}
         edges={edges}
         fitView
-        fitViewOptions={{ padding: 0.3 }}
+        fitViewOptions={{ padding: 0.25 }}
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable={false}

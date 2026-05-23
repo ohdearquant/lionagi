@@ -65,45 +65,67 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
 
   return (
     <div
-      className="relative rounded-lg px-3 py-2.5"
+      className="relative rounded-md px-2.5 py-2"
       style={{
         background: bgColor,
         border: `${selected || status === "running" ? 2 : 1}px solid ${borderColor}`,
-        minWidth: 160,
-        maxWidth: 220,
-        transition: "border-color 0.2s, background 0.2s",
+        minWidth: 148,
+        maxWidth: 210,
+        boxShadow:
+          status === "running"
+            ? "0 0 0 3px color-mix(in srgb, var(--dag-running-border) 18%, transparent)"
+            : selected
+              ? "0 0 0 2px color-mix(in srgb, var(--status-selected) 22%, transparent)"
+              : "0 1px 3px rgba(0,0,0,0.12)",
+        transition: "border-color 0.2s, background 0.2s, box-shadow 0.2s",
       }}
     >
       <Handle
         type="target"
         position={Position.Left}
         style={{
-          width: 10,
-          height: 10,
-          background: "var(--edge-strong)",
-          borderColor: "var(--edge-default)",
+          width: 8,
+          height: 8,
+          background: "var(--edge-default)",
+          borderColor: "var(--surface-raised)",
+          borderWidth: 1.5,
         }}
       />
 
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-body font-semibold truncate" style={{ color: labelColor }}>
+      <div className="flex items-center justify-between gap-1.5">
+        <span
+          className="font-mono text-[11px] font-semibold leading-snug truncate"
+          style={{ color: labelColor }}
+        >
           {data.label}
         </span>
         {status === "completed" && (
-          <span className="shrink-0 text-meta" style={{ color: "var(--status-success)" }}>
+          <span
+            className="shrink-0 text-[10px] font-semibold"
+            style={{ color: "var(--status-success)" }}
+          >
             ✓
           </span>
         )}
         {status === "failed" && (
-          <span className="shrink-0 text-meta" style={{ color: "var(--status-error)" }}>
+          <span
+            className="shrink-0 text-[10px] font-semibold"
+            style={{ color: "var(--status-error)" }}
+          >
             ✕
           </span>
+        )}
+        {status === "running" && (
+          <span
+            className="shrink-0 h-1.5 w-1.5 rounded-full animate-pulse"
+            style={{ background: "var(--dag-running-border)" }}
+          />
         )}
       </div>
 
       {data.role && (
         <span
-          className="mt-1 inline-block rounded-full px-2 py-0.5 font-mono text-[10px]"
+          className="mt-1 inline-block rounded px-1.5 py-px font-mono text-[9px] leading-tight tracking-wide"
           style={{
             backgroundColor: `color-mix(in srgb, ${roleColor} 14%, transparent)`,
             color: roleColor,
@@ -114,7 +136,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
       )}
 
       {data.assignment && (
-        <div className="mt-1 truncate font-mono text-meta text-content-muted">
+        <div className="mt-0.5 truncate font-mono text-[10px] leading-snug text-content-muted">
           {data.assignment}
         </div>
       )}
@@ -122,26 +144,26 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
       {(data.durationSeconds != null ||
         (data.errorCount ?? 0) > 0 ||
         (data.toolCallCount ?? 0) > 0) && (
-        <div className="mt-1.5 flex items-center gap-2 text-meta tabular-nums">
+        <div className="mt-1 flex items-center gap-2 font-mono text-[9px] tabular-nums text-content-muted">
           {data.durationSeconds != null && data.durationSeconds >= 0 ? (
-            <span className="text-content-muted">{formatStepDuration(data.durationSeconds)}</span>
+            <span>{formatStepDuration(data.durationSeconds)}</span>
           ) : null}
           {(data.errorCount ?? 0) > 0 ? (
-            <span className="text-status-error">{data.errorCount} err</span>
+            <span style={{ color: "var(--status-error)" }}>{data.errorCount} err</span>
           ) : null}
           {(data.toolCallCount ?? 0) > 0 ? (
-            <span className="text-content-muted">{data.toolCallCount} calls</span>
+            <span>{data.toolCallCount} calls</span>
           ) : null}
         </div>
       )}
 
       {status === "running" && (
         <div
-          className="pointer-events-none absolute inset-0 rounded-lg"
+          className="pointer-events-none absolute inset-0 rounded-md"
           style={{
             border: "2px solid var(--dag-running-border)",
             animation: "pulse 1.5s ease-in-out infinite",
-            opacity: 0.4,
+            opacity: 0.35,
           }}
         />
       )}
@@ -150,10 +172,11 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         type="source"
         position={Position.Right}
         style={{
-          width: 10,
-          height: 10,
-          background: "var(--edge-strong)",
-          borderColor: "var(--edge-default)",
+          width: 8,
+          height: 8,
+          background: "var(--edge-default)",
+          borderColor: "var(--surface-raised)",
+          borderWidth: 1.5,
         }}
       />
     </div>
