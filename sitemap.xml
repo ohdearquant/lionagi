@@ -125,6 +125,14 @@
          <lastmod>2026-05-23</lastmod>
     </url>
     <url>
+         <loc>https://lionagi.ai/adrs/ADR-0026-project-detection/</loc>
+         <lastmod>2026-05-23</lastmod>
+    </url>
+    <url>
+         <loc>https://lionagi.ai/adrs/ADR-0027-scheduled-runs/</loc>
+         <lastmod>2026-05-23</lastmod>
+    </url>
+    <url>
          <loc>https://lionagi.ai/adrs/DECISION_LOG/</loc>
          <lastmod>2026-05-23</lastmod>
     </url>
