@@ -1,6 +1,6 @@
 # orchestrate
 
-Claude Code plugin for lionagi's multi-agent orchestration. Three skills and two agent profiles for planning DAG workflows, authoring playbooks, and running multi-play shows with quality gates.
+Claude Code plugin for lionagi's multi-agent orchestration. Nine skills and two agent profiles covering workflow planning, execution, quality gating, code review, debugging, and development methodology.
 
 ## Prerequisites
 
@@ -22,6 +22,12 @@ claude /plugin install orchestrate@lionagi
 | `orchestrate` | Plan and execute multi-agent workflows via `li o flow`, `li o fanout`, `li play` |
 | `show` | Orchestrate multi-play shows with quality gates and adaptive replanning |
 | `playbook` | Author `.playbook.yaml` files — reusable parametric workflow templates |
+| `pr-review` | Multi-perspective PR review with parallel specialist reviewers and critic synthesis |
+| `review` | General-purpose code review checklist (correctness, API, tests, readability, security) |
+| `security-review` | Threat-model security review rubric with CWE mapping and severity calibration |
+| `debug` | Systematic debugging workflow: research → orchestrate agents → escalate |
+| `summarize` | Mid-session context capture: checkpoint decisions, patterns, and progress |
+| `tdd` | Test-driven development discipline: Red-Green-Refactor with gate checks |
 
 ## Agent profiles
 
