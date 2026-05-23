@@ -32,7 +32,7 @@ def _make_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         async with StateDB(fake_db) as db:
             pass  # opens + applies schema
 
-    asyncio.get_event_loop().run_until_complete(_init())
+    asyncio.run(_init())
 
     from apps.studio.server.app import app
 
