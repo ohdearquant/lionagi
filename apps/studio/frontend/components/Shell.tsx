@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useEffect, useState, type ReactNode } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState, type ReactNode } from "react";
+import { listProjects } from "@/lib/api";
+import type { ProjectSummary } from "@/lib/types";
 
 type NavItem = {
   label: string;
@@ -11,6 +13,8 @@ type NavItem = {
 };
 
 const navItems: NavItem[] = [
+  { label: "Projects", href: "/projects" },
+  { label: "Schedules", href: "/schedules" },
   { label: "Playbooks", href: "/playbooks" },
   { label: "Agents", href: "/agents" },
   { label: "Plugins", href: "/plugins" },
@@ -108,6 +112,54 @@ function ThemeToggle() {
   );
 }
 
+// Global project selector — loads project list once and keeps it in sync with
+// the ?project= search param. Selecting a project sets the param on the current
+// page; clearing it removes the param entirely.
+function ProjectSelector() {
+  const router = useRouter();
+  const pathname = usePathname() ?? "/";
+  const searchParams = useSearchParams();
+  const currentProject = searchParams.get("project") ?? "";
+
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+
+  useEffect(() => {
+    listProjects()
+      .then((data) => setProjects(data.projects))
+      .catch(() => {
+        /* silently ignore — selector degrades to empty list */
+      });
+  }, []);
+
+  function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const value = e.target.value;
+    const params = new URLSearchParams(searchParams.toString());
+    if (value) {
+      params.set("project", value);
+    } else {
+      params.delete("project");
+    }
+    const qs = params.toString();
+    router.push(qs ? `${pathname}?${qs}` : pathname);
+  }
+
+  return (
+    <select
+      value={currentProject}
+      onChange={handleChange}
+      aria-label="Filter by project"
+      className="h-6 rounded border border-edge bg-surface-nav px-1.5 text-[11px] text-content-secondary focus:border-interactive-primary focus:outline-none hover:border-edge-strong transition-colors cursor-pointer"
+    >
+      <option value="">All Projects</option>
+      {projects.map((p) => (
+        <option key={p.name} value={p.name}>
+          {p.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 export default function Shell({ children }: ShellProps) {
   const pathname = usePathname() ?? "/";
 
@@ -171,6 +223,9 @@ export default function Shell({ children }: ShellProps) {
 
           {/* Right cluster */}
           <div className="flex items-center gap-1.5 self-center">
+            <Suspense fallback={null}>
+              <ProjectSelector />
+            </Suspense>
             <ThemeToggle />
           </div>
         </div>

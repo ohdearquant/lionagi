@@ -48,6 +48,9 @@ _SESSION_COLUMNS = frozenset(
         "provider",
         "effort",
         "agent_hash",
+        # ADR-0026: project detection for session organization.
+        "project",
+        "project_source",
     }
 )
 
@@ -347,6 +350,9 @@ class StateDB:
             ("provider", "TEXT"),
             ("effort", "TEXT"),
             ("agent_hash", "TEXT"),
+            # ADR-0026: project detection for session organization.
+            ("project", "TEXT"),
+            ("project_source", "TEXT"),
         ],
         "branches": [
             ("system_msg_id", "TEXT"),
@@ -366,6 +372,8 @@ class StateDB:
             # column defaults there; insert_artifact() always sets this.
             ("updated_at", "REAL"),
         ],
+        "schedules": [],
+        "schedule_runs": [],
     }
 
     async def _reconcile_columns(self) -> None:
@@ -465,7 +473,9 @@ class StateDB:
                   model           TEXT,
                   provider        TEXT,
                   effort          TEXT,
-                  agent_hash      TEXT
+                  agent_hash      TEXT,
+                  project         TEXT,
+                  project_source  TEXT
                 )
                 """
             )
@@ -660,9 +670,10 @@ class StateDB:
                playbook_name, agent_name, invocation_kind, show_topic,
                show_play_name, artifacts_path, source_kind,
                status, started_at, ended_at, last_message_at, invocation_id,
-               model, provider, effort, agent_hash)
+               model, provider, effort, agent_hash,
+               project, project_source)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?)""",
             (
                 session["id"],
                 session.get("created_at", now),
@@ -700,6 +711,9 @@ class StateDB:
                 session.get("provider"),
                 session.get("effort"),
                 session.get("agent_hash"),
+                # ADR-0026: project detection for session organization.
+                session.get("project"),
+                session.get("project_source"),
             ),
         )
         # ADR-0020: keep invocations.session_count in sync so list queries
@@ -711,6 +725,14 @@ class StateDB:
                 (now, session["invocation_id"]),
             )
         await self.db.commit()
+        # ADR-0026: auto-register the detected project so Studio's project
+        # list is populated without any explicit studio action.
+        project_name = session.get("project")
+        if project_name:
+            await self.register_project(
+                project_name,
+                session.get("project_source") or "git_remote",
+            )
 
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
         cur = await self.db.execute(
@@ -794,6 +816,325 @@ class StateDB:
             cur = await self.db.execute("SELECT COUNT(*) AS n FROM sessions")
         row = await cur.fetchone()
         return row["n"]
+
+    # ── Projects (ADR-0026) ────────────────────────────────────────────
+
+    async def register_project(
+        self,
+        name: str,
+        source: str,
+        *,
+        path: str | None = None,
+        github: str | None = None,
+    ) -> None:
+        """Register or update a project entry (ADR-0026).
+
+        Called during session creation to auto-register detected projects.
+        Uses INSERT ... ON CONFLICT to bump last_seen_at on subsequent
+        encounters. Prefers config_toml/global_override over git_remote as
+        source; never overwrites existing path/github with NULL.
+        """
+        now = time.time()
+        await self.db.execute(
+            """INSERT INTO projects
+                   (name, source, path, github, created_at, updated_at, last_seen_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET
+                   last_seen_at = excluded.last_seen_at,
+                   updated_at   = excluded.updated_at,
+                   source       = COALESCE(
+                       CASE WHEN excluded.source IN ('config_toml', 'global_override')
+                            THEN excluded.source ELSE NULL END,
+                       projects.source
+                   ),
+                   path   = COALESCE(excluded.path, projects.path),
+                   github = COALESCE(excluded.github, projects.github)""",
+            (name, source, path, github, now, now, now),
+        )
+        await self.db.commit()
+
+    async def create_project(
+        self,
+        name: str,
+        *,
+        github: str | None = None,
+        description: str | None = None,
+        path: str | None = None,
+    ) -> None:
+        """Insert a Studio-managed project (source='studio').
+
+        Raises ``aiosqlite.IntegrityError`` on duplicate name.
+        """
+        now = time.time()
+        await self.db.execute(
+            """INSERT INTO projects
+                   (name, source, path, github, description,
+                    created_at, updated_at, last_seen_at)
+               VALUES (?, 'studio', ?, ?, ?, ?, ?, ?)""",
+            (name, path, github, description, now, now, now),
+        )
+        await self.db.commit()
+
+    async def list_projects(self) -> list[dict[str, Any]]:
+        """List all projects ordered by last_seen_at DESC, with session counts."""
+        cur = await self.db.execute(
+            """SELECT p.*,
+                      COUNT(s.id) AS session_count,
+                      SUM(CASE WHEN s.status = 'running' THEN 1 ELSE 0 END) AS running_count
+               FROM projects p
+               LEFT JOIN sessions s ON s.project = p.name
+               GROUP BY p.name
+               ORDER BY COALESCE(p.last_seen_at, p.updated_at) DESC"""
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_project(self, name: str) -> dict[str, Any] | None:
+        """Return a single project row with session counts, or None."""
+        cur = await self.db.execute(
+            """SELECT p.*,
+                      COUNT(s.id) AS session_count,
+                      SUM(CASE WHEN s.status = 'running' THEN 1 ELSE 0 END) AS running_count
+               FROM projects p
+               LEFT JOIN sessions s ON s.project = p.name
+               WHERE p.name = ?
+               GROUP BY p.name""",
+            (name,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def update_project(self, name: str, **fields: Any) -> bool:
+        """Patch allowed mutable columns on a project row.
+
+        Returns True when a row was updated, False when the project was not
+        found. Raises ``ValueError`` for disallowed column names.
+        """
+        allowed = {"description", "github", "path"}
+        bad = set(fields) - allowed
+        if bad:
+            raise ValueError(f"Invalid project field(s): {bad}")
+        if not fields:
+            return False
+        fields["updated_at"] = time.time()
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [name]
+        cur = await self.db.execute(
+            f"UPDATE projects SET {sets} WHERE name = ?", vals  # noqa: S608
+        )
+        await self.db.commit()
+        return cur.rowcount > 0
+
+    async def delete_project(self, name: str) -> bool:
+        """Delete a Studio-managed project.
+
+        Only projects with source='studio' may be deleted; auto-detected
+        projects are immutable from the Studio API.  Returns True when a
+        row was deleted.
+        """
+        cur = await self.db.execute(
+            "DELETE FROM projects WHERE name = ? AND source = 'studio'",
+            (name,),
+        )
+        await self.db.commit()
+        return cur.rowcount > 0
+
+    # ── Schedules (ADR-0027) ──────────────────────────────────────────
+
+    async def create_schedule(self, schedule: dict[str, Any]) -> None:
+        now = time.time()
+        await self.db.execute(
+            """INSERT INTO schedules
+               (id, name, description, enabled, trigger_type,
+                cron_expr, interval_sec, github_repo, github_filter,
+                github_cursor, poll_interval_sec,
+                action_kind, action_model, action_prompt, action_agent,
+                action_playbook, action_project, action_extra_args,
+                on_success, on_fail, last_fired_at, next_fire_at,
+                missed_fire_policy, overlap_policy, project,
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                schedule["id"],
+                schedule["name"],
+                schedule.get("description"),
+                schedule.get("enabled", 1),
+                schedule["trigger_type"],
+                schedule.get("cron_expr"),
+                schedule.get("interval_sec"),
+                schedule.get("github_repo"),
+                _to_json_column(schedule.get("github_filter")),
+                schedule.get("github_cursor"),
+                schedule.get("poll_interval_sec"),
+                schedule["action_kind"],
+                schedule.get("action_model"),
+                schedule.get("action_prompt"),
+                schedule.get("action_agent"),
+                schedule.get("action_playbook"),
+                schedule.get("action_project"),
+                _to_json_column(schedule.get("action_extra_args", [])),
+                _to_json_column(schedule.get("on_success")),
+                _to_json_column(schedule.get("on_fail")),
+                schedule.get("last_fired_at"),
+                schedule.get("next_fire_at"),
+                schedule.get("missed_fire_policy", "skip"),
+                schedule.get("overlap_policy", "skip"),
+                schedule.get("project"),
+                schedule.get("created_at", now),
+                schedule.get("updated_at", now),
+            ),
+        )
+        await self.db.commit()
+
+    async def get_schedule(self, schedule_id: str) -> dict[str, Any] | None:
+        cur = await self.db.execute(
+            "SELECT * FROM schedules WHERE id = ?", (schedule_id,)
+        )
+        row = await cur.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    async def get_schedule_by_name(self, name: str) -> dict[str, Any] | None:
+        cur = await self.db.execute(
+            "SELECT * FROM schedules WHERE name = ?", (name,)
+        )
+        row = await cur.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    async def list_schedules(
+        self,
+        *,
+        enabled: bool | None = None,
+        trigger_type: str | None = None,
+        project: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM schedules"
+        conds: list[str] = []
+        params: list[Any] = []
+        if enabled is not None:
+            conds.append("enabled = ?")
+            params.append(1 if enabled else 0)
+        if trigger_type:
+            conds.append("trigger_type = ?")
+            params.append(trigger_type)
+        if project:
+            conds.append("project = ?")
+            params.append(project)
+        if conds:
+            query += " WHERE " + " AND ".join(conds)
+        query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        cur = await self.db.execute(query, params)
+        rows = await cur.fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    async def update_schedule(self, schedule_id: str, **fields: Any) -> None:
+        allowed = {
+            "name", "description", "enabled", "trigger_type",
+            "cron_expr", "interval_sec", "github_repo", "github_filter",
+            "github_cursor", "poll_interval_sec",
+            "action_kind", "action_model", "action_prompt", "action_agent",
+            "action_playbook", "action_project", "action_extra_args",
+            "on_success", "on_fail", "last_fired_at", "next_fire_at",
+            "missed_fire_policy", "overlap_policy", "project",
+        }
+        bad = set(fields) - allowed
+        if bad:
+            raise ValueError(f"Invalid schedule field(s): {bad}")
+        for k in ("github_filter", "action_extra_args", "on_success", "on_fail"):
+            if k in fields:
+                fields[k] = _to_json_column(fields[k])
+        fields["updated_at"] = time.time()
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [schedule_id]
+        await self.db.execute(
+            f"UPDATE schedules SET {sets} WHERE id = ?", vals  # noqa: S608
+        )
+        await self.db.commit()
+
+    async def delete_schedule(self, schedule_id: str) -> bool:
+        cur = await self.db.execute(
+            "DELETE FROM schedules WHERE id = ?", (schedule_id,)
+        )
+        await self.db.commit()
+        return cur.rowcount > 0
+
+    # ── Schedule Runs (ADR-0027) ──────────────────────────────────────
+
+    async def create_schedule_run(self, run: dict[str, Any]) -> None:
+        now = time.time()
+        await self.db.execute(
+            """INSERT INTO schedule_runs
+               (id, schedule_id, invocation_id, trigger_context,
+                action_kind, action_args, status, exit_code,
+                chain_parent_id, chain_depth, fired_at, ended_at,
+                error_detail, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                run["id"],
+                run["schedule_id"],
+                run.get("invocation_id"),
+                _to_json_column(run["trigger_context"]),
+                run["action_kind"],
+                _to_json_column(run["action_args"]),
+                run.get("status", "running"),
+                run.get("exit_code"),
+                run.get("chain_parent_id"),
+                run.get("chain_depth", 0),
+                run["fired_at"],
+                run.get("ended_at"),
+                run.get("error_detail"),
+                run.get("created_at", now),
+            ),
+        )
+        await self.db.commit()
+
+    async def update_schedule_run(self, run_id: str, **fields: Any) -> None:
+        allowed = {"status", "exit_code", "ended_at", "error_detail", "invocation_id"}
+        bad = set(fields) - allowed
+        if bad:
+            raise ValueError(f"Invalid schedule_run field(s): {bad}")
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [run_id]
+        await self.db.execute(
+            f"UPDATE schedule_runs SET {sets} WHERE id = ?", vals  # noqa: S608
+        )
+        await self.db.commit()
+
+    async def list_schedule_runs(
+        self,
+        schedule_id: str,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM schedule_runs WHERE schedule_id = ?"
+        params: list[Any] = [schedule_id]
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY fired_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        cur = await self.db.execute(query, params)
+        rows = await cur.fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    async def get_schedule_run(self, run_id: str) -> dict[str, Any] | None:
+        cur = await self.db.execute(
+            "SELECT * FROM schedule_runs WHERE id = ?", (run_id,)
+        )
+        row = await cur.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    async def list_running_schedule_runs(self, schedule_id: str) -> list[dict[str, Any]]:
+        cur = await self.db.execute(
+            "SELECT * FROM schedule_runs WHERE schedule_id = ? AND status = 'running'",
+            (schedule_id,),
+        )
+        rows = await cur.fetchall()
+        return [self._row_to_dict(r) for r in rows]
 
     # ── Invocations (ADR-0020) ──────────────────────────────────────────
 
@@ -1468,7 +1809,9 @@ class StateDB:
     @staticmethod
     def _row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:
         d = dict(row)
-        for key in ("node_metadata", "content", "depends_on"):
+        for key in ("node_metadata", "content", "depends_on",
+                    "on_success", "on_fail", "github_filter",
+                    "action_extra_args", "trigger_context", "action_args"):
             if key in d and isinstance(d[key], str):
                 try:
                     d[key] = json.loads(d[key])

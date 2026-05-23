@@ -1,3 +1,24 @@
+// ─── Project types (ADR-0026) ────────────────────────────────────────────────
+
+export interface ProjectSummary {
+  name: string;
+  source: string;
+  path: string | null;
+  github: string | null;
+  description: string | null;
+  session_count: number;
+  running_count: number;
+  editable: boolean;
+  created_at: number;
+  updated_at: number;
+  last_seen_at: number | null;
+}
+
+export interface ProjectDetail extends ProjectSummary {
+  agents_used: Array<{ agent_name: string; run_count: number }>;
+  playbooks_used: Array<{ playbook_name: string; run_count: number }>;
+}
+
 // ─── Run types ───────────────────────────────────────────────────────────────
 
 // H-FE-3: RunSummary matches the actual SQLite-session response shape from
@@ -45,6 +66,9 @@ export interface RunSummary {
   updated_at?: number | null;
   branch_count?: number;
   message_count?: number;
+  // ADR-0026: project detection for session organization.
+  project?: string | null;
+  project_source?: string | null;
 }
 
 export interface RunMessage {
@@ -272,4 +296,51 @@ export interface ShowEvent {
   type: "new" | "change" | "delete" | "done";
   path?: string;
   size?: number;
+}
+
+// ─── Schedule types (ADR-0027) ───────────────────────────────────────────────
+
+export interface ScheduleSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  enabled: number;
+  trigger_type: "cron" | "interval" | "github_poll";
+  cron_expr: string | null;
+  interval_sec: number | null;
+  github_repo: string | null;
+  poll_interval_sec: number | null;
+  action_kind: "agent" | "flow" | "fanout" | "play";
+  action_model: string | null;
+  action_prompt: string | null;
+  action_agent: string | null;
+  action_playbook: string | null;
+  action_project: string | null;
+  on_success: Record<string, unknown> | null;
+  on_fail: Record<string, unknown> | null;
+  last_fired_at: number | null;
+  next_fire_at: number | null;
+  missed_fire_policy: string;
+  overlap_policy: string;
+  project: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ScheduleRunSummary {
+  id: string;
+  schedule_id: string;
+  invocation_id: string | null;
+  trigger_context: Record<string, unknown>;
+  action_kind: string;
+  status: "running" | "completed" | "failed" | "skipped" | "cancelled";
+  exit_code: number | null;
+  chain_depth: number;
+  fired_at: number;
+  ended_at: number | null;
+  error_detail: string | null;
+}
+
+export interface ScheduleDetail extends ScheduleSummary {
+  recent_runs: ScheduleRunSummary[];
 }

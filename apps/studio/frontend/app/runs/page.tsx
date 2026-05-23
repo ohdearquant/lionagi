@@ -160,9 +160,19 @@ function SessionRow({
         >
           {displayName(run)}
         </Link>
-        <span className="font-mono text-meta text-content-muted">
-          {shortRunId(run)}
-        </span>
+        <div className="flex items-center gap-1.5">
+          <span className="font-mono text-meta text-content-muted">
+            {shortRunId(run)}
+          </span>
+          {run.project && (
+            <span
+              className="rounded px-1 py-0.5 font-mono text-[10px] border border-edge text-content-muted"
+              title={`Project: ${run.project} (${run.project_source ?? "unknown"})`}
+            >
+              {run.project}
+            </span>
+          )}
+        </div>
       </td>
       <td className="px-3 py-2">
         <div className="flex items-center gap-1 flex-wrap">
@@ -198,6 +208,7 @@ function RunsPageInner() {
   const page = Number(searchParams.get("page") ?? "1") || 1;
   const statuses = searchParams.getAll("status");
   const playbook = searchParams.get("playbook") ?? "";
+  const project = searchParams.get("project") ?? "";
   const perPage = 20;
 
   const [data, setData] = useState<RunListResponse | null>(null);
@@ -209,6 +220,7 @@ function RunsPageInner() {
   const [expandedInvocations, setExpandedInvocations] = useState<Set<string>>(
     new Set(),
   );
+  const [knownProjects, setKnownProjects] = useState<string[]>([]);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- sync URL→input: no external system involved, single derived state write
   useEffect(() => setPlaybookInput(playbook), [playbook]);
@@ -217,15 +229,19 @@ function RunsPageInner() {
     page?: number;
     status?: string[];
     playbook?: string;
+    project?: string;
   }) {
     const params = new URLSearchParams();
     const nextPage = next.page ?? 1;
     const nextStatuses = next.status ?? statuses;
     const nextPlaybook =
       next.playbook !== undefined ? next.playbook : playbook;
+    const nextProject =
+      next.project !== undefined ? next.project : project;
     if (nextPage > 1) params.set("page", String(nextPage));
     for (const s of nextStatuses) params.append("status", s);
     if (nextPlaybook) params.set("playbook", nextPlaybook);
+    if (nextProject) params.set("project", nextProject);
     const qs = params.toString();
     router.push(qs ? `${pathname}?${qs}` : pathname);
   }
@@ -245,10 +261,23 @@ function RunsPageInner() {
           per_page: effectivePerPage,
           status: statuses.length > 0 ? statuses : undefined,
           playbook: playbook || undefined,
+          project: project || undefined,
         });
         if (active) {
           setData(result);
           setError(null);
+          // ADR-0026: collect distinct project names for filter chips.
+          // Only update from an unfiltered fetch so we always see all projects.
+          if (!project) {
+            const projects = new Set<string>();
+            for (const r of result.runs) {
+              if (r.project) projects.add(r.project);
+            }
+            setKnownProjects((prev) => {
+              const merged = new Set([...prev, ...Array.from(projects)]);
+              return merged.size === prev.length ? prev : Array.from(merged).sort();
+            });
+          }
         }
       } catch {
         if (active) setError("Failed to load runs");
@@ -264,7 +293,7 @@ function RunsPageInner() {
       clearInterval(interval);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, statuses.join(","), playbook, viewMode]);
+  }, [page, statuses.join(","), playbook, project, viewMode]);
 
   useEffect(() => {
     const tick = setInterval(
@@ -320,23 +349,51 @@ function RunsPageInner() {
 
       {/* View toggle + Filter bar */}
       <div className="flex flex-col gap-2">
-        <div className="flex items-center gap-1">
-          <Button
-            size="sm"
-            variant="toggle"
-            active={viewMode === "sessions"}
-            onClick={() => setViewMode("sessions")}
-          >
-            Sessions
-          </Button>
-          <Button
-            size="sm"
-            variant="toggle"
-            active={viewMode === "invocations"}
-            onClick={() => setViewMode("invocations")}
-          >
-            Invocations
-          </Button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="toggle"
+              active={viewMode === "sessions"}
+              onClick={() => setViewMode("sessions")}
+            >
+              Sessions
+            </Button>
+            <Button
+              size="sm"
+              variant="toggle"
+              active={viewMode === "invocations"}
+              onClick={() => setViewMode("invocations")}
+            >
+              Invocations
+            </Button>
+          </div>
+          {/* ADR-0026: project filter chips */}
+          {knownProjects.length > 0 && (
+            <div className="flex items-center gap-1 border-l border-edge pl-2">
+              <Button
+                size="sm"
+                variant="toggle"
+                active={!project}
+                onClick={() => setQuery({ project: "", page: 1 })}
+              >
+                All
+              </Button>
+              {knownProjects.map((p) => (
+                <Button
+                  key={p}
+                  size="sm"
+                  variant="toggle"
+                  active={project === p}
+                  onClick={() =>
+                    setQuery({ project: project === p ? "" : p, page: 1 })
+                  }
+                >
+                  {p}
+                </Button>
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
           <div className="flex items-center gap-1.5">

@@ -14,5 +14,5 @@ _raw_origins = os.environ.get("CORS_ORIGINS", "")
 CORS_ORIGINS: list[str] = (
     [o.strip() for o in _raw_origins.split(",") if o.strip()]
     if _raw_origins
-    else ["http://localhost:5173", "http://localhost:3000"]
+    else ["http://localhost:5173", "http://localhost:3000", "http://localhost:3765"]
 )

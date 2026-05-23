@@ -530,6 +530,7 @@ async def start_live_persist(
     model: str | None = None,
     provider: str | None = None,
     effort: str | None = None,
+    project: str | None = None,
 ) -> None:
     """Open state.db, create session row, register hooks on existing branches.
 
@@ -555,6 +556,12 @@ async def start_live_persist(
 
         session_prog_id = str(uuid.uuid4())
         await db.create_progression(session_prog_id)
+        if project:
+            _proj, _proj_src = project, "explicit"
+        else:
+            from lionagi.cli._project import detect_project
+
+            _proj, _proj_src = detect_project()
         await db.create_session(
             {
                 "id": session_id,
@@ -580,6 +587,9 @@ async def start_live_persist(
                 "provider": provider,
                 "effort": effort,
                 "agent_hash": _provenance.agent_definition_hash(agent_name),
+                # ADR-0026: project detection.
+                "project": _proj,
+                "project_source": _proj_src,
             }
         )
 

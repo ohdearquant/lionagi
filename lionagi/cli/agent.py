@@ -41,6 +41,7 @@ async def _run_agent(
     timeout: int | None = None,
     fast: bool = False,
     invocation_id: str | None = None,
+    project: str | None = None,
 ) -> tuple[str, str, str, str]:
     """Execute one agent turn (new or resumed).
 
@@ -144,6 +145,7 @@ async def _run_agent(
         model=resolved_model_spec,
         provider=provider,
         effort=effort,
+        project=project,
     )
 
     # ADR-0025: distinguish timed_out / aborted / cancelled / failed so
@@ -220,6 +222,7 @@ async def _setup_live_persist(
     model: str | None = None,
     provider: str | None = None,
     effort: str | None = None,
+    project: str | None = None,
 ) -> dict | None:
     """Open DB, create session/branch rows, register live message hook.
 
@@ -289,6 +292,12 @@ async def _setup_live_persist(
             await db.create_progression(branch_prog_id)
 
             session_dict = session.to_dict(mode="db")
+            if project:
+                _proj, _proj_src = project, "explicit"
+            else:
+                from lionagi.cli._project import detect_project
+
+                _proj, _proj_src = detect_project()
             await db.create_session(
                 {
                     "id": session_id,
@@ -314,6 +323,9 @@ async def _setup_live_persist(
                     "provider": provider,
                     "effort": effort,
                     "agent_hash": _provenance.agent_definition_hash(agent_name),
+                    # ADR-0026: project detection.
+                    "project": _proj,
+                    "project_source": _proj_src,
                 }
             )
 
@@ -553,6 +565,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 timeout=args.timeout,
                 fast=args.fast,
                 invocation_id=getattr(args, "invocation", None),
+                project=getattr(args, "project", None),
             )
         )
     except KeyboardInterrupt:

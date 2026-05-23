@@ -697,6 +697,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     fast=getattr(args, "fast", False),
                     playbook_name=getattr(args, "playbook", None),
                     invocation_id=getattr(args, "invocation", None),
+                    project=getattr(args, "project", None),
                 )
             )
         except (TimeoutError, LionTimeoutError) as e:
@@ -913,6 +914,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     fast=getattr(args, "fast", False),
                     playbook_name=playbook_name,
                     invocation_id=getattr(args, "invocation", None),
+                    project=getattr(args, "project", None),
                 )
             )
         except (TimeoutError, LionTimeoutError) as e:

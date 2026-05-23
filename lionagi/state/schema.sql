@@ -72,6 +72,24 @@ CREATE TABLE IF NOT EXISTS progressions (
   collection    TEXT    NOT NULL DEFAULT '[]' -- JSON array of message id strings
 );
 
+-- ── Projects (ADR-0026) ───────────────────────────────────────────────────
+-- Auto-registered from session detection; also created explicitly via Studio.
+-- Uses name as primary key (project names are unique + used as FK in sessions.project).
+
+CREATE TABLE IF NOT EXISTS projects (
+    name         TEXT PRIMARY KEY,
+    source       TEXT NOT NULL,
+    path         TEXT,
+    github       TEXT,
+    description  TEXT,
+    created_at   REAL NOT NULL,
+    updated_at   REAL NOT NULL,
+    last_seen_at REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_source ON projects(source);
+CREATE INDEX IF NOT EXISTS idx_projects_updated ON projects(updated_at DESC);
+
 -- ── Sessions ──────────────────────────────────────────────────────────────
 -- Scope boundary.  Owns a progression (the session-level message pool)
 -- and zero or more branches.
@@ -128,7 +146,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   model           TEXT,
   provider        TEXT,
   effort          TEXT,
-  agent_hash      TEXT
+  agent_hash      TEXT,
+  -- ── Project detection (ADR-0026) ────────────────────────────────────
+  project         TEXT,
+  project_source  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_updated
@@ -140,6 +161,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_status_last_msg
 -- ADR-0020: grouped runs view fetches all sessions for an invocation.
 CREATE INDEX IF NOT EXISTS idx_sessions_invocation
   ON sessions(invocation_id) WHERE invocation_id IS NOT NULL;
+-- ADR-0026: project-scoped session listing in Studio.
+CREATE INDEX IF NOT EXISTS idx_sessions_project
+  ON sessions(project) WHERE project IS NOT NULL;
 
 -- ── Branches ──────────────────────────────────────────────────────────────
 -- A progression with identity.  Branch config (provider, model,
@@ -314,6 +338,76 @@ CREATE TABLE IF NOT EXISTS invocations (
 CREATE INDEX IF NOT EXISTS idx_invocations_skill ON invocations(skill);
 CREATE INDEX IF NOT EXISTS idx_invocations_status ON invocations(status);
 CREATE INDEX IF NOT EXISTS idx_invocations_updated ON invocations(updated_at DESC);
+
+-- ── Schedules (ADR-0027) ─────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS schedules (
+  id                  TEXT    PRIMARY KEY,
+  name                TEXT    NOT NULL UNIQUE,
+  description         TEXT,
+  enabled             INTEGER NOT NULL DEFAULT 1
+                      CHECK(enabled IN (0, 1)),
+  trigger_type        TEXT    NOT NULL
+                      CHECK(trigger_type IN ('cron', 'interval', 'github_poll')),
+  cron_expr           TEXT,
+  interval_sec        INTEGER,
+  github_repo         TEXT,
+  github_filter       JSON,
+  github_cursor       TEXT,
+  poll_interval_sec   INTEGER,
+  action_kind         TEXT    NOT NULL
+                      CHECK(action_kind IN ('agent', 'flow', 'fanout', 'play')),
+  action_model        TEXT,
+  action_prompt       TEXT,
+  action_agent        TEXT,
+  action_playbook     TEXT,
+  action_project      TEXT,
+  action_extra_args   JSON    DEFAULT '[]',
+  on_success          JSON,
+  on_fail             JSON,
+  last_fired_at       REAL,
+  next_fire_at        REAL,
+  missed_fire_policy  TEXT    NOT NULL DEFAULT 'skip'
+                      CHECK(missed_fire_policy IN ('skip', 'run_once')),
+  overlap_policy      TEXT    NOT NULL DEFAULT 'skip'
+                      CHECK(overlap_policy IN ('skip', 'allow')),
+  project             TEXT,
+  created_at          REAL    NOT NULL,
+  updated_at          REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_schedules_enabled
+  ON schedules(enabled, next_fire_at) WHERE enabled = 1;
+CREATE INDEX IF NOT EXISTS idx_schedules_name
+  ON schedules(name);
+CREATE INDEX IF NOT EXISTS idx_schedules_project
+  ON schedules(project) WHERE project IS NOT NULL;
+
+-- ── Schedule Runs (ADR-0027) ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS schedule_runs (
+  id                  TEXT    PRIMARY KEY,
+  schedule_id         TEXT    NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+  invocation_id       TEXT    REFERENCES invocations(id),
+  trigger_context     JSON    NOT NULL,
+  action_kind         TEXT    NOT NULL,
+  action_args         JSON    NOT NULL,
+  status              TEXT    NOT NULL DEFAULT 'running'
+                      CHECK(status IN ('running', 'completed', 'failed',
+                                       'skipped', 'cancelled')),
+  exit_code           INTEGER,
+  chain_parent_id     TEXT    REFERENCES schedule_runs(id),
+  chain_depth         INTEGER NOT NULL DEFAULT 0,
+  fired_at            REAL    NOT NULL,
+  ended_at            REAL,
+  error_detail        TEXT,
+  created_at          REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sched_runs_schedule
+  ON schedule_runs(schedule_id, fired_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sched_runs_status
+  ON schedule_runs(status) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_sched_runs_invocation
+  ON schedule_runs(invocation_id) WHERE invocation_id IS NOT NULL;
 
 -- ── Admin event log (ADR-0024) ───────────────────────────────────────────
 -- Append-only audit log following NIST SP 800-92 pattern. Every admin

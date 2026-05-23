@@ -406,3 +406,12 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
             "session under a skill orchestration record. Optional."
         ),
     )
+    parser.add_argument(
+        "--project",
+        metavar="NAME",
+        default=None,
+        help=(
+            "Explicit project name for this session. Overrides auto-detection "
+            "from .lionagi/config.toml or git remote."
+        ),
+    )
