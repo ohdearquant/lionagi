@@ -255,27 +255,28 @@ the entity tables:
 # apps/studio/server/services/attention.py — sketch
 # Consumes the existing public admin API
 # (apps/studio/server/services/admin.py:104) which returns a list of
-# dicts shaped { "id", "reason", "started_at", "updated_at",
-# "artifacts_path", ... }. `reason` is a PhantomReason literal
-# defined at apps/studio/server/services/admin.py:16.
+# dicts shaped { "session_id", "reason", "name", "playbook_name",
+# "started_at", "updated_at", "artifacts_path", "status", ... }.
+# `reason` is a PhantomReason literal defined at admin.py:16.
 async def _phantom_items(stale_hours: float = 1.0) -> list[AttentionItem]:
     phantoms = await admin_service.list_phantom_sessions(stale_hours=stale_hours)
     out: list[AttentionItem] = []
     for entry in phantoms:
+        session_id = entry["session_id"]   # admin.py:125 yields session_id
         reason_code = _PHANTOM_TO_REASON_CODE[entry["reason"]]
         # entry["reason"] ∈ {"process_dead", "missing_artifacts", "stale_lock"}
         out.append(AttentionItem(
             entity_type="session",
-            entity_id=entry["id"],
+            entity_id=session_id,
             status="running",  # phantom items are still pre-transition
             reason=StatusReason(
                 code=reason_code,
                 summary=_PHANTOM_TO_SUMMARY[entry["reason"]],
                 evidence_refs=[
-                    {"kind": "session", "id": entry["id"]},
+                    {"kind": "session", "id": session_id},
                 ],
             ),
-            fingerprint=f"session:{entry['id']}:{reason_code}",
+            fingerprint=f"session:{session_id}:{reason_code}",
             severity="warning",
         ))
     return out
