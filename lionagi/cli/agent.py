@@ -50,9 +50,7 @@ async def _run_agent(
     exit-code mapping in :func:`run_agent`.
     """
     if resume and continue_last:
-        raise ValueError(
-            "--resume / -r and --continue-last / -c are mutually exclusive."
-        )
+        raise ValueError("--resume / -r and --continue-last / -c are mutually exclusive.")
 
     # Load agent profile if specified — provides defaults for model/effort/yolo/fast_mode
     profile = None
@@ -95,9 +93,7 @@ async def _run_agent(
         )
 
     if branch is None:
-        chat_model = build_chat_model(
-            provider, model, yolo, verbose, theme, effort, fast
-        )
+        chat_model = build_chat_model(provider, model, yolo, verbose, theme, effort, fast)
         # Resolve the effort value to persist: captures post-clamp values
         # (e.g. "max"→"xhigh" for codex) and forces None for providers that
         # don't accept an effort kwarg at all (e.g. gemini).  The helper is
@@ -151,7 +147,10 @@ async def _run_agent(
     # ADR-0025: distinguish timed_out / aborted / cancelled / failed so
     # operators can tell "retry with more time" from "investigate" from
     # "user pressed Ctrl-C" from "orchestrator cascaded a cancel."
+    # ADR-0028: also capture the exception so teardown can resolve a
+    # structured reason code and summary for the status transition.
     _terminal_status = "completed"
+    _terminal_exc: BaseException | None = None
     try:
         res = await branch.operate(
             instruction=prompt,
@@ -165,12 +164,15 @@ async def _run_agent(
             timeout=timeout,
             **({"repo": cwd} if cwd else {}),
         )
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
         _terminal_status = "aborted"
+        _terminal_exc = exc
         raise
-    except (TimeoutError, LionTimeoutError):
+    except (TimeoutError, LionTimeoutError) as exc:
         _terminal_status = "timed_out"
+        _terminal_exc = exc
         from lionagi.cli._logging import warn
+
         warn(f"agent timed out after {timeout}s")
         res = None
     except BaseException as exc:
@@ -180,6 +182,7 @@ async def _run_agent(
             _terminal_status = "cancelled"
         else:
             _terminal_status = "failed"
+        _terminal_exc = exc
         raise
     finally:
         # Shield teardown from outer cancellation (KeyboardInterrupt, anyio
@@ -189,7 +192,11 @@ async def _run_agent(
         import anyio
 
         with anyio.CancelScope(shield=True):
-            await _teardown_live_persist(live, status=_terminal_status)
+            await _teardown_live_persist(
+                live,
+                status=_terminal_status,
+                exception=_terminal_exc,
+            )
             # Shut down every iModel on the branch (chat_model AND
             # parse_model, plus any other registered) so each
             # RateLimitedAPIExecutor's background replenisher task is
@@ -268,14 +275,16 @@ async def _setup_live_persist(
                 candidate = str(_uuid.uuid4())
                 await db.create_progression(candidate)
                 effective = await db.repair_session_progression(
-                    session_id, candidate,
+                    session_id,
+                    candidate,
                 )
                 session_prog_id = effective or candidate
             if branch_prog_id is None:
                 candidate = str(_uuid.uuid4())
                 await db.create_progression(candidate)
                 effective = await db.repair_branch_progression(
-                    branch_id, candidate,
+                    branch_id,
+                    candidate,
                 )
                 branch_prog_id = effective or candidate
 
@@ -391,9 +400,7 @@ async def _setup_live_persist(
                 # ADR-0019: activity heartbeat for staleness detection.
                 # Done after the progression append so callers see the
                 # bump only once the message is committed.
-                await db.touch_session_activity(
-                    session_id, at=msg_dict.get("created_at")
-                )
+                await db.touch_session_activity(session_id, at=msg_dict.get("created_at"))
                 # ADR-0009: branches.system_msg_id must track the CURRENT
                 # system message. If the runtime replaces the system mid-run
                 # (set_system), update the pointer so Studio's O(1) lookup
@@ -430,10 +437,50 @@ async def _setup_live_persist(
         return None
 
 
+def _resolve_run_reason(
+    *,
+    status: str,
+    exception: BaseException | None,
+) -> tuple[str, str, list[dict] | None]:
+    """Map terminal session status + exception to ADR-0028 (code, summary, evidence).
+
+    ADR-0029 (artifact contract) extends this when the verifier flips
+    a clean-exit run into a contract-failure run; that override happens
+    at the call site, not here.
+    """
+    from lionagi.state.reasons import RunReasons
+
+    if status == "completed":
+        return RunReasons.COMPLETED_OK, "Run completed successfully.", None
+    if status == "timed_out":
+        return (
+            RunReasons.TIMED_OUT_DEADLINE,
+            "Run exceeded the configured timeout.",
+            None,
+        )
+    if status == "aborted":
+        return RunReasons.ABORTED_USER, "User pressed Ctrl-C.", None
+    if status == "cancelled":
+        return (
+            RunReasons.CANCELLED_SYSTEM,
+            "Task cancelled by the runtime (anyio CancelledError).",
+            None,
+        )
+    # status == "failed"
+    if exception is not None:
+        return (
+            RunReasons.FAILED_EXCEPTION,
+            f"{type(exception).__name__}: {exception}",
+            None,
+        )
+    return RunReasons.FAILED_EXCEPTION, "Run failed.", None
+
+
 async def _teardown_live_persist(
     ctx: dict | None,
     *,
     status: str = "completed",
+    exception: BaseException | None = None,
 ) -> None:
     """Update session bookmarks, lifecycle columns, and close DB.
 
@@ -445,6 +492,12 @@ async def _teardown_live_persist(
     Leaving the DB unclosed leaks the aiosqlite worker thread, which is
     non-daemon and would prevent the Python interpreter from shutting
     down — the symptom reported as "CLI process hangs after completion".
+
+    ADR-0028: the status transition goes through ``StateDB.update_status()``
+    so the denormalized reason columns and ``status_transitions`` history
+    are written in the same SQLite transaction. ``exception`` carries
+    the terminating exception (if any) so the reason can include the
+    exception class and message.
     """
     if ctx is None:
         return
@@ -459,14 +512,33 @@ async def _teardown_live_persist(
         session_prog_id = ctx["session_prog_id"]
 
         all_msgs = await db.get_progression(session_prog_id)
-        update_kwargs: dict = {
-            "status": status,
-            "ended_at": _time.time(),
-        }
+        # Bookmark and ended_at go through update_session(); status
+        # transition goes through update_status() so the reason model
+        # (ADR-0028) is enforced.
+        bookmark_kwargs: dict = {"ended_at": _time.time()}
         if all_msgs:
-            update_kwargs["first_msg_id"] = all_msgs[0]
-            update_kwargs["last_msg_id"] = all_msgs[-1]
-        await db.update_session(session_id, **update_kwargs)
+            bookmark_kwargs["first_msg_id"] = all_msgs[0]
+            bookmark_kwargs["last_msg_id"] = all_msgs[-1]
+        await db.update_session(session_id, **bookmark_kwargs)
+
+        reason_code, reason_summary, evidence_refs = _resolve_run_reason(
+            status=status,
+            exception=exception,
+        )
+        metadata: dict | None = None
+        if exception is not None:
+            metadata = {"exception_class": type(exception).__name__}
+        await db.update_status(
+            "session",
+            session_id,
+            new_status=status,
+            reason_code=reason_code,
+            reason_summary=reason_summary,
+            evidence_refs=evidence_refs,
+            source="executor",
+            actor=session_id,
+            metadata=metadata,
+        )
 
         # Remove ALL matching registrations of our hook. ``list.remove``
         # only removes the first match; if a caller appended the same

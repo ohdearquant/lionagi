@@ -149,11 +149,27 @@ CREATE TABLE IF NOT EXISTS sessions (
   agent_hash      TEXT,
   -- ── Project detection (ADR-0026) ────────────────────────────────────
   project         TEXT,
-  project_source  TEXT
+  project_source  TEXT,
+  -- ── Status reason (ADR-0028) ────────────────────────────────────────
+  -- Denormalized "current reason" for the hot read path. The full
+  -- history of transitions lives in ``status_transitions``; these
+  -- three columns let a status pill render its tooltip without a JOIN.
+  -- All writes go through StateDB.update_status() in the same SQLite
+  -- transaction as the status update, so the columns and history table
+  -- never drift.
+  status_reason_code     TEXT,
+  status_reason_summary  TEXT,
+  status_evidence_refs   JSON
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_updated
   ON sessions(updated_at DESC);
+-- ADR-0028: failed/timed_out queries in the attention queue (ADR-0030)
+-- need an index that covers terminal states, not just running. The
+-- existing idx_sessions_status_last_msg is a partial index for
+-- status='running' only.
+CREATE INDEX IF NOT EXISTS idx_sessions_status_updated
+  ON sessions(status, updated_at DESC);
 -- ADR-0019: lets the staleness query (running sessions sorted by oldest
 -- activity) skip the full table scan.
 CREATE INDEX IF NOT EXISTS idx_sessions_status_last_msg
@@ -228,7 +244,11 @@ CREATE TABLE IF NOT EXISTS shows (
   show_dir            TEXT    NOT NULL,
   status_source       TEXT    NOT NULL DEFAULT 'unknown',
   created_at          REAL    NOT NULL,
-  updated_at          REAL    NOT NULL
+  updated_at          REAL    NOT NULL,
+  -- ADR-0028: see sessions table for the denormalization rationale.
+  status_reason_code     TEXT,
+  status_reason_summary  TEXT,
+  status_evidence_refs   JSON
 );
 
 CREATE INDEX IF NOT EXISTS idx_shows_topic ON shows(topic);
@@ -264,7 +284,11 @@ CREATE TABLE IF NOT EXISTS plays (
   depends_on      JSON    DEFAULT '[]',
   sort_order      INTEGER NOT NULL DEFAULT 0,
   created_at      REAL    NOT NULL,
-  updated_at      REAL    NOT NULL
+  updated_at      REAL    NOT NULL,
+  -- ADR-0028: see sessions table for the denormalization rationale.
+  status_reason_code     TEXT,
+  status_reason_summary  TEXT,
+  status_evidence_refs   JSON
 );
 
 CREATE INDEX IF NOT EXISTS idx_plays_show ON plays(show_id);
@@ -288,7 +312,11 @@ CREATE TABLE IF NOT EXISTS teams (
   node_metadata   JSON,
   status          TEXT    NOT NULL DEFAULT 'active' CHECK(
                     status IN ('active', 'archived')
-                  )
+                  ),
+  -- ADR-0028: see sessions table for the denormalization rationale.
+  status_reason_code     TEXT,
+  status_reason_summary  TEXT,
+  status_evidence_refs   JSON
 );
 
 CREATE INDEX IF NOT EXISTS idx_teams_name ON teams(name);
@@ -332,7 +360,11 @@ CREATE TABLE IF NOT EXISTS invocations (
   session_count   INTEGER NOT NULL DEFAULT 0,
   created_at      REAL    NOT NULL,
   updated_at      REAL    NOT NULL,
-  node_metadata   JSON
+  node_metadata   JSON,
+  -- ADR-0028: see sessions table for the denormalization rationale.
+  status_reason_code     TEXT,
+  status_reason_summary  TEXT,
+  status_evidence_refs   JSON
 );
 
 CREATE INDEX IF NOT EXISTS idx_invocations_skill ON invocations(skill);
@@ -399,7 +431,15 @@ CREATE TABLE IF NOT EXISTS schedule_runs (
   fired_at            REAL    NOT NULL,
   ended_at            REAL,
   error_detail        TEXT,
-  created_at          REAL    NOT NULL
+  created_at          REAL    NOT NULL,
+  -- ADR-0028: schedule_runs needs updated_at so StateDB.update_status()
+  -- can write it consistently (the only entity table that originally
+  -- lacked one).
+  updated_at          REAL,
+  -- ADR-0028: see sessions table for the denormalization rationale.
+  status_reason_code     TEXT,
+  status_reason_summary  TEXT,
+  status_evidence_refs   JSON
 );
 
 CREATE INDEX IF NOT EXISTS idx_sched_runs_schedule
@@ -482,3 +522,35 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_invocation_time
   ON artifacts(invocation_id, created_at) WHERE invocation_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_artifacts_session_time
   ON artifacts(session_id, created_at) WHERE session_id IS NOT NULL;
+
+-- ── Status transitions (ADR-0028) ────────────────────────────────────
+-- Append-only history of every status change across all entity types.
+-- Hot reads use the denormalized status_reason_* columns on each
+-- entity table; this table is the cold path for audit, "show me all
+-- failures with reason X", and the run-detail status-history tab.
+-- Writes are paired with the entity status UPDATE in a single SQLite
+-- transaction via StateDB.update_status(), so the two views never
+-- drift.
+
+CREATE TABLE IF NOT EXISTS status_transitions (
+  id              TEXT    PRIMARY KEY,
+  entity_type     TEXT    NOT NULL,    -- canonical singular: 'session' | 'show' | ...
+                                       -- (see lionagi/state/reasons.py VALID_ENTITY_TYPES)
+  entity_id       TEXT    NOT NULL,
+  previous_status TEXT,                -- NULL for the first transition
+  status          TEXT    NOT NULL,
+  reason_code     TEXT    NOT NULL,    -- see lionagi/state/reasons.py VALID_REASON_CODES
+  reason_summary  TEXT,
+  evidence_refs   JSON,                -- list[{kind, id|path|ref, label?}]
+  source          TEXT    NOT NULL,    -- 'executor' | 'agent' | 'admin' | 'system'
+  actor           TEXT,                -- session_id, user, 'doctor_auto', ...
+  created_at      REAL    NOT NULL,
+  metadata        JSON                 -- optional: timing, exit code, exc class
+);
+
+CREATE INDEX IF NOT EXISTS idx_status_transitions_entity
+  ON status_transitions(entity_type, entity_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_status_transitions_reason
+  ON status_transitions(reason_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_status_transitions_created
+  ON status_transitions(created_at DESC);
