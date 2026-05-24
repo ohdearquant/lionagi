@@ -14,6 +14,13 @@ _GLOB_CHARS = frozenset("*?[]")
 _ARTIFACT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _VALIDATION_ROOT = os.path.realpath("/tmp/__contract_validate__")  # noqa: S108 — synthetic root for path-validation only, never written to
 
+# ADR-0029 §2: v1 entry fields. `kind`, `min_size`, `mime_type` are
+# reserved for v1.1 — silently accepting them now would let contract
+# files drift into looking stricter than the executor actually is.
+# Both the `li play check` pre-flight AND the real `li play` runtime
+# path emit a warning for unknown subfields via warn_unknown_artifact_keys().
+_ARTIFACT_ENTRY_ALLOWED_KEYS = frozenset({"id", "path", "required", "description", "source"})
+
 
 class ArtifactPathError(ValueError):
     """Raised when an artifact contract id/path is invalid."""
@@ -66,6 +73,53 @@ def _safe_join(root: str, rel: str) -> str:
     if common != root_real:
         raise ArtifactPathError(f"path escapes artifacts_root: {rel!r}")
     return joined
+
+
+def warn_unknown_artifact_keys(
+    contract: dict[str, Any] | None,
+    *,
+    source: str = "playbook",
+    emit: Any = None,
+) -> list[str]:
+    """Warn about unknown subfields under each `expected[]` entry.
+
+    ADR-0029 §2 declares v1 fields as `id, path, required, description`
+    (plus `source` added by the resolver). `kind`, `min_size`,
+    `mime_type` are reserved for v1.1. Silently accepting them in v1
+    lets contract files look stricter than the executor actually is —
+    warn so the author sees what was ignored.
+
+    Both `li play check` (pre-flight) and the real `li play` execution
+    path call this so the warning fires in both surfaces.
+
+    ``emit`` defaults to printing to stdout (for the CLI pre-flight).
+    The runtime path passes a logger so warnings land in the structured
+    log, not the console.
+
+    Returns the list of warning messages emitted (so tests can assert
+    without capturing the side channel).
+    """
+    if contract is None:
+        return []
+    expected = contract.get("expected") or []
+    if not isinstance(expected, list):
+        return []
+    if emit is None:
+        emit = print
+    warnings: list[str] = []
+    for entry in expected:
+        if not isinstance(entry, dict):
+            continue
+        unknown = set(entry.keys()) - _ARTIFACT_ENTRY_ALLOWED_KEYS
+        if unknown:
+            msg = (
+                f"warning: {source} artifact entry "
+                f"{entry.get('id', '<unnamed>')!r} has unknown subfield(s) "
+                f"{sorted(unknown)} (ignored by v1; reserved for v1.1)."
+            )
+            warnings.append(msg)
+            emit(msg)
+    return warnings
 
 
 def validate_artifact_contract(contract: dict[str, Any] | None) -> None:

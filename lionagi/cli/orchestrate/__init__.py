@@ -624,9 +624,25 @@ def _validate_spec_fields(spec: dict) -> str | None:
         if artifacts is None:
             return "spec field 'artifacts' must be a dict, got NoneType"
         try:
-            from lionagi.state.artifact_verifier import validate_artifact_contract
+            from lionagi.state.artifact_verifier import (
+                validate_artifact_contract,
+                warn_unknown_artifact_keys,
+            )
 
             validate_artifact_contract(artifacts)
+            # ADR-0029 §2: unknown subfields are reserved for v1.1.
+            # Warn at runtime as well as in `li play check` so contract
+            # files don't silently drift into v1.1-looking shapes the
+            # v1 executor ignores. Route through the standard logger
+            # so the warning lands in structured logs, not stdout.
+            import logging as _logging
+
+            _cli_log = _logging.getLogger("lionagi.cli")
+            warn_unknown_artifact_keys(
+                artifacts,
+                source="playbook",
+                emit=_cli_log.warning,
+            )
         except Exception as exc:
             return f"spec field 'artifacts' is invalid: {exc}"
 

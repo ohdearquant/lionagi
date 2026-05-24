@@ -69,30 +69,10 @@ def _print_playbook_help(name: str) -> int:
     return 0
 
 
-_ARTIFACT_ENTRY_ALLOWED_KEYS = frozenset({"id", "path", "required", "description", "source"})
-
-
-def _warn_unknown_artifact_keys(artifacts_block: dict, *, name: str) -> None:
-    """Emit a CLI warning for unknown subfields under each artifact entry.
-
-    ADR-0029 §2 declares `id, path, required, description` as v1. `kind`,
-    `min_size`, `mime_type` are reserved for v1.1 — silently accepting
-    them in v1 lets contract files drift into looking stricter than the
-    executor actually is. Warn so the author sees what was ignored.
-    """
-    expected = artifacts_block.get("expected") or []
-    if not isinstance(expected, list):
-        return
-    for entry in expected:
-        if not isinstance(entry, dict):
-            continue
-        unknown = set(entry.keys()) - _ARTIFACT_ENTRY_ALLOWED_KEYS
-        if unknown:
-            print(
-                f"warning: playbook '{name}' artifact entry "
-                f"{entry.get('id', '<unnamed>')!r} has unknown subfield(s) "
-                f"{sorted(unknown)} (ignored by v1; reserved for v1.1)."
-            )
+# The unknown-subfield warning is shared with the runtime spec validator
+# (lionagi/cli/orchestrate/__init__.py) — see warn_unknown_artifact_keys
+# in lionagi/state/artifact_verifier.py. Importing here keeps the
+# pre-flight and runtime warnings in lockstep.
 
 
 def _handle_play_check(argv: list[str]) -> int:
@@ -113,6 +93,7 @@ def _handle_play_check(argv: list[str]) -> int:
     from lionagi.state.artifact_verifier import (
         ArtifactPathError,
         resolve_artifact_contract,
+        warn_unknown_artifact_keys,
     )
 
     path, err = _resolve_playbook_path(name)
@@ -126,7 +107,10 @@ def _handle_play_check(argv: list[str]) -> int:
 
     artifacts_block = spec.get("artifacts")
     # Load the agent profile the playbook names so its artifact_defaults
-    # participate in the merge — a real invocation sees them.
+    # participate in the merge — a real invocation sees them. The actual
+    # `li play` path raises if the profile is missing, so pre-flight
+    # must FAIL in the same case rather than silently green-light an
+    # invocation that will crash at execution start.
     agent_defaults = None
     agent_name = spec.get("agent")
     if agent_name:
@@ -135,18 +119,24 @@ def _handle_play_check(argv: list[str]) -> int:
 
             profile = load_agent_profile(agent_name)
             agent_defaults = getattr(profile, "artifact_defaults", None)
-        except Exception as exc:  # noqa: BLE001 — best-effort pre-flight
-            print(
-                f"warning: could not load agent profile '{agent_name}' "
-                f"({exc}); checking playbook contract only."
+        except Exception as exc:  # noqa: BLE001 — match runtime behaviour
+            log_error(
+                f"playbook '{name}' references agent profile "
+                f"'{agent_name}' but it could not be loaded: {exc}. "
+                f"Real `li play {name}` will fail at execution start; "
+                f"fix the profile or remove the `agent:` field."
             )
+            return 1
 
     if not artifacts_block and not agent_defaults:
         print(f"playbook '{name}': no `artifacts:` block declared (verification skipped).")
         return 0
 
     if artifacts_block:
-        _warn_unknown_artifact_keys(artifacts_block, name=name)
+        # Same warning the runtime spec validator emits (via
+        # logger.warning there); on the pre-flight surface we want it
+        # visible in the operator's terminal, so default print is fine.
+        warn_unknown_artifact_keys(artifacts_block, source=f"playbook '{name}'")
 
     try:
         resolved = resolve_artifact_contract(
