@@ -14,7 +14,7 @@ Claude Code's plugin marketplace provides a tested distribution primitive: a roo
 
 Adopt the Claude Code marketplace pattern inside the lionagi repository. The structure is:
 
-```
+```text
 .claude-plugin/marketplace.json          # root manifest
 marketplace/<plugin>/.claude-plugin/plugin.json  # per-plugin manifest
 marketplace/<plugin>/skills/             # bundled skills (added in later plays)
@@ -51,6 +51,27 @@ package are required for any of the four.
 The `_deferred_plugins` block in `.claude-plugin/marketplace.json` records `studio`,
 `mcp-bundle`, and `memory` so they are not silently forgotten.
 
+### Issue closure record
+
+**#1022 — Deprecated khive verb syntax in 6 marketplace skills**: The six affected files
+(`memory-recall/SKILL.md`, `migrate-memory/SKILL.md`, `devx/status/SKILL.md`,
+`devx/summarize/SKILL.md`, `devx/wake-up/SKILL.md`, `research/progress-research/SKILL.md`)
+were removed or replaced during the v2 Phase 0 consolidation (commits `a75c66d4d` and
+`0aab5a9ed`). The `memory` and `research` plugins were deleted entirely; `devx/status` and
+`devx/wake-up` were deleted as Lion-internal; `devx/summarize` was rewritten without khive
+references; the replacement `orchestrate` plugin's skills contain no khive MCP calls.
+`marketplace/scripts/lint_skills.py` enforces this via CI — all deprecated patterns
+(`mcp__khive__memory(action=...)`, `mcp__khive__graph`, `mcp__khive__work`,
+`mcp__khive__communication`, `mcp__khive__waves`, `forget_batch`, bare `memory.recall()`,
+bare `work.tasks()`) are blocked at lint time.
+
+**#1021 — migrate-memory data-loss chain**: The `migrate-memory` skill was fully deleted in
+commit `a75c66d4d` as part of deferring the entire `memory` plugin to v2.1. The three
+root causes (ambiguous `MEMORY_DIR` resolution, no backup before destructive operations,
+nonexistent `forget_batch` rollback verb) are resolved by deletion. When the `memory`
+plugin is rebuilt for v2.1, it must target `~/.lionagi/runs/` and Studio APIs only —
+no khive MCP calls and no unguarded destructive file operations without a backup step.
+
 This play establishes the skeleton (manifests, directory structure, README, this ADR). Plugin content (skills, agents, MCP server configuration) is added in three subsequent plays: `marketplace-plugins-core`, `marketplace-plugins-knowledge`, and `marketplace-plugins-app`.
 
 ## v1 Historical Catalog (2026-05-19, superseded)
@@ -75,12 +96,14 @@ shipped in Phase 0 and why the remaining four were removed or deferred.
 ## Consequences
 
 **Positive**
+
 - Users install only the capability slices they need, keeping Claude Code context lean.
 - Each plugin can version independently; `studio` can ship a breaking MCP config change without bumping `devx`.
 - MCP server configuration can be bundled per plugin (`studio`, `mcp-bundle`) once the FastAPI backend route set is stable.
 - Clear ownership boundary: each plugin directory is a self-contained unit that external contributors or downstream forks can understand and extend.
 
 **Negative**
+
 - More manifests to maintain: root `marketplace.json` plus four `plugin.json` files (v2) must stay in sync as plugin names or descriptions change.
 - Skills authored in `firm/resources/skills/` (canonical) must be copied or symlinked into `marketplace/<plugin>/skills/` for external installs — two places to update per skill change.
 - The `plugin.json` schema is not yet finalized by Anthropic; field names or required keys may shift before GA, requiring a sweep across all four manifests.
