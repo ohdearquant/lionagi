@@ -19,12 +19,11 @@ each other.
 
 Items that need attention live in:
 
-- `sessions` (failed, stuck, timed_out, phantom)
+- `sessions` (failed, stuck, timed_out, plus operator action needed on phantom classifications)
 - `shows` (active with no ready plays)
 - `plays` (blocked, escalated, gate_failed)
 - `schedule_runs` (skipped, failed)
-- `chain_runs` (waiting_approval — from ADR-0021)
-- system-level conditions (WAL pressure, DB health)
+- (deferred — see Non-Goals) `chain_runs` waiting_approval, system-level DB/WAL conditions
 
 There is no single page that aggregates these. The closest surface is
 the dashboard's failure cards, but they only show sessions and only
@@ -135,7 +134,9 @@ CREATE TABLE IF NOT EXISTS attention_dismissals (
   fingerprint            TEXT    NOT NULL,
   entity_type            TEXT    NOT NULL,
   entity_id              TEXT    NOT NULL,
-  reason_code            TEXT,
+  reason_code            TEXT    NOT NULL,      -- the reason at dismissal time
+  status_at_dismissal    TEXT    NOT NULL,      -- the entity status at dismissal time
+                                                -- used by clear_on_status_change cleanup
   snoozed_until          REAL,                  -- NULL = permanent dismiss (until status change)
   dismissed_at           REAL    NOT NULL,
   dismissed_by           TEXT    DEFAULT 'operator',
@@ -148,10 +149,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_attention_dismissals_fp
   ON attention_dismissals(fingerprint);
 CREATE INDEX IF NOT EXISTS idx_attention_dismissals_snoozed
   ON attention_dismissals(snoozed_until) WHERE snoozed_until IS NOT NULL;
+
+-- Compensating index for queries that JOIN by (entity_type, entity_id)
+-- when computing the live fingerprint client-side.
+CREATE INDEX IF NOT EXISTS idx_attention_dismissals_entity
+  ON attention_dismissals(entity_type, entity_id);
 ```
 
-The unique index on `fingerprint` lets snooze be an upsert — `POST
-/api/attention/snooze` with the same fingerprint extends the snooze.
+`fingerprint` is the dismissal's identity (`<entity_type>:<entity_id>:<reason_code>`).
+Snooze is an upsert keyed by fingerprint — re-snoozing the same condition
+extends the deadline; a *different* reason on the same entity gets a new
+fingerprint and surfaces fresh.
 
 ### 3. Item generation
 
@@ -161,53 +169,74 @@ an attention-worthy condition (see severity table). Sample query for
 sessions:
 
 ```sql
--- failed sessions in last 24h not dismissed
+-- failed sessions in last 24h, not dismissed for THIS reason code
 SELECT
   'session' AS entity_type,
-  id AS entity_id,
-  status, status_reason_code, status_reason_summary, status_evidence_refs,
-  updated_at,
-  COALESCE(playbook_name, agent_name, 'agent') AS label_root
-FROM sessions
-WHERE status = 'failed'
-  AND updated_at >= ?  -- now - 86400
-  AND id NOT IN (
-    SELECT entity_id FROM attention_dismissals
-    WHERE entity_type = 'session' AND clear_on_status_change = 1
-      AND (snoozed_until IS NULL OR snoozed_until > ?)
+  s.id AS entity_id,
+  s.status, s.status_reason_code, s.status_reason_summary, s.status_evidence_refs,
+  s.updated_at,
+  COALESCE(s.playbook_name, s.agent_name, 'agent') AS label_root
+FROM sessions s
+WHERE s.status = 'failed'
+  AND s.updated_at >= ?  -- now - 86400
+  AND NOT EXISTS (
+    SELECT 1 FROM attention_dismissals d
+    WHERE d.fingerprint = (
+        'session:' || s.id || ':' || COALESCE(s.status_reason_code, '')
+      )
+      AND (d.snoozed_until IS NULL OR d.snoozed_until > ?)
   );
 ```
+
+Filtering matches the *fingerprint*, not just `entity_id` — so a
+dismissal of `session:X:session.phantom.process_dead` does not hide
+a later `session:X:session.phantom.missing_artifacts` item.
 
 The Python aggregator runs these queries (one per entity type), applies
 severity scoring, computes cluster ids, and returns the merged list.
 
 For the v1 scale (single-user Studio with hundreds of sessions),
-running ~7 queries on every poll is well within budget. The
-`sessions(status)` and `plays(status)` indexes already exist; one new
-index on `attention_dismissals(fingerprint)` suffices.
+running ~6 queries on every poll is well within budget. The
+existing `plays(status)` index (`lionagi/state/schema.sql:271`)
+covers the play queries; the existing
+`idx_sessions_status_last_msg` (`lionagi/state/schema.sql:159`) is
+a partial index for `status='running'` only and does **not** cover
+`failed`/`timed_out` lookups. This ADR therefore adds:
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_sessions_status_updated
+  ON sessions(status, updated_at DESC);
+```
+
+so the failed/timed_out queries (severity table rows 1-2) avoid
+a full scan.
 
 ### 4. Severity heuristic
 
 | Condition | Detection | Severity |
 |---|---|---|
-| Session `failed` | `status='failed'` AND `updated_at >= now - 24h` | `critical` |
-| Session `timed_out` | `status='timed_out'` AND `updated_at >= now - 24h` | `warning` |
-| Session phantom (process_dead) | `status_reason_code='session.phantom.process_dead'` | `warning` |
-| Session phantom (missing_artifacts) tied to a required contract | `status_reason_code='session.phantom.missing_artifacts'` AND `artifact_verification_json` shows `missing_required` non-empty | `critical` |
-| Session phantom (missing_artifacts) without contract | same code, contract is NULL | `warning` |
+| Run failed (missing required artifact) | `status_reason_code='run.failed.missing_artifact'` | `critical` |
+| Session `failed` (any other cause, last 24h) | `status='failed'` AND `updated_at >= now - 24h` AND `status_reason_code != 'run.failed.missing_artifact'` | `critical` |
+| Session `timed_out` (last 24h) | `status='timed_out'` AND `updated_at >= now - 24h` | `warning` |
 | Session stuck (`running` >60m, no heartbeat) | `status='running'` AND `now - last_message_at > 3600` | `critical` |
-| Session slow (>60m, alive) | `status='running'` AND `60m < age < 3h` AND has recent heartbeat | `info` |
+| Session slow (`running`, alive, >60m) | `status='running'` AND `60m < age < 3h` AND has recent heartbeat | `info` |
+| Session went phantom (process_dead, operator hasn't transitioned) | per ADR-0024 the doctor classifies; the operator must still transition. Detected by joining the live doctor classification — see Section 6. | `warning` |
+| Session went phantom (missing_artifacts, operator hasn't transitioned) | doctor classification = `missing_artifacts`. The artifact contract from ADR-0029 already would have set `run.failed.missing_artifact` at teardown; this row catches sessions that pre-date the contract or had no contract declared. | `warning` |
 | Play `blocked` (invalid deps) | `status_reason_code='play.blocked.invalid_deps'` | `warning` |
 | Play `blocked` (dep failed) | `status_reason_code='play.blocked.dep_failed'` | `warning` |
 | Play `escalated` | `status='escalated'` | `critical` |
 | Play `gate_failed` attempt 2 | `status='gate_failed'` AND `attempt=2` | `critical` |
-| Show `active` with 0 ready plays | computed: no play has status in `{pending, prepared}` with deps resolved | `warning` |
-| Schedule run `failed` | `status='failed'` AND `fired_at >= now - 24h` | `warning` |
-| Chain run `waiting_approval` (ADR-0021) | `status='waiting_approval'` | `warning` |
-| DB/WAL health degraded | admin classifier flag set | `critical` |
+| Show `active` with 0 ready plays | `status_reason_code='show.blocked.no_ready_plays'` | `warning` |
+| Schedule run `failed` (last 24h) | `status='failed'` AND `fired_at >= now - 24h` | `warning` |
 
 Sessions with `status_reason_code = 'legacy.imported'` are excluded —
 they are pre-ADR-0028 and have no useful reason to surface.
+
+**Deferred to v1.1** (see Non-Goals): chain-run `waiting_approval`
+attention items wait for the `chain_runs` table (ADR-0021 proposed,
+not landed). System-level DB/WAL attention items require a `system`
+entity_type with synthetic `entity_id` (e.g. `system:db`) and matching
+reason codes (`system.db.wal_degraded`) — separate ADR.
 
 ### 5. Clustering
 
@@ -239,11 +268,14 @@ data, we can promote shared substrings to first-class reason codes.
 ### 6. Dismissal semantics
 
 - `POST /api/attention/snooze` with `{fingerprint, until}` upserts a
-  row with `snoozed_until=until`. The next attention poll filters
+  row keyed on `fingerprint`. The endpoint stores the entity's
+  current status as `status_at_dismissal` so the cleanup query has
+  something to compare against. The next attention poll filters
   snoozed items.
 
 - `POST /api/attention/dismiss` with `{fingerprint}` upserts with
-  `snoozed_until=NULL` (permanent until status change).
+  `snoozed_until=NULL` and records `status_at_dismissal` (permanent
+  until status change).
 
 - `clear_on_status_change=1` (default): when the entity's *status*
   enum changes (`running -> failed`), the dismissal is invalidated.
@@ -254,9 +286,11 @@ data, we can promote shared substrings to first-class reason codes.
   changed.
 
 - `clear_on_status_change=0`: the dismissal persists until the entity
-  is deleted. For "I never want to see this again" cases.
+  is deleted. For "I never want to see this again" cases. The query
+  filter still applies, but cleanup never runs on these rows.
 
-The cleanup query runs nightly:
+The cleanup query runs as a step in `li state vacuum` (per ADR-0024's
+maintenance flow):
 
 ```sql
 DELETE FROM attention_dismissals
@@ -264,7 +298,7 @@ WHERE clear_on_status_change = 1
   AND EXISTS (
     SELECT 1 FROM <entity_table>
     WHERE id = attention_dismissals.entity_id
-      AND status != <recorded_status>
+      AND status != attention_dismissals.status_at_dismissal
   );
 ```
 
@@ -363,7 +397,7 @@ apps/studio/frontend/lib/api.ts              # fetchAttention(), snoozeItem()
 
 **Negative**
 
-- Polling load. At 10s intervals × 7 entity-type queries × a single
+- Polling load. At 10s intervals × 6 entity-type queries × a single
   user, the impact is negligible. If Studio scales to multi-user (it
   is currently single-user only — see ADR-0008), polling will need
   reconsideration.
@@ -418,6 +452,19 @@ apps/studio/frontend/lib/api.ts              # fetchAttention(), snoozeItem()
 
 - **No external integrations.** Linear / GitHub Issues escalation is
   deferred. The queue lives in Studio.
+
+- **No system-level attention items in v1.** DB/WAL pressure, disk
+  exhaustion, and other non-entity conditions would require a
+  synthetic `entity_type='system'` with no row in any entity table,
+  which the schema (entity_id NOT NULL) does not accommodate cleanly.
+  Deferred to a follow-up that introduces `system` reason codes
+  (e.g. `system.db.wal_degraded`) and either a `system_entities`
+  table or a documented synthetic-id convention.
+
+- **No chain-run attention items in v1.** Chain runs are proposed in
+  ADR-0021 but `chain_runs` is not in the current schema. When
+  ADR-0021 lands, a follow-up extends the queue with
+  `chain_run.waiting_approval`.
 
 ## References
 

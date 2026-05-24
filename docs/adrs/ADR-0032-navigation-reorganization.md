@@ -6,18 +6,23 @@
 
 ## Context
 
-Studio's top navigation currently lists ten entity types as siblings
-at the same visual weight:
+Studio's top navigation today lists ten entity types as siblings at
+the same visual weight (see `apps/studio/frontend/components/Shell.tsx:15`):
 
 ```text
-Dashboard | Projects | Schedules | Playbooks | Agents | Plugins | Shows | Invocations | Runs | Teams | Admin
+Projects | Schedules | Playbooks | Agents | Plugins | Shows | Invocations | Runs | Teams | Admin
 ```
+
+There is no `Dashboard` entry in the live nav — `/` renders the
+dashboard, but it is reachable only via the project chip or by
+typing the URL.
 
 This mirrors the backend ontology accurately. But operationally, the
 ten items are not equivalent — they answer different questions and are
 visited at different cadences. The current flat structure gives
 "Plugins" (browsed weekly) the same visual prominence as "Runs"
-(opened many times per day). The cost is scan time on every page load.
+(opened many times per day). The cost is scan time on every page load,
+plus the dashboard's invisibility.
 
 ### 1. Flat nav is not grouped by intent
 
@@ -123,29 +128,40 @@ Breadcrumbs above the page content show `Group › Section › Item`
 (e.g., `Work › Runs › e288a6e2493f`), giving an always-visible "where
 am I" that the flat nav currently lacks.
 
-### 3. Routes stay stable
+### 3. Route changes
 
-Direct URLs are unchanged:
+Most direct URLs are unchanged; two need transitions:
 
-| URL | Group | Old nav | New nav |
-|---|---|---|---|
-| `/` | Dashboard | Dashboard | Dashboard |
-| `/projects` | (selector) | Projects | Project chip (top-right) |
-| `/shows` | Work | Shows | Work › Shows |
-| `/shows/<topic>` | Work | (deep) | Work › Shows › `<topic>` |
-| `/runs` | Work | Runs | Work › Runs |
-| `/runs/<id>` | Work | (deep) | Work › Runs › `<id>` |
-| `/teams` | Work | Teams | Work › Teams |
-| `/invocations` | Work | Invocations | Work › Invocations |
-| `/schedules` | Work | Schedules | Work › Schedules |
-| `/playbooks` | Library | Playbooks | Library › Playbooks |
-| `/agents` | Library | Agents | Library › Agents |
-| `/plugins` | Library | Plugins | Library › Plugins |
-| `/skills` | Library | (none — new) | Library › Skills |
-| `/admin/health` | Admin | Admin | Admin › Health |
-| `/admin/maintenance` | Admin | (under Admin) | Admin › Maintenance |
+| URL | Group | Old reachability | New nav | Migration |
+|---|---|---|---|---|
+| `/` | Dashboard | URL-only, no nav | Dashboard (now visible in nav) | — |
+| `/projects` | (selector) | top nav | Project chip + popover; full list reachable via "View all projects" | — |
+| `/shows` | Work | top nav | Work › Shows | — |
+| `/shows/<topic>` | Work | (deep) | Work › Shows › `<topic>` | — |
+| `/runs` | Work | top nav | Work › Runs | — |
+| `/runs/<id>` | Work | (deep) | Work › Runs › `<id>` | — |
+| `/teams` | Work | top nav | Work › Teams | — |
+| `/invocations` | Work | top nav | Work › Invocations | — |
+| `/schedules` | Work | top nav | Work › Schedules | — |
+| `/playbooks` | Library | top nav | Library › Playbooks | — |
+| `/agents` | Library | top nav | Library › Agents | — |
+| `/plugins` | Library | top nav | Library › Plugins | — |
+| `/skills` | Library | exists (`apps/studio/frontend/app/skills/page.tsx`) but not in top nav | Library › Skills | promote to nav |
+| `/admin` | — | top nav lands at combined page | replaced | **301** → `/admin/health` for one release |
+| `/admin/health` | Admin | (new) | Admin › Health | new route (extracted from `/admin`) |
+| `/admin/maintenance` | Admin | (new) | Admin › Maintenance | new route (extracted from `/admin`) |
 
-No 301 redirects needed. Routes are untouched.
+Two real route changes:
+
+1. **`/admin` splits.** The combined page becomes two routes
+   (`/admin/health` and `/admin/maintenance`). A 301 redirect from
+   `/admin` → `/admin/health` lives in `next.config.mjs` for one
+   release; the redirect can be removed in the release after.
+2. **`/skills` becomes nav-promoted.** The page already exists, so
+   this is not a new route — only a nav visibility change.
+
+All other URLs are byte-stable. Bookmarks and CLI URL output continue
+to work without changes.
 
 ### 4. Projects: chip, not nav item
 
@@ -166,18 +182,18 @@ This matches the operator mental model: project is *context*, not
 *navigation*. You don't navigate *to* a project — you work within a
 project and navigate to its work / library / admin.
 
-### 5. Skills added under Library
+### 5. Skills promoted to nav-level
 
-`/skills` becomes a new surface listing individual skill files from
-the marketplace plugins. Currently skills are only reachable via
+`/skills` already exists as a page (`apps/studio/frontend/app/skills/page.tsx`)
+but is not currently reachable from the top nav — users find skills via
 `/plugins/<name>` detail pages. Promoting Skills to a sibling of
 Plugins matches the user mental model (skills are the thing they
 invoke; plugins are the delivery mechanism).
 
-The Skills list is read-only in v1 — it points to the underlying
-`SKILL.md` files in `~/.claude/plugins/` and the marketplace
-directory. CRUD is owned by the marketplace plugin tooling, not
-Studio.
+This ADR is a nav change, not a new page. The existing Skills list
+keeps its current behaviour (read-only listing of `SKILL.md` files
+from `~/.claude/plugins/` and the marketplace directory). CRUD is
+owned by the marketplace plugin tooling, not Studio.
 
 ### 6. Admin: separate Health from Maintenance
 
@@ -244,10 +260,14 @@ renders SKILL.md frontmatter — similar to the existing Playbooks page.
   Linear, Stripe) and frees the top nav for *what to do*, not *whose
   project you're in*.
 
-- Skills become a discoverable surface for the first time.
+- Skills become discoverable in the nav for the first time (the page
+  itself already exists).
+
 - No backend changes; entirely a frontend reshuffle.
-- Direct URLs stay stable — bookmarks, deep links, and existing CLI
-  output that prints URLs all continue to work.
+
+- Most direct URLs are byte-stable. The only exception is `/admin`,
+  which 301-redirects to `/admin/health` for one release before being
+  removed. Bookmarks and CLI URL output continue to work.
 
 **Negative**
 

@@ -247,7 +247,7 @@ def verify_artifact_contract(
 
     missing_required, missing_optional, produced = [], [], []
     for entry in contract["expected"]:
-        full = os.path.join(artifacts_root, entry["path"])
+        full = _safe_join(artifacts_root, entry["path"])  # see below
         present = os.path.isfile(full) and os.path.getsize(full) > 0
         if present:
             produced.append({
@@ -279,7 +279,61 @@ def verify_artifact_contract(
 "Produced" requires the file to exist *and* be non-empty. A zero-byte
 `review.md` is not a delivery.
 
-Path resolution is `os.path.join(sessions.artifacts_path, entry.path)`.
+Path resolution uses a `_safe_join()` that enforces the rules declared
+in Section 2 ("No leading `/`, no `..`, no globs"). The verifier MUST
+NOT use bare `os.path.join`, which is permissive about absolute paths
+and `..` escapes:
+
+```python
+import os
+from pathlib import PurePosixPath
+
+_GLOB_CHARS = frozenset("*?[]")
+
+class ArtifactPathError(ValueError):
+    pass
+
+def _safe_join(root: str, rel: str) -> str:
+    """Join ``rel`` under ``root``, rejecting paths that escape the root.
+
+    Rejects absolute paths, `..` segments, glob metacharacters, and
+    any final path that does not have ``root`` as its prefix after
+    realpath resolution. ``root`` itself is expected to already be
+    realpath-resolved and absolute.
+    """
+    if not rel or rel.startswith("/"):
+        raise ArtifactPathError(f"absolute path not allowed: {rel!r}")
+    if any(c in _GLOB_CHARS for c in rel):
+        raise ArtifactPathError(f"glob characters not allowed in v1: {rel!r}")
+    parts = PurePosixPath(rel).parts
+    if any(p in ("..", "") for p in parts):
+        raise ArtifactPathError(f"`..` segments not allowed: {rel!r}")
+    joined = os.path.realpath(os.path.join(root, *parts))
+    if joined != root and not joined.startswith(root + os.sep):
+        raise ArtifactPathError(f"path escapes artifacts_root: {rel!r}")
+    return joined
+```
+
+The same validation runs at session start as `validate_artifact_contract(contract)`,
+so a bad path fails fast rather than at teardown:
+
+```python
+def validate_artifact_contract(contract: dict | None) -> None:
+    if contract is None:
+        return
+    seen_ids: set[str] = set()
+    for entry in contract["expected"]:
+        eid = entry["id"]
+        if not eid.replace("-", "").replace("_", "").isalnum():
+            raise ArtifactPathError(f"id must be alphanumeric/_/-: {eid!r}")
+        if eid in seen_ids:
+            raise ArtifactPathError(f"duplicate id in contract: {eid!r}")
+        seen_ids.add(eid)
+        # Pre-flight path check: realpath against a dummy root catches
+        # the rule violations without needing the live artifacts_path.
+        _safe_join("/tmp/__contract_validate__", entry["path"])
+```
+
 `artifacts_path` is the existing column on `sessions` (ADR-0012). No
 new path concept introduced.
 
@@ -303,7 +357,7 @@ if verification and verification["status"] == "failed":
         final_reason_code = RunReasons.FAILED_MISSING_ARTIFACT
         final_reason_summary = _format_missing(verification["missing_required"])
         final_evidence = [
-            {"kind": "artifact_id", "id": e["id"], "label": e["path"]}
+            {"kind": "expected_artifact", "id": e["id"], "label": e["path"]}
             for e in verification["missing_required"]
         ]
     else:
@@ -429,7 +483,10 @@ lionagi/state/db.py                       # create_session(artifact_contract=...
 lionagi/cli/orchestrate/__init__.py       # parse playbook artifacts block
 lionagi/cli/orchestrate/_orchestration.py # snapshot contract at session start
 lionagi/cli/agent.py                      # teardown runs verifier before status update
-lionagi/cli/_project.py                   # resolve agent profile frontmatter
+lionagi/cli/_agents.py                    # AgentProfile parser exposes
+                                          # `artifact_defaults` from frontmatter
+                                          # (see lionagi/cli/_agents.py:160 for
+                                          # current frontmatter dispatch)
 apps/studio/server/services/sessions.py   # include contract+verification in API
 apps/studio/server/routers/runs.py        # detail endpoint exposes both
 apps/studio/frontend/components/runs/ExpectedArtifacts.tsx  # new UI section

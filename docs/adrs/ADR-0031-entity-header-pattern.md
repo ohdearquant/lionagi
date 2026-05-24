@@ -78,11 +78,21 @@ Pydantic models in `apps/studio/server/schemas/entity_header.py`:
 from typing import Literal, Optional
 from pydantic import BaseModel
 
+# Mirrors ADR-0028's VALID_ENTITY_TYPES plus the library/config kinds
+# the frontend renders headers for. Storage-backed entity kinds
+# (left column) match ADR-0028 exactly; library/config kinds (right
+# column) live on disk and don't participate in status_transitions.
+#
+# `run` is NOT in this list — /runs/<id> is a frontend route over the
+# `session` entity, per ENTITY_ROUTE_ALIASES in ADR-0028.
 EntityKind = Literal[
-    "project", "show", "play", "run", "session",
-    "team", "invocation", "agent", "playbook", "plugin",
-    "schedule", "schedule_run", "chain", "chain_run",
+    # Storage entities (have rows, status, status_reason; see ADR-0028)
+    "session", "show", "play", "invocation", "team", "schedule_run",
+    # Library / config (filesystem-backed; no status_transitions)
+    "project", "agent", "playbook", "plugin", "schedule",
 ]
+
+# Deferred until ADR-0021 (chain_runs) lands: "chain", "chain_run".
 
 ActionKind = Literal["primary", "secondary", "danger"]
 
@@ -90,7 +100,6 @@ ActionId = Literal[
     "open", "inspect", "retry", "prune", "edit", "abort",
     "open_artifacts", "open_logs", "open_workspace",
     "reassign", "snooze", "dismiss",
-    "approve", "reject",          # for chain waiting_approval
     "manual_trigger",              # for schedules
 ]
 
@@ -219,8 +228,12 @@ at no cost.
 
 ```tsx
 // apps/studio/frontend/components/entity/EntityHeader.tsx
-import { StatusPill } from "@/components/status/StatusPill";
-import { StatusReasonTooltip } from "@/components/status/StatusReasonTooltip";
+// StatusPill is the existing component at apps/studio/frontend/components/StatusPill.tsx
+// (default export). ADR-0028 adds a `reason` prop to it; this header
+// passes the prop, NOT a tooltip child, so the API stays consistent
+// with what ADR-0028 specifies and with the current component's
+// prop-based API surface (see apps/studio/frontend/components/StatusPill.tsx:17).
+import StatusPill from "@/components/StatusPill";
 import { ActionButton } from "@/components/entity/ActionButton";
 import type { EntityHeader as TEntityHeader } from "@/lib/types";
 
@@ -229,11 +242,11 @@ export function EntityHeader({ header }: { header: TEntityHeader }) {
     <header className="entity-header">
       <div className="entity-header__title-row">
         <h1>{header.title}</h1>
-        <StatusPill taxonomy={header.status_taxonomy} value={header.status}>
-          {header.status_reason && (
-            <StatusReasonTooltip reason={header.status_reason} />
-          )}
-        </StatusPill>
+        <StatusPill
+          taxonomy={header.status_taxonomy}
+          value={header.status}
+          reason={header.status_reason ?? undefined}
+        />
         {header.next_action && (
           <ActionButton action={header.next_action} prominent />
         )}
@@ -315,9 +328,10 @@ state-to-action mapping in one place.
 ### 5. Graceful degradation when ADR-0028 not landed
 
 If a backend service has not yet been updated to populate
-`status_reason`, the header renders without the reason tooltip — just
-the status pill. The frontend's `<StatusReasonTooltip />` returns
-null when its `reason` prop is undefined. No errors, no broken UI.
+`status_reason`, the header passes `reason={undefined}` to
+`<StatusPill>`. ADR-0028 specifies that the pill renders unchanged
+when `reason` is undefined (no tooltip affordance, no popover). No
+errors, no broken UI.
 
 Per-entity rollout order:
 
@@ -352,7 +366,6 @@ apps/studio/frontend/components/entity/EntityHeader.tsx
 apps/studio/frontend/components/entity/ActionButton.tsx
 apps/studio/frontend/components/entity/EntityOwnerChip.tsx
 apps/studio/frontend/components/entity/EntityRelatedChip.tsx
-apps/studio/frontend/components/status/StatusReasonTooltip.tsx
 apps/studio/frontend/lib/types/entity_header.ts   # mirror Pydantic via TS interfaces
 ```
 
@@ -363,6 +376,7 @@ apps/studio/server/routers/runs.py              # include header on detail
 apps/studio/server/routers/shows.py             # include header on detail
 apps/studio/server/routers/sessions.py          # include header on detail
 apps/studio/server/routers/projects.py          # include header on detail
+apps/studio/frontend/components/StatusPill.tsx  # add `reason` prop (per ADR-0028)
 apps/studio/frontend/app/runs/[id]/page.tsx     # mount EntityHeader
 apps/studio/frontend/app/shows/[topic]/page.tsx # mount EntityHeader
 apps/studio/frontend/app/sessions/[id]/page.tsx # mount EntityHeader
@@ -457,7 +471,7 @@ apps/studio/frontend/app/projects/[name]/page.tsx # mount EntityHeader
 - [ADR-0028](ADR-0028-status-reason-model.md) — `status_reason` field surfaced in tooltip / popover.
 - [ADR-0030](ADR-0030-attention-queue.md) — Reuses `EntityAction` shape and `ActionButton` component.
 - [ADR-0024](ADR-0024-session-health-and-admin-surface.md) — Phantom session reasons feed Session header actions (Prune).
-- `apps/studio/frontend/components/status/StatusPill.tsx` — Existing pill component.
+- `apps/studio/frontend/components/StatusPill.tsx` — Existing pill component (default export; this ADR + ADR-0028 add a `reason` prop).
 - ChatGPT frontend design review (external) — proposed an entity header on every page; this ADR scopes the rollout to four pages first, defers the rest, and pins the `EntityAction` shape so the Attention Queue and entity headers share one descriptor.
 
 ### Prior art

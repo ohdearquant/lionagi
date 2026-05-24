@@ -89,14 +89,30 @@ SQLite has no CHECK constraint on `reason_code`.
 
 ### 1. Schema additions
 
-Seven entity tables gain three columns each:
+Six entity tables gain three columns each:
 
 ```sql
--- sessions, shows, plays, invocations, schedule_runs, teams, chain_runs
+-- sessions, shows, plays, invocations, teams, schedule_runs
 ALTER TABLE <entity> ADD COLUMN status_reason_code TEXT;
 ALTER TABLE <entity> ADD COLUMN status_reason_summary TEXT;
 ALTER TABLE <entity> ADD COLUMN status_evidence_refs JSON;
 ```
+
+`schedule_runs` is the one entity table without a pre-existing
+`updated_at` column (see `lionagi/state/schema.sql:386-403`). The
+migration also adds it:
+
+```sql
+ALTER TABLE schedule_runs ADD COLUMN updated_at REAL;
+```
+
+`update_status()` (Section 4) always writes `updated_at`, so the
+column must exist on every target table.
+
+`chain_runs` is deferred. It is proposed in ADR-0021 but does not
+exist in the current `schema.sql`. When ADR-0021 lands, a follow-up
+ADR can extend the reason model to cover it (one ALTER per column,
+plus an entry in `VALID_ENTITY_TYPES`).
 
 One new table for transition history:
 
@@ -135,8 +151,26 @@ without schema migration.
 from __future__ import annotations
 from typing import Final
 
+# Canonical entity taxonomy. Singular nouns; consumed by ADR-0030
+# (queue), ADR-0031 (entity headers), and validated at write time
+# in update_status(). Frontend route names ("run") may alias an
+# entity_type ("session") — see "Route aliases" below.
+VALID_ENTITY_TYPES: Final = frozenset({
+    "session", "show", "play", "invocation", "team", "schedule_run",
+})
+
+# Route aliases — pure frontend convenience. The UI may render
+# /runs/<id> as a view over the `session` entity; the *entity_type*
+# stored in status_transitions and attention_dismissals is always
+# the canonical name above.
+ENTITY_ROUTE_ALIASES: Final = {
+    "run": "session",   # /runs/<id> is the frontend route for sessions
+}
+
 # Sentinel for rows that pre-date this ADR. Frontend renders as
-# "Reason tracking not yet enabled" with a muted treatment.
+# "Reason tracking not yet enabled" with a muted treatment. This is
+# the one allowed two-segment code; all other codes follow the
+# <domain>.<status_or_outcome>.<cause> three-segment format.
 LEGACY_IMPORTED: Final = "legacy.imported"
 
 # Format: <domain>.<status_or_outcome>.<cause>
@@ -180,17 +214,34 @@ class ScheduleReasons:
     SKIPPED_OVERLAP           = "schedule.skipped.overlap"
     SKIPPED_MISSED_FIRE       = "schedule.skipped.missed_fire"
 
-VALID_REASON_CODES: Final = frozenset({
-    LEGACY_IMPORTED,
-    *vars(RunReasons).values(),
-    *vars(SessionReasons).values(),
-    *vars(PlayReasons).values(),
-    *vars(ShowReasons).values(),
-    *vars(ScheduleReasons).values(),
-}) - {None}
+def _collect(*classes: type) -> frozenset[str]:
+    """Pull the str-valued public class attributes off each reason class.
 
-# Codes are filtered to strings (vars() includes dunder attrs)
+    Filters out dunders, descriptors, and any non-string values so the
+    frozenset is exactly the controlled vocabulary, not whatever Python
+    happens to put in __dict__.
+    """
+    out: set[str] = set()
+    for cls in classes:
+        for name, value in vars(cls).items():
+            if name.startswith("_"):
+                continue
+            if isinstance(value, str):
+                out.add(value)
+    return frozenset(out)
+
+VALID_REASON_CODES: Final = _collect(
+    RunReasons, SessionReasons, PlayReasons,
+    ShowReasons, ScheduleReasons,
+) | {LEGACY_IMPORTED}
 ```
+
+The `_collect()` helper enforces what `vars()` alone does not: only
+public string-valued attributes become part of the namespace. The
+ADR explicitly allows `legacy.imported` as the only two-segment
+sentinel; the validator (`_validate_reason_code()`, Section 4)
+accepts it as a member of `VALID_REASON_CODES` and the linter step
+that enforces the three-segment format skips this single code.
 
 The vocabulary is intentionally seeded small. Add codes when a real
 status transition needs one, not preemptively.
@@ -202,22 +253,23 @@ status transition needs one, not preemptively.
 
 ```json
 [
-  {"kind": "run",      "id": "e288a6e2493f"},
-  {"kind": "session",  "id": "0a1b2c3d", "label": "reviewer (round 2)"},
-  {"kind": "artifact", "id": "...", "label": "review.md"},
-  {"kind": "file",     "path": "artifacts/review.md"},
-  {"kind": "branch",   "id": "eebf8f19"},
-  {"kind": "play",     "id": "...", "label": "rust-cleanup"},
-  {"kind": "log",      "ref": "branch:eebf8f19:stderr"},
-  {"kind": "url",      "url": "https://github.com/.../pull/1070"}
+  {"kind": "session",          "id": "0a1b2c3d", "label": "reviewer (round 2)"},
+  {"kind": "artifact",         "id": "...", "label": "review.md"},
+  {"kind": "expected_artifact","id": "review", "label": "review.md"},
+  {"kind": "file",             "path": "artifacts/review.md"},
+  {"kind": "branch",           "id": "eebf8f19"},
+  {"kind": "play",             "id": "...", "label": "rust-cleanup"},
+  {"kind": "log",              "ref": "branch:eebf8f19:stderr"},
+  {"kind": "url",              "url": "https://github.com/.../pull/1070"}
 ]
 ```
 
 Renderer rules:
 
-- `kind: run|session|play|show|invocation|branch` — link to detail page
-- `kind: artifact` — link to artifact view (per ADR-0021)
-- `kind: file` — copy-to-clipboard, optionally open in editor
+- `kind: session|play|show|invocation|branch` — link to entity detail page (uses ENTITY_ROUTE_ALIASES for URL: `session` → `/runs/<id>`)
+- `kind: artifact` — link to artifact row in the existing `artifacts` table (per ADR-0021)
+- `kind: expected_artifact` — link into the Expected Artifacts section of the run detail page; `id` is the contract entry id from ADR-0029 (e.g. `review`)
+- `kind: file` — copy-to-clipboard; optionally open in editor
 - `kind: log` — open log tab on the relevant entity
 - `kind: url` — external link
 - Unknown `kind` — render as a labeled string, no link
@@ -338,10 +390,37 @@ def _resolve_reason(*, status, exception, exit_code):
 ```
 
 ADR-0029's contract verifier writes `run.failed.missing_artifact` with
-the unmet artifact IDs in `evidence_refs`. ADR-0024's doctor classifier
-writes `session.phantom.*` codes when it transitions a session. The
-admin transition API (per ADR-0025) requires a `reason_code` in the
-request body — no more bare status updates from the UI.
+the unmet artifact IDs in `evidence_refs`.
+
+Per ADR-0024, the health classifier (`doctor`) does **not**
+auto-transition sessions; it surfaces them as phantom in the admin UI.
+The operator initiates the transition via the admin API, whose body
+(per ADR-0025) is restricted to `target_status ∈ {failed, aborted,
+cancelled}`. This ADR extends that contract by replacing ADR-0024's
+free-text `reason` field with `reason_code` + `reason_summary`:
+
+```python
+class TransitionBody(BaseModel):
+    target_status: Literal["failed", "aborted", "cancelled"]
+    reason_code: str       # must be in VALID_REASON_CODES
+    reason_summary: str    # human-readable; defaults from a code-to-text map
+    evidence_refs: list[EvidenceRef] = []
+```
+
+When the operator transitions a phantom session, they choose:
+
+| Doctor classification | Operator target status | reason_code |
+|---|---|---|
+| `process_dead` | `failed` | `SessionReasons.HEALTH_PHANTOM_PROCESS_DEAD` |
+| `missing_artifacts` | `failed` | `SessionReasons.HEALTH_PHANTOM_MISSING_ARTIFACTS` |
+| `stale` (no heartbeat, process alive) | `cancelled` | `SessionReasons.HEALTH_STALE_NO_HEARTBEAT` |
+| `orphaned` | `cancelled` | `SessionReasons.HEALTH_ORPHANED_NO_PROCESS` |
+
+`phantom` is **not** a session status — it remains a derived health
+classification per ADR-0024. The reason code records *why the
+operator chose to transition*. The denormalized
+`status_reason_code` on the now-failed session preserves that
+attribution for the runs list.
 
 ### 6. Read path — entity API responses
 
@@ -452,7 +531,7 @@ apps/studio/server/services/admin.py      # health classifier writes reason on t
 apps/studio/server/services/shows.py      # play/show transitions write reason
 apps/studio/server/services/schedules.py  # schedule fire/skip writes reason
 apps/studio/server/routers/admin.py       # admin transition API requires reason_code
-apps/studio/frontend/components/status/StatusPill.tsx  # reason tooltip/popover
+apps/studio/frontend/components/StatusPill.tsx         # add `reason` prop + tooltip/popover
 apps/studio/frontend/lib/api.ts           # status_reason type + fetch
 ```
 
