@@ -10,6 +10,7 @@ import Duration from "@/components/Duration";
 import OutcomeRenderer from "@/components/outcomes/OutcomeRenderer";
 import { getInvocation } from "@/lib/api";
 import type { InvocationDetail } from "@/lib/api";
+import { errors } from "@/lib/copy";
 
 function shortId(id: string): string {
   return id.slice(0, 8);
@@ -33,7 +34,7 @@ export default function InvocationDetailPage() {
           setError(null);
         }
       } catch {
-        if (active) setError("Failed to load invocation");
+        if (active) setError(errors.loadInvocation);
       } finally {
         if (active) setLoading(false);
       }
@@ -56,11 +57,7 @@ export default function InvocationDetailPage() {
   if (error || !data) {
     return (
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6">
-        <PageHeader
-          title="Invocation"
-          subtitle={error ?? "Not found"}
-          density="tight"
-        />
+        <PageHeader title="Invocation" subtitle={error ?? "Not found"} density="tight" />
       </main>
     );
   }
@@ -78,36 +75,26 @@ export default function InvocationDetailPage() {
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4 text-body">
         <div className="rounded border border-edge bg-surface-raised p-3">
-          <div className="text-meta uppercase tracking-[0.06em] text-content-muted">
-            Sessions
-          </div>
+          <div className="text-meta uppercase tracking-[0.06em] text-content-muted">Sessions</div>
           <div className="mt-1 text-2xl tabular-nums text-content-primary">
             {data.session_count}
           </div>
         </div>
         <div className="rounded border border-edge bg-surface-raised p-3">
-          <div className="text-meta uppercase tracking-[0.06em] text-content-muted">
-            Duration
-          </div>
+          <div className="text-meta uppercase tracking-[0.06em] text-content-muted">Duration</div>
           <div className="mt-1 text-2xl tabular-nums text-content-primary">
             <Duration value={dur} />
           </div>
         </div>
         <div className="rounded border border-edge bg-surface-raised p-3">
-          <div className="text-meta uppercase tracking-[0.06em] text-content-muted">
-            Started
-          </div>
+          <div className="text-meta uppercase tracking-[0.06em] text-content-muted">Started</div>
           <div className="mt-1 text-body text-content-primary">
             <Timestamp value={data.started_at} />
           </div>
         </div>
         <div className="rounded border border-edge bg-surface-raised p-3">
-          <div className="text-meta uppercase tracking-[0.06em] text-content-muted">
-            Plugin
-          </div>
-          <div className="mt-1 text-body text-content-primary">
-            {data.plugin ?? "—"}
-          </div>
+          <div className="text-meta uppercase tracking-[0.06em] text-content-muted">Plugin</div>
+          <div className="mt-1 text-body text-content-primary">{data.plugin ?? "—"}</div>
         </div>
       </div>
 
@@ -130,10 +117,7 @@ export default function InvocationDetailPage() {
             <tbody>
               {data.sessions.length === 0 ? (
                 <tr>
-                  <td
-                    colSpan={6}
-                    className="px-3 py-8 text-center text-meta text-content-muted"
-                  >
+                  <td colSpan={6} className="px-3 py-8 text-center text-meta text-content-muted">
                     No sessions spawned under this invocation yet.
                   </td>
                 </tr>
@@ -150,9 +134,7 @@ export default function InvocationDetailPage() {
                       >
                         {s.name || s.agent_name || s.playbook_name || shortId(s.id)}
                       </Link>
-                      <div className="text-meta text-content-muted font-mono">
-                        {shortId(s.id)}
-                      </div>
+                      <div className="text-meta text-content-muted font-mono">{shortId(s.id)}</div>
                     </td>
                     <td className="px-3 py-2 align-middle text-content-secondary">
                       {s.invocation_kind ?? "—"}
@@ -160,9 +142,7 @@ export default function InvocationDetailPage() {
                     <td className="px-3 py-2 align-middle font-mono text-meta text-content-secondary">
                       {s.model ?? "—"}
                       {s.effort ? (
-                        <span className="ml-1 text-content-muted">
-                          · {s.effort}
-                        </span>
+                        <span className="ml-1 text-content-muted">· {s.effort}</span>
                       ) : null}
                     </td>
                     <td className="px-3 py-2 align-middle">

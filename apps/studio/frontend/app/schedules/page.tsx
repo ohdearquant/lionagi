@@ -16,6 +16,7 @@ import {
   type ScheduleListResponse,
 } from "@/lib/api";
 import type { ScheduleRunSummary, ScheduleSummary } from "@/lib/types";
+import { empty, errors } from "@/lib/copy";
 
 // ─── Badge helpers ────────────────────────────────────────────────────────────
 
@@ -26,8 +27,7 @@ const TRIGGER_CLASS: Record<string, string> = {
 };
 
 function TriggerBadge({ type }: { type: string }) {
-  const cls =
-    TRIGGER_CLASS[type] ?? "border-edge bg-surface-overlay text-content-secondary";
+  const cls = TRIGGER_CLASS[type] ?? "border-edge bg-surface-overlay text-content-secondary";
   const label = type === "github_poll" ? "github" : type;
   return (
     <span
@@ -113,9 +113,7 @@ function EnabledToggle({
       title={enabled ? "Click to disable" : "Click to enable"}
       className={[
         "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-interactive-primary focus:ring-offset-1 focus:ring-offset-surface-base",
-        enabled
-          ? "border-status-success/50 bg-status-success"
-          : "border-edge bg-surface-overlay",
+        enabled ? "border-status-success/50 bg-status-success" : "border-edge bg-surface-overlay",
         busy ? "opacity-60 cursor-not-allowed" : "cursor-pointer",
       ]
         .filter(Boolean)
@@ -162,10 +160,7 @@ function ScheduleCard({
   }
 
   const actionDetail =
-    schedule.action_model ??
-    schedule.action_playbook ??
-    schedule.action_agent ??
-    null;
+    schedule.action_model ?? schedule.action_playbook ?? schedule.action_agent ?? null;
 
   return (
     <div
@@ -183,16 +178,10 @@ function ScheduleCard({
             {schedule.name}
           </span>
           {schedule.description && (
-            <p className="truncate text-meta text-content-secondary">
-              {schedule.description}
-            </p>
+            <p className="truncate text-meta text-content-secondary">{schedule.description}</p>
           )}
         </div>
-        <EnabledToggle
-          scheduleId={schedule.id}
-          enabled={enabled}
-          onToggled={onRefresh}
-        />
+        <EnabledToggle scheduleId={schedule.id} enabled={enabled} onToggled={onRefresh} />
       </div>
 
       {/* Badge row */}
@@ -209,19 +198,14 @@ function ScheduleCard({
       {/* Trigger detail */}
       <div className="text-meta text-content-secondary">
         {schedule.trigger_type === "cron" && schedule.cron_expr && (
-          <span className="font-mono text-[11px] text-content-muted">
-            {schedule.cron_expr}
-          </span>
+          <span className="font-mono text-[11px] text-content-muted">{schedule.cron_expr}</span>
         )}
         {schedule.trigger_type === "interval" && schedule.interval_sec != null && (
           <span>Every {formatInterval(schedule.interval_sec)}</span>
         )}
         {schedule.trigger_type === "github_poll" && schedule.github_repo && (
           <span className="truncate text-[11px]">
-            Polling{" "}
-            <span className="font-mono text-content-primary">
-              {schedule.github_repo}
-            </span>
+            Polling <span className="font-mono text-content-primary">{schedule.github_repo}</span>
             {schedule.poll_interval_sec != null && (
               <span className="text-content-muted">
                 {" "}
@@ -250,11 +234,7 @@ function ScheduleCard({
 
       {/* Actions row */}
       <div className="flex items-center justify-between gap-2 border-t border-edge pt-2.5">
-        {triggerMsg ? (
-          <span className="text-meta text-content-muted">{triggerMsg}</span>
-        ) : (
-          <span />
-        )}
+        {triggerMsg ? <span className="text-meta text-content-muted">{triggerMsg}</span> : <span />}
         <Button
           variant="ghost"
           size="sm"
@@ -284,11 +264,7 @@ function SkeletonCard() {
 
 function RecentRunsTable({ runs }: { runs: ScheduleRunSummary[] }) {
   if (runs.length === 0) {
-    return (
-      <p className="py-6 text-center text-body text-content-muted">
-        No recent runs.
-      </p>
-    );
+    return <p className="py-6 text-center text-body text-content-muted">No recent runs.</p>;
   }
 
   return (
@@ -463,7 +439,7 @@ function CreateScheduleModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.name.trim()) {
-      setError("Name is required.");
+      setError(errors.nameRequired);
       return;
     }
     setSubmitting(true);
@@ -490,9 +466,7 @@ function CreateScheduleModal({
       <div className="w-full max-w-lg rounded-lg border border-edge bg-surface-raised shadow-card mx-4">
         {/* Modal header */}
         <div className="flex items-center justify-between border-b border-edge px-5 py-4">
-          <h2 className="font-mono text-base font-semibold text-content-primary">
-            New Schedule
-          </h2>
+          <h2 className="font-mono text-base font-semibold text-content-primary">New Schedule</h2>
           <button
             type="button"
             onClick={onClose}
@@ -504,10 +478,7 @@ function CreateScheduleModal({
         </div>
 
         {/* Form body */}
-        <form
-          onSubmit={(e) => void handleSubmit(e)}
-          className="flex flex-col gap-3 px-5 py-4"
-        >
+        <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3 px-5 py-4">
           {/* — Basic info — */}
           <SectionHeading>Basic Info</SectionHeading>
 
@@ -769,9 +740,7 @@ function EmptyState({ onNew }: { onNew: () => void }) {
       <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full border border-edge bg-surface-raised text-content-muted text-xl">
         ◷
       </div>
-      <p className="mb-1 text-body font-medium text-content-secondary">
-        No schedules yet
-      </p>
+      <p className="mb-1 text-body font-medium text-content-secondary">{empty.schedules}</p>
       <p className="mb-4 text-meta text-content-muted">
         Create a schedule to automate agent runs on cron, interval, or GitHub events.
       </p>
@@ -818,7 +787,7 @@ function SchedulesPageInner() {
         setRunsLoading(false);
       }
     } catch {
-      setError("Failed to load schedules.");
+      setError(errors.loadSchedules);
     } finally {
       setLoading(false);
     }
@@ -827,7 +796,6 @@ function SchedulesPageInner() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- load() calls setState, but this is a data-fetch pattern matching the rest of the codebase
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const schedules = data?.schedules ?? [];
@@ -879,12 +847,8 @@ function SchedulesPageInner() {
       {!loading && schedules.length > 0 && (
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between border-t border-edge pt-4">
-            <h2 className="font-mono text-sm font-semibold text-content-primary">
-              Recent Runs
-            </h2>
-            {runsLoading && (
-              <span className="text-meta text-content-muted">Loading...</span>
-            )}
+            <h2 className="font-mono text-sm font-semibold text-content-primary">Recent Runs</h2>
+            {runsLoading && <span className="text-meta text-content-muted">Loading...</span>}
           </div>
           <div className="rounded-lg border border-edge bg-surface-raised p-4 shadow-card">
             <RecentRunsTable runs={recentRuns} />
@@ -893,10 +857,7 @@ function SchedulesPageInner() {
       )}
 
       {showModal && (
-        <CreateScheduleModal
-          onClose={() => setShowModal(false)}
-          onCreated={() => void load()}
-        />
+        <CreateScheduleModal onClose={() => setShowModal(false)} onCreated={() => void load()} />
       )}
     </main>
   );

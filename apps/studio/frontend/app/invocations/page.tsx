@@ -9,6 +9,7 @@ import Timestamp from "@/components/Timestamp";
 import Duration from "@/components/Duration";
 import { listInvocations } from "@/lib/api";
 import type { InvocationListResponse } from "@/lib/api";
+import { empty, errors } from "@/lib/copy";
 
 const LIMIT = 25;
 
@@ -16,11 +17,7 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
-function durationSeconds(
-  startedAt: number,
-  endedAt: number | null,
-  nowSec: number,
-): number {
+function durationSeconds(startedAt: number, endedAt: number | null, nowSec: number): number {
   return (endedAt ?? nowSec) - startedAt;
 }
 
@@ -50,7 +47,7 @@ export default function InvocationsPage() {
           setError(null);
         }
       } catch {
-        if (active) setError("Failed to load invocations");
+        if (active) setError(errors.loadInvocations);
       } finally {
         if (active) setLoading(false);
       }
@@ -82,9 +79,7 @@ export default function InvocationsPage() {
 
       {/* Filter strip */}
       <div className="flex flex-wrap items-center gap-3 rounded border border-edge bg-surface-overlay px-3 py-2 text-body">
-        <span className="text-meta uppercase tracking-[0.06em] text-content-muted">
-          Filters
-        </span>
+        <span className="text-meta uppercase tracking-[0.06em] text-content-muted">Filters</span>
         <input
           type="text"
           placeholder="Filter by skill..."
@@ -160,21 +155,15 @@ export default function InvocationsPage() {
           <tbody>
             {loading ? (
               <tr>
-                <td
-                  colSpan={6}
-                  className="px-3 py-8 text-center text-meta text-content-muted"
-                >
+                <td colSpan={6} className="px-3 py-8 text-center text-meta text-content-muted">
                   Loading...
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               !error ? (
                 <tr>
-                  <td
-                    colSpan={6}
-                    className="px-3 py-8 text-center text-meta text-content-muted"
-                  >
-                    No invocations yet. Skills track here once they call{" "}
+                  <td colSpan={6} className="px-3 py-8 text-center text-meta text-content-muted">
+                    {empty.invocations} Skills track here once they call{" "}
                     <code className="text-content-primary">li invoke start</code>.
                   </td>
                 </tr>
@@ -204,9 +193,7 @@ export default function InvocationsPage() {
                         {inv.prompt ?? "(no prompt)"}
                       </div>
                     </td>
-                    <td className="px-3 py-2 align-middle tabular-nums">
-                      {inv.session_count}
-                    </td>
+                    <td className="px-3 py-2 align-middle tabular-nums">{inv.session_count}</td>
                     <td className="px-3 py-2 align-middle tabular-nums">
                       <Duration value={dur} />
                     </td>
@@ -229,16 +216,10 @@ export default function InvocationsPage() {
           offset {offset} · showing {rows.length}
         </div>
         <div className="flex gap-2">
-          <Button
-            onClick={() => setOffset(Math.max(0, offset - LIMIT))}
-            disabled={offset === 0}
-          >
+          <Button onClick={() => setOffset(Math.max(0, offset - LIMIT))} disabled={offset === 0}>
             Prev
           </Button>
-          <Button
-            onClick={() => setOffset(offset + LIMIT)}
-            disabled={!data?.has_next}
-          >
+          <Button onClick={() => setOffset(offset + LIMIT)} disabled={!data?.has_next}>
             Next
           </Button>
         </div>
