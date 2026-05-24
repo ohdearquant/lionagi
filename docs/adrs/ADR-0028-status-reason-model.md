@@ -573,9 +573,10 @@ apps/studio/frontend/lib/api.ts           # status_reason type + fetch
 
 **Negative**
 
-- Seven `ALTER TABLE` statements. Pre-release, so acceptable; still
-  three more columns × six status-bearing tables of schema width,
-  plus the `updated_at` ALTER on `schedule_runs`.
+- Nineteen `ALTER TABLE` statements (18 reason columns across six
+  status-bearing tables + 1 `updated_at` on `schedule_runs`).
+  Pre-release, so acceptable; still three more columns × six tables
+  of schema width plus the new history table.
 
 - Every status mutation site in the codebase has to be updated to call
   `update_status()` with a reason. The current pattern is to write

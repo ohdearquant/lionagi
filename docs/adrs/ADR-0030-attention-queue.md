@@ -253,30 +253,37 @@ the entity tables:
 
 ```python
 # apps/studio/server/services/attention.py — sketch
-async def _phantom_items(db) -> list[AttentionItem]:
-    classified = await admin_service.classify_phantoms(db)
-    out = []
-    for entry in classified:  # PhantomEntry: {session_id, reason, ...}
-        reason_code = _PHANTOM_TO_REASON_CODE[entry.reason]
-        # entry.reason ∈ {"process_dead", "missing_artifacts", "stale_lock"}
+# Consumes the existing public admin API
+# (apps/studio/server/services/admin.py:104) which returns a list of
+# dicts shaped { "id", "reason", "started_at", "updated_at",
+# "artifacts_path", ... }. `reason` is a PhantomReason literal
+# defined at apps/studio/server/services/admin.py:16.
+async def _phantom_items(stale_hours: float = 1.0) -> list[AttentionItem]:
+    phantoms = await admin_service.list_phantom_sessions(stale_hours=stale_hours)
+    out: list[AttentionItem] = []
+    for entry in phantoms:
+        reason_code = _PHANTOM_TO_REASON_CODE[entry["reason"]]
+        # entry["reason"] ∈ {"process_dead", "missing_artifacts", "stale_lock"}
         out.append(AttentionItem(
             entity_type="session",
-            entity_id=entry.session_id,
-            status=entry.status,           # whatever status the row still has
+            entity_id=entry["id"],
+            status="running",  # phantom items are still pre-transition
             reason=StatusReason(
                 code=reason_code,
-                summary=_PHANTOM_TO_SUMMARY[entry.reason],
-                evidence_refs=entry.evidence,
+                summary=_PHANTOM_TO_SUMMARY[entry["reason"]],
+                evidence_refs=[
+                    {"kind": "session", "id": entry["id"]},
+                ],
             ),
-            fingerprint=f"session:{entry.session_id}:{reason_code}",
+            fingerprint=f"session:{entry['id']}:{reason_code}",
             severity="warning",
         ))
     return out
 
 _PHANTOM_TO_REASON_CODE = {
-    "process_dead":     SessionReasons.HEALTH_PHANTOM_PROCESS_DEAD,
-    "missing_artifacts":SessionReasons.HEALTH_PHANTOM_MISSING_ARTIFACTS,
-    "stale_lock":       SessionReasons.HEALTH_ZOMBIE_STALE_LOCKS,
+    "process_dead":      SessionReasons.HEALTH_PHANTOM_PROCESS_DEAD,
+    "missing_artifacts": SessionReasons.HEALTH_PHANTOM_MISSING_ARTIFACTS,
+    "stale_lock":        SessionReasons.HEALTH_ZOMBIE_STALE_LOCKS,
 }
 ```
 
