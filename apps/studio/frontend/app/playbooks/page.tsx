@@ -12,6 +12,7 @@ import {
   rollbackDefinition,
 } from "@/lib/api";
 import type { DefinitionDetail, DefinitionVersion } from "@/lib/api";
+import { notImplemented } from "@/lib/copy";
 import type { WorkerSummary } from "@/lib/types";
 
 type PlaybookItem = WorkerSummary;
@@ -419,7 +420,7 @@ function PlaybookDetail({ name }: { name: string }) {
                 leading="▶"
                 onClick={handleRun}
                 disabled
-                title="Coming soon"
+                title={notImplemented.runPlaybook}
               >
                 Run
               </Button>

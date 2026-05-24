@@ -1,148 +1,27 @@
 "use client";
 
 import Link from "next/link";
-import dynamic from "next/dynamic";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ModelConfigTable from "@/components/ModelConfigTable";
+import { notImplemented } from "@/lib/copy";
 
-const WorkerCanvas = dynamic(() => import("@/components/canvas/WorkerCanvas"), { ssr: false });
-import { listAgents } from "@/lib/api";
-import type {
-  AgentProfileSummary,
-  ModelConfig,
-  WorkerGraph,
-  WorkerLinkEdge,
-  WorkerStepNode,
-} from "@/lib/types";
-
-const EMPTY_GRAPH: WorkerGraph = {
-  name: "",
-  description: "",
-  nodes: [
-    {
-      id: "step_1",
-      label: "step_1",
-      assignment: "",
-      role: "",
-      prompt: "",
-      capacity: 1,
-      timeout: null,
-      inputs: [],
-      outputs: [],
-    },
-  ],
-  edges: [],
-};
+// H-FE-983: POST /api/playbooks/{name} returns 501. This page previously
+// rendered a full canvas form whose Create button called that route. The
+// form is replaced with a hold-message until the backend is implemented.
+// Option A (implement the route) is tracked in the issue.
 
 export default function NewWorkerPage() {
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [models, setModels] = useState<Record<string, ModelConfig>>({});
-  const [agentProfiles, setAgentProfiles] = useState<AgentProfileSummary[]>([]);
-
-  const [errors, setErrors] = useState<string[]>([]);
-  const [showModels, setShowModels] = useState(false);
-
-  const canvasNodesRef = useRef<WorkerStepNode[]>(EMPTY_GRAPH.nodes);
-  const canvasEdgesRef = useRef<WorkerLinkEdge[]>([]);
-
-  useEffect(() => {
-    listAgents()
-      .then((data) => setAgentProfiles(data.agents))
-      .catch(() => {});
-  }, []);
-
-  const allRoleNames = useMemo(() => {
-    const names = new Set<string>();
-    agentProfiles.forEach((p) => names.add(p.name));
-    Object.keys(models).forEach((k) => names.add(k));
-    return Array.from(names).sort();
-  }, [agentProfiles, models]);
-
-  const handleCanvasChange = useCallback((nodes: WorkerStepNode[], edges: WorkerLinkEdge[]) => {
-    canvasNodesRef.current = nodes;
-    canvasEdgesRef.current = edges;
-  }, []);
-
-  const handleSave = useCallback(async () => {
-    setErrors(["Not yet available"]);
-  }, []);
-
   return (
-    <div className="flex h-[calc(100vh-56px)] flex-col">
-      {/* Top bar */}
-      <div className="flex items-center gap-3 border-b border-neutral-800 px-4 py-2">
-        <Link href="/playbooks" className="text-xs text-neutral-500 hover:text-neutral-300">
+    <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-12">
+      <header className="flex flex-col gap-2 border-b border-edge pb-4">
+        <Link href="/playbooks" className="text-meta text-content-muted hover:text-content-primary">
           &larr; playbooks
         </Link>
+        <h1 className="text-xl font-semibold text-content-primary">New Playbook</h1>
+      </header>
 
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Playbook name..."
-          className="w-48 rounded border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-sm text-neutral-200 placeholder-neutral-600 focus:border-neutral-500 focus:outline-none"
-        />
-
-        <input
-          type="text"
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="Description..."
-          className="flex-1 rounded border border-transparent bg-transparent px-2 py-1 text-sm text-neutral-400 placeholder-neutral-600 hover:border-neutral-700 focus:border-neutral-500 focus:outline-none"
-        />
-
-        <button
-          onClick={() => setShowModels((v) => !v)}
-          className="rounded border border-neutral-700 bg-neutral-900 px-3 py-1 text-xs text-neutral-400 hover:text-neutral-200"
-        >
-          Models {showModels ? "▴" : "▾"}
-        </button>
-
-        <button
-          onClick={handleSave}
-          disabled
-          title="Coming soon"
-          className="rounded border border-green-700 bg-green-900/50 px-4 py-1 text-sm font-medium text-green-300 hover:bg-green-800/50 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          Create
-        </button>
+      <div className="rounded-lg border border-edge bg-surface-raised p-6 text-center">
+        <p className="text-body text-content-secondary">{notImplemented.newPlaybook}</p>
+        <p className="mt-3 font-mono text-meta text-content-muted">li play --help</p>
       </div>
-
-      {/* Errors */}
-      {errors.length > 0 && (
-        <div className="border-b border-red-900 bg-red-950/40 px-4 py-2">
-          {errors.map((err, i) => (
-            <p key={i} className="text-xs text-red-300">
-              {err}
-            </p>
-          ))}
-        </div>
-      )}
-
-      {/* Model overrides (collapsible) */}
-      {showModels && (
-        <div className="border-b border-neutral-800 bg-neutral-950 px-4 py-3">
-          <div className="mx-auto max-w-3xl">
-            <h3 className="mb-2 text-xs font-semibold uppercase text-neutral-500">
-              Model Overrides
-            </h3>
-            <ModelConfigTable models={models} onChange={setModels} />
-          </div>
-        </div>
-      )}
-
-      {/* Canvas */}
-      <div className="flex-1 min-h-0">
-        <WorkerCanvas
-          graph={EMPTY_GRAPH}
-          editable={true}
-          roles={allRoleNames}
-          agentProfiles={agentProfiles}
-          modelOverrides={models}
-          onChange={handleCanvasChange}
-        />
-      </div>
-    </div>
+    </main>
   );
 }
