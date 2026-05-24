@@ -436,6 +436,9 @@ export interface InvocationSummary {
   created_at: number;
   updated_at: number;
   node_metadata: Record<string, unknown> | null;
+  // ADR-0026: project provenance from the most-recently updated child session.
+  project?: string | null;
+  project_source?: string | null;
 }
 
 export interface InvocationSession {

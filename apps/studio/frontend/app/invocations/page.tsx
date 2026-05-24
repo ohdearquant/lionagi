@@ -183,9 +183,19 @@ export default function InvocationsPage() {
                       >
                         /{inv.skill}
                       </Link>
-                      <div className="text-meta text-content-muted">
-                        {shortId(inv.id)}
-                        {inv.plugin ? ` · ${inv.plugin}` : ""}
+                      <div className="flex items-center gap-1.5 text-meta text-content-muted">
+                        <span>
+                          {shortId(inv.id)}
+                          {inv.plugin ? ` · ${inv.plugin}` : ""}
+                        </span>
+                        {inv.project && (
+                          <span
+                            className="rounded px-1 py-0.5 font-mono text-[10px] border border-edge text-content-muted"
+                            title={`Project: ${inv.project} (${inv.project_source ?? "unknown"})`}
+                          >
+                            {inv.project}
+                          </span>
+                        )}
                       </div>
                     </td>
                     <td className="px-3 py-2 align-middle">
