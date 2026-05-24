@@ -9,7 +9,7 @@ import Timestamp from "@/components/Timestamp";
 import Duration from "@/components/Duration";
 import { listInvocations } from "@/lib/api";
 import type { InvocationListResponse } from "@/lib/api";
-import { errors } from "@/lib/copy";
+import { empty, errors } from "@/lib/copy";
 
 const LIMIT = 25;
 
@@ -163,7 +163,7 @@ export default function InvocationsPage() {
               !error ? (
                 <tr>
                   <td colSpan={6} className="px-3 py-8 text-center text-meta text-content-muted">
-                    No invocations yet. Skills track here once they call{" "}
+                    {empty.invocations} Skills track here once they call{" "}
                     <code className="text-content-primary">li invoke start</code>.
                   </td>
                 </tr>

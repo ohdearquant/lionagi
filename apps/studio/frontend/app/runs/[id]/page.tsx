@@ -9,6 +9,7 @@ import RunStepCard from "@/components/RunStepCard";
 import { getSession, streamSession } from "@/lib/api";
 import type { SessionDetail, SessionBranch, SessionMessage } from "@/lib/api";
 import type { RunMessage, RunStep, WorkerGraph } from "@/lib/types";
+import { empty } from "@/lib/copy";
 
 const WorkerCanvas = dynamic(() => import("@/components/canvas/WorkerCanvas"), { ssr: false });
 
@@ -355,7 +356,7 @@ function ErrorsSection({ errors }: { errors: ErrorEntry[] }) {
       <SectionHeader label="Errors" count={errors.length} errorTone={errors.length > 0} />
       {errors.length === 0 ? (
         <div className="flex items-center gap-2 rounded border border-edge bg-surface-raised px-4 py-3 text-sm text-status-success">
-          <span>No errors detected across all branches.</span>
+          <span>{empty.branchErrors}</span>
         </div>
       ) : (
         <div className="flex flex-col gap-1.5">

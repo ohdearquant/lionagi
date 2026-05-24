@@ -11,7 +11,7 @@ import Timestamp from "@/components/Timestamp";
 import { listRuns } from "@/lib/api";
 import type { RunListResponse } from "@/lib/api";
 import type { RunSummary } from "@/lib/types";
-import { errors } from "@/lib/copy";
+import { empty, errors } from "@/lib/copy";
 
 // ADR-0025: six-value session vocabulary (running/completed/failed/
 // timed_out/aborted/cancelled). "done" stays as an alias for completed
@@ -455,7 +455,7 @@ function RunsPageInner() {
               invocationGroups.length === 0 && ungroupedRuns.length === 0 ? (
                 <tr>
                   <td colSpan={4} className="px-3 py-14 text-center text-body text-content-muted">
-                    <span className="block mb-1 text-[11px]">No runs found</span>
+                    <span className="block mb-1 text-[11px]">{empty.runs}</span>
                     {(statuses.length > 0 || playbook) && (
                       <span className="text-meta">Try adjusting your filters.</span>
                     )}
@@ -522,7 +522,7 @@ function RunsPageInner() {
             ) : runs.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-3 py-14 text-center text-body text-content-muted">
-                  <span className="block mb-1 text-[11px]">No runs found</span>
+                  <span className="block mb-1 text-[11px]">{empty.runs}</span>
                   {(statuses.length > 0 || playbook) && (
                     <span className="text-meta">Try adjusting your filters.</span>
                   )}

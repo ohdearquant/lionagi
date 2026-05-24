@@ -6,7 +6,7 @@ import PageHeader from "@/components/PageHeader";
 import Timestamp from "@/components/Timestamp";
 import { getAdminDoctor, pruneAdmin } from "@/lib/api";
 import type { AdminDoctorResponse, PhantomReason } from "@/lib/api";
-import { errors } from "@/lib/copy";
+import { confirmPhantomPrune, empty, errors } from "@/lib/copy";
 
 function formatBytes(value: number): string {
   if (value === 0) return "0 B";
@@ -84,13 +84,7 @@ export default function AdminMaintenancePage() {
 
   async function handlePruneSelected() {
     if (selected.size === 0) return;
-    const count = selected.size;
-    const noun = count === 1 ? "session" : "sessions";
-    const confirmed = window.confirm(
-      `Prune ${count} phantom ${noun}?\n\n` +
-        `Removes DB rows. Artifacts on disk are kept.\n` +
-        `Cannot be undone.`,
-    );
+    const confirmed = window.confirm(confirmPhantomPrune(selected.size, false));
     if (!confirmed) return;
     setPruning(true);
     try {
@@ -106,12 +100,7 @@ export default function AdminMaintenancePage() {
 
   async function handlePruneAll() {
     const count = (doctor?.phantom_sessions ?? []).length;
-    const noun = count === 1 ? "session" : "sessions";
-    const confirmed = window.confirm(
-      `Prune all ${count} phantom ${noun}?\n\n` +
-        `Removes DB rows. Artifacts on disk are kept.\n` +
-        `Cannot be undone.`,
-    );
+    const confirmed = window.confirm(confirmPhantomPrune(count, true));
     if (!confirmed) return;
     setPruning(true);
     try {
@@ -175,7 +164,7 @@ export default function AdminMaintenancePage() {
           <div className="py-8 text-center text-meta text-content-muted">Loading...</div>
         ) : phantoms.length === 0 ? (
           <div className="rounded border border-status-success/25 bg-status-success-bg px-4 py-4 text-body text-content-primary shadow-card">
-            No phantom sessions detected.
+            {empty.phantomSessions}
           </div>
         ) : (
           <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">

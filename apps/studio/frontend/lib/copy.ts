@@ -42,7 +42,7 @@ export function confirmPhantomPrune(count: number, all: boolean): string {
 export const empty = {
   // Zero-state — surface awaits its first entry.
   projects: "No projects yet.",
-  invocations: "No invocations yet. Skills track here once they call /invoke.",
+  invocations: "No invocations yet.",
   schedules: "No schedules yet.",
   versions: "No versions yet.",
   plays: "No plays yet.",
