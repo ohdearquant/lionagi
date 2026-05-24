@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 from lionagi.state.db import DEFAULT_DB_PATH
+from lionagi.state.reasons import SessionReasons
 
 from ._db import open_db as _open_db
 
@@ -261,13 +264,58 @@ async def health_report() -> dict[str, Any]:
 # so the API rejects the request before touching the DB.
 _ADMIN_TRANSITION_TARGETS: frozenset[str] = frozenset({"failed", "aborted", "cancelled"})
 
+# ADR-0028 §5: phantom-classifier (PhantomReason) → reason code mapping.
+_PHANTOM_REASON_CODES: dict[str, str] = {
+    "process_dead": SessionReasons.HEALTH_PHANTOM_PROCESS_DEAD,
+    "missing_artifacts": SessionReasons.HEALTH_PHANTOM_MISSING_ARTIFACTS,
+    "stale_lock": SessionReasons.HEALTH_ZOMBIE_STALE_LOCKS,
+}
+
+
+# ADR-0028 §5: SessionHealth (read-time) → reason code mapping. The
+# phantom resolver checks this AFTER the PhantomReason map so a
+# concrete phantom cause wins, but a non-phantom unhealthy session
+# (STALE without lock, ORPHANED, IDLE-but-process-dead) still gets a
+# specific reason code instead of falling back to the operator's
+# generic choice.
+def _resolve_session_health_reason_code(
+    *,
+    phantom_reason: str | None,
+    health,  # SessionHealth enum from lionagi.state.health
+) -> str | None:
+    """Return the most-specific health-derived reason code, or None.
+
+    Returns None when neither classifier yields a specific cause —
+    callers should keep the operator's `reason_code` in that case.
+    """
+    if phantom_reason is not None:
+        # PhantomReason wins — the phantom classifier names a concrete
+        # filesystem-level cause (dead process, missing artifacts, stale
+        # lock) that's more actionable than a generic health label.
+        return _PHANTOM_REASON_CODES.get(phantom_reason)
+    # Non-phantom unhealthy states use SessionReasons.HEALTH_* codes.
+    # Map by enum name so changes to the SessionHealth enum surface
+    # here at import time, not at runtime.
+    from lionagi.state.health import SessionHealth
+
+    if health == SessionHealth.STALE:
+        return SessionReasons.HEALTH_STALE_NO_HEARTBEAT
+    if health == SessionHealth.ORPHANED:
+        return SessionReasons.HEALTH_ORPHANED_NO_PROCESS
+    if health == SessionHealth.ZOMBIE:
+        return SessionReasons.HEALTH_ZOMBIE_STALE_LOCKS
+    return None
+
 
 async def transition_sessions(
     session_ids: list[str],
     *,
     target_status: str,
-    reason: str,
+    reason_code: str,
+    reason_summary: str = "",
+    evidence_refs: list[dict[str, Any]] | None = None,
     actor: str = "admin",
+    legacy_reason: str | None = None,
 ) -> dict[str, Any]:
     """Mark running sessions terminal with an audit-log entry.
 
@@ -284,13 +332,17 @@ async def transition_sessions(
       clause to close the TOCTOU window between the pre-check read and the
       write.
     """
+    from lionagi.state.reasons import validate_reason_code
+
     if target_status not in _ADMIN_TRANSITION_TARGETS:
         raise ValueError(
             f"target_status must be one of {sorted(_ADMIN_TRANSITION_TARGETS)}; "
             f"got {target_status!r}"
         )
-    if not reason or not reason.strip():
-        raise ValueError("reason is required")
+    validate_reason_code(reason_code)
+    if reason_summary is None:
+        reason_summary = ""
+    evidence_refs = list(evidence_refs or [])
     if not session_ids:
         return {"transitioned": [], "skipped": [], "event_id": None}
     if not DEFAULT_DB_PATH.exists():
@@ -341,47 +393,139 @@ async def transition_sessions(
                     "Only unhealthy sessions may be force-transitioned."
                 )
 
-            # UPDATE immediately after the health check to minimize the race
-            # window. The WHERE status='running' guard closes the residual
-            # TOCTOU: rowcount==0 means a concurrent transition already won.
-            cur = await db.db.execute(
-                "UPDATE sessions SET status=?, ended_at=?, updated_at=? "
-                "WHERE id=? AND status='running'"
-                "  AND (last_message_at IS ? OR last_message_at = ?)"
-                "  AND (updated_at      IS ? OR updated_at      = ?)",
-                (
-                    target_status,
-                    now,
-                    now,
-                    sid,
-                    _snap_last_msg,
-                    _snap_last_msg,
-                    _snap_updated,
-                    _snap_updated,
-                ),
+            # Health/phantom classification overrides the operator reason
+            # code when a concrete cause is available (ADR-0028 §5).
+            # _resolve_session_health_reason_code() returns the
+            # most-specific code — PhantomReason takes priority over
+            # SessionHealth so a dead process / missing artifacts /
+            # stale lock isn't masked by the broader STALE label.
+            phantom_reason = _classify_phantom(current, now=now, stale_seconds=3600)
+            classifier_code = _resolve_session_health_reason_code(
+                phantom_reason=phantom_reason,
+                health=health,
             )
-            await db.db.commit()
-            if cur.rowcount == 0:
-                existing = await db.get_session(sid)
-                if existing is None:
-                    skipped.append({"session_id": sid, "reason": "not_found"})
-                elif existing.get("status") == "running":
-                    # Status is still running but timestamps changed between
-                    # snapshot and UPDATE — a concurrent heartbeat raced us.
-                    skipped.append(
+            effective_reason_code = reason_code
+            effective_reason_summary = reason_summary
+            effective_evidence_refs: list[dict[str, Any]] = list(evidence_refs)
+            if classifier_code is not None:
+                effective_reason_code = classifier_code
+                # Preserve the operator's narrative when they bothered
+                # to write one; otherwise synthesize from the classifier.
+                if not reason_summary:
+                    cause = phantom_reason or health.value
+                    effective_reason_summary = (
+                        f"Operator transitioned session after classifier: {cause}."
+                    )
+                if phantom_reason is not None:
+                    effective_evidence_refs.append(
                         {
+                            "kind": "phantom_classification",
+                            "reason": phantom_reason,
                             "session_id": sid,
-                            "reason": "changed_since_snapshot",
                         }
                     )
                 else:
-                    skipped.append(
+                    effective_evidence_refs.append(
                         {
+                            "kind": "session_health",
+                            "health": health.value,
                             "session_id": sid,
-                            "reason": f"not_running:{existing.get('status')}",
                         }
                     )
-                continue
+
+            # ADR-0028: the conditional sessions UPDATE and the
+            # status_transitions INSERT must commit together. The
+            # earlier two-commit layout had a window where a crash
+            # between commits left the session terminal with no
+            # history row — the exact drift ADR-0028 §4 says must
+            # not happen.
+            #
+            # BEGIN IMMEDIATE acquires the write lock up front so the
+            # TOCTOU window is the same length as before (we already
+            # held the SQLite connection; this just makes the lock
+            # explicit instead of letting aiosqlite take it lazily on
+            # the first write).
+            await db.db.execute("BEGIN IMMEDIATE")
+            try:
+                cur = await db.db.execute(
+                    "UPDATE sessions SET status=?, ended_at=?, updated_at=?, "
+                    "  status_reason_code=?, status_reason_summary=?, status_evidence_refs=? "
+                    "WHERE id=? AND status='running'"
+                    "  AND (last_message_at IS ? OR last_message_at = ?)"
+                    "  AND (updated_at      IS ? OR updated_at      = ?)",
+                    (
+                        target_status,
+                        now,
+                        now,
+                        effective_reason_code,
+                        effective_reason_summary,
+                        json.dumps(effective_evidence_refs),
+                        sid,
+                        _snap_last_msg,
+                        _snap_last_msg,
+                        _snap_updated,
+                        _snap_updated,
+                    ),
+                )
+                if cur.rowcount == 0:
+                    # No row to transition — roll back the empty
+                    # transaction so we don't leave a no-op BEGIN
+                    # blocking the connection.
+                    await db.db.rollback()
+                    existing = await db.get_session(sid)
+                    if existing is None:
+                        skipped.append({"session_id": sid, "reason": "not_found"})
+                    elif existing.get("status") == "running":
+                        # Status is still running but timestamps changed
+                        # between snapshot and UPDATE — concurrent heartbeat.
+                        skipped.append(
+                            {
+                                "session_id": sid,
+                                "reason": "changed_since_snapshot",
+                            }
+                        )
+                    else:
+                        skipped.append(
+                            {
+                                "session_id": sid,
+                                "reason": f"not_running:{existing.get('status')}",
+                            }
+                        )
+                    continue
+                # Append the transition row inside the same transaction.
+                await db.db.execute(
+                    "INSERT INTO status_transitions "
+                    "(id, entity_type, entity_id, previous_status, status, "
+                    " reason_code, reason_summary, evidence_refs, "
+                    " source, actor, created_at, metadata) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        uuid.uuid4().hex,
+                        "session",
+                        sid,
+                        "running",
+                        target_status,
+                        effective_reason_code,
+                        effective_reason_summary,
+                        json.dumps(effective_evidence_refs),
+                        "admin",
+                        actor,
+                        now,
+                        json.dumps(
+                            {
+                                "legacy_reason": legacy_reason,
+                                "health": health.value,
+                                "process_alive": process_alive,
+                            }
+                        ),
+                    ),
+                )
+                await db.db.commit()
+            except BaseException:
+                # Any failure between BEGIN and COMMIT rolls back both
+                # writes, restoring the running session.
+                await db.db.rollback()
+                raise
             transitioned.append(sid)
 
         event_id = await db.insert_admin_event(
@@ -390,7 +534,10 @@ async def transition_sessions(
             actor=actor,
             details={
                 "target_status": target_status,
-                "reason": reason,
+                "reason_code": reason_code,
+                "reason_summary": reason_summary,
+                "evidence_refs": evidence_refs,
+                "reason": legacy_reason,
                 "transitioned": transitioned,
                 "skipped": skipped,
             },

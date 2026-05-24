@@ -14,6 +14,15 @@ import aiosqlite
 
 from lionagi.cli._runs import LIONAGI_HOME
 from lionagi.state.reasons import (
+    PlayReasons as _PlayReasons,
+)
+from lionagi.state.reasons import (
+    RunReasons as _RunReasons,
+)
+from lionagi.state.reasons import (
+    ShowReasons as _ShowReasons,
+)
+from lionagi.state.reasons import (
     entity_table as _reason_entity_table,
 )
 from lionagi.state.reasons import (
@@ -22,6 +31,60 @@ from lionagi.state.reasons import (
 from lionagi.state.reasons import (
     validate_reason_code as _validate_reason_code,
 )
+
+# Per-entity default-reason maps used by the Phase 2 deprecation shim
+# in update_invocation / update_show / update_play / update_schedule_run.
+# Picking a wrong-domain code (e.g. ``run.completed.ok`` for a successful
+# show) pollutes the reason-grouping primitive ADR-0028 introduces for
+# Phase 3/4 + ADR-0030. The resolver is conservative — it returns None
+# for (entity, status) pairs without a canonical default, forcing the
+# caller to surface a clear error instead of synthesizing nonsense.
+_RUN_DEFAULTS: dict[str, str] = {
+    "completed": _RunReasons.COMPLETED_OK,
+    "failed": _RunReasons.FAILED_EXCEPTION,
+    "timed_out": _RunReasons.TIMED_OUT_DEADLINE,
+    "aborted": _RunReasons.ABORTED_USER,
+    "cancelled": _RunReasons.CANCELLED_SYSTEM,
+}
+
+_SHOW_DEFAULTS: dict[str, str] = {
+    "completed": _ShowReasons.COMPLETED_FINAL_GATE,
+    "aborted": _ShowReasons.ABORTED_OPERATOR,
+}
+
+_PLAY_DEFAULTS: dict[str, str] = {
+    "merged": _PlayReasons.MERGED_OK,
+    "escalated": _PlayReasons.ESCALATED_GATE_TWICE,
+    "gate_failed": _PlayReasons.GATE_FAILED_VERDICT,
+}
+
+
+def _default_reason_code_for_entity_status(entity_type: str, status: str) -> str | None:
+    """Map (entity_type, status) → canonical reason_code, or None.
+
+    Returns None for ambiguous (entity, status) pairs — sessions/
+    invocations/schedule_runs share the run.* codes (they're process
+    runs); shows + plays have entity-specific codes for the subset
+    of statuses with canonical defaults. Statuses outside the per-
+    entity map return None and the deprecation shim raises so
+    callers supply reason_code explicitly.
+    """
+    if entity_type in ("session", "invocation", "schedule_run"):
+        return _RUN_DEFAULTS.get(status)
+    if entity_type == "show":
+        return _SHOW_DEFAULTS.get(status)
+    if entity_type == "play":
+        return _PLAY_DEFAULTS.get(status)
+    return None
+
+
+def _default_reason_code_for_status(status: str) -> str:
+    """Legacy run-only resolver. Kept for one release to avoid
+    breaking external callers that imported the private name.
+    New code MUST use :func:`_default_reason_code_for_entity_status`.
+    """
+    return _RUN_DEFAULTS.get(status, _RunReasons.FAILED_EXCEPTION)
+
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
@@ -359,6 +422,9 @@ class StateDB:
             ("status_reason_code", "TEXT"),
             ("status_reason_summary", "TEXT"),
             ("status_evidence_refs", "JSON"),
+            # ADR-0029: resolved artifact contract and teardown result.
+            ("artifact_contract_json", "JSON"),
+            ("artifact_verification_json", "JSON"),
         ],
         "branches": [
             ("system_msg_id", "TEXT"),
@@ -515,7 +581,10 @@ class StateDB:
                   -- preserves these columns when migrating from ADR-0017.
                   status_reason_code     TEXT,
                   status_reason_summary  TEXT,
-                  status_evidence_refs   JSON
+                  status_evidence_refs   JSON,
+                  -- ADR-0029: artifact contract snapshot and verification.
+                  artifact_contract_json      JSON,
+                  artifact_verification_json  JSON
                 )
                 """
             )
@@ -702,12 +771,13 @@ class StateDB:
             """INSERT OR IGNORE INTO sessions (id, created_at, node_metadata, name, user,
                progression_id, first_msg_id, last_msg_id, updated_at,
                playbook_name, agent_name, invocation_kind, show_topic,
-               show_play_name, artifacts_path, source_kind,
+               show_play_name, artifacts_path, artifact_contract_json,
+               artifact_verification_json, source_kind,
                status, started_at, ended_at, last_message_at, invocation_id,
                model, provider, effort, agent_hash,
                project, project_source)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session["id"],
                 session.get("created_at", now),
@@ -726,6 +796,8 @@ class StateDB:
                 session.get("show_topic"),
                 session.get("show_play_name"),
                 session.get("artifacts_path"),
+                _to_json_column(session.get("artifact_contract_json")),
+                _to_json_column(session.get("artifact_verification_json")),
                 session.get("source_kind", "live"),
                 session.get("status"),
                 session.get("started_at"),
@@ -816,6 +888,17 @@ class StateDB:
         await self.db.execute(
             f"UPDATE sessions SET {sets} WHERE id = ?",  # noqa: S608
             vals,
+        )
+        await self.db.commit()
+
+    async def update_artifact_verification(
+        self,
+        session_id: str,
+        verification: dict[str, Any] | None,
+    ) -> None:
+        await self.db.execute(
+            "UPDATE sessions SET artifact_verification_json = ?, updated_at = ? WHERE id = ?",
+            (_to_json_column(verification), time.time(), session_id),
         )
         await self.db.commit()
 
@@ -1260,18 +1343,69 @@ class StateDB:
         )
         await self.db.commit()
 
-    async def update_schedule_run(self, run_id: str, **fields: Any) -> None:
+    async def update_schedule_run(
+        self,
+        run_id: str,
+        *,
+        reason_code: str | None = None,
+        reason_summary: str = "",
+        evidence_refs: list[dict[str, Any]] | None = None,
+        reason_source: str = "executor",
+        reason_actor: str | None = None,
+        **fields: Any,
+    ) -> None:
+        """Update schedule_run fields; route status through update_status().
+
+        ADR-0028 Phase 2: status writes go through update_status() so
+        reason columns + status_transitions are atomic. See
+        update_invocation() for the pattern.
+        """
         allowed = {"status", "exit_code", "ended_at", "error_detail", "invocation_id"}
         bad = set(fields) - allowed
         if bad:
             raise ValueError(f"Invalid schedule_run field(s): {bad}")
-        sets = ", ".join(f"{k} = ?" for k in fields)
-        vals = list(fields.values()) + [run_id]
-        await self.db.execute(
-            f"UPDATE schedule_runs SET {sets} WHERE id = ?",  # noqa: S608
-            vals,
-        )
-        await self.db.commit()
+
+        status_value = fields.pop("status", None)
+        if status_value is not None:
+            if reason_code is None:
+                from warnings import warn
+
+                resolved = _default_reason_code_for_entity_status("schedule_run", status_value)
+                if resolved is None:
+                    raise ValueError(
+                        f"update_schedule_run() called with status={status_value!r} but "
+                        f"no canonical default reason_code exists for "
+                        f"(schedule_run, {status_value!r}). Pass reason_code "
+                        f"explicitly from lionagi/state/reasons.py."
+                    )
+                reason_code = resolved
+                warn(
+                    f"update_schedule_run({run_id!r}, status={status_value!r}) "
+                    "called without reason_code; defaulting to "
+                    f"{reason_code!r}. Pass reason_code explicitly "
+                    "(ADR-0028 Phase 2 deprecation).",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+            await self.update_status(
+                "schedule_run",
+                run_id,
+                new_status=status_value,
+                reason_code=reason_code,
+                reason_summary=reason_summary,
+                evidence_refs=evidence_refs,
+                source=reason_source,
+                actor=reason_actor,
+            )
+
+        if fields:
+            sets = ", ".join(f"{k} = ?" for k in fields)
+            vals = list(fields.values()) + [run_id]
+            await self.db.execute(
+                f"UPDATE schedule_runs SET {sets} WHERE id = ?",  # noqa: S608
+                vals,
+            )
+            await self.db.commit()
 
     async def list_schedule_runs(
         self,
@@ -1344,7 +1478,35 @@ class StateDB:
         )
         await self.db.commit()
 
-    async def update_invocation(self, invocation_id: str, **fields: Any) -> None:
+    async def update_invocation(
+        self,
+        invocation_id: str,
+        *,
+        reason_code: str | None = None,
+        reason_summary: str = "",
+        evidence_refs: list[dict[str, Any]] | None = None,
+        reason_source: str = "executor",
+        reason_actor: str | None = None,
+        **fields: Any,
+    ) -> None:
+        """Update invocation fields; route status changes through update_status().
+
+        ADR-0028 Phase 2: when ``status`` is among the updated fields, the
+        transition goes through :meth:`update_status` so the denormalized
+        reason columns and ``status_transitions`` history row are written
+        atomically.
+
+        Pass ``reason_code`` (required when status is in fields) plus
+        optional ``reason_summary`` / ``evidence_refs`` / ``reason_source``
+        / ``reason_actor`` to control the transition record. The
+        non-status fields are written by the legacy UPDATE path below
+        (separate transaction).
+
+        Backwards compatibility: callers that pass ``status`` without a
+        ``reason_code`` get a deprecation warning + a default code
+        derived from the status (matching the executor's resolution
+        logic for sessions). Remove the fallback in a future release.
+        """
         _validate_columns(fields, _INVOCATION_COLUMNS)
         if "status" in fields:
             _validate_enum(
@@ -1356,13 +1518,50 @@ class StateDB:
             )
         if "node_metadata" in fields:
             fields["node_metadata"] = _to_json_column(fields["node_metadata"])
-        fields["updated_at"] = time.time()
-        sets = ", ".join(f"{k} = ?" for k in fields)
-        vals = list(fields.values()) + [invocation_id]
-        # columns validated above; SQL is identifier-only interpolation.
-        update_sql = f"UPDATE invocations SET {sets} WHERE id = ?"  # noqa: S608
-        await self.db.execute(update_sql, vals)
-        await self.db.commit()
+
+        status_value = fields.pop("status", None)
+        if status_value is not None:
+            if reason_code is None:
+                from warnings import warn
+
+                resolved = _default_reason_code_for_entity_status("invocation", status_value)
+                if resolved is None:
+                    raise ValueError(
+                        f"update_invocation() called with status={status_value!r} but "
+                        f"no canonical default reason_code exists for "
+                        f"(invocation, {status_value!r}). Pass reason_code "
+                        f"explicitly from lionagi/state/reasons.py."
+                    )
+                reason_code = resolved
+                warn(
+                    f"update_invocation({invocation_id!r}, status={status_value!r}) "
+                    "called without reason_code; defaulting to "
+                    f"{reason_code!r}. Pass reason_code explicitly "
+                    "(ADR-0028 Phase 2 deprecation).",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+            await self.update_status(
+                "invocation",
+                invocation_id,
+                new_status=status_value,
+                reason_code=reason_code,
+                reason_summary=reason_summary,
+                evidence_refs=evidence_refs,
+                source=reason_source,
+                actor=reason_actor,
+            )
+
+        # Remaining (non-status) fields go through the legacy update path
+        # in a separate write — update_status() already touched updated_at.
+        if fields:
+            fields["updated_at"] = time.time()
+            sets = ", ".join(f"{k} = ?" for k in fields)
+            vals = list(fields.values()) + [invocation_id]
+            # columns validated above; SQL is identifier-only interpolation.
+            update_sql = f"UPDATE invocations SET {sets} WHERE id = ?"  # noqa: S608
+            await self.db.execute(update_sql, vals)
+            await self.db.commit()
 
     async def get_invocation(self, invocation_id: str) -> dict[str, Any] | None:
         cur = await self.db.execute("SELECT * FROM invocations WHERE id = ?", (invocation_id,))
@@ -1768,7 +1967,23 @@ class StateDB:
         rows = await cur.fetchall()
         return [self._row_to_dict(r) for r in rows]
 
-    async def update_show(self, show_id: str, **fields: Any) -> None:
+    async def update_show(
+        self,
+        show_id: str,
+        *,
+        reason_code: str | None = None,
+        reason_summary: str = "",
+        evidence_refs: list[dict[str, Any]] | None = None,
+        reason_source: str = "executor",
+        reason_actor: str | None = None,
+        **fields: Any,
+    ) -> None:
+        """Update show fields; route status changes through update_status().
+
+        ADR-0028 Phase 2: status writes go through StateDB.update_status()
+        so reason columns and status_transitions are written atomically.
+        Backwards-compatible deprecation shim mirrors update_invocation().
+        """
         _validate_columns(fields, _SHOW_COLUMNS)
         if "status" in fields:
             _validate_enum(
@@ -1778,15 +1993,50 @@ class StateDB:
                 adr="ADR-0011",
                 nullable=False,
             )
-        fields["updated_at"] = time.time()
-        sets = ", ".join(f"{k} = ?" for k in fields)
-        vals = list(fields.values()) + [show_id]
-        # noqa: S608 — column names allowlisted via _validate_columns
-        await self.db.execute(
-            f"UPDATE shows SET {sets} WHERE id = ?",  # noqa: S608
-            vals,
-        )
-        await self.db.commit()
+
+        status_value = fields.pop("status", None)
+        if status_value is not None:
+            if reason_code is None:
+                from warnings import warn
+
+                resolved = _default_reason_code_for_entity_status("show", status_value)
+                if resolved is None:
+                    raise ValueError(
+                        f"update_show() called with status={status_value!r} but "
+                        f"no canonical default reason_code exists for "
+                        f"(show, {status_value!r}). Pass reason_code "
+                        f"explicitly from lionagi/state/reasons.py."
+                    )
+                reason_code = resolved
+                warn(
+                    f"update_show({show_id!r}, status={status_value!r}) "
+                    "called without reason_code; defaulting to "
+                    f"{reason_code!r}. Pass reason_code explicitly "
+                    "(ADR-0028 Phase 2 deprecation).",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+            await self.update_status(
+                "show",
+                show_id,
+                new_status=status_value,
+                reason_code=reason_code,
+                reason_summary=reason_summary,
+                evidence_refs=evidence_refs,
+                source=reason_source,
+                actor=reason_actor,
+            )
+
+        if fields:
+            fields["updated_at"] = time.time()
+            sets = ", ".join(f"{k} = ?" for k in fields)
+            vals = list(fields.values()) + [show_id]
+            # noqa: S608 — column names allowlisted via _validate_columns
+            await self.db.execute(
+                f"UPDATE shows SET {sets} WHERE id = ?",  # noqa: S608
+                vals,
+            )
+            await self.db.commit()
 
     # ── Plays ─────────────────────────────────────────────────────────
 
@@ -1844,7 +2094,22 @@ class StateDB:
         rows = await cur.fetchall()
         return [self._row_to_dict(r) for r in rows]
 
-    async def update_play(self, play_id: str, **fields: Any) -> None:
+    async def update_play(
+        self,
+        play_id: str,
+        *,
+        reason_code: str | None = None,
+        reason_summary: str = "",
+        evidence_refs: list[dict[str, Any]] | None = None,
+        reason_source: str = "executor",
+        reason_actor: str | None = None,
+        **fields: Any,
+    ) -> None:
+        """Update play fields; route status changes through update_status().
+
+        ADR-0028 Phase 2: see update_invocation() / update_show() for
+        the same routing pattern.
+        """
         _validate_columns(fields, _PLAY_COLUMNS)
         if "status" in fields:
             _validate_enum(
@@ -1854,15 +2119,50 @@ class StateDB:
                 adr="ADR-0011",
                 nullable=False,
             )
-        fields["updated_at"] = time.time()
-        sets = ", ".join(f"{k} = ?" for k in fields)
-        vals = list(fields.values()) + [play_id]
-        # noqa: S608 — column names allowlisted via _validate_columns
-        await self.db.execute(
-            f"UPDATE plays SET {sets} WHERE id = ?",  # noqa: S608
-            vals,
-        )
-        await self.db.commit()
+
+        status_value = fields.pop("status", None)
+        if status_value is not None:
+            if reason_code is None:
+                from warnings import warn
+
+                resolved = _default_reason_code_for_entity_status("play", status_value)
+                if resolved is None:
+                    raise ValueError(
+                        f"update_play() called with status={status_value!r} but "
+                        f"no canonical default reason_code exists for "
+                        f"(play, {status_value!r}). Pass reason_code "
+                        f"explicitly from lionagi/state/reasons.py."
+                    )
+                reason_code = resolved
+                warn(
+                    f"update_play({play_id!r}, status={status_value!r}) "
+                    "called without reason_code; defaulting to "
+                    f"{reason_code!r}. Pass reason_code explicitly "
+                    "(ADR-0028 Phase 2 deprecation).",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+            await self.update_status(
+                "play",
+                play_id,
+                new_status=status_value,
+                reason_code=reason_code,
+                reason_summary=reason_summary,
+                evidence_refs=evidence_refs,
+                source=reason_source,
+                actor=reason_actor,
+            )
+
+        if fields:
+            fields["updated_at"] = time.time()
+            sets = ", ".join(f"{k} = ?" for k in fields)
+            vals = list(fields.values()) + [play_id]
+            # noqa: S608 — column names allowlisted via _validate_columns
+            await self.db.execute(
+                f"UPDATE plays SET {sets} WHERE id = ?",  # noqa: S608
+                vals,
+            )
+            await self.db.commit()
 
     # ── Definitions ───────────────────────────────────────────────────
 
@@ -1972,6 +2272,8 @@ class StateDB:
             "action_extra_args",
             "trigger_context",
             "action_args",
+            "artifact_contract_json",
+            "artifact_verification_json",
         ):
             if key in d and isinstance(d[key], str):
                 try:

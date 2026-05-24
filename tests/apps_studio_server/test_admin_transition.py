@@ -136,7 +136,8 @@ def test_transition_refused_when_heartbeat_changes_health(tmp_path, monkeypatch)
         adm.transition_sessions(
             session_ids=[sid],
             target_status="failed",
-            reason="test atomicity guard",
+            reason_code="run.failed.exception",
+            reason_summary="test atomicity guard",
             actor="test",
         )
     )

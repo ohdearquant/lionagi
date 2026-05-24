@@ -159,7 +159,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- never drift.
   status_reason_code     TEXT,
   status_reason_summary  TEXT,
-  status_evidence_refs   JSON
+  status_evidence_refs   JSON,
+  -- ── Artifact contract (ADR-0029) ──────────────────────────────────────
+  -- Resolved contract snapshot written at session creation and verifier
+  -- result written at teardown. NULL contract means verification skipped.
+  artifact_contract_json      JSON,
+  artifact_verification_json  JSON
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_updated

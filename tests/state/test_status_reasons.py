@@ -403,3 +403,124 @@ class TestTeardownReasonResolution:
         )
         assert "ValueError" in summary
         assert "bad input" in summary
+
+
+# ── ADR-0028 Phase 2: invocation transition writes reason ────────────
+
+
+async def _create_invocation(db: StateDB, *, status: str = "running") -> str:
+    inv_id = uuid.uuid4().hex[:12]
+    now = time.time()
+    await db.db.execute(
+        "INSERT INTO invocations (id, skill, status, created_at, started_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (inv_id, "test:skill", status, now, now, now),
+    )
+    await db.db.commit()
+    return inv_id
+
+
+class TestInvocationTransition:
+    async def test_update_status_direct(self, db: StateDB):
+        """Direct update_status() on entity_type='invocation' works."""
+        inv_id = await _create_invocation(db)
+        await db.update_status(
+            "invocation",
+            inv_id,
+            new_status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+            reason_summary="All child sessions completed successfully.",
+            evidence_refs=[{"kind": "session", "id": "abc"}],
+            source="executor",
+            actor=inv_id,
+        )
+
+        cur = await db.db.execute(
+            "SELECT status, status_reason_code, status_reason_summary "
+            "FROM invocations WHERE id = ?",
+            (inv_id,),
+        )
+        row = dict(await cur.fetchone())
+        assert row["status"] == "completed"
+        assert row["status_reason_code"] == RunReasons.COMPLETED_OK
+        assert "child sessions" in row["status_reason_summary"]
+
+        cur = await db.db.execute(
+            "SELECT entity_type, previous_status, status, reason_code "
+            "FROM status_transitions WHERE entity_id = ?",
+            (inv_id,),
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+        assert len(rows) == 1
+        assert rows[0]["entity_type"] == "invocation"
+        assert rows[0]["previous_status"] == "running"
+        assert rows[0]["status"] == "completed"
+        assert rows[0]["reason_code"] == RunReasons.COMPLETED_OK
+
+    async def test_update_invocation_routes_status_through_update_status(self, db: StateDB):
+        """ADR-0028 Phase 2: update_invocation(status=...) writes reason atomically."""
+        inv_id = await _create_invocation(db)
+        await db.update_invocation(
+            inv_id,
+            status="completed",
+            ended_at=time.time(),
+            reason_code=RunReasons.COMPLETED_OK,
+            reason_summary="All children passed.",
+        )
+
+        cur = await db.db.execute(
+            "SELECT status, status_reason_code, ended_at IS NOT NULL AS has_end "
+            "FROM invocations WHERE id = ?",
+            (inv_id,),
+        )
+        row = dict(await cur.fetchone())
+        assert row["status"] == "completed"
+        assert row["status_reason_code"] == RunReasons.COMPLETED_OK
+        assert row["has_end"] == 1
+
+        # Transition row was written through update_status().
+        cur = await db.db.execute(
+            "SELECT COUNT(*) AS n FROM status_transitions WHERE entity_id = ?",
+            (inv_id,),
+        )
+        assert (await cur.fetchone())["n"] == 1
+
+    async def test_update_invocation_compat_warns_when_reason_omitted(self, db: StateDB):
+        """Legacy callers that pass status without reason_code get a deprecation
+        warning + a default code so they keep working through the migration."""
+        import warnings
+
+        inv_id = await _create_invocation(db)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            await db.update_invocation(inv_id, status="failed")
+            deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecations) == 1, "missing-reason_code call must emit one DeprecationWarning"
+        assert "reason_code" in str(deprecations[0].message)
+
+        cur = await db.db.execute(
+            "SELECT status_reason_code FROM invocations WHERE id = ?",
+            (inv_id,),
+        )
+        # Compat shim defaults to the generic exception reason for 'failed'.
+        row = dict(await cur.fetchone())
+        assert row["status_reason_code"] == RunReasons.FAILED_EXCEPTION
+
+    async def test_update_invocation_no_status_skips_reason_path(self, db: StateDB):
+        """Updates that don't touch status don't write to status_transitions."""
+        inv_id = await _create_invocation(db)
+        await db.update_invocation(inv_id, ended_at=time.time())
+
+        cur = await db.db.execute(
+            "SELECT status, status_reason_code FROM invocations WHERE id = ?",
+            (inv_id,),
+        )
+        row = dict(await cur.fetchone())
+        assert row["status"] == "running"  # unchanged
+        assert row["status_reason_code"] is None  # never touched
+
+        cur = await db.db.execute(
+            "SELECT COUNT(*) AS n FROM status_transitions WHERE entity_id = ?",
+            (inv_id,),
+        )
+        assert (await cur.fetchone())["n"] == 0
