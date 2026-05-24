@@ -12,6 +12,12 @@ from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.ln.concurrency import run_async
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
+from lionagi.state.artifact_verifier import (
+    missing_artifact_evidence,
+    missing_artifact_summary,
+    resolve_artifact_contract,
+    verify_artifact_contract,
+)
 
 from ._agents import load_agent_profile
 from ._logging import hint, log_error
@@ -133,10 +139,15 @@ async def _run_agent(
     # ``model_spec`` here is the canonical ``provider/model`` string built
     # right above this block — no aliases, no defaults yet to apply.
     resolved_model_spec = _provenance.resolve_model_spec(provider, model)
+    artifact_contract = resolve_artifact_contract(
+        playbook_artifacts=None,
+        agent_defaults=profile.artifact_defaults if profile else None,
+    )
     live = await _setup_live_persist(
         branch,
         agent_name=agent_name,
         artifacts_path=str(run.artifact_root),
+        artifact_contract=artifact_contract,
         invocation_id=invocation_id,
         model=resolved_model_spec,
         provider=provider,
@@ -192,11 +203,18 @@ async def _run_agent(
         import anyio
 
         with anyio.CancelScope(shield=True):
-            await _teardown_live_persist(
+            # ADR-0029 §7: teardown may override the proposed terminal
+            # status (clean exit + missing required artifact → failed).
+            # Use the returned status — NOT the original — for the
+            # process exit code so shell scripts, schedules, and chains
+            # see the failure.
+            effective_status = await _teardown_live_persist(
                 live,
                 status=_terminal_status,
                 exception=_terminal_exc,
             )
+            if effective_status != _terminal_status:
+                _terminal_status = effective_status
             # Shut down every iModel on the branch (chat_model AND
             # parse_model, plus any other registered) so each
             # RateLimitedAPIExecutor's background replenisher task is
@@ -225,6 +243,7 @@ async def _setup_live_persist(
     *,
     agent_name: str | None = None,
     artifacts_path: str | None = None,
+    artifact_contract: dict | None = None,
     invocation_id: str | None = None,
     model: str | None = None,
     provider: str | None = None,
@@ -320,6 +339,7 @@ async def _setup_live_persist(
                     "invocation_kind": "agent",
                     "agent_name": agent_name,
                     "artifacts_path": artifacts_path,
+                    "artifact_contract_json": artifact_contract,
                     "status": "running",
                     "started_at": time.time(),
                     # ADR-0020: optional skill-level orchestration parent.
@@ -381,6 +401,8 @@ async def _setup_live_persist(
             "branch_prog_id": branch_prog_id,
             "existing_msg_ids": existing_msg_ids,
             "new_msg_ids": [],
+            "artifacts_path": artifacts_path,
+            "artifact_contract": artifact_contract,
         }
 
         async def _on_message(msg):
@@ -481,8 +503,14 @@ async def _teardown_live_persist(
     *,
     status: str = "completed",
     exception: BaseException | None = None,
-) -> None:
+) -> str:
     """Update session bookmarks, lifecycle columns, and close DB.
+
+    Returns the *effective* terminal status — ADR-0029 §7's verification
+    override can flip a clean ``completed`` into ``failed`` when required
+    artifacts are missing. Callers MUST use the returned status (not the
+    `status` argument they passed in) for any downstream side effect
+    like the process exit code.
 
     The DB close is in its own ``finally`` so it always runs — even if
     the bookmark update or hook removal fails. Failures elsewhere are
@@ -500,7 +528,7 @@ async def _teardown_live_persist(
     exception class and message.
     """
     if ctx is None:
-        return
+        return status
     import logging
 
     log = logging.getLogger("lionagi.cli")
@@ -528,13 +556,43 @@ async def _teardown_live_persist(
         metadata: dict | None = None
         if exception is not None:
             metadata = {"exception_class": type(exception).__name__}
+
+        session_row = await db.get_session(session_id) or {}
+        contract = session_row.get("artifact_contract_json")
+        artifacts_root = session_row.get("artifacts_path")
+        verification = verify_artifact_contract(
+            contract,
+            artifacts_root=artifacts_root,
+        )
+        await db.update_artifact_verification(session_id, verification)
+
+        final_status = status
+        final_reason_code = reason_code
+        final_reason_summary = reason_summary
+        final_evidence_refs = evidence_refs
+        if verification and verification["status"] == "failed":
+            missing = verification["missing_required"]
+            if status == "completed":
+                from lionagi.state.reasons import RunReasons
+
+                final_status = "failed"
+                final_reason_code = RunReasons.FAILED_MISSING_ARTIFACT
+                final_reason_summary = missing_artifact_summary(missing)
+                final_evidence_refs = missing_artifact_evidence(missing)
+            else:
+                metadata = dict(metadata or {})
+                metadata["artifact_verification_status"] = verification["status"]
+                metadata["missing_required_artifact_ids"] = [
+                    str(entry.get("id", "")) for entry in missing
+                ]
+
         await db.update_status(
             "session",
             session_id,
-            new_status=status,
-            reason_code=reason_code,
-            reason_summary=reason_summary,
-            evidence_refs=evidence_refs,
+            new_status=final_status,
+            reason_code=final_reason_code,
+            reason_summary=final_reason_summary,
+            evidence_refs=final_evidence_refs,
             source="executor",
             actor=session_id,
             metadata=metadata,
@@ -550,11 +608,15 @@ async def _teardown_live_persist(
         ]
     except Exception as exc:
         log.warning("live persist teardown failed: %s", exc, exc_info=True)
+        # Surface the original status on best-effort failure so the
+        # caller's exit code reflects what we tried to commit.
+        return status
     finally:
         try:
             await db.close()
         except Exception as exc:
             log.warning("live persist db.close failed: %s", exc, exc_info=True)
+    return final_status
 
 
 def add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:

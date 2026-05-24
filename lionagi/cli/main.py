@@ -69,6 +69,107 @@ def _print_playbook_help(name: str) -> int:
     return 0
 
 
+# The unknown-subfield warning is shared with the runtime spec validator
+# (lionagi/cli/orchestrate/__init__.py) — see warn_unknown_artifact_keys
+# in lionagi/state/artifact_verifier.py. Importing here keeps the
+# pre-flight and runtime warnings in lockstep.
+
+
+def _handle_play_check(argv: list[str]) -> int:
+    """`li play check <name>` — ADR-0029 §9 pre-flight contract validation.
+
+    Loads the playbook, optionally loads the agent profile it names so
+    `artifact_defaults` participate in the merge (matching what a real
+    invocation will see), resolves the contract via
+    :func:`lionagi.state.artifact_verifier.resolve_artifact_contract`,
+    and pretty-prints the result. Does not fire the playbook.
+    """
+    if not argv or argv[0].startswith("-"):
+        print("Usage: li play check <name>")
+        return 1
+    name = argv[0]
+
+    from lionagi.cli.orchestrate import _load_flow_spec, _resolve_playbook_path
+    from lionagi.state.artifact_verifier import (
+        ArtifactPathError,
+        resolve_artifact_contract,
+        warn_unknown_artifact_keys,
+    )
+
+    path, err = _resolve_playbook_path(name)
+    if err is not None:
+        log_error(err)
+        return 1
+    spec = _load_flow_spec(str(path))
+    if not isinstance(spec, dict):
+        log_error(f"could not parse playbook spec at {path}")
+        return 1
+
+    artifacts_block = spec.get("artifacts")
+    # Load the agent profile the playbook names so its artifact_defaults
+    # participate in the merge — a real invocation sees them. The actual
+    # `li play` path raises if the profile is missing, so pre-flight
+    # must FAIL in the same case rather than silently green-light an
+    # invocation that will crash at execution start.
+    agent_defaults = None
+    agent_name = spec.get("agent")
+    if agent_name:
+        try:
+            from lionagi.cli._agents import load_agent_profile
+
+            profile = load_agent_profile(agent_name)
+            agent_defaults = getattr(profile, "artifact_defaults", None)
+        except Exception as exc:  # noqa: BLE001 — match runtime behaviour
+            log_error(
+                f"playbook '{name}' references agent profile "
+                f"'{agent_name}' but it could not be loaded: {exc}. "
+                f"Real `li play {name}` will fail at execution start; "
+                f"fix the profile or remove the `agent:` field."
+            )
+            return 1
+
+    if not artifacts_block and not agent_defaults:
+        print(f"playbook '{name}': no `artifacts:` block declared (verification skipped).")
+        return 0
+
+    if artifacts_block:
+        # Same warning the runtime spec validator emits (via
+        # logger.warning there); on the pre-flight surface we want it
+        # visible in the operator's terminal, so default print is fine.
+        warn_unknown_artifact_keys(artifacts_block, source=f"playbook '{name}'")
+
+    try:
+        resolved = resolve_artifact_contract(
+            playbook_artifacts=artifacts_block,
+            agent_defaults=agent_defaults,
+        )
+    except ArtifactPathError as exc:
+        log_error(f"playbook '{name}' artifact contract invalid: {exc}")
+        return 1
+
+    if resolved is None:
+        print(f"playbook '{name}': empty contract (no expected artifacts).")
+        return 0
+
+    expected = resolved.get("expected", [])
+    required = [e for e in expected if e.get("required", True)]
+    optional = [e for e in expected if not e.get("required", True)]
+    sources = [e.get("source") for e in expected]
+    from_playbook = sum(1 for s in sources if s == "playbook")
+    from_agent = sum(1 for s in sources if s == "agent_profile")
+    print(f"playbook '{name}' artifact contract:")
+    print(f"  expected: {len(expected)} ({len(required)} required, {len(optional)} optional)")
+    if from_playbook or from_agent:
+        print(f"  sources:  {from_playbook} from playbook, {from_agent} from agent_profile")
+    for e in expected:
+        flag = "REQUIRED" if e.get("required", True) else "OPTIONAL"
+        src = e.get("source", "?")
+        desc = e.get("description") or ""
+        suffix = f" — {desc}" if desc else ""
+        print(f"  [{flag}] {e['id']}  →  {e['path']}  (from {src}){suffix}")
+    return 0
+
+
 def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
     """Expand `li play` sugar into `li o flow -p NAME ...`.
 
@@ -89,15 +190,18 @@ def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
         if not root.is_dir():
             print(f"(no playbooks directory at {root})")
             return 0
-        names = sorted(
-            p.name.removesuffix(".playbook.yaml") for p in root.glob("*.playbook.yaml")
-        )
+        names = sorted(p.name.removesuffix(".playbook.yaml") for p in root.glob("*.playbook.yaml"))
         if not names:
             print(f"(no playbooks in {root})")
             return 0
         for name in names:
             print(name)
         return 0
+    if head == "check":
+        # ADR-0029 §9: pre-flight artifact-contract validation.
+        # `li play check <name>` loads the playbook, resolves its
+        # artifact contract, and prints the result without firing.
+        return _handle_play_check(rest[1:])
     if head.startswith("-"):
         log_error("li play NAME must come before flags")
         return 1

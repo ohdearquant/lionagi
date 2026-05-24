@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import time
@@ -33,6 +34,102 @@ from ._orchestration import (
     stop_live_persist,
     team_guidance,
 )
+
+
+async def _resolve_invocation_terminal_flow(
+    invocation_id: str,
+    *,
+    fallback_status: str,
+) -> tuple[str, str, str, list[dict], dict]:
+    """Aggregate child session statuses into a flow invocation terminal reason."""
+    from lionagi.state.db import StateDB
+    from lionagi.state.reasons import RunReasons
+
+    async with StateDB() as db:
+        sessions = await db.list_sessions_for_invocation(invocation_id)
+        child_statuses = [str(s.get("status") or "") for s in sessions]
+        evidence_refs = [{"kind": "session", "id": s["id"]} for s in sessions if s.get("id")]
+        metadata: dict = {"child_statuses": child_statuses}
+
+        # Precedence: timed_out > failed > aborted > cancelled > completed.
+        # `failed` MUST beat `aborted`/`cancelled` so a real failure isn't
+        # masked by sibling cleanup-cancellation triggered by the failure.
+        if child_statuses:
+            if any(s == "timed_out" for s in child_statuses):
+                return (
+                    "timed_out",
+                    RunReasons.TIMED_OUT_DEADLINE,
+                    "Flow timed out because at least one child session timed out.",
+                    evidence_refs,
+                    metadata,
+                )
+            if any(s == "failed" for s in child_statuses):
+                return (
+                    "failed",
+                    RunReasons.FAILED_EXCEPTION,
+                    "Flow failed because at least one child session failed.",
+                    evidence_refs,
+                    metadata,
+                )
+            if any(s == "aborted" for s in child_statuses):
+                return (
+                    "aborted",
+                    RunReasons.ABORTED_USER,
+                    "Flow was aborted because at least one child session was aborted.",
+                    evidence_refs,
+                    metadata,
+                )
+            if any(s == "cancelled" for s in child_statuses):
+                return (
+                    "cancelled",
+                    RunReasons.CANCELLED_SYSTEM,
+                    "Flow was cancelled because at least one child session was cancelled.",
+                    evidence_refs,
+                    metadata,
+                )
+            if all(s == "completed" for s in child_statuses):
+                return (
+                    "completed",
+                    RunReasons.COMPLETED_OK,
+                    "All child sessions completed successfully.",
+                    evidence_refs,
+                    metadata,
+                )
+
+        if fallback_status == "completed":
+            return (
+                "completed",
+                RunReasons.COMPLETED_OK,
+                "Flow completed successfully.",
+                evidence_refs,
+                metadata,
+            )
+        if fallback_status == "timed_out":
+            return (
+                "timed_out",
+                RunReasons.TIMED_OUT_DEADLINE,
+                "Flow exceeded its configured timeout.",
+                evidence_refs,
+                metadata,
+            )
+        if fallback_status == "aborted":
+            return (
+                "aborted",
+                RunReasons.ABORTED_USER,
+                "Flow was aborted by the user.",
+                evidence_refs,
+                metadata,
+            )
+        if fallback_status == "cancelled":
+            return (
+                "cancelled",
+                RunReasons.CANCELLED_SYSTEM,
+                "Flow was cancelled by the runtime.",
+                evidence_refs,
+                metadata,
+            )
+        return "failed", RunReasons.FAILED_EXCEPTION, "Flow failed.", evidence_refs, metadata
+
 
 # ── Security: restrict model-produced identifiers used as filesystem paths ──
 #
@@ -419,11 +516,18 @@ async def _run_flow(
     show_graph: bool = False,
     fast: bool = False,
     playbook_name: str | None = None,
+    playbook_artifacts: dict | None = None,
     invocation_id: str | None = None,
     project: str | None = None,
     **legacy_kwargs,
-) -> str:
+) -> tuple[str, str]:
     """Auto-DAG flow: orchestrator plans DAG → engine executes with deps.
+
+    Returns ``(output, terminal_status)`` — ADR-0029 §7 lets the artifact
+    contract verifier flip a clean ``completed`` into ``failed`` at
+    teardown, so callers MUST use the returned status to compute the
+    process exit code rather than assuming success when no exception
+    was raised.
 
     ``max_ops`` caps the number of operations (DAG nodes) the planner may
     emit. ``max_agents`` is accepted as a deprecated alias.
@@ -435,9 +539,7 @@ async def _run_flow(
         legacy_kwargs.pop("max_agents")
     if legacy_kwargs:
         # Surface unrecognized kwargs instead of swallowing.
-        raise TypeError(
-            f"_run_flow() got unexpected keyword arguments: {list(legacy_kwargs)}"
-        )
+        raise TypeError(f"_run_flow() got unexpected keyword arguments: {list(legacy_kwargs)}")
     env = setup_orchestration(
         pattern_name="Flow",
         model_spec=model_spec,
@@ -463,6 +565,27 @@ async def _run_flow(
     _orc_provider = None
     if _orc_ms and "/" in _orc_ms.model:
         _orc_provider = _orc_ms.model.split("/", 1)[0]
+    # ADR-0029 §4-5: resolve the artifact contract (playbook overrides
+    # agent defaults by id; playbook wins). Snapshot onto the session
+    # via start_live_persist so verify_artifact_contract() at teardown
+    # has something to check against. None = no contract declared →
+    # verification skipped entirely.
+    artifact_contract = None
+    if playbook_artifacts is not None or (
+        agent_name is not None and getattr(env.agent_profile, "artifact_defaults", None) is not None
+    ):
+        from lionagi.state.artifact_verifier import resolve_artifact_contract
+
+        agent_defaults = (
+            getattr(env.agent_profile, "artifact_defaults", None)
+            if agent_name is not None
+            else None
+        )
+        artifact_contract = resolve_artifact_contract(
+            playbook_artifacts=playbook_artifacts,
+            agent_defaults=agent_defaults,
+        )
+
     await start_live_persist(
         env,
         invocation_kind="play" if playbook_name else "flow",
@@ -474,6 +597,7 @@ async def _run_flow(
         provider=_orc_provider,
         effort=env.effort,
         project=project,
+        artifact_contract=artifact_contract,
     )
 
     inner_kw = dict(
@@ -490,6 +614,7 @@ async def _run_flow(
     )
     # ADR-0025: distinguish timed_out / aborted / cancelled / failed.
     _terminal_status = "completed"
+    result: str = ""
     try:
         if timeout:
             with move_on_after(timeout) as cancel_scope:
@@ -497,8 +622,8 @@ async def _run_flow(
             if cancel_scope.cancelled_caught:
                 _terminal_status = "timed_out"
                 raise LionTimeoutError(f"Flow timed out after {timeout}s")
-            return result
-        return await _run_flow_inner(model_spec, prompt, **inner_kw)
+        else:
+            result = await _run_flow_inner(model_spec, prompt, **inner_kw)
     except KeyboardInterrupt:
         _terminal_status = "aborted"
         raise
@@ -521,9 +646,52 @@ async def _run_flow(
         import anyio
 
         with anyio.CancelScope(shield=True):
-            await stop_live_persist(env, status=_terminal_status)
+            # ADR-0029 §7: stop_live_persist may override the proposed
+            # status (clean exit + missing required → failed). Use the
+            # returned status for downstream exit-code propagation.
+            effective_status = await stop_live_persist(env, status=_terminal_status)
+            if effective_status != _terminal_status:
+                _terminal_status = effective_status
+            # ADR-0028 Phase 2: finalize invocation with reason code,
+            # using the (possibly overridden) terminal status.
+            if invocation_id:
+                import time as _time
+
+                from lionagi.state.db import StateDB
+
+                try:
+                    (
+                        inv_status,
+                        inv_rc,
+                        inv_rs,
+                        inv_ev,
+                        inv_meta,
+                    ) = await _resolve_invocation_terminal_flow(
+                        invocation_id, fallback_status=_terminal_status
+                    )
+                    async with StateDB() as _inv_db:
+                        await _inv_db.update_invocation(invocation_id, ended_at=_time.time())
+                        await _inv_db.update_status(
+                            "invocation",
+                            invocation_id,
+                            new_status=inv_status,
+                            reason_code=inv_rc,
+                            reason_summary=inv_rs,
+                            evidence_refs=inv_ev,
+                            source="executor",
+                            actor=invocation_id,
+                            metadata=inv_meta,
+                        )
+                except Exception:
+                    import logging as _logging
+
+                    _logging.getLogger("lionagi.cli").exception(
+                        "Failed to finalize invocation %s", invocation_id
+                    )
             for _br in env.session.branches:
                 await _br.mdls.shutdown()
+
+    return result, _terminal_status
 
 
 async def _run_flow_inner(
@@ -632,7 +800,9 @@ async def _run_flow_inner(
     seen_agent_ids: set[str] = set()
     for a in plan.agents:
         if a.id in seen_agent_ids:
-            return f"Invalid plan: duplicate FlowAgent.id {a.id!r}. Each agent must have a unique id."
+            return (
+                f"Invalid plan: duplicate FlowAgent.id {a.id!r}. Each agent must have a unique id."
+            )
         seen_agent_ids.add(a.id)
 
     # Reject duplicate FlowOp.id as well — depends_on references would
@@ -738,9 +908,7 @@ async def _run_flow_inner(
 
             visualize_plan(
                 plan,
-                title=(
-                    f"Flow DAG plan — {len(plan.agents)} agents / {len(plan.operations)} ops"
-                ),
+                title=(f"Flow DAG plan — {len(plan.agents)} agents / {len(plan.operations)} ops"),
                 save_path=str(run.dag_image_path),
             )
 
@@ -815,9 +983,7 @@ async def _run_flow_inner(
                     # turn — no need to re-gather context or re-read files.
                     dep_notes.append(f"{d}: already in your memory (same agent)")
                 else:
-                    dep_notes.append(
-                        f"{d} ({dep_agent}): {run.agent_artifact_dir(dep_agent)}/"
-                    )
+                    dep_notes.append(f"{d} ({dep_agent}): {run.agent_artifact_dir(dep_agent)}/")
             if dep_notes:
                 artifact_note += f" Upstream: {'; '.join(dep_notes)}."
         ctx.append({"artifact_instructions": artifact_note})
@@ -886,9 +1052,7 @@ async def _run_flow_inner(
     control_ops = [op for op in plan.operations if op.control]
 
     ctrl_note = f" ({len(control_ops)} control)" if control_ops else ""
-    progress(
-        f"Executing DAG: {len(plan.agents)} agents / {len(regular_ops)} ops{ctrl_note}..."
-    )
+    progress(f"Executing DAG: {len(plan.agents)} agents / {len(regular_ops)} ops{ctrl_note}...")
 
     for op in regular_ops:
         a = agent_spec_by_id[op.agent_id]
@@ -930,14 +1094,16 @@ async def _run_flow_inner(
         branch_id = str(branch.id) if branch else ""
         now = time.time()
         if new_status == "running":
-            _op_segments.append({
-                "op_id": op_id,
-                "branch_id": branch_id,
-                "branch_name": branch_name,
-                "status": "running",
-                "started_at": now,
-                "ended_at": None,
-            })
+            _op_segments.append(
+                {
+                    "op_id": op_id,
+                    "branch_id": branch_id,
+                    "branch_name": branch_name,
+                    "status": "running",
+                    "started_at": now,
+                    "ended_at": None,
+                }
+            )
         else:
             for seg in reversed(_op_segments):
                 if seg["op_id"] == op_id:
@@ -956,12 +1122,10 @@ async def _run_flow_inner(
         import asyncio as _aio
 
         async def _do():
-            try:
-                await ctx["db"].update_session(
-                    ctx["session_id"], node_metadata=json.dumps(extras)
-                )
-            except Exception:
-                pass
+            # Best-effort live metadata update — failures here mustn't block
+            # the surrounding flow execution.
+            with contextlib.suppress(Exception):
+                await ctx["db"].update_session(ctx["session_id"], node_metadata=json.dumps(extras))
 
         _aio.ensure_future(_do())
 
@@ -975,15 +1139,14 @@ async def _run_flow_inner(
         import asyncio as _aio
 
         async def _do():
-            try:
+            # Best-effort branch status sync — failures must not block the flow.
+            with contextlib.suppress(Exception):
                 kw = {"status": new_status}
                 if new_status == "running":
                     kw["started_at"] = time.time()
                 elif new_status in ("completed", "failed"):
                     kw["ended_at"] = time.time()
                 await ctx["db"].update_branch(str(branch.id), **kw)
-            except Exception:
-                pass
 
         _aio.ensure_future(_do())
 
@@ -994,19 +1157,23 @@ async def _run_flow_inner(
             for aid in agents_by_id
         ],
         "operations": [
-            {"id": op.id, "agent_id": op.agent_id, "control": op.control, "depends_on": op.depends_on or []}
+            {
+                "id": op.id,
+                "agent_id": op.agent_id,
+                "control": op.control,
+                "depends_on": op.depends_on or [],
+            }
             for op in plan.operations
         ],
     }
     env._finalize_extras = _early_graph
     ctx = getattr(env, "_live_persist", None)
     if ctx and ctx.get("db"):
-        try:
+        # Best-effort early DAG snapshot — flow continues even if persist fails.
+        with contextlib.suppress(Exception):
             await ctx["db"].update_session(
                 ctx["session_id"], node_metadata=json.dumps(_early_graph)
             )
-        except Exception:
-            pass
 
     # Execute regular ops
     t_exec = time.monotonic()
@@ -1049,9 +1216,7 @@ async def _run_flow_inner(
         c_branch = agents_by_id[cop.agent_id]
         c_model = agent_model_by_id[cop.agent_id]
 
-        artifacts = [
-            f"[op {r['id']} via {r['name']}]: {r['response']}" for r in agent_results
-        ]
+        artifacts = [f"[op {r['id']} via {r['name']}]: {r['response']}" for r in agent_results]
         dep_nodes = [op_to_node[d] for d in (cop.depends_on or []) if d in op_to_node]
         if not dep_nodes:
             dep_nodes = list(op_to_node.values())[-1:] or [plan_root]
@@ -1170,9 +1335,7 @@ async def _run_flow_inner(
             new_ops: list[FlowOp] = []
             for nop in next_plan.operations:
                 if nop.agent_id not in agents_by_id:
-                    progress(
-                        f"Re-plan: skipping op {nop.id!r} — unknown agent {nop.agent_id!r}"
-                    )
+                    progress(f"Re-plan: skipping op {nop.id!r} — unknown agent {nop.agent_id!r}")
                     continue
                 if nop.id in op_to_node:
                     progress(f"Re-plan: skipping duplicate op id {nop.id!r}")
@@ -1221,9 +1384,7 @@ async def _run_flow_inner(
                 op_id_to_agent[nop.id] = nop.agent_id
 
             ids = ", ".join(o.id for o in new_ops)
-            progress(
-                f"Re-plan: +{len(next_plan.agents)} agents, +{len(new_ops)} ops: {ids}"
-            )
+            progress(f"Re-plan: +{len(next_plan.agents)} agents, +{len(new_ops)} ops: {ids}")
 
             for nop in new_ops:
                 na = agent_spec_by_id[nop.agent_id]
@@ -1284,9 +1445,7 @@ async def _run_flow_inner(
         all_op_node_ids = set(op_to_node.values())
         leaf_nodes = list(all_op_node_ids - depended_on_nodes) or list(all_op_node_ids)
 
-        artifacts = [
-            f"[op {r['id']} via {r['name']}]: {r['response']}" for r in agent_results
-        ]
+        artifacts = [f"[op {r['id']} via {r['name']}]: {r['response']}" for r in agent_results]
         adirs = [str(run.agent_artifact_dir(aid)) for aid in agents_by_id]
         artifact_chain_note = (
             f"\n\nARTIFACT CHAIN: Read ALL files in: {', '.join(adirs)}. "
@@ -1339,9 +1498,7 @@ async def _run_flow_inner(
         run.synthesis_path.write_text(synthesis_result["response"])
 
     if team_data:
-        _post_results_to_team(
-            team_data, agent_results, all_agent_names, synthesis_result
-        )
+        _post_results_to_team(team_data, agent_results, all_agent_names, synthesis_result)
 
     # ── Persist branches + run manifest + hints ──────────────────────
     finalize_orchestration(

@@ -162,9 +162,9 @@ async def test_start_create_session_failure_closes_db(
         if _aiosqlite_thread_count() <= before:
             break
         await asyncio.sleep(0.05)
-    assert (
-        _aiosqlite_thread_count() <= before
-    ), "DB was not closed on start failure — aiosqlite worker leaked"
+    assert _aiosqlite_thread_count() <= before, (
+        "DB was not closed on start failure — aiosqlite worker leaked"
+    )
 
 
 # ── _register_branch_hook: lazy branch row + multi-message paths ──────────────
@@ -204,9 +204,7 @@ async def test_register_branch_hook_creates_row_on_first_message(
 
     async with StateDB() as db:
         b_after = await db.get_branch(str(worker.id))
-        prog = await db.get_progression(
-            env._live_persist["branch_prog_ids"][str(worker.id)]
-        )
+        prog = await db.get_progression(env._live_persist["branch_prog_ids"][str(worker.id)])
         session_prog = await db.get_progression(env._live_persist["session_prog_id"])
     assert b_after is not None
     assert b_after["session_id"] == str(env.session.id)
@@ -260,9 +258,7 @@ async def test_register_branch_hook_ensure_branch_row_idempotent(
         )
         n_sys = (await cur.fetchone())["n"]
         # Branch progression has both user messages.
-        prog = await db.get_progression(
-            env._live_persist["branch_prog_ids"][str(worker.id)]
-        )
+        prog = await db.get_progression(env._live_persist["branch_prog_ids"][str(worker.id)])
 
     assert n_rows == 1
     assert n_sys == 1
@@ -310,12 +306,8 @@ async def test_multiple_branches_share_session_progression(
 
     async with StateDB() as db:
         session_prog = await db.get_progression(env._live_persist["session_prog_id"])
-        w1_prog = await db.get_progression(
-            env._live_persist["branch_prog_ids"][str(w1.id)]
-        )
-        w2_prog = await db.get_progression(
-            env._live_persist["branch_prog_ids"][str(w2.id)]
-        )
+        w1_prog = await db.get_progression(env._live_persist["branch_prog_ids"][str(w1.id)])
+        w2_prog = await db.get_progression(env._live_persist["branch_prog_ids"][str(w2.id)])
 
     assert set(session_prog) == {str(m1.id), str(m2.id)}
     assert w1_prog == [str(m1.id)]
@@ -528,9 +520,9 @@ async def test_start_stop_does_not_leak_aiosqlite_thread(temp_db_path: Path):
             if _aiosqlite_thread_count() <= baseline:
                 break
             await asyncio.sleep(0.05)
-        assert (
-            _aiosqlite_thread_count() <= baseline
-        ), "aiosqlite worker thread leaked across orchestration start/stop"
+        assert _aiosqlite_thread_count() <= baseline, (
+            "aiosqlite worker thread leaked across orchestration start/stop"
+        )
 
 
 # ── R5-A MED-1: lazy _ensure_branch_row retry after first-init failure ────────
@@ -569,10 +561,14 @@ async def test_ensure_branch_row_retries_after_transient_failure(
     monkeypatch.setattr(StateDB, "create_branch", flaky_create)
 
     m1 = MessageManager.create_instruction(
-        instruction="a", sender="u", recipient=str(worker.id),
+        instruction="a",
+        sender="u",
+        recipient=str(worker.id),
     )
     m2 = MessageManager.create_instruction(
-        instruction="b", sender="u", recipient=str(worker.id),
+        instruction="b",
+        sender="u",
+        recipient=str(worker.id),
     )
     # First fire: row creation fails; hook swallows the error.
     await hook(m1)
@@ -584,9 +580,7 @@ async def test_ensure_branch_row_retries_after_transient_failure(
     await hook(m2)
     async with StateDB() as db:
         b = await db.get_branch(str(worker.id))
-        prog = await db.get_progression(
-            env._live_persist["branch_prog_ids"][str(worker.id)]
-        )
+        prog = await db.get_progression(env._live_persist["branch_prog_ids"][str(worker.id)])
     assert b is not None
     # Only m2 made it into the progression — m1's append was after a
     # failed _ensure_branch_row, so its progression write also failed
@@ -645,7 +639,8 @@ def test_finalize_returns_branch_ids_and_writes_branch_snapshots(
     saved: list = []
     hints: list = []
     monkeypatch.setattr(
-        orch_mod, "save_last_branch_pointer",
+        orch_mod,
+        "save_last_branch_pointer",
         lambda run_id, bid: saved.append((run_id, bid)),
     )
     monkeypatch.setattr(orch_mod, "hint", lambda msg: hints.append(msg))
@@ -755,7 +750,8 @@ def test_finalize_snapshot_write_failure_logs_warning_and_continues(
 
     saved: list = []
     monkeypatch.setattr(
-        orch_mod, "save_last_branch_pointer",
+        orch_mod,
+        "save_last_branch_pointer",
         lambda run_id, bid: saved.append((run_id, bid)),
     )
     monkeypatch.setattr(orch_mod, "hint", lambda *_: None)
@@ -776,9 +772,7 @@ def test_finalize_snapshot_write_failure_logs_warning_and_continues(
     bad_path = MagicMock()
     bad_path.write_text.side_effect = OSError("disk full")
 
-    env.run.branch_path.side_effect = (
-        lambda bid: valid_path if bid == orc_id else bad_path
-    )
+    env.run.branch_path.side_effect = lambda bid: valid_path if bid == orc_id else bad_path
 
     with caplog.at_level(logging.WARNING, logger="lionagi.cli"):
         branch_ids, orc_branch_id = finalize_orchestration(
@@ -789,10 +783,7 @@ def test_finalize_snapshot_write_failure_logs_warning_and_continues(
     assert {bid for _, bid, _ in branch_ids} == {orc_id, worker_id}
     assert getattr(env, "_finalize_extras", None) == dag_extras()
     assert saved == [("run-finalize-failure", orc_id)]
-    assert any(
-        "finalize: branch snapshot write failed" in rec.message
-        for rec in caplog.records
-    )
+    assert any("finalize: branch snapshot write failed" in rec.message for rec in caplog.records)
 
 
 # ── Test 2.5 — stop persists finalize extras without messages ─────────────────
@@ -836,10 +827,14 @@ async def test_stop_persists_dag_metadata_and_message_bookmarks_together(
     hook = env._live_persist["hooks"][-1][1]
 
     m1 = MessageManager.create_instruction(
-        instruction="a", sender="u", recipient=str(worker.id),
+        instruction="a",
+        sender="u",
+        recipient=str(worker.id),
     )
     m2 = MessageManager.create_instruction(
-        instruction="b", sender="u", recipient=str(worker.id),
+        instruction="b",
+        sender="u",
+        recipient=str(worker.id),
     )
     await hook(m1)
     await hook(m2)
@@ -958,3 +953,119 @@ async def test_stop_persists_cancelled_status_with_dag_metadata(
     assert s["status"] == "cancelled"
     assert s["node_metadata"] == dag_extras()
     assert s["ended_at"] is not None
+
+
+# ── ADR-0029: artifact contract snapshot and verification ─────────────────────
+
+
+async def test_start_persists_artifact_contract(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """artifact_contract passed to start_live_persist is stored in session."""
+    env = _minimal_env()
+    contract = {"expected": [{"id": "brief", "path": "brief.md"}]}
+    await start_live_persist(
+        env,
+        invocation_kind="flow",
+        artifacts_path=str(tmp_path / "artifacts"),
+        artifact_contract=contract,
+    )
+    assert env._live_persist is not None
+    ctx = env._live_persist
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    stored = s["artifact_contract_json"]
+    assert isinstance(stored, dict), f"expected dict, got {type(stored)}"
+    assert stored["expected"][0]["id"] == "brief"
+
+    await stop_live_persist(env, status="completed")
+
+
+async def test_stop_uses_update_status_writes_reason(
+    temp_db_path: Path,
+):
+    """stop_live_persist now writes status through update_status(), so
+    status_reason_code must be present after a clean completion.
+    """
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed"
+    assert s["status_reason_code"] == "run.completed.ok"
+
+
+async def test_stop_verification_fails_flips_status(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """Clean completion with missing required artifact → status flipped to failed."""
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    # deliberately NOT creating brief.md
+
+    env = _minimal_env()
+    contract = {"expected": [{"id": "brief", "path": "brief.md"}]}
+    await start_live_persist(
+        env,
+        invocation_kind="flow",
+        artifacts_path=str(artifacts_dir),
+        artifact_contract=contract,
+    )
+    ctx = env._live_persist
+    assert ctx is not None
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+    assert s["status_reason_code"] == "run.failed.missing_artifact"
+    v = s["artifact_verification_json"]
+    assert isinstance(v, dict)
+    assert v["status"] == "failed"
+
+
+async def test_stop_verification_preserves_non_completed_reason(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """Missing artifact on a failed run keeps the original exception reason."""
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    # deliberately NOT creating brief.md
+
+    env = _minimal_env()
+    contract = {"expected": [{"id": "brief", "path": "brief.md"}]}
+    await start_live_persist(
+        env,
+        invocation_kind="flow",
+        artifacts_path=str(artifacts_dir),
+        artifact_contract=contract,
+    )
+    ctx = env._live_persist
+    assert ctx is not None
+
+    exc = RuntimeError("something broke")
+    await stop_live_persist(env, status="failed", exception=exc)
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+    # Original exception reason preserved — NOT overridden by artifact code.
+    assert s["status_reason_code"] == "run.failed.exception"
+    # Verification still ran.
+    v = s["artifact_verification_json"]
+    assert isinstance(v, dict)
+    assert v["status"] == "failed"

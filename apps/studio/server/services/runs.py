@@ -34,6 +34,7 @@ def _normalize_status_filter(status: str | list[str] | None) -> set[str] | None:
         result |= _STATUS_ALIASES.get(s, {s})
     return result or None
 
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -54,10 +55,7 @@ def _adapt_summary(
         step_count = len(manifest["steps"])
 
     worker_name = (
-        manifest.get("worker_name")
-        or manifest.get("worker")
-        or manifest.get("kind")
-        or ""
+        manifest.get("worker_name") or manifest.get("worker") or manifest.get("kind") or ""
     )
 
     task = str(manifest.get("task") or manifest.get("prompt") or "")
@@ -78,9 +76,7 @@ def _adapt_summary(
             status = "completed"
             if not finished_at:
                 try:
-                    latest = max(
-                        branches_dir.glob("*.json"), key=lambda p: p.stat().st_mtime
-                    )
+                    latest = max(branches_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
                     finished_at = latest.stat().st_mtime
                 except (OSError, ValueError):
                     pass
@@ -128,9 +124,7 @@ def _build_graph(manifest: dict[str, Any]) -> dict[str, Any]:
                         "id": kind,
                         "label": kind,
                         "role": manifest.get("provider", ""),
-                        "assignment": manifest.get("model_spec")
-                        or manifest.get("model")
-                        or "",
+                        "assignment": manifest.get("model_spec") or manifest.get("model") or "",
                         "prompt": "",
                         "capacity": 1,
                         "timeout": None,
@@ -192,7 +186,7 @@ def _summarize_args(fn: str, args: dict[str, Any]) -> str:
         return str(path) if path else "(patch)"
     # Fallback: show first non-trivial arg.
     for k, v in args.items():
-        if isinstance(v, (str, int, float)) and v:
+        if isinstance(v, str | int | float) and v:
             return f"{k}={v}"
     return ""
 
@@ -218,10 +212,7 @@ def _detect_status(output: str, function: str) -> tuple[str, int | None]:
             break
     if exit_code is not None and exit_code != 0:
         return ("error", exit_code)
-    if any(
-        kw in lower[:300]
-        for kw in ("error:", "failed", "permission denied", "not found")
-    ):
+    if any(kw in lower[:300] for kw in ("error:", "failed", "permission denied", "not found")):
         if "no such file or directory" in lower:
             return ("error", exit_code)
     return ("ok", exit_code)
@@ -281,11 +272,7 @@ def _extract_messages(branch: dict[str, Any]) -> list[dict[str, Any]]:
 
         # Render System
         if role == "system":
-            text = (
-                content.get("system_message", "")
-                if isinstance(content, dict)
-                else str(content)
-            )
+            text = content.get("system_message", "") if isinstance(content, dict) else str(content)
             if text:
                 out.append(
                     {
@@ -322,9 +309,7 @@ def _extract_messages(branch: dict[str, Any]) -> list[dict[str, Any]]:
         # Render Assistant
         if role == "assistant":
             text = (
-                content.get("assistant_response", "")
-                if isinstance(content, dict)
-                else str(content)
+                content.get("assistant_response", "") if isinstance(content, dict) else str(content)
             )
             if text:
                 out.append(
@@ -341,14 +326,10 @@ def _extract_messages(branch: dict[str, Any]) -> list[dict[str, Any]]:
         if role == "action" and cls == "ActionRequest":
             args = content.get("arguments", {}) if isinstance(content, dict) else {}
             fn = content.get("function", "") if isinstance(content, dict) else ""
-            response_id = (
-                content.get("action_response_id") if isinstance(content, dict) else None
-            )
+            response_id = content.get("action_response_id") if isinstance(content, dict) else None
             response_msg = response_by_id.get(response_id, {}) if response_id else {}
             response_content = (
-                response_msg.get("content", {})
-                if isinstance(response_msg, dict)
-                else {}
+                response_msg.get("content", {}) if isinstance(response_msg, dict) else {}
             )
             output_text = ""
             if isinstance(response_content, dict):
@@ -384,9 +365,7 @@ def _extract_messages(branch: dict[str, Any]) -> list[dict[str, Any]]:
                 {
                     "role": "tool_call",
                     "function": fn,
-                    "summary": _summarize_args(
-                        fn, args if isinstance(args, dict) else {}
-                    ),
+                    "summary": _summarize_args(fn, args if isinstance(args, dict) else {}),
                     "arguments": args if isinstance(args, dict) else {},
                     "output": str(output_text),
                     "status": status,
@@ -425,9 +404,7 @@ def _build_steps(
                     "status": "completed" if messages else "pending",
                     "result": {
                         "agent": name,
-                        "model": manifest.get("model_spec")
-                        or manifest.get("model")
-                        or "",
+                        "model": manifest.get("model_spec") or manifest.get("model") or "",
                         "message_count": len(messages),
                         "roles": role_counts,
                     },
@@ -511,6 +488,10 @@ def _adapt_detail(
         "graph": graph,
         "manifest": manifest,
         "branches": branches,
+        "artifact_contract_json": manifest.get("artifact_contract_json")
+        or manifest.get("artifact_contract"),
+        "artifact_verification_json": manifest.get("artifact_verification_json")
+        or manifest.get("artifact_verification"),
     }
 
 
@@ -574,41 +555,44 @@ async def list_runs(
         # effective_health === 'stale'. Map UNRESPONSIVE → 'stale' so the
         # dashboard counter stays correct without requiring a frontend change.
         effective_health = (
-            SessionHealth.STALE.value
-            if health == SessionHealth.UNRESPONSIVE
-            else health.value
+            SessionHealth.STALE.value if health == SessionHealth.UNRESPONSIVE else health.value
         )
-        out.append({
-            "run_id": s["id"],
-            "id": s["id"],
-            "name": s.get("name"),
-            "playbook_name": s.get("playbook_name"),
-            "agent_name": s.get("agent_name"),
-            "invocation_kind": s.get("invocation_kind"),
-            "show_topic": s.get("show_topic"),
-            "show_play_name": s.get("show_play_name"),
-            "source_kind": s.get("source_kind", "live"),
-            # ADR-0020: parent skill orchestration; null when standalone.
-            "invocation_id": s.get("invocation_id"),
-            # ADR-0022: provenance disclosure.
-            "model": s.get("model"),
-            "provider": s.get("provider"),
-            "effort": s.get("effort"),
-            "agent_hash": s.get("agent_hash"),
-            "status": s.get("status", "completed"),
-            "started_at": s.get("started_at"),
-            "ended_at": s.get("ended_at"),
-            "created_at": s.get("created_at"),
-            "updated_at": s.get("updated_at"),
-            # ADR-0019/0024: activity marker + derived health label.
-            "last_message_at": s.get("last_message_at"),
-            "effective_health": effective_health,
-            "branch_count": s.get("branch_count", 0),
-            "message_count": s.get("message_count", 0),
-            # ADR-0026: project detection.
-            "project": s.get("project"),
-            "project_source": s.get("project_source"),
-        })
+        out.append(
+            {
+                "run_id": s["id"],
+                "id": s["id"],
+                "name": s.get("name"),
+                "playbook_name": s.get("playbook_name"),
+                "agent_name": s.get("agent_name"),
+                "invocation_kind": s.get("invocation_kind"),
+                "show_topic": s.get("show_topic"),
+                "show_play_name": s.get("show_play_name"),
+                "source_kind": s.get("source_kind", "live"),
+                # ADR-0029: expected artifact contract and teardown verification.
+                "artifact_contract_json": s.get("artifact_contract_json"),
+                "artifact_verification_json": s.get("artifact_verification_json"),
+                # ADR-0020: parent skill orchestration; null when standalone.
+                "invocation_id": s.get("invocation_id"),
+                # ADR-0022: provenance disclosure.
+                "model": s.get("model"),
+                "provider": s.get("provider"),
+                "effort": s.get("effort"),
+                "agent_hash": s.get("agent_hash"),
+                "status": s.get("status", "completed"),
+                "started_at": s.get("started_at"),
+                "ended_at": s.get("ended_at"),
+                "created_at": s.get("created_at"),
+                "updated_at": s.get("updated_at"),
+                # ADR-0019/0024: activity marker + derived health label.
+                "last_message_at": s.get("last_message_at"),
+                "effective_health": effective_health,
+                "branch_count": s.get("branch_count", 0),
+                "message_count": s.get("message_count", 0),
+                # ADR-0026: project detection.
+                "project": s.get("project"),
+                "project_source": s.get("project_source"),
+            }
+        )
     return out
 
 
@@ -622,7 +606,7 @@ def paginate_runs(
     total = len(runs)
     total_pages = math.ceil(total / per_page) if total else 0
     start = (page - 1) * per_page
-    page_runs = runs[start: start + per_page]
+    page_runs = runs[start : start + per_page]
     return {
         "runs": page_runs,
         "page": page,
@@ -643,9 +627,7 @@ def get_run(run_id: str) -> dict[str, Any] | None:
 
     state_root = RUNS_ROOT / run_id
     if not state_root.is_dir():
-        matches = [
-            d for d in RUNS_ROOT.iterdir() if d.is_dir() and d.name.startswith(run_id)
-        ]
+        matches = [d for d in RUNS_ROOT.iterdir() if d.is_dir() and d.name.startswith(run_id)]
         if not matches:
             return None
         state_root = sorted(matches, key=lambda p: p.stat().st_mtime, reverse=True)[0]
