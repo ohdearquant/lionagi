@@ -14,7 +14,13 @@ import aiosqlite
 
 from lionagi.cli._runs import LIONAGI_HOME
 from lionagi.state.reasons import (
+    PlayReasons as _PlayReasons,
+)
+from lionagi.state.reasons import (
     RunReasons as _RunReasons,
+)
+from lionagi.state.reasons import (
+    ShowReasons as _ShowReasons,
 )
 from lionagi.state.reasons import (
     entity_table as _reason_entity_table,
@@ -26,23 +32,58 @@ from lionagi.state.reasons import (
     validate_reason_code as _validate_reason_code,
 )
 
+# Per-entity default-reason maps used by the Phase 2 deprecation shim
+# in update_invocation / update_show / update_play / update_schedule_run.
+# Picking a wrong-domain code (e.g. ``run.completed.ok`` for a successful
+# show) pollutes the reason-grouping primitive ADR-0028 introduces for
+# Phase 3/4 + ADR-0030. The resolver is conservative — it returns None
+# for (entity, status) pairs without a canonical default, forcing the
+# caller to surface a clear error instead of synthesizing nonsense.
+_RUN_DEFAULTS: dict[str, str] = {
+    "completed": _RunReasons.COMPLETED_OK,
+    "failed": _RunReasons.FAILED_EXCEPTION,
+    "timed_out": _RunReasons.TIMED_OUT_DEADLINE,
+    "aborted": _RunReasons.ABORTED_USER,
+    "cancelled": _RunReasons.CANCELLED_SYSTEM,
+}
+
+_SHOW_DEFAULTS: dict[str, str] = {
+    "completed": _ShowReasons.COMPLETED_FINAL_GATE,
+    "aborted": _ShowReasons.ABORTED_OPERATOR,
+}
+
+_PLAY_DEFAULTS: dict[str, str] = {
+    "merged": _PlayReasons.MERGED_OK,
+    "escalated": _PlayReasons.ESCALATED_GATE_TWICE,
+    "gate_failed": _PlayReasons.GATE_FAILED_VERDICT,
+}
+
+
+def _default_reason_code_for_entity_status(entity_type: str, status: str) -> str | None:
+    """Map (entity_type, status) → canonical reason_code, or None.
+
+    Returns None for ambiguous (entity, status) pairs — sessions/
+    invocations/schedule_runs share the run.* codes (they're process
+    runs); shows + plays have entity-specific codes for the subset
+    of statuses with canonical defaults. Statuses outside the per-
+    entity map return None and the deprecation shim raises so
+    callers supply reason_code explicitly.
+    """
+    if entity_type in ("session", "invocation", "schedule_run"):
+        return _RUN_DEFAULTS.get(status)
+    if entity_type == "show":
+        return _SHOW_DEFAULTS.get(status)
+    if entity_type == "play":
+        return _PLAY_DEFAULTS.get(status)
+    return None
+
 
 def _default_reason_code_for_status(status: str) -> str:
-    """Map a terminal status to a generic run.* reason code.
-
-    Used by the ADR-0028 Phase 2 deprecation shim in update_invocation()
-    (and follow-ups for update_show / update_play / update_schedule_run)
-    when callers haven't yet supplied an explicit ``reason_code``. The
-    mapping mirrors :func:`lionagi.cli.agent._resolve_run_reason` for the
-    exception-less case.
+    """Legacy run-only resolver. Kept for one release to avoid
+    breaking external callers that imported the private name.
+    New code MUST use :func:`_default_reason_code_for_entity_status`.
     """
-    return {
-        "completed": _RunReasons.COMPLETED_OK,
-        "failed": _RunReasons.FAILED_EXCEPTION,
-        "timed_out": _RunReasons.TIMED_OUT_DEADLINE,
-        "aborted": _RunReasons.ABORTED_USER,
-        "cancelled": _RunReasons.CANCELLED_SYSTEM,
-    }.get(status, _RunReasons.FAILED_EXCEPTION)
+    return _RUN_DEFAULTS.get(status, _RunReasons.FAILED_EXCEPTION)
 
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
@@ -1309,7 +1350,15 @@ class StateDB:
             if reason_code is None:
                 from warnings import warn
 
-                reason_code = _default_reason_code_for_status(status_value)
+                resolved = _default_reason_code_for_entity_status("schedule_run", status_value)
+                if resolved is None:
+                    raise ValueError(
+                        f"update_schedule_run() called with status={status_value!r} but "
+                        f"no canonical default reason_code exists for "
+                        f"(schedule_run, {status_value!r}). Pass reason_code "
+                        f"explicitly from lionagi/state/reasons.py."
+                    )
+                reason_code = resolved
                 warn(
                     f"update_schedule_run({run_id!r}, status={status_value!r}) "
                     "called without reason_code; defaulting to "
@@ -1455,7 +1504,15 @@ class StateDB:
             if reason_code is None:
                 from warnings import warn
 
-                reason_code = _default_reason_code_for_status(status_value)
+                resolved = _default_reason_code_for_entity_status("invocation", status_value)
+                if resolved is None:
+                    raise ValueError(
+                        f"update_invocation() called with status={status_value!r} but "
+                        f"no canonical default reason_code exists for "
+                        f"(invocation, {status_value!r}). Pass reason_code "
+                        f"explicitly from lionagi/state/reasons.py."
+                    )
+                reason_code = resolved
                 warn(
                     f"update_invocation({invocation_id!r}, status={status_value!r}) "
                     "called without reason_code; defaulting to "
@@ -1922,7 +1979,15 @@ class StateDB:
             if reason_code is None:
                 from warnings import warn
 
-                reason_code = _default_reason_code_for_status(status_value)
+                resolved = _default_reason_code_for_entity_status("show", status_value)
+                if resolved is None:
+                    raise ValueError(
+                        f"update_show() called with status={status_value!r} but "
+                        f"no canonical default reason_code exists for "
+                        f"(show, {status_value!r}). Pass reason_code "
+                        f"explicitly from lionagi/state/reasons.py."
+                    )
+                reason_code = resolved
                 warn(
                     f"update_show({show_id!r}, status={status_value!r}) "
                     "called without reason_code; defaulting to "
@@ -2040,7 +2105,15 @@ class StateDB:
             if reason_code is None:
                 from warnings import warn
 
-                reason_code = _default_reason_code_for_status(status_value)
+                resolved = _default_reason_code_for_entity_status("play", status_value)
+                if resolved is None:
+                    raise ValueError(
+                        f"update_play() called with status={status_value!r} but "
+                        f"no canonical default reason_code exists for "
+                        f"(play, {status_value!r}). Pass reason_code "
+                        f"explicitly from lionagi/state/reasons.py."
+                    )
+                reason_code = resolved
                 warn(
                     f"update_play({play_id!r}, status={status_value!r}) "
                     "called without reason_code; defaulting to "

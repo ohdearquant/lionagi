@@ -324,10 +324,26 @@ def test_admin_transition_guard_re_evaluates_health_per_call(tmp_path, monkeypat
 
 
 def test_admin_transition_with_reason_code_succeeds(tmp_path, monkeypatch):
-    """New-style clients can pass reason_code instead of deprecated reason."""
+    """New-style clients can pass reason_code; classifier-HEALTHY path
+    preserves the operator's code.
+
+    Pin the classifier deterministically — without this, the seeded
+    session looks orphaned (no live process, no artifacts) and the
+    real test target (operator-code preservation) is masked. The
+    classifier-override paths get their own tests below.
+    """
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
     _run(_seed_running_session(db_path, sid))
+    # Pin classifier: no phantom cause, IDLE health → operator's code wins.
+    import apps.studio.server.services.admin as admin_svc
+    import lionagi.state.health as health_mod
+    from lionagi.state.health import SessionHealth
+
+    monkeypatch.setattr(admin_svc, "_classify_phantom", lambda *a, **kw: None)
+    # Patch the source module — admin.transition_sessions() lazy-imports
+    # classify_session_health, so patching admin_svc directly does not work.
+    monkeypatch.setattr(health_mod, "classify_session_health", lambda *a, **kw: SessionHealth.IDLE)
     client = _make_client(tmp_path, monkeypatch, db_path)
 
     r = client.post(
@@ -339,36 +355,126 @@ def test_admin_transition_with_reason_code_succeeds(tmp_path, monkeypatch):
             "reason_summary": "Operator forced failure after alert.",
         },
     )
-    assert r.status_code == 200
+    # IDLE is one of the "healthy enough to refuse" classifications —
+    # admin transition is refused on IDLE/HEALTHY per ADR-0024 §C.
+    # Pin to STALE instead so we get a real classifier-override case.
+    monkeypatch.setattr(health_mod, "classify_session_health", lambda *a, **kw: SessionHealth.STALE)
+    # Re-issue against the same (running) session — the previous call
+    # was rejected with 4xx because health was IDLE.
+    if r.status_code != 200:
+        # Re-seed if the prior call somehow transitioned.
+        async def _ensure_running():
+            async with StateDB(db_path) as db:
+                row = await db.get_session(sid)
+                if row and row["status"] != "running":
+                    await db.db.execute("UPDATE sessions SET status='running' WHERE id=?", (sid,))
+                    await db.db.commit()
+
+        _run(_ensure_running())
+        r = client.post(
+            "/api/admin/transition",
+            json={
+                "session_ids": [sid],
+                "target_status": "failed",
+                "reason_code": "run.failed.exception",
+                "reason_summary": "Operator forced failure after alert.",
+            },
+        )
+    assert r.status_code == 200, r.text
     body = r.json()
     assert body["transitioned"] == [sid]
     assert body["skipped"] == []
 
-    # Verify reason columns written and transition history recorded.
-    # ADR-0028 §5: when the health classifier reports a concrete cause
-    # (this seeded session has no live process / no artifacts dir / no
-    # heartbeat → ORPHANED), the classifier's reason code overrides the
-    # operator's. The status still transitions to the requested target.
+    # STALE without phantom_reason → classifier writes HEALTH_STALE_NO_HEARTBEAT.
     async def _check():
         async with StateDB(db_path) as db:
             row = await db.get_session(sid)
             assert row["status"] == "failed"
-            assert row["status_reason_code"] in (
-                "run.failed.exception",  # if classifier reports HEALTHY/IDLE
-                "session.orphaned.no_process",  # if classifier reports ORPHANED
-                "session.stale.no_heartbeat",  # if classifier reports STALE
-            ), f"unexpected reason_code: {row['status_reason_code']!r}"
-            # The operator's summary is preserved when they bothered to write one.
-            assert row["status_reason_summary"]
+            assert row["status_reason_code"] == "session.stale.no_heartbeat"
+            assert row["status_reason_summary"] == "Operator forced failure after alert."
             cur = await db.db.execute(
-                "SELECT reason_code, previous_status, status FROM status_transitions WHERE entity_id = ?",
+                "SELECT reason_code, previous_status, status, evidence_refs "
+                "FROM status_transitions WHERE entity_id = ?",
                 (sid,),
             )
             rows = await cur.fetchall()
             assert len(rows) == 1
-            assert rows[0]["reason_code"] == row["status_reason_code"]
+            assert rows[0]["reason_code"] == "session.stale.no_heartbeat"
             assert rows[0]["previous_status"] == "running"
             assert rows[0]["status"] == "failed"
+            # Evidence ref must include the classifier source.
+            import json as _json
+
+            refs = _json.loads(rows[0]["evidence_refs"] or "[]")
+            assert any(r.get("kind") == "session_health" for r in refs)
+
+    _run(_check())
+
+
+@pytest.mark.parametrize(
+    "phantom_reason, expected_code, expected_evidence_kind",
+    [
+        ("process_dead", "session.phantom.process_dead", "phantom_classification"),
+        (
+            "missing_artifacts",
+            "session.phantom.missing_artifacts",
+            "phantom_classification",
+        ),
+        ("stale_lock", "session.zombie.stale_locks", "phantom_classification"),
+    ],
+)
+def test_admin_transition_phantom_classifier_override(
+    tmp_path, monkeypatch, phantom_reason, expected_code, expected_evidence_kind
+):
+    """Each PhantomReason value maps to its specific reason code, and the
+    classifier override wins over the operator's chosen code.
+
+    Pin the classifier so the assertion is deterministic — without
+    monkeypatching the test would race against the actual fs/ps state
+    of the seeded session.
+    """
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    _run(_seed_running_session(db_path, sid))
+    import apps.studio.server.services.admin as admin_svc
+    import lionagi.state.health as health_mod
+    from lionagi.state.health import SessionHealth
+
+    monkeypatch.setattr(admin_svc, "_classify_phantom", lambda *a, **kw: phantom_reason)
+    # Force a non-HEALTHY/IDLE so the admin transition gate passes.
+    monkeypatch.setattr(health_mod, "classify_session_health", lambda *a, **kw: SessionHealth.STALE)
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    # Operator passes a generic code; classifier should override.
+    r = client.post(
+        "/api/admin/transition",
+        json={
+            "session_ids": [sid],
+            "target_status": "failed",
+            "reason_code": "run.failed.exception",
+            "reason_summary": "operator picked something generic",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    async def _check():
+        async with StateDB(db_path) as db:
+            row = await db.get_session(sid)
+            assert row["status_reason_code"] == expected_code, (
+                f"classifier override didn't win: got {row['status_reason_code']!r}, "
+                f"expected {expected_code!r}"
+            )
+            import json as _json
+
+            cur = await db.db.execute(
+                "SELECT evidence_refs FROM status_transitions WHERE entity_id = ?",
+                (sid,),
+            )
+            row_t = await cur.fetchone()
+            refs = _json.loads(row_t["evidence_refs"] or "[]")
+            assert any(r.get("kind") == expected_evidence_kind for r in refs), (
+                f"evidence missing {expected_evidence_kind} kind: {refs}"
+            )
 
     _run(_check())
 
@@ -394,11 +500,18 @@ def test_admin_transition_legacy_reason_backwards_compat(tmp_path, monkeypatch):
     """Old clients that send only 'reason' (no reason_code) still succeed.
 
     The router synthesises a reason_code from target_status and uses the
-    free-text 'reason' as reason_summary; a deprecation warning is logged.
+    free-text 'reason' as reason_summary; classifier override applies as
+    usual (here pinned to STALE for determinism).
     """
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
     _run(_seed_running_session(db_path, sid))
+    import apps.studio.server.services.admin as admin_svc
+    import lionagi.state.health as health_mod
+    from lionagi.state.health import SessionHealth
+
+    monkeypatch.setattr(admin_svc, "_classify_phantom", lambda *a, **kw: None)
+    monkeypatch.setattr(health_mod, "classify_session_health", lambda *a, **kw: SessionHealth.STALE)
     client = _make_client(tmp_path, monkeypatch, db_path)
 
     r = client.post(
@@ -413,22 +526,16 @@ def test_admin_transition_legacy_reason_backwards_compat(tmp_path, monkeypatch):
     body = r.json()
     assert body["transitioned"] == [sid]
 
-    # Verify that the synthesised reason code (or classifier override)
-    # landed in the DB. The seeded session looks orphaned to the
-    # classifier (no live process, no artifacts), so per ADR-0028 §5
-    # the classifier may override the legacy 'reason' → 'run.aborted.user'
-    # map with a more-specific health code.
+    # Verify the legacy compat path: 'reason' (no reason_code) maps via
+    # _LEGACY_ADMIN_REASON_CODES['aborted'] → run.aborted.user, and the
+    # free-text 'reason' becomes reason_summary. The classifier is
+    # pinned to STALE here so we get the override on top.
     async def _check():
         async with StateDB(db_path) as db:
             row = await db.get_session(sid)
             assert row["status"] == "aborted"
-            assert row["status_reason_code"] in (
-                "run.aborted.user",
-                "session.orphaned.no_process",
-                "session.stale.no_heartbeat",
-            ), f"unexpected reason_code: {row['status_reason_code']!r}"
-            # The operator's free-text 'reason' is mapped to reason_summary
-            # via the legacy compat shim and survives the classifier override.
+            # STALE → session.stale.no_heartbeat (classifier override).
+            assert row["status_reason_code"] == "session.stale.no_heartbeat"
             assert row["status_reason_summary"] == "Legacy client cleanup"
 
     _run(_check())

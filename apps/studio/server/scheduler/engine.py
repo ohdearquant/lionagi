@@ -192,19 +192,90 @@ class SchedulerEngine:
                 schedules = await db.list_schedules(enabled=True)
             now = time.time()
             for s in schedules:
-                if s.get("missed_fire_policy") == "run_once" and s.get("next_fire_at"):
-                    if s["next_fire_at"] < now:
-                        run_id = uuid.uuid4().hex[:12]
-                        _log.info("Missed fire recovery for schedule %s (%s)", s["name"], s["id"])
-                        asyncio.create_task(
-                            self._fire(
-                                s,
-                                run_id,
-                                trigger_context={"missed_recovery": True, "fired_at": now},
-                            )
+                next_fire_at = s.get("next_fire_at")
+                if next_fire_at is None or next_fire_at >= now:
+                    continue
+                policy = s.get("missed_fire_policy")
+                if policy == "run_once":
+                    # Recover by firing once; the resulting schedule_run
+                    # row gets ScheduleReasons.FIRED_DUE via _fire().
+                    run_id = uuid.uuid4().hex[:12]
+                    _log.info(
+                        "Missed fire recovery for schedule %s (%s)",
+                        s["name"],
+                        s["id"],
+                    )
+                    asyncio.create_task(
+                        self._fire(
+                            s,
+                            run_id,
+                            trigger_context={"missed_recovery": True, "fired_at": now},
                         )
+                    )
+                else:
+                    # policy in {"skip", default}: drop the missed fire,
+                    # but record the skip so operators can see why.
+                    # ADR-0028 § ScheduleReasons.SKIPPED_MISSED_FIRE is
+                    # the canonical code for this case.
+                    await self._record_missed_fire_skip(s, now)
         except Exception:
             _log.exception("Missed fire check error")
+
+    async def _record_missed_fire_skip(self, schedule: dict, now: float) -> None:
+        """Create a schedule_runs row recording the missed-fire skip.
+
+        Writes status="skipped" with reason_code=SKIPPED_MISSED_FIRE so
+        downstream attention-queue / failure-grouping (ADR-0028, ADR-0030)
+        can distinguish missed-fire skips from overlap skips and normal
+        due fires. Also advances next_fire_at so the schedule doesn't
+        re-trigger this same skip every tick.
+        """
+        skipped_run_id = uuid.uuid4().hex[:12]
+        try:
+            async with StateDB() as db:
+                await db.create_schedule_run(
+                    {
+                        "id": skipped_run_id,
+                        "schedule_id": schedule["id"],
+                        "trigger_context": {
+                            "skipped_missed_fire": True,
+                            "missed_fire_at": schedule.get("next_fire_at"),
+                            "checked_at": now,
+                        },
+                        "action_kind": schedule["action_kind"],
+                        "action_args": [],
+                        "status": "skipped",
+                        "fired_at": now,
+                    }
+                )
+                await db.update_status(
+                    "schedule_run",
+                    skipped_run_id,
+                    new_status="skipped",
+                    reason_code=ScheduleReasons.SKIPPED_MISSED_FIRE,
+                    reason_summary=(
+                        "Schedule fire skipped because the scheduled time "
+                        "passed while the server was down or the tick was "
+                        "delayed (missed_fire_policy=skip)."
+                    ),
+                    evidence_refs=[{"kind": "schedule", "id": schedule["id"]}],
+                    source="system",
+                    actor=schedule["id"],
+                    metadata={
+                        "missed_fire_policy": schedule.get("missed_fire_policy"),
+                        "missed_fire_at": schedule.get("next_fire_at"),
+                    },
+                )
+                # Advance next_fire_at so this schedule doesn't keep
+                # producing skip rows for the same missed slot.
+                next_at = self._compute_next_fire(schedule, now)
+                if next_at:
+                    await db.update_schedule(schedule["id"], next_fire_at=next_at)
+        except Exception:
+            _log.exception(
+                "Failed to record missed-fire skip for schedule %s",
+                schedule.get("id"),
+            )
 
     async def _tick(self) -> None:
         now = time.time()

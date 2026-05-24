@@ -255,9 +255,7 @@ async def test_insert_message_idempotent(db: StateDB):
     # Second insert — same id, should silently be ignored
     await db.insert_message(msg)
 
-    cur = await db.db.execute(
-        "SELECT COUNT(*) AS n FROM messages WHERE id = ?", (msg["id"],)
-    )
+    cur = await db.db.execute("SELECT COUNT(*) AS n FROM messages WHERE id = ?", (msg["id"],))
     row = await cur.fetchone()
     assert row["n"] == 1
 
@@ -268,9 +266,7 @@ async def test_resolve_lion_class_known(db: StateDB):
     msg = make_message(lion_class=known)
     await db.insert_message(msg)
 
-    cur = await db.db.execute(
-        "SELECT lion_class FROM messages WHERE id = ?", (msg["id"],)
-    )
+    cur = await db.db.execute("SELECT lion_class FROM messages WHERE id = ?", (msg["id"],))
     row = await cur.fetchone()
     # type_id 1 maps to System
     assert row["lion_class"] == 1
@@ -281,9 +277,7 @@ async def test_resolve_lion_class_unknown_empty(db: StateDB):
     msg = make_message(lion_class="")
     await db.insert_message(msg)
 
-    cur = await db.db.execute(
-        "SELECT lion_class FROM messages WHERE id = ?", (msg["id"],)
-    )
+    cur = await db.db.execute("SELECT lion_class FROM messages WHERE id = ?", (msg["id"],))
     row = await cur.fetchone()
     assert row["lion_class"] == 0
 
@@ -710,11 +704,19 @@ async def test_update_play(db: StateDB):
     # ADR-0011 vocab: plays use ``running_complete`` (not ``completed``)
     # for the "finished running" terminal — ``completed`` belongs to the
     # sessions vocabulary (ADR-0017), not plays.
+    # ADR-0028 Phase 2: `running_complete` has no canonical default
+    # reason_code (the gate hasn't run yet at that point — the caller
+    # has the context to choose between PENDING_READY / GATE_FAILED_
+    # VERDICT / etc.), so we must pass reason_code explicitly.
+    from lionagi.state.reasons import PlayReasons
+
     await db.update_play(
         play["id"],
         status="running_complete",
         exit_code=0,
         ended_at=end_time,
+        reason_code=PlayReasons.PENDING_READY,
+        reason_summary="Test fixture: play marked running_complete.",
     )
 
     retrieved = await db.get_play(play["id"])
@@ -898,9 +900,9 @@ async def test_save_definition_concurrent_versions_are_unique(tmp_path):
             )
         )
         # Every save returned a unique version, and the set is {1..N}.
-        assert sorted(versions) == list(
-            range(1, N + 1)
-        ), f"Expected unique versions 1..{N}, got {sorted(versions)}"
+        assert sorted(versions) == list(range(1, N + 1)), (
+            f"Expected unique versions 1..{N}, got {sorted(versions)}"
+        )
 
         # Database state matches the API return values.
         rows = await db.list_definition_versions("agent", "race-agent")
@@ -941,9 +943,9 @@ async def test_message_content_string_roundtrips_as_string(db: StateDB):
         got = await db.get_message(msg_id)
         assert got is not None
         # Critical: type AND value preserved exactly.
-        assert isinstance(
-            got["content"], str
-        ), f"case {i!r}: expected str, got {type(got['content']).__name__}"
+        assert isinstance(got["content"], str), (
+            f"case {i!r}: expected str, got {type(got['content']).__name__}"
+        )
         assert got["content"] == raw, f"case {i!r}: value diverged"
 
 
