@@ -9,7 +9,11 @@ import json
 
 from lionagi import Branch
 from lionagi._errors import TimeoutError as LionTimeoutError
-from lionagi.ln.concurrency import run_async
+from lionagi.ln.concurrency import (
+    cache_cancelled_exc_class,
+    cancelled_exc_classes,
+    run_async,
+)
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import (
@@ -57,6 +61,24 @@ async def _run_agent(
     """
     if resume and continue_last:
         raise ValueError("--resume / -r and --continue-last / -c are mutually exclusive.")
+
+    # Cache the backend cancellation exception class *now*, while the event
+    # loop is running.  The ``except BaseException`` block in ``run_agent``
+    # executes after ``run_async`` returns (i.e. after the loop exits), so
+    # calling ``anyio.get_cancelled_exc_class()`` there raises
+    # ``NoEventLoopError``.  We pre-populate the module-level cache here so
+    # :func:`cancelled_exc_classes` in the error path is always safe.
+    try:
+        cache_cancelled_exc_class()
+    except Exception as _cache_err:
+        # Defensive: if for some reason we couldn't cache (shouldn't happen
+        # inside a running loop), the fallback in cancelled_exc_classes() is
+        # sufficient — don't let this shadow a real startup error.
+        import logging as _logging
+
+        _logging.getLogger("lionagi.cli").debug(
+            "cache_cancelled_exc_class() failed (non-fatal): %s", _cache_err
+        )
 
     # Load agent profile if specified — provides defaults for model/effort/yolo/fast_mode
     profile = None
@@ -707,9 +729,11 @@ def run_agent(args: argparse.Namespace) -> int:
         # ``status='aborted'`` under a shielded scope before re-raising.
         return _EXIT_CODE_BY_TERMINAL_STATUS["aborted"]
     except BaseException as exc:
-        from lionagi.ln.concurrency import get_cancelled_exc_class
-
-        if isinstance(exc, get_cancelled_exc_class()):
+        # Use the pre-cached tuple — ``get_cancelled_exc_class()`` would call
+        # ``anyio.get_cancelled_exc_class()`` here, which raises
+        # ``NoEventLoopError`` because ``run_async`` has already closed the
+        # event loop.  ``cancelled_exc_classes()`` is safe after loop exit.
+        if isinstance(exc, cancelled_exc_classes()):
             return _EXIT_CODE_BY_TERMINAL_STATUS["cancelled"]
         raise
 
