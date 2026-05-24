@@ -707,9 +707,22 @@ def run_agent(args: argparse.Namespace) -> int:
         # ``status='aborted'`` under a shielded scope before re-raising.
         return _EXIT_CODE_BY_TERMINAL_STATUS["aborted"]
     except BaseException as exc:
-        from lionagi.ln.concurrency import get_cancelled_exc_class
+        # get_cancelled_exc_class() requires an active event loop; this
+        # except-clause runs outside anyio.run(), so we fall back to a
+        # name-based check if the loop is gone (fixes #1082).
+        try:
+            from lionagi.ln.concurrency import get_cancelled_exc_class
 
-        if isinstance(exc, get_cancelled_exc_class()):
+            cancelled_cls = get_cancelled_exc_class()
+        except Exception:
+            cancelled_cls = None
+
+        if cancelled_cls is not None and isinstance(exc, cancelled_cls):
+            return _EXIT_CODE_BY_TERMINAL_STATUS["cancelled"]
+        if cancelled_cls is None and type(exc).__name__ in (
+            "Cancelled",
+            "CancelledError",
+        ):
             return _EXIT_CODE_BY_TERMINAL_STATUS["cancelled"]
         raise
 

@@ -39,9 +39,7 @@ def test_mock_factory_creates_imodel():
 @pytest.mark.asyncio
 async def test_async_branch_communication():
     """Test async communication with mocked branch."""
-    branch = LionAGIMockFactory.create_mocked_branch(
-        response="Async communication test"
-    )
+    branch = LionAGIMockFactory.create_mocked_branch(response="Async communication test")
 
     # Test async communication
     result = await branch.communicate("Test message", skip_validation=True)
@@ -81,10 +79,8 @@ async def test_async_helpers():
     # Start task to set condition
     task = asyncio.create_task(set_condition())
 
-    # Wait for condition
-    await AsyncTestHelpers.assert_eventually(
-        check_condition, timeout=1.0, interval=0.01
-    )
+    # Wait for condition — use a CI-tolerant 5.0s ceiling (fixes #1090)
+    await AsyncTestHelpers.assert_eventually(check_condition, timeout=5.0, interval=0.01)
 
     await task  # Ensure task completes
 
@@ -132,9 +128,7 @@ async def test_end_to_end_simple():
     assert result == "End-to-end test response"
 
     # Test that we can create multiple responses
-    imodel = LionAGIMockFactory.create_mocked_imodel(
-        responses=["First", "Second", "Third"]
-    )
+    imodel = LionAGIMockFactory.create_mocked_imodel(responses=["First", "Second", "Third"])
 
     # Test sequence of responses
     call1 = await imodel.invoke()

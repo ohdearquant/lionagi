@@ -19,9 +19,7 @@ async def test_fail_after_zero_deadline_raises_fast(anyio_backend):
     with pytest.raises(TimeoutError):
         with fail_after(0):
             await anyio.sleep(0.001)
-    assert (
-        time.perf_counter() - t0
-    ) < 0.5  # should trip reasonably quickly (CI-friendly)
+    assert (time.perf_counter() - t0) < 0.5  # should trip reasonably quickly (CI-friendly)
 
 
 @pytest.mark.anyio
@@ -151,19 +149,23 @@ async def test_none_move_on_after_still_cancellable(anyio_backend):
 async def test_fail_at_none_still_cancellable(anyio_backend):
     """Test that fail_at(None) doesn't shield from outer cancellation."""
     cancelled = False
+    # Use an Event so the outer scope cancels only after work() is running,
+    # eliminating the timing race that caused CI flakiness (fixes #1090).
+    work_started = anyio.Event()
 
     async def work():
         nonlocal cancelled
         try:
             with fail_at(None):  # No deadline
-                await anyio.sleep(1.0)  # Reduced from 10
+                work_started.set()  # signal: we are inside the scope, safe to cancel
+                await anyio.sleep_forever()
         except BaseException:
             cancelled = True
             raise
 
     async with anyio.create_task_group() as tg:
         tg.start_soon(work)
-        await anyio.sleep(0.005)  # Reduced from 0.01
+        await work_started.wait()  # deterministic: work is running before we cancel
         tg.cancel_scope.cancel()
 
     assert cancelled is True

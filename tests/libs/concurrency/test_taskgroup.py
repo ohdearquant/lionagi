@@ -153,13 +153,18 @@ async def test_taskgroup_cancel_scope_propagation(anyio_backend):
     """Test that TaskGroup properly propagates its cancel scope."""
     outer_cancelled = False
     inner_cancelled = False
+    # Deterministic signal: outer_task sets this once it has entered the
+    # inner task group and is ready to be cancelled.  Avoids a timing race
+    # where tg.cancel_scope.cancel() fired before outer_task was scheduled.
+    outer_ready = anyio.Event()
 
     async def outer_task():
         nonlocal outer_cancelled
         try:
             async with create_task_group() as inner_tg:
                 inner_tg.start_soon(inner_task)
-                await anyio.sleep(0.1)
+                outer_ready.set()  # signal: inner task is running, ready to cancel
+                await anyio.sleep_forever()
         except BaseException:
             outer_cancelled = True
             raise
@@ -167,14 +172,14 @@ async def test_taskgroup_cancel_scope_propagation(anyio_backend):
     async def inner_task():
         nonlocal inner_cancelled
         try:
-            await anyio.sleep(0.1)
+            await anyio.sleep_forever()
         except BaseException:
             inner_cancelled = True
             raise
 
     async with create_task_group() as tg:
         tg.start_soon(outer_task)
-        await anyio.sleep(0.01)
+        await outer_ready.wait()  # wait until outer_task is running, not a fixed sleep
         tg.cancel_scope.cancel()
 
     assert outer_cancelled
