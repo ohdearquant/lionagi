@@ -84,10 +84,11 @@ export default function AdminMaintenancePage() {
   async function handlePruneSelected() {
     if (selected.size === 0) return;
     const count = selected.size;
+    const noun = count === 1 ? "session" : "sessions";
     const confirmed = window.confirm(
-      `Prune ${count} phantom session${count === 1 ? "" : "s"}? ` +
-        `This removes the session row(s) and any orphaned ` +
-        `messages from the database (artifacts on disk are left in place). The action cannot be undone.`,
+      `Prune ${count} phantom ${noun}?\n\n` +
+        `Removes DB rows. Artifacts on disk are kept.\n` +
+        `Cannot be undone.`,
     );
     if (!confirmed) return;
     setPruning(true);
@@ -104,10 +105,11 @@ export default function AdminMaintenancePage() {
 
   async function handlePruneAll() {
     const count = (doctor?.phantom_sessions ?? []).length;
+    const noun = count === 1 ? "session" : "sessions";
     const confirmed = window.confirm(
-      `Prune ALL ${count} phantom session${count === 1 ? "" : "s"}? ` +
-        `This removes the session row(s) and any orphaned ` +
-        `messages from the database (artifacts on disk are left in place). The action cannot be undone.`,
+      `Prune all ${count} phantom ${noun}?\n\n` +
+        `Removes DB rows. Artifacts on disk are kept.\n` +
+        `Cannot be undone.`,
     );
     if (!confirmed) return;
     setPruning(true);
