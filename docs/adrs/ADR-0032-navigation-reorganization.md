@@ -201,12 +201,26 @@ The Admin page today bundles DB health (size, WAL, phantom sessions)
 with maintenance actions (prune, checkpoint, vacuum) on one screen.
 Split:
 
-- `/admin/health` — read-only view of current system state
-- `/admin/maintenance` — actions that mutate state (with
-  confirmations per ADR-0031's `EntityAction.requires_confirm`)
+- `/admin/health` — read-only view of current system state. Renders
+  the DB health strip and a read-only phantom sessions table (no
+  checkboxes, no action buttons). Includes a "Manage in Maintenance →"
+  link to the mutating surface.
+- `/admin/maintenance` — actions that mutate state (`prune selected`,
+  `prune all phantom`), each gated by a `window.confirm()` dialog
+  per the ADR-0031 `EntityAction.requires_confirm` pattern.
 
 The split clarifies which surface is "look" vs "act". Today the bundle
 makes routine inspection feel risky (the prune button is right there).
+
+**Scope clarification (v1):** Only `prune` lands as a maintenance
+action in v1 because the backend admin router currently exposes only
+`POST /api/admin/prune`. `checkpoint` and `vacuum` are deferred to a
+follow-up that first adds `POST /api/admin/checkpoint` and
+`POST /api/admin/vacuum` endpoints (today these operations exist as
+`li state checkpoint` / `li state vacuum` CLI subcommands, not as
+HTTP endpoints). When those endpoints land, this ADR is amended in
+place and the corresponding buttons join the Maintenance page with
+the same confirmation pattern.
 
 ### 7. Mobile / narrow-viewport behavior
 

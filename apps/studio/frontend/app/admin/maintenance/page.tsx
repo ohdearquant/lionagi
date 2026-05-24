@@ -83,6 +83,13 @@ export default function AdminMaintenancePage() {
 
   async function handlePruneSelected() {
     if (selected.size === 0) return;
+    const count = selected.size;
+    const confirmed = window.confirm(
+      `Prune ${count} phantom session${count === 1 ? "" : "s"}? ` +
+        `This deletes the session row(s) and any associated artifacts ` +
+        `directory. The action cannot be undone.`,
+    );
+    if (!confirmed) return;
     setPruning(true);
     try {
       await pruneAdmin({ session_ids: Array.from(selected) });
@@ -96,6 +103,13 @@ export default function AdminMaintenancePage() {
   }
 
   async function handlePruneAll() {
+    const count = (doctor?.phantom_sessions ?? []).length;
+    const confirmed = window.confirm(
+      `Prune ALL ${count} phantom session${count === 1 ? "" : "s"}? ` +
+        `This deletes the session row(s) and any associated artifacts ` +
+        `directory. The action cannot be undone.`,
+    );
+    if (!confirmed) return;
     setPruning(true);
     try {
       await pruneAdmin({ all_phantom: true });
