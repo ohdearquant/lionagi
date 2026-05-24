@@ -90,7 +90,7 @@ Response:
         "code": "run.failed.missing_artifact",
         "summary": "Required artifact review.md was not produced.",
         "evidence_refs": [
-          {"kind": "artifact_id", "id": "review", "label": "review.md"}
+          {"kind": "expected_artifact", "id": "review", "label": "review.md"}
         ]
       },
       "impact": "Blocks /codex-pr-review pipeline for PR #1064.",
@@ -169,7 +169,8 @@ an attention-worthy condition (see severity table). Sample query for
 sessions:
 
 ```sql
--- failed sessions in last 24h, not dismissed for THIS reason code
+-- failed sessions in last 24h, not dismissed for THIS reason code,
+-- AND status hasn't changed since the dismissal was recorded
 SELECT
   'session' AS entity_type,
   s.id AS entity_id,
@@ -185,12 +186,19 @@ WHERE s.status = 'failed'
         'session:' || s.id || ':' || COALESCE(s.status_reason_code, '')
       )
       AND (d.snoozed_until IS NULL OR d.snoozed_until > ?)
+      -- clear_on_status_change=1 dismissals stop hiding the item as
+      -- soon as the entity's status changes from what it was at
+      -- dismissal time. clear_on_status_change=0 dismissals ignore
+      -- status drift entirely.
+      AND (d.clear_on_status_change = 0 OR d.status_at_dismissal = s.status)
   );
 ```
 
 Filtering matches the *fingerprint*, not just `entity_id` — so a
 dismissal of `session:X:session.phantom.process_dead` does not hide
-a later `session:X:session.phantom.missing_artifacts` item.
+a later `session:X:session.phantom.missing_artifacts` item. The
+`status_at_dismissal` comparison makes `clear_on_status_change=1`
+behavior immediate at read time, not deferred until vacuum.
 
 The Python aggregator runs these queries (one per entity type), applies
 severity scoring, computes cluster ids, and returns the merged list.
@@ -220,8 +228,9 @@ a full scan.
 | Session `timed_out` (last 24h) | `status='timed_out'` AND `updated_at >= now - 24h` | `warning` |
 | Session stuck (`running` >60m, no heartbeat) | `status='running'` AND `now - last_message_at > 3600` | `critical` |
 | Session slow (`running`, alive, >60m) | `status='running'` AND `60m < age < 3h` AND has recent heartbeat | `info` |
-| Session went phantom (process_dead, operator hasn't transitioned) | per ADR-0024 the doctor classifies; the operator must still transition. Detected by joining the live doctor classification — see Section 6. | `warning` |
-| Session went phantom (missing_artifacts, operator hasn't transitioned) | doctor classification = `missing_artifacts`. The artifact contract from ADR-0029 already would have set `run.failed.missing_artifact` at teardown; this row catches sessions that pre-date the contract or had no contract declared. | `warning` |
+| Session went phantom (process_dead, operator hasn't transitioned) | doctor classification (see "Live doctor-derived items" below) | `warning` |
+| Session went phantom (missing_artifacts, operator hasn't transitioned) | doctor classification `missing_artifacts` — catches sessions that pre-date ADR-0029's contract or had no contract declared | `warning` |
+| Session went phantom (stale_lock, operator hasn't transitioned) | doctor classification `stale_lock` | `warning` |
 | Play `blocked` (invalid deps) | `status_reason_code='play.blocked.invalid_deps'` | `warning` |
 | Play `blocked` (dep failed) | `status_reason_code='play.blocked.dep_failed'` | `warning` |
 | Play `escalated` | `status='escalated'` | `critical` |
@@ -231,6 +240,51 @@ a full scan.
 
 Sessions with `status_reason_code = 'legacy.imported'` are excluded —
 they are pre-ADR-0028 and have no useful reason to surface.
+
+#### Live doctor-derived items
+
+The three "Session went phantom" rows above are *not* generated from
+the entity-table status × status_reason_code query path. Phantom
+classifications are derived at read time by the doctor service per
+ADR-0024 (`apps/studio/server/services/admin.py:_classify_phantom`),
+and the operator may not yet have transitioned the session. The
+attention aggregator therefore queries the doctor service alongside
+the entity tables:
+
+```python
+# apps/studio/server/services/attention.py — sketch
+async def _phantom_items(db) -> list[AttentionItem]:
+    classified = await admin_service.classify_phantoms(db)
+    out = []
+    for entry in classified:  # PhantomEntry: {session_id, reason, ...}
+        reason_code = _PHANTOM_TO_REASON_CODE[entry.reason]
+        # entry.reason ∈ {"process_dead", "missing_artifacts", "stale_lock"}
+        out.append(AttentionItem(
+            entity_type="session",
+            entity_id=entry.session_id,
+            status=entry.status,           # whatever status the row still has
+            reason=StatusReason(
+                code=reason_code,
+                summary=_PHANTOM_TO_SUMMARY[entry.reason],
+                evidence_refs=entry.evidence,
+            ),
+            fingerprint=f"session:{entry.session_id}:{reason_code}",
+            severity="warning",
+        ))
+    return out
+
+_PHANTOM_TO_REASON_CODE = {
+    "process_dead":     SessionReasons.HEALTH_PHANTOM_PROCESS_DEAD,
+    "missing_artifacts":SessionReasons.HEALTH_PHANTOM_MISSING_ARTIFACTS,
+    "stale_lock":       SessionReasons.HEALTH_ZOMBIE_STALE_LOCKS,
+}
+```
+
+Once the operator transitions the session (per ADR-0028 Section 5,
+the admin transition API), the row's persisted `status_reason_code`
+matches the same code; the entity-table query path picks it up; the
+doctor-derived path stops returning the same session because it is
+no longer classified as phantom.
 
 **Deferred to v1.1** (see Non-Goals): chain-run `waiting_approval`
 attention items wait for the `chain_runs` table (ADR-0021 proposed,

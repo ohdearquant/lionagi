@@ -411,10 +411,15 @@ When the operator transitions a phantom session, they choose:
 
 | Doctor classification | Operator target status | reason_code |
 |---|---|---|
-| `process_dead` | `failed` | `SessionReasons.HEALTH_PHANTOM_PROCESS_DEAD` |
-| `missing_artifacts` | `failed` | `SessionReasons.HEALTH_PHANTOM_MISSING_ARTIFACTS` |
+| `process_dead` (per `apps/studio/server/services/admin.py:93`) | `failed` | `SessionReasons.HEALTH_PHANTOM_PROCESS_DEAD` |
+| `missing_artifacts` (per `admin.py:93`) | `failed` | `SessionReasons.HEALTH_PHANTOM_MISSING_ARTIFACTS` |
+| `stale_lock` (per `admin.py:16`, `admin.py:93`) | `failed` | `SessionReasons.HEALTH_ZOMBIE_STALE_LOCKS` |
 | `stale` (no heartbeat, process alive) | `cancelled` | `SessionReasons.HEALTH_STALE_NO_HEARTBEAT` |
 | `orphaned` | `cancelled` | `SessionReasons.HEALTH_ORPHANED_NO_PROCESS` |
+
+The first three rows cover the live doctor `PhantomReason` enum
+exhaustively. The last two cover health states ADR-0024 surfaces
+through other classifier outputs.
 
 `phantom` is **not** a session status — it remains a derived health
 classification per ADR-0024. The reason code records *why the
@@ -492,7 +497,9 @@ rename — the code is the contract, the summary is the message.
 
 SQLite supports `ALTER TABLE ... ADD COLUMN`. Migration via
 `StateDB._reconcile_columns()` (existing pattern from ADR-0025/0026):
-add three columns to each of the seven entity tables on next
+add three columns to each of the six status-bearing entity tables
+plus `updated_at` to `schedule_runs` (19 ALTERs total — 18 reason
+columns + 1 timestamp) on next
 `StateDB.open()`. New `status_transitions` table created via `IF NOT
 EXISTS`.
 
@@ -510,7 +517,7 @@ would be worse than honest silence.
 | ADR-0025 | Session status vocabulary stays as-is. `update_status()` enforces both the status validator and the reason validator. |
 | ADR-0029 | Artifact contract violations write `run.failed.missing_artifact` with evidence refs pointing to the unmet artifact IDs. |
 | ADR-0030 | Attention Queue groups by `reason_code` for clustering; pulls `summary` and `evidence_refs` directly from entity responses. |
-| ADR-0024 `admin_events` | Parallel append-only log. `admin_events` records the *action* (admin pruned X, admin classified Y); `status_transitions` records the *consequence* (X transitioned from running to phantom). Both rows get written when an admin action causes a transition. |
+| ADR-0024 `admin_events` | Parallel append-only log. `admin_events` records the *action* (admin pruned X, admin classified Y); `status_transitions` records the *consequence* (X transitioned from running to failed with `reason_code=session.phantom.process_dead`). Both rows get written when an admin action causes a transition. `phantom` is never a *target_status* — it's the health input that motivates the operator's choice of `failed` or `cancelled`. |
 
 ### 10. File map
 
@@ -523,7 +530,9 @@ lionagi/state/reasons.py                  # Reason code namespace + validators
 Modified files:
 
 ```text
-lionagi/state/schema.sql                  # ALTER for 7 tables + status_transitions table
+lionagi/state/schema.sql                  # ALTER for 6 status-bearing tables (3 reason
+                                          # columns each) + ALTER schedule_runs ADD
+                                          # updated_at + new status_transitions table
 lionagi/state/db.py                       # update_status() + reconcile_columns
 lionagi/cli/agent.py                      # teardown writes reason
 lionagi/cli/orchestrate/flow.py           # flow termination writes reason
@@ -565,7 +574,8 @@ apps/studio/frontend/lib/api.ts           # status_reason type + fetch
 **Negative**
 
 - Seven `ALTER TABLE` statements. Pre-release, so acceptable; still
-  three more columns × seven tables of schema width.
+  three more columns × six status-bearing tables of schema width,
+  plus the `updated_at` ALTER on `schedule_runs`.
 
 - Every status mutation site in the codebase has to be updated to call
   `update_status()` with a reason. The current pattern is to write
@@ -590,7 +600,7 @@ apps/studio/frontend/lib/api.ts           # status_reason type + fetch
 | Alternative | Why Rejected |
 |---|---|
 | `status_note TEXT` column only (denormalized, no history, no code) | Gives the tooltip but loses grouping, filtering, dismissal stability, evidence linking, and audit history. ChatGPT proposed this as the "80% solution"; it is actually the 20% solution. The reason *code* is the load-bearing primitive. |
-| Single shared `status_reason_json` JSON column per entity table | Same schema sprawl (one column × seven tables) without indexable code. Filtering by reason becomes a JSON extract on every query. |
+| Single shared `status_reason_json` JSON column per entity table | Same schema sprawl (one column × six tables) without indexable code. Filtering by reason becomes a JSON extract on every query. |
 | Status reasons only in a separate `status_transitions` table (no denormalization) | Every status pill render becomes a JOIN. Dashboard would N+1 across hundreds of entities per page. The 3-column denormalization on entities is the read-path optimization. |
 | Reuse `admin_events` for status transitions | `admin_events` is for admin actions (transition, prune, checkpoint, vacuum, classify). Most status transitions are runtime, not admin. Conflating them would mean every session completion writes to a table named "admin_events", which is semantically wrong. Both tables coexist. |
 | Agents write reasons directly | Agents can hallucinate reasons. The executor has authoritative process/exit-code/contract state. Agents emit hints; the executor canonicalizes. |

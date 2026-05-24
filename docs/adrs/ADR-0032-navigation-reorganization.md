@@ -228,11 +228,18 @@ apps/studio/frontend/components/nav/TopNav.tsx          # group structure
 apps/studio/frontend/components/nav/NavGroup.tsx        # new: group with submenu
 apps/studio/frontend/components/nav/ProjectChip.tsx     # new: top-right chip
 apps/studio/frontend/components/nav/Breadcrumb.tsx      # new: above page content
-apps/studio/frontend/app/layout.tsx                     # nav composition
-apps/studio/frontend/app/admin/page.tsx                 # split into health/maintenance
-apps/studio/frontend/app/admin/maintenance/page.tsx     # new (extracted)
-apps/studio/frontend/app/skills/page.tsx                # new
 apps/studio/frontend/components/nav/types.ts            # NavGroup, NavItem types
+apps/studio/frontend/components/Shell.tsx               # consume new nav structure
+apps/studio/frontend/app/layout.tsx                     # nav composition
+apps/studio/frontend/app/admin/page.tsx                 # delete: replaced by 301
+apps/studio/frontend/app/admin/health/page.tsx          # new: extracted health view
+apps/studio/frontend/app/admin/maintenance/page.tsx     # new: extracted maintenance view
+apps/studio/frontend/app/skills/page.tsx                # existing — no code change,
+                                                        # only nav-level promotion
+apps/studio/frontend/next.config.mjs                    # add 301 redirect:
+                                                        #   /admin -> /admin/health
+                                                        # (remove the redirect one
+                                                        #  release later)
 ```
 
 No backend changes.
