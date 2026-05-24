@@ -747,8 +747,13 @@ async def stop_live_persist(
     *,
     status: str = "completed",
     exception: BaseException | None = None,
-) -> None:
+) -> str:
     """Update session bookmarks, lifecycle columns, and close DB.
+
+    Returns the *effective* terminal status — ADR-0029 §7's verification
+    override can flip a clean ``completed`` into ``failed`` when required
+    artifacts are missing. Callers MUST use the returned status for the
+    process exit code.
 
     The DB close is in its own ``finally`` so it always runs — even if
     the bookmark update or hook removal fails. Leaving the DB unclosed
@@ -759,7 +764,7 @@ async def stop_live_persist(
 
     ctx = env._live_persist
     if ctx is None:
-        return
+        return status
     log = logging.getLogger("lionagi.cli")
     db = ctx["db"]
     try:
@@ -836,9 +841,11 @@ async def stop_live_persist(
             branch.on_message_added[:] = [h for h in branch.on_message_added if h is not hook]
     except Exception as exc:
         log.warning("live persist teardown failed: %s", exc, exc_info=True)
+        return status
     finally:
         try:
             await db.close()
         except Exception as exc:
             log.warning("live persist db.close failed: %s", exc, exc_info=True)
         env._live_persist = None
+    return final_status

@@ -127,7 +127,7 @@ class TestLoadFlowSpec:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="flow output"),
+            AsyncMock(return_value=("flow output", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 
@@ -151,7 +151,7 @@ class TestLoadFlowSpec:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="ok"),
+            AsyncMock(return_value=("ok", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 
@@ -174,7 +174,7 @@ class TestLoadFlowSpec:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="ok"),
+            AsyncMock(return_value=("ok", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 
@@ -348,7 +348,7 @@ class TestPlaybookEndToEnd:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="done"),
+            AsyncMock(return_value=("done", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 
@@ -373,7 +373,7 @@ class TestPlaybookEndToEnd:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="done"),
+            AsyncMock(return_value=("done", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 
@@ -397,7 +397,7 @@ class TestPlaybookEndToEnd:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="done"),
+            AsyncMock(return_value=("done", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 
@@ -436,7 +436,7 @@ class TestPlaybookEndToEnd:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="done"),
+            AsyncMock(return_value=("done", "completed")),
         ) as run_flow:
             code = cli_main(["play", "hello", "--tabs", "9", "do a thing"])
 
@@ -496,7 +496,7 @@ class TestPlaybookEndToEnd:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="ok"),
+            AsyncMock(return_value=("ok", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 
@@ -517,7 +517,7 @@ class TestPlaybookEndToEnd:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="ok"),
+            AsyncMock(return_value=("ok", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 
@@ -531,7 +531,7 @@ class TestPlaybookEndToEnd:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="ok"),
+            AsyncMock(return_value=("ok", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 
@@ -555,7 +555,7 @@ class TestPlaybookEndToEnd:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="ok"),
+            AsyncMock(return_value=("ok", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 
@@ -580,7 +580,7 @@ class TestPlaybookEndToEnd:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="ok"),
+            AsyncMock(return_value=("ok", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 
@@ -600,7 +600,7 @@ class TestPlaybookEndToEnd:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="ok"),
+            AsyncMock(return_value=("ok", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 
@@ -648,7 +648,7 @@ class TestPlaybookEndToEnd:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="ok"),
+            AsyncMock(return_value=("ok", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 
@@ -720,7 +720,7 @@ class TestPlaybookArtifactsPassThrough:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="done"),
+            AsyncMock(return_value=("done", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 
@@ -748,7 +748,7 @@ class TestPlaybookArtifactsPassThrough:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="done"),
+            AsyncMock(return_value=("done", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 

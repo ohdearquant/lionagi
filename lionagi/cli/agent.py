@@ -203,11 +203,18 @@ async def _run_agent(
         import anyio
 
         with anyio.CancelScope(shield=True):
-            await _teardown_live_persist(
+            # ADR-0029 §7: teardown may override the proposed terminal
+            # status (clean exit + missing required artifact → failed).
+            # Use the returned status — NOT the original — for the
+            # process exit code so shell scripts, schedules, and chains
+            # see the failure.
+            effective_status = await _teardown_live_persist(
                 live,
                 status=_terminal_status,
                 exception=_terminal_exc,
             )
+            if effective_status != _terminal_status:
+                _terminal_status = effective_status
             # Shut down every iModel on the branch (chat_model AND
             # parse_model, plus any other registered) so each
             # RateLimitedAPIExecutor's background replenisher task is
@@ -496,8 +503,14 @@ async def _teardown_live_persist(
     *,
     status: str = "completed",
     exception: BaseException | None = None,
-) -> None:
+) -> str:
     """Update session bookmarks, lifecycle columns, and close DB.
+
+    Returns the *effective* terminal status — ADR-0029 §7's verification
+    override can flip a clean ``completed`` into ``failed`` when required
+    artifacts are missing. Callers MUST use the returned status (not the
+    `status` argument they passed in) for any downstream side effect
+    like the process exit code.
 
     The DB close is in its own ``finally`` so it always runs — even if
     the bookmark update or hook removal fails. Failures elsewhere are
@@ -515,7 +528,7 @@ async def _teardown_live_persist(
     exception class and message.
     """
     if ctx is None:
-        return
+        return status
     import logging
 
     log = logging.getLogger("lionagi.cli")
@@ -595,11 +608,15 @@ async def _teardown_live_persist(
         ]
     except Exception as exc:
         log.warning("live persist teardown failed: %s", exc, exc_info=True)
+        # Surface the original status on best-effort failure so the
+        # caller's exit code reflects what we tried to commit.
+        return status
     finally:
         try:
             await db.close()
         except Exception as exc:
             log.warning("live persist db.close failed: %s", exc, exc_info=True)
+    return final_status
 
 
 def add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:

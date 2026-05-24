@@ -69,12 +69,39 @@ def _print_playbook_help(name: str) -> int:
     return 0
 
 
+_ARTIFACT_ENTRY_ALLOWED_KEYS = frozenset({"id", "path", "required", "description", "source"})
+
+
+def _warn_unknown_artifact_keys(artifacts_block: dict, *, name: str) -> None:
+    """Emit a CLI warning for unknown subfields under each artifact entry.
+
+    ADR-0029 §2 declares `id, path, required, description` as v1. `kind`,
+    `min_size`, `mime_type` are reserved for v1.1 — silently accepting
+    them in v1 lets contract files drift into looking stricter than the
+    executor actually is. Warn so the author sees what was ignored.
+    """
+    expected = artifacts_block.get("expected") or []
+    if not isinstance(expected, list):
+        return
+    for entry in expected:
+        if not isinstance(entry, dict):
+            continue
+        unknown = set(entry.keys()) - _ARTIFACT_ENTRY_ALLOWED_KEYS
+        if unknown:
+            print(
+                f"warning: playbook '{name}' artifact entry "
+                f"{entry.get('id', '<unnamed>')!r} has unknown subfield(s) "
+                f"{sorted(unknown)} (ignored by v1; reserved for v1.1)."
+            )
+
+
 def _handle_play_check(argv: list[str]) -> int:
     """`li play check <name>` — ADR-0029 §9 pre-flight contract validation.
 
-    Loads the playbook, resolves its artifact contract (no agent defaults
-    available in this thin path — playbook contract only), runs
-    :func:`lionagi.state.artifact_verifier.validate_artifact_contract`,
+    Loads the playbook, optionally loads the agent profile it names so
+    `artifact_defaults` participate in the merge (matching what a real
+    invocation will see), resolves the contract via
+    :func:`lionagi.state.artifact_verifier.resolve_artifact_contract`,
     and pretty-prints the result. Does not fire the playbook.
     """
     if not argv or argv[0].startswith("-"):
@@ -98,14 +125,33 @@ def _handle_play_check(argv: list[str]) -> int:
         return 1
 
     artifacts_block = spec.get("artifacts")
-    if not artifacts_block:
+    # Load the agent profile the playbook names so its artifact_defaults
+    # participate in the merge — a real invocation sees them.
+    agent_defaults = None
+    agent_name = spec.get("agent")
+    if agent_name:
+        try:
+            from lionagi.cli._agents import load_agent_profile
+
+            profile = load_agent_profile(agent_name)
+            agent_defaults = getattr(profile, "artifact_defaults", None)
+        except Exception as exc:  # noqa: BLE001 — best-effort pre-flight
+            print(
+                f"warning: could not load agent profile '{agent_name}' "
+                f"({exc}); checking playbook contract only."
+            )
+
+    if not artifacts_block and not agent_defaults:
         print(f"playbook '{name}': no `artifacts:` block declared (verification skipped).")
         return 0
+
+    if artifacts_block:
+        _warn_unknown_artifact_keys(artifacts_block, name=name)
 
     try:
         resolved = resolve_artifact_contract(
             playbook_artifacts=artifacts_block,
-            agent_defaults=None,
+            agent_defaults=agent_defaults,
         )
     except ArtifactPathError as exc:
         log_error(f"playbook '{name}' artifact contract invalid: {exc}")
@@ -118,8 +164,13 @@ def _handle_play_check(argv: list[str]) -> int:
     expected = resolved.get("expected", [])
     required = [e for e in expected if e.get("required", True)]
     optional = [e for e in expected if not e.get("required", True)]
+    sources = [e.get("source") for e in expected]
+    from_playbook = sum(1 for s in sources if s == "playbook")
+    from_agent = sum(1 for s in sources if s == "agent_profile")
     print(f"playbook '{name}' artifact contract:")
     print(f"  expected: {len(expected)} ({len(required)} required, {len(optional)} optional)")
+    if from_playbook or from_agent:
+        print(f"  sources:  {from_playbook} from playbook, {from_agent} from agent_profile")
     for e in expected:
         flag = "REQUIRED" if e.get("required", True) else "OPTIONAL"
         src = e.get("source", "?")

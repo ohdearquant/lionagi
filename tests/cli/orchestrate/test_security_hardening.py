@@ -288,7 +288,7 @@ class TestSavePathContainment:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="should not reach"),
+            AsyncMock(return_value=("should not reach", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 
@@ -307,7 +307,7 @@ class TestSavePathContainment:
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
-            AsyncMock(return_value="flow done"),
+            AsyncMock(return_value=("flow done", "completed")),
         ) as run_flow:
             code = run_orchestrate(args)
 

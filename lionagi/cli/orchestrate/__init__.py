@@ -887,7 +887,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
         synthesis_model = synth if isinstance(synth, str) else None
 
         try:
-            output = run_async(
+            output, terminal_status = run_async(
                 _run_flow(
                     model_spec=args.model or "",
                     prompt=args.prompt,
@@ -930,7 +930,11 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             raise
         if not args.verbose:
             print(output)
-        return 0
+        # ADR-0029 §7: terminal_status reflects the verification override.
+        # Map to the same exit codes used by `li agent` (see ADR-0025).
+        from lionagi.cli.agent import _EXIT_CODE_BY_TERMINAL_STATUS
+
+        return _EXIT_CODE_BY_TERMINAL_STATUS.get(terminal_status, 0)
 
     log_error(f"Unknown orchestrate command: {args.orch_command}")
     return 1
