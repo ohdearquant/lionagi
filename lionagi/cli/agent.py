@@ -19,7 +19,7 @@ from lionagi.state.artifact_verifier import (
     verify_artifact_contract,
 )
 
-from ._agents import load_agent_profile
+from ._agents import build_deadline_preamble, load_agent_profile
 from ._logging import hint, log_error
 from ._providers import (
     PROVIDER_EFFORT_KWARG,
@@ -130,6 +130,14 @@ async def _run_agent(
     # Inject agent system prompt
     if profile and profile.system_prompt:
         branch.msgs.add_message(system=profile.system_prompt)
+
+    # Inject deadline preamble when --timeout is set so the agent can pace
+    # its own reasoning.  Prepended to the user's prompt as a leading user
+    # message — most reliable position across all CLI providers (codex,
+    # claude-code, gemini-code).  Issue #1087.
+    if timeout is not None:
+        preamble = build_deadline_preamble(timeout)
+        prompt = preamble + prompt
 
     run = allocate_run()
     branch_id = str(branch.id)

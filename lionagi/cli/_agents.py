@@ -39,6 +39,40 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def build_deadline_preamble(timeout_seconds: int) -> str:
+    """Build a deadline-awareness preamble for the agent's first user message.
+
+    Injected when ``--timeout N`` is set so the agent knows its wall-clock
+    budget and can pace reasoning accordingly.  A leading user message is used
+    (rather than a system-prompt prefix) because it is the most reliably
+    visible position across codex, claude-code, and other CLI providers.
+
+    Args:
+        timeout_seconds: The ``--timeout`` value in seconds.
+
+    Returns:
+        The formatted ``[DEADLINE] … [/DEADLINE]`` block.
+    """
+    import time as _time
+    from datetime import datetime, timezone
+
+    minutes = max(1, int(timeout_seconds / 60))
+    deadline_ts = _time.time() + timeout_seconds
+    deadline_iso = datetime.fromtimestamp(deadline_ts, tz=timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    return (
+        f"[DEADLINE]\n"
+        f"You have {minutes} minute{'s' if minutes != 1 else ''} "
+        f"(until {deadline_iso}) to complete this task.\n"
+        f"Pace your reasoning accordingly. Prefer decisive verdicts over exhaustive\n"
+        f"deliberation. If you're more than 60% through your time budget and\n"
+        f"still in research mode, switch to writing the deliverable.\n\n"
+        f"You can check the current time with: `date -Iseconds`\n"
+        f"[/DEADLINE]\n"
+    )
+
+
 @dataclass
 class AgentProfile:
     name: str
