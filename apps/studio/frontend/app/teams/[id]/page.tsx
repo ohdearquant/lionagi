@@ -6,7 +6,6 @@ import PageHeader from "@/components/PageHeader";
 import Timestamp from "@/components/Timestamp";
 import { getTeam } from "@/lib/api";
 import type { TeamDetail } from "@/lib/api";
-import { errors } from "@/lib/copy";
 
 function JsonTree({ value }: { value: unknown }) {
   return (
@@ -55,7 +54,7 @@ export default function TeamDetailPage({ params }: { params: Promise<{ id: strin
         }
       })
       .catch(() => {
-        if (active) setError(errors.teamNotFound);
+        if (active) setError("Team not found");
       })
       .finally(() => {
         if (active) setLoading(false);

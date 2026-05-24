@@ -14,7 +14,6 @@ import {
 } from "@/lib/api";
 import type { DefinitionDetail, DefinitionVersion } from "@/lib/api";
 import type { AgentProfile, AgentProfileSummary } from "@/lib/types";
-import { empty, errors } from "@/lib/copy";
 
 // ─── Frontmatter parsing ──────────────────────────────────────────────────────
 
@@ -287,7 +286,7 @@ function AgentList({
           <div className="px-3 py-4 text-meta text-content-muted">Loading...</div>
         ) : filtered.length === 0 ? (
           <div className="px-3 py-4 text-meta text-content-muted">
-            {searchQuery ? empty.agentsFiltered : empty.agents}
+            {searchQuery ? "No agents match filter." : "No agents found."}
           </div>
         ) : (
           filtered.map((agent) => {

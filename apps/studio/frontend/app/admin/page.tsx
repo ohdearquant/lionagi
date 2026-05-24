@@ -6,7 +6,6 @@ import PageHeader from "@/components/PageHeader";
 import Timestamp from "@/components/Timestamp";
 import { getAdminDoctor, pruneAdmin } from "@/lib/api";
 import type { AdminDoctorResponse, PhantomReason, PhantomSession } from "@/lib/api";
-import { errors } from "@/lib/copy";
 
 function formatBytes(value: number): string {
   if (value === 0) return "0 B";
@@ -62,7 +61,7 @@ export default function AdminPage() {
       setDoctor(d);
       setError(null);
     } catch {
-      setError(errors.loadDiagnostics);
+      setError("Failed to load diagnostics");
     } finally {
       setLoading(false);
     }
@@ -90,7 +89,7 @@ export default function AdminPage() {
       setSelected(new Set());
       await refresh();
     } catch {
-      setError(errors.prune);
+      setError("Prune failed");
     } finally {
       setPruning(false);
     }
@@ -103,7 +102,7 @@ export default function AdminPage() {
       setSelected(new Set());
       await refresh();
     } catch {
-      setError(errors.pruneAll);
+      setError("Prune all failed");
     } finally {
       setPruning(false);
     }

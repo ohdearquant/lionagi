@@ -10,7 +10,6 @@ import StatusPill from "@/components/StatusPill";
 import Timestamp from "@/components/Timestamp";
 import { getShow, streamShow } from "@/lib/api";
 import type { PlayMeta, ShowDetail, ShowEvent } from "@/lib/types";
-import { empty } from "@/lib/copy";
 
 const Markdown = dynamic(() => import("@/components/Markdown"), { ssr: false });
 const PlayDag = dynamic(() => import("./components/PlayDag"), { ssr: false });
@@ -539,7 +538,7 @@ function ShowSummaryPanel({
             />
           </dl>
         ) : (
-          <p className="mt-2 text-body text-content-muted">{empty.plays}</p>
+          <p className="mt-2 text-body text-content-muted">No plays yet.</p>
         )}
       </section>
 

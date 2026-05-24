@@ -10,7 +10,6 @@ import Duration from "@/components/Duration";
 import OutcomeRenderer from "@/components/outcomes/OutcomeRenderer";
 import { getInvocation } from "@/lib/api";
 import type { InvocationDetail } from "@/lib/api";
-import { errors } from "@/lib/copy";
 
 function shortId(id: string): string {
   return id.slice(0, 8);
@@ -34,7 +33,7 @@ export default function InvocationDetailPage() {
           setError(null);
         }
       } catch {
-        if (active) setError(errors.loadInvocation);
+        if (active) setError("Failed to load invocation");
       } finally {
         if (active) setLoading(false);
       }

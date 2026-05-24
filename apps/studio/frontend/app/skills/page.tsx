@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import Badge from "@/components/Badge";
 import { listSkills, getSkill } from "@/lib/api";
 import type { SkillSummary, SkillDetail } from "@/lib/api";
-import { empty } from "@/lib/copy";
 
 export default function SkillsPage() {
   const [skills, setSkills] = useState<SkillSummary[]>([]);
@@ -92,7 +91,7 @@ export default function SkillsPage() {
             <div className="px-3 py-4 text-body text-content-muted">Loading...</div>
           ) : filtered.length === 0 ? (
             <div className="px-3 py-4 text-body text-content-muted">
-              {filter ? empty.skillsFiltered : empty.skills}
+              {filter ? "No matching skills" : "No skills found"}
             </div>
           ) : (
             filtered.map((s) => (

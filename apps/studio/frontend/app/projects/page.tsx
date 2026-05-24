@@ -8,7 +8,6 @@ import PageHeader from "@/components/PageHeader";
 import Timestamp from "@/components/Timestamp";
 import { createProject, listProjects, type ProjectListResponse } from "@/lib/api";
 import type { ProjectSummary } from "@/lib/types";
-import { errors } from "@/lib/copy";
 
 // Source badge colours follow the same design vocabulary as StatusPill
 // but are simpler (no icon, static colours per source type).
@@ -50,7 +49,7 @@ function CreateProjectModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) {
-      setError(errors.nameRequired);
+      setError("Name is required.");
       return;
     }
     setSubmitting(true);
@@ -230,7 +229,7 @@ function ProjectsPageInner() {
       setData(result);
       setError(null);
     } catch {
-      setError(errors.loadProjects);
+      setError("Failed to load projects.");
     } finally {
       setLoading(false);
     }

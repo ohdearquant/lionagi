@@ -11,7 +11,6 @@ import Timestamp from "@/components/Timestamp";
 import { listRuns } from "@/lib/api";
 import type { RunListResponse } from "@/lib/api";
 import type { RunSummary } from "@/lib/types";
-import { errors } from "@/lib/copy";
 
 // ADR-0025: six-value session vocabulary (running/completed/failed/
 // timed_out/aborted/cancelled). "done" stays as an alias for completed
@@ -275,7 +274,7 @@ function RunsPageInner() {
           }
         }
       } catch {
-        if (active) setError(errors.loadRuns);
+        if (active) setError("Failed to load runs");
       } finally {
         if (active) setLoading(false);
       }

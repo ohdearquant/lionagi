@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
 import Badge from "@/components/Badge";
 import { listPlugins, getPlugin, getPluginSkill } from "@/lib/api";
 import type { PluginSummary, PluginDetail, PluginSkillDetail } from "@/lib/api";
-import { empty } from "@/lib/copy";
 
 const Markdown = dynamic(() => import("@/components/Markdown"), { ssr: false });
 
@@ -64,7 +63,7 @@ function PluginList({
           <div className="px-3 py-4 text-body text-content-muted">Loading...</div>
         ) : filtered.length === 0 ? (
           <div className="px-3 py-4 text-body text-content-muted">
-            {filter ? empty.pluginsFiltered : empty.plugins}
+            {filter ? "No matching plugins" : "No plugins found"}
           </div>
         ) : (
           filtered.map((p) => (

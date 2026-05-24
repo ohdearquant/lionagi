@@ -16,7 +16,6 @@ import {
   type ScheduleListResponse,
 } from "@/lib/api";
 import type { ScheduleRunSummary, ScheduleSummary } from "@/lib/types";
-import { empty, errors } from "@/lib/copy";
 
 // ─── Badge helpers ────────────────────────────────────────────────────────────
 
@@ -439,7 +438,7 @@ function CreateScheduleModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.name.trim()) {
-      setError(errors.nameRequired);
+      setError("Name is required.");
       return;
     }
     setSubmitting(true);
@@ -740,7 +739,7 @@ function EmptyState({ onNew }: { onNew: () => void }) {
       <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full border border-edge bg-surface-raised text-content-muted text-xl">
         ◷
       </div>
-      <p className="mb-1 text-body font-medium text-content-secondary">{empty.schedules}</p>
+      <p className="mb-1 text-body font-medium text-content-secondary">No schedules yet</p>
       <p className="mb-4 text-meta text-content-muted">
         Create a schedule to automate agent runs on cron, interval, or GitHub events.
       </p>
@@ -787,7 +786,7 @@ function SchedulesPageInner() {
         setRunsLoading(false);
       }
     } catch {
-      setError(errors.loadSchedules);
+      setError("Failed to load schedules.");
     } finally {
       setLoading(false);
     }

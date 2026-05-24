@@ -8,7 +8,6 @@ import PageHeader from "@/components/PageHeader";
 import Timestamp from "@/components/Timestamp";
 import { deleteProject, getProject, updateProject } from "@/lib/api";
 import type { ProjectDetail } from "@/lib/types";
-import { errors } from "@/lib/copy";
 
 // Source badge colours mirror the list page
 const SOURCE_CLASS: Record<string, string> = {
@@ -212,7 +211,7 @@ function ProjectDetailInner({ params }: { params: Promise<{ name: string }> }) {
           setError(null);
         }
       } catch {
-        if (active) setError(errors.loadProject);
+        if (active) setError("Failed to load project.");
       } finally {
         if (active) setLoading(false);
       }

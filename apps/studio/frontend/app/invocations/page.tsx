@@ -9,7 +9,6 @@ import Timestamp from "@/components/Timestamp";
 import Duration from "@/components/Duration";
 import { listInvocations } from "@/lib/api";
 import type { InvocationListResponse } from "@/lib/api";
-import { errors } from "@/lib/copy";
 
 const LIMIT = 25;
 
@@ -47,7 +46,7 @@ export default function InvocationsPage() {
           setError(null);
         }
       } catch {
-        if (active) setError(errors.loadInvocations);
+        if (active) setError("Failed to load invocations");
       } finally {
         if (active) setLoading(false);
       }
