@@ -147,14 +147,14 @@ Most direct URLs are unchanged; two need transitions:
 | `/agents` | Library | top nav | Library › Agents | — |
 | `/plugins` | Library | top nav | Library › Plugins | — |
 | `/skills` | Library | exists (`apps/studio/frontend/app/skills/page.tsx`) but not in top nav | Library › Skills | promote to nav |
-| `/admin` | — | top nav lands at combined page | replaced | **301** → `/admin/health` for one release |
+| `/admin` | — | top nav lands at combined page | replaced | **308** → `/admin/health` for one release |
 | `/admin/health` | Admin | (new) | Admin › Health | new route (extracted from `/admin`) |
 | `/admin/maintenance` | Admin | (new) | Admin › Maintenance | new route (extracted from `/admin`) |
 
 Two real route changes:
 
 1. **`/admin` splits.** The combined page becomes two routes
-   (`/admin/health` and `/admin/maintenance`). A 301 redirect from
+   (`/admin/health` and `/admin/maintenance`). A 308 redirect from
    `/admin` → `/admin/health` lives in `next.config.mjs` for one
    release; the redirect can be removed in the release after.
 2. **`/skills` becomes nav-promoted.** The page already exists, so
@@ -245,12 +245,12 @@ apps/studio/frontend/components/nav/Breadcrumb.tsx      # new: above page conten
 apps/studio/frontend/components/nav/types.ts            # NavGroup, NavItem types
 apps/studio/frontend/components/Shell.tsx               # consume new nav structure
 apps/studio/frontend/app/layout.tsx                     # nav composition
-apps/studio/frontend/app/admin/page.tsx                 # delete: replaced by 301
+apps/studio/frontend/app/admin/page.tsx                 # delete: replaced by 308 redirect
 apps/studio/frontend/app/admin/health/page.tsx          # new: extracted health view
 apps/studio/frontend/app/admin/maintenance/page.tsx     # new: extracted maintenance view
 apps/studio/frontend/app/skills/page.tsx                # existing — no code change,
                                                         # only nav-level promotion
-apps/studio/frontend/next.config.mjs                    # add 301 redirect:
+apps/studio/frontend/next.config.mjs                    # add 308 (permanent) redirect:
                                                         #   /admin -> /admin/health
                                                         # (remove the redirect one
                                                         #  release later)
@@ -287,7 +287,7 @@ renders SKILL.md frontmatter — similar to the existing Playbooks page.
 - No backend changes; entirely a frontend reshuffle.
 
 - Most direct URLs are byte-stable. The only exception is `/admin`,
-  which 301-redirects to `/admin/health` for one release before being
+  which 308-redirects to `/admin/health` for one release before being
   removed. Bookmarks and CLI URL output continue to work.
 
 **Negative**
