@@ -6,6 +6,7 @@ import PageHeader from "@/components/PageHeader";
 import Timestamp from "@/components/Timestamp";
 import { getTeam } from "@/lib/api";
 import type { TeamDetail } from "@/lib/api";
+import { errors } from "@/lib/copy";
 
 function JsonTree({ value }: { value: unknown }) {
   return (
@@ -21,19 +22,14 @@ function TeamMessages({ messages }: { messages: unknown[] }) {
       {messages.map((msg, i) => {
         const m = msg as Record<string, unknown>;
         return (
-          <div
-            key={i}
-            className="rounded border border-edge bg-surface-overlay p-3 text-body"
-          >
+          <div key={i} className="rounded border border-edge bg-surface-overlay p-3 text-body">
             <div className="mb-1 flex items-center gap-3 text-meta text-content-muted">
               <span className="font-mono">{String(m.from ?? "?")}</span>
               <span>→</span>
               <span className="font-mono">{String(m.to ?? "?")}</span>
               {m.timestamp != null && <Timestamp value={m.timestamp as string | number | null} />}
             </div>
-            {m.content != null && (
-              <div className="text-content-secondary">{String(m.content)}</div>
-            )}
+            {m.content != null && <div className="text-content-secondary">{String(m.content)}</div>}
           </div>
         );
       })}
@@ -52,10 +48,21 @@ export default function TeamDetailPage({ params }: { params: Promise<{ id: strin
   useEffect(() => {
     let active = true;
     getTeam(teamId)
-      .then((d) => { if (active) { setTeam(d); setError(null); } })
-      .catch(() => { if (active) setError("Team not found"); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
+      .then((d) => {
+        if (active) {
+          setTeam(d);
+          setError(null);
+        }
+      })
+      .catch(() => {
+        if (active) setError(errors.teamNotFound);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [teamId]);
 
   if (loading) {
@@ -84,11 +91,7 @@ export default function TeamDetailPage({ params }: { params: Promise<{ id: strin
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 animate-page-enter">
-      <PageHeader
-        title={String(team.name ?? teamId)}
-        subtitle="Teams"
-        density="tight"
-      />
+      <PageHeader title={String(team.name ?? teamId)} subtitle="Teams" density="tight" />
 
       <div className="flex flex-wrap gap-x-5 gap-y-1 rounded border border-edge bg-surface-overlay px-4 py-2.5 text-meta text-content-muted">
         <span>
@@ -103,7 +106,9 @@ export default function TeamDetailPage({ params }: { params: Promise<{ id: strin
           </span>
         )}
         {team.created_at != null && (
-          <span>Created <Timestamp value={team.created_at as string | number} /></span>
+          <span>
+            Created <Timestamp value={team.created_at as string | number} />
+          </span>
         )}
       </div>
 

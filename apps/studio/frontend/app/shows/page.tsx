@@ -6,6 +6,7 @@ import Badge from "@/components/Badge";
 import Table, { type TableColumn } from "@/components/Table";
 import { listShows } from "@/lib/api";
 import type { ShowSummary } from "@/lib/types";
+import { empty } from "@/lib/copy";
 
 function formatLastUpdate(ts: number | string | null): string {
   if (!ts) return "—";
@@ -101,7 +102,7 @@ export default function ShowsPage() {
       <Table
         data={shows}
         columns={columns}
-        emptyMessage={loading ? "Loading shows..." : "No shows found."}
+        emptyMessage={loading ? empty.loadingShows : empty.shows}
         getRowKey={(row) => row.topic}
         onRowClick={(row) => router.push(`/shows/${encodeURIComponent(row.topic)}`)}
       />

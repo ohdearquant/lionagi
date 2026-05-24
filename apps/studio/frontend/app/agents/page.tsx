@@ -14,6 +14,7 @@ import {
 } from "@/lib/api";
 import type { DefinitionDetail, DefinitionVersion } from "@/lib/api";
 import type { AgentProfile, AgentProfileSummary } from "@/lib/types";
+import { empty, errors } from "@/lib/copy";
 
 // ─── Frontmatter parsing ──────────────────────────────────────────────────────
 
@@ -103,7 +104,7 @@ function FrontmatterEditForm({ content, onChange }: FrontmatterEditFormProps) {
     } else {
       onChange(body);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fm, body]);
 
   function setField(key: keyof ParsedFrontmatter, value: unknown) {
@@ -118,7 +119,9 @@ function FrontmatterEditForm({ content, onChange }: FrontmatterEditFormProps) {
           {/* Model + Effort group */}
           <div className="flex items-end gap-3">
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">Model</span>
+              <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">
+                Model
+              </span>
               <input
                 type="text"
                 value={typeof fm.model === "string" ? fm.model : ""}
@@ -128,7 +131,9 @@ function FrontmatterEditForm({ content, onChange }: FrontmatterEditFormProps) {
               />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">Effort</span>
+              <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">
+                Effort
+              </span>
               <select
                 value={typeof fm.effort === "string" ? fm.effort : ""}
                 onChange={(e) => setField("effort", e.target.value || undefined)}
@@ -149,7 +154,9 @@ function FrontmatterEditForm({ content, onChange }: FrontmatterEditFormProps) {
           {/* Permission + toggles group */}
           <div className="flex items-end gap-3">
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">Permission</span>
+              <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">
+                Permission
+              </span>
               <select
                 value={typeof fm.permission_mode === "string" ? fm.permission_mode : ""}
                 onChange={(e) => setField("permission_mode", e.target.value || undefined)}
@@ -169,7 +176,9 @@ function FrontmatterEditForm({ content, onChange }: FrontmatterEditFormProps) {
                 onChange={(e) => setField("yolo", e.target.checked || undefined)}
                 className="h-3.5 w-3.5 rounded border-edge accent-interactive-primary"
               />
-              <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">Yolo</span>
+              <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">
+                Yolo
+              </span>
             </label>
             <label className="flex items-center gap-1.5 h-[34px] cursor-pointer select-none">
               <input
@@ -178,7 +187,9 @@ function FrontmatterEditForm({ content, onChange }: FrontmatterEditFormProps) {
                 onChange={(e) => setField("lion_system", e.target.checked || undefined)}
                 className="h-3.5 w-3.5 rounded border-edge accent-interactive-primary"
               />
-              <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">Lion System</span>
+              <span className="text-[10px] uppercase tracking-[0.08em] text-content-muted font-medium">
+                Lion System
+              </span>
             </label>
           </div>
         </div>
@@ -276,7 +287,7 @@ function AgentList({
           <div className="px-3 py-4 text-meta text-content-muted">Loading...</div>
         ) : filtered.length === 0 ? (
           <div className="px-3 py-4 text-meta text-content-muted">
-            {searchQuery ? "No agents match filter." : "No agents found."}
+            {searchQuery ? empty.agentsFiltered : empty.agents}
           </div>
         ) : (
           filtered.map((agent) => {
@@ -552,10 +563,7 @@ function AgentDetail({ agentName, agentProfile }: AgentDetailProps) {
               Loading version...
             </div>
           ) : editing ? (
-            <FrontmatterEditForm
-              content={editContent}
-              onChange={setEditContent}
-            />
+            <FrontmatterEditForm content={editContent} onChange={setEditContent} />
           ) : (
             <StructuredContentView content={displayContent} />
           )}
@@ -640,7 +648,9 @@ function VersionHistory({
   const sorted = [...versions].sort((a, b) => b.version - a.version);
 
   return (
-    <div className={`flex shrink-0 flex-col border-l border-edge transition-all ${sorted.length === 0 ? "w-36" : "w-56"}`}>
+    <div
+      className={`flex shrink-0 flex-col border-l border-edge transition-all ${sorted.length === 0 ? "w-36" : "w-56"}`}
+    >
       <div className="border-b border-edge px-3 py-2">
         <span className="text-meta font-medium uppercase tracking-[0.06em] text-content-muted">
           Version History

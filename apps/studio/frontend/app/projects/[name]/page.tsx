@@ -6,28 +6,21 @@ import { useRouter } from "next/navigation";
 import Button from "@/components/Button";
 import PageHeader from "@/components/PageHeader";
 import Timestamp from "@/components/Timestamp";
-import {
-  deleteProject,
-  getProject,
-  updateProject,
-} from "@/lib/api";
+import { deleteProject, getProject, updateProject } from "@/lib/api";
 import type { ProjectDetail } from "@/lib/types";
+import { errors } from "@/lib/copy";
 
 // Source badge colours mirror the list page
 const SOURCE_CLASS: Record<string, string> = {
-  config:
-    "border-status-running/40 bg-status-running-bg text-status-running",
-  override:
-    "border-status-warning/40 bg-status-warning-bg text-status-warning",
+  config: "border-status-running/40 bg-status-running-bg text-status-running",
+  override: "border-status-warning/40 bg-status-warning-bg text-status-warning",
   git: "border-status-selected/40 bg-status-selected-bg text-status-selected",
-  studio:
-    "border-status-success/40 bg-status-success-bg text-status-success",
+  studio: "border-status-success/40 bg-status-success-bg text-status-success",
 };
 
 function SourceBadge({ source }: { source: string }) {
   const cls =
-    SOURCE_CLASS[source.toLowerCase()] ??
-    "border-edge bg-surface-overlay text-content-secondary";
+    SOURCE_CLASS[source.toLowerCase()] ?? "border-edge bg-surface-overlay text-content-secondary";
   return (
     <span
       className={[
@@ -52,18 +45,14 @@ function UsageTable({
   if (rows.length === 0) {
     return (
       <section className="flex flex-col gap-2">
-        <h2 className="font-mono text-[13px] font-semibold text-content-primary">
-          {title}
-        </h2>
+        <h2 className="font-mono text-[13px] font-semibold text-content-primary">{title}</h2>
         <p className="text-meta text-content-muted">None recorded.</p>
       </section>
     );
   }
   return (
     <section className="flex flex-col gap-2">
-      <h2 className="font-mono text-[13px] font-semibold text-content-primary">
-        {title}
-      </h2>
+      <h2 className="font-mono text-[13px] font-semibold text-content-primary">{title}</h2>
       <div className="overflow-x-auto rounded border border-edge bg-surface-raised">
         <table className="w-full text-left text-body">
           <thead>
@@ -78,9 +67,7 @@ function UsageTable({
                 key={r.name}
                 className="border-b border-edge-subtle text-content-secondary hover:bg-surface-overlay transition-colors duration-100"
               >
-                <td className="px-3 py-2 font-mono text-[12px] text-content-primary">
-                  {r.name}
-                </td>
+                <td className="px-3 py-2 font-mono text-[12px] text-content-primary">{r.name}</td>
                 <td className="px-3 py-2 tabular-nums">{r.count}</td>
               </tr>
             ))}
@@ -129,17 +116,13 @@ function EditForm({
 
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="font-mono text-[13px] font-semibold text-content-primary">
-        Edit Project
-      </h2>
+      <h2 className="font-mono text-[13px] font-semibold text-content-primary">Edit Project</h2>
       <form
         onSubmit={(e) => void handleSubmit(e)}
         className="flex flex-col gap-3 rounded border border-edge bg-surface-raised p-4"
       >
         <label className="flex flex-col gap-1">
-          <span className="text-meta text-content-secondary font-medium">
-            GitHub URL
-          </span>
+          <span className="text-meta text-content-secondary font-medium">GitHub URL</span>
           <input
             type="url"
             value={github}
@@ -149,9 +132,7 @@ function EditForm({
           />
         </label>
         <label className="flex flex-col gap-1">
-          <span className="text-meta text-content-secondary font-medium">
-            Description
-          </span>
+          <span className="text-meta text-content-secondary font-medium">Description</span>
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
@@ -161,9 +142,7 @@ function EditForm({
           />
         </label>
         {error && <p className="text-meta text-status-error">{error}</p>}
-        {saved && (
-          <p className="text-meta text-status-success">Saved.</p>
-        )}
+        {saved && <p className="text-meta text-status-success">Saved.</p>}
         <div className="flex justify-end">
           <Button variant="primary" type="submit" disabled={submitting}>
             {submitting ? "Saving..." : "Save"}
@@ -174,13 +153,7 @@ function EditForm({
   );
 }
 
-function DeleteButton({
-  name,
-  onDeleted,
-}: {
-  name: string;
-  onDeleted: () => void;
-}) {
+function DeleteButton({ name, onDeleted }: { name: string; onDeleted: () => void }) {
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -202,19 +175,10 @@ function DeleteButton({
     return (
       <div className="flex items-center gap-2">
         <span className="text-meta text-content-muted">Delete &ldquo;{name}&rdquo;?</span>
-        <Button
-          variant="danger"
-          size="sm"
-          disabled={deleting}
-          onClick={() => void handleDelete()}
-        >
+        <Button variant="danger" size="sm" disabled={deleting} onClick={() => void handleDelete()}>
           {deleting ? "Deleting..." : "Confirm"}
         </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setConfirming(false)}
-        >
+        <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
           Cancel
         </Button>
         {error && <span className="text-meta text-status-error">{error}</span>}
@@ -248,7 +212,7 @@ function ProjectDetailInner({ params }: { params: Promise<{ name: string }> }) {
           setError(null);
         }
       } catch {
-        if (active) setError("Failed to load project.");
+        if (active) setError(errors.loadProject);
       } finally {
         if (active) setLoading(false);
       }
@@ -277,10 +241,7 @@ function ProjectDetailInner({ params }: { params: Promise<{ name: string }> }) {
         <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
           {error ?? "Project not found."}
         </div>
-        <Link
-          href="/projects"
-          className="text-meta text-status-running hover:underline"
-        >
+        <Link href="/projects" className="text-meta text-status-running hover:underline">
           Back to Projects
         </Link>
       </main>
@@ -319,15 +280,11 @@ function ProjectDetailInner({ params }: { params: Promise<{ name: string }> }) {
         {/* Info card */}
         <div className="flex flex-col gap-3 rounded border border-edge bg-surface-raised p-4">
           {project.description && (
-            <p className="text-body text-content-secondary">
-              {project.description}
-            </p>
+            <p className="text-body text-content-secondary">{project.description}</p>
           )}
           {project.github && (
             <div className="flex flex-col gap-0.5">
-              <span className="text-meta text-content-muted font-medium">
-                GitHub
-              </span>
+              <span className="text-meta text-content-muted font-medium">GitHub</span>
               <a
                 href={project.github}
                 target="_blank"
@@ -340,18 +297,17 @@ function ProjectDetailInner({ params }: { params: Promise<{ name: string }> }) {
           )}
           {project.path && (
             <div className="flex flex-col gap-0.5">
-              <span className="text-meta text-content-muted font-medium">
-                Path
-              </span>
-              <span className="font-mono text-[11px] text-content-secondary truncate" title={project.path}>
+              <span className="text-meta text-content-muted font-medium">Path</span>
+              <span
+                className="font-mono text-[11px] text-content-secondary truncate"
+                title={project.path}
+              >
                 {project.path}
               </span>
             </div>
           )}
           <div className="flex flex-col gap-0.5">
-            <span className="text-meta text-content-muted font-medium">
-              Last seen
-            </span>
+            <span className="text-meta text-content-muted font-medium">Last seen</span>
             <span className="text-meta text-content-secondary">
               <Timestamp value={project.last_seen_at ?? project.updated_at} />
             </span>
@@ -361,9 +317,7 @@ function ProjectDetailInner({ params }: { params: Promise<{ name: string }> }) {
         {/* Stats card */}
         <div className="flex flex-col gap-3 rounded border border-edge bg-surface-raised p-4">
           <div className="flex flex-col gap-0.5">
-            <span className="text-meta text-content-muted font-medium">
-              Sessions
-            </span>
+            <span className="text-meta text-content-muted font-medium">Sessions</span>
             <Link
               href={`/runs?project=${encodeURIComponent(project.name)}`}
               className="text-xl font-semibold text-content-primary tabular-nums hover:text-status-running transition-colors"
@@ -373,18 +327,14 @@ function ProjectDetailInner({ params }: { params: Promise<{ name: string }> }) {
           </div>
           {project.running_count > 0 && (
             <div className="flex flex-col gap-0.5">
-              <span className="text-meta text-content-muted font-medium">
-                Running now
-              </span>
+              <span className="text-meta text-content-muted font-medium">Running now</span>
               <span className="text-xl font-semibold text-status-running tabular-nums">
                 {project.running_count}
               </span>
             </div>
           )}
           <div className="flex flex-col gap-0.5">
-            <span className="text-meta text-content-muted font-medium">
-              Created
-            </span>
+            <span className="text-meta text-content-muted font-medium">Created</span>
             <span className="text-meta text-content-secondary">
               <Timestamp value={project.created_at} />
             </span>
@@ -393,36 +343,20 @@ function ProjectDetailInner({ params }: { params: Promise<{ name: string }> }) {
       </div>
 
       {/* Usage tables */}
-      <UsageTable
-        title="Agents Used"
-        rows={agentRows}
-        nameLabel="Agent"
-      />
-      <UsageTable
-        title="Playbooks Used"
-        rows={playbookRows}
-        nameLabel="Playbook"
-      />
+      <UsageTable title="Agents Used" rows={agentRows} nameLabel="Agent" />
+      <UsageTable title="Playbooks Used" rows={playbookRows} nameLabel="Playbook" />
 
       {/* Editable controls */}
       {project.editable && (
-        <EditForm
-          project={project}
-          onSaved={(updated) => setProject(updated)}
-        />
+        <EditForm project={project} onSaved={(updated) => setProject(updated)} />
       )}
 
       {/* Delete (studio-managed only — source === "studio") */}
       {project.source === "studio" && (
         <section className="flex flex-col gap-2">
-          <h2 className="font-mono text-[13px] font-semibold text-content-primary">
-            Danger Zone
-          </h2>
+          <h2 className="font-mono text-[13px] font-semibold text-content-primary">Danger Zone</h2>
           <div className="rounded border border-status-error/30 bg-status-error-bg p-4">
-            <DeleteButton
-              name={project.name}
-              onDeleted={() => router.push("/projects")}
-            />
+            <DeleteButton name={project.name} onDeleted={() => router.push("/projects")} />
           </div>
         </section>
       )}
@@ -430,11 +364,7 @@ function ProjectDetailInner({ params }: { params: Promise<{ name: string }> }) {
   );
 }
 
-export default function ProjectDetailPage({
-  params,
-}: {
-  params: Promise<{ name: string }>;
-}) {
+export default function ProjectDetailPage({ params }: { params: Promise<{ name: string }> }) {
   return (
     <Suspense>
       <ProjectDetailInner params={params} />
