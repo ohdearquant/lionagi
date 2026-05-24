@@ -57,9 +57,13 @@ def _extract_repo_and_branches(show_md: str | None) -> tuple[str | None, str | N
     for line in show_md.splitlines():
         if line.strip().startswith("- Repo:"):
             repo = line.split(":", 1)[1].strip()
-        elif line.strip().startswith("- Integration branch:") or line.strip().startswith("- Integration:"):
+        elif line.strip().startswith("- Integration branch:") or line.strip().startswith(
+            "- Integration:"
+        ):
             integration = line.split(":", 1)[1].strip().split("(")[0].strip()
-        elif line.strip().startswith("- Base for final merge:") or line.strip().startswith("- Base:"):
+        elif line.strip().startswith("- Base for final merge:") or line.strip().startswith(
+            "- Base:"
+        ):
             base = line.split(":", 1)[1].strip()
     return repo, base, integration
 
@@ -167,20 +171,21 @@ async def get_show(topic: str) -> dict[str, Any] | None:
     if await _db_available():
         try:
             async with _open_db(_DB) as db:
-                cur = await db.execute(
-                    "SELECT * FROM shows WHERE topic = ?", (topic,)
-                )
+                cur = await db.execute("SELECT * FROM shows WHERE topic = ?", (topic,))
                 row = await cur.fetchone()
                 if row:
                     show_row = dict(row)
 
-                    play_cur = await db.execute("""
+                    play_cur = await db.execute(
+                        """
                         SELECT p.*, s.name AS session_name
                         FROM plays p
                         LEFT JOIN sessions s ON s.id = p.session_id
                         WHERE p.show_id = ?
                         ORDER BY p.sort_order, p.created_at
-                    """, (show_row["id"],))
+                    """,
+                        (show_row["id"],),
+                    )
                     play_rows = await play_cur.fetchall()
                     db_plays = [dict(r) for r in play_rows]
         except Exception:
@@ -190,29 +195,37 @@ async def get_show(topic: str) -> dict[str, Any] | None:
         plays = []
         for p in db_plays:
             play_dir = show_dir / p["name"]
-            plays.append({
-                "name": p["name"],
-                "meta": {
-                    "worktree": p["worktree"],
-                    "branch": p["branch"],
-                    "attempt": p["attempt"],
-                    "started_at": p["started_at"],
-                    "ended_at": p["ended_at"],
-                    "exit_code": p["exit_code"],
-                    "merged_at": p["merged_at"],
-                    "merge_sha": p["merge_sha"],
-                    "status": p["status"],
-                },
-                "verdict": {
-                    "gate_passed": bool(p["gate_passed"]) if p["gate_passed"] is not None else None,
-                    "feedback": p["gate_feedback"],
-                } if p["gate_passed"] is not None else _read_json(play_dir / "_verdict.json"),
-                "session_id": p["session_id"],
-                "session_name": p.get("session_name"),
-                "intent": _read_text(play_dir / "_intent.md"),
-                "updated_at": p["updated_at"],
-                "depends_on": json.loads(p["depends_on"]) if isinstance(p["depends_on"], str) else (p["depends_on"] or []),
-            })
+            plays.append(
+                {
+                    "name": p["name"],
+                    "meta": {
+                        "worktree": p["worktree"],
+                        "branch": p["branch"],
+                        "attempt": p["attempt"],
+                        "started_at": p["started_at"],
+                        "ended_at": p["ended_at"],
+                        "exit_code": p["exit_code"],
+                        "merged_at": p["merged_at"],
+                        "merge_sha": p["merge_sha"],
+                        "status": p["status"],
+                    },
+                    "verdict": {
+                        "gate_passed": bool(p["gate_passed"])
+                        if p["gate_passed"] is not None
+                        else None,
+                        "feedback": p["gate_feedback"],
+                    }
+                    if p["gate_passed"] is not None
+                    else _read_json(play_dir / "_verdict.json"),
+                    "session_id": p["session_id"],
+                    "session_name": p.get("session_name"),
+                    "intent": _read_text(play_dir / "_intent.md"),
+                    "updated_at": p["updated_at"],
+                    "depends_on": json.loads(p["depends_on"])
+                    if isinstance(p["depends_on"], str)
+                    else (p["depends_on"] or []),
+                }
+            )
     else:
         plays = []
         for play_dir in _play_dirs(show_dir):
@@ -222,12 +235,14 @@ async def get_show(topic: str) -> dict[str, Any] | None:
                 updated_at = play_dir.stat().st_mtime
             except OSError:
                 updated_at = None
-            plays.append({
-                "name": play_dir.name,
-                "meta": meta,
-                "verdict": verdict,
-                "updated_at": updated_at,
-            })
+            plays.append(
+                {
+                    "name": play_dir.name,
+                    "meta": meta,
+                    "verdict": verdict,
+                    "updated_at": updated_at,
+                }
+            )
 
     # F-A1-5 (ADR-0011 §"Show status provenance"): status_source mirrors the
     # derivation in list_shows() — "sqlite" when the row came from the DB,
@@ -255,6 +270,7 @@ async def import_shows() -> dict[str, int]:
         return {"shows_imported": 0, "plays_imported": 0}
 
     from lionagi.state.db import StateDB
+    from lionagi.state.reasons import PlayReasons, ShowReasons
 
     shows_count = 0
     plays_count = 0
@@ -267,9 +283,7 @@ async def import_shows() -> dict[str, int]:
             topic = show_path.name
             now = time.time()
 
-            cur = await db.db.execute(
-                "SELECT id FROM shows WHERE topic = ?", (topic,)
-            )
+            cur = await db.db.execute("SELECT id FROM shows WHERE topic = ?", (topic,))
             existing = await cur.fetchone()
             if existing:
                 show_id = existing["id"]
@@ -303,15 +317,59 @@ async def import_shows() -> dict[str, int]:
                 except OSError:
                     created_at = now
 
+                show_reason_code: str | None = None
+                show_reason_summary = ""
+                show_evidence_refs: list[dict[str, Any]] = []
+                if abort_file:
+                    show_reason_code = ShowReasons.ABORTED_OPERATOR
+                    show_reason_summary = "Show was imported with an operator abort marker."
+                    show_evidence_refs = [{"kind": "file", "path": str(show_path / "_ABORT")}]
+                elif final_verdict and final_verdict.get("show_passed"):
+                    show_reason_code = ShowReasons.COMPLETED_FINAL_GATE
+                    show_reason_summary = "Show was imported with a passing final gate verdict."
+                    show_evidence_refs = [
+                        {"kind": "file", "path": str(show_path / "_final_verdict.json")}
+                    ]
+                elif show_status == "completed":
+                    _log.warning(
+                        "show %s imported as completed without final gate evidence; "
+                        "no ADR-0028 reason code matched",
+                        topic,
+                    )
+
                 await db.db.execute(
                     """INSERT OR IGNORE INTO shows
                        (id, topic, goal, repo, base_branch, integration_branch,
                         status, show_dir, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (show_id, topic, goal, repo, base_branch, integration,
-                     show_status, str(show_path), created_at, now),
+                    (
+                        show_id,
+                        topic,
+                        goal,
+                        repo,
+                        base_branch,
+                        integration,
+                        show_status,
+                        str(show_path),
+                        created_at,
+                        now,
+                    ),
                 )
                 shows_count += 1
+
+                if show_reason_code is not None:
+                    await db.db.commit()
+                    await db.update_status(
+                        "show",
+                        show_id,
+                        new_status=show_status,
+                        reason_code=show_reason_code,
+                        reason_summary=show_reason_summary,
+                        evidence_refs=show_evidence_refs,
+                        source="system",
+                        actor="shows_import",
+                        metadata={"topic": topic},
+                    )
 
             for idx, play_dir in enumerate(_play_dirs(show_path)):
                 play_name = play_dir.name
@@ -349,12 +407,14 @@ async def import_shows() -> dict[str, int]:
                 ended_at = meta.get("ended_at")
                 if isinstance(started_at, str):
                     from datetime import datetime
+
                     try:
                         started_at = datetime.fromisoformat(started_at).timestamp()
                     except (ValueError, TypeError):
                         started_at = None
                 if isinstance(ended_at, str):
                     from datetime import datetime
+
                     try:
                         ended_at = datetime.fromisoformat(ended_at).timestamp()
                     except (ValueError, TypeError):
@@ -363,6 +423,7 @@ async def import_shows() -> dict[str, int]:
                 merged_at = meta.get("merged_at")
                 if isinstance(merged_at, str):
                     from datetime import datetime
+
                     try:
                         merged_at = datetime.fromisoformat(merged_at).timestamp()
                     except (ValueError, TypeError):
@@ -373,6 +434,59 @@ async def import_shows() -> dict[str, int]:
                 except OSError:
                     play_created = time.time()
 
+                imported_play_status = str(meta.get("status", "pending"))
+                play_attempt = int(meta.get("attempt", 1) or 1)
+
+                play_reason_code: str | None = None
+                play_reason_summary = ""
+                play_evidence_refs: list[dict[str, Any]] = []
+                if imported_play_status == "blocked":
+                    block_reason = meta.get("block_reason") or meta.get("blocked_reason")
+                    if block_reason == "invalid_deps":
+                        play_reason_code = PlayReasons.BLOCKED_INVALID_DEPS
+                        play_reason_summary = (
+                            "Play was imported as blocked because dependencies were invalid."
+                        )
+                    elif block_reason == "dep_failed":
+                        play_reason_code = PlayReasons.BLOCKED_DEP_FAILED
+                        play_reason_summary = (
+                            "Play was imported as blocked because a dependency failed."
+                        )
+                    else:
+                        _log.warning(
+                            "play %s/%s imported as blocked without invalid_deps or dep_failed "
+                            "evidence; no ADR-0028 reason code matched",
+                            topic,
+                            play_name,
+                        )
+                elif imported_play_status == "gate_failed" and gate_passed == 0:
+                    play_reason_code = PlayReasons.GATE_FAILED_VERDICT
+                    play_reason_summary = "Play was imported with a failing gate verdict."
+                    play_evidence_refs = [{"kind": "file", "path": str(play_dir / "_verdict.json")}]
+                elif imported_play_status == "escalated" and play_attempt >= 2:
+                    play_reason_code = PlayReasons.ESCALATED_GATE_TWICE
+                    play_reason_summary = (
+                        "Play was imported as escalated after a second gate failure."
+                    )
+                elif imported_play_status == "merged":
+                    play_reason_code = PlayReasons.MERGED_OK
+                    play_reason_summary = "Play was imported as merged."
+                elif imported_play_status not in {
+                    "pending",
+                    "running",
+                    "running_complete",
+                    "prepared",
+                    "gated",
+                    "redoing",
+                    "aborted_after_finish",
+                }:
+                    _log.warning(
+                        "play %s/%s imported with status %s but no ADR-0028 reason code matched",
+                        topic,
+                        play_name,
+                        imported_play_status,
+                    )
+
                 await db.db.execute(
                     """INSERT OR IGNORE INTO plays
                        (id, show_id, name, playbook, effort, status, attempt,
@@ -381,16 +495,45 @@ async def import_shows() -> dict[str, int]:
                         gate_passed, gate_feedback, depends_on,
                         sort_order, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (play_id, show_id, play_name, None,
-                     meta.get("effort"), meta.get("status", "pending"),
-                     meta.get("attempt", 1), session_id,
-                     started_at, ended_at, meta.get("exit_code"),
-                     meta.get("worktree"), meta.get("branch"),
-                     meta.get("merge_sha"), merged_at,
-                     gate_passed, gate_feedback, json.dumps([]),
-                     idx, play_created, play_created),
+                    (
+                        play_id,
+                        show_id,
+                        play_name,
+                        None,
+                        meta.get("effort"),
+                        imported_play_status,
+                        play_attempt,
+                        session_id,
+                        started_at,
+                        ended_at,
+                        meta.get("exit_code"),
+                        meta.get("worktree"),
+                        meta.get("branch"),
+                        meta.get("merge_sha"),
+                        merged_at,
+                        gate_passed,
+                        gate_feedback,
+                        json.dumps([]),
+                        idx,
+                        play_created,
+                        play_created,
+                    ),
                 )
                 plays_count += 1
+
+                if play_reason_code is not None:
+                    await db.db.commit()
+                    await db.update_status(
+                        "play",
+                        play_id,
+                        new_status=imported_play_status,
+                        reason_code=play_reason_code,
+                        reason_summary=play_reason_summary,
+                        evidence_refs=play_evidence_refs,
+                        source="system",
+                        actor="shows_import",
+                        metadata={"topic": topic, "play": play_name, "attempt": play_attempt},
+                    )
 
         await db.db.commit()
 
@@ -447,14 +590,14 @@ async def watch_show(topic: str) -> AsyncGenerator[str, None]:
             if await _db_available():
                 try:
                     async with _open_db(_DB) as db:
-                        cur = await db.execute(
-                            "SELECT status FROM shows WHERE topic = ?", (topic,)
-                        )
+                        cur = await db.execute("SELECT status FROM shows WHERE topic = ?", (topic,))
                         row = await cur.fetchone()
                         if row:
                             show_status = row["status"]
                 except Exception:
-                    _log.debug("watch_show DB status check failed for topic %r", topic, exc_info=True)
+                    _log.debug(
+                        "watch_show DB status check failed for topic %r", topic, exc_info=True
+                    )
             if show_status in _SHOW_TERMINAL_STATUSES:
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return

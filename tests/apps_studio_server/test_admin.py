@@ -1,4 +1,5 @@
 """Tests for #1014 admin doctor and prune endpoints."""
+
 from __future__ import annotations
 
 import asyncio
@@ -22,17 +23,21 @@ def _run(coro):
         loop.close()
 
 
-async def _seed_running_session(db_path: Path, session_id: str, artifacts_path: str | None = None) -> None:
+async def _seed_running_session(
+    db_path: Path, session_id: str, artifacts_path: str | None = None
+) -> None:
     async with StateDB(db_path) as db:
         pid = str(uuid.uuid4())
         await db.create_progression(pid)
-        await db.create_session({
-            "id": session_id,
-            "progression_id": pid,
-            "name": "test-session",
-            "status": "running",
-            "started_at": time.time(),
-        })
+        await db.create_session(
+            {
+                "id": session_id,
+                "progression_id": pid,
+                "name": "test-session",
+                "status": "running",
+                "started_at": time.time(),
+            }
+        )
         if artifacts_path is not None:
             await db.db.execute(
                 "UPDATE sessions SET artifacts_path = ? WHERE id = ?",
@@ -53,6 +58,7 @@ def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
     monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
 
     from apps.studio.server.app import app
+
     return TestClient(app)
 
 
@@ -212,6 +218,7 @@ def test_admin_transition_skips_non_running(tmp_path, monkeypatch):
 
 
 def test_admin_transition_requires_reason(tmp_path, monkeypatch):
+    """Omitting both reason_code and reason returns 400 (not 422)."""
     db_path = tmp_path / "state.db"
     client = _make_client(tmp_path, monkeypatch, db_path)
     r = client.post(
@@ -219,10 +226,9 @@ def test_admin_transition_requires_reason(tmp_path, monkeypatch):
         json={
             "session_ids": ["x"],
             "target_status": "failed",
-            "reason": "",
         },
     )
-    assert r.status_code == 422
+    assert r.status_code == 400
 
 
 def test_admin_transition_rejects_healthy_session(tmp_path, monkeypatch):
@@ -312,3 +318,99 @@ def test_admin_transition_guard_re_evaluates_health_per_call(tmp_path, monkeypat
     body = r2.json()
     assert body["transitioned"] == [sid]
     assert body["skipped"] == []
+
+
+# ─── ADR-0028: reason_code in TransitionBody ────────────────────────────────
+
+
+def test_admin_transition_with_reason_code_succeeds(tmp_path, monkeypatch):
+    """New-style clients can pass reason_code instead of deprecated reason."""
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    _run(_seed_running_session(db_path, sid))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.post(
+        "/api/admin/transition",
+        json={
+            "session_ids": [sid],
+            "target_status": "failed",
+            "reason_code": "run.failed.exception",
+            "reason_summary": "Operator forced failure after alert.",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["transitioned"] == [sid]
+    assert body["skipped"] == []
+
+    # Verify reason columns written and transition history recorded.
+    async def _check():
+        async with StateDB(db_path) as db:
+            row = await db.get_session(sid)
+            assert row["status"] == "failed"
+            assert row["status_reason_code"] == "run.failed.exception"
+            assert row["status_reason_summary"] == "Operator forced failure after alert."
+            cur = await db.db.execute(
+                "SELECT reason_code, previous_status, status FROM status_transitions WHERE entity_id = ?",
+                (sid,),
+            )
+            rows = await cur.fetchall()
+            assert len(rows) == 1
+            assert rows[0]["reason_code"] == "run.failed.exception"
+            assert rows[0]["previous_status"] == "running"
+            assert rows[0]["status"] == "failed"
+
+    _run(_check())
+
+
+def test_admin_transition_invalid_reason_code_returns_400(tmp_path, monkeypatch):
+    """An unrecognised reason_code returns HTTP 400 before touching the DB."""
+    db_path = tmp_path / "state.db"
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.post(
+        "/api/admin/transition",
+        json={
+            "session_ids": ["any"],
+            "target_status": "failed",
+            "reason_code": "not.a.real.code",
+        },
+    )
+    assert r.status_code == 400
+    assert "reason_code" in r.json()["detail"].lower() or "invalid" in r.json()["detail"].lower()
+
+
+def test_admin_transition_legacy_reason_backwards_compat(tmp_path, monkeypatch):
+    """Old clients that send only 'reason' (no reason_code) still succeed.
+
+    The router synthesises a reason_code from target_status and uses the
+    free-text 'reason' as reason_summary; a deprecation warning is logged.
+    """
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    _run(_seed_running_session(db_path, sid))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.post(
+        "/api/admin/transition",
+        json={
+            "session_ids": [sid],
+            "target_status": "aborted",
+            "reason": "Legacy client cleanup",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["transitioned"] == [sid]
+
+    # Verify that the synthesised reason code landed in the DB.
+    async def _check():
+        async with StateDB(db_path) as db:
+            row = await db.get_session(sid)
+            assert row["status"] == "aborted"
+            # aborted → RunReasons.ABORTED_USER
+            assert row["status_reason_code"] == "run.aborted.user"
+            assert row["status_reason_summary"] == "Legacy client cleanup"
+
+    _run(_check())

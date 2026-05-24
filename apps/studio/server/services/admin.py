@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 from lionagi.state.db import DEFAULT_DB_PATH
+from lionagi.state.reasons import SessionReasons
 
 from ._db import open_db as _open_db
 
@@ -261,13 +264,23 @@ async def health_report() -> dict[str, Any]:
 # so the API rejects the request before touching the DB.
 _ADMIN_TRANSITION_TARGETS: frozenset[str] = frozenset({"failed", "aborted", "cancelled"})
 
+# ADR-0028 §5: phantom classification → reason code mapping.
+_PHANTOM_REASON_CODES: dict[str, str] = {
+    "process_dead": SessionReasons.HEALTH_PHANTOM_PROCESS_DEAD,
+    "missing_artifacts": SessionReasons.HEALTH_PHANTOM_MISSING_ARTIFACTS,
+    "stale_lock": SessionReasons.HEALTH_ZOMBIE_STALE_LOCKS,
+}
+
 
 async def transition_sessions(
     session_ids: list[str],
     *,
     target_status: str,
-    reason: str,
+    reason_code: str,
+    reason_summary: str = "",
+    evidence_refs: list[dict[str, Any]] | None = None,
     actor: str = "admin",
+    legacy_reason: str | None = None,
 ) -> dict[str, Any]:
     """Mark running sessions terminal with an audit-log entry.
 
@@ -284,13 +297,17 @@ async def transition_sessions(
       clause to close the TOCTOU window between the pre-check read and the
       write.
     """
+    from lionagi.state.reasons import validate_reason_code
+
     if target_status not in _ADMIN_TRANSITION_TARGETS:
         raise ValueError(
             f"target_status must be one of {sorted(_ADMIN_TRANSITION_TARGETS)}; "
             f"got {target_status!r}"
         )
-    if not reason or not reason.strip():
-        raise ValueError("reason is required")
+    validate_reason_code(reason_code)
+    if reason_summary is None:
+        reason_summary = ""
+    evidence_refs = list(evidence_refs or [])
     if not session_ids:
         return {"transitioned": [], "skipped": [], "event_id": None}
     if not DEFAULT_DB_PATH.exists():
@@ -341,11 +358,29 @@ async def transition_sessions(
                     "Only unhealthy sessions may be force-transitioned."
                 )
 
+            # Phantom classification overrides the operator reason code when a
+            # concrete health cause is available (ADR-0028 §5).
+            phantom_reason = _classify_phantom(current, now=now, stale_seconds=3600)
+            effective_reason_code = reason_code
+            effective_reason_summary = reason_summary
+            effective_evidence_refs: list[dict[str, Any]] = list(evidence_refs)
+            if phantom_reason is not None:
+                effective_reason_code = _PHANTOM_REASON_CODES[phantom_reason]
+                effective_reason_summary = reason_summary or (
+                    f"Operator transitioned session after phantom classification: {phantom_reason}."
+                )
+                effective_evidence_refs.append(
+                    {"kind": "phantom_classification", "reason": phantom_reason, "session_id": sid}
+                )
+
             # UPDATE immediately after the health check to minimize the race
-            # window. The WHERE status='running' guard closes the residual
-            # TOCTOU: rowcount==0 means a concurrent transition already won.
+            # window. Reason columns are written in the same conditional UPDATE
+            # so they're atomic with the TOCTOU guard. The WHERE status='running'
+            # guard closes the residual TOCTOU: rowcount==0 means a concurrent
+            # transition already won.
             cur = await db.db.execute(
-                "UPDATE sessions SET status=?, ended_at=?, updated_at=? "
+                "UPDATE sessions SET status=?, ended_at=?, updated_at=?, "
+                "  status_reason_code=?, status_reason_summary=?, status_evidence_refs=? "
                 "WHERE id=? AND status='running'"
                 "  AND (last_message_at IS ? OR last_message_at = ?)"
                 "  AND (updated_at      IS ? OR updated_at      = ?)",
@@ -353,6 +388,9 @@ async def transition_sessions(
                     target_status,
                     now,
                     now,
+                    effective_reason_code,
+                    effective_reason_summary,
+                    json.dumps(effective_evidence_refs),
                     sid,
                     _snap_last_msg,
                     _snap_last_msg,
@@ -382,6 +420,36 @@ async def transition_sessions(
                         }
                     )
                 continue
+            # Log the transition to history. Separate commit is acceptable:
+            # status is already correct; this is append-only audit data.
+            await db.db.execute(
+                "INSERT INTO status_transitions "
+                "(id, entity_type, entity_id, previous_status, status, "
+                " reason_code, reason_summary, evidence_refs, "
+                " source, actor, created_at, metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    uuid.uuid4().hex,
+                    "session",
+                    sid,
+                    "running",
+                    target_status,
+                    effective_reason_code,
+                    effective_reason_summary,
+                    json.dumps(effective_evidence_refs),
+                    "admin",
+                    actor,
+                    now,
+                    json.dumps(
+                        {
+                            "legacy_reason": legacy_reason,
+                            "health": health.value,
+                            "process_alive": process_alive,
+                        }
+                    ),
+                ),
+            )
+            await db.db.commit()
             transitioned.append(sid)
 
         event_id = await db.insert_admin_event(
@@ -390,7 +458,10 @@ async def transition_sessions(
             actor=actor,
             details={
                 "target_status": target_status,
-                "reason": reason,
+                "reason_code": reason_code,
+                "reason_summary": reason_summary,
+                "evidence_refs": evidence_refs,
+                "reason": legacy_reason,
                 "transitioned": transitioned,
                 "skipped": skipped,
             },
