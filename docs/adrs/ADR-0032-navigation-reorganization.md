@@ -147,14 +147,14 @@ Most direct URLs are unchanged; two need transitions:
 | `/agents` | Library | top nav | Library › Agents | — |
 | `/plugins` | Library | top nav | Library › Plugins | — |
 | `/skills` | Library | exists (`apps/studio/frontend/app/skills/page.tsx`) but not in top nav | Library › Skills | promote to nav |
-| `/admin` | — | top nav lands at combined page | replaced | **301** → `/admin/health` for one release |
+| `/admin` | — | top nav lands at combined page | replaced | **308** → `/admin/health` for one release |
 | `/admin/health` | Admin | (new) | Admin › Health | new route (extracted from `/admin`) |
 | `/admin/maintenance` | Admin | (new) | Admin › Maintenance | new route (extracted from `/admin`) |
 
 Two real route changes:
 
 1. **`/admin` splits.** The combined page becomes two routes
-   (`/admin/health` and `/admin/maintenance`). A 301 redirect from
+   (`/admin/health` and `/admin/maintenance`). A 308 redirect from
    `/admin` → `/admin/health` lives in `next.config.mjs` for one
    release; the redirect can be removed in the release after.
 2. **`/skills` becomes nav-promoted.** The page already exists, so
@@ -201,12 +201,26 @@ The Admin page today bundles DB health (size, WAL, phantom sessions)
 with maintenance actions (prune, checkpoint, vacuum) on one screen.
 Split:
 
-- `/admin/health` — read-only view of current system state
-- `/admin/maintenance` — actions that mutate state (with
-  confirmations per ADR-0031's `EntityAction.requires_confirm`)
+- `/admin/health` — read-only view of current system state. Renders
+  the DB health strip and a read-only phantom sessions table (no
+  checkboxes, no action buttons). Includes a "Manage in Maintenance →"
+  link to the mutating surface.
+- `/admin/maintenance` — actions that mutate state (`prune selected`,
+  `prune all phantom`), each gated by a `window.confirm()` dialog
+  per the ADR-0031 `EntityAction.requires_confirm` pattern.
 
 The split clarifies which surface is "look" vs "act". Today the bundle
 makes routine inspection feel risky (the prune button is right there).
+
+**Scope clarification (v1):** Only `prune` lands as a maintenance
+action in v1 because the backend admin router currently exposes only
+`POST /api/admin/prune`. `checkpoint` and `vacuum` are deferred to a
+follow-up that first adds `POST /api/admin/checkpoint` and
+`POST /api/admin/vacuum` endpoints (today these operations exist as
+`li state checkpoint` / `li state vacuum` CLI subcommands, not as
+HTTP endpoints). When those endpoints land, this ADR is amended in
+place and the corresponding buttons join the Maintenance page with
+the same confirmation pattern.
 
 ### 7. Mobile / narrow-viewport behavior
 
@@ -231,12 +245,12 @@ apps/studio/frontend/components/nav/Breadcrumb.tsx      # new: above page conten
 apps/studio/frontend/components/nav/types.ts            # NavGroup, NavItem types
 apps/studio/frontend/components/Shell.tsx               # consume new nav structure
 apps/studio/frontend/app/layout.tsx                     # nav composition
-apps/studio/frontend/app/admin/page.tsx                 # delete: replaced by 301
+apps/studio/frontend/app/admin/page.tsx                 # delete: replaced by 308 redirect
 apps/studio/frontend/app/admin/health/page.tsx          # new: extracted health view
 apps/studio/frontend/app/admin/maintenance/page.tsx     # new: extracted maintenance view
 apps/studio/frontend/app/skills/page.tsx                # existing — no code change,
                                                         # only nav-level promotion
-apps/studio/frontend/next.config.mjs                    # add 301 redirect:
+apps/studio/frontend/next.config.mjs                    # add 308 (permanent) redirect:
                                                         #   /admin -> /admin/health
                                                         # (remove the redirect one
                                                         #  release later)
@@ -273,7 +287,7 @@ renders SKILL.md frontmatter — similar to the existing Playbooks page.
 - No backend changes; entirely a frontend reshuffle.
 
 - Most direct URLs are byte-stable. The only exception is `/admin`,
-  which 301-redirects to `/admin/health` for one release before being
+  which 308-redirects to `/admin/health` for one release before being
   removed. Bookmarks and CLI URL output continue to work.
 
 **Negative**
