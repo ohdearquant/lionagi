@@ -24,11 +24,12 @@ Profile format (YAML frontmatter + markdown body):
     You are an implementer. Write production code, not stubs...
 
 Frontmatter fields (all optional, CLI flags override):
-  model:       provider/model spec
-  effort:      reasoning effort level
-  yolo:        auto-approve tool calls
-  fast_mode:   route via OpenAI priority tier (codex only)
-  lion_system: prepend LION_SYSTEM_MESSAGE (default: true)
+  model:              provider/model spec
+  effort:             reasoning effort level
+  yolo:               auto-approve tool calls
+  fast_mode:          route via OpenAI priority tier (codex only)
+  lion_system:        prepend LION_SYSTEM_MESSAGE (default: true)
+  artifact_defaults:  ADR-0029 expected artifact defaults
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ class AgentProfile:
     yolo: bool = False
     fast_mode: bool = False
     lion_system: bool = True
+    artifact_defaults: dict | None = None
     extra: dict = field(default_factory=dict)
 
 
@@ -60,7 +62,7 @@ def _find_lionagi_dirs() -> list[Path]:
     # 1. Git root
     try:
         root = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            ["git", "rev-parse", "--show-toplevel"],  # noqa: S607 — git is expected on $PATH
             capture_output=True,
             text=True,
             timeout=5,
@@ -167,15 +169,13 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         if len(parts) >= 3:
             fm_text = parts[1].strip()
             body = parts[2].strip()
-            for line in fm_text.splitlines():
-                line = line.strip()
-                if ":" in line:
-                    key, _, val = line.partition(":")
-                    val = val.strip()
-                    if val.lower() in ("true", "false"):
-                        frontmatter[key.strip()] = val.lower() == "true"
-                    else:
-                        frontmatter[key.strip()] = val
+            if fm_text:
+                import yaml
+
+                loaded = yaml.safe_load(fm_text) or {}
+                if not isinstance(loaded, dict):
+                    loaded = {}
+                frontmatter = loaded
 
     lion_system = bool(frontmatter.get("lion_system", True))
     if lion_system:
@@ -191,9 +191,18 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         yolo=bool(frontmatter.get("yolo", False)),
         fast_mode=bool(frontmatter.get("fast_mode", False)),
         lion_system=lion_system,
+        artifact_defaults=frontmatter.get("artifact_defaults"),
         extra={
             k: v
             for k, v in frontmatter.items()
-            if k not in ("model", "effort", "yolo", "fast_mode", "lion_system")
+            if k
+            not in (
+                "model",
+                "effort",
+                "yolo",
+                "fast_mode",
+                "lion_system",
+                "artifact_defaults",
+            )
         },
     )

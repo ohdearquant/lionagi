@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { use, useEffect, useMemo, useRef, useState } from "react";
 import Badge from "@/components/Badge";
+import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
 import RunStepCard from "@/components/RunStepCard";
 import { getSession, streamSession } from "@/lib/api";
 import type { SessionDetail, SessionBranch, SessionMessage } from "@/lib/api";
@@ -527,7 +528,12 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
           | null
           | undefined;
         if (graph && graph.nodes && graph.nodes.length > 0) {
-          setRunGraph({ name: s.name || id, description: "", nodes: graph.nodes, edges: graph.edges });
+          setRunGraph({
+            name: s.name || id,
+            description: "",
+            nodes: graph.nodes,
+            edges: graph.edges,
+          });
         }
       })
       .catch((e: unknown) => setError(String(e)));
@@ -589,7 +595,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
 
   // Track active section on scroll
   useEffect(() => {
-    const sectionIds = ["overview", "dag", "branches", "errors", "files"];
+    const sectionIds = ["overview", "expected-artifacts", "dag", "branches", "errors", "files"];
     const onScroll = () => {
       for (const sid of [...sectionIds].reverse()) {
         const el = document.getElementById(sid);
@@ -617,9 +623,24 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
 
   // Segments from session metadata — maps op executions to branch time windows
   const segments = useMemo(() => {
-    if (!session) return [] as Array<{ op_id: string; branch_id: string; branch_name: string; status: string; started_at: number | null; ended_at: number | null }>;
+    if (!session)
+      return [] as Array<{
+        op_id: string;
+        branch_id: string;
+        branch_name: string;
+        status: string;
+        started_at: number | null;
+        ended_at: number | null;
+      }>;
     const raw = (session as unknown as Record<string, unknown>).segments;
-    return (Array.isArray(raw) ? raw : []) as Array<{ op_id: string; branch_id: string; branch_name: string; status: string; started_at: number | null; ended_at: number | null }>;
+    return (Array.isArray(raw) ? raw : []) as Array<{
+      op_id: string;
+      branch_id: string;
+      branch_name: string;
+      status: string;
+      started_at: number | null;
+      ended_at: number | null;
+    }>;
   }, [session]);
 
   const steps = useMemo(() => {
@@ -641,7 +662,11 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
             const before = seg.ended_at == null || ts <= seg.ended_at + 1;
             return after && before;
           });
-          const segBranch = { ...b, messages: segMsgs, name: `${b.name || b.id.slice(0, 8)} [${seg.op_id}]` };
+          const segBranch = {
+            ...b,
+            messages: segMsgs,
+            name: `${b.name || b.id.slice(0, 8)} [${seg.op_id}]`,
+          };
           result.push(branchToRunStep(segBranch, seg.status || bStatus || sessionStatus));
         }
       }
@@ -751,8 +776,12 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
       | undefined,
   };
 
+  const expectedArtifactsCount = session.artifact_contract_json?.expected?.length ?? 0;
   const navSections: NavSection[] = [
     { id: "overview", label: "Overview" },
+    ...(expectedArtifactsCount > 0
+      ? [{ id: "expected-artifacts", label: "Expected artifacts", count: expectedArtifactsCount }]
+      : []),
     ...(runGraph ? [{ id: "dag", label: "DAG", count: runGraph.nodes.length }] : []),
     { id: "branches", label: "Branches", count: session.branches.length },
     { id: "errors", label: "Errors", count: errors.length, errorTone: errors.length > 0 },
@@ -834,6 +863,10 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
         <main className="min-w-0 flex-1">
           <div className="flex flex-col gap-8">
             <OverviewSection data={overviewData} />
+            <ExpectedArtifacts
+              contract={session.artifact_contract_json}
+              verification={session.artifact_verification_json}
+            />
             {runGraph && (
               <div id="dag" className="scroll-mt-24">
                 <SectionHeader label="Execution DAG" count={runGraph.nodes.length} />

@@ -166,8 +166,8 @@ def add_orchestrate_subparser(
         default=None,
         help=(
             "Load playbook from ~/.lionagi/playbooks/<NAME>.playbook.yaml. "
-            "Playbooks may declare args: schema or argument-hint: for "
-            "CLI flags that fill template placeholders {name} in the prompt."
+            "Playbooks may declare args: schema, artifacts: contracts, "
+            "or argument-hint: placeholders for prompt template values."
         ),
     )
     fl.add_argument(
@@ -553,9 +553,7 @@ def _validate_spec_fields(spec: dict) -> str | None:
     if "workers" in spec:
         workers = spec["workers"]
         if not isinstance(workers, int) or isinstance(workers, bool):
-            return (
-                f"spec field 'workers' must be an integer, got {type(workers).__name__}"
-            )
+            return f"spec field 'workers' must be an integer, got {type(workers).__name__}"
         if not (1 <= workers <= 32):
             return f"spec field 'workers' must be in [1, 32], got {workers}"
 
@@ -591,7 +589,7 @@ def _validate_spec_fields(spec: dict) -> str | None:
     #   str   → synthesis model spec (flag with explicit value)
     if "with_synthesis" in spec:
         val = spec["with_synthesis"]
-        if not isinstance(val, (bool, str)):
+        if not isinstance(val, bool | str):
             return (
                 f"spec field 'with_synthesis' must be bool or str (model spec), "
                 f"got {type(val).__name__}"
@@ -621,12 +619,21 @@ def _validate_spec_fields(spec: dict) -> str | None:
             if not isinstance(val, str):
                 return f"spec field {str_field!r} must be a string, got {type(val).__name__}"
 
+    if "artifacts" in spec:
+        artifacts = spec["artifacts"]
+        if artifacts is None:
+            return "spec field 'artifacts' must be a dict, got NoneType"
+        try:
+            from lionagi.state.artifact_verifier import validate_artifact_contract
+
+            validate_artifact_contract(artifacts)
+        except Exception as exc:
+            return f"spec field 'artifacts' is invalid: {exc}"
+
     return None
 
 
-def _interpolate_prompt(
-    template: str, positional: str | None, playbook_args: dict
-) -> str:
+def _interpolate_prompt(template: str, positional: str | None, playbook_args: dict) -> str:
     """Interpolate {input} + all playbook args into the prompt template.
 
     - {input} substitution uses the positional prompt if present
@@ -718,6 +725,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
     if args.orch_command == "flow":
         # ── Resolve -p/--playbook NAME into a concrete file path ─────
         playbook_name = getattr(args, "playbook", None)
+        playbook_artifacts: dict | None = None
         file_spec = getattr(args, "file", None)
         if playbook_name and file_spec:
             log_error("pass either -p/--playbook or -f/--file, not both")
@@ -738,6 +746,8 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             if spec_err is not None:
                 log_error(spec_err)
                 return 1
+
+            playbook_artifacts = spec.get("artifacts")
 
             # ── Derive args schema: explicit args: block OR argument-hint fallback
             if "args" in spec:
@@ -764,9 +774,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 raw = getattr(args, name, None)
                 if raw is None:
                     continue
-                coerced, coerce_err = _coerce_arg_value(
-                    name, raw, field.get("type", "str")
-                )
+                coerced, coerce_err = _coerce_arg_value(name, raw, field.get("type", "str"))
                 if coerce_err is not None:
                     log_error(coerce_err)
                     return 1
@@ -774,11 +782,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
 
             # If the file supplies the model/agent, argparse's lone positional
             # is a prompt override, not a model override.
-            if (
-                args.model
-                and args.prompt is None
-                and (spec.get("model") or spec.get("agent"))
-            ):
+            if args.model and args.prompt is None and (spec.get("model") or spec.get("agent")):
                 args.prompt = args.model
                 args.model = None
             # File values are defaults; CLI flags override.
@@ -787,9 +791,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             if args.agent is None and spec.get("agent"):
                 args.agent = spec["agent"]
             if spec.get("prompt"):
-                args.prompt = _interpolate_prompt(
-                    spec["prompt"], args.prompt, playbook_ctx
-                )
+                args.prompt = _interpolate_prompt(spec["prompt"], args.prompt, playbook_ctx)
             if args.max_concurrent == 0 and spec.get("workers"):
                 args.max_concurrent = spec["workers"]
             if args.effort is None and spec.get("effort"):
@@ -832,10 +834,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             log_error("prompt is required (positional or via -f spec file)")
             return 1
 
-        if (
-            args.team_mode is not None
-            and getattr(args, "team_attach", None) is not None
-        ):
+        if args.team_mode is not None and getattr(args, "team_attach", None) is not None:
             log_error("--team-mode and --team-attach are mutually exclusive")
             return 1
 
@@ -913,6 +912,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     show_graph=getattr(args, "show_graph", False),
                     fast=getattr(args, "fast", False),
                     playbook_name=playbook_name,
+                    playbook_artifacts=playbook_artifacts,
                     invocation_id=getattr(args, "invocation", None),
                     project=getattr(args, "project", None),
                 )

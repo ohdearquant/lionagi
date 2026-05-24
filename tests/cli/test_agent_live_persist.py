@@ -182,9 +182,9 @@ async def test_setup_create_session_failure_closes_db(
         if _aiosqlite_thread_count() == before:
             break
         await asyncio.sleep(0.05)
-    assert (
-        _aiosqlite_thread_count() == before
-    ), "DB was not closed on setup failure — aiosqlite worker leaked"
+    assert _aiosqlite_thread_count() == before, (
+        "DB was not closed on setup failure — aiosqlite worker leaked"
+    )
 
     # Restore so other tests run clean.
     monkeypatch.setattr(StateDB, "create_session", original_create)
@@ -289,9 +289,9 @@ async def test_hook_swallows_db_write_failure(
         # MUST NOT raise.
         await ctx["hook"](msg)
 
-    assert any(
-        "live persist write failed" in rec.message for rec in caplog.records
-    ), "expected WARNING log on hook DB-write failure"
+    assert any("live persist write failed" in rec.message for rec in caplog.records), (
+        "expected WARNING log on hook DB-write failure"
+    )
 
     await _teardown_live_persist(ctx, status="completed")
 
@@ -444,9 +444,9 @@ async def test_setup_teardown_does_not_leak_aiosqlite_thread(
             if _aiosqlite_thread_count() <= baseline:
                 break
             await asyncio.sleep(0.05)
-        assert (
-            _aiosqlite_thread_count() <= baseline
-        ), "aiosqlite worker thread leaked across setup/teardown cycle"
+        assert _aiosqlite_thread_count() <= baseline, (
+            "aiosqlite worker thread leaked across setup/teardown cycle"
+        )
 
 
 # ── R5-A HIGH-2: NULL progression_id resume repair ────────────────────────────
@@ -554,7 +554,9 @@ async def test_setup_resume_repairs_null_branch_progression_id(
 
     # Fire a message — branch progression now actually receives it.
     msg = MessageManager.create_instruction(
-        instruction="post-repair", sender="u", recipient=str(branch.id),
+        instruction="post-repair",
+        sender="u",
+        recipient=str(branch.id),
     )
     await ctx["hook"](msg)
 
@@ -588,8 +590,7 @@ async def test_repair_branch_progression_returns_existing_id_under_race(
         sess_prog = str(uuid.uuid4())
         await legacy_db.create_progression(sess_prog)
         await legacy_db.db.execute(
-            "INSERT INTO sessions (id, created_at, progression_id, "
-            "updated_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO sessions (id, created_at, progression_id, updated_at) VALUES (?, ?, ?, ?)",
             (session_id, 0.0, sess_prog, 0.0),
         )
         await legacy_db.db.execute(
@@ -615,9 +616,7 @@ async def test_repair_branch_progression_returns_existing_id_under_race(
         # Caller B repairs second — UPDATE no-ops (column already set),
         # but the return value MUST be the winner's id, not B's local id.
         effective_b = await db.repair_branch_progression(branch_id, loser_id)
-        assert effective_b == winner_id, (
-            f"loser must adopt winner's id, got {effective_b!r}"
-        )
+        assert effective_b == winner_id, f"loser must adopt winner's id, got {effective_b!r}"
 
         # Spot-check the row really stored the winner's id.
         b = await db.get_branch(branch_id)
@@ -649,12 +648,14 @@ async def test_repair_session_progression_returns_existing_id_under_race(
         await db.create_progression(loser_id)
 
         effective_a = await db.repair_session_progression(
-            session_id, winner_id,
+            session_id,
+            winner_id,
         )
         assert effective_a == winner_id
 
         effective_b = await db.repair_session_progression(
-            session_id, loser_id,
+            session_id,
+            loser_id,
         )
         assert effective_b == winner_id
 
@@ -686,8 +687,7 @@ async def test_setup_resume_repairs_null_session_progression_id(
         )
         # Branch row with a valid branch progression.
         await legacy_db.db.execute(
-            "INSERT INTO branches (id, created_at, session_id, "
-            "progression_id) VALUES (?, ?, ?, ?)",
+            "INSERT INTO branches (id, created_at, session_id, progression_id) VALUES (?, ?, ?, ?)",
             (branch_id, 0.0, session_id, branch_prog),
         )
         await legacy_db.db.commit()
@@ -698,7 +698,9 @@ async def test_setup_resume_repairs_null_session_progression_id(
     assert ctx["session_prog_id"] is not None
 
     msg = MessageManager.create_instruction(
-        instruction="hi", sender="u", recipient=str(branch.id),
+        instruction="hi",
+        sender="u",
+        recipient=str(branch.id),
     )
     await ctx["hook"](msg)
 
@@ -709,3 +711,125 @@ async def test_setup_resume_repairs_null_session_progression_id(
     assert str(msg.id) in sprog
 
     await _teardown_live_persist(ctx, status="completed")
+
+
+# ── ADR-0029: artifact contract snapshot and verification ─────────────────────
+
+
+async def test_setup_persists_artifact_contract(temp_db_path: Path):
+    """artifact_contract passed to setup is stored in the session row."""
+    branch = Branch(name="b1")
+    contract = {"expected": [{"id": "report", "path": "report.md"}]}
+
+    ctx = await _setup_live_persist(
+        branch,
+        agent_name="researcher",
+        artifact_contract=contract,
+    )
+    assert ctx is not None
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    stored = s["artifact_contract_json"]
+    assert isinstance(stored, dict), f"expected dict, got {type(stored)}"
+    assert stored["expected"][0]["id"] == "report"
+
+    await _teardown_live_persist(ctx, status="completed")
+
+
+async def test_teardown_verification_passes_when_artifact_present(
+    temp_db_path: Path, tmp_path: Path
+):
+    """Clean completion with required artifact present → status passed, session completed."""
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    (artifacts_dir / "report.md").write_text("report content")
+
+    branch = Branch(name="b1")
+    contract = {"expected": [{"id": "report", "path": "report.md"}]}
+
+    ctx = await _setup_live_persist(
+        branch,
+        agent_name="researcher",
+        artifacts_path=str(artifacts_dir),
+        artifact_contract=contract,
+    )
+    assert ctx is not None
+    await _teardown_live_persist(ctx, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed"
+    v = s["artifact_verification_json"]
+    assert isinstance(v, dict)
+    assert v["status"] == "passed"
+
+
+async def test_teardown_verification_fails_flips_status(temp_db_path: Path, tmp_path: Path):
+    """Clean completion with missing required artifact → status flipped to failed."""
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    # deliberately NOT creating report.md
+
+    branch = Branch(name="b1")
+    contract = {"expected": [{"id": "report", "path": "report.md"}]}
+
+    ctx = await _setup_live_persist(
+        branch,
+        agent_name="researcher",
+        artifacts_path=str(artifacts_dir),
+        artifact_contract=contract,
+    )
+    assert ctx is not None
+    await _teardown_live_persist(ctx, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+    assert s["status_reason_code"] == "run.failed.missing_artifact"
+    # Evidence refs include the missing artifact entry (stored as JSON string).
+    import json as _json
+
+    evidence_raw = s["status_evidence_refs"]
+    evidence = _json.loads(evidence_raw) if isinstance(evidence_raw, str) else evidence_raw
+    assert isinstance(evidence, list)
+    assert any(e.get("id") == "report" for e in evidence)
+    v = s["artifact_verification_json"]
+    assert isinstance(v, dict)
+    assert v["status"] == "failed"
+
+
+async def test_teardown_verification_preserves_non_completed_reason(
+    temp_db_path: Path, tmp_path: Path
+):
+    """Missing artifact on a failed (non-completed) run keeps original reason."""
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    # deliberately NOT creating report.md
+
+    branch = Branch(name="b1")
+    contract = {"expected": [{"id": "report", "path": "report.md"}]}
+
+    ctx = await _setup_live_persist(
+        branch,
+        agent_name="researcher",
+        artifacts_path=str(artifacts_dir),
+        artifact_contract=contract,
+    )
+    assert ctx is not None
+    exc = RuntimeError("simulated failure")
+    await _teardown_live_persist(ctx, status="failed", exception=exc)
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+    # Original exception reason preserved — NOT overridden by artifact code.
+    assert s["status_reason_code"] == "run.failed.exception"
+    # Verification still ran and is stored.
+    v = s["artifact_verification_json"]
+    assert isinstance(v, dict)
+    assert v["status"] == "failed"

@@ -220,10 +220,7 @@ class TestSpecValidationAcceptsValidFields:
 
     def test_valid_booleans(self):
         assert (
-            _validate_spec_fields(
-                {"bare": True, "dry_run": False, "with_synthesis": True}
-            )
-            is None
+            _validate_spec_fields({"bare": True, "dry_run": False, "with_synthesis": True}) is None
         )
 
     def test_valid_prompt(self):
@@ -394,3 +391,64 @@ async def test_run_flow_inner_rejects_plan_over_200_ops(tmp_path):
     )
 
     assert "200" in output or "Invalid plan" in output
+
+
+# ── ADR-0029: artifacts: field validation in _validate_spec_fields ────────────
+
+
+class TestArtifactsFieldValidation:
+    def test_valid_artifacts_passes(self):
+        spec = {
+            "model": "codex/gpt-4o",
+            "prompt": "do it",
+            "artifacts": {"expected": [{"id": "report", "path": "report.md"}]},
+        }
+        assert _validate_spec_fields(spec) is None
+
+    def test_none_artifacts_rejected(self):
+        spec = {"model": "x", "prompt": "p", "artifacts": None}
+        err = _validate_spec_fields(spec)
+        assert err is not None
+        assert "artifacts" in err
+
+    def test_absolute_path_in_artifacts_rejected(self):
+        spec = {
+            "model": "x",
+            "prompt": "p",
+            "artifacts": {"expected": [{"id": "x", "path": "/etc/passwd"}]},
+        }
+        err = _validate_spec_fields(spec)
+        assert err is not None
+        assert "artifacts" in err.lower() or "absolute" in err.lower()
+
+    def test_glob_in_artifact_path_rejected(self):
+        spec = {
+            "model": "x",
+            "prompt": "p",
+            "artifacts": {"expected": [{"id": "x", "path": "*.md"}]},
+        }
+        err = _validate_spec_fields(spec)
+        assert err is not None
+
+    def test_duplicate_id_in_artifacts_rejected(self):
+        spec = {
+            "model": "x",
+            "prompt": "p",
+            "artifacts": {
+                "expected": [
+                    {"id": "report", "path": "report.md"},
+                    {"id": "report", "path": "other.md"},
+                ]
+            },
+        }
+        err = _validate_spec_fields(spec)
+        assert err is not None
+
+    def test_non_bool_required_in_artifacts_rejected(self):
+        spec = {
+            "model": "x",
+            "prompt": "p",
+            "artifacts": {"expected": [{"id": "x", "path": "x.md", "required": "yes"}]},
+        }
+        err = _validate_spec_fields(spec)
+        assert err is not None

@@ -35,6 +35,11 @@ from lionagi import Branch, Session
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
+from lionagi.state.artifact_verifier import (
+    missing_artifact_evidence,
+    missing_artifact_summary,
+    verify_artifact_contract,
+)
 
 from .._agents import AgentProfile, load_agent_profile
 from .._logging import hint
@@ -42,15 +47,14 @@ from .._providers import build_imodel_from_spec, resolve_persisted_effort
 from .._runs import RunDir, allocate_run, save_last_branch_pointer
 
 
-def _resolve_session_model(
-    provider: str | None, model: str | None
-) -> str | None:
+def _resolve_session_model(provider: str | None, model: str | None) -> str | None:
     """ADR-0022: canonical 'provider/model' for the session.model column.
 
     Thin wrapper over :func:`provenance.resolve_model_spec` so callers
     don't repeat the import. Returns None when both args are None.
     """
     return _provenance.resolve_model_spec(provider, model)
+
 
 __all__ = (
     "OrchestrationEnv",
@@ -261,9 +265,7 @@ def setup_orchestration(
             fast = True
 
     if not model_spec:
-        raise ValueError(
-            "Provide a model spec or use -a/--agent to load a profile with a model."
-        )
+        raise ValueError("Provide a model spec or use -a/--agent to load a profile with a model.")
 
     orc_imodel = build_imodel_from_spec(
         model_spec,
@@ -398,9 +400,7 @@ def build_worker_branch(
     w_imodel.endpoint.config.kwargs["repo"] = artifact_dir
     # Grant write access to the actual project directory so workers can
     # edit source files, not just their artifact sandbox.
-    project_root = (
-        str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
-    )
+    project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
     w_imodel.endpoint.config.kwargs.setdefault("add_dir", [])
     if project_root not in w_imodel.endpoint.config.kwargs["add_dir"]:
         w_imodel.endpoint.config.kwargs["add_dir"].append(project_root)
@@ -498,7 +498,9 @@ def finalize_orchestration(
         except Exception as exc:  # noqa: BLE001
             log.warning(
                 "finalize: branch snapshot write failed for %s: %s",
-                branch.id, exc, exc_info=True,
+                branch.id,
+                exc,
+                exc_info=True,
             )
 
     if extras:
@@ -526,6 +528,7 @@ async def start_live_persist(
     playbook_name: str | None = None,
     agent_name: str | None = None,
     artifacts_path: str | None = None,
+    artifact_contract: dict[str, Any] | None = None,
     invocation_id: str | None = None,
     model: str | None = None,
     provider: str | None = None,
@@ -576,6 +579,7 @@ async def start_live_persist(
                 "playbook_name": playbook_name,
                 "agent_name": agent_name,
                 "artifacts_path": artifacts_path,
+                "artifact_contract_json": artifact_contract,
                 "status": "running",
                 "started_at": time.time(),
                 # ADR-0020: optional skill orchestration parent
@@ -599,6 +603,8 @@ async def start_live_persist(
             "session_prog_id": session_prog_id,
             "branch_prog_ids": {},
             "hooks": [],
+            "artifacts_path": artifacts_path,
+            "artifact_contract": artifact_contract,
         }
         env._live_persist = ctx
 
@@ -676,9 +682,7 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
                 ep_cfg = branch.chat_model.endpoint.config
                 br_provider = getattr(ep_cfg, "provider", None)
                 br_model_raw = (ep_cfg.kwargs or {}).get("model")
-                br_model = _provenance.resolve_model_spec(
-                    br_provider, br_model_raw
-                )
+                br_model = _provenance.resolve_model_spec(br_provider, br_model_raw)
             except Exception as _provenance_exc:  # noqa: BLE001
                 # Provenance is best-effort — never block the branch row.
                 import logging
@@ -719,9 +723,7 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
             await db.append_to_progression(branch_prog_id, msg_id)
             await db.append_to_progression(session_prog_id, msg_id)
             # ADR-0019: activity heartbeat for staleness detection.
-            await db.touch_session_activity(
-                session_id, at=msg_dict.get("created_at")
-            )
+            await db.touch_session_activity(session_id, at=msg_dict.get("created_at"))
             # ADR-0009: keep branches.system_msg_id pointing at the
             # current system if the runtime replaces it mid-flow.
             if msg_dict.get("role") == "system":
@@ -744,6 +746,7 @@ async def stop_live_persist(
     env: OrchestrationEnv,
     *,
     status: str = "completed",
+    exception: BaseException | None = None,
 ) -> None:
     """Update session bookmarks, lifecycle columns, and close DB.
 
@@ -761,10 +764,10 @@ async def stop_live_persist(
     db = ctx["db"]
     try:
         session_prog_id = ctx["session_prog_id"]
+        session_id = ctx["session_id"]
 
         all_msgs = await db.get_progression(session_prog_id)
         update_kwargs: dict[str, Any] = {
-            "status": status,
             "ended_at": time.time(),
         }
         if all_msgs:
@@ -775,15 +778,62 @@ async def stop_live_persist(
         if extras:
             update_kwargs["node_metadata"] = json.dumps(extras)
 
-        await db.update_session(ctx["session_id"], **update_kwargs)
+        await db.update_session(session_id, **update_kwargs)
+
+        from lionagi.cli.agent import _resolve_run_reason
+
+        reason_code, reason_summary, evidence_refs = _resolve_run_reason(
+            status=status,
+            exception=exception,
+        )
+        metadata: dict[str, Any] | None = None
+        if exception is not None:
+            metadata = {"exception_class": type(exception).__name__}
+
+        session_row = await db.get_session(session_id) or {}
+        verification = verify_artifact_contract(
+            session_row.get("artifact_contract_json"),
+            artifacts_root=session_row.get("artifacts_path"),
+        )
+        await db.update_artifact_verification(session_id, verification)
+
+        final_status = status
+        final_reason_code = reason_code
+        final_reason_summary = reason_summary
+        final_evidence_refs = evidence_refs
+        if verification and verification["status"] == "failed":
+            missing = verification["missing_required"]
+            if status == "completed":
+                from lionagi.state.reasons import RunReasons
+
+                final_status = "failed"
+                final_reason_code = RunReasons.FAILED_MISSING_ARTIFACT
+                final_reason_summary = missing_artifact_summary(missing)
+                final_evidence_refs = missing_artifact_evidence(missing)
+            else:
+                metadata = dict(metadata or {})
+                metadata["artifact_verification_status"] = verification["status"]
+                metadata["missing_required_artifact_ids"] = [
+                    str(entry.get("id", "")) for entry in missing
+                ]
+
+        await db.update_status(
+            "session",
+            session_id,
+            new_status=final_status,
+            reason_code=final_reason_code,
+            reason_summary=final_reason_summary,
+            evidence_refs=final_evidence_refs,
+            source="executor",
+            actor=session_id,
+            metadata=metadata,
+        )
 
         # Remove ALL matching registrations of each hook (list.remove
         # would only drop the first; a duplicate registration would
         # leave a closed-DB hook live).
         for branch, hook in ctx["hooks"]:
-            branch.on_message_added[:] = [
-                h for h in branch.on_message_added if h is not hook
-            ]
+            branch.on_message_added[:] = [h for h in branch.on_message_added if h is not hook]
     except Exception as exc:
         log.warning("live persist teardown failed: %s", exc, exc_info=True)
     finally:

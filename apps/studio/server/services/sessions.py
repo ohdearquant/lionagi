@@ -11,9 +11,7 @@ from ._db import open_db as _open_db
 
 _DB = str(DEFAULT_DB_PATH)
 
-SESSION_TERMINAL_STATUSES = frozenset(
-    {"completed", "failed", "timed_out", "aborted", "cancelled"}
-)
+SESSION_TERMINAL_STATUSES = frozenset({"completed", "failed", "timed_out", "aborted", "cancelled"})
 SESSION_DONE_STABLE_SECS = 60.0
 
 
@@ -51,24 +49,28 @@ def _graph_from_metadata(raw: str | None) -> dict[str, Any] | None:
         depends_on = op.get("depends_on", [])
         if not isinstance(depends_on, list):
             depends_on = []
-        nodes.append({
-            "id": op["id"],
-            "label": op["id"],
-            "role": agent.get("name", ""),
-            "assignment": agent.get("model", ""),
-            "prompt": "",
-            "capacity": 1,
-            "timeout": None,
-            "inputs": depends_on,
-            "outputs": [],
-        })
+        nodes.append(
+            {
+                "id": op["id"],
+                "label": op["id"],
+                "role": agent.get("name", ""),
+                "assignment": agent.get("model", ""),
+                "prompt": "",
+                "capacity": 1,
+                "timeout": None,
+                "inputs": depends_on,
+                "outputs": [],
+            }
+        )
         for dep in depends_on:
-            edges.append({
-                "id": f"e-{dep}-{op['id']}",
-                "source": dep,
-                "target": op["id"],
-                "mode": "simple",
-            })
+            edges.append(
+                {
+                    "id": f"e-{dep}-{op['id']}",
+                    "source": dep,
+                    "target": op["id"],
+                    "mode": "simple",
+                }
+            )
     return {"nodes": nodes, "edges": edges} if nodes else None
 
 
@@ -109,6 +111,9 @@ async def list_sessions() -> list[dict[str, Any]]:
                 s.invocation_kind,
                 s.show_topic,
                 s.show_play_name,
+                s.artifacts_path,
+                s.artifact_contract_json,
+                s.artifact_verification_json,
                 s.source_kind,
                 s.status,
                 s.started_at,
@@ -161,7 +166,10 @@ async def list_sessions() -> list[dict[str, Any]]:
             "invocation_kind": row["invocation_kind"],
             "show_topic": row["show_topic"],
             "show_play_name": row["show_play_name"],
+            "artifacts_path": row["artifacts_path"],
             "source_kind": row["source_kind"] or "live",
+            "artifact_contract_json": _parse_json_col(row["artifact_contract_json"]),
+            "artifact_verification_json": _parse_json_col(row["artifact_verification_json"]),
             # ADR-0026: project detection.
             "project": row["project"],
             "project_source": row["project_source"],
@@ -180,8 +188,9 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
             # ADR-0022: include provenance columns (model/provider/effort/agent_hash)
             """SELECT id, name, created_at, updated_at,
                       playbook_name, agent_name, invocation_kind,
-                      show_topic, show_play_name, artifacts_path, source_kind,
-                      status, started_at, ended_at,
+                      show_topic, show_play_name, artifacts_path,
+                      artifact_contract_json, artifact_verification_json,
+                      source_kind, status, started_at, ended_at,
                       model, provider, effort, agent_hash, invocation_id,
                       node_metadata, project, project_source
                FROM sessions WHERE id = ?""",
@@ -285,6 +294,8 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
         "show_topic": session_row["show_topic"],
         "show_play_name": session_row["show_play_name"],
         "artifacts_path": session_row["artifacts_path"],
+        "artifact_contract_json": _parse_json_col(session_row["artifact_contract_json"]),
+        "artifact_verification_json": _parse_json_col(session_row["artifact_verification_json"]),
         "source_kind": session_row["source_kind"] or "live",
         "status": session_row["status"] or "completed",
         "started_at": started_at,
