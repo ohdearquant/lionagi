@@ -1,6 +1,8 @@
 import type {
   AgentProfile,
   AgentProfileSummary,
+  ArtifactContract,
+  ArtifactVerification,
   DeclarativeArgSpec,
   DeclarativePlaybookData,
   PlaybookFormat,
@@ -386,6 +388,9 @@ export interface SessionDetail {
   effort?: string | null;
   agent_hash?: string | null;
   invocation_id?: string | null;
+  // ADR-0029: artifact contract and verification result.
+  artifact_contract_json?: ArtifactContract | null;
+  artifact_verification_json?: ArtifactVerification | null;
 }
 
 export async function listSessions(): Promise<{ sessions: SessionSummary[] }> {

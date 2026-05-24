@@ -359,6 +359,9 @@ class StateDB:
             ("status_reason_code", "TEXT"),
             ("status_reason_summary", "TEXT"),
             ("status_evidence_refs", "JSON"),
+            # ADR-0029: resolved artifact contract and teardown result.
+            ("artifact_contract_json", "JSON"),
+            ("artifact_verification_json", "JSON"),
         ],
         "branches": [
             ("system_msg_id", "TEXT"),
@@ -515,7 +518,10 @@ class StateDB:
                   -- preserves these columns when migrating from ADR-0017.
                   status_reason_code     TEXT,
                   status_reason_summary  TEXT,
-                  status_evidence_refs   JSON
+                  status_evidence_refs   JSON,
+                  -- ADR-0029: artifact contract snapshot and verification.
+                  artifact_contract_json      JSON,
+                  artifact_verification_json  JSON
                 )
                 """
             )
@@ -702,12 +708,13 @@ class StateDB:
             """INSERT OR IGNORE INTO sessions (id, created_at, node_metadata, name, user,
                progression_id, first_msg_id, last_msg_id, updated_at,
                playbook_name, agent_name, invocation_kind, show_topic,
-               show_play_name, artifacts_path, source_kind,
+               show_play_name, artifacts_path, artifact_contract_json,
+               artifact_verification_json, source_kind,
                status, started_at, ended_at, last_message_at, invocation_id,
                model, provider, effort, agent_hash,
                project, project_source)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session["id"],
                 session.get("created_at", now),
@@ -726,6 +733,8 @@ class StateDB:
                 session.get("show_topic"),
                 session.get("show_play_name"),
                 session.get("artifacts_path"),
+                _to_json_column(session.get("artifact_contract_json")),
+                _to_json_column(session.get("artifact_verification_json")),
                 session.get("source_kind", "live"),
                 session.get("status"),
                 session.get("started_at"),
@@ -816,6 +825,17 @@ class StateDB:
         await self.db.execute(
             f"UPDATE sessions SET {sets} WHERE id = ?",  # noqa: S608
             vals,
+        )
+        await self.db.commit()
+
+    async def update_artifact_verification(
+        self,
+        session_id: str,
+        verification: dict[str, Any] | None,
+    ) -> None:
+        await self.db.execute(
+            "UPDATE sessions SET artifact_verification_json = ?, updated_at = ? WHERE id = ?",
+            (_to_json_column(verification), time.time(), session_id),
         )
         await self.db.commit()
 
@@ -1972,6 +1992,8 @@ class StateDB:
             "action_extra_args",
             "trigger_context",
             "action_args",
+            "artifact_contract_json",
+            "artifact_verification_json",
         ):
             if key in d and isinstance(d[key], str):
                 try:

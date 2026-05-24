@@ -69,6 +69,66 @@ def _print_playbook_help(name: str) -> int:
     return 0
 
 
+def _handle_play_check(argv: list[str]) -> int:
+    """`li play check <name>` — ADR-0029 §9 pre-flight contract validation.
+
+    Loads the playbook, resolves its artifact contract (no agent defaults
+    available in this thin path — playbook contract only), runs
+    :func:`lionagi.state.artifact_verifier.validate_artifact_contract`,
+    and pretty-prints the result. Does not fire the playbook.
+    """
+    if not argv or argv[0].startswith("-"):
+        print("Usage: li play check <name>")
+        return 1
+    name = argv[0]
+
+    from lionagi.cli.orchestrate import _load_flow_spec, _resolve_playbook_path
+    from lionagi.state.artifact_verifier import (
+        ArtifactPathError,
+        resolve_artifact_contract,
+    )
+
+    path, err = _resolve_playbook_path(name)
+    if err is not None:
+        log_error(err)
+        return 1
+    spec = _load_flow_spec(str(path))
+    if not isinstance(spec, dict):
+        log_error(f"could not parse playbook spec at {path}")
+        return 1
+
+    artifacts_block = spec.get("artifacts")
+    if not artifacts_block:
+        print(f"playbook '{name}': no `artifacts:` block declared (verification skipped).")
+        return 0
+
+    try:
+        resolved = resolve_artifact_contract(
+            playbook_artifacts=artifacts_block,
+            agent_defaults=None,
+        )
+    except ArtifactPathError as exc:
+        log_error(f"playbook '{name}' artifact contract invalid: {exc}")
+        return 1
+
+    if resolved is None:
+        print(f"playbook '{name}': empty contract (no expected artifacts).")
+        return 0
+
+    expected = resolved.get("expected", [])
+    required = [e for e in expected if e.get("required", True)]
+    optional = [e for e in expected if not e.get("required", True)]
+    print(f"playbook '{name}' artifact contract:")
+    print(f"  expected: {len(expected)} ({len(required)} required, {len(optional)} optional)")
+    for e in expected:
+        flag = "REQUIRED" if e.get("required", True) else "OPTIONAL"
+        src = e.get("source", "?")
+        desc = e.get("description") or ""
+        suffix = f" — {desc}" if desc else ""
+        print(f"  [{flag}] {e['id']}  →  {e['path']}  (from {src}){suffix}")
+    return 0
+
+
 def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
     """Expand `li play` sugar into `li o flow -p NAME ...`.
 
@@ -89,15 +149,18 @@ def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
         if not root.is_dir():
             print(f"(no playbooks directory at {root})")
             return 0
-        names = sorted(
-            p.name.removesuffix(".playbook.yaml") for p in root.glob("*.playbook.yaml")
-        )
+        names = sorted(p.name.removesuffix(".playbook.yaml") for p in root.glob("*.playbook.yaml"))
         if not names:
             print(f"(no playbooks in {root})")
             return 0
         for name in names:
             print(name)
         return 0
+    if head == "check":
+        # ADR-0029 §9: pre-flight artifact-contract validation.
+        # `li play check <name>` loads the playbook, resolves its
+        # artifact contract, and prints the result without firing.
+        return _handle_play_check(rest[1:])
     if head.startswith("-"):
         log_error("li play NAME must come before flags")
         return 1

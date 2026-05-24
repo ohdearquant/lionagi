@@ -12,6 +12,12 @@ from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.ln.concurrency import run_async
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
+from lionagi.state.artifact_verifier import (
+    missing_artifact_evidence,
+    missing_artifact_summary,
+    resolve_artifact_contract,
+    verify_artifact_contract,
+)
 
 from ._agents import load_agent_profile
 from ._logging import hint, log_error
@@ -133,10 +139,15 @@ async def _run_agent(
     # ``model_spec`` here is the canonical ``provider/model`` string built
     # right above this block — no aliases, no defaults yet to apply.
     resolved_model_spec = _provenance.resolve_model_spec(provider, model)
+    artifact_contract = resolve_artifact_contract(
+        playbook_artifacts=None,
+        agent_defaults=profile.artifact_defaults if profile else None,
+    )
     live = await _setup_live_persist(
         branch,
         agent_name=agent_name,
         artifacts_path=str(run.artifact_root),
+        artifact_contract=artifact_contract,
         invocation_id=invocation_id,
         model=resolved_model_spec,
         provider=provider,
@@ -225,6 +236,7 @@ async def _setup_live_persist(
     *,
     agent_name: str | None = None,
     artifacts_path: str | None = None,
+    artifact_contract: dict | None = None,
     invocation_id: str | None = None,
     model: str | None = None,
     provider: str | None = None,
@@ -320,6 +332,7 @@ async def _setup_live_persist(
                     "invocation_kind": "agent",
                     "agent_name": agent_name,
                     "artifacts_path": artifacts_path,
+                    "artifact_contract_json": artifact_contract,
                     "status": "running",
                     "started_at": time.time(),
                     # ADR-0020: optional skill-level orchestration parent.
@@ -381,6 +394,8 @@ async def _setup_live_persist(
             "branch_prog_id": branch_prog_id,
             "existing_msg_ids": existing_msg_ids,
             "new_msg_ids": [],
+            "artifacts_path": artifacts_path,
+            "artifact_contract": artifact_contract,
         }
 
         async def _on_message(msg):
@@ -528,13 +543,43 @@ async def _teardown_live_persist(
         metadata: dict | None = None
         if exception is not None:
             metadata = {"exception_class": type(exception).__name__}
+
+        session_row = await db.get_session(session_id) or {}
+        contract = session_row.get("artifact_contract_json")
+        artifacts_root = session_row.get("artifacts_path")
+        verification = verify_artifact_contract(
+            contract,
+            artifacts_root=artifacts_root,
+        )
+        await db.update_artifact_verification(session_id, verification)
+
+        final_status = status
+        final_reason_code = reason_code
+        final_reason_summary = reason_summary
+        final_evidence_refs = evidence_refs
+        if verification and verification["status"] == "failed":
+            missing = verification["missing_required"]
+            if status == "completed":
+                from lionagi.state.reasons import RunReasons
+
+                final_status = "failed"
+                final_reason_code = RunReasons.FAILED_MISSING_ARTIFACT
+                final_reason_summary = missing_artifact_summary(missing)
+                final_evidence_refs = missing_artifact_evidence(missing)
+            else:
+                metadata = dict(metadata or {})
+                metadata["artifact_verification_status"] = verification["status"]
+                metadata["missing_required_artifact_ids"] = [
+                    str(entry.get("id", "")) for entry in missing
+                ]
+
         await db.update_status(
             "session",
             session_id,
-            new_status=status,
-            reason_code=reason_code,
-            reason_summary=reason_summary,
-            evidence_refs=evidence_refs,
+            new_status=final_status,
+            reason_code=final_reason_code,
+            reason_summary=final_reason_summary,
+            evidence_refs=final_evidence_refs,
             source="executor",
             actor=session_id,
             metadata=metadata,

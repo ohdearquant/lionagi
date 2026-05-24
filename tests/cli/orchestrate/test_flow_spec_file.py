@@ -120,9 +120,7 @@ class TestLoadFlowSpec:
         result = _load_flow_spec(str(p))
         assert result == spec
 
-    def test_lone_positional_overrides_prompt_when_spec_supplies_model(
-        self, tmp_path, capsys
-    ):
+    def test_lone_positional_overrides_prompt_when_spec_supplies_model(self, tmp_path, capsys):
         p = tmp_path / "spec.yaml"
         p.write_text(yaml.dump({"model": "claude-code/opus-4-7"}))
         args = _parse_flow_args(["-f", str(p), "Write the thing"])
@@ -346,9 +344,7 @@ class TestPlaybookEndToEnd:
             )
         )
         monkeypatch.setenv("HOME", str(tmp_path))
-        args = _parse_flow_args(
-            ["-p", "audit", "--tabs", "7", "--poll", "audit the auth service"]
-        )
+        args = _parse_flow_args(["-p", "audit", "--tabs", "7", "--poll", "audit the auth service"])
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
@@ -470,9 +466,7 @@ class TestPlaybookEndToEnd:
         assert code == 1
         assert "Usage" in capsys.readouterr().out
 
-    def test_playbook_arg_collision_does_not_leak_into_template(
-        self, monkeypatch, tmp_path
-    ):
+    def test_playbook_arg_collision_does_not_leak_into_template(self, monkeypatch, tmp_path):
         """A playbook arg that collides with a built-in flag must NOT have
         its value read from the base argparse default during interpolation.
         The filtered schema (from parser injection) is authoritative.
@@ -498,9 +492,7 @@ class TestPlaybookEndToEnd:
         monkeypatch.setenv("HOME", str(tmp_path))
         # User passes --save /some/dir (built-in), NOT the playbook arg.
         save_dir = tmp_path / "artifacts"
-        args = _parse_flow_args(
-            ["-p", "collider", "--save", str(save_dir), "do the thing"]
-        )
+        args = _parse_flow_args(["-p", "collider", "--save", str(save_dir), "do the thing"])
 
         with patch(
             "lionagi.cli.orchestrate._run_flow",
@@ -516,8 +508,7 @@ class TestPlaybookEndToEnd:
         # default if run_orchestrate falls through. Assert the built-in
         # --save value did NOT leak into the template.
         assert str(save_dir) not in prompt, (
-            "Built-in --save value leaked into template via "
-            "collision-shadowed playbook arg"
+            "Built-in --save value leaked into template via collision-shadowed playbook arg"
         )
 
     def test_max_ops_flag_passes_through(self, monkeypatch, tmp_path):
@@ -571,9 +562,7 @@ class TestPlaybookEndToEnd:
         assert code == 0
         assert run_flow.call_args.kwargs["max_ops"] == 8
 
-    def test_playbook_max_agents_deprecated_spec_still_works(
-        self, monkeypatch, tmp_path
-    ):
+    def test_playbook_max_agents_deprecated_spec_still_works(self, monkeypatch, tmp_path):
         """Playbooks with legacy `max_agents:` field must still cap ops."""
         playbooks_dir = tmp_path / ".lionagi" / "playbooks"
         playbooks_dir.mkdir(parents=True)
@@ -703,3 +692,67 @@ class TestPlaybookEndToEnd:
 
         code = run_orchestrate(args)
         assert code == 1
+
+
+# ── ADR-0029: artifacts: block pass-through ───────────────────────────────────
+
+
+class TestPlaybookArtifactsPassThrough:
+    def test_artifacts_block_passed_to_run_flow(self, monkeypatch, tmp_path):
+        """A playbook with artifacts: block passes playbook_artifacts to _run_flow."""
+        playbooks_dir = tmp_path / ".lionagi" / "playbooks"
+        playbooks_dir.mkdir(parents=True)
+        (playbooks_dir / "research.playbook.yaml").write_text(
+            yaml.dump(
+                {
+                    "model": "codex/gpt-4o",
+                    "prompt": "Research the topic.",
+                    "artifacts": {
+                        "expected": [
+                            {"id": "report", "path": "report.md"},
+                        ]
+                    },
+                }
+            )
+        )
+        monkeypatch.setenv("HOME", str(tmp_path))
+        args = _parse_flow_args(["-p", "research", "do it"])
+
+        with patch(
+            "lionagi.cli.orchestrate._run_flow",
+            AsyncMock(return_value="done"),
+        ) as run_flow:
+            code = run_orchestrate(args)
+
+        assert code == 0
+        call_kwargs = run_flow.call_args.kwargs
+        pa = call_kwargs.get("playbook_artifacts")
+        assert pa is not None
+        assert isinstance(pa, dict)
+        assert pa["expected"][0]["id"] == "report"
+
+    def test_no_artifacts_block_passes_none(self, monkeypatch, tmp_path):
+        """A playbook without artifacts: passes None to _run_flow."""
+        playbooks_dir = tmp_path / ".lionagi" / "playbooks"
+        playbooks_dir.mkdir(parents=True)
+        (playbooks_dir / "basic.playbook.yaml").write_text(
+            yaml.dump(
+                {
+                    "model": "codex/gpt-4o",
+                    "prompt": "Do the task.",
+                }
+            )
+        )
+        monkeypatch.setenv("HOME", str(tmp_path))
+        args = _parse_flow_args(["-p", "basic", "do it"])
+
+        with patch(
+            "lionagi.cli.orchestrate._run_flow",
+            AsyncMock(return_value="done"),
+        ) as run_flow:
+            code = run_orchestrate(args)
+
+        assert code == 0
+        call_kwargs = run_flow.call_args.kwargs
+        pa = call_kwargs.get("playbook_artifacts")
+        assert pa is None

@@ -195,6 +195,9 @@ async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
             "artifacts_path",
             "source_kind",
             "updated_at",
+            # ADR-0029: new artifact columns must be reconciled on old DBs.
+            "artifact_contract_json",
+            "artifact_verification_json",
         ):
             assert must_have in cols, f"sessions.{must_have} not migrated"
         cur = await db.db.execute("PRAGMA table_info(branches)")
@@ -255,9 +258,7 @@ async def test_insert_message_idempotent(db: StateDB):
     # Second insert — same id, should silently be ignored
     await db.insert_message(msg)
 
-    cur = await db.db.execute(
-        "SELECT COUNT(*) AS n FROM messages WHERE id = ?", (msg["id"],)
-    )
+    cur = await db.db.execute("SELECT COUNT(*) AS n FROM messages WHERE id = ?", (msg["id"],))
     row = await cur.fetchone()
     assert row["n"] == 1
 
@@ -268,9 +269,7 @@ async def test_resolve_lion_class_known(db: StateDB):
     msg = make_message(lion_class=known)
     await db.insert_message(msg)
 
-    cur = await db.db.execute(
-        "SELECT lion_class FROM messages WHERE id = ?", (msg["id"],)
-    )
+    cur = await db.db.execute("SELECT lion_class FROM messages WHERE id = ?", (msg["id"],))
     row = await cur.fetchone()
     # type_id 1 maps to System
     assert row["lion_class"] == 1
@@ -281,9 +280,7 @@ async def test_resolve_lion_class_unknown_empty(db: StateDB):
     msg = make_message(lion_class="")
     await db.insert_message(msg)
 
-    cur = await db.db.execute(
-        "SELECT lion_class FROM messages WHERE id = ?", (msg["id"],)
-    )
+    cur = await db.db.execute("SELECT lion_class FROM messages WHERE id = ?", (msg["id"],))
     row = await cur.fetchone()
     assert row["lion_class"] == 0
 
@@ -898,9 +895,9 @@ async def test_save_definition_concurrent_versions_are_unique(tmp_path):
             )
         )
         # Every save returned a unique version, and the set is {1..N}.
-        assert sorted(versions) == list(
-            range(1, N + 1)
-        ), f"Expected unique versions 1..{N}, got {sorted(versions)}"
+        assert sorted(versions) == list(range(1, N + 1)), (
+            f"Expected unique versions 1..{N}, got {sorted(versions)}"
+        )
 
         # Database state matches the API return values.
         rows = await db.list_definition_versions("agent", "race-agent")
@@ -941,9 +938,9 @@ async def test_message_content_string_roundtrips_as_string(db: StateDB):
         got = await db.get_message(msg_id)
         assert got is not None
         # Critical: type AND value preserved exactly.
-        assert isinstance(
-            got["content"], str
-        ), f"case {i!r}: expected str, got {type(got['content']).__name__}"
+        assert isinstance(got["content"], str), (
+            f"case {i!r}: expected str, got {type(got['content']).__name__}"
+        )
         assert got["content"] == raw, f"case {i!r}: value diverged"
 
 
@@ -1073,3 +1070,84 @@ async def test_session_delete_cascades_branches(db: StateDB):
     await db.db.execute("DELETE FROM sessions WHERE id = ?", (sid,))
     await db.db.commit()
     assert await db.get_branch(bid) is None
+
+
+# ── ADR-0029: Artifact contract storage ───────────────────────────────────────
+
+
+async def test_create_session_with_artifact_contract(db: StateDB):
+    """artifact_contract_json written at creation is decoded on fetch."""
+    prog_id = uid()
+    await db.create_progression(prog_id)
+    contract = {"expected": [{"id": "report", "path": "report.md"}]}
+    sid = uid()
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": prog_id,
+            "created_at": time.time(),
+            "status": "running",
+            "artifact_contract_json": contract,
+        }
+    )
+    row = await db.get_session(sid)
+    assert row is not None
+    stored = row["artifact_contract_json"]
+    assert isinstance(stored, dict), f"expected dict, got {type(stored)}"
+    assert stored["expected"][0]["id"] == "report"
+
+
+async def test_update_artifact_verification(db: StateDB):
+    """update_artifact_verification() persists and round-trips the result."""
+    prog_id = uid()
+    await db.create_progression(prog_id)
+    sid = uid()
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": prog_id,
+            "created_at": time.time(),
+            "status": "running",
+        }
+    )
+    verification = {
+        "status": "passed",
+        "checked_at": time.time(),
+        "missing_required": [],
+        "missing_optional": [],
+        "produced": [{"id": "report", "path": "report.md", "size": 42, "present": True}],
+    }
+    await db.update_artifact_verification(sid, verification)
+    row = await db.get_session(sid)
+    assert row is not None
+    stored = row["artifact_verification_json"]
+    assert isinstance(stored, dict), f"expected dict, got {type(stored)}"
+    assert stored["status"] == "passed"
+    assert stored["produced"][0]["id"] == "report"
+
+
+async def test_update_artifact_verification_none(db: StateDB):
+    """update_artifact_verification(None) stores NULL without error."""
+    prog_id = uid()
+    await db.create_progression(prog_id)
+    sid = uid()
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": prog_id,
+            "created_at": time.time(),
+            "status": "running",
+        }
+    )
+    await db.update_artifact_verification(sid, None)
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["artifact_verification_json"] is None
+
+
+async def test_new_db_has_artifact_columns(db: StateDB):
+    """Fresh in-memory DB exposes both new columns via PRAGMA table_info."""
+    cur = await db.db.execute("PRAGMA table_info(sessions)")
+    cols = {r["name"] for r in await cur.fetchall()}
+    assert "artifact_contract_json" in cols
+    assert "artifact_verification_json" in cols

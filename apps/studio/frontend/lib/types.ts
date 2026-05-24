@@ -19,6 +19,35 @@ export interface ProjectDetail extends ProjectSummary {
   playbooks_used: Array<{ playbook_name: string; run_count: number }>;
 }
 
+// ─── Artifact contract types (ADR-0029) ─────────────────────────────────────
+
+export interface ExpectedArtifact {
+  id: string;
+  path: string;
+  required?: boolean;
+  description?: string;
+  source?: string;
+}
+
+export interface ProducedArtifact {
+  id: string;
+  path: string;
+  size: number;
+  present?: boolean;
+}
+
+export interface ArtifactContract {
+  expected: ExpectedArtifact[];
+}
+
+export interface ArtifactVerification {
+  status: "passed" | "failed" | "warning" | "skipped";
+  checked_at: number;
+  missing_required: ExpectedArtifact[];
+  missing_optional: ExpectedArtifact[];
+  produced: ProducedArtifact[];
+}
+
 // ─── Run types ───────────────────────────────────────────────────────────────
 
 // H-FE-3: RunSummary matches the actual SQLite-session response shape from
@@ -41,14 +70,7 @@ export interface RunSummary {
   // - stale: process dead, has produced output.
   // - orphaned: process dead, no output, no artifacts.
   // - zombie: terminal status, but resources leaked (stale locks).
-  effective_health?:
-    | "healthy"
-    | "idle"
-    | "unresponsive"
-    | "stale"
-    | "orphaned"
-    | "zombie"
-    | null;
+  effective_health?: "healthy" | "idle" | "unresponsive" | "stale" | "orphaned" | "zombie" | null;
   last_message_at?: number | null;
   // ADR-0020: optional parent skill orchestration id (from `li invoke`).
   invocation_id?: string | null;
@@ -69,6 +91,9 @@ export interface RunSummary {
   // ADR-0026: project detection for session organization.
   project?: string | null;
   project_source?: string | null;
+  // ADR-0029: artifact contract and verification result.
+  artifact_contract_json?: ArtifactContract | null;
+  artifact_verification_json?: ArtifactVerification | null;
 }
 
 export interface RunMessage {
@@ -115,6 +140,9 @@ export interface RunDetail {
   graph: { nodes: WorkerStepNode[]; edges: WorkerLinkEdge[] };
   manifest: Record<string, unknown>;
   branches: unknown[];
+  // ADR-0029: artifact contract and verification result.
+  artifact_contract_json?: ArtifactContract | null;
+  artifact_verification_json?: ArtifactVerification | null;
 }
 
 // ─── Worker / Playbook types ──────────────────────────────────────────────────
