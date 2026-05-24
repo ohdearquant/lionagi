@@ -13,6 +13,15 @@ from typing import Any
 import aiosqlite
 
 from lionagi.cli._runs import LIONAGI_HOME
+from lionagi.state.reasons import (
+    entity_table as _reason_entity_table,
+)
+from lionagi.state.reasons import (
+    validate_entity_type as _validate_entity_type_for_reason,
+)
+from lionagi.state.reasons import (
+    validate_reason_code as _validate_reason_code,
+)
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
@@ -141,9 +150,7 @@ _BRANCH_COLUMNS = frozenset(
 VALID_SESSION_STATUSES = frozenset(
     {"running", "completed", "failed", "timed_out", "aborted", "cancelled"}
 )
-SESSION_TERMINAL_STATUSES = frozenset(
-    {"completed", "failed", "timed_out", "aborted", "cancelled"}
-)
+SESSION_TERMINAL_STATUSES = frozenset({"completed", "failed", "timed_out", "aborted", "cancelled"})
 # Admin/operator transitions cannot mark a session "completed" or
 # "timed_out" — those are system-determined outcomes.
 ADMIN_TRANSITION_TARGETS = frozenset({"failed", "aborted", "cancelled"})
@@ -163,6 +170,7 @@ def can_transition(current: str | None, target: str) -> bool:
     if current != "running":
         return False
     return target in SESSION_TERMINAL_STATUSES
+
 
 # ADR-0012: closed provenance vocabularies. Validated alongside status
 # so dashboards/filters can't be polluted with arbitrary text.
@@ -211,7 +219,7 @@ def _to_json_column(value: Any) -> Any:
     are passed through unchanged so they go into the SQLite BLOB
     storage class without UTF-8 coercion.
     """
-    if value is None or isinstance(value, (bytes, bytearray, memoryview)):
+    if value is None or isinstance(value, bytes | bytearray | memoryview):
         return value
     return json.dumps(value)
 
@@ -239,9 +247,7 @@ def _validate_enum(
             return
         raise ValueError(f"{name} is required")
     if value not in allowed:
-        raise ValueError(
-            f"Invalid {name} {value!r}; {adr} vocabulary is {sorted(allowed)}"
-        )
+        raise ValueError(f"Invalid {name} {value!r}; {adr} vocabulary is {sorted(allowed)}")
 
 
 class StateDB:
@@ -315,11 +321,7 @@ class StateDB:
         # before the new vocabulary (timed_out / cancelled) is written.
         await self._drop_legacy_session_status_check()
         schema = _SCHEMA_PATH.read_text()
-        lines = [
-            ln
-            for ln in schema.splitlines()
-            if not ln.strip().upper().startswith("PRAGMA")
-        ]
+        lines = [ln for ln in schema.splitlines() if not ln.strip().upper().startswith("PRAGMA")]
         await self.db.executescript("\n".join(lines))
 
     # Columns that may need to be back-added to an existing sessions
@@ -353,6 +355,10 @@ class StateDB:
             # ADR-0026: project detection for session organization.
             ("project", "TEXT"),
             ("project_source", "TEXT"),
+            # ADR-0028: denormalized current status reason (hot read path).
+            ("status_reason_code", "TEXT"),
+            ("status_reason_summary", "TEXT"),
+            ("status_evidence_refs", "JSON"),
         ],
         "branches": [
             ("system_msg_id", "TEXT"),
@@ -366,6 +372,28 @@ class StateDB:
         ],
         "shows": [
             ("status_source", "TEXT NOT NULL DEFAULT 'unknown'"),
+            # ADR-0028.
+            ("status_reason_code", "TEXT"),
+            ("status_reason_summary", "TEXT"),
+            ("status_evidence_refs", "JSON"),
+        ],
+        "plays": [
+            # ADR-0028.
+            ("status_reason_code", "TEXT"),
+            ("status_reason_summary", "TEXT"),
+            ("status_evidence_refs", "JSON"),
+        ],
+        "invocations": [
+            # ADR-0028.
+            ("status_reason_code", "TEXT"),
+            ("status_reason_summary", "TEXT"),
+            ("status_evidence_refs", "JSON"),
+        ],
+        "teams": [
+            # ADR-0028.
+            ("status_reason_code", "TEXT"),
+            ("status_reason_summary", "TEXT"),
+            ("status_evidence_refs", "JSON"),
         ],
         "artifacts": [
             # Nullable in ALTER TABLE because expressions aren't valid
@@ -373,7 +401,14 @@ class StateDB:
             ("updated_at", "REAL"),
         ],
         "schedules": [],
-        "schedule_runs": [],
+        "schedule_runs": [
+            # ADR-0028: schedule_runs originally had no updated_at.
+            # update_status() writes it, so it must exist.
+            ("updated_at", "REAL"),
+            ("status_reason_code", "TEXT"),
+            ("status_reason_summary", "TEXT"),
+            ("status_evidence_refs", "JSON"),
+        ],
     }
 
     async def _reconcile_columns(self) -> None:
@@ -475,7 +510,12 @@ class StateDB:
                   effort          TEXT,
                   agent_hash      TEXT,
                   project         TEXT,
-                  project_source  TEXT
+                  project_source  TEXT,
+                  -- ADR-0028: keep parity with schema.sql so the rebuild
+                  -- preserves these columns when migrating from ADR-0017.
+                  status_reason_code     TEXT,
+                  status_reason_summary  TEXT,
+                  status_evidence_refs   JSON
                 )
                 """
             )
@@ -493,9 +533,7 @@ class StateDB:
             insert_sql = f"INSERT INTO sessions_new ({col_list}) SELECT {select_list} FROM sessions"  # noqa: S608
             await self.db.execute(insert_sql)
             await self.db.execute("DROP TABLE sessions")
-            await self.db.execute(
-                "ALTER TABLE sessions_new RENAME TO sessions"
-            )
+            await self.db.execute("ALTER TABLE sessions_new RENAME TO sessions")
             for idx_sql in index_sqls:
                 await self.db.execute(idx_sql)
             await self.db.commit()
@@ -505,9 +543,7 @@ class StateDB:
     # ── Schema version ─────────────────────────────────────────────────
 
     async def schema_version(self) -> str | None:
-        cur = await self.db.execute(
-            "SELECT value FROM schema_meta WHERE key = 'version'"
-        )
+        cur = await self.db.execute("SELECT value FROM schema_meta WHERE key = 'version'")
         row = await cur.fetchone()
         return row["value"] if row else None
 
@@ -526,9 +562,7 @@ class StateDB:
             raise ValueError("messages.content is NOT NULL (ADR-0009)")
         role = msg.get("role")
         if not isinstance(role, str) or not role.strip():
-            raise ValueError(
-                "messages.role must be a non-empty string (ADR-0009); " f"got {role!r}"
-            )
+            raise ValueError(f"messages.role must be a non-empty string (ADR-0009); got {role!r}")
 
         lion_class_str = (msg.get("node_metadata") or {}).get("lion_class", "")
         node_metadata = _to_json_column(msg.get("node_metadata"))
@@ -735,15 +769,11 @@ class StateDB:
             )
 
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
-        cur = await self.db.execute(
-            "SELECT * FROM sessions WHERE id = ?", (session_id,)
-        )
+        cur = await self.db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
         row = await cur.fetchone()
         return self._row_to_dict(row) if row else None
 
-    async def touch_session_activity(
-        self, session_id: str, *, at: float | None = None
-    ) -> None:
+    async def touch_session_activity(self, session_id: str, *, at: float | None = None) -> None:
         """Bump ``last_message_at`` (and ``updated_at``) for staleness signal.
 
         ADR-0019: stored at write time so the runs list and dashboard can
@@ -784,9 +814,136 @@ class StateDB:
         vals = list(fields.values()) + [session_id]
         # noqa: S608 — column names allowlisted via _validate_columns
         await self.db.execute(
-            f"UPDATE sessions SET {sets} WHERE id = ?", vals  # noqa: S608
+            f"UPDATE sessions SET {sets} WHERE id = ?",  # noqa: S608
+            vals,
         )
         await self.db.commit()
+
+    # ── Status reason model (ADR-0028) ───────────────────────────────
+    # update_status() is the single sanctioned mutation point for any
+    # entity's status. It always writes:
+    #   1. the entity row (status + denormalized reason columns)
+    #   2. an append-only status_transitions row (history)
+    # ...in the same SQLite transaction, so denormalized "current
+    # reason" and the transition log never drift.
+    #
+    # The legacy update_session(..., status=...) path remains for
+    # callers that haven't migrated yet; new code MUST use
+    # update_status() so reason tracking is enforced.
+
+    async def update_status(
+        self,
+        entity_type: str,
+        entity_id: str,
+        *,
+        new_status: str,
+        reason_code: str,
+        reason_summary: str = "",
+        evidence_refs: list[dict[str, Any]] | None = None,
+        source: str = "executor",
+        actor: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Atomically transition an entity's status and record the reason.
+
+        Args:
+            entity_type: Canonical singular ('session', 'show', ...) or a
+                registered alias ('run', 'sessions'). Resolved to the
+                canonical form before the table lookup.
+            entity_id: Primary key of the row being transitioned.
+            new_status: The target status string. Per ADR-0025, sessions
+                accept only the six-value vocabulary; other entities have
+                their own vocabularies (still validated by their own
+                table's CHECK).
+            reason_code: Must be in :data:`VALID_REASON_CODES`. The
+                ``legacy.imported`` sentinel is permitted as the one
+                two-segment code.
+            reason_summary: Human-readable message; rendered in the
+                StatusPill tooltip. Free text; not validated.
+            evidence_refs: Optional list of typed references — see
+                ADR-0028 Section 3 for the kind vocabulary.
+            source: Who initiated the write. One of 'executor', 'agent',
+                'admin', 'system'.
+            actor: Optional identifier for the actor (session id, user
+                name, 'doctor_auto', ...). Stored on the transition row
+                for audit.
+            metadata: Optional JSON blob for additional context (timing,
+                exit code, exception class).
+
+        Raises:
+            ValueError: ``reason_code`` not in
+                :data:`VALID_REASON_CODES`, or ``entity_type`` not
+                recognized.
+            LookupError: Entity row not found.
+        """
+        canonical_type = _validate_entity_type_for_reason(entity_type)
+        _validate_reason_code(reason_code)
+        table = _reason_entity_table(canonical_type)
+        evidence_json = json.dumps(evidence_refs or [])
+        metadata_json = json.dumps(metadata) if metadata is not None else None
+        now = time.time()
+
+        # Single transaction: status + denormalized reason + transition row.
+        await self.db.execute("BEGIN IMMEDIATE")
+        try:
+            # Lookup previous status. NOT FOUND raises before any write.
+            # noqa: S608 — `table` is allowlisted via _reason_entity_table.
+            cur = await self.db.execute(
+                f"SELECT status FROM {table} WHERE id = ?",  # noqa: S608
+                (entity_id,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                raise LookupError(f"{canonical_type} {entity_id!r} not found (table={table})")
+            previous_status = row["status"] if "status" in row.keys() else None
+
+            # Update the entity row. updated_at is always touched; every
+            # status-bearing table has the column per ADR-0028 migration.
+            # noqa: S608 — `table` is allowlisted.
+            await self.db.execute(
+                f"UPDATE {table} SET "  # noqa: S608
+                "  status = ?, "
+                "  status_reason_code = ?, "
+                "  status_reason_summary = ?, "
+                "  status_evidence_refs = ?, "
+                "  updated_at = ? "
+                "WHERE id = ?",
+                (
+                    new_status,
+                    reason_code,
+                    reason_summary,
+                    evidence_json,
+                    now,
+                    entity_id,
+                ),
+            )
+
+            # Append to transition history.
+            await self.db.execute(
+                "INSERT INTO status_transitions "
+                "(id, entity_type, entity_id, previous_status, status, "
+                " reason_code, reason_summary, evidence_refs, "
+                " source, actor, created_at, metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    uuid.uuid4().hex,
+                    canonical_type,
+                    entity_id,
+                    previous_status,
+                    new_status,
+                    reason_code,
+                    reason_summary,
+                    evidence_json,
+                    source,
+                    actor,
+                    now,
+                    metadata_json,
+                ),
+            )
+            await self.db.commit()
+        except BaseException:
+            await self.db.rollback()
+            raise
 
     async def list_sessions(
         self,
@@ -920,7 +1077,8 @@ class StateDB:
         sets = ", ".join(f"{k} = ?" for k in fields)
         vals = list(fields.values()) + [name]
         cur = await self.db.execute(
-            f"UPDATE projects SET {sets} WHERE name = ?", vals  # noqa: S608
+            f"UPDATE projects SET {sets} WHERE name = ?",  # noqa: S608
+            vals,
         )
         await self.db.commit()
         return cur.rowcount > 0
@@ -987,16 +1145,12 @@ class StateDB:
         await self.db.commit()
 
     async def get_schedule(self, schedule_id: str) -> dict[str, Any] | None:
-        cur = await self.db.execute(
-            "SELECT * FROM schedules WHERE id = ?", (schedule_id,)
-        )
+        cur = await self.db.execute("SELECT * FROM schedules WHERE id = ?", (schedule_id,))
         row = await cur.fetchone()
         return self._row_to_dict(row) if row else None
 
     async def get_schedule_by_name(self, name: str) -> dict[str, Any] | None:
-        cur = await self.db.execute(
-            "SELECT * FROM schedules WHERE name = ?", (name,)
-        )
+        cur = await self.db.execute("SELECT * FROM schedules WHERE name = ?", (name,))
         row = await cur.fetchone()
         return self._row_to_dict(row) if row else None
 
@@ -1031,13 +1185,30 @@ class StateDB:
 
     async def update_schedule(self, schedule_id: str, **fields: Any) -> None:
         allowed = {
-            "name", "description", "enabled", "trigger_type",
-            "cron_expr", "interval_sec", "github_repo", "github_filter",
-            "github_cursor", "poll_interval_sec",
-            "action_kind", "action_model", "action_prompt", "action_agent",
-            "action_playbook", "action_project", "action_extra_args",
-            "on_success", "on_fail", "last_fired_at", "next_fire_at",
-            "missed_fire_policy", "overlap_policy", "project",
+            "name",
+            "description",
+            "enabled",
+            "trigger_type",
+            "cron_expr",
+            "interval_sec",
+            "github_repo",
+            "github_filter",
+            "github_cursor",
+            "poll_interval_sec",
+            "action_kind",
+            "action_model",
+            "action_prompt",
+            "action_agent",
+            "action_playbook",
+            "action_project",
+            "action_extra_args",
+            "on_success",
+            "on_fail",
+            "last_fired_at",
+            "next_fire_at",
+            "missed_fire_policy",
+            "overlap_policy",
+            "project",
         }
         bad = set(fields) - allowed
         if bad:
@@ -1049,14 +1220,13 @@ class StateDB:
         sets = ", ".join(f"{k} = ?" for k in fields)
         vals = list(fields.values()) + [schedule_id]
         await self.db.execute(
-            f"UPDATE schedules SET {sets} WHERE id = ?", vals  # noqa: S608
+            f"UPDATE schedules SET {sets} WHERE id = ?",  # noqa: S608
+            vals,
         )
         await self.db.commit()
 
     async def delete_schedule(self, schedule_id: str) -> bool:
-        cur = await self.db.execute(
-            "DELETE FROM schedules WHERE id = ?", (schedule_id,)
-        )
+        cur = await self.db.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
         await self.db.commit()
         return cur.rowcount > 0
 
@@ -1098,7 +1268,8 @@ class StateDB:
         sets = ", ".join(f"{k} = ?" for k in fields)
         vals = list(fields.values()) + [run_id]
         await self.db.execute(
-            f"UPDATE schedule_runs SET {sets} WHERE id = ?", vals  # noqa: S608
+            f"UPDATE schedule_runs SET {sets} WHERE id = ?",  # noqa: S608
+            vals,
         )
         await self.db.commit()
 
@@ -1122,9 +1293,7 @@ class StateDB:
         return [self._row_to_dict(r) for r in rows]
 
     async def get_schedule_run(self, run_id: str) -> dict[str, Any] | None:
-        cur = await self.db.execute(
-            "SELECT * FROM schedule_runs WHERE id = ?", (run_id,)
-        )
+        cur = await self.db.execute("SELECT * FROM schedule_runs WHERE id = ?", (run_id,))
         row = await cur.fetchone()
         return self._row_to_dict(row) if row else None
 
@@ -1175,9 +1344,7 @@ class StateDB:
         )
         await self.db.commit()
 
-    async def update_invocation(
-        self, invocation_id: str, **fields: Any
-    ) -> None:
+    async def update_invocation(self, invocation_id: str, **fields: Any) -> None:
         _validate_columns(fields, _INVOCATION_COLUMNS)
         if "status" in fields:
             _validate_enum(
@@ -1197,12 +1364,8 @@ class StateDB:
         await self.db.execute(update_sql, vals)
         await self.db.commit()
 
-    async def get_invocation(
-        self, invocation_id: str
-    ) -> dict[str, Any] | None:
-        cur = await self.db.execute(
-            "SELECT * FROM invocations WHERE id = ?", (invocation_id,)
-        )
+    async def get_invocation(self, invocation_id: str) -> dict[str, Any] | None:
+        cur = await self.db.execute("SELECT * FROM invocations WHERE id = ?", (invocation_id,))
         row = await cur.fetchone()
         return self._row_to_dict(row) if row else None
 
@@ -1231,12 +1394,9 @@ class StateDB:
         rows = await cur.fetchall()
         return [self._row_to_dict(r) for r in rows]
 
-    async def list_sessions_for_invocation(
-        self, invocation_id: str
-    ) -> list[dict[str, Any]]:
+    async def list_sessions_for_invocation(self, invocation_id: str) -> list[dict[str, Any]]:
         cur = await self.db.execute(
-            "SELECT * FROM sessions WHERE invocation_id = ? "
-            "ORDER BY created_at ASC",
+            "SELECT * FROM sessions WHERE invocation_id = ? ORDER BY created_at ASC",
             (invocation_id,),
         )
         rows = await cur.fetchall()
@@ -1313,8 +1473,7 @@ class StateDB:
         )
         if existing_id:
             await self.db.execute(
-                "UPDATE artifacts SET content = ?, file_path = ?, updated_at = ? "
-                "WHERE id = ?",
+                "UPDATE artifacts SET content = ?, file_path = ?, updated_at = ? WHERE id = ?",
                 (content_json, file_path, now, existing_id),
             )
             await self.db.commit()
@@ -1329,34 +1488,24 @@ class StateDB:
         await self.db.commit()
         return art_id
 
-    async def list_artifacts_for_invocation(
-        self, invocation_id: str
-    ) -> list[dict[str, Any]]:
+    async def list_artifacts_for_invocation(self, invocation_id: str) -> list[dict[str, Any]]:
         cur = await self.db.execute(
-            "SELECT * FROM artifacts WHERE invocation_id = ? "
-            "ORDER BY created_at ASC",
+            "SELECT * FROM artifacts WHERE invocation_id = ? ORDER BY created_at ASC",
             (invocation_id,),
         )
         rows = await cur.fetchall()
         return [self._row_to_dict(r) for r in rows]
 
-    async def list_artifacts_for_session(
-        self, session_id: str
-    ) -> list[dict[str, Any]]:
+    async def list_artifacts_for_session(self, session_id: str) -> list[dict[str, Any]]:
         cur = await self.db.execute(
-            "SELECT * FROM artifacts WHERE session_id = ? "
-            "ORDER BY created_at ASC",
+            "SELECT * FROM artifacts WHERE session_id = ? ORDER BY created_at ASC",
             (session_id,),
         )
         rows = await cur.fetchall()
         return [self._row_to_dict(r) for r in rows]
 
-    async def get_artifact(
-        self, artifact_id: str
-    ) -> dict[str, Any] | None:
-        cur = await self.db.execute(
-            "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
-        )
+    async def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
+        cur = await self.db.execute("SELECT * FROM artifacts WHERE id = ?", (artifact_id,))
         row = await cur.fetchone()
         return self._row_to_dict(row) if row else None
 
@@ -1460,12 +1609,15 @@ class StateDB:
         vals = list(fields.values()) + [branch_id]
         # noqa: S608 — column names allowlisted via _validate_columns
         await self.db.execute(
-            f"UPDATE branches SET {sets} WHERE id = ?", vals  # noqa: S608
+            f"UPDATE branches SET {sets} WHERE id = ?",  # noqa: S608
+            vals,
         )
         await self.db.commit()
 
     async def repair_branch_progression(
-        self, branch_id: str, new_progression_id: str,
+        self,
+        branch_id: str,
+        new_progression_id: str,
     ) -> str | None:
         """Backfill ``branches.progression_id`` for a legacy row that has NULL.
 
@@ -1494,12 +1646,12 @@ class StateDB:
         # back the actual stored id so the caller cannot diverge from
         # the row.
         await self.db.execute(
-            "UPDATE branches SET progression_id = ? "
-            "WHERE id = ? AND progression_id IS NULL",
+            "UPDATE branches SET progression_id = ? WHERE id = ? AND progression_id IS NULL",
             (new_progression_id, branch_id),
         )
         cur = await self.db.execute(
-            "SELECT progression_id FROM branches WHERE id = ?", (branch_id,),
+            "SELECT progression_id FROM branches WHERE id = ?",
+            (branch_id,),
         )
         row = await cur.fetchone()
         await self.db.commit()
@@ -1508,7 +1660,9 @@ class StateDB:
         return row["progression_id"]
 
     async def repair_session_progression(
-        self, session_id: str, new_progression_id: str,
+        self,
+        session_id: str,
+        new_progression_id: str,
     ) -> str | None:
         """Backfill ``sessions.progression_id`` for a legacy row that has NULL.
 
@@ -1518,12 +1672,12 @@ class StateDB:
         the returned id.
         """
         await self.db.execute(
-            "UPDATE sessions SET progression_id = ? "
-            "WHERE id = ? AND progression_id IS NULL",
+            "UPDATE sessions SET progression_id = ? WHERE id = ? AND progression_id IS NULL",
             (new_progression_id, session_id),
         )
         cur = await self.db.execute(
-            "SELECT progression_id FROM sessions WHERE id = ?", (session_id,),
+            "SELECT progression_id FROM sessions WHERE id = ?",
+            (session_id,),
         )
         row = await cur.fetchone()
         await self.db.commit()
@@ -1629,7 +1783,8 @@ class StateDB:
         vals = list(fields.values()) + [show_id]
         # noqa: S608 — column names allowlisted via _validate_columns
         await self.db.execute(
-            f"UPDATE shows SET {sets} WHERE id = ?", vals  # noqa: S608
+            f"UPDATE shows SET {sets} WHERE id = ?",  # noqa: S608
+            vals,
         )
         await self.db.commit()
 
@@ -1704,7 +1859,8 @@ class StateDB:
         vals = list(fields.values()) + [play_id]
         # noqa: S608 — column names allowlisted via _validate_columns
         await self.db.execute(
-            f"UPDATE plays SET {sets} WHERE id = ?", vals  # noqa: S608
+            f"UPDATE plays SET {sets} WHERE id = ?",  # noqa: S608
+            vals,
         )
         await self.db.commit()
 
@@ -1746,8 +1902,7 @@ class StateDB:
             for _ in range(5):
                 try:
                     cur = await self.db.execute(
-                        "SELECT MAX(version) AS v FROM definitions "
-                        "WHERE kind = ? AND name = ?",
+                        "SELECT MAX(version) AS v FROM definitions WHERE kind = ? AND name = ?",
                         (kind, name),
                     )
                     row = await cur.fetchone()
@@ -1794,9 +1949,7 @@ class StateDB:
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    async def list_definition_versions(
-        self, kind: str, name: str
-    ) -> list[dict[str, Any]]:
+    async def list_definition_versions(self, kind: str, name: str) -> list[dict[str, Any]]:
         cur = await self.db.execute(
             "SELECT id, kind, name, version, created_at, message FROM definitions WHERE kind = ? AND name = ? ORDER BY version DESC",
             (kind, name),
@@ -1809,9 +1962,17 @@ class StateDB:
     @staticmethod
     def _row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:
         d = dict(row)
-        for key in ("node_metadata", "content", "depends_on",
-                    "on_success", "on_fail", "github_filter",
-                    "action_extra_args", "trigger_context", "action_args"):
+        for key in (
+            "node_metadata",
+            "content",
+            "depends_on",
+            "on_success",
+            "on_fail",
+            "github_filter",
+            "action_extra_args",
+            "trigger_context",
+            "action_args",
+        ):
             if key in d and isinstance(d[key], str):
                 try:
                     d[key] = json.loads(d[key])
