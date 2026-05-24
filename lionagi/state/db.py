@@ -1282,18 +1282,61 @@ class StateDB:
         )
         await self.db.commit()
 
-    async def update_schedule_run(self, run_id: str, **fields: Any) -> None:
+    async def update_schedule_run(
+        self,
+        run_id: str,
+        *,
+        reason_code: str | None = None,
+        reason_summary: str = "",
+        evidence_refs: list[dict[str, Any]] | None = None,
+        reason_source: str = "executor",
+        reason_actor: str | None = None,
+        **fields: Any,
+    ) -> None:
+        """Update schedule_run fields; route status through update_status().
+
+        ADR-0028 Phase 2: status writes go through update_status() so
+        reason columns + status_transitions are atomic. See
+        update_invocation() for the pattern.
+        """
         allowed = {"status", "exit_code", "ended_at", "error_detail", "invocation_id"}
         bad = set(fields) - allowed
         if bad:
             raise ValueError(f"Invalid schedule_run field(s): {bad}")
-        sets = ", ".join(f"{k} = ?" for k in fields)
-        vals = list(fields.values()) + [run_id]
-        await self.db.execute(
-            f"UPDATE schedule_runs SET {sets} WHERE id = ?",  # noqa: S608
-            vals,
-        )
-        await self.db.commit()
+
+        status_value = fields.pop("status", None)
+        if status_value is not None:
+            if reason_code is None:
+                from warnings import warn
+
+                reason_code = _default_reason_code_for_status(status_value)
+                warn(
+                    f"update_schedule_run({run_id!r}, status={status_value!r}) "
+                    "called without reason_code; defaulting to "
+                    f"{reason_code!r}. Pass reason_code explicitly "
+                    "(ADR-0028 Phase 2 deprecation).",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+            await self.update_status(
+                "schedule_run",
+                run_id,
+                new_status=status_value,
+                reason_code=reason_code,
+                reason_summary=reason_summary,
+                evidence_refs=evidence_refs,
+                source=reason_source,
+                actor=reason_actor,
+            )
+
+        if fields:
+            sets = ", ".join(f"{k} = ?" for k in fields)
+            vals = list(fields.values()) + [run_id]
+            await self.db.execute(
+                f"UPDATE schedule_runs SET {sets} WHERE id = ?",  # noqa: S608
+                vals,
+            )
+            await self.db.commit()
 
     async def list_schedule_runs(
         self,
@@ -1847,7 +1890,23 @@ class StateDB:
         rows = await cur.fetchall()
         return [self._row_to_dict(r) for r in rows]
 
-    async def update_show(self, show_id: str, **fields: Any) -> None:
+    async def update_show(
+        self,
+        show_id: str,
+        *,
+        reason_code: str | None = None,
+        reason_summary: str = "",
+        evidence_refs: list[dict[str, Any]] | None = None,
+        reason_source: str = "executor",
+        reason_actor: str | None = None,
+        **fields: Any,
+    ) -> None:
+        """Update show fields; route status changes through update_status().
+
+        ADR-0028 Phase 2: status writes go through StateDB.update_status()
+        so reason columns and status_transitions are written atomically.
+        Backwards-compatible deprecation shim mirrors update_invocation().
+        """
         _validate_columns(fields, _SHOW_COLUMNS)
         if "status" in fields:
             _validate_enum(
@@ -1857,15 +1916,42 @@ class StateDB:
                 adr="ADR-0011",
                 nullable=False,
             )
-        fields["updated_at"] = time.time()
-        sets = ", ".join(f"{k} = ?" for k in fields)
-        vals = list(fields.values()) + [show_id]
-        # noqa: S608 — column names allowlisted via _validate_columns
-        await self.db.execute(
-            f"UPDATE shows SET {sets} WHERE id = ?",  # noqa: S608
-            vals,
-        )
-        await self.db.commit()
+
+        status_value = fields.pop("status", None)
+        if status_value is not None:
+            if reason_code is None:
+                from warnings import warn
+
+                reason_code = _default_reason_code_for_status(status_value)
+                warn(
+                    f"update_show({show_id!r}, status={status_value!r}) "
+                    "called without reason_code; defaulting to "
+                    f"{reason_code!r}. Pass reason_code explicitly "
+                    "(ADR-0028 Phase 2 deprecation).",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+            await self.update_status(
+                "show",
+                show_id,
+                new_status=status_value,
+                reason_code=reason_code,
+                reason_summary=reason_summary,
+                evidence_refs=evidence_refs,
+                source=reason_source,
+                actor=reason_actor,
+            )
+
+        if fields:
+            fields["updated_at"] = time.time()
+            sets = ", ".join(f"{k} = ?" for k in fields)
+            vals = list(fields.values()) + [show_id]
+            # noqa: S608 — column names allowlisted via _validate_columns
+            await self.db.execute(
+                f"UPDATE shows SET {sets} WHERE id = ?",  # noqa: S608
+                vals,
+            )
+            await self.db.commit()
 
     # ── Plays ─────────────────────────────────────────────────────────
 
@@ -1923,7 +2009,22 @@ class StateDB:
         rows = await cur.fetchall()
         return [self._row_to_dict(r) for r in rows]
 
-    async def update_play(self, play_id: str, **fields: Any) -> None:
+    async def update_play(
+        self,
+        play_id: str,
+        *,
+        reason_code: str | None = None,
+        reason_summary: str = "",
+        evidence_refs: list[dict[str, Any]] | None = None,
+        reason_source: str = "executor",
+        reason_actor: str | None = None,
+        **fields: Any,
+    ) -> None:
+        """Update play fields; route status changes through update_status().
+
+        ADR-0028 Phase 2: see update_invocation() / update_show() for
+        the same routing pattern.
+        """
         _validate_columns(fields, _PLAY_COLUMNS)
         if "status" in fields:
             _validate_enum(
@@ -1933,15 +2034,42 @@ class StateDB:
                 adr="ADR-0011",
                 nullable=False,
             )
-        fields["updated_at"] = time.time()
-        sets = ", ".join(f"{k} = ?" for k in fields)
-        vals = list(fields.values()) + [play_id]
-        # noqa: S608 — column names allowlisted via _validate_columns
-        await self.db.execute(
-            f"UPDATE plays SET {sets} WHERE id = ?",  # noqa: S608
-            vals,
-        )
-        await self.db.commit()
+
+        status_value = fields.pop("status", None)
+        if status_value is not None:
+            if reason_code is None:
+                from warnings import warn
+
+                reason_code = _default_reason_code_for_status(status_value)
+                warn(
+                    f"update_play({play_id!r}, status={status_value!r}) "
+                    "called without reason_code; defaulting to "
+                    f"{reason_code!r}. Pass reason_code explicitly "
+                    "(ADR-0028 Phase 2 deprecation).",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+            await self.update_status(
+                "play",
+                play_id,
+                new_status=status_value,
+                reason_code=reason_code,
+                reason_summary=reason_summary,
+                evidence_refs=evidence_refs,
+                source=reason_source,
+                actor=reason_actor,
+            )
+
+        if fields:
+            fields["updated_at"] = time.time()
+            sets = ", ".join(f"{k} = ?" for k in fields)
+            vals = list(fields.values()) + [play_id]
+            # noqa: S608 — column names allowlisted via _validate_columns
+            await self.db.execute(
+                f"UPDATE plays SET {sets} WHERE id = ?",  # noqa: S608
+                vals,
+            )
+            await self.db.commit()
 
     # ── Definitions ───────────────────────────────────────────────────
 

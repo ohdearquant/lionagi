@@ -51,12 +51,23 @@ async def _resolve_invocation_terminal_flow(
         evidence_refs = [{"kind": "session", "id": s["id"]} for s in sessions if s.get("id")]
         metadata: dict = {"child_statuses": child_statuses}
 
+        # Precedence: timed_out > failed > aborted > cancelled > completed.
+        # `failed` MUST beat `aborted`/`cancelled` so a real failure isn't
+        # masked by sibling cleanup-cancellation triggered by the failure.
         if child_statuses:
             if any(s == "timed_out" for s in child_statuses):
                 return (
                     "timed_out",
                     RunReasons.TIMED_OUT_DEADLINE,
                     "Flow timed out because at least one child session timed out.",
+                    evidence_refs,
+                    metadata,
+                )
+            if any(s == "failed" for s in child_statuses):
+                return (
+                    "failed",
+                    RunReasons.FAILED_EXCEPTION,
+                    "Flow failed because at least one child session failed.",
                     evidence_refs,
                     metadata,
                 )
@@ -73,14 +84,6 @@ async def _resolve_invocation_terminal_flow(
                     "cancelled",
                     RunReasons.CANCELLED_SYSTEM,
                     "Flow was cancelled because at least one child session was cancelled.",
-                    evidence_refs,
-                    metadata,
-                )
-            if any(s == "failed" for s in child_statuses):
-                return (
-                    "failed",
-                    RunReasons.FAILED_EXCEPTION,
-                    "Flow failed because at least one child session failed.",
                     evidence_refs,
                     metadata,
                 )
