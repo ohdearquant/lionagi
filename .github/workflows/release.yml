@@ -71,6 +71,9 @@ jobs:
     steps:
     - uses: actions/checkout@v6
 
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
@@ -85,12 +88,13 @@ jobs:
       id: version
       run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-    - name: Build and push Docker image
+    - name: Build and push Docker image (multi-arch)
       uses: docker/build-push-action@v6
       with:
         context: .
         file: apps/studio/Dockerfile
         push: true
+        platforms: linux/amd64,linux/arm64
         tags: |
           ghcr.io/ohdearquant/lion-studio:latest
           ghcr.io/ohdearquant/lion-studio:${{ steps.version.outputs.version }}
