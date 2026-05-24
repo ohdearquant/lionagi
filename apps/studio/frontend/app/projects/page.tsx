@@ -6,29 +6,22 @@ import { useRouter } from "next/navigation";
 import Button from "@/components/Button";
 import PageHeader from "@/components/PageHeader";
 import Timestamp from "@/components/Timestamp";
-import {
-  createProject,
-  listProjects,
-  type ProjectListResponse,
-} from "@/lib/api";
+import { createProject, listProjects, type ProjectListResponse } from "@/lib/api";
 import type { ProjectSummary } from "@/lib/types";
+import { errors } from "@/lib/copy";
 
 // Source badge colours follow the same design vocabulary as StatusPill
 // but are simpler (no icon, static colours per source type).
 const SOURCE_CLASS: Record<string, string> = {
-  config:
-    "border-status-running/40 bg-status-running-bg text-status-running",
-  override:
-    "border-status-warning/40 bg-status-warning-bg text-status-warning",
+  config: "border-status-running/40 bg-status-running-bg text-status-running",
+  override: "border-status-warning/40 bg-status-warning-bg text-status-warning",
   git: "border-status-selected/40 bg-status-selected-bg text-status-selected",
-  studio:
-    "border-status-success/40 bg-status-success-bg text-status-success",
+  studio: "border-status-success/40 bg-status-success-bg text-status-success",
 };
 
 function SourceBadge({ source }: { source: string }) {
   const cls =
-    SOURCE_CLASS[source.toLowerCase()] ??
-    "border-edge bg-surface-overlay text-content-secondary";
+    SOURCE_CLASS[source.toLowerCase()] ?? "border-edge bg-surface-overlay text-content-secondary";
   return (
     <span
       className={[
@@ -57,7 +50,7 @@ function CreateProjectModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) {
-      setError("Name is required.");
+      setError(errors.nameRequired);
       return;
     }
     setSubmitting(true);
@@ -85,9 +78,7 @@ function CreateProjectModal({
       }}
     >
       <div className="w-full max-w-md rounded-lg border border-edge bg-surface-raised shadow-card p-5">
-        <h2 className="mb-4 font-mono text-base font-semibold text-content-primary">
-          New Project
-        </h2>
+        <h2 className="mb-4 font-mono text-base font-semibold text-content-primary">New Project</h2>
         <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3">
           <label className="flex flex-col gap-1">
             <span className="text-meta text-content-secondary font-medium">
@@ -102,9 +93,7 @@ function CreateProjectModal({
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-meta text-content-secondary font-medium">
-              GitHub URL
-            </span>
+            <span className="text-meta text-content-secondary font-medium">GitHub URL</span>
             <input
               type="url"
               value={github}
@@ -114,9 +103,7 @@ function CreateProjectModal({
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-meta text-content-secondary font-medium">
-              Description
-            </span>
+            <span className="text-meta text-content-secondary font-medium">Description</span>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -125,9 +112,7 @@ function CreateProjectModal({
               className="rounded border border-edge bg-surface-base px-2.5 py-1.5 text-body text-content-primary placeholder:text-content-muted focus:border-interactive-primary focus:outline-none resize-none"
             />
           </label>
-          {error && (
-            <p className="text-meta text-status-error">{error}</p>
-          )}
+          {error && <p className="text-meta text-status-error">{error}</p>}
           <div className="flex justify-end gap-2 pt-1">
             <Button variant="ghost" onClick={onClose} type="button">
               Cancel
@@ -166,9 +151,7 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
 
       {/* Description */}
       {project.description && (
-        <p className="text-meta text-content-secondary truncate">
-          {project.description}
-        </p>
+        <p className="text-meta text-content-secondary truncate">{project.description}</p>
       )}
 
       {/* GitHub link */}
@@ -194,15 +177,11 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
       {/* Stats row */}
       <div className="flex items-center gap-3 text-meta text-content-muted">
         <span>
-          <span className="font-medium text-content-secondary">
-            {project.session_count}
-          </span>{" "}
+          <span className="font-medium text-content-secondary">{project.session_count}</span>{" "}
           session{project.session_count !== 1 ? "s" : ""}
         </span>
         {project.running_count > 0 && (
-          <span className="text-status-running font-medium">
-            {project.running_count} running
-          </span>
+          <span className="text-status-running font-medium">{project.running_count} running</span>
         )}
         <span className="ml-auto">
           <Timestamp value={project.last_seen_at ?? project.updated_at} />
@@ -224,9 +203,7 @@ function UnassignedCard({ count }: { count: number }) {
           {count}
         </span>
       </div>
-      <p className="text-meta">
-        Sessions not associated with any project.
-      </p>
+      <p className="text-meta">Sessions not associated with any project.</p>
     </Link>
   );
 }
@@ -253,7 +230,7 @@ function ProjectsPageInner() {
       setData(result);
       setError(null);
     } catch {
-      setError("Failed to load projects.");
+      setError(errors.loadProjects);
     } finally {
       setLoading(false);
     }
@@ -262,7 +239,6 @@ function ProjectsPageInner() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- async data fetch sets state in callback, not synchronously
     void load();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const projects = data?.projects ?? [];
@@ -305,8 +281,8 @@ function ProjectsPageInner() {
           <div className="col-span-full py-14 text-center text-body text-content-muted">
             <span className="block mb-1">No projects found.</span>
             <span className="text-meta">
-              Create one or run{" "}
-              <code className="font-mono">li agent</code> inside a project directory.
+              Create one or run <code className="font-mono">li agent</code> inside a project
+              directory.
             </span>
           </div>
         ) : (
@@ -320,10 +296,7 @@ function ProjectsPageInner() {
       </div>
 
       {showModal && (
-        <CreateProjectModal
-          onClose={() => setShowModal(false)}
-          onCreated={() => void load()}
-        />
+        <CreateProjectModal onClose={() => setShowModal(false)} onCreated={() => void load()} />
       )}
     </main>
   );
