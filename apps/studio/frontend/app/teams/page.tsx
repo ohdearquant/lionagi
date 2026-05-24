@@ -7,6 +7,7 @@ import PageHeader from "@/components/PageHeader";
 import Timestamp from "@/components/Timestamp";
 import { listTeams } from "@/lib/api";
 import type { TeamListResponse, TeamSummary } from "@/lib/api";
+import { empty, errors } from "@/lib/copy";
 
 const LIMIT = 20;
 
@@ -23,15 +24,20 @@ export default function TeamsPage() {
       setLoading(true);
       try {
         const d = await listTeams({ limit: LIMIT, offset });
-        if (active) { setData(d); setError(null); }
+        if (active) {
+          setData(d);
+          setError(null);
+        }
       } catch {
-        if (active) setError("Failed to load teams");
+        if (active) setError(errors.loadTeams);
       } finally {
         if (active) setLoading(false);
       }
     }
     void load();
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [offset]);
 
   const teams = data?.teams ?? [];
@@ -76,7 +82,7 @@ export default function TeamsPage() {
             ) : teams.length === 0 ? (
               <tr>
                 <td colSpan={3} className="px-3 py-8 text-center text-meta text-content-muted">
-                  No teams found.
+                  {empty.teamsNotFound}
                 </td>
               </tr>
             ) : (
@@ -110,7 +116,9 @@ export default function TeamsPage() {
       </div>
 
       <div className="flex items-center justify-between text-meta text-content-muted">
-        <span>{data?.total ?? 0} team{(data?.total ?? 0) !== 1 ? "s" : ""}</span>
+        <span>
+          {data?.total ?? 0} team{(data?.total ?? 0) !== 1 ? "s" : ""}
+        </span>
         <div className="flex gap-2">
           <Button
             size="sm"

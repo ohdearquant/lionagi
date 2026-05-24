@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import Badge from "@/components/Badge";
 import { listPlugins, getPlugin, getPluginSkill } from "@/lib/api";
 import type { PluginSummary, PluginDetail, PluginSkillDetail } from "@/lib/api";
+import { empty } from "@/lib/copy";
 
 const Markdown = dynamic(() => import("@/components/Markdown"), { ssr: false });
 
@@ -63,7 +64,7 @@ function PluginList({
           <div className="px-3 py-4 text-body text-content-muted">Loading...</div>
         ) : filtered.length === 0 ? (
           <div className="px-3 py-4 text-body text-content-muted">
-            {filter ? "No matching plugins" : "No plugins found"}
+            {filter ? empty.pluginsFiltered : empty.plugins}
           </div>
         ) : (
           filtered.map((p) => (
@@ -409,7 +410,11 @@ function PluginDetailPane({ pluginName }: PluginDetailPaneProps) {
 
       {/* Tab bar */}
       {tabs.length > 0 && (
-        <div role="tablist" aria-label="Plugin details" className="flex shrink-0 items-center gap-0 border-b border-edge px-4">
+        <div
+          role="tablist"
+          aria-label="Plugin details"
+          className="flex shrink-0 items-center gap-0 border-b border-edge px-4"
+        >
           {tabs.map((tab) => (
             <button
               key={tab.id}
@@ -434,31 +439,51 @@ function PluginDetailPane({ pluginName }: PluginDetailPaneProps) {
       {/* Tab content */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {visibleTab === "skills" && (
-          <div role="tabpanel" id={`plugin-${detail.name}-panel-skills`} className="flex flex-1 overflow-hidden">
+          <div
+            role="tabpanel"
+            id={`plugin-${detail.name}-panel-skills`}
+            className="flex flex-1 overflow-hidden"
+          >
             <SkillSubPane key={detail.name} pluginName={detail.name} skillNames={detail.skills} />
           </div>
         )}
         {visibleTab === "agents" && (
-          <div role="tabpanel" id={`plugin-${detail.name}-panel-agents`} className="flex flex-1 overflow-hidden">
+          <div
+            role="tabpanel"
+            id={`plugin-${detail.name}-panel-agents`}
+            className="flex flex-1 overflow-hidden"
+          >
             <AgentSubPane key={detail.name} agentRefs={detail.agents} />
           </div>
         )}
         {visibleTab === "hooks" && detail.hooks && (
-          <div role="tabpanel" id={`plugin-${detail.name}-panel-hooks`} className="flex-1 overflow-y-auto px-4 py-3">
+          <div
+            role="tabpanel"
+            id={`plugin-${detail.name}-panel-hooks`}
+            className="flex-1 overflow-y-auto px-4 py-3"
+          >
             <pre className="whitespace-pre-wrap break-words rounded border border-edge bg-surface-base p-4 font-mono text-body text-content-secondary leading-relaxed">
               {JSON.stringify(detail.hooks, null, 2)}
             </pre>
           </div>
         )}
         {visibleTab === "mcp" && detail.mcp && (
-          <div role="tabpanel" id={`plugin-${detail.name}-panel-mcp`} className="flex-1 overflow-y-auto px-4 py-3">
+          <div
+            role="tabpanel"
+            id={`plugin-${detail.name}-panel-mcp`}
+            className="flex-1 overflow-y-auto px-4 py-3"
+          >
             <pre className="whitespace-pre-wrap break-words rounded border border-edge bg-surface-base p-4 font-mono text-body text-content-secondary leading-relaxed">
               {JSON.stringify(detail.mcp, null, 2)}
             </pre>
           </div>
         )}
         {visibleTab === "readme" && detail.readme && (
-          <div role="tabpanel" id={`plugin-${detail.name}-panel-readme`} className="flex-1 overflow-y-auto px-4 py-4">
+          <div
+            role="tabpanel"
+            id={`plugin-${detail.name}-panel-readme`}
+            className="flex-1 overflow-y-auto px-4 py-4"
+          >
             <Markdown>{detail.readme}</Markdown>
           </div>
         )}

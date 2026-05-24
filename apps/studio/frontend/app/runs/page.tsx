@@ -11,6 +11,7 @@ import Timestamp from "@/components/Timestamp";
 import { listRuns } from "@/lib/api";
 import type { RunListResponse } from "@/lib/api";
 import type { RunSummary } from "@/lib/types";
+import { errors } from "@/lib/copy";
 
 // ADR-0025: six-value session vocabulary (running/completed/failed/
 // timed_out/aborted/cancelled). "done" stays as an alias for completed
@@ -47,9 +48,10 @@ function groupByInvocation(runs: RunSummary[]): {
       ungrouped.push(run);
     }
   }
-  const groups: InvocationGroup[] = Array.from(map.entries()).map(
-    ([invocation_id, sessions]) => ({ invocation_id, sessions }),
-  );
+  const groups: InvocationGroup[] = Array.from(map.entries()).map(([invocation_id, sessions]) => ({
+    invocation_id,
+    sessions,
+  }));
   return { groups, ungrouped };
 }
 
@@ -83,8 +85,7 @@ function groupStatus(sessions: RunSummary[]): string {
   if (sessions.some((s) => s.status === "failed")) return "failed";
   if (sessions.some((s) => s.status === "timed_out")) return "timed_out";
   if (sessions.some((s) => s.status === "aborted")) return "aborted";
-  if (sessions.every((s) => s.status === "done" || s.status === "completed"))
-    return "done";
+  if (sessions.every((s) => s.status === "done" || s.status === "completed")) return "done";
   return sessions[0]?.status ?? "pending";
 }
 
@@ -161,9 +162,7 @@ function SessionRow({
           {displayName(run)}
         </Link>
         <div className="flex items-center gap-1.5">
-          <span className="font-mono text-meta text-content-muted">
-            {shortRunId(run)}
-          </span>
+          <span className="font-mono text-meta text-content-muted">{shortRunId(run)}</span>
           {run.project && (
             <span
               className="rounded px-1 py-0.5 font-mono text-[10px] border border-edge text-content-muted"
@@ -217,9 +216,7 @@ function RunsPageInner() {
   const [playbookInput, setPlaybookInput] = useState(playbook);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const [viewMode, setViewMode] = useState<ViewMode>("sessions");
-  const [expandedInvocations, setExpandedInvocations] = useState<Set<string>>(
-    new Set(),
-  );
+  const [expandedInvocations, setExpandedInvocations] = useState<Set<string>>(new Set());
   const [knownProjects, setKnownProjects] = useState<string[]>([]);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- sync URL→input: no external system involved, single derived state write
@@ -234,10 +231,8 @@ function RunsPageInner() {
     const params = new URLSearchParams();
     const nextPage = next.page ?? 1;
     const nextStatuses = next.status ?? statuses;
-    const nextPlaybook =
-      next.playbook !== undefined ? next.playbook : playbook;
-    const nextProject =
-      next.project !== undefined ? next.project : project;
+    const nextPlaybook = next.playbook !== undefined ? next.playbook : playbook;
+    const nextProject = next.project !== undefined ? next.project : project;
     if (nextPage > 1) params.set("page", String(nextPage));
     for (const s of nextStatuses) params.append("status", s);
     if (nextPlaybook) params.set("playbook", nextPlaybook);
@@ -280,7 +275,7 @@ function RunsPageInner() {
           }
         }
       } catch {
-        if (active) setError("Failed to load runs");
+        if (active) setError(errors.loadRuns);
       } finally {
         if (active) setLoading(false);
       }
@@ -296,17 +291,12 @@ function RunsPageInner() {
   }, [page, statuses.join(","), playbook, project, viewMode]);
 
   useEffect(() => {
-    const tick = setInterval(
-      () => setNow(Math.floor(Date.now() / 1000)),
-      30000,
-    );
+    const tick = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 30000);
     return () => clearInterval(tick);
   }, []);
 
   function toggleStatus(s: string) {
-    const next = statuses.includes(s)
-      ? statuses.filter((x) => x !== s)
-      : [...statuses, s];
+    const next = statuses.includes(s) ? statuses.filter((x) => x !== s) : [...statuses, s];
     setQuery({ status: next, page: 1 });
   }
 
@@ -385,9 +375,7 @@ function RunsPageInner() {
                   size="sm"
                   variant="toggle"
                   active={project === p}
-                  onClick={() =>
-                    setQuery({ project: project === p ? "" : p, page: 1 })
-                  }
+                  onClick={() => setQuery({ project: project === p ? "" : p, page: 1 })}
                 >
                   {p}
                 </Button>
@@ -466,34 +454,24 @@ function RunsPageInner() {
             ) : viewMode === "invocations" ? (
               invocationGroups.length === 0 && ungroupedRuns.length === 0 ? (
                 <tr>
-                  <td
-                    colSpan={4}
-                    className="px-3 py-14 text-center text-body text-content-muted"
-                  >
+                  <td colSpan={4} className="px-3 py-14 text-center text-body text-content-muted">
                     <span className="block mb-1 text-[11px]">No runs found</span>
                     {(statuses.length > 0 || playbook) && (
-                      <span className="text-meta">
-                        Try adjusting your filters.
-                      </span>
+                      <span className="text-meta">Try adjusting your filters.</span>
                     )}
                   </td>
                 </tr>
               ) : (
                 <>
                   {invocationGroups.map((group) => {
-                    const isExpanded = expandedInvocations.has(
-                      group.invocation_id,
-                    );
+                    const isExpanded = expandedInvocations.has(group.invocation_id);
                     const st = groupStatus(group.sessions);
                     const health = worstHealth(group.sessions);
-                    const latestUpdated = group.sessions.reduce<number | null>(
-                      (acc, s) => {
-                        const u = s.updated_at ?? null;
-                        if (u === null) return acc;
-                        return acc === null || u > acc ? u : acc;
-                      },
-                      null,
-                    );
+                    const latestUpdated = group.sessions.reduce<number | null>((acc, s) => {
+                      const u = s.updated_at ?? null;
+                      if (u === null) return acc;
+                      return acc === null || u > acc ? u : acc;
+                    }, null);
                     return (
                       <Fragment key={group.invocation_id}>
                         <tr
@@ -531,12 +509,7 @@ function RunsPageInner() {
                         </tr>
                         {isExpanded &&
                           group.sessions.map((run) => (
-                            <SessionRow
-                              key={run.run_id}
-                              run={run}
-                              now={now}
-                              indent
-                            />
+                            <SessionRow key={run.run_id} run={run} now={now} indent />
                           ))}
                       </Fragment>
                     );
@@ -556,39 +529,39 @@ function RunsPageInner() {
                 </td>
               </tr>
             ) : (
-              runs.map((run) => (
-                <SessionRow key={run.run_id} run={run} now={now} />
-              ))
+              runs.map((run) => <SessionRow key={run.run_id} run={run} now={now} />)
             )}
           </tbody>
         </table>
       </div>
 
       {/* Pagination — hidden in invocations mode (full dataset loaded client-side) */}
-      {viewMode === "sessions" && <div className="flex items-center justify-between text-meta text-content-muted">
-        <span>
-          Page {page} of {totalPages || 1} &mdash; {total} run
-          {total !== 1 ? "s" : ""}
-        </span>
-        <div className="flex gap-2">
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={!data?.has_prev}
-            onClick={() => setQuery({ page: page - 1 })}
-          >
-            Previous
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={!data?.has_next}
-            onClick={() => setQuery({ page: page + 1 })}
-          >
-            Next
-          </Button>
+      {viewMode === "sessions" && (
+        <div className="flex items-center justify-between text-meta text-content-muted">
+          <span>
+            Page {page} of {totalPages || 1} &mdash; {total} run
+            {total !== 1 ? "s" : ""}
+          </span>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={!data?.has_prev}
+              onClick={() => setQuery({ page: page - 1 })}
+            >
+              Previous
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={!data?.has_next}
+              onClick={() => setQuery({ page: page + 1 })}
+            >
+              Next
+            </Button>
+          </div>
         </div>
-      </div>}
+      )}
     </main>
   );
 }

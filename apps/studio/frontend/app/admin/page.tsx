@@ -6,6 +6,7 @@ import PageHeader from "@/components/PageHeader";
 import Timestamp from "@/components/Timestamp";
 import { getAdminDoctor, pruneAdmin } from "@/lib/api";
 import type { AdminDoctorResponse, PhantomReason, PhantomSession } from "@/lib/api";
+import { errors } from "@/lib/copy";
 
 function formatBytes(value: number): string {
   if (value === 0) return "0 B";
@@ -16,9 +17,12 @@ function formatBytes(value: number): string {
 
 function reasonLabel(reason: PhantomReason): string {
   switch (reason) {
-    case "process_dead": return "Process dead";
-    case "missing_artifacts": return "Missing artifacts";
-    case "stale_lock": return "Stale lock";
+    case "process_dead":
+      return "Process dead";
+    case "missing_artifacts":
+      return "Missing artifacts";
+    case "stale_lock":
+      return "Stale lock";
   }
 }
 
@@ -32,8 +36,7 @@ function DbHealthStrip({ doctor }: { doctor: AdminDoctorResponse }) {
         state DB
       </span>
       <span>
-        <span className="tabular-nums text-content-secondary">{formatBytes(h.wal_bytes)}</span>{" "}
-        WAL
+        <span className="tabular-nums text-content-secondary">{formatBytes(h.wal_bytes)}</span> WAL
       </span>
       <span>
         <span className="tabular-nums text-content-secondary">{formatBytes(h.wal_pending)}</span>{" "}
@@ -59,7 +62,7 @@ export default function AdminPage() {
       setDoctor(d);
       setError(null);
     } catch {
-      setError("Failed to load diagnostics");
+      setError(errors.loadDiagnostics);
     } finally {
       setLoading(false);
     }
@@ -87,7 +90,7 @@ export default function AdminPage() {
       setSelected(new Set());
       await refresh();
     } catch {
-      setError("Prune failed");
+      setError(errors.prune);
     } finally {
       setPruning(false);
     }
@@ -100,7 +103,7 @@ export default function AdminPage() {
       setSelected(new Set());
       await refresh();
     } catch {
-      setError("Prune all failed");
+      setError(errors.pruneAll);
     } finally {
       setPruning(false);
     }
@@ -110,11 +113,7 @@ export default function AdminPage() {
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 animate-page-enter">
-      <PageHeader
-        title="Admin"
-        subtitle="Studio maintenance and diagnostics"
-        density="tight"
-      />
+      <PageHeader title="Admin" subtitle="Studio maintenance and diagnostics" density="tight" />
 
       {error && (
         <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-content-primary">
@@ -184,9 +183,7 @@ export default function AdminPage() {
                       />
                     </td>
                     <td className="px-3 py-2">
-                      <div className="font-medium text-content-primary">
-                        {p.playbook ?? "—"}
-                      </div>
+                      <div className="font-medium text-content-primary">{p.playbook ?? "—"}</div>
                       <div className="font-mono text-meta text-content-muted">
                         {p.session_id.slice(-8)}
                       </div>
