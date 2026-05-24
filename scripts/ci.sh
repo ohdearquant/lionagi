@@ -188,6 +188,13 @@ sys.exit(rc)
     echo "  SKIP: no python for skill content lint"
   fi
 
+  echo "  running pytest-based surface validation..."
+  if _has_cmd uv; then
+    uv run pytest tests/marketplace_lint.py -v --timeout=60 --no-header -q || rc=1
+  else
+    echo "  SKIP: uv not found for pytest marketplace validation"
+  fi
+
   [ $rc -eq 0 ] && echo "  marketplace lint: PASS" || { echo "  marketplace lint: FAIL"; return 1; }
 }
 
