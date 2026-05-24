@@ -1,41 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { Suspense, useEffect, useState, type ReactNode } from "react";
-import { listProjects } from "@/lib/api";
-import type { ProjectSummary } from "@/lib/types";
-
-type NavItem = {
-  label: string;
-  href: string;
-  match?: (pathname: string) => boolean;
-};
-
-const navItems: NavItem[] = [
-  { label: "Projects", href: "/projects" },
-  { label: "Schedules", href: "/schedules" },
-  { label: "Playbooks", href: "/playbooks" },
-  { label: "Agents", href: "/agents" },
-  { label: "Plugins", href: "/plugins" },
-  { label: "Shows", href: "/shows" },
-  { label: "Invocations", href: "/invocations" },
-  { label: "Runs", href: "/runs" },
-  { label: "Teams", href: "/teams" },
-  { label: "Admin", href: "/admin" },
-];
-
-function isActive(item: NavItem, pathname: string) {
-  if (item.match) {
-    return item.match(pathname);
-  }
-
-  if (item.href === "/") {
-    return pathname === "/";
-  }
-
-  return pathname === item.href || pathname.startsWith(`${item.href}/`);
-}
+import Breadcrumb from "@/components/nav/Breadcrumb";
+import NavGroup from "@/components/nav/NavGroup";
+import ProjectChip from "@/components/nav/ProjectChip";
+import { NAV_GROUPS } from "@/components/nav/types";
 
 export interface ShellProps {
   children: ReactNode;
@@ -112,56 +83,9 @@ function ThemeToggle() {
   );
 }
 
-// Global project selector — loads project list once and keeps it in sync with
-// the ?project= search param. Selecting a project sets the param on the current
-// page; clearing it removes the param entirely.
-function ProjectSelector() {
-  const router = useRouter();
-  const pathname = usePathname() ?? "/";
-  const searchParams = useSearchParams();
-  const currentProject = searchParams.get("project") ?? "";
-
-  const [projects, setProjects] = useState<ProjectSummary[]>([]);
-
-  useEffect(() => {
-    listProjects()
-      .then((data) => setProjects(data.projects))
-      .catch(() => {
-        /* silently ignore — selector degrades to empty list */
-      });
-  }, []);
-
-  function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
-    const value = e.target.value;
-    const params = new URLSearchParams(searchParams.toString());
-    if (value) {
-      params.set("project", value);
-    } else {
-      params.delete("project");
-    }
-    const qs = params.toString();
-    router.push(qs ? `${pathname}?${qs}` : pathname);
-  }
-
-  return (
-    <select
-      value={currentProject}
-      onChange={handleChange}
-      aria-label="Filter by project"
-      className="h-6 rounded border border-edge bg-surface-nav px-1.5 text-[11px] text-content-secondary focus:border-interactive-primary focus:outline-none hover:border-edge-strong transition-colors cursor-pointer"
-    >
-      <option value="">All Projects</option>
-      {projects.map((p) => (
-        <option key={p.name} value={p.name}>
-          {p.name}
-        </option>
-      ))}
-    </select>
-  );
-}
-
 export default function Shell({ children }: ShellProps) {
   const pathname = usePathname() ?? "/";
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
     <div className="min-h-screen bg-surface-base text-content-primary">
@@ -193,29 +117,11 @@ export default function Shell({ children }: ShellProps) {
             </span>
           </Link>
 
-          {/* Tab-style primary nav with underline */}
-          <nav aria-label="Primary" className="flex items-stretch gap-0.5">
-            {navItems.map((item) => {
-              const active = isActive(item, pathname);
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  aria-current={active ? "page" : undefined}
-                  className={[
-                    "relative flex items-center whitespace-nowrap px-2.5 text-[12px] font-medium transition-colors duration-150",
-                    active
-                      ? "text-content-primary"
-                      : "text-content-muted hover:text-content-secondary",
-                  ].join(" ")}
-                >
-                  {item.label}
-                  {active && (
-                    <span className="absolute inset-x-2.5 bottom-0 h-[2px] rounded-t bg-interactive-primary" />
-                  )}
-                </Link>
-              );
-            })}
+          {/* Desktop: 4-group primary nav */}
+          <nav aria-label="Primary" className="hidden items-stretch gap-0.5 md:flex">
+            {NAV_GROUPS.map((group) => (
+              <NavGroup key={group.label} group={group} pathname={pathname} />
+            ))}
           </nav>
 
           {/* Spacer */}
@@ -224,14 +130,66 @@ export default function Shell({ children }: ShellProps) {
           {/* Right cluster */}
           <div className="flex items-center gap-1.5 self-center">
             <Suspense fallback={null}>
-              <ProjectSelector />
+              <ProjectChip />
             </Suspense>
             <ThemeToggle />
+            {/* Hamburger: visible below 768px */}
+            <button
+              type="button"
+              aria-label="Open navigation menu"
+              aria-expanded={mobileOpen}
+              onClick={() => setMobileOpen((v) => !v)}
+              className="flex h-8 w-8 items-center justify-center rounded text-content-muted transition-colors hover:bg-interactive-secondary hover:text-content-primary md:hidden"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                {mobileOpen ? (
+                  <>
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </>
+                ) : (
+                  <>
+                    <line x1="3" y1="6" x2="21" y2="6" />
+                    <line x1="3" y1="12" x2="21" y2="12" />
+                    <line x1="3" y1="18" x2="21" y2="18" />
+                  </>
+                )}
+              </svg>
+            </button>
           </div>
         </div>
+
+        {/* Mobile drawer: vertical accordion of 4 groups */}
+        {mobileOpen && (
+          <div className="border-t border-edge bg-surface-nav shadow-card md:hidden">
+            {NAV_GROUPS.map((group) => (
+              <NavGroup
+                key={group.label}
+                group={group}
+                pathname={pathname}
+                mobile
+                onNavigate={() => setMobileOpen(false)}
+              />
+            ))}
+          </div>
+        )}
       </header>
 
-      <div id="main-content" tabIndex={-1} className="w-full">{children}</div>
+      <Breadcrumb />
+
+      <div id="main-content" tabIndex={-1} className="w-full">
+        {children}
+      </div>
     </div>
   );
 }

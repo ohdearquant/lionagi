@@ -5,7 +5,7 @@ import Button from "@/components/Button";
 import PageHeader from "@/components/PageHeader";
 import Timestamp from "@/components/Timestamp";
 import { getAdminDoctor, pruneAdmin } from "@/lib/api";
-import type { AdminDoctorResponse, PhantomReason, PhantomSession } from "@/lib/api";
+import type { AdminDoctorResponse, PhantomReason } from "@/lib/api";
 
 function formatBytes(value: number): string {
   if (value === 0) return "0 B";
@@ -16,9 +16,12 @@ function formatBytes(value: number): string {
 
 function reasonLabel(reason: PhantomReason): string {
   switch (reason) {
-    case "process_dead": return "Process dead";
-    case "missing_artifacts": return "Missing artifacts";
-    case "stale_lock": return "Stale lock";
+    case "process_dead":
+      return "Process dead";
+    case "missing_artifacts":
+      return "Missing artifacts";
+    case "stale_lock":
+      return "Stale lock";
   }
 }
 
@@ -32,8 +35,7 @@ function DbHealthStrip({ doctor }: { doctor: AdminDoctorResponse }) {
         state DB
       </span>
       <span>
-        <span className="tabular-nums text-content-secondary">{formatBytes(h.wal_bytes)}</span>{" "}
-        WAL
+        <span className="tabular-nums text-content-secondary">{formatBytes(h.wal_bytes)}</span> WAL
       </span>
       <span>
         <span className="tabular-nums text-content-secondary">{formatBytes(h.wal_pending)}</span>{" "}
@@ -46,7 +48,7 @@ function DbHealthStrip({ doctor }: { doctor: AdminDoctorResponse }) {
   );
 }
 
-export default function AdminPage() {
+export default function AdminMaintenancePage() {
   const [doctor, setDoctor] = useState<AdminDoctorResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -81,6 +83,14 @@ export default function AdminPage() {
 
   async function handlePruneSelected() {
     if (selected.size === 0) return;
+    const count = selected.size;
+    const noun = count === 1 ? "session" : "sessions";
+    const confirmed = window.confirm(
+      `Prune ${count} phantom ${noun}?\n\n` +
+        `Removes DB rows. Artifacts on disk are kept.\n` +
+        `Cannot be undone.`,
+    );
+    if (!confirmed) return;
     setPruning(true);
     try {
       await pruneAdmin({ session_ids: Array.from(selected) });
@@ -94,6 +104,14 @@ export default function AdminPage() {
   }
 
   async function handlePruneAll() {
+    const count = (doctor?.phantom_sessions ?? []).length;
+    const noun = count === 1 ? "session" : "sessions";
+    const confirmed = window.confirm(
+      `Prune all ${count} phantom ${noun}?\n\n` +
+        `Removes DB rows. Artifacts on disk are kept.\n` +
+        `Cannot be undone.`,
+    );
+    if (!confirmed) return;
     setPruning(true);
     try {
       await pruneAdmin({ all_phantom: true });
@@ -111,8 +129,8 @@ export default function AdminPage() {
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 animate-page-enter">
       <PageHeader
-        title="Admin"
-        subtitle="Studio maintenance and diagnostics"
+        title="Admin Maintenance"
+        subtitle="Prune phantom sessions and system maintenance"
         density="tight"
       />
 
@@ -184,9 +202,7 @@ export default function AdminPage() {
                       />
                     </td>
                     <td className="px-3 py-2">
-                      <div className="font-medium text-content-primary">
-                        {p.playbook ?? "—"}
-                      </div>
+                      <div className="font-medium text-content-primary">{p.playbook ?? "—"}</div>
                       <div className="font-mono text-meta text-content-muted">
                         {p.session_id.slice(-8)}
                       </div>
