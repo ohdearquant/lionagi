@@ -86,8 +86,8 @@ export default function AdminMaintenancePage() {
     const count = selected.size;
     const confirmed = window.confirm(
       `Prune ${count} phantom session${count === 1 ? "" : "s"}? ` +
-        `This deletes the session row(s) and any associated artifacts ` +
-        `directory. The action cannot be undone.`,
+        `This removes the session row(s) and any orphaned ` +
+        `messages from the database (artifacts on disk are left in place). The action cannot be undone.`,
     );
     if (!confirmed) return;
     setPruning(true);
@@ -106,8 +106,8 @@ export default function AdminMaintenancePage() {
     const count = (doctor?.phantom_sessions ?? []).length;
     const confirmed = window.confirm(
       `Prune ALL ${count} phantom session${count === 1 ? "" : "s"}? ` +
-        `This deletes the session row(s) and any associated artifacts ` +
-        `directory. The action cannot be undone.`,
+        `This removes the session row(s) and any orphaned ` +
+        `messages from the database (artifacts on disk are left in place). The action cannot be undone.`,
     );
     if (!confirmed) return;
     setPruning(true);
