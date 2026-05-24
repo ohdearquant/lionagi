@@ -35,6 +35,63 @@ from ._orchestration import (
     team_guidance,
 )
 
+# ── Budget preamble template ──────────────────────────────────────────────
+#
+# Injected at the START of each FlowOp's instruction when the orchestrator
+# runs with a total timeout (--timeout / playbook timeout:). Workers see
+# their proportional share of the budget so they can pace reasoning and
+# switch from research to writing before time runs out.
+#
+# The template variables are:
+#   op_index      — 1-based position of this op in the plan (display only)
+#   num_ops       — total number of non-control ops in the plan
+#   seconds       — this op's budget share in seconds (int)
+#   deadline_iso  — wall-clock deadline in ISO-8601 format (UTC)
+
+_BUDGET_PREAMBLE_TEMPLATE = """\
+[BUDGET]
+You are op {op_index} of {num_ops} in this flow. Your share of the total \
+budget is approximately {seconds} seconds (until {deadline_iso} UTC).
+- Pace your reasoning accordingly.
+- Prefer "good enough by the deadline" over "ideal but late".
+- If you find yourself >70% through your budget and still in research, \
+switch to writing the deliverable with what you have.
+- You can check the current time: `date -Iseconds`.
+[/BUDGET]
+
+"""
+
+
+def _format_budget_preamble(
+    op_index: int,
+    num_ops: int,
+    op_budget_seconds: int,
+    deadline_epoch: float,
+) -> str:
+    """Format the BUDGET preamble for a single op.
+
+    Parameters
+    ----------
+    op_index
+        1-based display index for this op within the plan.
+    num_ops
+        Total number of ops being budgeted (display only).
+    op_budget_seconds
+        This op's share of the total budget in whole seconds.
+    deadline_epoch
+        UNIX timestamp for this op's wall-clock deadline.
+    """
+    import datetime
+
+    deadline_dt = datetime.datetime.fromtimestamp(deadline_epoch, tz=datetime.timezone.utc)
+    deadline_iso = deadline_dt.strftime("%Y-%m-%dT%H:%M:%S")
+    return _BUDGET_PREAMBLE_TEMPLATE.format(
+        op_index=op_index,
+        num_ops=num_ops,
+        seconds=op_budget_seconds,
+        deadline_iso=deadline_iso,
+    )
+
 
 async def _resolve_invocation_terminal_flow(
     invocation_id: str,
@@ -258,6 +315,16 @@ class FlowOp(HashableModel):
             "Set True to make this a control/critic checkpoint. Control "
             "ops produce a FlowControlVerdict and may trigger re-planning. "
             "At most one control op per round."
+        ),
+    )
+    budget_weight: float = Field(
+        default=1.0,
+        description=(
+            "Relative weight for budget allocation among ops when a total "
+            "timeout is configured. The per-op share is computed as "
+            "``(total_budget / sum_of_all_weights) * budget_weight``. "
+            "Critic or lightweight ops can use a lower weight (e.g. 0.5) "
+            "to leave more time for heavy implementation ops."
         ),
     )
 
@@ -553,6 +620,7 @@ async def _run_flow(
         theme=theme,
         bare=bare,
         fast=fast,
+        total_budget=timeout,
     )
 
     # ADR-0012: `flow` and `play` are distinct invocation kinds. A playbook
@@ -966,6 +1034,7 @@ async def _run_flow_inner(
         dep_nodes: list[str],
         op_id_to_agent: dict[str, str],
         field_models=None,
+        budget_preamble: str | None = None,
     ) -> str:
         ctx: list = [{"original_task": prompt}]
         artifact_note = (
@@ -1005,10 +1074,17 @@ async def _run_flow_inner(
         if w_effort:
             ctx.append({"effort_guidance": EFFORT_MAP.get(w_effort, "")})
 
+        # Prepend BUDGET preamble when a time budget was configured. The
+        # preamble is injected at the start of the instruction text so the
+        # worker sees it before any domain-specific framing.
+        instruction = op.instruction
+        if budget_preamble:
+            instruction = budget_preamble + instruction
+
         add_kw = dict(
             branch=branch,
             depends_on=dep_nodes,
-            instruction=op.instruction,
+            instruction=instruction,
             guidance=op.guidance or agent.guidance,
             context=ctx,
         )
@@ -1054,6 +1130,28 @@ async def _run_flow_inner(
     ctrl_note = f" ({len(control_ops)} control)" if control_ops else ""
     progress(f"Executing DAG: {len(plan.agents)} agents / {len(regular_ops)} ops{ctrl_note}...")
 
+    # ── Budget preamble computation ──────────────────────────────────
+    # When a total timeout was configured, split it proportionally across
+    # regular ops by their budget_weight (default 1.0 = equal share).
+    # Control ops are excluded — they are bookkeeping, not deliverables.
+    _op_budget_preambles: dict[str, str] = {}
+    if env.total_budget and regular_ops:
+        _sum_weights = sum(op.budget_weight for op in regular_ops)
+        _budget_start = time.time()
+        for _idx, _op in enumerate(regular_ops, 1):
+            _share = int((env.total_budget / _sum_weights) * _op.budget_weight)
+            # Deadline = wall-clock start + this op's cumulative offset.
+            # We use a simple "start + total" deadline: every op sees the
+            # same wall-clock deadline (the flow's global deadline). Each
+            # op's *share* tells it how much of that window is "its turn".
+            _deadline = _budget_start + env.total_budget
+            _op_budget_preambles[_op.id] = _format_budget_preamble(
+                op_index=_idx,
+                num_ops=len(regular_ops),
+                op_budget_seconds=_share,
+                deadline_epoch=_deadline,
+            )
+
     for op in regular_ops:
         a = agent_spec_by_id[op.agent_id]
         b = agents_by_id[op.agent_id]
@@ -1061,7 +1159,15 @@ async def _run_flow_inner(
         dep_nodes = [op_to_node[d] for d in (op.depends_on or []) if d in op_to_node]
         if not dep_nodes:
             dep_nodes = [plan_root]
-        node_id = _add_op_node(op, a, p, b, dep_nodes, op_id_to_agent)
+        node_id = _add_op_node(
+            op,
+            a,
+            p,
+            b,
+            dep_nodes,
+            op_id_to_agent,
+            budget_preamble=_op_budget_preambles.get(op.id),
+        )
         op_to_node[op.id] = node_id
         op_meta[op.id] = {
             "agent_id": op.agent_id,
