@@ -11,6 +11,8 @@ from .cancel import (
     move_on_at,
 )
 from .errors import (
+    cache_cancelled_exc_class,
+    cancelled_exc_classes,
     get_cancelled_exc_class,
     is_cancelled,
     non_cancel_subgroup,
@@ -32,6 +34,8 @@ __all__ = (
     "fail_at",
     "move_on_at",
     "effective_deadline",
+    "cache_cancelled_exc_class",
+    "cancelled_exc_classes",
     "get_cancelled_exc_class",
     "is_cancelled",
     "non_cancel_subgroup",
