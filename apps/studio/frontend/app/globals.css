@@ -21,7 +21,7 @@
     /* ─── Content (text) ─── */
     --content-primary: #18181b;
     --content-secondary: #52525b;
-    --content-muted: #6e6e7b;
+    --content-muted: #686875; /* was #6e6e7b; darkened to meet 4.5:1 on surface-input (#f0f0ee) */
     --content-inverse: #ffffff;
 
     /* ─── Edge (borders, dividers) ─── */
@@ -77,7 +77,7 @@
     --dag-edge-pending: #d4d4d4;
     --dag-edge-done: #16a34a;
     --dag-hover-border: #737373;
-    --dag-assign-text: #c4c4c4;
+    --dag-assign-text: #707070; /* was #c4c4c4; darkened to meet 4.5:1 on dag-pending-bg (#f5f5f4) */
   }
 
   /* ── Dark theme ── */
@@ -154,7 +154,7 @@
     --dag-edge-pending: #2d2d32;
     --dag-edge-done: #22c55e;
     --dag-hover-border: #62626e;
-    --dag-assign-text: #3e3e45;
+    --dag-assign-text: #848484; /* was #3e3e45; lightened to meet 4.5:1 on dag-pending-bg (#1c1c1e) */
   }
 }
 
