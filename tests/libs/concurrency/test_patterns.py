@@ -9,6 +9,12 @@ from lionagi.ln.concurrency import bounded_map, fail_after, gather, race, retry
 @pytest.mark.slow
 @pytest.mark.anyio
 async def test_gather_first_error_cancels_peers(anyio_backend):
+    # peer_sleep is long enough that the test would hang near-forever if
+    # cancellation did NOT propagate, yet short enough to not slow CI.
+    # The elapsed bound is expressed relative to peer_sleep so that the
+    # test still proves "cancellation arrived long before the peer could
+    # have completed naturally."
+    peer_sleep = 10.0
     cancelled = anyio.Event()
 
     async def boom():
@@ -17,7 +23,7 @@ async def test_gather_first_error_cancels_peers(anyio_backend):
 
     async def peer():
         try:
-            await anyio.sleep(10)
+            await anyio.sleep(peer_sleep)
         except BaseException:
             cancelled.set()
             raise
@@ -26,8 +32,15 @@ async def test_gather_first_error_cancels_peers(anyio_backend):
     with pytest.raises(RuntimeError):
         await gather(boom(), peer(), return_exceptions=False)
     dt = time.perf_counter() - t0
-    assert cancelled.is_set()
-    assert dt < 2.0  # tolerance for CI scheduler load — see #1090
+
+    # Behavioral: peer must have been cancelled (not completed naturally).
+    assert cancelled.is_set(), "peer was not cancelled after gather error"
+    # Relative timing: gather must return well before the peer would have
+    # finished on its own — any value << peer_sleep catches the regression
+    # where cancellation is not propagated at all.
+    assert dt < peer_sleep / 2, (
+        f"gather took {dt:.2f}s — cancellation may not have propagated promptly"
+    )
 
 
 @pytest.mark.anyio

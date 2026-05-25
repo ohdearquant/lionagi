@@ -426,21 +426,35 @@ async def test_run_honors_caller_timeout_on_slow_stream():
     would otherwise stream forever."""
     import time
 
-    model, _ = _make_slow_cli_model(chunk_delay=0.5, n_chunks=20)
+    # chunk_delay is large so that timeout (0.15s) fires before ANY chunk
+    # arrives.  Keeping it large (3.0s) also provides CI-tolerant headroom
+    # for the elapsed-time bound below.
+    chunk_delay = 3.0
+    caller_timeout = 0.15
+    model, _ = _make_slow_cli_model(chunk_delay=chunk_delay, n_chunks=20)
     branch = Branch()
     branch.chat_model = model
 
+    stream_responses: list = []
     started = time.monotonic()
-    # 0.15s ceiling — first chunk lands at 0.5s, so we MUST hit the timeout
-    # before any chunk arrives; safety budget 1s.
     with pytest.raises(TimeoutError):
-        async for _ in run(branch, "go", RunParam(imodel_kw={"timeout": 0.15})):
-            pass
+        async for msg in run(branch, "go", RunParam(imodel_kw={"timeout": caller_timeout})):
+            if isinstance(msg, AssistantResponse):
+                stream_responses.append(msg)
     elapsed = time.monotonic() - started
 
-    # Should fire close to 0.15s, well under the 0.5s first chunk delay.
-    # Ceiling is generous for CI scheduler load — see #1090.
-    assert elapsed < 3.0, f"timeout fired too late: {elapsed:.2f}s"
+    # Behavioral: timeout must fire before the stream produces any content.
+    # run() yields an Instruction first (always), then AssistantResponse per chunk.
+    # If timeout fires correctly, no AssistantResponse should be yielded.
+    assert stream_responses == [], (
+        f"timeout fired after {len(stream_responses)} stream response(s) — "
+        "timeout is not enforced before first chunk"
+    )
+    # Relative timing: elapsed must be less than one chunk interval,
+    # which proves the timeout tripped before the provider would have sent anything.
+    assert elapsed < chunk_delay, (
+        f"timeout fired at {elapsed:.2f}s but first chunk was due at {chunk_delay}s"
+    )
 
 
 async def test_run_no_timeout_when_kwarg_absent():
@@ -534,8 +548,13 @@ async def test_imodel_stream_propagates_cancellation():
     not swallow it via a yield-in-finally."""
     import anyio
 
-    from lionagi.protocols.generic.event import Event, EventStatus
+    from lionagi.protocols.generic.event import EventStatus
     from lionagi.service.connections.api_calling import APICalling
+
+    # chunk_delay is large so fail_after(cancel_after) fires before ANY chunk
+    # arrives.  Keeping it large also gives CI-tolerant headroom for elapsed bound.
+    chunk_delay = 3.0
+    cancel_after = 0.1
 
     m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
 
@@ -546,7 +565,7 @@ async def test_imodel_stream_propagates_cancellation():
 
         async def stream(self, request=None, extra_headers=None, **kw):
             for _ in range(100):
-                await anyio.sleep(0.5)
+                await anyio.sleep(chunk_delay)
                 yield StreamChunk(type="text", content="x")
 
     m.endpoint = SlowEndpoint()
@@ -558,7 +577,7 @@ async def test_imodel_stream_propagates_cancellation():
 
     async def fake_core_stream():
         for _ in range(100):
-            await anyio.sleep(0.5)
+            await anyio.sleep(chunk_delay)
             yield StreamChunk(type="text", content="x")
 
     api_call.stream = fake_core_stream
@@ -574,11 +593,21 @@ async def test_imodel_stream_propagates_cancellation():
 
     import time
 
+    chunks_yielded: list = []
     started = time.monotonic()
     with pytest.raises(TimeoutError):
-        with anyio.fail_after(0.1):
-            async for _ in m.stream(api_call=api_call):
-                pass
+        with anyio.fail_after(cancel_after):
+            async for chunk in m.stream(api_call=api_call):
+                chunks_yielded.append(chunk)
     elapsed = time.monotonic() - started
-    # Generous ceiling for CI scheduler load — see #1090.
-    assert elapsed < 3.0, f"cancellation took too long: {elapsed:.2f}s"
+
+    # Behavioral: cancellation must propagate — no chunks should have been yielded.
+    assert chunks_yielded == [], (
+        f"stream yielded {len(chunks_yielded)} chunk(s) after cancellation — "
+        "CancelledError was swallowed instead of propagated"
+    )
+    # Relative timing: cancellation must surface before the first chunk interval,
+    # proving the generator did not block on a yield-in-finally.
+    assert elapsed < chunk_delay, (
+        f"cancellation surfaced at {elapsed:.2f}s but first chunk was due at {chunk_delay}s"
+    )

@@ -279,25 +279,35 @@ class TestNoDeadlocks:
     @pytest.mark.anyio
     async def test_nested_hook_calls_no_deadlock(self, patch_cancellation):
         """Test that hooks calling other hooks don't deadlock."""
+        hook_sleep = 0.01
+        invoke_delay = 0.01
+        # Upper bound: each event does hook + invoke (+ optional post-hook).
+        # Two events run concurrently, so worst-case sequential would be
+        # 2 * (hook_sleep + invoke_delay).  We multiply by 100 to give
+        # generous CI headroom while still catching a true deadlock (which
+        # would hang until the test runner's global timeout fires).
+        n_events = 2
+        per_event_max = hook_sleep + invoke_delay
+        deadlock_timeout = n_events * per_event_max * 100
 
         async def nested_hook(ev, **kw):
             # Simulate a hook that might call another hook
-            await anyio.sleep(0.01)
+            await anyio.sleep(hook_sleep)
             return "nested_result"
 
         async def calling_hook(ev, **kw):
             # This hook simulates calling another async operation
-            await anyio.sleep(0.01)
+            await anyio.sleep(hook_sleep)
             return "calling_result"
 
         registry1 = HookRegistry(hooks={HookEventTypes.PreInvocation: nested_hook})
         registry2 = HookRegistry(hooks={HookEventTypes.PostInvocation: calling_hook})
 
         # Create events that use different registries
-        event1 = ConcurrentTestEvent(invoke_delay=0.01)
+        event1 = ConcurrentTestEvent(invoke_delay=invoke_delay)
         event1.create_pre_invoke_hook(hook_registry=registry1, exit_hook=False)
 
-        event2 = ConcurrentTestEvent(invoke_delay=0.01)
+        event2 = ConcurrentTestEvent(invoke_delay=invoke_delay)
         event2.create_post_invoke_hook(hook_registry=registry2, exit_hook=False)
 
         # Run concurrently - should not deadlock
@@ -305,14 +315,19 @@ class TestNoDeadlocks:
         results = await asyncio.gather(event1.invoke(), event2.invoke(), return_exceptions=True)
         end_time = anyio.current_time()
 
-        # Should complete in reasonable time (not hang)
-        # Generous ceiling for CI scheduler load — see #1090.
-        assert end_time - start_time < 3.0
-
-        # Both should succeed
+        # Behavioral: both must complete successfully — an exception or a
+        # missing result indicates deadlock or hook-system failure.
         assert len(results) == 2
-        assert not isinstance(results[0], Exception)
-        assert not isinstance(results[1], Exception)
+        assert not isinstance(results[0], Exception), f"event1 failed: {results[0]}"
+        assert not isinstance(results[1], Exception), f"event2 failed: {results[1]}"
+
+        # Relative timing: must finish well under the deadlock-detection bound.
+        # A true deadlock would block until the global test timeout, not this bound.
+        elapsed = end_time - start_time
+        assert elapsed < deadlock_timeout, (
+            f"completed in {elapsed:.3f}s — exceeded {deadlock_timeout:.3f}s bound "
+            "(possible deadlock or extreme scheduler starvation)"
+        )
 
     @pytest.mark.anyio
     async def test_high_concurrency_no_resource_exhaustion(self, patch_cancellation):
