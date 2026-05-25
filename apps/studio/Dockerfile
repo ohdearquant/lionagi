@@ -13,7 +13,13 @@ WORKDIR /build
 COPY apps/studio/frontend/package.json apps/studio/frontend/package-lock.json* ./
 RUN npm ci --legacy-peer-deps 2>/dev/null || npm install --legacy-peer-deps
 COPY apps/studio/frontend/ ./
-ENV NEXT_PUBLIC_STUDIO_API_BASE=""
+# Bake the backend URL into the client bundle. NEXT_PUBLIC_* vars are
+# resolved at build time, so the empty string used previously became the
+# literal URL prefix in production builds — fetch('/api/runs') then hit
+# the Next.js server on :3000 (which doesn't proxy /api) and returned 404.
+# Pointing at localhost:8765 lets the browser reach the FastAPI backend
+# directly via the host port mapping.
+ENV NEXT_PUBLIC_STUDIO_API_BASE="http://localhost:8765"
 RUN npm run build
 
 # ── Stage 2: Final image ─────────────────────────────────────────────────────
