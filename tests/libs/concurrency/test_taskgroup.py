@@ -155,10 +155,11 @@ async def test_taskgroup_cancel_scope_propagation(anyio_backend):
     inner_cancelled = False
     outer_started = anyio.Event()
 
-    async def inner_task():
+    async def inner_task(*, task_status=anyio.TASK_STATUS_IGNORED):
         nonlocal inner_cancelled
+        task_status.started()  # unblocks outer_task's inner_tg.start() call
         try:
-            await anyio.sleep(10)
+            await anyio.sleep_forever()
         except BaseException:
             inner_cancelled = True
             raise
@@ -167,16 +168,18 @@ async def test_taskgroup_cancel_scope_propagation(anyio_backend):
         nonlocal outer_cancelled
         try:
             async with create_task_group() as inner_tg:
-                inner_tg.start_soon(inner_task)
-                outer_started.set()  # signal: outer is inside inner task group
-                await anyio.sleep(10)
+                # start() blocks until inner_task calls task_status.started(),
+                # guaranteeing inner_task is inside its try/except before we signal.
+                await inner_tg.start(inner_task)
+                outer_started.set()
+                await anyio.sleep_forever()
         except BaseException:
             outer_cancelled = True
             raise
 
     async with create_task_group() as tg:
         tg.start_soon(outer_task)
-        await outer_started.wait()  # deterministic: wait until outer is running
+        await outer_started.wait()  # deterministic: inner_task is running
         tg.cancel_scope.cancel()
 
     assert outer_cancelled
