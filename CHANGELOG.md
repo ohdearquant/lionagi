@@ -4,6 +4,22 @@
 All notable changes to lionagi are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.26.10] - 2026-05-25
+
+Studio launcher: auto-mount symlink targets in `~/.lionagi/*/` so the Library tab works for users with symlinked content.
+
+### Fixed
+
+- **`li studio` launcher — dangling symlinks inside container** — many power-user
+  setups symlink `~/.lionagi/agents/*.md`, `~/.lionagi/skills/*`, etc. to
+  content living elsewhere on the host (e.g. a `firm/` content repo). When
+  `~/.lionagi` is bind-mounted into the container, those symlinks point at
+  paths the container can't see — ENOENT → empty Library / Agents / Skills /
+  Playbooks / Teams views. The launcher now walks `~/.lionagi/{agents,skills,
+  playbooks,teams}`, resolves any symlinks via `Path.resolve(strict=True)`,
+  and adds read-only bind mounts for each unique target parent directory so
+  the symlinks resolve identically inside the container.
+
 ## [0.26.9] - 2026-05-25
 
 Hotfix for empty Studio Library / Skills / Agents views in the Docker image.
