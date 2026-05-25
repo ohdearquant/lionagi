@@ -74,6 +74,10 @@ class RunReasons:
     ABORTED_USER = "run.aborted.user"
     CANCELLED_SYSTEM = "run.cancelled.system"
     CANCELLED_ORCHESTRATOR = "run.cancelled.orchestrator"
+    # `li kill` — Phase 2 reason codes (issue #1094)
+    CANCELLED_MANUAL_KILL = "run.cancelled.manual_kill"
+    CANCELLED_FORCE_KILL = "run.cancelled.force_kill"
+    CANCELLED_STALE_AUTO = "run.cancelled.stale_auto"
 
 
 class SessionReasons:
