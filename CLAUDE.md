@@ -78,7 +78,6 @@ Modules: chat, parse, operate, ReAct, select, interpret, communicate, run, act. 
 
 - `cli/agent.py` — `li agent`: one-shot or resumed turn
 - `cli/team.py` — `li team`: inbox (`~/.lionagi/teams/{id}.json`), concurrent writes via `fcntl.flock`
-- `cli/schedule.py` — `li schedule`: CRUD + manual trigger for scheduled runs (see ADR-0027)
 - `cli/_project.py` — `detect_project(cwd)`: returns `(project_name, project_source)` via detection cascade (see ADR-0026)
 - `cli/orchestrate/` — `li o fanout` / `li o flow`:
   - `flow.py` — FlowAgent + FlowOp DAG. `--team-mode` enables `li team` routing mid-pipeline.
