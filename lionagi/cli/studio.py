@@ -154,23 +154,26 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
     print("Press Ctrl+C to stop")
     print()
 
+    # Mount Claude Code's third-party plugin cache (if present) so Studio's
+    # Library tab can enumerate installed plugins beyond the bundled marketplace.
+    claude_plugins = Path.home() / ".claude" / "plugins"
+    docker_cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-p",
+        f"{api_port}:8765",
+        "-p",
+        f"{frontend_port}:3000",
+        "-v",
+        f"{lionagi_home}:/root/.lionagi",
+    ]
+    if claude_plugins.is_dir():
+        docker_cmd.extend(["-v", f"{claude_plugins}:/root/.claude/plugins:ro"])
+    docker_cmd.extend(["--name", "lion-studio", _STUDIO_IMAGE])
+
     try:
-        subprocess.run(  # noqa: S603
-            [  # noqa: S607
-                "docker",
-                "run",
-                "--rm",
-                "-p",
-                f"{api_port}:8765",
-                "-p",
-                f"{frontend_port}:3000",
-                "-v",
-                f"{lionagi_home}:/root/.lionagi",
-                "--name",
-                "lion-studio",
-                _STUDIO_IMAGE,
-            ],
-        )
+        subprocess.run(docker_cmd, check=False)  # noqa: S603
     except KeyboardInterrupt:
         print("\nStopping Lion Studio...")
         subprocess.run(  # noqa: S603

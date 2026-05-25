@@ -4,6 +4,30 @@
 All notable changes to lionagi are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.26.9] - 2026-05-25
+
+Hotfix for empty Studio Library / Skills / Agents views in the Docker image.
+
+### Fixed
+
+- **Studio Docker image — empty Library tab** — `apps/studio/server/services/plugins.py`
+  resolves `MARKETPLACE_DIR = _REPO_ROOT / "marketplace"` and
+  `MARKETPLACE_MANIFEST = _REPO_ROOT / ".claude-plugin" / "marketplace.json"`,
+  where `_REPO_ROOT` is `/app` inside the container. The Dockerfile previously
+  COPYed only `lionagi/`, `apps/studio/server/`, and the built frontend — the
+  bundled marketplace and plugin manifest were missing from the image. Now
+  copied at `/app/marketplace/` and `/app/.claude-plugin/`.
+
+- **`li studio` launcher — third-party plugins** — also mounts
+  `~/.claude/plugins:/root/.claude/plugins:ro` (when the host directory exists)
+  so Studio can enumerate Claude Code third-party plugins from the user's
+  cache, not just the bundled marketplace.
+
+### No Python package changes
+
+The Python package surface is identical to v0.26.7. This bump exists only to
+publish a corrected Docker image and an updated `li studio` launcher.
+
 ## [0.26.8] - 2026-05-25
 
 Hotfix for the Lion Studio Docker image.
