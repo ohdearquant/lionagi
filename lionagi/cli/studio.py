@@ -170,6 +170,42 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
     ]
     if claude_plugins.is_dir():
         docker_cmd.extend(["-v", f"{claude_plugins}:/root/.claude/plugins:ro"])
+
+    # Auto-discover symlink targets in ~/.lionagi/{agents,skills,playbooks,teams}
+    # and mount their parent directories read-only so Studio can follow the
+    # symlinks inside the container. Many power-user setups symlink content
+    # from external project dirs (e.g. ~/projects/firm/agents/*) into
+    # ~/.lionagi/agents/ — without these extra mounts the symlinks dangle.
+    symlink_mounts: set[Path] = set()
+    for subdir_name in ("agents", "skills", "playbooks", "teams"):
+        subdir = lionagi_home / subdir_name
+        if not subdir.is_dir():
+            continue
+        for entry in subdir.iterdir():
+            if not entry.is_symlink():
+                continue
+            try:
+                target = entry.resolve(strict=True)
+            except (OSError, RuntimeError):
+                continue  # broken symlink — skip
+            # Mount the target's parent directory at its real host path so the
+            # symlink resolves identically inside the container. For directory
+            # targets, mount the target itself.
+            mount_src = target if target.is_dir() else target.parent
+            symlink_mounts.add(mount_src)
+
+    for mount_src in sorted(symlink_mounts):
+        # Same host path inside the container so the symlink target string
+        # in ~/.lionagi/* resolves correctly. Read-only — Studio should
+        # never write to source-of-truth project dirs.
+        docker_cmd.extend(["-v", f"{mount_src}:{mount_src}:ro"])
+
+    if symlink_mounts:
+        print(f"Mounted {len(symlink_mounts)} symlink target(s) for Library access:")
+        for m in sorted(symlink_mounts):
+            print(f"  {m} (ro)")
+        print()
+
     docker_cmd.extend(["--name", "lion-studio", _STUDIO_IMAGE])
 
     try:
