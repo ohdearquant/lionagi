@@ -7,10 +7,10 @@
 
 ## Context
 
-ADR-0033 introduces capabilities as the declarative grant. This ADR is about
-*where* those grants are checked at runtime.
+ADR-0033 specifies the declarative grant. This document specifies the
+enforcement points at which those grants are validated at runtime.
 
-An audit of the existing hook surface (2026-05-25) found four hook systems:
+A review of the existing hook surface (2026-05-25) identifies four hook systems:
 
 | System | File | Status | What it sees |
 |---|---|---|---|
@@ -20,8 +20,9 @@ An audit of the existing hook surface (2026-05-25) found four hook systems:
 | `HookBus` (ADR-0023 Phase 1) | `lionagi/hooks/` | **shipped but not wired** | 11 `HookPoint` events including `TOOL_PRE`, `BRANCH_CREATE`, `SESSION_START` |
 
 ADR-0023b/c (the wiring PRs that hook `HookBus` into CLI / iModel) are not
-yet tracked as open issues. We do **not** need to wait for them — the existing
-surfaces are sufficient for 0.27.0 governance.
+yet tracked as open issues. Implementation of this ADR does not depend on
+those wiring PRs; the existing hook surfaces are sufficient for 0.27.0
+governance.
 
 Additional finding: the `error:` phase in `AgentConfig` is declared but never
 queried by `_tool_hooks()` at `factory.py:138-143`. This is dead code that
@@ -95,8 +96,8 @@ if hook_bus := _resolve_hook_bus():
     hook_bus.emit(HookPoint.BRANCH_CREATE, branch=self, parent_caps=...)
 ```
 
-Same for `SESSION_START` in `lionagi/cli/state.py`. These are 1-2 line
-additions and unblock all the HookBus-shipped governance.
+Same for `SESSION_START` in `lionagi/cli/state.py`. Both are single-line
+additions that activate the shipped HookBus governance.
 
 ### 5. Memory-write enforcement → new branch hook
 
@@ -137,35 +138,37 @@ proves out of scope for 0.27.0, delete the dead phase instead.
 - Capability checks live in one module (`lionagi/governance/enforcement.py`).
   Reviewable, testable, replaceable.
 - Capability denials are first-class log events, queryable via khive.
-- Subagent inheritance is enforced at branch construction (BRANCH_CREATE hook)
-  with no scattered checks.
+- Sub-agent capability inheritance is enforced at branch construction
+  (BRANCH_CREATE hook) without dispersed guard sites.
 - The fix for the unwired BRANCH_CREATE / SESSION_START emit sites is a
   side-benefit beyond governance.
 
 **Negative**
 
-- Enforcement is scattered across three hook layers (security_pre, PreInvocation,
-  PreEventCreate). The governance module must keep its mental model
-  consistent across all three.
-- Hooks that mutate state (e.g. PreEventCreate adjusting `allowed_tools` for
-  claude_code) make the request payload non-obvious from reading the call
-  site. Documented behavior, but a footgun.
-- Tying governance to the existing hook surface means HookRegistry changes
-  could break governance — coupling cost.
+- Enforcement is distributed across three hook layers (security_pre,
+  PreInvocation, PreEventCreate). The governance module must maintain a
+  consistent model across all three layers.
+- Hooks that mutate state (e.g., the PreEventCreate hook adjusting
+  `allowed_tools` for the claude_code provider) introduce indirection: the
+  effective request payload is not fully derivable from the call site. This
+  behavior is documented but represents a non-trivial source of operational
+  confusion.
+- Coupling governance to the existing hook surface means HookRegistry changes
+  carry a risk of breaking governance — an explicit coupling cost.
 
 ## Alternatives Considered
 
 | Alternative | Why Rejected |
 |---|---|
 | Wait for ADR-0023b/c HookBus wiring | Delays 0.27.0 indefinitely; existing surfaces are sufficient |
-| Build a new `PolicyEngine` independent of hooks | Two enforcement systems = drift; hooks already fire at the right points |
+| Build a new `PolicyEngine` independent of hooks | Two enforcement systems introduce drift; the existing hooks already fire at the required enforcement points |
 | Enforce only at iModel layer (single point) | Misses tool-call gates, can't redact tool args, can't constrain spawn |
 | Enforce only at tool-call layer | Misses model-cost caps, misses agentic-CLI permission projection |
 | Use middleware decorators on tools | Less observable than hooks (no event log); duplicates the hook semantics |
 
 ## References
 
-- ADR-0023: Unified hook system (this ADR is the implementation, not the spec)
+- ADR-0023: Unified hook system (this ADR specifies the enforcement layer; ADR-0023 specifies the hook system itself)
 - ADR-0033: Agent capability declarations (this ADR enforces those)
 - ADR-0035: Capability projection for agentic CLI providers (where (3) gets
   its mapping table)

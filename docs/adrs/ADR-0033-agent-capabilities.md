@@ -7,31 +7,33 @@
 
 ## Context
 
-Agents in lionagi can do anything their tools allow: shell out, edit files,
-write to memory, spawn branches, hit external APIs. Today, the safety surface
-is a mix of:
+Agents in lionagi can perform any action their registered tools permit: shell
+execution, file editing, memory writes, branch spawning, and external API
+calls. The current safety surface is a mix of:
 
 - Hard-coded `guard_paths` / `guard_destructive` hooks attached by the `coding`
   preset (`lionagi/agent/hooks.py`)
 - A `PermissionPolicy` with `allowlist` / `denylist` / `confirm` modes
   (`lionagi/agent/permissions.py`) — wired only when explicitly attached
 - Per-agent profiles in `~/.lionagi/agents/{name}.md` that declare model and
-  prompt but not what the agent is *allowed* to do
+  prompt but not what the agent is *permitted* to do
 - For agentic CLI providers (claude_code / codex / gemini_code / pi), safety
   flags (`permission_mode`, `allowed_tools`, `sandbox`, `yolo`) are passed
   ad-hoc via `PROVIDER_YOLO_KWARGS` and CLI flags — not declared per agent
 
-This is fine when humans write the agent profiles by hand. It is brittle when
-agents spawn agents (subagent tool, FlowAgent, fanout) — the parent has no
-canonical way to declare "this child can read but not write" or "this child
-gets the memory tools but not bash."
+The current approach is workable when agent profiles are authored manually.
+It becomes brittle when agents spawn agents (subagent tool, FlowAgent, fanout)
+— the parent has no canonical mechanism to declare "this child may read but not
+write" or "this child receives the memory tools but not bash."
 
 ### Triggering observation
 
-PR #1151 added `lionagi.testing` so the CLI can be tested without real API
-calls. But the test stories that justify the new infrastructure all reduce to
-"is this agent allowed to do X?" — and that question has no first-class
-representation in the codebase today.
+The introduction of a test infrastructure layer for the CLI (enabling
+end-to-end testing without live API calls) surfaced a recurring question in
+every test scenario: "is this agent permitted to perform action X?" That
+question has no first-class representation in the codebase. Each test story
+is forced to reverse-engineer permission boundaries from ad-hoc hook
+configurations rather than reading a single declared capability set.
 
 ## Decision
 
@@ -61,8 +63,8 @@ class Capability:
 | `model.*` | `model.invoke`, `model.cost_max_usd:N` |
 | `network.*` | `network.http`, `network.mcp` |
 
-Closed set — agents cannot invent new capability names. New capabilities require
-an ADR amendment.
+The vocabulary is a closed set; agents may not introduce capability names
+outside this list. Extending the vocabulary requires an ADR amendment.
 
 ### Declaration sites
 
@@ -83,7 +85,7 @@ constraints:
 ---
 ```
 
-Plus a Python builder for programmatic use:
+A Python builder is also provided for programmatic construction:
 
 ```python
 from lionagi.governance import Capability, CapabilitySet
@@ -126,27 +128,27 @@ parent to hold `tool.subagent.elevate` (separate cap, not in v0).
 
 **Negative**
 
-- Adds a layer agents have to declare. Existing agent profiles need migration
-  (default to `CapabilitySet.minimal()` plus whatever tools they already
-  register).
-- A closed capability vocabulary needs maintenance as new tool families ship.
+- Introduces an additional declaration surface for agent authors. Existing
+  agent profiles require migration (defaulting to `CapabilitySet.minimal()`
+  plus whatever tools they already register).
+- A closed capability vocabulary requires ongoing maintenance as new tool
+  families ship.
 
 ## Alternatives Considered
 
 | Alternative | Why Rejected |
 |---|---|
-| Keep ad-hoc hooks (`guard_paths`, etc.) | No single surface; "what can this agent do" is unanswerable without reading Python |
-| Use `PermissionPolicy` as the only mechanism | It's tool-args focused; doesn't cover memory writes, branch spawn, model cost |
-| Capability strings only (no constraints) | Loses path scoping, exec allowlists, cost caps — every governance system needs constraints |
-| Open vocabulary (any string) | Drift across projects; impossible to audit; security teams can't enumerate |
-| Bind capabilities to roles instead of agents | Roles (researcher/coder/etc.) are useful presets but agents are the unit that holds capabilities; ADR conflates the two if it picks roles |
+| Keep ad-hoc hooks (`guard_paths`, etc.) | No single surface; the question "what is this agent permitted to do?" is unanswerable without reading Python source |
+| Use `PermissionPolicy` as the only mechanism | Focused on tool-argument filtering; does not cover memory writes, branch spawning, or model cost |
+| Capability strings only (no constraints) | Loses path scoping, exec allowlists, and cost caps; any practical governance system requires constraint parameters |
+| Open vocabulary (any string) | Produces naming drift across projects; the granted surface is impossible to enumerate and audit |
+| Bind capabilities to roles instead of agents | Roles (researcher, coder, etc.) are useful presets but the agent is the runtime unit that holds capabilities; conflating the two overloads role semantics |
 
 ## References
 
-- ADR-0023: Unified hook system (governance plugs into the hooks defined there)
-- ADR-0028: Status reason model (capability denials use the reason taxonomy)
-- ADR-0034: Hook-based governance enforcement (how capabilities are checked)
-- ADR-0035: Capability projection for agentic CLI providers
-- `lionagi/agent/permissions.py`: existing `PermissionPolicy` — subsumed
-- `lionagi/agent/hooks.py`: existing `guard_*` hooks — re-expressed as
-  capability constraints
+- [ADR-0023](ADR-0023-unified-hook-system.md) — Unified hook system; capability enforcement gates plug into the hooks defined there.
+- [ADR-0028](ADR-0028-status-reason-model.md) — Status reason model; capability denials emit reason codes drawn from that taxonomy.
+- [ADR-0034](ADR-0034-hook-based-governance-enforcement.md) — Hook-based governance enforcement; specifies how capability checks are evaluated at runtime.
+- [ADR-0035](ADR-0035-cli-provider-capability-projection.md) — Capability projection for agentic CLI providers (claude_code, codex, gemini_code, pi).
+- `lionagi/agent/permissions.py` — Existing `PermissionPolicy`; subsumed by the capability model introduced here.
+- `lionagi/agent/hooks.py` — Existing `guard_*` hooks; re-expressed as capability constraints under this ADR.

@@ -7,27 +7,24 @@
 
 ## Context
 
-Earlier drafts of this ADR proposed shipping a lionagi-side wrapper module
-that re-exposed external toolkit verbs (memory, knowledge graph, GTD, etc.)
-as agent tools. That approach was wrong:
+External MCP-exposing services (memory toolkits, knowledge graph services,
+task management systems, etc.) already ship their own MCP servers. A
+lionagi-side wrapper module that re-exposes those verbs as Python callables
+would duplicate surface area and drift as the upstream evolves.
 
-1. **External toolkits already ship their own MCP servers.** Re-wrapping their
-   verbs in lionagi duplicates surface area and drifts as the upstream evolves.
-2. **Every provider lionagi targets (Claude Code, codex, etc.) already has its
-   own MCP / plugin configuration mechanism** — Claude Code's `.mcp.json`,
-   codex's MCP config, and so on. Users wiring an external toolkit do it
-   through the provider's native config path, not through a lionagi-specific
-   layer.
-3. **Lionagi already discovers MCP tools** via
-   `ActionManager.register_mcp_server` (`lionagi/protocols/action/manager.py:256-310`)
-   and `load_mcp_config` (line 386). Given a server config dict, it
-   auto-discovers and registers all tools with full Pydantic validation. No
-   new code needed.
+Two existing mechanisms already solve the integration problem without new
+code:
 
-The right integration is **no lionagi-side wrapper at all**: let users
-configure external toolkits through their provider's existing MCP/plugin
-config, and rely on lionagi's already-working MCP discovery + the ADR-0033
-capability gates to govern the discovered tools.
+1. **Provider-native MCP configuration.** Every provider lionagi targets
+   already has its own MCP or plugin configuration mechanism — for example,
+   `.mcp.json` for Claude Code, and equivalent CLI config for other agentic
+   providers. Configuration of external toolkits belongs at that layer, not
+   in a lionagi-specific module.
+2. **Lionagi's existing MCP discovery.** `ActionManager.register_mcp_server`
+   (`lionagi/protocols/action/manager.py:256-310`) and `load_mcp_config`
+   (line 386) accept a server config dict and auto-discover all exposed tools
+   with full Pydantic validation. This path is already general-purpose; it
+   requires no toolkit-specific additions.
 
 ## Decision
 
@@ -36,7 +33,7 @@ external MCP-exposing service. The integration model is:
 
 ### 1. Provider-native config is the entry point
 
-Users wire external MCP servers through whichever config mechanism their
+External MCP servers are wired through whichever config mechanism the
 provider already supports. For lionagi-managed branches running against
 agentic CLI providers, the provider's MCP config is the canonical location.
 For lionagi's direct API-provider branches, MCP servers are registered via
@@ -51,9 +48,8 @@ await branch.acts.register_mcp_server({"server": "memory-toolkit"})
 ```
 
 The `server` name resolves against whatever MCP server config the
-environment already has loaded — provider-native, project-local, or
-user-global. Lionagi does not prescribe the format or location of the config
-file.
+environment has loaded — provider-native, project-local, or user-global.
+Lionagi does not prescribe the format or location of that config file.
 
 ### 2. No lionagi.integrations.{toolkit} modules
 
@@ -84,10 +80,11 @@ registered as tools — the agent never sees them.
 
 ### 4. Documentation pointer
 
-The 0.27.0 docs reference the existing `register_mcp_server` API and link to
-the relevant provider's MCP config docs (Claude Code, codex, etc.). No new
-lionagi documentation prescribes what an external toolkit's config should
-look like — that's the provider's and the toolkit's responsibility.
+The 0.27.0 documentation references the existing `register_mcp_server` API
+and links to the relevant provider's MCP configuration documentation. No
+new lionagi documentation prescribes what an external toolkit's config
+should look like — that responsibility lies with the toolkit provider and
+the MCP-loading client.
 
 ## Consequences
 
@@ -107,19 +104,21 @@ look like — that's the provider's and the toolkit's responsibility.
 
 **Negative**
 
-- Users have to know how to configure their provider's MCP loader. The
-  cognitive load lives outside lionagi (already true for any MCP user).
+- The configuration burden lies with the toolkit provider and the
+  MCP-loading client. Operators must understand their provider's MCP loader
+  configuration before wiring an external toolkit (this is already true for
+  any MCP deployment, not a new requirement introduced by this ADR).
 - No typed `Branch.memory.recall(...)` convenience layer. `branch.acts.invoke("recall", ...)`
-  is the canonical path — same as any other MCP tool.
-- If users were hoping for a "pip install lionagi[X] and it works"
-  experience, they get the more honest "wire it via your provider's MCP
-  config and lionagi discovers it" experience instead.
+  is the canonical path — identical to any other MCP-discovered tool.
+- The integration entry point is the provider's MCP configuration mechanism,
+  not a lionagi-specific install step. There is no `pip install lionagi[X]`
+  shortcut for external toolkit wiring.
 
 ## Alternatives Considered
 
 | Alternative | Why Rejected |
 |---|---|
-| Ship a `lionagi.integrations.<toolkit>` Python module re-wrapping each verb | Duplicates verb surface; drifts as upstream evolves; rejected by Ocean |
+| Ship a `lionagi.integrations.<toolkit>` Python module re-wrapping each verb | Duplicates verb surface; drifts as the upstream toolkit evolves; maintenance burden disproportionate to benefit |
 | Ship a thin `Branch.memory` abstraction backed by MCP recall/remember | Premature abstraction — earns its own ADR if/when the pattern proves out across toolkits |
 | Ship reference `.mcp.json` files in lionagi's `examples/` | Each provider has its own config format; reference files would drift; better to point at the provider's own docs |
 | Auto-detect installed toolkits at Branch init and register their MCP servers | Magic; bad surprise when the server's not running; explicit `register_mcp_server` is fine |

@@ -19,9 +19,10 @@ But four agentic CLI providers execute tools **inside their own subprocess**:
 - `gemini_code` (Google Gemini CLI)
 - `pi` (Pi CLI — multi-provider)
 
-For these, lionagi never holds the tool dispatch loop. The only real blocking
-layer is **pre-spawn request construction** — once `asyncio.create_subprocess_exec`
-is called, governance is advisory (observe the stream, optionally `os.killpg`).
+For these, lionagi does not participate in the tool dispatch loop.
+Request construction prior to subprocess spawn is the sole effective enforcement
+point — once `asyncio.create_subprocess_exec` is called, governance is advisory
+(observe the stream, optionally `os.killpg`).
 
 An audit of the four provider request models (2026-05-25) found wildly
 different permission surfaces. This ADR specifies the projection from lionagi
@@ -35,7 +36,7 @@ provider-specific request kwargs. The projection fires at
 
 ### Projection table
 
-#### claude_code (fully governable)
+#### claude_code — full enforcement
 
 `claude_code` has the richest surface: `permission_mode`, `allowed_tools`,
 `disallowed_tools`, `mcp_config`, `permission_prompt_tool_name`.
@@ -52,10 +53,10 @@ provider-specific request kwargs. The projection fires at
 | `network.http` *not* present | `disallowed_tools += ["WebFetch"]` |
 | `tool.bash` constraint `exec: [...]` | `--allowedTools 'Bash(pytest *)'` per command |
 
-Verdict: **full enforcement**. Lionagi capabilities project cleanly onto
-Claude Code's CLI flags.
+Effective enforcement granularity: **full**. lionagi capabilities project
+cleanly onto Claude Code's CLI flags.
 
-#### codex (sandbox-tier governable)
+#### codex — partial enforcement (sandbox-tier)
 
 `codex` has structural sandbox levels rather than per-tool allowlists.
 
@@ -68,11 +69,11 @@ Claude Code's CLI flags.
 | `network.http` absent | (codex sandbox already blocks network in "read-only" / "workspace-write" — no extra flag needed) |
 | **danger override** | `bypass_approvals = true` requires `tool.dangerous` capability explicitly |
 
-Verdict: **partial enforcement** at sandbox-tier granularity. Per-command
-allowlists (`exec: ["pytest"]`) are NOT representable — observable in the
-stream only.
+Effective enforcement granularity: **partial** (sandbox-tier). Per-command
+allowlists (`exec: ["pytest"]`) are not representable at request time;
+enforcement for those constraints is stream-observation only.
 
-#### pi (governable + pre-result abort window)
+#### pi — per-tool enforcement with pre-result abort window
 
 `pi` has an explicit `tools: list[str]` allowlist passed to the CLI.
 
@@ -85,12 +86,12 @@ stream only.
 | (no tool caps at all) | `no_tools = True` |
 | `network.http` absent | `no_extensions = True` (best approximation) |
 
-Verdict: **per-tool allowlist enforcement** at request time. Plus: pi emits
-`tool_execution_start` BEFORE the tool result lands, giving a narrow
-pre-result abort window where stream observers can `os.killpg` on policy
-violation.
+Effective enforcement granularity: **per-tool allowlist** at request time.
+Additionally, pi emits `tool_execution_start` before the tool result lands,
+providing a narrow pre-result abort window in which stream observers may
+invoke `os.killpg` on policy violation.
 
-#### gemini_code (observe-only)
+#### gemini_code — audit-only
 
 `gemini_code` has only `yolo: bool` (binary) and `sandbox: bool`.
 
@@ -100,10 +101,10 @@ violation.
 | `tool.dangerous` present | `yolo = true` |
 | (no projection for `tool.bash`/`tool.editor`/etc.) | — |
 
-Verdict: **audit-only** for fine-grained policy. Any tool-level capability
-spec emits a `policy_audit_only` log event documenting that gemini_code
-cannot enforce it pre-spawn. Stream-observed `tool_use` events are logged
-for review.
+Effective enforcement granularity: **audit-only** for fine-grained policy.
+Any tool-level capability specification emits a `policy_audit_only` log event
+recording that gemini_code cannot enforce it pre-spawn. Stream-observed
+`tool_use` events are logged for post-execution review.
 
 ### Implementation shape
 
@@ -146,18 +147,21 @@ is the audit point. The governance module subscribes to:
 
 - One declarative capability set drives enforcement across Python tools AND
   the four CLI providers — no per-provider config in agent profiles.
-- Documented gaps: gemini_code is honestly marked audit-only, codex
-  documented as sandbox-tier only. Users see what they get.
-- Existing PROVIDER_YOLO_KWARGS / PROVIDER_BYPASS_KWARGS plumbing (already
-  in `lionagi/cli/_providers.py`) is the right path — this ADR formalizes
-  what it sets and adds capability-driven mapping.
+- The integration documents per-provider gaps explicitly: gemini_code is
+  designated audit-only; codex is designated sandbox-tier only. The
+  enforcement level is disclosed rather than implied.
+- Existing `PROVIDER_YOLO_KWARGS` / `PROVIDER_BYPASS_KWARGS` plumbing
+  (already in `lionagi/cli/_providers.py`) is the appropriate extension
+  path — this ADR formalizes the values it sets and adds capability-driven
+  mapping.
 
 **Negative**
 
 - Projection mapping is provider-specific code that drifts as CLI flags
   change. Each provider release potentially invalidates the table.
-- gemini_code users get weaker safety than claude_code users despite the same
-  capability declaration. Has to be explicit in docs.
+- gemini_code users receive weaker pre-spawn enforcement than claude_code
+  users despite identical capability declarations. Documentation must
+  explicitly disclose this asymmetry.
 - Stream-observed enforcement for pi requires the governance hook to run
   fast (between `tool_execution_start` and the actual exec). Latency budget
   is tight.
@@ -169,8 +173,8 @@ is the audit point. The governance module subscribes to:
 | Don't enforce on CLI providers at all | Defeats the whole point of capabilities for the agentic flows lionagi pushes |
 | Wrap each CLI provider with a lionagi-controlled tool dispatch | Massive scope; defeats the purpose of using vendor CLIs |
 | Require all 4 providers to expose `allowedTools`-style flag | Out of lionagi's control; codex/gemini won't comply |
-| Enforce only on claude_code (the rich surface) | Punishes users of other providers without surfacing the tradeoff |
-| Stream-kill on every policy violation post-spawn | Race-y; the tool already executed by the time we can kill |
+| Enforce only on claude_code (the rich surface) | Leaves users of other providers without enforcement or disclosure of the tradeoff |
+| Stream-kill on every policy violation post-spawn | Subject to a race condition; the tool has typically executed before the kill signal can be delivered |
 
 ## References
 
