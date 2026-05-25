@@ -41,6 +41,13 @@ COPY apps/studio/server/ ./apps/studio/server/
 COPY apps/__init__.py ./apps/__init__.py
 COPY apps/studio/__init__.py ./apps/studio/__init__.py
 
+# Copy marketplace + plugin manifest so Studio's Library/Skills/Agents
+# views resolve resources. plugins.py uses _THIS.parents[4] which lands
+# at /app inside the container; MARKETPLACE_DIR = /app/marketplace and
+# MARKETPLACE_MANIFEST = /app/.claude-plugin/marketplace.json.
+COPY marketplace/ ./marketplace/
+COPY .claude-plugin/ ./.claude-plugin/
+
 # Copy built frontend
 COPY --from=frontend-build /build/.next ./apps/studio/frontend/.next
 COPY --from=frontend-build /build/node_modules ./apps/studio/frontend/node_modules
