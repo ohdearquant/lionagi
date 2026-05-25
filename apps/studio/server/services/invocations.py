@@ -24,9 +24,7 @@ async def list_invocations(
     if not DEFAULT_DB_PATH.exists():
         return []
     async with StateDB() as db:
-        rows = await db.list_invocations(
-            skill=skill, status=status, limit=limit, offset=offset
-        )
+        rows = await db.list_invocations(skill=skill, status=status, limit=limit, offset=offset)
     out: list[dict[str, Any]] = []
     for r in rows:
         node_meta = r.get("node_metadata")
@@ -48,6 +46,10 @@ async def list_invocations(
                 "created_at": r["created_at"],
                 "updated_at": r["updated_at"],
                 "node_metadata": node_meta,
+                # ADR-0026: project provenance from the most-recently updated
+                # child session.  NULL when the invocation has no sessions yet.
+                "project": r.get("project"),
+                "project_source": r.get("project_source"),
             }
         )
     return out

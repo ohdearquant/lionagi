@@ -1576,18 +1576,34 @@ class StateDB:
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        query = "SELECT * FROM invocations"
+        # ADR-0026: surface project/project_source from the most-recently
+        # updated child session so Studio can render project chips on the
+        # invocations list page.  The subquery picks one row per invocation
+        # by latest updated_at; NULL when the invocation has no sessions yet.
+        query = (
+            "SELECT inv.*, "
+            "  sq.project        AS project, "
+            "  sq.project_source AS project_source "
+            "FROM invocations inv "
+            "LEFT JOIN ( "
+            "  SELECT invocation_id, project, project_source "
+            "  FROM sessions "
+            "  WHERE invocation_id IS NOT NULL "
+            "  GROUP BY invocation_id "
+            "  HAVING MAX(updated_at) "
+            ") sq ON sq.invocation_id = inv.id"
+        )
         conds: list[str] = []
         params: list[Any] = []
         if skill:
-            conds.append("skill = ?")
+            conds.append("inv.skill = ?")
             params.append(skill)
         if status:
-            conds.append("status = ?")
+            conds.append("inv.status = ?")
             params.append(status)
         if conds:
             query += " WHERE " + " AND ".join(conds)
-        query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        query += " ORDER BY inv.updated_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         cur = await self.db.execute(query, params)
         rows = await cur.fetchall()
