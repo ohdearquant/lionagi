@@ -202,10 +202,11 @@ class ScriptModel(BaseModel):
                 continue
             return entry, "positional"
 
+        positional_count = sum(1 for e in self.responses if e.when is None or e.when.is_empty())
         raise ScriptExhaustedError(
             f"script exhausted at call_index={call_index}; "
-            f"only {sum(1 for e in self.responses if e.when is None or e.when.is_empty())} "
-            f"positional entries available"
+            f"only {positional_count} positional entries available; "
+            f"payload last user message={_extract_last_user(payload)!r}"
         )
 
     @staticmethod

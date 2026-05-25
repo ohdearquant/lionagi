@@ -22,9 +22,15 @@ from lionagi.testing import (
 
 class TestRegistration:
     def test_match_endpoint_returns_scripted(self):
-        ep = match_endpoint("scripted", "chat")
+        ep = match_endpoint(
+            "scripted",
+            "chat",
+            script=ScriptModel.from_responses([{"type": "text", "content": "x"}]),
+        )
         assert isinstance(ep, ScriptedEndpoint)
-        assert ep.is_cli is False
+        # is_cli=True so the CLI flow (li agent / branch.run) routes through
+        # stream() exactly like real CLI providers.
+        assert ep.is_cli is True
 
     def test_imodel_construction_routes_to_scripted(self):
         script = ScriptModel.from_responses([{"type": "text", "content": "hi"}])
@@ -151,3 +157,81 @@ class TestBranchIntegration:
         branch = Branch(chat_model=plain)
         with pytest.raises(TypeError, match="not ScriptedEndpoint"):
             TestBranch.scripted(branch)
+
+
+class TestCopyIndependence:
+    """``iModel.copy()`` must yield independent cursors — otherwise positional
+    matching cross-contaminates between the original and the clone.
+    Regression for the codex-flagged P1-B."""
+
+    async def test_imodel_copy_yields_independent_cursors(self):
+        original = scripted_imodel(
+            ScriptModel.from_responses(
+                [
+                    {"type": "text", "content": "one"},
+                    {"type": "text", "content": "two"},
+                    {"type": "text", "content": "three"},
+                ]
+            )
+        )
+        clone = original.copy()
+
+        # Both should consume entry 0 independently. If they shared the
+        # cursor, the second call would advance to entry 1.
+        r1 = await original.invoke(messages=[{"role": "user", "content": "a"}])
+        r2 = await clone.invoke(messages=[{"role": "user", "content": "b"}])
+
+        # Both invocations consumed positional[0] → "one"
+        assert (
+            r1.response["choices"][0]["message"]["content"]
+            == r2.response["choices"][0]["message"]["content"]
+            == "one"
+        )
+
+    def test_copy_preserves_recorded_calls_shallow(self):
+        from lionagi.service.connections import match_endpoint
+
+        ep = match_endpoint(
+            "scripted",
+            "chat",
+            script=ScriptModel.from_responses([{"type": "text", "content": "x"}]),
+        )
+        ep.calls.append("synthetic")  # mark prior call
+        other = match_endpoint(
+            "scripted",
+            "chat",
+            script=ScriptModel.from_responses([{"type": "text", "content": "y"}]),
+        )
+        ep.copy_runtime_state_to(other)
+        assert other.calls == ["synthetic"]
+        other.calls.append("new")
+        # Original's call list is independent
+        assert ep.calls == ["synthetic"]
+
+
+class TestEmptyScriptWarning:
+    """Regression for codex-flagged P1-D — endpoint with no script + no env
+    var should warn at construction so the failure mode is obvious."""
+
+    def test_empty_construction_warns(self, caplog, monkeypatch):
+        import logging
+
+        monkeypatch.delenv("LIONAGI_TEST_SCRIPT", raising=False)
+        from lionagi.service.connections import match_endpoint
+
+        with caplog.at_level(logging.WARNING, logger="lionagi.testing._endpoint"):
+            match_endpoint("scripted", "chat")
+        assert any("no script" in rec.message.lower() for rec in caplog.records), (
+            f"expected an empty-script warning, got: {[r.message for r in caplog.records]}"
+        )
+
+    def test_explicit_empty_script_does_not_warn(self, caplog, monkeypatch):
+        import logging
+
+        monkeypatch.delenv("LIONAGI_TEST_SCRIPT", raising=False)
+        from lionagi.service.connections import match_endpoint
+
+        with caplog.at_level(logging.WARNING, logger="lionagi.testing._endpoint"):
+            match_endpoint("scripted", "chat", script=ScriptModel())
+        # The explicit empty script is intentional — no warning.
+        assert not any("no script" in rec.message.lower() for rec in caplog.records)

@@ -3,35 +3,42 @@
 
 """``ScriptedEndpoint`` — a registered provider that serves canned responses.
 
-Activation:
+Activation paths:
+
+In-process (unit tests)::
 
     iModel(provider="scripted", script="path.yaml", model="any")
     # or
     iModel(provider="scripted", script=ScriptModel.from_responses([...]))
 
-Or via env var so subprocess-launched ``li`` commands pick it up::
+Subprocess (CLI tests)::
 
-    LIONAGI_CHAT_PROVIDER=scripted LIONAGI_TEST_SCRIPT=path.yaml li agent "hi"
+    LIONAGI_TEST_SCRIPT=path.yaml li agent scripted/scripted-test "hi"
 
 The endpoint registers as ``provider="scripted"`` with endpoint ``chat/completions``
-and alias ``chat``, matching the iModel default ``endpoint="chat"``. It mirrors the
-OpenAI chat-completions response shape so ``AssistantResponse.from_response`` parses
-the result through the same code path as real providers — no special-casing in the
-operations layer.
+plus aliases ``chat``, ``query_cli``, and ``cli``. It inherits ``is_cli = True`` from
+``AgenticEndpoint`` so the ``li agent`` flow (which routes through ``branch.run`` →
+``endpoint.stream``) works exactly like real CLI providers. ``branch.chat`` /
+``branch.communicate`` still hit the overridden ``_call`` and receive an OpenAI-shaped
+chat-completion dict so ``AssistantResponse.from_response`` parses it through the same
+code path as real API providers.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
+import logging
 import uuid
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, ClassVar
 
 import aiohttp
 from multidict import CIMultiDict, CIMultiDictProxy
 from yarl import URL
 
+from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.registry import EndpointType, register_endpoint
 from lionagi.service.types.stream_chunk import StreamChunk
@@ -48,6 +55,8 @@ from ._types import (
     ToolCallResponse,
 )
 
+logger = logging.getLogger(__name__)
+
 __all__ = ("ScriptedEndpoint",)
 
 # Env-var names. Kept in one place so tests and CLI agree.
@@ -57,23 +66,36 @@ ENV_SCRIPT_PATH = "LIONAGI_TEST_SCRIPT"
 @register_endpoint(
     provider="scripted",
     endpoint="chat/completions",
-    aliases=["chat"],
-    endpoint_type=EndpointType.API,
-    base_url="https://scripted.invalid",
+    aliases=["chat", "query_cli", "cli"],
+    endpoint_type=EndpointType.AGENTIC,
+    base_url="internal",
     auth_type="bearer",
 )
-class ScriptedEndpoint(Endpoint):
+class ScriptedEndpoint(AgenticEndpoint):
     """Endpoint that serves responses from a ``ScriptModel`` instead of HTTP.
+
+    Inherits ``is_cli = True`` from :class:`AgenticEndpoint`, so the CLI
+    invocation path (``branch.run()`` / ``branch.operate()`` for CLI providers)
+    routes through ``stream()`` exactly like real CLI providers. Direct
+    ``branch.chat()`` / ``branch.communicate()`` continue to work via the
+    overridden ``_call()``.
 
     Recorded calls are accessible via ``endpoint.calls`` — tests inspect these
     to assert on what the agent actually sent.
     """
+
+    # Inherits is_cli=True, DEFAULT_QUEUE_CAPACITY=10, DEFAULT_CONCURRENCY_LIMIT=3
+    # from AgenticEndpoint. Overriding here only to make them explicit.
+    is_cli: ClassVar[bool] = True
+    DEFAULT_QUEUE_CAPACITY: ClassVar[int] = 10
+    DEFAULT_CONCURRENCY_LIMIT: ClassVar[int] = 3
 
     def __init__(self, config: Any = None, **kwargs: Any) -> None:
         # ── pop our test-only kwargs BEFORE super so EndpointConfig doesn't
         # see them. EndpointConfig drops unknown keys into ``config.kwargs``
         # which then leak into request payloads.
         script = kwargs.pop("script", None)
+        script_was_passed = script is not None
         if script is None:
             script = self._resolve_script_from_env()
 
@@ -84,7 +106,20 @@ class ScriptedEndpoint(Endpoint):
 
         super().__init__(config, **kwargs)
 
-        self._script: ScriptModel = ScriptModel.coerce(script) if script else ScriptModel()
+        if script:
+            self._script: ScriptModel = ScriptModel.coerce(script)
+        else:
+            self._script = ScriptModel()
+            if not script_was_passed:
+                # No script kwarg AND no env var — the first call will raise
+                # a confusing "exhausted" error several layers downstream.
+                # Surface it now so tests fail with a clear message.
+                logger.warning(
+                    "ScriptedEndpoint constructed with no script and no "
+                    "%s env var. The first call will raise "
+                    "ScriptExhaustedError. Pass script= or set the env var.",
+                    ENV_SCRIPT_PATH,
+                )
         self.calls: list[RecordedCall] = []
 
     # ─────────────────────────────── public api ───────────────────────────
@@ -218,10 +253,18 @@ class ScriptedEndpoint(Endpoint):
         return None
 
     def copy_runtime_state_to(self, other: Endpoint) -> None:
-        """Preserve the script + recorded calls when iModel.copy() clones us."""
+        """Carry script + recorded calls across an ``iModel.copy()`` clone.
+
+        The script is **deep-copied** so the clone gets an independent cursor
+        — otherwise positional matching would cross-contaminate (clone A
+        consuming entry 0, clone B getting entry 1 instead of 0). Recorded
+        calls are shallow-copied for inspection but each clone records its
+        own future calls.
+        """
         super().copy_runtime_state_to(other)
         if isinstance(other, ScriptedEndpoint):
-            other._script = self._script
+            other._script = copy.deepcopy(self._script)
+            other._script.reset()
             other.calls = list(self.calls)
 
 
