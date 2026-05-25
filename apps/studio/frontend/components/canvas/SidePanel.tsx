@@ -127,9 +127,12 @@ function NodePanel({
 
       {/* Role */}
       <div>
-        <label className={LABEL_CLS}>Role</label>
+        <label htmlFor={`${id}-role`} className={LABEL_CLS}>
+          Role
+        </label>
         {editable ? (
           <select
+            id={`${id}-role`}
             value={data.role}
             onChange={(e) => update("role", e.target.value)}
             className={INPUT_CLS}
@@ -173,9 +176,12 @@ function NodePanel({
 
       {/* Assignment */}
       <div>
-        <label className={LABEL_CLS}>Assignment</label>
+        <label htmlFor={`${id}-assignment`} className={LABEL_CLS}>
+          Assignment
+        </label>
         {editable ? (
           <input
+            id={`${id}-assignment`}
             type="text"
             value={data.assignment}
             onChange={(e) => update("assignment", e.target.value)}
@@ -189,9 +195,12 @@ function NodePanel({
 
       {/* Prompt */}
       <div>
-        <label className={LABEL_CLS}>Prompt Template</label>
+        <label htmlFor={`${id}-prompt`} className={LABEL_CLS}>
+          Prompt Template
+        </label>
         {editable ? (
           <textarea
+            id={`${id}-prompt`}
             value={data.prompt}
             onChange={(e) => update("prompt", e.target.value)}
             placeholder="Use {field} syntax for inputs"
@@ -208,9 +217,12 @@ function NodePanel({
       {/* Capacity + Timeout */}
       <div className="flex gap-3">
         <div className="flex-1">
-          <label className={LABEL_CLS}>Capacity</label>
+          <label htmlFor={`${id}-capacity`} className={LABEL_CLS}>
+            Capacity
+          </label>
           {editable ? (
             <input
+              id={`${id}-capacity`}
               type="number"
               min={1}
               value={data.capacity ?? 1}
@@ -222,9 +234,12 @@ function NodePanel({
           )}
         </div>
         <div className="flex-1">
-          <label className={LABEL_CLS}>Timeout (s)</label>
+          <label htmlFor={`${id}-timeout`} className={LABEL_CLS}>
+            Timeout (s)
+          </label>
           {editable ? (
             <input
+              id={`${id}-timeout`}
               type="number"
               min={0}
               value={data.timeout ?? ""}
@@ -281,7 +296,7 @@ function EdgePanel({
 
       {/* Mode toggle */}
       <div>
-        <label className={LABEL_CLS}>Mode</label>
+        <p className={LABEL_CLS}>Mode</p>
         {editable ? (
           <div className="flex gap-1">
             {(["simple", "code"] as const).map((m) => (
@@ -307,9 +322,12 @@ function EdgePanel({
         <>
           {/* Condition */}
           <div>
-            <label className={LABEL_CLS}>Condition (optional)</label>
+            <label htmlFor={`${id}-condition`} className={LABEL_CLS}>
+              Condition (optional)
+            </label>
             {editable ? (
               <input
+                id={`${id}-condition`}
                 type="text"
                 value={data.condition ?? ""}
                 onChange={(e) => update("condition", e.target.value)}
@@ -325,7 +343,7 @@ function EdgePanel({
 
           {/* Field map */}
           <div>
-            <label className={LABEL_CLS}>Field Map</label>
+            <p className={LABEL_CLS}>Field Map</p>
             {data.map && Object.keys(data.map).length > 0 ? (
               <div className="flex flex-col gap-1">
                 {Object.entries(data.map).map(([k, v]) => (
@@ -342,9 +360,12 @@ function EdgePanel({
       ) : (
         /* Code handler */
         <div>
-          <label className={LABEL_CLS}>Handler</label>
+          <label htmlFor={`${id}-handler`} className={LABEL_CLS}>
+            Handler
+          </label>
           {editable ? (
             <textarea
+              id={`${id}-handler`}
               value={data.handler ?? ""}
               onChange={(e) => update("handler", e.target.value)}
               placeholder="Python code snippet"
@@ -389,7 +410,7 @@ function ExecResultPanel({
       )}
 
       <div>
-        <label className={LABEL_CLS}>Output</label>
+        <p className={LABEL_CLS}>Output</p>
         {Object.keys(result).length > 0 ? (
           <div className="flex flex-col gap-2">
             {Object.entries(result).map(([key, val]) => (
