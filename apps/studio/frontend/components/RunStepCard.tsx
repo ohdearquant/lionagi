@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import Badge from "@/components/Badge";
 import type { RunMessage, RunStep } from "@/lib/types";
 
@@ -99,6 +99,7 @@ const DEFAULT_FILTERS: Filters = {
 };
 
 type TabId = "overview" | "files" | "commands" | "errors" | "conversation";
+const TAB_ORDER: TabId[] = ["overview", "files", "commands", "errors", "conversation"];
 
 interface FileChange {
   path: string;
@@ -179,6 +180,30 @@ export default function RunStepCard({
   const [tab, setTab] = useState<TabId>("overview");
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [expandedTools, setExpandedTools] = useState<Set<number>>(new Set());
+
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const handleTabKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLButtonElement>) => {
+      const activeIndex = TAB_ORDER.indexOf(tab);
+      let nextIndex: number | null = null;
+      if (e.key === "ArrowRight") {
+        nextIndex = (activeIndex + 1) % TAB_ORDER.length;
+      } else if (e.key === "ArrowLeft") {
+        nextIndex = (activeIndex - 1 + TAB_ORDER.length) % TAB_ORDER.length;
+      } else if (e.key === "Home") {
+        nextIndex = 0;
+      } else if (e.key === "End") {
+        nextIndex = TAB_ORDER.length - 1;
+      }
+      if (nextIndex !== null) {
+        e.preventDefault();
+        setTab(TAB_ORDER[nextIndex]);
+        tabRefs.current[nextIndex]?.focus();
+      }
+    },
+    [tab],
+  );
 
   const messages = useMemo(() => step.messages ?? [], [step.messages]);
   const result = (step.result ?? {}) as StepResult;
@@ -359,8 +384,24 @@ export default function RunStepCard({
       {expanded && (
         <div id={`step-${step.step}-body`} className="border-t border-edge">
           {/* Tab bar */}
-          <div role="tablist" aria-label="Step details" className="sticky top-0 z-10 flex items-center gap-0 border-b border-edge bg-surface-base/95 px-2 backdrop-blur">
-            <TabButton id="overview" active={tab} onSelect={setTab} label="Overview" panelId={`step-${step.step}-panel-overview`} buttonId={`step-${step.step}-tab-overview`} />
+          <div
+            role="tablist"
+            aria-label="Step details"
+            className="sticky top-0 z-10 flex items-center gap-0 border-b border-edge bg-surface-base/95 px-2 backdrop-blur"
+          >
+            <TabButton
+              id="overview"
+              active={tab}
+              onSelect={setTab}
+              label="Overview"
+              panelId={`step-${step.step}-panel-overview`}
+              buttonId={`step-${step.step}-tab-overview`}
+              tabIndex={tab === "overview" ? 0 : -1}
+              ref={(el) => {
+                tabRefs.current[0] = el;
+              }}
+              onKeyDown={handleTabKeyDown}
+            />
             <TabButton
               id="files"
               active={tab}
@@ -369,6 +410,11 @@ export default function RunStepCard({
               count={summary.files.length}
               panelId={`step-${step.step}-panel-files`}
               buttonId={`step-${step.step}-tab-files`}
+              tabIndex={tab === "files" ? 0 : -1}
+              ref={(el) => {
+                tabRefs.current[1] = el;
+              }}
+              onKeyDown={handleTabKeyDown}
             />
             <TabButton
               id="commands"
@@ -378,6 +424,11 @@ export default function RunStepCard({
               count={summary.toolCount}
               panelId={`step-${step.step}-panel-commands`}
               buttonId={`step-${step.step}-tab-commands`}
+              tabIndex={tab === "commands" ? 0 : -1}
+              ref={(el) => {
+                tabRefs.current[2] = el;
+              }}
+              onKeyDown={handleTabKeyDown}
             />
             <TabButton
               id="errors"
@@ -388,6 +439,11 @@ export default function RunStepCard({
               tone={summary.failedCount > 0 ? "error" : undefined}
               panelId={`step-${step.step}-panel-errors`}
               buttonId={`step-${step.step}-tab-errors`}
+              tabIndex={tab === "errors" ? 0 : -1}
+              ref={(el) => {
+                tabRefs.current[3] = el;
+              }}
+              onKeyDown={handleTabKeyDown}
             />
             <TabButton
               id="conversation"
@@ -397,6 +453,11 @@ export default function RunStepCard({
               count={messages.length}
               panelId={`step-${step.step}-panel-conversation`}
               buttonId={`step-${step.step}-tab-conversation`}
+              tabIndex={tab === "conversation" ? 0 : -1}
+              ref={(el) => {
+                tabRefs.current[4] = el;
+              }}
+              onKeyDown={handleTabKeyDown}
             />
             {tab === "conversation" && assistantList.length > 0 && (
               <button
@@ -416,7 +477,11 @@ export default function RunStepCard({
           </div>
 
           {tab === "overview" && (
-            <div role="tabpanel" id={`step-${step.step}-panel-overview`} aria-labelledby={`step-${step.step}-tab-overview`}>
+            <div
+              role="tabpanel"
+              id={`step-${step.step}-panel-overview`}
+              aria-labelledby={`step-${step.step}-tab-overview`}
+            >
               <OverviewPanel
                 summary={summary}
                 lastAssistant={lastAssistant}
@@ -426,25 +491,41 @@ export default function RunStepCard({
           )}
 
           {tab === "files" && (
-            <div role="tabpanel" id={`step-${step.step}-panel-files`} aria-labelledby={`step-${step.step}-tab-files`}>
+            <div
+              role="tabpanel"
+              id={`step-${step.step}-panel-files`}
+              aria-labelledby={`step-${step.step}-tab-files`}
+            >
               <FilesPanel files={summary.files} />
             </div>
           )}
 
           {tab === "commands" && (
-            <div role="tabpanel" id={`step-${step.step}-panel-commands`} aria-labelledby={`step-${step.step}-tab-commands`}>
+            <div
+              role="tabpanel"
+              id={`step-${step.step}-panel-commands`}
+              aria-labelledby={`step-${step.step}-tab-commands`}
+            >
               <CommandsPanel commands={summary.commands} />
             </div>
           )}
 
           {tab === "errors" && (
-            <div role="tabpanel" id={`step-${step.step}-panel-errors`} aria-labelledby={`step-${step.step}-tab-errors`}>
+            <div
+              role="tabpanel"
+              id={`step-${step.step}-panel-errors`}
+              aria-labelledby={`step-${step.step}-tab-errors`}
+            >
               <ErrorsPanel failed={summary.failedTools} />
             </div>
           )}
 
           {tab === "conversation" && (
-            <div role="tabpanel" id={`step-${step.step}-panel-conversation`} aria-labelledby={`step-${step.step}-tab-conversation`}>
+            <div
+              role="tabpanel"
+              id={`step-${step.step}-panel-conversation`}
+              aria-labelledby={`step-${step.step}-tab-conversation`}
+            >
               <div className="flex flex-wrap items-center gap-1.5 border-b border-edge px-2 py-1">
                 <span className="text-[9px] uppercase tracking-wide text-content-muted">
                   filter:
@@ -492,34 +573,39 @@ export default function RunStepCard({
   );
 }
 
-function TabButton({
-  id,
-  active,
-  onSelect,
-  label,
-  count,
-  tone,
-  panelId,
-  buttonId,
-}: {
-  id: TabId;
-  active: TabId;
-  onSelect: (id: TabId) => void;
-  label: string;
-  count?: number;
-  tone?: "error";
-  panelId: string;
-  buttonId: string;
-}) {
+const TabButton = React.forwardRef<
+  HTMLButtonElement,
+  {
+    id: TabId;
+    active: TabId;
+    onSelect: (id: TabId) => void;
+    label: string;
+    count?: number;
+    tone?: "error";
+    panelId: string;
+    buttonId: string;
+    tabIndex?: number;
+    onKeyDown?: (e: React.KeyboardEvent<HTMLButtonElement>) => void;
+  }
+>(function TabButton(
+  { id, active, onSelect, label, count, tone, panelId, buttonId, tabIndex, onKeyDown },
+  ref,
+) {
   const isActive = id === active;
+  const tabPosition = TAB_ORDER.indexOf(id) + 1;
+  const totalTabs = TAB_ORDER.length;
   return (
     <button
+      ref={ref}
       type="button"
       id={buttonId}
       role="tab"
       aria-selected={isActive}
       aria-controls={panelId}
+      aria-label={`${label} tab ${tabPosition} of ${totalTabs}`}
+      tabIndex={tabIndex ?? (isActive ? 0 : -1)}
       onClick={() => onSelect(id)}
+      onKeyDown={onKeyDown}
       className={`relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-body font-medium transition-colors ${
         isActive
           ? "border-status-running text-content-primary"
@@ -536,7 +622,7 @@ function TabButton({
       )}
     </button>
   );
-}
+});
 
 function OverviewPanel({
   summary,
