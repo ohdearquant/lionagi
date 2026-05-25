@@ -130,11 +130,12 @@ def _terminate_pid(pid: int, grace_seconds: float = 5.0) -> str:
 
 _SEARCH_ORDER = ("sessions", "invocations", "plays", "shows")
 
-# Shows have no direct PID — their child plays/sessions do. Skip in
-# all-stale sweep to avoid false-positive aborts of long-running shows
-# whose children are still alive. Use `li kill <show_id> --recursive`
-# to clean up an individual show.
-_STALE_SWEEP_ORDER = ("sessions", "invocations", "plays")
+# Only sessions and invocations carry direct PID semantics. Plays and
+# shows are orchestrators that spawn child sessions/invocations — they
+# don't carry their own PID. Sweeping them by PID-absence would abort
+# legitimate long-running orchestrations whose child processes are still
+# alive. Use `li kill <play_or_show_id> --recursive` for explicit cleanup.
+_STALE_SWEEP_ORDER = ("sessions", "invocations")
 
 # Map DB table name → canonical entity type for update_status().
 _TABLE_TO_ENTITY_TYPE = {
@@ -438,11 +439,17 @@ async def _do_kill_all_stale(
     dry_run: bool = False,
     verbose: bool = False,
 ) -> int:
-    """Find all running entities with dead PIDs and cancel them.
+    """Sweep stale sessions and invocations whose PIDs are dead.
 
     ``threshold_seconds`` is the minimum age (since started_at or updated_at)
     required before a running row is considered stale.  Rows newer than this
     threshold may be legitimately in-progress and are skipped.
+
+    Plays and shows are NOT swept.  They are orchestrators with no direct
+    PID — their child sessions/invocations carry the actual OS process.
+    Sweeping them by PID-absence would silently abort legitimate long-running
+    orchestrations.  Use ``li kill <play_or_show_id> --recursive`` for
+    explicit play/show cleanup.
     """
     from lionagi.state.db import StateDB
     from lionagi.state.reasons import RunReasons
@@ -455,7 +462,6 @@ async def _do_kill_all_stale(
     live_status_for: dict[str, str] = {
         "sessions": "running",
         "invocations": "running",
-        "plays": "running",
     }
 
     async with StateDB() as db:
@@ -582,7 +588,11 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
     kill.add_argument(
         "--all-stale",
         action="store_true",
-        help="Sweep all running entities with dead PIDs (or no PID) older than --threshold.",
+        help=(
+            "Sweep stale sessions and invocations with dead PIDs older than --threshold. "
+            "Plays and shows are not swept (they are orchestrators without direct PIDs; "
+            "use --recursive with an explicit ID instead)."
+        ),
     )
     kill.add_argument(
         "--threshold",

@@ -586,43 +586,17 @@ def test_kill_all_stale_subparser_flags():
         Path(tmp_path).unlink(missing_ok=True)
 
 
-# ── issue #1117: _do_kill_all_stale must sweep plays (not shows) ───────────────
-
-
-async def test_do_kill_all_stale_cancels_stale_play(
-    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """Stale running play with a dead PID must be swept (issue #1117)."""
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
-
-    old_start = time.time() - 7200  # 2 hours ago
-    async with StateDB() as db:
-        show_id = await _seed_show(db, status="active")
-        play_id = await _seed_play(db, show_id, status="running")
-        # Backdate started_at so the row is outside the stale threshold.
-        await db.db.execute(
-            "UPDATE plays SET started_at = ? WHERE id = ?",
-            (old_start, play_id),
-        )
-        await db.db.commit()
-
-    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
-    assert rc == 0
-
-    async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM plays WHERE id = ?", (play_id,))
-        row = await cur.fetchone()
-        assert row is not None
-        # _persist_cancel maps stale play → "blocked" (no "cancelled" in play vocabulary)
-        assert row["status"] == "blocked"
+# ── issue #1117 / PR #1140 codex round-2: plays and shows excluded from sweep ──
 
 
 async def test_do_kill_all_stale_does_NOT_touch_show_at_all(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Regression for codex P1 on PR #1140: shows are skipped entirely in the
-    all-stale sweep.  Shows have no direct PID; treating pid=None as 'stale'
-    would abort long-running shows whose child plays are still alive.
+    """Shows are skipped entirely in the all-stale sweep (codex P1, PR #1140).
+
+    Shows have no direct PID; treating pid=None as 'stale' would abort
+    long-running shows whose child plays/sessions are still alive.
+    Both the show and any co-seeded child play must survive unchanged.
     """
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
 
@@ -634,43 +608,7 @@ async def test_do_kill_all_stale_does_NOT_touch_show_at_all(
             "UPDATE shows SET updated_at = ?, created_at = ? WHERE id = ?",
             (old_time, old_time, show_id),
         )
-        await db.db.commit()
-
-    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
-    assert rc == 0
-
-    async with StateDB() as db:
-        cur = await db.db.execute("SELECT status FROM shows WHERE id = ?", (show_id,))
-        row = await cur.fetchone()
-        assert row is not None
-        # Show must remain active — the sweep must not have touched it.
-        assert row["status"] == "active"
-
-
-async def test_do_kill_all_stale_does_NOT_touch_active_show_with_alive_play(
-    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """Regression for codex P1 on PR #1140: a show with an alive child play
-    must survive the all-stale sweep unchanged.
-
-    Seeds an active show with a play whose PID is os.getpid() (guaranteed
-    alive).  Even though the show itself has no PID, the sweep must not abort
-    it — shows are skipped entirely in the sweep.
-    """
-    import os
-
-    # _pid_alive returns True for the current process; False for anything else.
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: pid == os.getpid())
-
-    old_time = time.time() - 7200  # 2 hours ago
-    async with StateDB() as db:
-        show_id = await _seed_show(db, status="active")
-        # Backdate so the show looks stale by age.
-        await db.db.execute(
-            "UPDATE shows SET updated_at = ?, created_at = ? WHERE id = ?",
-            (old_time, old_time, show_id),
-        )
-        # Seed a child play with an alive PID so the show is legitimately running.
+        # Seed a child play so we also verify plays are not swept.
         play_id = await _seed_play(db, show_id, status="running")
         await db.db.execute(
             "UPDATE plays SET started_at = ? WHERE id = ?",
@@ -685,5 +623,45 @@ async def test_do_kill_all_stale_does_NOT_touch_active_show_with_alive_play(
         cur = await db.db.execute("SELECT status FROM shows WHERE id = ?", (show_id,))
         row = await cur.fetchone()
         assert row is not None
-        # Show must remain active.
+        # Show must remain active — the sweep must not have touched it.
         assert row["status"] == "active"
+
+        cur2 = await db.db.execute("SELECT status FROM plays WHERE id = ?", (play_id,))
+        row2 = await cur2.fetchone()
+        assert row2 is not None
+        # Play must also remain running — the sweep must not have touched it.
+        assert row2["status"] == "running"
+
+
+async def test_do_kill_all_stale_does_NOT_touch_play_at_all(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Plays are skipped entirely in the all-stale sweep (codex round-2 P1).
+
+    Plays are orchestrators with no direct PID; their child sessions carry
+    the actual OS process. Sweeping by PID-absence would silently abort
+    legitimate long-running plays. The play's status must remain 'running'
+    after the sweep regardless of age or PID presence.
+    """
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+
+    old_start = time.time() - 7200  # 2 hours ago
+    async with StateDB() as db:
+        show_id = await _seed_show(db, status="active")
+        play_id = await _seed_play(db, show_id, status="running")
+        # Backdate so the play is well outside the stale threshold.
+        await db.db.execute(
+            "UPDATE plays SET started_at = ? WHERE id = ?",
+            (old_start, play_id),
+        )
+        await db.db.commit()
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        cur = await db.db.execute("SELECT status FROM plays WHERE id = ?", (play_id,))
+        row = await cur.fetchone()
+        assert row is not None
+        # Play must remain running — the sweep must not have touched it.
+        assert row["status"] == "running"
