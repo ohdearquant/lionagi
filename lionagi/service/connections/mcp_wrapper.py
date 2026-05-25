@@ -1,7 +1,6 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-import asyncio
 import json
 import logging
 import os
@@ -9,6 +8,8 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from lionagi.ln.concurrency import Lock
 
 # Suppress MCP server logging by default
 logging.getLogger("mcp").setLevel(logging.WARNING)
@@ -150,13 +151,13 @@ class MCPConnectionPool:
 
     _clients: dict[str, Any] = {}
     _configs: dict[str, dict] = {}
-    _lock: asyncio.Lock | None = None
+    _lock: Lock | None = None
     _lock_guard: threading.Lock = threading.Lock()
     _security: MCPSecurityConfig | None = None
 
     @classmethod
-    def _get_lock(cls) -> asyncio.Lock:
-        """Lazily create the asyncio.Lock on first use.
+    def _get_lock(cls) -> Lock:
+        """Lazily create the Lock on first use.
 
         This avoids binding the lock to an event loop at import time,
         which would fail if the module is imported before any event loop
@@ -166,7 +167,7 @@ class MCPConnectionPool:
         if cls._lock is None:
             with cls._lock_guard:
                 if cls._lock is None:
-                    cls._lock = asyncio.Lock()
+                    cls._lock = Lock()
         return cls._lock
 
     @classmethod

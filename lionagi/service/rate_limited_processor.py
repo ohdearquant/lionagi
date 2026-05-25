@@ -109,6 +109,7 @@ class RateLimitedAPIProcessor(Processor):
             limit_tokens=limit_tokens,
             concurrency_limit=concurrency_limit,
         )
+        # TODO(#1043 Phase 2): migrate to anyio task group (structured concurrency)
         self._rate_limit_replenisher_task = asyncio.create_task(
             self.start_replenishing()
         )

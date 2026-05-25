@@ -695,6 +695,7 @@ def _extract_summary(session: ClaudeSession) -> dict[str, Any]:
 # --------------------------------------------------------------------------- NDJSON stream
 
 
+# TODO(#1043 Phase 2): migrate create_subprocess_exec + wait_for to anyio
 async def _ndjson_from_cli(request: ClaudeCodeRequest):
     """
     Yields each JSON object emitted by the *claude-code* CLI.

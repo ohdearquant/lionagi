@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 import uuid
@@ -12,6 +11,7 @@ from typing import Any
 
 import aiosqlite
 
+from lionagi.ln.concurrency import Lock
 from lionagi.cli._runs import LIONAGI_HOME
 from lionagi.state.reasons import (
     PlayReasons as _PlayReasons,
@@ -329,7 +329,7 @@ class StateDB:
         # UNIQUE(kind, name, version) index. The lock is keyed by
         # ``(kind, name)`` so unrelated definitions can still progress
         # in parallel.
-        self._definition_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._definition_locks: dict[tuple[str, str], Lock] = {}
 
     # ── Connection lifecycle ───────────────────────────────────────────
 
@@ -2212,7 +2212,7 @@ class StateDB:
         # ``StateDB`` instance (different connection) races us; the
         # Lock alone handles intra-instance concurrency.
         lock_key = (kind, name)
-        lock = self._definition_locks.setdefault(lock_key, asyncio.Lock())
+        lock = self._definition_locks.setdefault(lock_key, Lock())
         async with lock:
             last_exc: Exception | None = None
             for _ in range(5):

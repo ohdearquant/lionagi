@@ -123,6 +123,7 @@ def _build_policies(names: list[str]) -> list:
     return policies
 
 
+# TODO(#1043 Phase 2): migrate create_task + Queue + wait_for to anyio primitives
 async def run_beta_agent(
     config: AgentConfig | None,
     message: str,

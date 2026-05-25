@@ -8,7 +8,6 @@ This module provides resilience patterns for API clients, including
 the CircuitBreaker pattern and retry with exponential backoff.
 """
 
-import asyncio
 import functools
 import logging
 import random
@@ -18,6 +17,8 @@ from enum import Enum
 from typing import Any, TypeVar
 
 import anyio
+
+from lionagi.ln.concurrency import Lock
 
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
@@ -128,7 +129,7 @@ class CircuitBreaker:
         self.state = CircuitState.CLOSED
         self.last_failure_time = 0
         self._half_open_calls = 0
-        self._lock = asyncio.Lock()
+        self._lock = Lock()
 
         # Metrics
         self._metrics = {
