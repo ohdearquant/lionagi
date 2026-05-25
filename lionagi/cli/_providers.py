@@ -391,7 +391,12 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
         metavar="SECONDS",
         type=int,
         default=None,
-        help="Timeout in seconds.",
+        help=(
+            "Hard wall-clock timeout in seconds. "
+            "When set, a [DEADLINE] preamble is injected into the agent's "
+            "prompt so the agent knows its time budget and can pace reasoning "
+            "accordingly (issue #1087)."
+        ),
     )
     # ADR-0020: opt-in skill-orchestration grouping. Set by a skill via
     # ``li invoke start``; threaded through to the session row so the

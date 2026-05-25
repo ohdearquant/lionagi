@@ -114,6 +114,9 @@ li skill commit
 
 # Resume any run
 li agent -r <branch-id> "follow up on your findings"
+
+# Time-bounded run: injects a [DEADLINE] preamble so the agent paces its own reasoning
+li agent claude/sonnet --timeout 300 "Audit the auth module and produce a summary"
 ```
 
 Full reference → [docs/cli-reference.md](docs/cli-reference.md) · Installable
