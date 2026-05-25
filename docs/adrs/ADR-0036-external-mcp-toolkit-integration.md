@@ -121,8 +121,8 @@ the MCP-loading client.
 | Ship a `lionagi.integrations.<toolkit>` Python module re-wrapping each verb | Duplicates verb surface; drifts as the upstream toolkit evolves; maintenance burden disproportionate to benefit |
 | Ship a thin `Branch.memory` abstraction backed by MCP recall/remember | Premature abstraction — earns its own ADR if/when the pattern proves out across toolkits |
 | Ship reference `.mcp.json` files in lionagi's `examples/` | Each provider has its own config format; reference files would drift; better to point at the provider's own docs |
-| Auto-detect installed toolkits at Branch init and register their MCP servers | Magic; bad surprise when the server's not running; explicit `register_mcp_server` is fine |
-| Require a `[mcp-toolkits]` optional extra that auto-discovers servers | Same magic problem; users opt in explicitly via config, not import-time side effects |
+| Auto-detect installed toolkits at Branch init and register their MCP servers | Implicit behavior; registration fails silently when the server is not running; explicit `register_mcp_server` is the correct entry point |
+| Require a `[mcp-toolkits]` optional extra that auto-discovers servers | Same implicit-behavior problem; operators configure explicitly via their provider's MCP config, not via import-time side effects |
 
 ## References
 
