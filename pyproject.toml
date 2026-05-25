@@ -21,6 +21,7 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "tiktoken>=0.10.0",
     "aiosqlite>=0.21.0",
+    "orjson>=3.11.8",
 ]
 license = {file = "LICENSE"}
 classifiers=[
