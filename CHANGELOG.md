@@ -4,6 +4,22 @@
 All notable changes to lionagi are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.26.11] - 2026-05-25
+
+### Fixed
+
+- **`li play` AttributeError on artifact contract resolution** — `flow.py`
+  referenced `env.agent_profile` in two places (lines 643 + 648) but the
+  `OrchestrationEnv` dataclass field is named `orc_profile`. The bug was
+  introduced by #1083 (ADR-0029 artifact contract). It only triggered when
+  an explicit agent name was passed via `--agent`, so the orchestrator
+  tried to look up artifact defaults on the orchestrator profile. Now
+  references the correct `env.orc_profile`.
+- **Regression test added** — `tests/cli/orchestrate/test_orchestration_env_attrs.py`
+  parses `flow.py` for every `env.<public_attr>` access and asserts each
+  matches a real `OrchestrationEnv` field or method. Prevents future typos
+  of this exact shape.
+
 ## [0.26.10] - 2026-05-25
 
 Studio launcher: auto-mount symlink targets in `~/.lionagi/*/` so the Library tab works for users with symlinked content.
