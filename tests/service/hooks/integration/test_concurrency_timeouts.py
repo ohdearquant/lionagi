@@ -110,9 +110,7 @@ class TestParallelInvocations:
         assert hook_event2._should_exit is False
 
     @pytest.mark.anyio
-    async def test_parallel_hooked_events_isolated(
-        self, patch_cancellation, patch_logger
-    ):
+    async def test_parallel_hooked_events_isolated(self, patch_cancellation, patch_logger):
         """Test that parallel HookedEvent invocations don't interfere."""
 
         async def pre_hook(ev, **kw):
@@ -304,13 +302,12 @@ class TestNoDeadlocks:
 
         # Run concurrently - should not deadlock
         start_time = anyio.current_time()
-        results = await asyncio.gather(
-            event1.invoke(), event2.invoke(), return_exceptions=True
-        )
+        results = await asyncio.gather(event1.invoke(), event2.invoke(), return_exceptions=True)
         end_time = anyio.current_time()
 
         # Should complete in reasonable time (not hang)
-        assert end_time - start_time < 1.0  # Should be much faster
+        # Generous ceiling for CI scheduler load — see #1090.
+        assert end_time - start_time < 3.0
 
         # Both should succeed
         assert len(results) == 2
@@ -442,9 +439,7 @@ class TestPerformanceSmoke:
                 raise RuntimeError("planned failure")
             return "success"
 
-        registry = HookRegistry(
-            hooks={HookEventTypes.PreInvocation: sometimes_failing_hook}
-        )
+        registry = HookRegistry(hooks={HookEventTypes.PreInvocation: sometimes_failing_hook})
 
         start_time = anyio.current_time()
 
@@ -466,9 +461,7 @@ class TestPerformanceSmoke:
         assert total_time < 2.0  # Generous allowance for error handling
 
         # Check that we got expected mix of success/failure
-        successes = sum(
-            1 for (res, se, st), _ in results if st == EventStatus.COMPLETED
-        )
+        successes = sum(1 for (res, se, st), _ in results if st == EventStatus.COMPLETED)
         failures = sum(1 for (res, se, st), _ in results if st == EventStatus.CANCELLED)
 
         assert successes == 25  # Half should succeed

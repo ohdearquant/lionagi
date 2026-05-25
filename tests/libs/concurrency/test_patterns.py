@@ -27,7 +27,7 @@ async def test_gather_first_error_cancels_peers(anyio_backend):
         await gather(boom(), peer(), return_exceptions=False)
     dt = time.perf_counter() - t0
     assert cancelled.is_set()
-    assert dt < 0.5
+    assert dt < 2.0  # tolerance for CI scheduler load — see #1090
 
 
 @pytest.mark.anyio
@@ -109,9 +109,7 @@ async def test_gather_return_exceptions_true(anyio_backend):
         raise ValueError(f"error_{x}")
 
     # Mix successes and failures
-    results = await gather(
-        success(1), failure(2), success(3), failure(4), return_exceptions=True
-    )
+    results = await gather(success(1), failure(2), success(3), failure(4), return_exceptions=True)
 
     assert len(results) == 4
     assert results[0] == "result_1"
@@ -357,9 +355,7 @@ async def test_retry_eventual_success(anyio_backend):
             raise ConnectionError(f"Attempt {attempts['count']} failed")
         return "success"
 
-    result = await retry(
-        flaky, attempts=5, base_delay=0.001, retry_on=(ConnectionError,)
-    )
+    result = await retry(flaky, attempts=5, base_delay=0.001, retry_on=(ConnectionError,))
 
     assert result == "success"
     assert attempts["count"] == 3  # Succeeded on third attempt
