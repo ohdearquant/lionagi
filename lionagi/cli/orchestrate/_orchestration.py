@@ -203,6 +203,11 @@ class OrchestrationEnv:
     # Optional shared features
     team_data: dict | None = None
 
+    # Time budget: total seconds for the entire flow (from --timeout or
+    # playbook timeout:). None means no budget was configured — workers
+    # will not receive a BUDGET preamble.
+    total_budget: int | None = None
+
     # Live SQLite persist context (set by start_live_persist)
     _live_persist: dict | None = field(default=None, repr=False)
 
@@ -244,6 +249,7 @@ def setup_orchestration(
     theme: str | None,
     bare: bool = False,
     fast: bool = False,
+    total_budget: int | None = None,
 ) -> OrchestrationEnv:
     """Phase A — resolve orchestrator config, allocate run, build branch+session.
 
@@ -310,6 +316,7 @@ def setup_orchestration(
         verbose=verbose,
         fast=fast,
         cwd=cwd,
+        total_budget=total_budget,
     )
 
 
