@@ -13,7 +13,30 @@ if TYPE_CHECKING:
     from pydantic import BaseModel, Field
 
     from . import _types as types
+    from .adapters import (
+        Adaptable,
+        AdapterError,
+        AdapterRegistry,
+        AsyncAdaptable,
+        AsyncAdapterRegistry,
+        CsvAdapter,
+        JsonAdapter,
+        TomlAdapter,
+    )
     from .ln import alcall, json_dumps, lcall, to_dict, to_list
+    from .lndl import (
+        AmbiguousMatchError,
+        InvalidConstructorError,
+        LNDLError,
+        LNDLOutput,
+        MissingFieldError,
+        MissingLvarError,
+        MissingOutBlockError,
+        TypeMismatchError,
+        extract_lndl_blocks,
+        get_lndl_system_prompt,
+        normalize_lndl_text,
+    )
     from .models.field_model import FieldModel
     from .models.operable_model import OperableModel
     from .operations.builder import OperationGraphBuilder as Builder
@@ -56,6 +79,27 @@ _LAZY_MAP: dict[str, tuple[str, str | None]] = {
     "to_list": ("ln", "to_list"),
     "to_dict": ("ln", "to_dict"),
     "json_dumps": ("ln", "json_dumps"),
+    # lndl — Lion Notation Definition Language
+    "LNDLOutput": ("lndl", "LNDLOutput"),
+    "LNDLError": ("lndl", "LNDLError"),
+    "MissingLvarError": ("lndl", "MissingLvarError"),
+    "MissingFieldError": ("lndl", "MissingFieldError"),
+    "TypeMismatchError": ("lndl", "TypeMismatchError"),
+    "InvalidConstructorError": ("lndl", "InvalidConstructorError"),
+    "MissingOutBlockError": ("lndl", "MissingOutBlockError"),
+    "AmbiguousMatchError": ("lndl", "AmbiguousMatchError"),
+    "get_lndl_system_prompt": ("lndl", "get_lndl_system_prompt"),
+    "extract_lndl_blocks": ("lndl", "extract_lndl_blocks"),
+    "normalize_lndl_text": ("lndl", "normalize_lndl_text"),
+    # adapters — inlined adapter stack
+    "AdapterRegistry": ("adapters", "AdapterRegistry"),
+    "AsyncAdapterRegistry": ("adapters", "AsyncAdapterRegistry"),
+    "Adaptable": ("adapters", "Adaptable"),
+    "AsyncAdaptable": ("adapters", "AsyncAdaptable"),
+    "AdapterError": ("adapters", "AdapterError"),
+    "JsonAdapter": ("adapters", "JsonAdapter"),
+    "CsvAdapter": ("adapters", "CsvAdapter"),
+    "TomlAdapter": ("adapters", "TomlAdapter"),
 }
 
 
@@ -76,10 +120,17 @@ def __getattr__(name: str):
 
 __all__ = (
     "__version__",
+    "Adaptable",
+    "AdapterError",
+    "AdapterRegistry",
+    "AmbiguousMatchError",
+    "AsyncAdaptable",
+    "AsyncAdapterRegistry",
     "BaseModel",
     "Branch",
     "Broadcaster",
     "Builder",
+    "CsvAdapter",
     "DataClass",
     "Edge",
     "Element",
@@ -89,7 +140,14 @@ __all__ = (
     "Graph",
     "HookRegistry",
     "HookedEvent",
+    "InvalidConstructorError",
+    "JsonAdapter",
+    "LNDLError",
+    "LNDLOutput",
     "Message",
+    "MissingFieldError",
+    "MissingLvarError",
+    "MissingOutBlockError",
     "Node",
     "Operable",
     "OperableModel",
@@ -99,16 +157,21 @@ __all__ = (
     "Progression",
     "Session",
     "Spec",
+    "TomlAdapter",
+    "TypeMismatchError",
     "Undefined",
     "Unset",
     "alcall",
     "create_message",
+    "extract_lndl_blocks",
+    "get_lndl_system_prompt",
     "iModel",
     "json_dumps",
     "lcall",
     "ln",
     "load_mcp_tools",
     "logger",
+    "normalize_lndl_text",
     "to_dict",
     "to_list",
     "types",

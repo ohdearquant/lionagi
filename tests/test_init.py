@@ -12,13 +12,21 @@ from lionagi.ln import import_module
 class TestMainImports:
     """Tests for main lionagi package imports."""
 
-    # All exports from lionagi.__all__ (alphabetically sorted)
+    # All exports from lionagi.__all__ (dunders first, then alphabetical).
+    # Updated for PR #1122: lndl and adapters symbols added.
     EXPECTED_EXPORTS = (
         "__version__",
+        "Adaptable",
+        "AdapterError",
+        "AdapterRegistry",
+        "AmbiguousMatchError",
+        "AsyncAdaptable",
+        "AsyncAdapterRegistry",
         "BaseModel",
         "Branch",
         "Broadcaster",
         "Builder",
+        "CsvAdapter",
         "DataClass",
         "Edge",
         "Element",
@@ -28,7 +36,14 @@ class TestMainImports:
         "Graph",
         "HookRegistry",
         "HookedEvent",
+        "InvalidConstructorError",
+        "JsonAdapter",
+        "LNDLError",
+        "LNDLOutput",
         "Message",
+        "MissingFieldError",
+        "MissingLvarError",
+        "MissingOutBlockError",
         "Node",
         "Operable",
         "OperableModel",
@@ -38,16 +53,21 @@ class TestMainImports:
         "Progression",
         "Session",
         "Spec",
+        "TomlAdapter",
+        "TypeMismatchError",
         "Undefined",
         "Unset",
         "alcall",
         "create_message",
+        "extract_lndl_blocks",
+        "get_lndl_system_prompt",
         "iModel",
         "json_dumps",
         "lcall",
         "ln",
         "load_mcp_tools",
         "logger",
+        "normalize_lndl_text",
         "to_dict",
         "to_list",
         "types",
@@ -59,24 +79,23 @@ class TestMainImports:
         assert lionagi.__all__ == self.EXPECTED_EXPORTS
 
     def test_all_exports_alphabetically_sorted(self):
-        """Test that __all__ exports are alphabetically sorted.
-
-        Note: Dunder names (like __version__) come first by convention,
-        then regular names are sorted alphabetically.
-        """
-        # Separate dunder names from regular names
+        """Dunder names first, then all regular names alphabetically sorted."""
         dunder_names = [name for name in lionagi.__all__ if name.startswith("__")]
         regular_names = [name for name in lionagi.__all__ if not name.startswith("__")]
 
-        # Check dunder names are sorted
+        # Dunder names must be sorted among themselves
         assert tuple(dunder_names) == tuple(sorted(dunder_names))
 
-        # Check regular names are sorted
+        # Regular names must be globally sorted (not just per-group)
         assert tuple(regular_names) == tuple(sorted(regular_names))
 
-        # Check dunder names come before regular names
-        expected_exports = tuple(sorted(dunder_names)) + tuple(sorted(regular_names))
-        assert lionagi.__all__ == expected_exports
+        # Dunder names must appear before any regular name
+        if dunder_names and regular_names:
+            dunder_indices = [i for i, n in enumerate(lionagi.__all__) if n.startswith("__")]
+            regular_indices = [i for i, n in enumerate(lionagi.__all__) if not n.startswith("__")]
+            assert max(dunder_indices) < min(regular_indices), (
+                "All dunder names must precede regular names in __all__"
+            )
 
     @pytest.mark.parametrize("export_name", EXPECTED_EXPORTS)
     def test_import_all_exports(self, export_name):
