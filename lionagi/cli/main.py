@@ -22,6 +22,7 @@ from ._logging import configure_cli_logging, log_error
 from .agent import add_agent_subparser, run_agent
 from .invoke import add_invoke_subparser, run_invoke
 from .kill import add_kill_subparser, run_kill
+from .monitor import add_monitor_subparser, run_monitor
 from .orchestrate import (
     add_orchestrate_subparser,
     inject_playbook_schema_into_parser,
@@ -257,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
     add_state_subparser(sub)
     add_invoke_subparser(sub)
     add_kill_subparser(sub)
+    add_monitor_subparser(sub)
 
     # If the user is invoking `li o flow -p NAME`, inject the playbook's
     # declared args as flags on the flow sub-parser BEFORE argparse runs,
@@ -285,6 +287,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "kill":
         return run_kill(args)
+
+    if args.command in ("monitor", "mon"):
+        return run_monitor(args)
 
     parser.print_help()
     return 1
