@@ -27,17 +27,19 @@ async def test_shield_does_not_block_internal_timeout(anyio_backend):
 @pytest.mark.anyio
 async def test_is_cancelled_true_for_backend_exception(anyio_backend):
     caught = {}
+    victim_started = anyio.Event()
 
     async def victim():
         try:
-            await anyio.sleep(0.1)  # Further reduced for faster tests
+            victim_started.set()
+            await anyio.sleep(0.1)
         except BaseException as e:
             caught["e"] = e
             raise
 
     async with anyio.create_task_group() as tg:
         tg.start_soon(victim)
-        await anyio.sleep(0.001)  # Small delay
+        await victim_started.wait()  # deterministic: victim is sleeping
         tg.cancel_scope.cancel()
 
     assert "e" in caught and is_cancelled(caught["e"])
@@ -55,10 +57,13 @@ async def test_shield_protects_from_external_cancellation(anyio_backend):
         completed = True
         return "done"
 
+    outer_started = anyio.Event()
+
     async def outer_work():
         nonlocal shield_worked
         try:
             # Shield protects the inner work
+            outer_started.set()
             result = await shield(protected_work)
             shield_worked = result == "done"
         except BaseException:
@@ -67,7 +72,7 @@ async def test_shield_protects_from_external_cancellation(anyio_backend):
 
     async with anyio.create_task_group() as tg:
         tg.start_soon(outer_work)
-        await anyio.sleep(0.001)  # Let work start
+        await outer_started.wait()  # deterministic: outer_work is running
         tg.cancel_scope.cancel()  # Cancel the group
 
     # Give shielded work time to complete
