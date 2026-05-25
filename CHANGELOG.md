@@ -4,6 +4,108 @@
 All notable changes to lionagi are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.26.7] - 2026-05-25
+
+Issue-sweep release. 16 issues closed, 14 PRs merged this cycle.
+
+### Added
+
+- **CLI: `li kill`** (#1094) — terminate runs/sessions/plays with SIGTERM→SIGKILL escalation,
+  `--recursive` cascade, `--all-stale` sweep (sessions + invocations; plays/shows are
+  orchestrators with no direct PID — use `--recursive` for explicit cleanup).
+- **CLI: `li monitor`** (#1089) — table + detail + `--watch` for play/agent/run progress.
+  Filters: `--since`, `--type`, `--project`.
+- **CLI: `--timeout` deadline awareness** (#1087) — when `--timeout N` is set, a deadline
+  preamble is injected as a leading user message so agents (codex/claude-code/etc.) can
+  ration reasoning instead of running until guillotine.
+- **Orchestrator: FlowOp budget propagation** (#1091) — total budget split across ops by
+  `FlowOp.budget_weight`; each worker receives a BUDGET preamble with its share + deadline.
+- **LNDL Phase 1** (#966) — opt-in structured-output formatter ported from beta:
+  `LNDLOutput`, `LNDLError`, `get_lndl_system_prompt`, `extract_lndl_blocks`,
+  `normalize_lndl_text`. `parse_lndl_fuzzy` stubbed pending Phase 2.
+- **Custom render/parser protocols Phase 1** (#1092) — `CustomRenderer`, `CustomParser`,
+  `StructureFormat`, `validate_image_url`, pure-function `prepare_messages_for_chat`.
+  Phase 2 (manager.py refactor + `branch.operate(renderer=...)` wiring) deferred.
+- **Studio: project chips on invocations rows** (#1081). Schedules + runs already had them.
+- **Studio a11y baseline (4 of 6 tracks)** (#1020):
+  - Track 1 — programmatic labels + `aria-describedby` on form inputs
+  - Track 2 — `--content-muted` and `dag-assign-text` contrast lifted to WCAG AA (4.5:1)
+  - Tracks 3-4 — skip-to-main link, `aria-live` on status/loading regions, `aria-busy` on
+    skeleton tables, `aria-pressed`/`aria-expanded` on toggle widgets
+  - Tracks 5-6 — global `prefers-reduced-motion` guard, `eslint-plugin-jsx-a11y` installed
+    (13 findings deferred via `TODO(#1020 follow-up)`).
+- **Studio: ARIA tabs keyboard model** (#1040) — `RunStepCard` gains ArrowLeft/Right/Home/End
+  with roving `tabIndex` per WAI-ARIA Tabs Pattern.
+- **CI: marketplace skill validation** (#1031) — 175 parameterized tests across 35 marketplace
+  MD files: canonical khive verbs, valid CLI subcommands, no banned models, no `nohup`.
+- **API: public exports** (#1122) — 19 lndl + adapters symbols now importable from package root.
+- **Tests: public-API smoke test** (#1134) — fails loudly on broken `lionagi/__init__.py`
+  (no `importorskip` on the package under test).
+
+### Fixed
+
+- **`li kill --all-stale` scope** (#1117, codex-iter ×3) — was iterating only sessions+invocations
+  despite docstring claiming all entity types. Now correctly limited to sessions + invocations
+  (plays/shows excluded — orchestrators with no direct PID). Follow-up #1144 tracks smart
+  child-derived staleness for plays/shows.
+- **`anyio.NoEventLoopError` on resumed-codex teardown** (#1082) — cancelled-exception class
+  cached at session start so the error path survives loop exit.
+- **SIGINT bypassed shielded teardown in `run_async()`** (#1055) — signal-aware handler
+  installed in parent thread; child loop is canceled cleanly so structured `finally:`
+  finalizers run before exit.
+- **Test timing-race patterns** (#1090, codex-iter ×3) — replaced `anyio.sleep(<small>)` sync
+  points with `anyio.Event` and `TaskGroup.start(...)` `task_status.started()`. Behavioral
+  assertions added alongside CI-tolerant relative timing bounds.
+- **SSRF guard missed `::169.254.169.254`** (#1125, CWE-918) — IPv4-compatible IPv6 form was
+  bypassing block-net check; now unmapped before lookup, same treatment as IPv4-mapped.
+- **Hook subprocess errors silently swallowed** (#1127) — `B904`/`S110`: traceback chain
+  preserved on `PermissionError`; warning logged in place of bare `except: pass`.
+- **State layer imported CLI internals** (#1119) — `LIONAGI_HOME` extracted to
+  `lionagi/_paths.py` leaf module; state no longer transitively pulls in CLI code.
+- **Studio: 501-stubbed Run/New controls** (#983) — disabled in UI with hold-message
+  pointing to CLI until backend implementation is designed.
+- **CLAUDE.md described `li schedule` as shipped** (#1121) — reference removed; ADR-0027
+  itself correctly remains "Proposed".
+
+### Changed
+
+- **Removed `pydapter` core dependency** (#1044) — `Adaptable`/`AsyncAdaptable`,
+  `AdapterRegistry`, `JsonAdapter`/`CsvAdapter`/`TomlAdapter` inlined into
+  `lionagi/adapters/`. `DataFrameAdapter` is now opt-in via `lionagi[pandas]`.
+  `AsyncPostgresAdapter` retains `pydapter[postgres]` (it inherits from a substantial
+  SQLAlchemy stack) and is opt-in via `lionagi[postgres]`.
+- **Asyncio sweep Phase 1** (#1043) — `asyncio.Lock` → `lionagi.ln.concurrency.Lock` (×6
+  call sites), `asyncio.sleep` → `anyio.sleep` (×1), `asyncio.gather` → anyio task group
+  (×1). 9 Phase 2/3 sites tagged with `TODO(#1043 Phase 2)` for next pass.
+- **CI matrix split** (#1069) — `pull_request` runs Python 3.10 + 3.14; `push` to main
+  runs the full 3.10–3.14 matrix. ~60% PR wall-time reduction.
+
+### Security
+
+- **#1125** — IPv4-compatible IPv6 IMDS bypass in `lionagi/ln/_ssrf.py`. Cloud envs with
+  IPv6-reachable IMDS could have been reached via `http://[::169.254.169.254]/…`.
+- **#1127** — broken hooks now logged instead of silently swallowed.
+
+### Internal
+
+- **Polish**: Studio microcopy centralized in `lib/copy.ts` (#1088 merged pre-cycle).
+- **Discovery**: `/discover-issues` filed 19 follow-up issues (#1117–#1135) — 8 resolved
+  this cycle; the remainder live for the next sweep + decisions on canonical SIGINT
+  reason code (#1118), README scope (#1120), ADR status taxonomy (#1129), custom render
+  Phase 1 integration (#1130), and v0.21.0 deprecation purge strategy (#1131).
+
+### Patch releases 0.26.1–0.26.6
+
+These were Docker-distribution iteration releases:
+
+- 0.26.1 — initial Docker release
+- 0.26.2 — Docker fix iteration
+- 0.26.3 — `fix(docker): use --legacy-peer-deps for npm install in Dockerfile` (#)
+- 0.26.4 — `fix(docker): remove non-existent public/ dir from COPY step` (#)
+- 0.26.5 — Docker build verified locally
+- 0.26.6 — minor fixups + ADR-0028 Phase 1 (#1073), marketplace consolidation (#1070),
+  ADRs 0028-0032 proposed (#1072), multi-arch Docker amd64+arm64 (#1080/#1093)
+
 ## [0.26.0] - 2026-05-21
 
 ### Added
