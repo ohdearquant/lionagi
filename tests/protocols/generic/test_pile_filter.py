@@ -105,9 +105,10 @@ class TestAdaptTo:
 
     @pytest.mark.asyncio
     async def test_adapt_to_async_json(self, pile_3):
-        # Only async adapters registered (pydapter CsvAsyncAdapter etc.) work;
-        # 'json' is sync-only — assert it raises the expected error.
-        from pydapter.exceptions import AdapterNotFoundError
+        # Only async adapters registered work; 'json' is sync-only — assert
+        # it raises the expected error (AdapterNotFoundError from our local
+        # adapter stack, previously sourced from pydapter.exceptions).
+        from lionagi.adapters._base import AdapterNotFoundError
 
         with pytest.raises(AdapterNotFoundError):
             await pile_3.adapt_to_async("json", many=True)

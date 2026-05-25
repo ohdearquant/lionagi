@@ -17,7 +17,7 @@ dependencies = [
     "msgspec>=0.20.0",
     "pydantic>=2.8.0",
     "pydantic-settings>=2.8.0",
-    "pydapter[pandas]>=1.3.2",
+    "toml>=0.10.2",
     "python-dotenv>=1.2.2",
     "tiktoken>=0.10.0",
     "aiosqlite>=0.21.0",
@@ -97,8 +97,14 @@ schema = [
     "datamodel-code-generator>=0.31.2",
 ]
 
+pandas = [
+    "pandas>=1.3.0",
+]
+
 postgres = [
-    "pydapter[postgres]",
+    "pydapter[postgres]>=1.3.2",
+    "asyncpg>=0.27.0",
+    "sqlalchemy[asyncio]>=2.0.0",
 ]
 
 sqlite = [

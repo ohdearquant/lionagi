@@ -3270,9 +3270,9 @@ dependencies = [
     { name = "msgspec" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
-    { name = "pydapter", extra = ["pandas"] },
     { name = "python-dotenv" },
     { name = "tiktoken" },
+    { name = "toml" },
 ]
 
 [package.optional-dependencies]
@@ -3282,6 +3282,7 @@ ag2 = [
 all = [
     { name = "ag2", extra = ["openai"] },
     { name = "aiosqlite" },
+    { name = "asyncpg" },
     { name = "datamodel-code-generator" },
     { name = "docling" },
     { name = "fastmcp" },
@@ -3291,6 +3292,7 @@ all = [
     { name = "ollama" },
     { name = "pydapter", extra = ["postgres"] },
     { name = "rich" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "xmltodict" },
 ]
 graph = [
@@ -3308,8 +3310,14 @@ nlip = [
 ollama = [
     { name = "ollama" },
 ]
+pandas = [
+    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
 postgres = [
+    { name = "asyncpg" },
     { name = "pydapter", extra = ["postgres"] },
+    { name = "sqlalchemy", extra = ["asyncio"] },
 ]
 reader = [
     { name = "docling" },
@@ -3388,6 +3396,7 @@ requires-dist = [
     { name = "aiosqlite", marker = "extra == 'sqlite'", specifier = ">=0.21.0" },
     { name = "aiosqlite", marker = "extra == 'studio'", specifier = ">=0.21.0" },
     { name = "anyio", specifier = ">=4.10.0" },
+    { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.27.0" },
     { name = "backoff", specifier = ">=2.1.0" },
     { name = "croniter", specifier = ">=1.4" },
     { name = "datamodel-code-generator", marker = "extra == 'schema'", specifier = ">=0.31.2" },
@@ -3410,21 +3419,23 @@ requires-dist = [
     { name = "msgspec", specifier = ">=0.20.0" },
     { name = "networkx", marker = "extra == 'graph'", specifier = ">=3.0.0" },
     { name = "ollama", marker = "extra == 'ollama'", specifier = ">=0.6.1" },
+    { name = "pandas", marker = "extra == 'pandas'", specifier = ">=1.3.0" },
     { name = "pydantic", specifier = ">=2.8.0" },
     { name = "pydantic-settings", specifier = ">=2.8.0" },
-    { name = "pydapter", extras = ["pandas"], specifier = ">=1.3.2" },
-    { name = "pydapter", extras = ["postgres"], marker = "extra == 'postgres'" },
+    { name = "pydapter", extras = ["postgres"], marker = "extra == 'postgres'", specifier = ">=1.3.2" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "pyyaml", marker = "extra == 'studio'", specifier = ">=6.0" },
     { name = "rich", marker = "extra == 'rich'", specifier = ">=13.0.0" },
+    { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'postgres'", specifier = ">=2.0.0" },
     { name = "starlette", marker = "extra == 'studio'", specifier = ">=0.46.2" },
     { name = "tiktoken", specifier = ">=0.10.0" },
+    { name = "toml", specifier = ">=0.10.2" },
     { name = "uvicorn", marker = "extra == 'nlip'", specifier = ">=0.34.0" },
     { name = "uvicorn", marker = "extra == 'sandbox'", specifier = ">=0.34.0" },
     { name = "uvicorn", marker = "extra == 'studio'", specifier = ">=0.34" },
     { name = "xmltodict", marker = "extra == 'xml'", specifier = ">=0.12.0" },
 ]
-provides-extras = ["reader", "ollama", "mcp", "rich", "schema", "postgres", "sqlite", "graph", "xml", "ag2", "nlip", "sandbox", "studio", "all"]
+provides-extras = ["reader", "ollama", "mcp", "rich", "schema", "pandas", "postgres", "sqlite", "graph", "xml", "ag2", "nlip", "sandbox", "studio", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -6032,10 +6043,6 @@ wheels = [
 ]
 
 [package.optional-dependencies]
-pandas = [
-    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-]
 postgres = [
     { name = "asyncpg" },
     { name = "greenlet" },

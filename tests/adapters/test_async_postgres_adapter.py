@@ -3,6 +3,7 @@
 
 """Tests for lionagi async postgres adapter and availability check."""
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # A9 / A10: check_async_postgres_available
@@ -42,12 +43,20 @@ def test_check_async_postgres_available_true_when_dependencies_present(monkeypat
 async def test_async_postgres_to_obj_ensures_table_for_dsn_before_delegating(
     monkeypatch,
 ):
+    """Requires lionagi[postgres] extra (pydapter[postgres], sqlalchemy, asyncpg)."""
+    pytest.importorskip("sqlalchemy", reason="requires lionagi[postgres] extra")
+
     from unittest.mock import AsyncMock
 
     from pydapter.extras.async_postgres_ import AsyncPostgresAdapter
 
-    from lionagi.adapters.async_postgres_adapter import LionAGIAsyncPostgresAdapter
+    from lionagi.adapters.async_postgres_adapter import (
+        create_lionagi_async_postgres_adapter,
+    )
     from lionagi.protocols.graph.node import Node
+
+    # Build the adapter class using the factory (lazily, now that we confirmed deps exist)
+    LionAGIAsyncPostgresAdapter = create_lionagi_async_postgres_adapter()
 
     ensure_mock = AsyncMock()
     parent_to_obj_mock = AsyncMock(return_value="ok")

@@ -8,9 +8,9 @@ from typing import Any, ClassVar
 
 import orjson
 from pydantic import BaseModel, field_serializer, field_validator
-from pydapter import Adaptable, AsyncAdaptable
 
 from lionagi._class_registry import LION_CLASS_REGISTRY
+from lionagi.adapters._base import Adaptable, AsyncAdaptable
 from lionagi.ln.types import DataClass
 
 from .._concepts import Relational
@@ -265,24 +265,31 @@ class Node(Element, Relational, AsyncAdaptable, Adaptable):
 
 
 def _ensure_postgres_adapter():
-    """Lazy registration of postgres adapter when needed"""
+    """Lazy registration of postgres adapter when needed.
+
+    Imports and constructs LionAGIAsyncPostgresAdapter only when the
+    lionagi[postgres] extra (pydapter[postgres], sqlalchemy, asyncpg) is
+    present.  Safe to call multiple times — only acts on the first call.
+    """
     if not hasattr(Node, "_postgres_adapter_checked"):
         from lionagi.adapters._utils import check_async_postgres_available
 
         if check_async_postgres_available() is True:
             try:
                 from lionagi.adapters.async_postgres_adapter import (
-                    LionAGIAsyncPostgresAdapter,
+                    create_lionagi_async_postgres_adapter,
                 )
 
-                Node.register_async_adapter(LionAGIAsyncPostgresAdapter)
-            except ImportError:
+                adapter_cls = create_lionagi_async_postgres_adapter()
+                Node.register_async_adapter(adapter_cls)
+            except Exception:  # noqa: BLE001, S110
                 pass  # Graceful degradation if postgres dependencies missing
         Node._postgres_adapter_checked = True
 
 
 if not _ADAPTER_REGISTERED:
-    from pydapter.adapters import JsonAdapter, TomlAdapter
+    from lionagi.adapters.json_ import JsonAdapter
+    from lionagi.adapters.toml_ import TomlAdapter
 
     Node.register_adapter(JsonAdapter)
     Node.register_adapter(TomlAdapter)
