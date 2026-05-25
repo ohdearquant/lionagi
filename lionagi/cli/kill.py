@@ -446,11 +446,21 @@ async def _do_kill_all_stale(
     skipped_live = 0
     skipped_recent = 0
 
+    # Shows use "active" as their live status; all other entity types use "running".
+    live_status_for: dict[str, str] = {
+        "sessions": "running",
+        "invocations": "running",
+        "plays": "running",
+        "shows": "active",
+    }
+
     async with StateDB() as db:
-        for table in ("sessions", "invocations"):
+        for table in _SEARCH_ORDER:
             entity_type = _TABLE_TO_ENTITY_TYPE[table]
+            live_status = live_status_for[table]
             cur = await db.db.execute(
-                f"SELECT * FROM {table} WHERE status = 'running'"  # noqa: S608
+                f"SELECT * FROM {table} WHERE status = ?",  # noqa: S608
+                (live_status,),
             )
             rows = await cur.fetchall()
 
@@ -458,8 +468,13 @@ async def _do_kill_all_stale(
                 row_dict = db._row_to_dict(row)
                 entity_id = row_dict["id"]
 
-                # Age check: skip sessions started recently.
-                started = row_dict.get("started_at") or row_dict.get("updated_at") or 0
+                # Age check: skip entities started/updated recently.
+                started = (
+                    row_dict.get("started_at")
+                    or row_dict.get("updated_at")
+                    or row_dict.get("created_at")
+                    or 0
+                )
                 if started > cutoff:
                     skipped_recent += 1
                     if verbose:

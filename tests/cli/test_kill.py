@@ -584,3 +584,64 @@ def test_kill_all_stale_subparser_flags():
     finally:
         _db_mod.DEFAULT_DB_PATH = original
         Path(tmp_path).unlink(missing_ok=True)
+
+
+# ── issue #1117: _do_kill_all_stale must sweep plays and shows ─────────────────
+
+
+async def test_do_kill_all_stale_cancels_stale_play(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Stale running play with a dead PID must be swept (issue #1117)."""
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+
+    old_start = time.time() - 7200  # 2 hours ago
+    async with StateDB() as db:
+        show_id = await _seed_show(db, status="active")
+        play_id = await _seed_play(db, show_id, status="running")
+        # Backdate started_at so the row is outside the stale threshold.
+        await db.db.execute(
+            "UPDATE plays SET started_at = ? WHERE id = ?",
+            (old_start, play_id),
+        )
+        await db.db.commit()
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        cur = await db.db.execute("SELECT status FROM plays WHERE id = ?", (play_id,))
+        row = await cur.fetchone()
+        assert row is not None
+        # _persist_cancel maps stale play → "blocked" (no "cancelled" in play vocabulary)
+        assert row["status"] == "blocked"
+
+
+async def test_do_kill_all_stale_cancels_stale_show(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Stale active show must be swept (issue #1117).
+
+    Shows use 'active' as their live status (not 'running').  The sweep
+    must query for 'active' rows and use updated_at/created_at for age check.
+    """
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+
+    old_time = time.time() - 7200  # 2 hours ago
+    async with StateDB() as db:
+        show_id = await _seed_show(db, status="active")
+        # Backdate both timestamps so the show is outside the stale threshold.
+        await db.db.execute(
+            "UPDATE shows SET updated_at = ?, created_at = ? WHERE id = ?",
+            (old_time, old_time, show_id),
+        )
+        await db.db.commit()
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        cur = await db.db.execute("SELECT status FROM shows WHERE id = ?", (show_id,))
+        row = await cur.fetchone()
+        assert row is not None
+        assert row["status"] == "aborted"
