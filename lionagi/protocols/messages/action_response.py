@@ -24,6 +24,45 @@ class ActionResponseContent(MessageContent):
     arguments: dict[str, Any] = field(default_factory=dict)
     output: Any = None
     action_request_id: str | None = None
+    error: str | None = None
+
+    @property
+    def role(self) -> MessageRole:
+        """Role for this content type (beta API compat)."""
+        return MessageRole.ACTION
+
+    @property
+    def request_id(self) -> str | None:
+        """Alias for action_request_id (beta API compat)."""
+        return self.action_request_id
+
+    @property
+    def result(self) -> Any:
+        """Alias for output (beta API compat)."""
+        return self.output
+
+    @property
+    def success(self) -> bool:
+        """True when no error was recorded."""
+        return self.error is None
+
+    def render(self, *_args: Any, **_kwargs: Any) -> str:
+        """Render action response.  Delegates to :attr:`rendered` for beta API compat."""
+        return self.rendered
+
+    def render_summary(self) -> str:
+        """Render result content for round-level aggregation."""
+        from lionagi.libs.schema.minimal_yaml import minimal_yaml
+
+        if not self.success:
+            return f"error: {self.error or 'unknown'}"
+        if self.output is None:
+            return "ok"
+        if isinstance(self.output, str):
+            return self.output
+        if isinstance(self.output, dict | list):
+            return minimal_yaml(self.output)
+        return str(self.output)
 
     @property
     def rendered(self) -> str:
