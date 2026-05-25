@@ -429,7 +429,7 @@ function RunsPageInner() {
       )}
 
       <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
-        <table className="w-full text-left text-body">
+        <table aria-busy={loading} className="w-full text-left text-body">
           <thead>
             <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
               <th className="px-3 py-2.5 font-medium">
@@ -475,12 +475,25 @@ function RunsPageInner() {
                     return (
                       <Fragment key={group.invocation_id}>
                         <tr
+                          role="button"
+                          tabIndex={0}
+                          aria-expanded={isExpanded}
+                          aria-label={`Invocation ${group.invocation_id.slice(-8)}, ${group.sessions.length} session${group.sessions.length !== 1 ? "s" : ""}`}
                           className="border-b border-edge-subtle bg-surface-overlay/50 text-content-primary cursor-pointer transition-colors duration-100 hover:bg-surface-overlay"
                           onClick={() => toggleExpand(group.invocation_id)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              toggleExpand(group.invocation_id);
+                            }
+                          }}
                         >
                           <td className="px-3 py-2">
                             <div className="flex items-center gap-1.5">
-                              <span className="inline-block w-3 text-center font-mono text-[10px] text-content-muted select-none">
+                              <span
+                                aria-hidden="true"
+                                className="inline-block w-3 text-center font-mono text-[10px] text-content-muted select-none"
+                              >
                                 {isExpanded ? "▼" : "▶"}
                               </span>
                               <span className="font-medium">

@@ -116,6 +116,7 @@ export default function ProjectChip() {
       </button>
 
       {open && (
+        // eslint-disable-next-line jsx-a11y/interactive-supports-focus -- TODO(#1020 follow-up): menu container; focus goes to menuitem children per ARIA spec
         <div
           ref={menuRef}
           id={menuId}

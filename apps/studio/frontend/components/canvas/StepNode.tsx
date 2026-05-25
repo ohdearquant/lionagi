@@ -1,8 +1,21 @@
 "use client";
 
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
 import { Handle, Position } from "reactflow";
 import type { NodeProps } from "reactflow";
+
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- SSR hydration guard: window.matchMedia unavailable during server render
+    setReduced(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setReduced(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+  return reduced;
+}
 
 const ROLE_VAR: Record<string, string> = {
   researcher: "var(--role-researcher)",
@@ -33,6 +46,7 @@ export interface StepNodeData {
 function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
   const roleColor = ROLE_VAR[data.role] || "var(--content-muted)";
   const status = data.execStatus ?? "pending";
+  const reducedMotion = usePrefersReducedMotion();
 
   const borderColor =
     status === "running"
@@ -117,7 +131,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         )}
         {status === "running" && (
           <span
-            className="shrink-0 h-1.5 w-1.5 rounded-full animate-pulse"
+            className={`shrink-0 h-1.5 w-1.5 rounded-full${reducedMotion ? "" : " animate-pulse"}`}
             style={{ background: "var(--dag-running-border)" }}
           />
         )}
@@ -151,9 +165,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
           {(data.errorCount ?? 0) > 0 ? (
             <span style={{ color: "var(--status-error)" }}>{data.errorCount} err</span>
           ) : null}
-          {(data.toolCallCount ?? 0) > 0 ? (
-            <span>{data.toolCallCount} calls</span>
-          ) : null}
+          {(data.toolCallCount ?? 0) > 0 ? <span>{data.toolCallCount} calls</span> : null}
         </div>
       )}
 
@@ -162,7 +174,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
           className="pointer-events-none absolute inset-0 rounded-md"
           style={{
             border: "2px solid var(--dag-running-border)",
-            animation: "pulse 1.5s ease-in-out infinite",
+            animation: reducedMotion ? "none" : "pulse 1.5s ease-in-out infinite",
             opacity: 0.35,
           }}
         />

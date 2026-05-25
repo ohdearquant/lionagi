@@ -141,7 +141,7 @@ export default function InvocationsPage() {
       )}
 
       <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
-        <table className="w-full text-left text-body">
+        <table aria-busy={loading} aria-live="polite" className="w-full text-left text-body">
           <thead>
             <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
               <th className="px-3 py-2.5 font-medium">Skill</th>

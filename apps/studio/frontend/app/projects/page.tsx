@@ -71,6 +71,7 @@ function CreateProjectModal({
   }
 
   return (
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- TODO(#1020 follow-up): modal backdrop dismiss; keyboard Escape handled by inner dialog
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
       onClick={(e) => {
