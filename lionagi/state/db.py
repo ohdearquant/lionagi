@@ -11,8 +11,8 @@ from typing import Any
 
 import aiosqlite
 
+from lionagi._paths import LIONAGI_HOME
 from lionagi.ln.concurrency import Lock
-from lionagi.cli._runs import LIONAGI_HOME
 from lionagi.state.reasons import (
     PlayReasons as _PlayReasons,
 )

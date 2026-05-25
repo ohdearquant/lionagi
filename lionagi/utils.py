@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, TypeVar, Union, get_args, get_origin
 
+from lionagi._paths import LIONAGI_HOME
+
 from .ln import (
     get_bins,
     hash_dict,
@@ -206,11 +208,6 @@ def create_path(
     # Check if file or directory existence
     full_path.parent.mkdir(parents=True, exist_ok=dir_exist_ok)
     if full_path.exists() and not file_exist_ok:
-        raise FileExistsError(
-            f"File {full_path} already exists and file_exist_ok is False."
-        )
+        raise FileExistsError(f"File {full_path} already exists and file_exist_ok is False.")
 
     return full_path
-
-
-LIONAGI_HOME = Path.home() / ".lionagi"
