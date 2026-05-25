@@ -128,6 +128,40 @@ def test_ipv4_mapped_public_safe():
 
 
 # ---------------------------------------------------------------------------
+# 4b. IPv4-compatible IPv6 (::a.b.c.d) — CRITICAL: must return False (#1125)
+# ---------------------------------------------------------------------------
+# IPv4-compatible IPv6 is the *deprecated* form where the IPv4 address is
+# embedded directly without the 0xffff marker.  ``::169.254.169.254`` is a
+# live IMDS bypass on IPv6-reachable cloud environments (CWE-918).
+# Python's ipaddress.IPv6Address.ipv4_mapped returns None for this form, so
+# the IPv4-mapped unmap path that covers ::ffff:a.b.c.d does NOT catch it.
+# These tests document the required behaviour after the fix.
+
+
+@pytest.mark.parametrize(
+    "ipv4_compat",
+    [
+        "::169.254.169.254",  # AWS/GCP IMDS — the live IMDS bypass (issue #1125)
+        "::10.0.0.1",  # RFC 1918 private via IPv4-compat
+        "::192.168.1.1",  # RFC 1918 private via IPv4-compat
+        "::127.0.0.1",  # Loopback via IPv4-compat
+        "::172.16.0.1",  # RFC 1918 private via IPv4-compat
+        "::100.64.0.1",  # CGN (RFC 6598) via IPv4-compat
+    ],
+)
+def test_ipv4_compatible_ipv6_blocked(ipv4_compat):
+    """IPv4-compatible IPv6 (::a.b.c.d) must not bypass IPv4 network checks."""
+    with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo(ipv4_compat)):
+        assert is_ssrf_safe("evil.internal") is False
+
+
+def test_ipv4_compatible_public_safe():
+    """IPv4-compatible IPv6 wrapping a public IP should be safe."""
+    with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("::8.8.8.8")):
+        assert is_ssrf_safe("dns.example.com") is True
+
+
+# ---------------------------------------------------------------------------
 # 5. DNS resolution failure — must fail closed
 # ---------------------------------------------------------------------------
 

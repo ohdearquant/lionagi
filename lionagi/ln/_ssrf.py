@@ -15,14 +15,6 @@ short TTL could change (DNS rebinding).  This is an accepted residual risk for
 the current implementation.  If DNS rebinding becomes a concrete threat,
 implement a custom ``httpx.AsyncHTTPTransport`` that pins the resolved address.
 
-IPv4-compatible IPv6 residual risk
------------------------------------
-The deprecated IPv4-compatible IPv6 form ``::a.b.c.d`` (distinct from the
-IPv4-mapped form ``::ffff:a.b.c.d``) is not unmapped before checking and is
-therefore treated as a public IPv6 address by this guard.  ``::169.254.169.254``
-would pass the check.  This is the same risk class as DNS rebinding and is
-accepted for the current implementation.
-
 CWE reference: CWE-918.
 """
 
@@ -70,8 +62,9 @@ def is_ssrf_safe(hostname: str) -> bool:
     against :data:`_BLOCKED_NETS`.  Unresolvable hostnames are rejected
     (return False) so that DNS failures fail-closed.
 
-    IPv4-mapped IPv6 addresses (``::ffff:a.b.c.d``) are unmapped before
-    checking so they match IPv4 blocked networks correctly.
+    Both IPv4-mapped (``::ffff:a.b.c.d``) and IPv4-compatible (``::a.b.c.d``)
+    IPv6 addresses are unmapped to their IPv4 form before checking, so they
+    correctly match IPv4 blocked networks.
 
     Args:
         hostname: Hostname to validate.  Do NOT pass a full URL; extract the
@@ -90,6 +83,8 @@ def is_ssrf_safe(hostname: str) -> bool:
         >>> is_ssrf_safe("localhost")
         False
         >>> is_ssrf_safe("::ffff:169.254.169.254")
+        False
+        >>> is_ssrf_safe("::169.254.169.254")
         False
     """
     if not hostname:
@@ -117,6 +112,17 @@ def is_ssrf_safe(hostname: str) -> bool:
         # IPv4 blocked networks.
         if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
             ip = ip.ipv4_mapped
+
+        # Unmap IPv4-compatible IPv6 (::a.b.c.d → a.b.c.d) — the deprecated
+        # form where the IPv4 address is embedded directly without the 0xffff
+        # marker.  Python's ipv4_mapped returns None for this form, so we must
+        # detect it manually.  RFC 4291 §2.5.5.1: packed representation is
+        # 10 zero bytes + 2 zero bytes + 4 IPv4 bytes.
+        # Fix for CWE-918 / issue #1125: ::169.254.169.254 reached AWS IMDS.
+        if isinstance(ip, ipaddress.IPv6Address):
+            b = ip.packed
+            if b[:12] == b"\x00" * 12:
+                ip = ipaddress.IPv4Address(b[12:])
 
         if any(ip in net for net in _BLOCKED_NETS):
             return False
