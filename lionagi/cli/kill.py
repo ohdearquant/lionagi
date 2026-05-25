@@ -130,6 +130,12 @@ def _terminate_pid(pid: int, grace_seconds: float = 5.0) -> str:
 
 _SEARCH_ORDER = ("sessions", "invocations", "plays", "shows")
 
+# Shows have no direct PID — their child plays/sessions do. Skip in
+# all-stale sweep to avoid false-positive aborts of long-running shows
+# whose children are still alive. Use `li kill <show_id> --recursive`
+# to clean up an individual show.
+_STALE_SWEEP_ORDER = ("sessions", "invocations", "plays")
+
 # Map DB table name → canonical entity type for update_status().
 _TABLE_TO_ENTITY_TYPE = {
     "sessions": "session",
@@ -446,16 +452,14 @@ async def _do_kill_all_stale(
     skipped_live = 0
     skipped_recent = 0
 
-    # Shows use "active" as their live status; all other entity types use "running".
     live_status_for: dict[str, str] = {
         "sessions": "running",
         "invocations": "running",
         "plays": "running",
-        "shows": "active",
     }
 
     async with StateDB() as db:
-        for table in _SEARCH_ORDER:
+        for table in _STALE_SWEEP_ORDER:
             entity_type = _TABLE_TO_ENTITY_TYPE[table]
             live_status = live_status_for[table]
             cur = await db.db.execute(
