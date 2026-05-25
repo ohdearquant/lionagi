@@ -166,12 +166,14 @@ export default function ModelConfigTable({ models, onChange }: ModelConfigTableP
               const showEffort = provider === "codex";
               const showPermission = provider === "claude_code";
 
+              const rowLabel = role || `row ${index + 1}`;
               return (
                 <tr key={index} className="border-b border-neutral-900 text-neutral-300">
                   {/* Role Name */}
                   <td className="px-3 py-2 align-middle">
                     <input
                       type="text"
+                      aria-label={`Role name for row ${index + 1}`}
                       value={role}
                       onChange={(e) => handleRoleChange(index, e.target.value)}
                       placeholder="role_name"
@@ -182,6 +184,7 @@ export default function ModelConfigTable({ models, onChange }: ModelConfigTableP
                   {/* Provider */}
                   <td className="px-3 py-2 align-middle">
                     <select
+                      aria-label={`Provider for ${rowLabel}`}
                       value={provider}
                       onChange={(e) => handleProviderChange(index, e.target.value)}
                       className={selectClass}
@@ -197,6 +200,7 @@ export default function ModelConfigTable({ models, onChange }: ModelConfigTableP
                   {/* Model */}
                   <td className="px-3 py-2 align-middle">
                     <select
+                      aria-label={`Model for ${rowLabel}`}
                       value={config.model}
                       onChange={(e) => handleModelChange(index, e.target.value)}
                       className={selectClass}
@@ -213,6 +217,7 @@ export default function ModelConfigTable({ models, onChange }: ModelConfigTableP
                   <td className="px-3 py-2 align-middle">
                     {showEffort ? (
                       <select
+                        aria-label={`Reasoning effort for ${rowLabel}`}
                         value={config.reasoning_effort ?? "none"}
                         onChange={(e) => handleEffortChange(index, e.target.value)}
                         className={selectClass}
@@ -232,6 +237,7 @@ export default function ModelConfigTable({ models, onChange }: ModelConfigTableP
                   <td className="px-3 py-2 align-middle">
                     {showPermission ? (
                       <select
+                        aria-label={`Permission mode for ${rowLabel}`}
                         value={config.permission_mode ?? "default"}
                         onChange={(e) => handlePermissionChange(index, e.target.value)}
                         className={selectClass}
