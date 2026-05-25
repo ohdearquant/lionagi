@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,8 @@ from typing import Any
 import yaml
 
 from .config import AgentConfig
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_TRUSTED_HOOK_MODULES: frozenset[str] = frozenset({"lionagi.agent.hooks"})
 
@@ -118,9 +121,7 @@ def apply_hooks_from_settings(
             if not isinstance(hook_specs, list):
                 hook_specs = [hook_specs]
             for spec in hook_specs:
-                handler = _resolve_hook_spec(
-                    spec, phase, tool_name, trusted_hook_modules
-                )
+                handler = _resolve_hook_spec(spec, phase, tool_name, trusted_hook_modules)
                 if handler is None:
                     continue
                 if phase == "pre":
@@ -151,9 +152,7 @@ def _resolve_hook_spec(
 
     if isinstance(spec, dict):
         if "python" in spec:
-            return _import_hook(
-                spec["python"], trusted_hook_modules=trusted_hook_modules
-            )
+            return _import_hook(spec["python"], trusted_hook_modules=trusted_hook_modules)
         if "command" in spec:
             return _make_shell_hook(spec["command"], phase, tool_name)
 
@@ -175,8 +174,7 @@ def _import_hook(
     # Finding 1: reject untrusted module imports
     if module_path not in trusted_hook_modules:
         raise PermissionError(
-            f"Untrusted hook module {module_path!r}. "
-            f"Add it to trusted_hook_modules to allow."
+            f"Untrusted hook module {module_path!r}. Add it to trusted_hook_modules to allow."
         )
     try:
         module = importlib.import_module(module_path)
@@ -185,9 +183,7 @@ def _import_hook(
         return None
 
 
-def _make_shell_hook(
-    command_template: list[str], phase: str, tool_name: str
-) -> Callable:
+def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) -> Callable:
     """Create an async hook that runs a shell command via argv list (shell=False).
 
     Finding 11: command_template must be a list of strings (no shell string).
@@ -230,15 +226,12 @@ def _make_shell_hook(
                     proc.communicate(json.dumps(args).encode()),
                     timeout=10,
                 )
-            except asyncio.TimeoutError:
-                raise PermissionError(f"Hook timed out: {argv[0]!r}")
+            except asyncio.TimeoutError as err:
+                raise PermissionError(f"Hook timed out: {argv[0]!r}") from err
             except Exception as e:
                 raise PermissionError(f"Hook execution error: {e}") from e
             if proc.returncode != 0:
-                msg = (
-                    stderr_bytes.decode(errors="replace").strip()
-                    or f"Hook blocked: {argv[0]!r}"
-                )
+                msg = stderr_bytes.decode(errors="replace").strip() or f"Hook blocked: {argv[0]!r}"
                 raise PermissionError(msg)
             return None
 
@@ -246,9 +239,7 @@ def _make_shell_hook(
 
     else:
 
-        async def shell_post_hook(
-            tn: str, action: str, args: dict, result: dict
-        ) -> dict | None:
+        async def shell_post_hook(tn: str, action: str, args: dict, result: dict) -> dict | None:
             argv = _render_argv({**args, **result})
             try:
                 # Finding 12: async subprocess instead of blocking subprocess.run()
@@ -263,8 +254,8 @@ def _make_shell_hook(
                     proc.communicate(json.dumps(result).encode()),
                     timeout=10,
                 )
-            except (asyncio.TimeoutError, Exception):
-                pass
+            except (asyncio.TimeoutError, Exception) as exc:
+                logger.warning("hook subprocess error (swallowed)", exc_info=exc)
             return None
 
         return shell_post_hook
