@@ -457,6 +457,7 @@ function CreateScheduleModal({
   }
 
   return (
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- TODO(#1020 follow-up): modal backdrop dismiss; keyboard Escape handled by inner dialog
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 py-8"
       onClick={(e) => {

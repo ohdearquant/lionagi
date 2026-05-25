@@ -7,12 +7,7 @@ export type StatusTone = "ok" | "running" | "failed" | "pending" | "blocked" | "
 // into the same tone. "session" = ADR-0025 status; "health" = ADR-0024
 // derived health; "verdict" = critic/review verdicts; "play" = ADR-0011
 // play vocabulary; "neutral" = catch-all.
-export type StatusTaxonomy =
-  | "session"
-  | "health"
-  | "verdict"
-  | "play"
-  | "neutral";
+export type StatusTaxonomy = "session" | "health" | "verdict" | "play" | "neutral";
 
 export interface StatusPillProps {
   // Raw machine string (e.g. "director-managed-complete"). Used to derive
@@ -101,19 +96,19 @@ const TONE_BY_TAXONOMY: Record<StatusTaxonomy, Record<string, StatusTone>> = {
     running: "running",
     completed: "ok",
     failed: "failed",
-    timed_out: "pending",  // deliberate bound — amber, not red
-    aborted: "neutral",    // user Ctrl-C
-    cancelled: "neutral",  // system / orchestrator cancellation
+    timed_out: "pending", // deliberate bound — amber, not red
+    aborted: "neutral", // user Ctrl-C
+    cancelled: "neutral", // system / orchestrator cancellation
   },
   health: {
     // ADR-0024: six-level derived health. Pre-sorted by severity for the
     // worst-of-group calculation in the grouped runs view.
     healthy: "ok",
     idle: "neutral",
-    unresponsive: "pending",  // amber — alive but past threshold
-    stale: "pending",         // amber/orange — process dead, has output
-    orphaned: "blocked",      // purple — never produced output
-    zombie: "failed",         // red — terminal, but resources leaked
+    unresponsive: "pending", // amber — alive but past threshold
+    stale: "pending", // amber/orange — process dead, has output
+    orphaned: "blocked", // purple — never produced output
+    zombie: "failed", // red — terminal, but resources leaked
   },
   verdict: {
     approve: "ok",
@@ -128,10 +123,7 @@ const TONE_BY_TAXONOMY: Record<StatusTaxonomy, Record<string, StatusTone>> = {
   neutral: {},
 };
 
-function toneFromValue(
-  value: string | null | undefined,
-  taxonomy?: StatusTaxonomy,
-): StatusTone {
+function toneFromValue(value: string | null | undefined, taxonomy?: StatusTaxonomy): StatusTone {
   if (!value) return "neutral";
   const key = value.toLowerCase().trim();
   if (taxonomy && TONE_BY_TAXONOMY[taxonomy][key]) {
@@ -227,7 +219,9 @@ export default function StatusPill({
         .join(" ")}
     >
       {resolvedIcon ? (
-        <span className="text-[9px] leading-none shrink-0">{resolvedIcon}</span>
+        <span aria-hidden="true" className="text-[9px] leading-none shrink-0">
+          {resolvedIcon}
+        </span>
       ) : null}
       <span className="truncate">{resolvedLabel}</span>
     </span>
