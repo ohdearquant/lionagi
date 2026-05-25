@@ -6,6 +6,7 @@ import { use, useCallback, useEffect, useRef, useState } from "react";
 import Button from "@/components/Button";
 import StatusPill from "@/components/StatusPill";
 import { getWorkerGraph } from "@/lib/api";
+import { notImplemented } from "@/lib/copy";
 import type { WorkerGraph } from "@/lib/types";
 
 const WorkerCanvas = dynamic(() => import("@/components/canvas/WorkerCanvas"), { ssr: false });
@@ -104,7 +105,7 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
       cancelled = true;
       if (handle != null) clearTimeout(handle);
     };
-  // POLL_MAX_MS is a module-scope constant hoisted to module scope — not a dep.
+    // POLL_MAX_MS is a module-scope constant hoisted to module scope — not a dep.
   }, [activeRunId]);
 
   const handleRun = useCallback(async () => {
@@ -168,7 +169,7 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
             size="sm"
             onClick={handleRun}
             disabled={runDisabled}
-            title="Coming soon"
+            title={notImplemented.runPlaybook}
             leading="▶"
           >
             Run
@@ -184,11 +185,7 @@ export default function WorkerDetailPage({ params }: { params: Promise<{ name: s
       {/* Canvas — or empty state when no steps */}
       {graph.nodes.length === 0 ? (
         <div className="flex flex-1 items-center justify-center bg-surface-base px-4 py-10">
-          <PlaybookEmptyState
-            workerName={workerName}
-            runDisabled={runDisabled}
-            onRun={handleRun}
-          />
+          <PlaybookEmptyState workerName={workerName} runDisabled={runDisabled} onRun={handleRun} />
         </div>
       ) : (
         <div className="min-h-0 flex-1">
@@ -228,7 +225,14 @@ function PlaybookEmptyState({
         </p>
       </div>
       <div className="flex flex-wrap justify-center gap-2">
-        <Button variant="primary" size="md" onClick={onRun} disabled={runDisabled} title="Coming soon" leading="▶">
+        <Button
+          variant="primary"
+          size="md"
+          onClick={onRun}
+          disabled={runDisabled}
+          title={notImplemented.runPlaybook}
+          leading="▶"
+        >
           Run
         </Button>
         <Link href={`/playbooks/${encodeURIComponent(workerName)}/edit`}>

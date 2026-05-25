@@ -23,6 +23,21 @@
 // i18n becomes a roadmap item, this file is the natural extraction
 // point.
 
+// ── Not-yet-implemented placeholders ────────────────────────────────
+//
+// Use `notImplemented.runPlaybook` as the title/tooltip on Run buttons,
+// and `notImplemented.newPlaybook` / `notImplemented.newAgent` as the
+// hold-message body on the corresponding new-item pages.
+// CLI command strings are monospace-marked at the call site, not here.
+
+export const notImplemented = {
+  runPlaybook: "Run from Studio not yet implemented — use `li play <name>` from the CLI.",
+  newPlaybook:
+    "Creating playbooks from Studio is not yet implemented. Use `li play` or author a YAML file directly.",
+  newAgent:
+    "Creating agents from Studio is not yet implemented. Use `li agent` or author an agent YAML file directly.",
+} as const;
+
 // ── Destructive confirmations ────────────────────────────────────────
 
 /**
