@@ -25,8 +25,11 @@ import type {
 } from "./types";
 
 function resolveApiBase(): string {
+  // Treat empty string as "not configured" — defense against build-time
+  // baking of NEXT_PUBLIC_STUDIO_API_BASE="" which silently produced
+  // same-origin /api/* calls that returned 404 from the Next.js server.
   const env = process.env.NEXT_PUBLIC_STUDIO_API_BASE;
-  if (env !== undefined) return env;
+  if (env) return env;
   if (typeof window !== "undefined") {
     const port = window.location.port;
     if (port && port !== "8765") {

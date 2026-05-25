@@ -4,6 +4,26 @@
 All notable changes to lionagi are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.26.8] - 2026-05-25
+
+Hotfix for the Lion Studio Docker image.
+
+### Fixed
+
+- **Studio Docker image — `/api/*` 404s** — the v0.26.7 image baked
+  `NEXT_PUBLIC_STUDIO_API_BASE=""` into the client bundle at build time. Because
+  `NEXT_PUBLIC_*` vars are resolved during `next build`, the empty string
+  became the literal URL prefix in production — `fetch('/api/runs')` hit the
+  Next.js server on `:3000` (which has no `/api` route) and returned 404 for
+  every backend call. The Dockerfile now bakes
+  `NEXT_PUBLIC_STUDIO_API_BASE="http://localhost:8765"` so the browser reaches
+  the FastAPI backend through the host port mapping.
+
+- **`lib/api.ts::resolveApiBase()`** — defense in depth: treat empty string as
+  "not configured" (`if (env)` instead of `if (env !== undefined)`) so the
+  runtime port-based fallback can recover if the env var is ever accidentally
+  baked as empty again.
+
 ## [0.26.7] - 2026-05-25
 
 Issue-sweep release. 16 issues closed, 14 PRs merged this cycle.
