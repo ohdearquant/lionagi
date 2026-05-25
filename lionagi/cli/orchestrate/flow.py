@@ -640,14 +640,12 @@ async def _run_flow(
     # verification skipped entirely.
     artifact_contract = None
     if playbook_artifacts is not None or (
-        agent_name is not None and getattr(env.agent_profile, "artifact_defaults", None) is not None
+        agent_name is not None and getattr(env.orc_profile, "artifact_defaults", None) is not None
     ):
         from lionagi.state.artifact_verifier import resolve_artifact_contract
 
         agent_defaults = (
-            getattr(env.agent_profile, "artifact_defaults", None)
-            if agent_name is not None
-            else None
+            getattr(env.orc_profile, "artifact_defaults", None) if agent_name is not None else None
         )
         artifact_contract = resolve_artifact_contract(
             playbook_artifacts=playbook_artifacts,
