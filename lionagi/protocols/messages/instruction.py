@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal
 
@@ -7,6 +8,7 @@ from pydantic import BaseModel, field_validator
 from lionagi.ln.types import ModelConfig
 
 from .message import Message, MessageContent, MessageRole
+from .rendering import StructureFormat
 
 
 @dataclass(slots=True)
@@ -30,7 +32,7 @@ class InstructionContent(MessageContent):
 
     _config: ClassVar[ModelConfig] = ModelConfig(
         none_as_sentinel=True,
-        serialize_exclude=frozenset({"response_format"}),
+        serialize_exclude=frozenset({"response_format", "custom_renderer"}),
     )
 
     instruction: str | None = None
@@ -38,9 +40,7 @@ class InstructionContent(MessageContent):
     prompt_context: list[Any] = field(default_factory=list)
     plain_content: str | None = None
     tool_schemas: list[dict[str, Any]] = field(default_factory=list)
-    response_format: type[BaseModel] | dict[str, Any] | BaseModel | None = (
-        None  # User input
-    )
+    response_format: type[BaseModel] | dict[str, Any] | BaseModel | None = None  # User input
     _schema_dict: dict[str, Any] | None = field(
         default=None, repr=False
     )  # Internal: dict for prompting
@@ -49,10 +49,13 @@ class InstructionContent(MessageContent):
     )  # Internal: class for validation
     images: list[str] = field(default_factory=list)
     image_detail: Literal["low", "high", "auto"] | None = None
+    structure_format: str | None = None  # "json", "lndl", "custom"
+    custom_renderer: Callable | None = field(default=None, repr=False)
 
     def __init__(
         self,
         instruction: str | None = None,
+        primary: str | None = None,  # alias for instruction
         guidance: str | None = None,
         prompt_context: list[Any] | None = None,
         context: list[Any] | None = None,  # backwards compat
@@ -61,7 +64,13 @@ class InstructionContent(MessageContent):
         response_format: type[BaseModel] | dict[str, Any] | BaseModel | None = None,
         images: list[str] | None = None,
         image_detail: Literal["low", "high", "auto"] | None = None,
+        structure_format: str | None = None,
+        custom_renderer: Callable | None = None,
     ):
+        # Handle primary as alias for instruction (primary loses if both are set)
+        if primary is not None and instruction is None:
+            instruction = primary
+
         # Handle backwards compatibility: context -> prompt_context
         if context is not None and prompt_context is None:
             prompt_context = context
@@ -72,9 +81,7 @@ class InstructionContent(MessageContent):
 
         if response_format is not None:
             # Extract model class
-            if isinstance(response_format, type) and issubclass(
-                response_format, BaseModel
-            ):
+            if isinstance(response_format, type) and issubclass(response_format, BaseModel):
                 model_class = response_format
             elif isinstance(response_format, BaseModel):
                 model_class = type(response_format)
@@ -105,22 +112,116 @@ class InstructionContent(MessageContent):
             "tool_schemas",
             tool_schemas if tool_schemas is not None else [],
         )
-        object.__setattr__(
-            self, "response_format", response_format
-        )  # Store original user input
-        object.__setattr__(
-            self, "_schema_dict", schema_dict
-        )  # Internal: dict for prompting
-        object.__setattr__(
-            self, "_model_class", model_class
-        )  # Internal: class for validation
+        object.__setattr__(self, "response_format", response_format)  # Store original user input
+        object.__setattr__(self, "_schema_dict", schema_dict)  # Internal: dict for prompting
+        object.__setattr__(self, "_model_class", model_class)  # Internal: class for validation
         object.__setattr__(self, "images", images if images is not None else [])
         object.__setattr__(self, "image_detail", image_detail)
+        object.__setattr__(self, "structure_format", structure_format)
+        object.__setattr__(self, "custom_renderer", custom_renderer)
 
     @property
     def context(self) -> list[Any]:
         """Backwards compatibility accessor for prompt_context."""
         return self.prompt_context
+
+    @property
+    def primary(self) -> str | None:
+        """Alias for instruction field."""
+        return self.instruction
+
+    @primary.setter
+    def primary(self, value: str | None) -> None:
+        """Write through to instruction field."""
+        object.__setattr__(self, "instruction", value)
+
+    @property
+    def role(self) -> MessageRole:
+        """Role for this content type (beta API compat)."""
+        return MessageRole.USER
+
+    def with_updates(self, **kwargs: Any) -> "InstructionContent":
+        """Return a new instance with updated fields.
+
+        Handles ``primary`` as an alias for ``instruction`` and strips the
+        beta-only ``copy_containers`` kwarg.
+        """
+        kwargs.pop("copy_containers", None)
+        # Translate 'primary' alias -> 'instruction'
+        if "primary" in kwargs:
+            primary_val = kwargs.pop("primary")
+            if primary_val is not None:
+                kwargs["instruction"] = primary_val
+        # Translate 'context' alias -> 'prompt_context'
+        if "context" in kwargs:
+            ctx_val = kwargs.pop("context")
+            kwargs["prompt_context"] = (
+                ctx_val if isinstance(ctx_val, list) else [ctx_val] if ctx_val is not None else []
+            )
+        # Translate 'request_model' -> 'response_format'
+        if "request_model" in kwargs:
+            kwargs["response_format"] = kwargs.pop("request_model")
+        dict_ = self.to_dict()
+        dict_.update(kwargs)
+        return type(self)(**dict_)
+
+    def render(
+        self,
+        structure_format: str | StructureFormat | None = None,
+        custom_renderer: Callable | None = None,
+        **kwargs: Any,
+    ) -> str | list[dict[str, Any]]:
+        """Render instruction content, dispatching to custom_renderer when set.
+
+        Falls back to the standard :attr:`rendered` property if no custom
+        renderer is provided.
+        """
+        renderer = custom_renderer or self.custom_renderer
+        if renderer is not None:
+            if self._model_class is not None:
+                return renderer(self._model_class, **kwargs)
+            return renderer(type(None), **kwargs)
+        return self.rendered
+
+    @classmethod
+    def create(
+        cls,
+        primary: str | None = None,
+        context: Any = None,
+        tool_schemas: list[dict[str, Any]] | None = None,
+        request_model: type[BaseModel] | None = None,
+        images: list[str] | None = None,
+        image_detail: Literal["low", "high", "auto"] | None = None,
+        structure_format: str | StructureFormat | None = None,
+        custom_renderer: Callable | None = None,
+        **kwargs: Any,
+    ) -> "InstructionContent":
+        """Create InstructionContent with beta-compatible signature.
+
+        Accepts both old (request_model, primary) and new (response_format,
+        instruction) field names.  ``structure_format`` accepts both string
+        values and ``StructureFormat`` enum members.
+        """
+        # Normalise structure_format to str
+        sf: str | None = None
+        if structure_format is not None:
+            sf = (
+                structure_format.value
+                if isinstance(structure_format, StructureFormat)
+                else str(structure_format)
+            )
+
+        return cls(
+            primary=primary,
+            context=context,
+            tool_schemas=tool_schemas,
+            response_format=request_model,
+            images=images,
+            image_detail=image_detail,
+            structure_format=sf,
+            custom_renderer=custom_renderer,
+            **kwargs,
+        )
 
     @property
     def response_model_cls(self) -> type[BaseModel] | None:
@@ -208,9 +309,7 @@ class InstructionContent(MessageContent):
             valid_format = False
 
             # Extract model class
-            if isinstance(response_format, type) and issubclass(
-                response_format, BaseModel
-            ):
+            if isinstance(response_format, type) and issubclass(response_format, BaseModel):
                 model_class = response_format
                 valid_format = True
             elif isinstance(response_format, BaseModel):
@@ -283,11 +382,7 @@ class InstructionContent(MessageContent):
     @staticmethod
     def _format_image_item(idx: str, detail: str) -> dict[str, Any]:
         url = idx
-        if not (
-            idx.startswith("http://")
-            or idx.startswith("https://")
-            or idx.startswith("data:")
-        ):
+        if not (idx.startswith("http://") or idx.startswith("https://") or idx.startswith("data:")):
             url = f"data:image/jpeg;base64,{idx}"
         return {
             "type": "image_url",

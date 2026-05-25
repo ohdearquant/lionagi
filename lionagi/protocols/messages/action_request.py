@@ -37,6 +37,23 @@ class ActionRequestContent(MessageContent):
         }
         return minimal_yaml(doc).strip()
 
+    def render(self, *_args: Any, **_kwargs: Any) -> str:
+        """Render action request.  Delegates to :attr:`rendered` for beta API compat."""
+        return self.rendered
+
+    def render_compact(self) -> str:
+        """Function-call representation for round summaries."""
+        func = self.function or "unknown"
+        parts = [
+            f"{k}={v!r}" if isinstance(v, str) else f"{k}={v}" for k, v in self.arguments.items()
+        ]
+        return f"{func}({', '.join(parts)})"
+
+    @property
+    def role(self) -> MessageRole:
+        """Role for this content type (beta API compat)."""
+        return MessageRole.ACTION
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ActionRequestContent":
         """Construct ActionRequestContent from dictionary."""

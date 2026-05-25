@@ -66,10 +66,7 @@ def parse_assistant_response(
                         content = out.get("content", [])
                         if isinstance(content, list):
                             for c in content:
-                                if (
-                                    isinstance(c, dict)
-                                    and c.get("type") == "output_text"
-                                ):
+                                if isinstance(c, dict) and c.get("type") == "output_text":
                                     text_contents.append(c.get("text", ""))
                                 elif isinstance(c, str):
                                     text_contents.append(c)
@@ -82,9 +79,7 @@ def parse_assistant_response(
             text_contents.append(item)
 
     text = "".join(text_contents)
-    model_response = (
-        model_responses[0] if len(model_responses) == 1 else model_responses
-    )
+    model_response = model_responses[0] if len(model_responses) == 1 else model_responses
 
     return text, model_response
 
@@ -100,9 +95,23 @@ class AssistantResponseContent(MessageContent):
     assistant_response: str = ""
 
     @property
+    def role(self) -> MessageRole:
+        """Role for this content type (beta API compat)."""
+        return MessageRole.ASSISTANT
+
+    @property
+    def response(self) -> str:
+        """Alias for assistant_response (beta API compat)."""
+        return self.assistant_response
+
+    @property
     def rendered(self) -> str:
         """Render assistant response as plain text."""
         return self.assistant_response
+
+    def render(self, *_args: Any, **_kwargs: Any) -> str:
+        """Render assistant response.  Delegates to :attr:`rendered` for beta API compat."""
+        return self.rendered
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AssistantResponseContent":
