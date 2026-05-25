@@ -1,0 +1,58 @@
+{
+  "basic_chat": {
+    "messages": [
+      {"role": "user", "content": "Hello, how are you?"},
+      {"role": "assistant", "content": "I'm doing well, thank you! How can I help you today?"},
+      {"role": "user", "content": "Can you explain quantum computing?"},
+      {"role": "assistant", "content": "Quantum computing uses quantum mechanical phenomena like superposition and entanglement to process information in ways that classical computers cannot."}
+    ],
+    "metadata": {
+      "total_messages": 4,
+      "conversation_type": "educational",
+      "topics": ["greeting", "quantum_computing"]
+    }
+  },
+  "technical_discussion": {
+    "messages": [
+      {"role": "system", "content": "You are a helpful AI assistant specialized in software development."},
+      {"role": "user", "content": "I need help debugging a Python async function."},
+      {"role": "assistant", "content": "I'd be happy to help! Could you share the function and describe what issue you're experiencing?"},
+      {"role": "user", "content": "The function sometimes hangs and never returns."},
+      {"role": "assistant", "content": "That sounds like it could be a deadlock or infinite wait. Let's check for common async pitfalls."}
+    ],
+    "metadata": {
+      "total_messages": 4,
+      "conversation_type": "technical_support",
+      "topics": ["python", "async", "debugging"]
+    }
+  },
+  "multi_turn_reasoning": {
+    "messages": [
+      {"role": "user", "content": "I need to plan a data pipeline for processing user events."},
+      {"role": "assistant", "content": "I can help you design that. What type of events are you processing and what's your expected volume?"},
+      {"role": "user", "content": "Click events, about 1M per day, need real-time analytics."},
+      {"role": "assistant", "content": "For 1M events daily with real-time needs, I'd recommend a streaming architecture. Let me break this down into components."},
+      {"role": "user", "content": "What technologies would you suggest?"},
+      {"role": "assistant", "content": "For this scale, consider Apache Kafka for streaming, Apache Flink or Spark Streaming for processing, and ClickHouse or TimescaleDB for analytics storage."}
+    ],
+    "metadata": {
+      "total_messages": 6,
+      "conversation_type": "system_design",
+      "topics": ["data_pipeline", "streaming", "analytics", "architecture"]
+    }
+  },
+  "error_handling_scenario": {
+    "messages": [
+      {"role": "user", "content": "Process this invalid JSON: {broken json}"},
+      {"role": "assistant", "content": "I notice the JSON you provided is malformed. Let me help you fix it."},
+      {"role": "user", "content": "Can you handle API errors gracefully?"},
+      {"role": "assistant", "content": "Yes, I can implement proper error handling with try-catch blocks and meaningful error messages."}
+    ],
+    "metadata": {
+      "total_messages": 4,
+      "conversation_type": "error_handling",
+      "topics": ["json", "error_handling", "api_errors"],
+      "contains_errors": true
+    }
+  }
+}

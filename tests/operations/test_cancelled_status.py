@@ -16,28 +16,7 @@ from lionagi.protocols.generic.event import EventStatus
 from lionagi.providers.openai.chat.models import OpenAIChatCompletionsRequest
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.connections.endpoint import Endpoint
-from lionagi.service.connections.endpoint_config import EndpointConfig
-
-
-def _get_oai_config(
-    name: str = "openai_chat/completions",
-    endpoint: str = "chat/completions",
-    request_options=None,
-    kwargs: dict | None = None,
-) -> EndpointConfig:
-    return EndpointConfig(
-        name=name,
-        provider="openai",
-        base_url="https://api.openai.com/v1",
-        endpoint=endpoint,
-        api_key="dummy-key-for-testing",
-        request_options=request_options,
-        auth_type="bearer",
-        content_type="application/json",
-        method="POST",
-        requires_tokens=True,
-        kwargs=kwargs or {},
-    )
+from lionagi.testing import oai_chat_endpoint_config
 
 
 @pytest.mark.slow
@@ -61,9 +40,7 @@ async def test_operation_cancelled_status():
     op._branch = branch
 
     task = asyncio.create_task(op.invoke())
-    await asyncio.wait_for(
-        started.wait(), timeout=2.0
-    )  # Wait for task to actually start
+    await asyncio.wait_for(started.wait(), timeout=2.0)  # Wait for task to actually start
     task.cancel()
 
     with pytest.raises(get_cancelled_exc_class()):
@@ -78,7 +55,7 @@ async def test_operation_cancelled_status():
 async def test_api_call_cancelled_status():
     """Test that cancelled API calls have EventStatus.CANCELLED."""
     # Create an API call
-    config = _get_oai_config(
+    config = oai_chat_endpoint_config(
         name="oai_chat",
         endpoint="chat/completions",
         request_options=OpenAIChatCompletionsRequest,

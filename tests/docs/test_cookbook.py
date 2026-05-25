@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
-from tests.utils.mock_factory import LionAGIMockFactory
+from lionagi.testing import LionAGIMockFactory
 
 # ---------------------------------------------------------------------------
 # Inline Pydantic models (as cookbook docs define them)

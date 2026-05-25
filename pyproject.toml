@@ -138,6 +138,12 @@ sandbox = [
     "uvicorn>=0.34.0",
 ]
 
+testing = [
+    # Optional YAML support for ScriptModel.from_yaml(); JSON/dict workflows
+    # work without this extra.
+    "pyyaml>=6.0",
+]
+
 studio = [
     "fastapi>=0.115",
     "uvicorn>=0.34",

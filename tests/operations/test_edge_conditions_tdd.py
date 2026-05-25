@@ -70,63 +70,31 @@ class AlwaysFalseCondition(EdgeCondition):
 
 
 def create_mock_branch(name: str = "TestBranch") -> Branch:
-    """Create a Branch with mocked operations for testing."""
+    """Branch with execution-history tracking on every chat call.
+
+    Uses ``LionAGIMockFactory.create_api_calling_mock`` for the canned response
+    plumbing; only the instruction-tracking wrapper stays local to this test.
+    """
     from lionagi.protocols.generic.event import EventStatus
     from lionagi.providers.openai.chat.models import OpenAIChatCompletionsRequest
-    from lionagi.service.connections.api_calling import APICalling
-    from lionagi.service.connections.endpoint import Endpoint
-    from lionagi.service.connections.endpoint_config import EndpointConfig
-    from lionagi.service.imodel import iModel
-
-    def _get_oai_config(
-        name="openai_chat/completions",
-        endpoint="chat/completions",
-        request_options=None,
-        kwargs=None,
-    ):
-        return EndpointConfig(
-            name=name,
-            provider="openai",
-            base_url="https://api.openai.com/v1",
-            endpoint=endpoint,
-            api_key="dummy-key-for-testing",
-            request_options=request_options,
-            auth_type="bearer",
-            content_type="application/json",
-            method="POST",
-            requires_tokens=True,
-            kwargs=kwargs or {},
-        )
+    from lionagi.testing import LionAGIMockFactory
 
     branch = Branch(user="test_user", name=name)
-
-    # Track execution history for verification in metadata
     branch.metadata["execution_history"] = []
 
     async def _fake_invoke(**kwargs):
         instruction = kwargs.get("messages", [{}])[0].get("content", "")
         branch.metadata["execution_history"].append(("chat", instruction))
-
-        config = _get_oai_config(
-            name="oai_chat",
-            endpoint="chat/completions",
-            request_options=OpenAIChatCompletionsRequest,
-            kwargs={"model": "gpt-4.1-mini"},
+        return LionAGIMockFactory.create_api_calling_mock(
+            response_data=f"Result for: {instruction}",
+            status=EventStatus.COMPLETED,
+            model="gpt-4-mini",
         )
-        endpoint = Endpoint(config=config)
-        fake_call = APICalling(
-            payload={"model": "gpt-4-mini", "messages": []},
-            headers={"Authorization": "Bearer test"},
-            endpoint=endpoint,
-        )
-        fake_call.execution.response = f"Result for: {instruction}"
-        fake_call.execution.status = EventStatus.COMPLETED
-        return fake_call
 
-    mock_invoke = AsyncMock(side_effect=_fake_invoke)
-    mock_chat_model = iModel(provider="openai", model="gpt-4-mini", api_key="test_key")
-    mock_chat_model.invoke = mock_invoke
-
+    mock_chat_model = LionAGIMockFactory.create_mocked_imodel(
+        provider="openai", model="gpt-4-mini", response="overridden-below"
+    )
+    mock_chat_model.invoke = AsyncMock(side_effect=_fake_invoke)
     branch.chat_model = mock_chat_model
     return branch
 
@@ -183,27 +151,27 @@ async def test_spec_edge_condition_controls_traversal():
     assert start.id in result["completed_operations"], "Start operation should complete"
 
     # 2. Path A should execute (condition True)
-    assert (
-        path_a.id in result["completed_operations"]
-    ), "Path A should execute when condition is True"
+    assert path_a.id in result["completed_operations"], (
+        "Path A should execute when condition is True"
+    )
 
     # 3. Path B should NOT execute (condition False)
-    assert (
-        path_b.id not in result["completed_operations"]
-    ), "Path B should NOT execute when condition is False"
+    assert path_b.id not in result["completed_operations"], (
+        "Path B should NOT execute when condition is False"
+    )
 
     # 4. Path B should be marked as SKIPPED, not FAILED
     if hasattr(EventStatus, "SKIPPED"):
-        assert (
-            path_b.execution.status == EventStatus.SKIPPED
-        ), "Path B should be SKIPPED, not FAILED"
+        assert path_b.execution.status == EventStatus.SKIPPED, (
+            "Path B should be SKIPPED, not FAILED"
+        )
 
     # 5. No error should be recorded for Path B
     if path_b.id in result["operation_results"]:
         path_b_result = result["operation_results"][path_b.id]
-        assert (
-            not isinstance(path_b_result, dict) or "error" not in path_b_result
-        ), "Skipped operations should not have error results"
+        assert not isinstance(path_b_result, dict) or "error" not in path_b_result, (
+            "Skipped operations should not have error results"
+        )
 
 
 @pytest.mark.asyncio
@@ -245,9 +213,9 @@ async def test_spec_multiple_conditions_any_satisfied():
 
     # ASSERTIONS
     # Target should execute because at least one path is valid
-    assert (
-        target.id in result["completed_operations"]
-    ), "Target should execute when at least one incoming edge condition is True"
+    assert target.id in result["completed_operations"], (
+        "Target should execute when at least one incoming edge condition is True"
+    )
 
     # Both sources should execute (they have no conditions)
     assert source_a.id in result["completed_operations"]
@@ -268,9 +236,7 @@ async def test_spec_all_conditions_must_fail_to_skip():
     graph.add_node(target)
 
     # All paths have False conditions
-    graph.add_edge(
-        Edge(head=source.id, tail=target.id, condition=AlwaysFalseCondition())
-    )
+    graph.add_edge(Edge(head=source.id, tail=target.id, condition=AlwaysFalseCondition()))
 
     session = Session()
     branch = create_mock_branch()
@@ -281,9 +247,9 @@ async def test_spec_all_conditions_must_fail_to_skip():
 
     # ASSERTIONS
     assert source.id in result["completed_operations"], "Source should execute"
-    assert (
-        target.id not in result["completed_operations"]
-    ), "Target should be skipped when all edge conditions are False"
+    assert target.id not in result["completed_operations"], (
+        "Target should be skipped when all edge conditions are False"
+    )
 
 
 @pytest.mark.asyncio
@@ -310,9 +276,9 @@ async def test_spec_no_condition_means_always_traverse():
 
     # ASSERTIONS
     assert source.id in result["completed_operations"]
-    assert (
-        target.id in result["completed_operations"]
-    ), "Operations should execute when edges have no conditions"
+    assert target.id in result["completed_operations"], (
+        "Operations should execute when edges have no conditions"
+    )
 
 
 @pytest.mark.asyncio
@@ -344,9 +310,9 @@ async def test_spec_operation_state_reset_between_executions():
     session.default_branch = branch2
 
     result2 = await flow(session, graph, verbose=False)
-    assert (
-        op.id in result2["completed_operations"]
-    ), "Operations should execute in second flow run without state carryover"
+    assert op.id in result2["completed_operations"], (
+        "Operations should execute in second flow run without state carryover"
+    )
 
 
 @pytest.mark.asyncio
@@ -365,9 +331,7 @@ async def test_spec_cascading_skip_propagation():
         graph.add_node(op)
 
     # Start -> Middle with False condition
-    graph.add_edge(
-        Edge(head=start.id, tail=middle.id, condition=AlwaysFalseCondition())
-    )
+    graph.add_edge(Edge(head=start.id, tail=middle.id, condition=AlwaysFalseCondition()))
 
     # Middle -> End with no condition
     graph.add_edge(Edge(head=middle.id, tail=end.id))
@@ -381,12 +345,12 @@ async def test_spec_cascading_skip_propagation():
 
     # ASSERTIONS
     assert start.id in result["completed_operations"], "Start should execute"
-    assert (
-        middle.id not in result["completed_operations"]
-    ), "Middle should be skipped due to False condition"
-    assert (
-        end.id not in result["completed_operations"]
-    ), "End should be skipped because Middle (its only predecessor) was skipped"
+    assert middle.id not in result["completed_operations"], (
+        "Middle should be skipped due to False condition"
+    )
+    assert end.id not in result["completed_operations"], (
+        "End should be skipped because Middle (its only predecessor) was skipped"
+    )
 
 
 # ============================================================================
@@ -407,9 +371,7 @@ async def test_guard_against_error_on_false_condition():
     graph.add_node(source)
     graph.add_node(target)
 
-    graph.add_edge(
-        Edge(head=source.id, tail=target.id, condition=AlwaysFalseCondition())
-    )
+    graph.add_edge(Edge(head=source.id, tail=target.id, condition=AlwaysFalseCondition()))
 
     session = Session()
     branch = create_mock_branch()
@@ -429,9 +391,7 @@ async def test_guard_against_error_on_false_condition():
     if target.id in result.get("operation_results", {}):
         target_result = result["operation_results"][target.id]
         if isinstance(target_result, dict):
-            assert (
-                "error" not in target_result
-            ), "Skipped operations should not have error results"
+            assert "error" not in target_result, "Skipped operations should not have error results"
 
 
 @pytest.mark.asyncio
@@ -459,9 +419,9 @@ async def test_guard_edge_check_condition_usage():
     result = await flow(session, graph, verbose=False)
 
     # Target should execute (None condition = always traverse)
-    assert (
-        target.id in result["completed_operations"]
-    ), "Operations should execute when edge condition is None"
+    assert target.id in result["completed_operations"], (
+        "Operations should execute when edge condition is None"
+    )
 
 
 @pytest.mark.asyncio
@@ -512,9 +472,9 @@ async def test_guard_conditional_aggregation():
 
     # Source B might be skipped or might execute but not connect to aggregator
     # The aggregator should still work with available sources
-    assert (
-        aggregator.id in result["completed_operations"]
-    ), "Aggregator should work even if some sources are conditionally excluded"
+    assert aggregator.id in result["completed_operations"], (
+        "Aggregator should work even if some sources are conditionally excluded"
+    )
 
 
 # ============================================================================
@@ -702,17 +662,17 @@ async def test_behavior_multi_level_conditions():
         result = await flow(session, graph, context={"level": level}, verbose=False)
 
         for op_id in expected_ops:
-            assert (
-                op_id in result["completed_operations"]
-            ), f"Level {level}: Operation {op_id} should execute"
+            assert op_id in result["completed_operations"], (
+                f"Level {level}: Operation {op_id} should execute"
+            )
 
         # Check that operations beyond the level are not executed
         all_ops = [start.id, gate1.id, gate2.id, gate3.id]
         for op_id in all_ops:
             if op_id not in expected_ops:
-                assert (
-                    op_id not in result["completed_operations"]
-                ), f"Level {level}: Operation {op_id} should NOT execute"
+                assert op_id not in result["completed_operations"], (
+                    f"Level {level}: Operation {op_id} should NOT execute"
+                )
 
 
 # ============================================================================
@@ -731,48 +691,13 @@ async def test_performance_skip_expensive_operations():
     async def expensive_operation(**kwargs):
         call_count["expensive"] += 1
         # No sleep — we're testing skipping, not timing
+        from lionagi.testing import LionAGIMockFactory
 
-        # Return proper API call format
-        from lionagi.providers.openai.chat.models import OpenAIChatCompletionsRequest
-        from lionagi.service.connections.api_calling import APICalling
-        from lionagi.service.connections.endpoint import Endpoint
-        from lionagi.service.connections.endpoint_config import EndpointConfig
-
-        def _get_oai_config(
-            name="openai_chat/completions",
-            endpoint="chat/completions",
-            request_options=None,
-            kwargs=None,
-        ):
-            return EndpointConfig(
-                name=name,
-                provider="openai",
-                base_url="https://api.openai.com/v1",
-                endpoint=endpoint,
-                api_key="dummy-key-for-testing",
-                request_options=request_options,
-                auth_type="bearer",
-                content_type="application/json",
-                method="POST",
-                requires_tokens=True,
-                kwargs=kwargs or {},
-            )
-
-        config = _get_oai_config(
-            name="oai_chat",
-            endpoint="chat/completions",
-            request_options=OpenAIChatCompletionsRequest,
-            kwargs={"model": "gpt-4.1-mini"},
+        return LionAGIMockFactory.create_api_calling_mock(
+            response_data="Expensive result",
+            status=EventStatus.COMPLETED,
+            model="gpt-4-mini",
         )
-        endpoint = Endpoint(config=config)
-        fake_call = APICalling(
-            payload={"model": "gpt-4-mini", "messages": []},
-            headers={"Authorization": "Bearer test"},
-            endpoint=endpoint,
-        )
-        fake_call.execution.response = "Expensive result"
-        fake_call.execution.status = EventStatus.COMPLETED
-        return fake_call
 
     start = Operation(operation="chat", parameters={"instruction": "Start"})
     expensive = Operation(operation="chat", parameters={"instruction": "Expensive"})
@@ -782,9 +707,7 @@ async def test_performance_skip_expensive_operations():
     graph.add_node(expensive)
 
     # Expensive operation has False condition
-    graph.add_edge(
-        Edge(head=start.id, tail=expensive.id, condition=AlwaysFalseCondition())
-    )
+    graph.add_edge(Edge(head=start.id, tail=expensive.id, condition=AlwaysFalseCondition()))
 
     # Create branch but don't override - the test should verify skipping
     branch = create_mock_branch("ExpensiveBranch")
@@ -807,12 +730,10 @@ async def test_performance_skip_expensive_operations():
     result = await flow(session, graph, verbose=False)
 
     # The expensive operation should NOT have been called
-    assert (
-        call_count["expensive"] == 0
-    ), "Skipped operations should not execute their logic"
-    assert (
-        expensive.id not in result["completed_operations"]
-    ), "Expensive operation should be skipped"
+    assert call_count["expensive"] == 0, "Skipped operations should not execute their logic"
+    assert expensive.id not in result["completed_operations"], (
+        "Expensive operation should be skipped"
+    )
 
 
 if __name__ == "__main__":

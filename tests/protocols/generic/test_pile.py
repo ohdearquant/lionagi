@@ -15,10 +15,7 @@ from lionagi.protocols.generic.element import ID, Element
 from lionagi.protocols.generic.pile import Pile
 from lionagi.protocols.generic.progression import Progression
 from lionagi.protocols.graph.node import Node
-
-
-class MockElement(Element):
-    value: Any
+from lionagi.testing import MockElement
 
 
 @pytest.fixture
@@ -240,9 +237,7 @@ def test_pile_with_complex_elements_inline():
     class ComplexElement(Element):
         data: dict
 
-    elements = [
-        ComplexElement(data={"value": i, "nested": {"x": i * 2}}) for i in range(5)
-    ]
+    elements = [ComplexElement(data={"value": i, "nested": {"x": i * 2}}) for i in range(5)]
     p = Pile(collections=elements)
     assert len(p) == 5
     assert all(isinstance(e, ComplexElement) for e in p.values())

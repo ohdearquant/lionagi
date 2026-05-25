@@ -246,6 +246,9 @@ def _import_all_providers():
         "lionagi.providers.ag2.groupchat.endpoint",
         "lionagi.providers.ag2.agent.endpoint",
         "lionagi.providers.ag2.nlip.endpoint",
+        # Test-only scripted provider (provider="scripted") — leaf module,
+        # always loadable; gated behind LIONAGI_CHAT_PROVIDER=scripted.
+        "lionagi.testing._endpoint",
     ]
     for mod in _modules:
         try:

@@ -1,48 +1,23 @@
-# tests/branch_ops/conftest.py
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
 
-from unittest.mock import AsyncMock
+"""Fixtures for ``tests/operations/``.
+
+The ``make_mocked_branch`` factory comes from
+``lionagi.testing.pytest_plugin`` (loaded in ``tests/conftest.py``). This file
+adds the legacy single-instance ``branch_with_mock_imodel`` alias so existing
+tests don't break.
+"""
 
 import pytest
 
-from lionagi.protocols.generic.event import EventStatus
-from lionagi.service.connections.api_calling import APICalling
-from lionagi.service.imodel import iModel
-from lionagi.session.branch import Branch
-
 
 @pytest.fixture
-def branch_with_mock_imodel():
-    """
-    Provides a Branch with a mock iModel that returns an APICalling
-    object with execution.response = {"response": "mocked_response_string"}.
-    """
-    branch = Branch(user="tester_fixture", name="BranchForTests")
-
-    async def _fake_invoke(**kwargs):
-        # Build a real APICalling object so it plays nicely with logging & validation
-        fake_call = APICalling(
-            payload={"model": "gpt-4.1-mini", "messages": []},
-            headers={"Authorization": "Bearer test"},
-            endpoint=branch.chat_model.endpoint,  # Some endpoint, real or mock
-        )
-        # The main thing your code sees is `fake_call.execution.response`
-        # which we set to a dict containing "mocked_response_string".
-        fake_call.execution.response = "mocked_response_string"
-        fake_call.execution.status = EventStatus.COMPLETED
-        return fake_call
-
-    async_mock_invoke = AsyncMock(side_effect=_fake_invoke)
-
-    mock_chat_model = iModel(
-        provider="openai", model="gpt-4.1-mini", api_key="test_key"
+def branch_with_mock_imodel(make_mocked_branch):
+    """Legacy fixture name — single branch with a string-response mock iModel."""
+    return make_mocked_branch(
+        name="BranchForTests",
+        user="tester_fixture",
+        response="mocked_response_string",
+        model="gpt-4.1-mini",
     )
-    mock_chat_model.invoke = async_mock_invoke
-
-    mock_parse_model = iModel(
-        provider="openai", model="gpt-4.1-mini", api_key="test_key"
-    )
-    mock_parse_model.invoke = async_mock_invoke
-
-    branch.chat_model = mock_chat_model
-    branch.parse_model = mock_parse_model
-    return branch

@@ -45,9 +45,7 @@ class TestBasicParsing:
     """P0: Core parsing functionality."""
 
     @pytest.mark.asyncio
-    async def test_parse_with_basemodel_direct_validation(
-        self, make_mocked_branch_for_parse
-    ):
+    async def test_parse_with_basemodel_direct_validation(self, make_mocked_branch_for_parse):
         """Test immediate successful validation without LLM call."""
         branch = make_mocked_branch_for_parse()
 
@@ -191,9 +189,7 @@ class TestBasicParsing:
                 assert result is None
 
     @pytest.mark.asyncio
-    async def test_parse_error_handling_return_value(
-        self, make_mocked_branch_for_parse
-    ):
+    async def test_parse_error_handling_return_value(self, make_mocked_branch_for_parse):
         """Test handle_validation='return_value' returns original text."""
         branch = make_mocked_branch_for_parse()
 
@@ -274,9 +270,7 @@ class TestAdvancedFeatures:
         assert res_msg is None
 
     @pytest.mark.asyncio
-    async def test_parse_return_res_message_with_llm(
-        self, make_mocked_branch_for_parse
-    ):
+    async def test_parse_return_res_message_with_llm(self, make_mocked_branch_for_parse):
         """Test return_res_message includes AssistantResponse after LLM."""
         branch = make_mocked_branch_for_parse()
 
@@ -354,64 +348,14 @@ class TestAdvancedFeatures:
 
 
 @pytest.fixture
-def make_mocked_branch_for_parse():
-    """Factory fixture for creating branches with mocked parse responses."""
+def make_mocked_branch_for_parse(make_mocked_branch):
+    """Adapter over the canonical ``make_mocked_branch`` factory."""
 
     def _make_branch():
-        from unittest.mock import AsyncMock
-
-        from lionagi.protocols.generic.event import EventStatus
-        from lionagi.providers.openai.chat.models import OpenAIChatCompletionsRequest
-        from lionagi.service.connections.api_calling import APICalling
-        from lionagi.service.connections.endpoint import Endpoint
-        from lionagi.service.connections.endpoint_config import EndpointConfig
-        from lionagi.service.imodel import iModel
-
-        def _get_oai_config(
-            name="openai_chat/completions",
-            endpoint="chat/completions",
-            request_options=None,
-            kwargs=None,
-        ):
-            return EndpointConfig(
-                name=name,
-                provider="openai",
-                base_url="https://api.openai.com/v1",
-                endpoint=endpoint,
-                api_key="dummy-key-for-testing",
-                request_options=request_options,
-                auth_type="bearer",
-                content_type="application/json",
-                method="POST",
-                requires_tokens=True,
-                kwargs=kwargs or {},
-            )
-
-        from lionagi.session.branch import Branch
-
-        branch = Branch(imodel=iModel(provider="openai", model="gpt-4.1-mini"))
-
-        # Mock imodel.invoke for when parse calls chat internally
-        async def _fake_invoke(**kwargs):
-            config = _get_oai_config(
-                name="oai_chat",
-                endpoint="chat/completions",
-                request_options=OpenAIChatCompletionsRequest,
-                kwargs={"model": "gpt-4.1-mini"},
-            )
-            endpoint = Endpoint(config=config)
-            fake_call = APICalling(
-                payload={"model": "gpt-4.1-mini", "messages": []},
-                headers={"Authorization": "Bearer test"},
-                endpoint=endpoint,
-            )
-            fake_call.execution.response = '{"summary": "Mocked summary"}'
-            fake_call.execution.status = EventStatus.COMPLETED
-            return fake_call
-
-        branch.chat_model.invoke = AsyncMock(side_effect=_fake_invoke)
-
-        return branch
+        return make_mocked_branch(
+            response='{"summary": "Mocked summary"}',
+            model="gpt-4.1-mini",
+        )
 
     return _make_branch
 

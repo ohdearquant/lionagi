@@ -1,0 +1,14 @@
+{"type":"agent_start"}
+{"type":"turn_start","turnIndex":0,"timestamp":1}
+{"type":"message_start","message":{"role":"assistant","content":[],"model":"gemini-2.5-flash"}}
+{"type":"message_update","message":{"role":"assistant","content":[]},"assistantMessageEvent":{"type":"start","partial":{"role":"assistant","content":[],"model":"gemini-2.5-flash","usage":{"input":1,"output":0}}}}
+{"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"Hello "}]},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello ","partial":{"role":"assistant","content":[{"type":"text","text":"Hello "}]}}}
+{"type":"message_update","message":{"role":"assistant","content":[{"type":"thinking","thinking":"consider"}]},"assistantMessageEvent":{"type":"thinking_delta","contentIndex":1,"delta":"consider","partial":{"role":"assistant","content":[{"type":"thinking","thinking":"consider"}]}}}
+{"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"Hello world"}]},"assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"Hello world","partial":{"role":"assistant","content":[{"type":"text","text":"Hello world"}]}}}
+{"type":"message_update","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"read","arguments":{"path":"README.md"}}]},"assistantMessageEvent":{"type":"toolcall_end","contentIndex":2,"toolCall":{"type":"toolCall","id":"call_1","name":"read","arguments":{"path":"README.md"}},"partial":{"role":"assistant","content":[]}}}
+{"type":"tool_execution_start","toolCallId":"call_1","toolName":"read","args":{"path":"README.md"}}
+{"type":"tool_execution_end","toolCallId":"call_1","toolName":"read","result":{"content":[{"type":"text","text":"contents"}],"details":{}},"isError":false}
+{"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"Hello world"}]},"assistantMessageEvent":{"type":"done","reason":"toolUse","message":{"role":"assistant","content":[{"type":"text","text":"Hello world"}],"model":"gemini-2.5-flash","usage":{"input":10,"output":5,"totalTokens":15}}}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Hello world"}],"model":"gemini-2.5-flash","usage":{"input":10,"output":5,"totalTokens":15}}}
+{"type":"turn_end","turnIndex":0,"message":{"role":"assistant","content":[{"type":"text","text":"Hello world"}],"model":"gemini-2.5-flash","usage":{"input":10,"output":5,"totalTokens":15}},"toolResults":[]}
+{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"Hello world"}],"model":"gemini-2.5-flash","usage":{"input":10,"output":5,"totalTokens":15}}]}

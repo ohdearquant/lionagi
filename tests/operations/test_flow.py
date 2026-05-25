@@ -8,39 +8,11 @@ import pytest
 
 from lionagi.operations.flow import flow
 from lionagi.operations.node import Operation
-from lionagi.protocols.generic.event import EventStatus
 from lionagi.protocols.graph.edge import Edge, EdgeCondition
 from lionagi.protocols.graph.graph import Graph
-from lionagi.providers.openai.chat.models import OpenAIChatCompletionsRequest
-from lionagi.service.connections.api_calling import APICalling
-from lionagi.service.connections.endpoint import Endpoint
-from lionagi.service.connections.endpoint_config import EndpointConfig
-from lionagi.service.imodel import iModel
-
-
-def _get_oai_config(
-    name: str = "openai_chat/completions",
-    endpoint: str = "chat/completions",
-    request_options=None,
-    kwargs: dict | None = None,
-) -> EndpointConfig:
-    return EndpointConfig(
-        name=name,
-        provider="openai",
-        base_url="https://api.openai.com/v1",
-        endpoint=endpoint,
-        api_key="dummy-key-for-testing",
-        request_options=request_options,
-        auth_type="bearer",
-        content_type="application/json",
-        method="POST",
-        requires_tokens=True,
-        kwargs=kwargs or {},
-    )
-
-
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
+from lionagi.testing import LionAGIMockFactory
 
 
 # Test Fixtures
@@ -73,33 +45,12 @@ class AlwaysFalseCondition(EdgeCondition):
 
 def make_mock_branch(name: str = "TestBranch") -> Branch:
     """Create a Branch with mocked iModel for testing."""
-    branch = Branch(user="test_user", name=name)
-
-    async def _fake_invoke(**kwargs):
-        config = _get_oai_config(
-            name="oai_chat",
-            endpoint="chat/completions",
-            request_options=OpenAIChatCompletionsRequest,
-            kwargs={"model": "gpt-4.1-mini"},
-        )
-        endpoint = Endpoint(config=config)
-        fake_call = APICalling(
-            payload={"model": "gpt-4.1-mini", "messages": []},
-            headers={"Authorization": "Bearer test"},
-            endpoint=endpoint,
-        )
-        fake_call.execution.response = "mocked_response"
-        fake_call.execution.status = EventStatus.COMPLETED
-        return fake_call
-
-    mock_invoke = AsyncMock(side_effect=_fake_invoke)
-    mock_chat_model = iModel(
-        provider="openai", model="gpt-4.1-mini", api_key="test_key"
+    return LionAGIMockFactory.create_mocked_branch(
+        name=name,
+        user="test_user",
+        response="mocked_response",
+        model="gpt-4.1-mini",
     )
-    mock_chat_model.invoke = mock_invoke
-
-    branch.chat_model = mock_chat_model
-    return branch
 
 
 # Test simple linear flow
@@ -332,9 +283,7 @@ async def test_flow_context_propagation():
             "context": {"initial": "value"},
         },
     )
-    op_b = Operation(
-        operation="chat", parameters={"instruction": "Use previous result"}
-    )
+    op_b = Operation(operation="chat", parameters={"instruction": "Use previous result"})
 
     # Build graph
     graph = Graph()
@@ -363,9 +312,7 @@ async def test_flow_blocked_nodes():
     """Test flow handles nodes blocked by unsatisfied conditions."""
     # Create operations
     op_start = Operation(operation="chat", parameters={"instruction": "Start"})
-    op_blocked = Operation(
-        operation="chat", parameters={"instruction": "Should be blocked"}
-    )
+    op_blocked = Operation(operation="chat", parameters={"instruction": "Should be blocked"})
 
     # Build graph with always-false condition
     graph = Graph()
@@ -410,15 +357,9 @@ async def test_flow_multiple_conditional_paths():
     graph.add_node(op_c)
 
     # All paths have true conditions - all should execute
-    graph.add_edge(
-        Edge(head=op_start.id, tail=op_a.id, condition=AlwaysTrueCondition())
-    )
-    graph.add_edge(
-        Edge(head=op_start.id, tail=op_b.id, condition=AlwaysTrueCondition())
-    )
-    graph.add_edge(
-        Edge(head=op_start.id, tail=op_c.id, condition=AlwaysTrueCondition())
-    )
+    graph.add_edge(Edge(head=op_start.id, tail=op_a.id, condition=AlwaysTrueCondition()))
+    graph.add_edge(Edge(head=op_start.id, tail=op_b.id, condition=AlwaysTrueCondition()))
+    graph.add_edge(Edge(head=op_start.id, tail=op_c.id, condition=AlwaysTrueCondition()))
 
     session = Session()
     branch = make_mock_branch()
@@ -522,8 +463,7 @@ async def test_flow_max_concurrent_limit():
     # Create many parallel operations
     num_ops = 10
     ops = [
-        Operation(operation="chat", parameters={"instruction": f"Task {i}"})
-        for i in range(num_ops)
+        Operation(operation="chat", parameters={"instruction": f"Task {i}"}) for i in range(num_ops)
     ]
 
     # Build graph where all operations can run in parallel

@@ -5,6 +5,11 @@ import types
 
 import pytest
 
+# Load shared scripted/mock fixtures from the library so any test under tests/
+# can ask for ``mocked_branch``, ``scripted_branch``, ``test_data_loader``, etc.
+# Sub-conftests can override specific fixtures (see tests/docs/conftest.py).
+pytest_plugins = ["lionagi.testing.pytest_plugin"]
+
 # Hypothesis: coverage instrumentation (5-10x slowdown) makes the default
 # 200ms deadline trip on async property tests. Register a "ci" profile with
 # no deadline and load it whenever coverage is active or CI=true.

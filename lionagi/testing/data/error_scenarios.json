@@ -1,0 +1,87 @@
+{
+  "api_rate_limit_error": {
+    "error": {
+      "message": "Rate limit exceeded. Please try again later.",
+      "type": "rate_limit_exceeded",
+      "code": "rate_limit_exceeded"
+    },
+    "http_status": 429,
+    "retry_after": 60
+  },
+  "api_authentication_error": {
+    "error": {
+      "message": "Invalid API key provided.",
+      "type": "invalid_request_error",
+      "code": "invalid_api_key"
+    },
+    "http_status": 401
+  },
+  "api_model_not_found": {
+    "error": {
+      "message": "Model 'gpt-nonexistent' does not exist.",
+      "type": "invalid_request_error",
+      "code": "model_not_found"
+    },
+    "http_status": 404
+  },
+  "api_timeout_error": {
+    "error": {
+      "message": "Request timed out. Please try again.",
+      "type": "timeout_error",
+      "code": "timeout"
+    },
+    "http_status": 408
+  },
+  "api_server_error": {
+    "error": {
+      "message": "Internal server error. Please try again later.",
+      "type": "server_error",
+      "code": "internal_server_error"
+    },
+    "http_status": 500
+  },
+  "network_connection_error": {
+    "error": {
+      "message": "Failed to connect to the API server.",
+      "type": "connection_error",
+      "code": "connection_failed"
+    },
+    "retry_count": 3,
+    "last_attempt": "2024-01-01T12:00:00Z"
+  },
+  "validation_error": {
+    "error": {
+      "message": "Invalid input parameters.",
+      "type": "validation_error",
+      "code": "invalid_input",
+      "details": {
+        "field": "messages",
+        "issue": "messages cannot be empty"
+      }
+    },
+    "http_status": 400
+  },
+  "quota_exceeded_error": {
+    "error": {
+      "message": "Monthly quota exceeded.",
+      "type": "quota_exceeded",
+      "code": "quota_exceeded",
+      "quota": {
+        "limit": 1000000,
+        "used": 1000000,
+        "remaining": 0,
+        "reset_date": "2024-02-01T00:00:00Z"
+      }
+    },
+    "http_status": 429
+  },
+  "malformed_response_error": {
+    "error": {
+      "message": "Received malformed response from API.",
+      "type": "response_error",
+      "code": "malformed_response"
+    },
+    "raw_response": "This is not valid JSON {",
+    "expected_format": "JSON object with 'choices' array"
+  }
+}

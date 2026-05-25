@@ -8,7 +8,7 @@ import asyncio
 
 import pytest
 
-from tests.utils.mock_factory import LionAGIMockFactory
+from lionagi.testing import LionAGIMockFactory
 
 # ============================================================================
 # Helpers / tool functions used across tests
@@ -120,9 +120,7 @@ class TestFanOutIn:
         )
 
         # Simulate aggregating expert responses into context
-        combined = "\n".join(
-            f"Expert {i + 1}: {r}" for i, r in enumerate(expert_responses)
-        )
+        combined = "\n".join(f"Expert {i + 1}: {r}" for i, r in enumerate(expert_responses))
         result = await synthesizer.communicate(f"Synthesize these reviews:\n{combined}")
         assert isinstance(result, str)
         assert len(result) > 0
@@ -297,9 +295,7 @@ class TestTournamentValidation:
         )
 
         # All solvers answer concurrently
-        solutions = await asyncio.gather(
-            *(s.communicate("Solve: 2x + 1 = 7") for s in solvers)
-        )
+        solutions = await asyncio.gather(*(s.communicate("Solve: 2x + 1 = 7") for s in solvers))
         assert len(solutions) == 3
         assert all("Solution" in s for s in solutions)
 

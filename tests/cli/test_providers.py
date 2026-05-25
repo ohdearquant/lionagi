@@ -17,20 +17,16 @@ def test_parse_model_spec_rejects_effort_for_gemini_provider():
 
 def test_build_imodel_from_spec_maps_effort_and_yolo_without_network(monkeypatch):
     """build_imodel_from_spec passes correct kwargs to iModel for codex+xhigh+yolo."""
-    calls = []
-
-    class FakeIModel:
-        def __init__(self, **kwargs):
-            calls.append(kwargs)
-
     import lionagi.cli._providers as pmod
+    from lionagi.testing import IModelKwargCaptor
 
-    monkeypatch.setattr(pmod, "iModel", FakeIModel)
+    captor = IModelKwargCaptor.fresh()
+    monkeypatch.setattr(pmod, "iModel", captor)
 
     build_imodel_from_spec("codex/gpt-5.4-xhigh", yolo=True, theme="dark")
 
-    assert len(calls) == 1
-    kwargs = calls[0]
+    assert len(captor.captures) == 1
+    kwargs = captor.captures[0]
     assert kwargs["model"] == "codex/gpt-5.4"
     assert kwargs.get("reasoning_effort") == "xhigh"
     assert kwargs.get("full_auto") is True
@@ -69,14 +65,11 @@ def test_resolve_persisted_effort_gemini_returns_none():
 
     # gemini returns str (no extra flags → empty extra → str branch)
     assert isinstance(chat_model, str), (
-        f"Expected str from build_chat_model for gemini with no extra flags, "
-        f"got {type(chat_model)}"
+        f"Expected str from build_chat_model for gemini with no extra flags, got {type(chat_model)}"
     )
 
     result = resolve_persisted_effort(provider, chat_model, "high")
-    assert result is None, (
-        f"resolve_persisted_effort must return None for gemini, got {result!r}"
-    )
+    assert result is None, f"resolve_persisted_effort must return None for gemini, got {result!r}"
 
 
 def test_resolve_persisted_effort_codex_max_clamps_to_xhigh():
@@ -141,15 +134,12 @@ def test_resolve_persisted_effort_no_effort_wins_over_imodel():
     original = pmod.PROVIDERS_NO_EFFORT
     try:
         pmod.PROVIDERS_NO_EFFORT = frozenset({"fake_no_effort_provider"})
-        result = resolve_persisted_effort(
-            "fake_no_effort_provider", _FakeIModel(), "xhigh"
-        )
+        result = resolve_persisted_effort("fake_no_effort_provider", _FakeIModel(), "xhigh")
     finally:
         pmod.PROVIDERS_NO_EFFORT = original
 
     assert result is None, (
-        f"PROVIDERS_NO_EFFORT must override even an iModel with an effort kwarg, "
-        f"got {result!r}"
+        f"PROVIDERS_NO_EFFORT must override even an iModel with an effort kwarg, got {result!r}"
     )
 
 

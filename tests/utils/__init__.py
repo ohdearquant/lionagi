@@ -1,15 +1,9 @@
-"""
-LionAGI Testing Utilities
+"""Re-export shim for legacy ``tests.utils`` callers. Real home: ``lionagi.testing``."""
 
-Shared testing infrastructure for LionAGI test suite.
-Provides standardized mocks, helpers, and test data management.
-"""
+from lionagi.testing import (
+    AsyncTestHelpers,
+    LionAGIMockFactory,
+    ValidationHelpers,
+)
 
-from .helpers import AsyncTestHelpers, ValidationHelpers
-from .mock_factory import LionAGIMockFactory
-
-__all__ = [
-    "LionAGIMockFactory",
-    "AsyncTestHelpers",
-    "ValidationHelpers",
-]
+__all__ = ("AsyncTestHelpers", "LionAGIMockFactory", "ValidationHelpers")

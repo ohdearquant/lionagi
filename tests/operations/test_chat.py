@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -62,9 +62,7 @@ class TestAssistantResponseConsolidation:
             imodel_kw={},
         )
 
-        result = await chat(
-            branch, "New question", chat_ctx, return_ins_res_message=False
-        )
+        result = await chat(branch, "New question", chat_ctx, return_ins_res_message=False)
 
         assert isinstance(result, str)
         assert "Mocked" in result
@@ -125,9 +123,7 @@ class TestSystemMessageHandling:
     """Test system message integration into instructions."""
 
     @pytest.mark.asyncio
-    async def test_chat_system_message_with_empty_progression(
-        self, make_mocked_branch_for_chat
-    ):
+    async def test_chat_system_message_with_empty_progression(self, make_mocked_branch_for_chat):
         """Verify system message handling with no prior messages."""
         # Create branch with system message
         branch = make_mocked_branch_for_chat(system="You are a helpful assistant")
@@ -149,16 +145,12 @@ class TestSystemMessageHandling:
             imodel_kw={},
         )
 
-        result = await chat(
-            branch, "Test question", chat_ctx, return_ins_res_message=False
-        )
+        result = await chat(branch, "Test question", chat_ctx, return_ins_res_message=False)
 
         assert isinstance(result, str)
 
     @pytest.mark.asyncio
-    async def test_chat_system_message_with_existing_progression(
-        self, make_mocked_branch_for_chat
-    ):
+    async def test_chat_system_message_with_existing_progression(self, make_mocked_branch_for_chat):
         """Verify system message prepended to first instruction."""
         # Create branch with system message
         branch = make_mocked_branch_for_chat(system="You are helpful")
@@ -193,9 +185,7 @@ class TestSystemMessageHandling:
             imodel_kw={},
         )
 
-        result = await chat(
-            branch, "New question", chat_ctx, return_ins_res_message=False
-        )
+        result = await chat(branch, "New question", chat_ctx, return_ins_res_message=False)
 
         assert isinstance(result, str)
 
@@ -299,9 +289,7 @@ class TestActionResponseIntegration:
             imodel_kw={},
         )
 
-        result = await chat(
-            branch, "New question", chat_ctx, return_ins_res_message=False
-        )
+        result = await chat(branch, "New question", chat_ctx, return_ins_res_message=False)
 
         assert isinstance(result, str)
 
@@ -443,9 +431,7 @@ class TestChatContextParameters:
     """Test ChatContext parameter handling and fallbacks."""
 
     @pytest.mark.asyncio
-    async def test_chat_sender_recipient_fallback_logic(
-        self, make_mocked_branch_for_chat
-    ):
+    async def test_chat_sender_recipient_fallback_logic(self, make_mocked_branch_for_chat):
         """Verify sender/recipient default resolution."""
         branch = make_mocked_branch_for_chat()
         branch.user = "test_user"
@@ -494,9 +480,7 @@ class TestChatContextParameters:
             imodel_kw={},
         )
 
-        result = await chat(
-            branch, "Describe image", chat_ctx, return_ins_res_message=False
-        )
+        result = await chat(branch, "Describe image", chat_ctx, return_ins_res_message=False)
 
         assert isinstance(result, str)
 
@@ -507,67 +491,25 @@ class TestChatContextParameters:
 
 
 @pytest.fixture
-def make_mocked_branch_for_chat():
-    """Factory fixture for creating branches with mocked chat responses."""
+def make_mocked_branch_for_chat(make_mocked_branch):
+    """Adapter over the canonical ``make_mocked_branch`` factory.
+
+    Test methods take ``make_mocked_branch_for_chat`` and call ``()`` with
+    optional ``system=``. The factory is shared across the operations
+    test suite via ``lionagi.testing.pytest_plugin`` — no per-file
+    ``_fake_invoke`` definitions.
+    """
 
     def _make_branch(system=None):
-        from lionagi.protocols.generic.event import EventStatus
-        from lionagi.providers.openai.chat.models import OpenAIChatCompletionsRequest
-        from lionagi.service.connections.api_calling import APICalling
-        from lionagi.service.connections.endpoint import Endpoint
-        from lionagi.service.connections.endpoint_config import EndpointConfig
-        from lionagi.service.imodel import iModel
-
-        def _get_oai_config(
-            name="openai_chat/completions",
-            endpoint="chat/completions",
-            request_options=None,
-            kwargs=None,
-        ):
-            return EndpointConfig(
-                name=name,
-                provider="openai",
-                base_url="https://api.openai.com/v1",
-                endpoint=endpoint,
-                api_key="dummy-key-for-testing",
-                request_options=request_options,
-                auth_type="bearer",
-                content_type="application/json",
-                method="POST",
-                requires_tokens=True,
-                kwargs=kwargs or {},
-            )
-
-        from lionagi.session.branch import Branch
-
-        branch = Branch(
-            imodel=iModel(provider="openai", model="gpt-4.1-mini"),
+        branch = make_mocked_branch(
+            name="BranchForChat",
+            user="tester",
+            response="Mocked chat response",
+            model="gpt-4.1-mini",
             system=system,
         )
-
-        # Mock imodel.invoke
-        async def _fake_invoke(**kwargs):
-            config = _get_oai_config(
-                name="oai_chat",
-                endpoint="chat/completions",
-                request_options=OpenAIChatCompletionsRequest,
-                kwargs={"model": "gpt-4.1-mini"},
-            )
-            endpoint = Endpoint(config=config)
-            fake_call = APICalling(
-                payload={"model": "gpt-4.1-mini", "messages": []},
-                headers={"Authorization": "Bearer test"},
-                endpoint=endpoint,
-            )
-            fake_call.execution.response = "Mocked chat response"
-            fake_call.execution.status = EventStatus.COMPLETED
-            return fake_call
-
-        branch.chat_model.invoke = AsyncMock(side_effect=_fake_invoke)
-
-        # Mock _log_manager.create_log
+        # Tests assert on log creation — keep it cheap.
         branch._log_manager.create_log = MagicMock()
-
         return branch
 
     return _make_branch
