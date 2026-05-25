@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import threading
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Generator, Iterator, Sequence
@@ -18,6 +17,7 @@ from typing_extensions import Self, override
 from lionagi._errors import ItemExistsError, ItemNotFoundError, ValidationError
 from lionagi.adapters._base import Adaptable, AsyncAdaptable
 from lionagi.ln.concurrency import Lock as ConcurrencyLock
+from lionagi.ln.concurrency import sleep as _concurrency_sleep
 from lionagi.utils import (
     UNDEFINED,
     is_same_dtype,
@@ -957,7 +957,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
                 raise StopAsyncIteration
             item = self.pile[self.pile.progression[self.index]]
             self.index += 1
-            await asyncio.sleep(0)  # Yield control to the event loop
+            await _concurrency_sleep(0)  # Yield control to the event loop
             return item
 
     async def __aenter__(self) -> Self:

@@ -1,6 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+from lionagi.ln.concurrency import gather
 from lionagi.protocols._concepts import Manager
 from lionagi.utils import is_same_dtype
 
@@ -62,6 +63,7 @@ class iModelManager(Manager):  # noqa: N801 — mirrors iModel naming
 
         async def _close_one(name: str, model: iModel) -> None:
             try:
+                # TODO(#1043 Phase 2): migrate to anyio cancel scope for timeout
                 await asyncio.wait_for(model.close(), timeout=per_model_timeout)
             except asyncio.TimeoutError:
                 log.warning(
@@ -79,7 +81,7 @@ class iModelManager(Manager):  # noqa: N801 — mirrors iModel naming
 
         if not self.registry:
             return
-        await asyncio.gather(
+        await gather(
             *(_close_one(name, model) for name, model in self.registry.items()),
             return_exceptions=True,
         )

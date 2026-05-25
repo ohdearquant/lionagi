@@ -263,6 +263,7 @@ class Event(Element):
     execution: Execution = Field(default_factory=Execution)
     streaming: bool = Field(False, exclude=True)
 
+    # TODO(#1043 Phase 2): migrate to anyio.Event (needs .clear() audit first)
     # Lazily-created asyncio.Event signalled on terminal status transitions.
     _completion_event: asyncio.Event | None = PrivateAttr(default=None)
 

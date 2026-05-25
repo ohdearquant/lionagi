@@ -296,6 +296,7 @@ def _extract_summary(session: GeminiSession) -> dict[str, Any]:
     }
 
 
+# TODO(#1043 Phase 2): migrate create_subprocess_exec + wait_for to anyio
 async def _ndjson_from_cli(request: GeminiCodeRequest):
     """
     Yields each JSON object emitted by the Gemini CLI.

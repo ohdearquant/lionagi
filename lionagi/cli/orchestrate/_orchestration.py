@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi import Branch, Session
+from lionagi.ln.concurrency import Lock
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
@@ -641,8 +642,6 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
     (since this function may be called from sync build_worker_branch
     where we can't await DB operations).
     """
-    import asyncio
-
     db = ctx["db"]
     session_id = ctx["session_id"]
     session_prog_id = ctx["session_prog_id"]
@@ -651,7 +650,7 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
     branch_prog_id = str(uuid.uuid4())
     ctx["branch_prog_ids"][branch_id] = branch_prog_id
     initialized = {"done": False}
-    init_lock = asyncio.Lock()
+    init_lock = Lock()
 
     async def _ensure_branch_row():
         # Serialize concurrent first messages on the same branch so
