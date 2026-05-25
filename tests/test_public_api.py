@@ -26,6 +26,15 @@ The "sanity" group (``TestExistingPublicAPI``) and sub-module tests
 import pytest
 
 # ---------------------------------------------------------------------------
+# Module-level import — intentionally NOT importorskip.
+#
+# A broken lionagi/__init__.py must FAIL the entire test module, not skip it.
+# Using importorskip here would mask exactly the regressions this file guards
+# against (codex P1 on PR #1143).
+# ---------------------------------------------------------------------------
+import lionagi as _lionagi  # noqa: E402 — must come after pytest import
+
+# ---------------------------------------------------------------------------
 # Sanity: pre-existing symbols — must always pass
 # ---------------------------------------------------------------------------
 
@@ -253,17 +262,17 @@ class TestAllConsistency:
 
     @pytest.mark.parametrize(
         "symbol",
-        # Evaluated at collection time — uses whatever __all__ the installed
-        # package currently declares.  Symbols added by #1122 appear here once
-        # that PR is merged.
-        pytest.importorskip("lionagi", reason="lionagi not installed").__all__,
+        # Use the module-level _lionagi import (plain `import lionagi`), NOT
+        # importorskip.  importorskip inside parametrize args is evaluated at
+        # collection time and silently skips the whole module on any import
+        # error — exactly the failure mode this file is meant to catch.
+        # See codex P1 finding on PR #1143.
+        list(_lionagi.__all__),
     )
     def test_all_symbol_importable_via_getattr(self, symbol: str) -> None:
         """getattr(lionagi, symbol) must not raise for any symbol in __all__."""
-        import lionagi
-
         try:
-            getattr(lionagi, symbol)
+            getattr(_lionagi, symbol)
         except (AttributeError, ImportError) as exc:
             pytest.fail(
                 f"lionagi.__all__ declares '{symbol}' but getattr raised "
