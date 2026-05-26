@@ -61,29 +61,6 @@ class InstructionContent(MessageContent):
     def role(self) -> MessageRole:
         return MessageRole.USER
 
-    def with_updates(self, **kwargs: Any) -> "InstructionContent":
-        import copy
-
-        deep = kwargs.pop("copy_containers", None) == "deep"
-        if "primary" in kwargs:
-            val = kwargs.pop("primary")
-            if val is not None:
-                kwargs["instruction"] = val
-        if "context" in kwargs:
-            ctx = kwargs.pop("context")
-            kwargs["prompt_context"] = (
-                ctx if isinstance(ctx, list) else [ctx] if ctx is not None else []
-            )
-        if "request_model" in kwargs:
-            kwargs["response_format"] = kwargs.pop("request_model")
-        if "structure_format" in kwargs:
-            kwargs["structure"] = kwargs.pop("structure_format")
-        dict_ = self.to_dict()
-        if deep:
-            dict_ = copy.deepcopy(dict_)
-        dict_.update(kwargs)
-        return type(self)(**dict_)
-
     @property
     def rendered(self) -> str | list[dict[str, Any]]:
         text = self._format_text_content()

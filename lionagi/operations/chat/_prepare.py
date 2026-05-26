@@ -12,6 +12,8 @@ from lionagi.protocols.messages import (
     Instruction,
     MessageRole,
 )
+from lionagi.protocols.messages.assistant_response import AssistantResponseContent
+from lionagi.protocols.messages.instruction import InstructionContent
 
 from ..types import ChatParam, RunParam
 
@@ -24,141 +26,121 @@ def _prepare_run_kwargs(
     instruction: JsonValue | Instruction,
     param: ChatParam,
 ) -> tuple[Instruction, dict]:
-    to_exlcude = {"imodel", "imodel_kw", "include_token_usage_to_model", "progression", "structure"}
+    to_exclude = {"imodel", "imodel_kw", "include_token_usage_to_model", "progression", "structure"}
     if isinstance(param, RunParam):
-        to_exlcude.add("stream_persist")
-        to_exlcude.add("persist_dir")
-        to_exlcude.add("snapshot_dir")
+        to_exclude.add("stream_persist")
+        to_exclude.add("persist_dir")
+        to_exclude.add("snapshot_dir")
 
-    params = param.to_dict(exclude=to_exlcude)
+    params = param.to_dict(exclude=to_exclude)
     params["sender"] = param.sender or branch.user or "user"
     params["recipient"] = param.recipient or branch.id
     params["instruction"] = instruction
 
     ins = branch.msgs.create_instruction(**params)
 
-    _use_ins, _use_msgs, _act_res = None, [], []
+    _use_ins_content = None
+    _contents = []
+    _act_res = []
     progression = param.progression or branch.progression
 
     for msg in (branch.msgs.messages[j] for j in progression):
         if isinstance(msg, ActionResponse):
             _act_res.append(msg)
 
-        if isinstance(msg, AssistantResponse):
-            _use_msgs.append(msg.model_copy(update={"content": msg.content.with_updates()}))
+        elif isinstance(msg, AssistantResponse):
+            _contents.append(msg.content.with_updates())
 
-        if isinstance(msg, Instruction):
-            j = msg.model_copy(update={"content": msg.content.with_updates()})
-            j.content.tool_schemas.clear()
-            j.content.response_format = None
-            j.content._structure_instance = None
+        elif isinstance(msg, Instruction):
+            updates = {"tool_schemas": [], "response_format": None}
 
             if _act_res:
-                # Convert ActionResponseContent to dicts for proper rendering
-                d_ = []
-                for k in to_list(_act_res, flatten=True, unique=True):
-                    if hasattr(k.content, "function"):  # ActionResponseContent
-                        d_.append(
-                            {
-                                "function": k.content.function,
-                                "arguments": k.content.arguments,
-                                "output": k.content.output,
-                            }
-                        )
-                    else:
-                        d_.append(k.content)
-                j.content.prompt_context.extend(
-                    [z for z in d_ if z not in j.content.prompt_context]
-                )
-                _use_msgs.append(j)
+                d_ = _collect_action_dicts(_act_res)
+                extended_ctx = list(msg.content.prompt_context)
+                extended_ctx.extend(z for z in d_ if z not in extended_ctx)
+                updates["prompt_context"] = extended_ctx
                 _act_res = []
-            else:
-                _use_msgs.append(j)
+
+            _contents.append(msg.content.with_updates(**updates))
 
     if _act_res:
-        j = ins.model_copy(update={"content": ins.content.with_updates()})
-        # Convert ActionResponseContent to dicts for proper rendering
-        d_ = []
-        for k in to_list(_act_res, flatten=True, unique=True):
-            if hasattr(k.content, "function"):  # ActionResponseContent
-                d_.append(
-                    {
-                        "function": k.content.function,
-                        "arguments": k.content.arguments,
-                        "output": k.content.output,
-                    }
-                )
-            else:
-                d_.append(k.content)
-        j.content.prompt_context.extend([z for z in d_ if z not in j.content.prompt_context])
-        _use_ins = j
+        d_ = _collect_action_dicts(_act_res)
+        extended_ctx = list(ins.content.prompt_context)
+        extended_ctx.extend(z for z in d_ if z not in extended_ctx)
+        _use_ins_content = ins.content.with_updates(prompt_context=extended_ctx)
 
-    _use_msgs = [msg for msg in _use_msgs if msg.role != MessageRole.UNSET]
-    messages = _use_msgs
-    if _use_msgs and len(_use_msgs) > 1:
-        _msgs = [_use_msgs[0]]
+    _contents = [c for c in _contents if c.role != MessageRole.UNSET]
 
-        for i in _use_msgs[1:]:
-            if isinstance(i, AssistantResponse):
-                if isinstance(_msgs[-1], AssistantResponse):
-                    _msgs[
+    # Merge consecutive assistant responses
+    if len(_contents) > 1:
+        merged = [_contents[0]]
+        for c in _contents[1:]:
+            if isinstance(c, AssistantResponseContent):
+                if isinstance(merged[-1], AssistantResponseContent):
+                    merged[
                         -1
-                    ].content.assistant_response = (
-                        f"{_msgs[-1].content.assistant_response}\n\n{i.content.assistant_response}"
+                    ].assistant_response = (
+                        f"{merged[-1].assistant_response}\n\n{c.assistant_response}"
                     )
                 else:
-                    _msgs.append(i)
+                    merged.append(c)
             else:
-                if isinstance(_msgs[-1], AssistantResponse):
-                    _msgs.append(i)
-        messages = _msgs
+                if isinstance(merged[-1], AssistantResponseContent):
+                    merged.append(c)
+        _contents = merged
 
-    # All endpoints now assume sequential exchange (system message embedded in first user message)
     if branch.msgs.system:
-        messages = [msg for msg in messages if msg.role != "system"]
-        first_instruction = None
 
-        def f(x):
-            g = x.content.guidance or ""
+        def f(c):
+            g = c.guidance or ""
             if not isinstance(g, str):
                 from lionagi.libs.schema.minimal_yaml import minimal_yaml
 
                 g = minimal_yaml(g).strip()
             return branch.msgs.system.rendered + g
 
-        if len(messages) == 0:
-            first_instruction = ins.model_copy(
-                update={"content": ins.content.with_updates(guidance=f(ins))}
-            )
-            messages.append(first_instruction)
-        elif len(messages) >= 1:
-            first_instruction = messages[0]
-            if not isinstance(first_instruction, Instruction):
+        if len(_contents) == 0:
+            _contents.append(ins.content.with_updates(guidance=f(ins.content)))
+        elif len(_contents) >= 1:
+            first = _contents[0]
+            if not isinstance(first, InstructionContent):
                 raise ValueError("First message in progression must be an Instruction or System")
-            first_instruction = first_instruction.model_copy(
-                update={
-                    "content": first_instruction.content.with_updates(guidance=f(first_instruction))
-                }
-            )
-            messages[0] = first_instruction
-            msg_to_append = _use_ins or ins
-            if msg_to_append is not None:
-                messages.append(msg_to_append)
-
+            _contents[0] = first.with_updates(guidance=f(first))
+            content_to_append = _use_ins_content or ins.content
+            if content_to_append is not None:
+                _contents.append(content_to_append)
     else:
-        msg_to_append = _use_ins or ins
-        if msg_to_append is not None:
-            messages.append(msg_to_append)
+        content_to_append = _use_ins_content or ins.content
+        if content_to_append is not None:
+            _contents.append(content_to_append)
 
     kw = (param.imodel_kw or {}).copy()
 
-    # Filter out messages with None chat_msg
     chat_msgs = []
-    for msg in messages:
-        if msg is not None and hasattr(msg, "chat_msg"):
-            chat_msg = msg.chat_msg
-            if chat_msg is not None:
-                chat_msgs.append(chat_msg)
+    for c in _contents:
+        if c is None:
+            continue
+        rendered = c.rendered
+        if not rendered:
+            continue
+        role_str = c.role.value if isinstance(c.role, MessageRole) else str(c.role)
+        chat_msgs.append({"role": role_str, "content": rendered})
 
     kw["messages"] = chat_msgs
     return ins, kw
+
+
+def _collect_action_dicts(act_res_msgs):
+    d_ = []
+    for k in to_list(act_res_msgs, flatten=True, unique=True):
+        if hasattr(k.content, "function"):
+            d_.append(
+                {
+                    "function": k.content.function,
+                    "arguments": k.content.arguments,
+                    "output": k.content.output,
+                }
+            )
+        else:
+            d_.append(k.content)
+    return d_

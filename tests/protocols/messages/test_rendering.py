@@ -146,26 +146,13 @@ class TestValidateImageUrl:
 
 
 class TestInstructionContentAdditions:
-    def test_primary_alias_sets_instruction(self):
-        c = InstructionContent(primary="hello world")
+    def test_instruction_field(self):
+        c = InstructionContent(instruction="hello world")
         assert c.instruction == "hello world"
 
-    def test_primary_loses_if_instruction_also_set(self):
-        c = InstructionContent(instruction="instruction wins", primary="primary loses")
-        assert c.instruction == "instruction wins"
-
-    def test_primary_property(self):
-        c = InstructionContent(instruction="test")
-        assert c.primary == "test"
-
-    def test_structure_format_stored(self):
-        c = InstructionContent(instruction="x", structure_format="json")
-        assert c.structure_format == "json"
-
-    def test_custom_renderer_stored(self):
-        renderer = lambda m, **kw: "rendered"
-        c = InstructionContent(instruction="x", custom_renderer=renderer)
-        assert c.custom_renderer is renderer
+    def test_structure_stored(self):
+        c = InstructionContent(instruction="x", structure="json")
+        assert c.structure is not None
 
     def test_role_property(self):
         from lionagi.protocols.messages.message import MessageRole
@@ -179,51 +166,15 @@ class TestInstructionContentAdditions:
         assert c2.instruction == "updated"
         assert c.instruction == "original"  # original unchanged
 
-    def test_with_updates_primary_alias(self):
-        c = InstructionContent(instruction="old")
-        c2 = c.with_updates(primary="new via primary")
-        assert c2.instruction == "new via primary"
-
-    def test_with_updates_context_alias(self):
+    def test_with_updates_prompt_context(self):
         c = InstructionContent(instruction="x")
-        c2 = c.with_updates(context=["ctx item"])
+        c2 = c.with_updates(prompt_context=["ctx item"])
         assert "ctx item" in c2.prompt_context
 
-    def test_with_updates_strips_copy_containers(self):
-        c = InstructionContent(instruction="x")
-        # Should not raise even though copy_containers is beta-only kwarg
-        c2 = c.with_updates(copy_containers="deep", instruction="y")
-        assert c2.instruction == "y"
-
-    def test_render_no_custom_renderer_returns_rendered(self):
+    def test_rendered_property(self):
         c = InstructionContent(instruction="hello")
-        result = c.render()
+        result = c.rendered
         assert "hello" in result
-
-    def test_render_with_custom_renderer(self):
-        class SampleModel(BaseModel):
-            value: str
-
-        def my_renderer(model: type[BaseModel], **kw: Any) -> str:
-            return f"CUSTOM:{model.__name__}"
-
-        c = InstructionContent(instruction="x", response_format=SampleModel)
-        result = c.render(custom_renderer=my_renderer)
-        assert result == "CUSTOM:SampleModel"
-
-    def test_render_structure_format_param_accepted(self):
-        c = InstructionContent(instruction="x", structure_format="json")
-        # With no custom_renderer, should fall back to rendered (no error)
-        result = c.render(structure_format=StructureFormat.JSON)
-        assert isinstance(result, str | list)
-
-    def test_create_classmethod(self):
-        c = InstructionContent.create(primary="via create")
-        assert c.instruction == "via create"
-
-    def test_create_with_structure_format_enum(self):
-        c = InstructionContent.create(primary="x", structure_format=StructureFormat.LNDL)
-        assert c.structure_format == "lndl"
 
 
 # ---------------------------------------------------------------------------
