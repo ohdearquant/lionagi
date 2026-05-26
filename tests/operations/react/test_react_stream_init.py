@@ -16,36 +16,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from lionagi.operations.ReAct.utils import Analysis, PlannedAction, ReActAnalysis
-from lionagi.protocols.generic.event import EventStatus
-from lionagi.providers.openai.chat.models import OpenAIChatCompletionsRequest
-from lionagi.service.connections.api_calling import APICalling
-from lionagi.service.connections.endpoint import Endpoint
-from lionagi.service.connections.endpoint_config import EndpointConfig
-from lionagi.service.imodel import iModel
-
-
-def _get_oai_config(
-    name: str = "openai_chat/completions",
-    endpoint: str = "chat/completions",
-    request_options=None,
-    kwargs: dict | None = None,
-) -> EndpointConfig:
-    return EndpointConfig(
-        name=name,
-        provider="openai",
-        base_url="https://api.openai.com/v1",
-        endpoint=endpoint,
-        api_key="dummy-key-for-testing",
-        request_options=request_options,
-        auth_type="bearer",
-        content_type="application/json",
-        method="POST",
-        requires_tokens=True,
-        kwargs=kwargs or {},
-    )
-
-
 from lionagi.session.branch import Branch
+from lionagi.testing import LionAGIMockFactory
 
 # ============================================================================
 # Helper Functions and Fixtures
@@ -54,31 +26,12 @@ from lionagi.session.branch import Branch
 
 def make_mocked_branch_for_react():
     """Create a mocked Branch for ReAct testing."""
-    branch = Branch(user="tester", name="ReActTestBranch")
-
-    async def _fake_invoke(**kwargs):
-        config = _get_oai_config(
-            name="oai_chat",
-            endpoint="chat/completions",
-            request_options=OpenAIChatCompletionsRequest,
-            kwargs={"model": "gpt-4o-mini"},
-        )
-        endpoint = Endpoint(config=config)
-        fake_call = APICalling(
-            payload={"model": "gpt-4o-mini", "messages": []},
-            headers={"Authorization": "Bearer test"},
-            endpoint=endpoint,
-        )
-        fake_call.execution.response = "mocked_response"
-        fake_call.execution.status = EventStatus.COMPLETED
-        return fake_call
-
-    mock_invoke = AsyncMock(side_effect=_fake_invoke)
-    mock_chat_model = iModel(provider="openai", model="gpt-4o-mini", api_key="test_key")
-    mock_chat_model.invoke = mock_invoke
-
-    branch.chat_model = mock_chat_model
-    return branch
+    return LionAGIMockFactory.create_mocked_branch(
+        name="ReActTestBranch",
+        user="tester",
+        response="mocked_response",
+        model="gpt-4o-mini",
+    )
 
 
 # Test tools
@@ -122,9 +75,7 @@ async def test_single_tool_invocation():
         # First: ReActAnalysis with tool call
         first_analysis = ReActAnalysis(
             analysis="Need to calculate 6 * 7",
-            planned_actions=[
-                PlannedAction(action_type="multiply", description="Calculate 6 * 7")
-            ],
+            planned_actions=[PlannedAction(action_type="multiply", description="Calculate 6 * 7")],
             extension_needed=False,
         )
 
@@ -153,9 +104,7 @@ async def test_multiple_tool_calls_sequential_strategy():
         # Round 1: First tool call with sequential strategy
         round1 = ReActAnalysis(
             analysis="Calculate 100 * 5",
-            planned_actions=[
-                PlannedAction(action_type="multiply", description="100 * 5")
-            ],
+            planned_actions=[PlannedAction(action_type="multiply", description="100 * 5")],
             extension_needed=True,
             action_strategy="sequential",
         )
@@ -163,9 +112,7 @@ async def test_multiple_tool_calls_sequential_strategy():
         # Round 2: Second tool call
         round2 = ReActAnalysis(
             analysis="Now divide by 10",
-            planned_actions=[
-                PlannedAction(action_type="divide", description="500 / 10")
-            ],
+            planned_actions=[PlannedAction(action_type="divide", description="500 / 10")],
             extension_needed=False,
             action_strategy="sequential",
         )

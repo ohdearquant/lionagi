@@ -3344,6 +3344,9 @@ studio = [
     { name = "starlette" },
     { name = "uvicorn" },
 ]
+testing = [
+    { name = "pyyaml" },
+]
 xml = [
     { name = "xmltodict" },
 ]
@@ -3427,6 +3430,7 @@ requires-dist = [
     { name = "pydapter", extras = ["postgres"], marker = "extra == 'postgres'", specifier = ">=1.3.2" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "pyyaml", marker = "extra == 'studio'", specifier = ">=6.0" },
+    { name = "pyyaml", marker = "extra == 'testing'", specifier = ">=6.0" },
     { name = "rich", marker = "extra == 'rich'", specifier = ">=13.0.0" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'postgres'", specifier = ">=2.0.0" },
     { name = "starlette", marker = "extra == 'studio'", specifier = ">=0.46.2" },
@@ -3437,7 +3441,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'studio'", specifier = ">=0.34" },
     { name = "xmltodict", marker = "extra == 'xml'", specifier = ">=0.12.0" },
 ]
-provides-extras = ["reader", "ollama", "mcp", "rich", "schema", "pandas", "postgres", "sqlite", "graph", "xml", "ag2", "nlip", "sandbox", "studio", "all"]
+provides-extras = ["reader", "ollama", "mcp", "rich", "schema", "pandas", "postgres", "sqlite", "graph", "xml", "ag2", "nlip", "sandbox", "testing", "studio", "all"]
 
 [package.metadata.requires-dev]
 dev = [

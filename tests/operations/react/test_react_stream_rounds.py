@@ -16,36 +16,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from lionagi.operations.ReAct.utils import Analysis, PlannedAction, ReActAnalysis
-from lionagi.protocols.generic.event import EventStatus
-from lionagi.providers.openai.chat.models import OpenAIChatCompletionsRequest
-from lionagi.service.connections.api_calling import APICalling
-from lionagi.service.connections.endpoint import Endpoint
-from lionagi.service.connections.endpoint_config import EndpointConfig
-from lionagi.service.imodel import iModel
-
-
-def _get_oai_config(
-    name: str = "openai_chat/completions",
-    endpoint: str = "chat/completions",
-    request_options=None,
-    kwargs: dict | None = None,
-) -> EndpointConfig:
-    return EndpointConfig(
-        name=name,
-        provider="openai",
-        base_url="https://api.openai.com/v1",
-        endpoint=endpoint,
-        api_key="dummy-key-for-testing",
-        request_options=request_options,
-        auth_type="bearer",
-        content_type="application/json",
-        method="POST",
-        requires_tokens=True,
-        kwargs=kwargs or {},
-    )
-
-
 from lionagi.session.branch import Branch
+from lionagi.testing import LionAGIMockFactory
 
 # ============================================================================
 # Helper Functions and Fixtures
@@ -54,31 +26,12 @@ from lionagi.session.branch import Branch
 
 def make_mocked_branch_for_react():
     """Create a mocked Branch for ReAct testing."""
-    branch = Branch(user="tester", name="ReActTestBranch")
-
-    async def _fake_invoke(**kwargs):
-        config = _get_oai_config(
-            name="oai_chat",
-            endpoint="chat/completions",
-            request_options=OpenAIChatCompletionsRequest,
-            kwargs={"model": "gpt-4o-mini"},
-        )
-        endpoint = Endpoint(config=config)
-        fake_call = APICalling(
-            payload={"model": "gpt-4o-mini", "messages": []},
-            headers={"Authorization": "Bearer test"},
-            endpoint=endpoint,
-        )
-        fake_call.execution.response = "mocked_response"
-        fake_call.execution.status = EventStatus.COMPLETED
-        return fake_call
-
-    mock_invoke = AsyncMock(side_effect=_fake_invoke)
-    mock_chat_model = iModel(provider="openai", model="gpt-4o-mini", api_key="test_key")
-    mock_chat_model.invoke = mock_invoke
-
-    branch.chat_model = mock_chat_model
-    return branch
+    return LionAGIMockFactory.create_mocked_branch(
+        name="ReActTestBranch",
+        user="tester",
+        response="mocked_response",
+        model="gpt-4o-mini",
+    )
 
 
 # Test tools
@@ -258,12 +211,8 @@ async def test_max_extensions_clamped_to_100():
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
         # Create chain that stops after 2 rounds
-        round1 = ReActAnalysis(
-            analysis="Round 1", planned_actions=[], extension_needed=True
-        )
-        round2 = ReActAnalysis(
-            analysis="Round 2", planned_actions=[], extension_needed=False
-        )
+        round1 = ReActAnalysis(analysis="Round 1", planned_actions=[], extension_needed=True)
+        round2 = ReActAnalysis(analysis="Round 2", planned_actions=[], extension_needed=False)
         final = Analysis(answer="Done")
 
         mock_operate.side_effect = [round1, round2, final]
@@ -301,9 +250,7 @@ async def test_react_with_real_tools_integration():
         # Simulate realistic ReAct flow
         analysis = ReActAnalysis(
             analysis="Calculate (20 * 3) / 4",
-            planned_actions=[
-                PlannedAction(action_type="multiply", description="20 * 3")
-            ],
+            planned_actions=[PlannedAction(action_type="multiply", description="20 * 3")],
             extension_needed=False,
         )
 
@@ -328,12 +275,8 @@ async def test_branch_state_consistency():
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
         # Multi-round ReAct
-        round1 = ReActAnalysis(
-            analysis="Step 1", planned_actions=[], extension_needed=True
-        )
-        round2 = ReActAnalysis(
-            analysis="Step 2", planned_actions=[], extension_needed=False
-        )
+        round1 = ReActAnalysis(analysis="Step 1", planned_actions=[], extension_needed=True)
+        round2 = ReActAnalysis(analysis="Step 2", planned_actions=[], extension_needed=False)
         final = Analysis(answer="Final")
 
         mock_operate.side_effect = [round1, round2, final]
@@ -355,9 +298,7 @@ async def test_clear_messages_parameter():
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
-        analysis = ReActAnalysis(
-            analysis="Analysis", planned_actions=[], extension_needed=False
-        )
+        analysis = ReActAnalysis(analysis="Analysis", planned_actions=[], extension_needed=False)
         final = Analysis(answer="Answer")
 
         mock_operate.side_effect = [analysis, final]
@@ -386,9 +327,7 @@ async def test_react_with_async_tool_registration():
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
         analysis = ReActAnalysis(
             analysis="Search for information",
-            planned_actions=[
-                PlannedAction(action_type="async_search", description="Search query")
-            ],
+            planned_actions=[PlannedAction(action_type="async_search", description="Search query")],
             extension_needed=False,
         )
 

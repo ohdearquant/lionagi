@@ -9,7 +9,11 @@ from lionagi.providers.pi.cli.models import PiChunk, PiCodeRequest, PiSession
 
 
 def _fixture_events(name: str) -> list[dict]:
-    path = Path(__file__).parents[3] / "fixtures" / "data" / name
+    # Fixtures live in the library at lionagi/testing/data/ — kept there so
+    # external test consumers can use them via lionagi.testing.TestDataLoader.
+    from lionagi import testing as _lt
+
+    path = Path(_lt.__file__).resolve().parent / "data" / name
     return [json.loads(line) for line in path.read_text().splitlines() if line]
 
 
@@ -102,13 +106,9 @@ async def test_stream_pi_cli_parses_jsonl_agent_events(monkeypatch):
             seen.append(item)
 
     text_chunks = [c.text for c in seen if isinstance(c, PiChunk) and c.text]
-    thinking_chunks = [
-        c.thinking for c in seen if isinstance(c, PiChunk) and c.thinking
-    ]
+    thinking_chunks = [c.thinking for c in seen if isinstance(c, PiChunk) and c.thinking]
     tool_uses = [c.tool_use for c in seen if isinstance(c, PiChunk) and c.tool_use]
-    tool_results = [
-        c.tool_result for c in seen if isinstance(c, PiChunk) and c.tool_result
-    ]
+    tool_results = [c.tool_result for c in seen if isinstance(c, PiChunk) and c.tool_result]
 
     assert text_chunks == ["Hello "]
     assert thinking_chunks == ["consider"]

@@ -12,7 +12,7 @@ Covers 6 doc files:
 
 import pytest
 
-from tests.utils.mock_factory import LionAGIMockFactory
+from lionagi.testing import LionAGIMockFactory
 
 # ---------------------------------------------------------------------------
 # A -- Imports & Construction (no mocks, no LLM calls)
@@ -425,9 +425,7 @@ class TestMessageTypeConstruction:
     def test_action_request_construct(self):
         from lionagi.protocols.messages import ActionRequest
 
-        ar = ActionRequest(
-            content={"function": "search", "arguments": {"query": "test"}}
-        )
+        ar = ActionRequest(content={"function": "search", "arguments": {"query": "test"}})
         assert ar.function == "search"
         assert ar.arguments == {"query": "test"}
 
@@ -500,9 +498,7 @@ class TestMockedSession:
         from lionagi.session.session import Session
 
         session = Session()
-        mock_model = LionAGIMockFactory.create_mocked_imodel(
-            response="mocked session response"
-        )
+        mock_model = LionAGIMockFactory.create_mocked_imodel(response="mocked session response")
         for branch_name in ("researcher", "writer", "reviewer"):
             branch = session.new_branch(name=branch_name)
             branch.chat_model = mock_model

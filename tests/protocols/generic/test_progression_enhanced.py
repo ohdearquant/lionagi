@@ -16,11 +16,7 @@ from pydantic import Field
 from lionagi._errors import ItemNotFoundError
 from lionagi.protocols.generic.element import Element
 from lionagi.protocols.generic.progression import Progression
-
-
-class MockElement(Element):
-    value: Any = Field(None)
-
+from lionagi.testing import MockElement
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -11,7 +11,7 @@ import inspect
 
 import pytest
 
-from tests.utils.mock_factory import LionAGIMockFactory
+from lionagi.testing import LionAGIMockFactory
 
 # =============================================================================
 # Orchestration Guide (orchestration-guide.md)
@@ -304,9 +304,9 @@ class TestPatternSelection:
         branch = Branch()
         for method_name in self.EXPECTED_METHODS:
             method = getattr(branch, method_name)
-            assert inspect.iscoroutinefunction(
-                method
-            ), f"Branch.{method_name} is not a coroutine function"
+            assert inspect.iscoroutinefunction(method), (
+                f"Branch.{method_name} is not a coroutine function"
+            )
 
     def test_communicate_signature(self):
         """branch.communicate accepts instruction as first positional arg."""

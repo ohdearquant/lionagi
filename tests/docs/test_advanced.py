@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from tests.utils.mock_factory import LionAGIMockFactory
+from lionagi.testing import LionAGIMockFactory
 
 
 # ===================================================================
@@ -256,9 +256,7 @@ class TestFlowComposition:
         from lionagi import Builder
 
         builder = Builder()
-        node_id = builder.add_operation(
-            "communicate", instruction="Summarize the document"
-        )
+        node_id = builder.add_operation("communicate", instruction="Summarize the document")
         assert node_id is not None
 
     def test_builder_get_graph_returns_graph(self):

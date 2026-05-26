@@ -12,7 +12,6 @@ These tests ensure complex patterns work correctly:
 """
 
 import asyncio
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -22,41 +21,7 @@ from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.operations.fields import Instruct
 from lionagi.operations.flow import flow
 from lionagi.session.session import Session
-
-
-class MockClaudeCode:
-    """Mock Claude Code model for testing."""
-
-    def __init__(self, name: str = "mock"):
-        self.name = name
-        self.call_count = 0
-
-    async def __call__(
-        self, messages: list[dict[str, Any]], **kwargs
-    ) -> dict[str, Any]:
-        """Simulate model call."""
-        self.call_count += 1
-
-        # Extract the last user message
-        last_msg = messages[-1]["content"] if messages else ""
-
-        # Generate response based on input
-        if "generate tasks" in str(last_msg).lower():
-            return {
-                "content": "I'll generate 3 research tasks",
-                "instruct_model": [
-                    {"instruction": "Research A", "context": "ctx_a"},
-                    {"instruction": "Research B", "context": "ctx_b"},
-                    {"instruction": "Research C", "context": "ctx_c"},
-                ],
-            }
-        elif "research" in str(last_msg).lower():
-            return {
-                "content": f"Research complete for: {last_msg}",
-                "findings": ["finding1", "finding2"],
-            }
-        else:
-            return {"content": f"Processed: {last_msg}"}
+from lionagi.testing import MockClaudeCode
 
 
 def create_mock_branch(branch_id: str, **operation_mocks):
@@ -130,9 +95,7 @@ async def test_dynamic_fanout_pattern():
                     ]
                 )
         # Subsequent calls do research
-        return MagicMock(
-            result=f"Research complete: {kwargs.get('instruction', 'unknown')}"
-        )
+        return MagicMock(result=f"Research complete: {kwargs.get('instruction', 'unknown')}")
 
     orc_branch.operate = AsyncMock(side_effect=mock_operate)
 
@@ -427,9 +390,7 @@ async def test_branch_pool_efficiency():
     for layer_idx in range(4):
         current_layer = []
         for i in range(5):
-            deps = (
-                prev_layer[-2:] if prev_layer else []
-            )  # Depend on last 2 from previous layer
+            deps = prev_layer[-2:] if prev_layer else []  # Depend on last 2 from previous layer
             op = builder.add_operation(
                 "operate",
                 depends_on=deps,
@@ -486,9 +447,7 @@ async def test_branch_pool_efficiency():
 
     # Branches should be pre-allocated for operations that need them
     # With our dependency tree, many operations will need new branches
-    assert (
-        clone_count >= 10
-    ), f"Expected many clones for complex dependency tree, got {clone_count}"
+    assert clone_count >= 10, f"Expected many clones for complex dependency tree, got {clone_count}"
 
 
 @pytest.mark.asyncio
@@ -510,9 +469,7 @@ async def test_mixed_operation_types():
     op1 = builder.add_operation("operate", instruction="Do something")
     op2 = builder.add_operation("parse", depends_on=[op1], text="Parse this")
     op3 = builder.add_operation("communicate", depends_on=[op1], message="Send this")
-    op4 = builder.add_operation(
-        "chat", depends_on=[op2, op3], prompt="Chat about results"
-    )
+    op4 = builder.add_operation("chat", depends_on=[op2, op3], prompt="Chat about results")
 
     # Create async wrappers for each operation type
     async def operate_wrapper(**kw):

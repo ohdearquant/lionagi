@@ -9,10 +9,7 @@ from pydantic import Field
 
 from lionagi._errors import ItemNotFoundError
 from lionagi.protocols.types import ID, Element, Progression
-
-
-class MockElement(Element):
-    value: Any = Field(None)
+from lionagi.testing import MockElement
 
 
 @pytest.fixture
@@ -366,9 +363,7 @@ def test_progression_serialization_advanced():
         data: dict
 
     p = Progression(
-        order=[
-            ComplexElement(data={"value": i, "nested": {"x": i * 2}}) for i in range(5)
-        ]
+        order=[ComplexElement(data={"value": i, "nested": {"x": i * 2}}) for i in range(5)]
     )
 
     serialized = p.model_dump_json()

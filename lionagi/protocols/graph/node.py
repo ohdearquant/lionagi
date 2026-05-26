@@ -131,7 +131,7 @@ class Node(Element, Relational, AsyncAdaptable, Adaptable):
 
     def _has_real_field(self, name: str) -> bool:
         """Check if a real Pydantic model field exists on this instance."""
-        return name in self.model_fields
+        return name in self.__class__.model_fields
 
     def touch(self, by: str | None = None) -> None:
         """Update timestamps, increment version, and rehash per config.

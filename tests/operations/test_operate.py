@@ -1,70 +1,24 @@
 # tests/branch_ops/test_operate.py
 
-from unittest.mock import AsyncMock
-
 import pytest
 from pydantic import BaseModel
 
-from lionagi.protocols.generic.event import EventStatus
-from lionagi.providers.openai.chat.models import OpenAIChatCompletionsRequest
-from lionagi.service.connections.api_calling import APICalling
-from lionagi.service.connections.endpoint import Endpoint
-from lionagi.service.connections.endpoint_config import EndpointConfig
-from lionagi.service.imodel import iModel
-
-
-def _get_oai_config(
-    name: str = "openai_chat/completions",
-    endpoint: str = "chat/completions",
-    request_options=None,
-    kwargs: dict | None = None,
-) -> EndpointConfig:
-    return EndpointConfig(
-        name=name,
-        provider="openai",
-        base_url="https://api.openai.com/v1",
-        endpoint=endpoint,
-        api_key="dummy-key-for-testing",
-        request_options=request_options,
-        auth_type="bearer",
-        content_type="application/json",
-        method="POST",
-        requires_tokens=True,
-        kwargs=kwargs or {},
-    )
-
-
 from lionagi.session.branch import Branch
+from lionagi.testing import LionAGIMockFactory
 
 
 def make_mocked_branch_for_operate():
-    branch = Branch(user="tester_fixture", name="BranchForTests_Operate")
+    """Branch backed by ``LionAGIMockFactory``; returns a JSON string response.
 
-    async def _fake_invoke(**kwargs):
-        config = _get_oai_config(
-            name="oai_chat",
-            endpoint="chat/completions",
-            request_options=OpenAIChatCompletionsRequest,
-            kwargs={"model": "gpt-4.1-mini"},
-        )
-        endpoint = Endpoint(config=config)
-        fake_call = APICalling(
-            payload={"model": "gpt-4.1-mini", "messages": []},
-            headers={"Authorization": "Bearer test"},
-            endpoint=endpoint,
-        )
-        fake_call.execution.response = '{"foo":"mocked_response_string"}'
-        fake_call.execution.status = EventStatus.COMPLETED
-        return fake_call
-
-    mock_invoke = AsyncMock(side_effect=_fake_invoke)
-    mock_chat_model = iModel(
-        provider="openai", model="gpt-4.1-mini", api_key="test_key"
+    Kept as a regular function (not a fixture) so the legacy callsites below
+    keep working — the boilerplate now lives in ``lionagi.testing``.
+    """
+    return LionAGIMockFactory.create_mocked_branch(
+        name="BranchForTests_Operate",
+        user="tester_fixture",
+        response='{"foo":"mocked_response_string"}',
+        model="gpt-4.1-mini",
     )
-    mock_chat_model.invoke = mock_invoke
-
-    branch.chat_model = mock_chat_model
-    return branch
 
 
 @pytest.mark.asyncio
@@ -113,47 +67,25 @@ async def test_operate_with_actions_preserves_response_data():
         answer: str
         confidence: float
 
-    # Mock branch with response that includes action requests
-    branch = Branch(user="tester", name="ActionTest")
+    # Mock branch with a response containing both data AND action requests
+    def add(a: int, b: int) -> int:
+        """Add two numbers."""
+        return a + b
 
-    async def _fake_invoke_with_actions(**kwargs):
-        config = _get_oai_config(
-            name="oai_chat",
-            endpoint="chat/completions",
-            request_options=OpenAIChatCompletionsRequest,
-            kwargs={"model": "gpt-4.1-mini"},
-        )
-        endpoint = Endpoint(config=config)
-        fake_call = APICalling(
-            payload={"model": "gpt-4.1-mini", "messages": []},
-            headers={"Authorization": "Bearer test"},
-            endpoint=endpoint,
-        )
-        # Response with both data AND action requests
-        fake_call.execution.response = """{
+    branch = LionAGIMockFactory.create_mocked_branch(
+        name="ActionTest",
+        user="tester",
+        response="""{
             "answer": "42",
             "confidence": 0.95,
             "action_required": true,
             "action_requests": [
                 {"function": "add", "arguments": {"a": 1, "b": 2}}
             ]
-        }"""
-        fake_call.execution.status = EventStatus.COMPLETED
-        return fake_call
-
-    mock_invoke = AsyncMock(side_effect=_fake_invoke_with_actions)
-    mock_chat_model = iModel(
-        provider="openai", model="gpt-4.1-mini", api_key="test_key"
+        }""",
+        model="gpt-4.1-mini",
+        tools=[add],
     )
-    mock_chat_model.invoke = mock_invoke
-    branch.chat_model = mock_chat_model
-
-    # Register a simple tool
-    def add(a: int, b: int) -> int:
-        """Add two numbers."""
-        return a + b
-
-    branch.register_tools([add])
 
     # Execute with actions=True
     result = await branch.operate(
@@ -216,26 +148,10 @@ async def test_operate_handle_validation_raise_reports_expected_model(monkeypatc
     async def stub_middle(b, ins, **kw):
         return {"not": "model"}
 
-    branch = Branch()
-
-    async def fake_invoke(**kw):
-        config = _get_oai_config(
-            name="oai_chat",
-            endpoint="chat/completions",
-            request_options=OpenAIChatCompletionsRequest,
-            kwargs={"model": "gpt-4.1-mini"},
-        )
-        endpoint = Endpoint(config=config)
-        fake_call = APICalling(
-            payload={"model": "gpt-4.1-mini", "messages": []},
-            headers={"Authorization": "Bearer test"},
-            endpoint=endpoint,
-        )
-        fake_call.execution.response = '{"not": "model"}'
-        fake_call.execution.status = EventStatus.COMPLETED
-        return fake_call
-
-    branch.chat_model.invoke = AsyncMock(side_effect=fake_invoke)
+    branch = LionAGIMockFactory.create_mocked_branch(
+        response='{"not": "model"}',
+        model="gpt-4.1-mini",
+    )
 
     with pytest.raises((ValueError, Exception)):
         await branch.operate(
@@ -347,7 +263,8 @@ def test_prepare_operate_kw_snapshot_dir_routes_to_run_param():
 
     branch = Branch()
     result = prepare_operate_kw(
-        branch, stream_persist=True,
+        branch,
+        stream_persist=True,
         persist_dir="/var/folders/buffer",
         snapshot_dir="/var/folders/branches",
     )

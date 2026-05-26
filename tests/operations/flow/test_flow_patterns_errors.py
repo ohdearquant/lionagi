@@ -11,7 +11,6 @@ These tests ensure complex patterns work correctly:
 4. Multi-phase execution patterns
 """
 
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -21,41 +20,7 @@ from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.operations.fields import Instruct
 from lionagi.operations.flow import flow
 from lionagi.session.session import Session
-
-
-class MockClaudeCode:
-    """Mock Claude Code model for testing."""
-
-    def __init__(self, name: str = "mock"):
-        self.name = name
-        self.call_count = 0
-
-    async def __call__(
-        self, messages: list[dict[str, Any]], **kwargs
-    ) -> dict[str, Any]:
-        """Simulate model call."""
-        self.call_count += 1
-
-        # Extract the last user message
-        last_msg = messages[-1]["content"] if messages else ""
-
-        # Generate response based on input
-        if "generate tasks" in str(last_msg).lower():
-            return {
-                "content": "I'll generate 3 research tasks",
-                "instruct_model": [
-                    {"instruction": "Research A", "context": "ctx_a"},
-                    {"instruction": "Research B", "context": "ctx_b"},
-                    {"instruction": "Research C", "context": "ctx_c"},
-                ],
-            }
-        elif "research" in str(last_msg).lower():
-            return {
-                "content": f"Research complete for: {last_msg}",
-                "findings": ["finding1", "finding2"],
-            }
-        else:
-            return {"content": f"Processed: {last_msg}"}
+from lionagi.testing import MockClaudeCode
 
 
 def create_mock_branch(branch_id: str, **operation_mocks):
@@ -169,11 +134,7 @@ async def test_flow_with_existing_graph():
                 # If context is a string, check kwargs for area
                 area = "unknown"
             else:
-                area = (
-                    context.get("area", "unknown")
-                    if isinstance(context, dict)
-                    else "unknown"
-                )
+                area = context.get("area", "unknown") if isinstance(context, dict) else "unknown"
             return {"issues_found": 2 if area != "protocols" else 0}
         elif "Fix issue" in instruction:
             return {"fix_applied": True}

@@ -83,15 +83,11 @@ You are an implementer.
     assert profile.fast_mode is True
 
     # Verify it propagates through build_imodel_from_spec → CodexCodeRequest
-    captured: list[dict] = []
-
-    class FakeIModel:
-        def __init__(self, **kwargs):
-            captured.append(kwargs)
-
     import lionagi.cli._providers as pmod
+    from lionagi.testing import IModelKwargCaptor
 
-    monkeypatch.setattr(pmod, "iModel", FakeIModel)
+    captor = IModelKwargCaptor.fresh()
+    monkeypatch.setattr(pmod, "iModel", captor)
 
     build_imodel_from_spec(
         "codex/gpt-5.5",
@@ -99,8 +95,8 @@ You are an implementer.
         effort_override=profile.effort,
     )
 
-    assert len(captured) == 1
-    kw = captured[0]
+    assert len(captor.captures) == 1
+    kw = captor.captures[0]
     # PROVIDER_FAST_KWARGS["codex"] = {"fast_mode": True}
     assert kw.get("fast_mode") is True
     assert kw.get("reasoning_effort") == "high"
@@ -139,20 +135,16 @@ def test_provider_fast_kwargs_codex():
 
 def test_build_imodel_from_spec_fast_flag(monkeypatch):
     """build_imodel_from_spec with fast=True sets fast_mode on the iModel."""
-    captured: list[dict] = []
-
-    class FakeIModel:
-        def __init__(self, **kwargs):
-            captured.append(kwargs)
-
     import lionagi.cli._providers as pmod
+    from lionagi.testing import IModelKwargCaptor
 
-    monkeypatch.setattr(pmod, "iModel", FakeIModel)
+    captor = IModelKwargCaptor.fresh()
+    monkeypatch.setattr(pmod, "iModel", captor)
 
     build_imodel_from_spec("codex/gpt-5.5-xhigh", fast=True)
 
-    assert len(captured) == 1
-    kw = captured[0]
+    assert len(captor.captures) == 1
+    kw = captor.captures[0]
     assert kw.get("fast_mode") is True
     # Effort should still be set
     assert kw.get("reasoning_effort") == "xhigh"
