@@ -11,6 +11,7 @@ from lionagi.ln import AlcallParams
 from lionagi.ln.fuzzy import FuzzyMatchKeysParams
 from lionagi.ln.types import ModelConfig, Params
 from lionagi.protocols.action.tool import ToolRef
+from lionagi.protocols.structure.base import Structure
 from lionagi.protocols.types import ID, SenderRecipient
 from lionagi.service.imodel import iModel
 from lionagi.utils import LIONAGI_HOME
@@ -54,6 +55,7 @@ class ChatParam(MorphParam):
     sender: SenderRecipient = None
     recipient: SenderRecipient = None
     response_format: type[BaseModel] | dict = None
+    structure: type[Structure] | str | None = None
     progression: ID.RefSeq = None
     tool_schemas: list[dict] = None
     images: list = None
@@ -104,6 +106,7 @@ class ParseParam(MorphParam):
 
     _config: ClassVar[ModelConfig] = ModelConfig(none_as_sentinel=True)
     response_format: type[BaseModel] | dict = None
+    structure: Structure | None = None
     fuzzy_match_params: FuzzyMatchKeysParams | dict = None
     handle_validation: HandleValidation = "raise"
     alcall_params: AlcallParams | dict = None

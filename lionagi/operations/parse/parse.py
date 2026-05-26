@@ -44,6 +44,7 @@ def prepare_parse_kws(
     suppress_conversion_errors: bool = False,
     response_format=None,
     request_fields=None,
+    structure=None,
     return_res_message: bool = False,
     **kw,
 ):
@@ -73,6 +74,7 @@ def prepare_parse_kws(
         "text": text,
         "parse_param": ParseParam(
             response_format=response_format or request_fields,
+            structure=structure,
             fuzzy_match_params=fuzzy_params,
             handle_validation=handle_validation,
             alcall_params=_alcall_params.with_updates(retry_attempts=max_retries),
@@ -89,12 +91,21 @@ async def parse(
     parse_param: ParseParam,
     return_res_message: bool = False,
 ) -> Any | tuple[Any, AssistantResponse | None]:
-    # Try direct validation first
-    with contextlib.suppress(Exception):
-        result = _validate_dict_or_model(
-            text, parse_param.response_format, parse_param.fuzzy_match_params
-        )
-        return result if not return_res_message else (result, None)
+    # When a Structure instance is provided, delegate to it
+    if parse_param.structure is not None:
+        with contextlib.suppress(Exception):
+            result = parse_param.structure.parse(
+                text,
+                fuzzy_match_params=parse_param.fuzzy_match_params,
+            )
+            return result if not return_res_message else (result, None)
+    else:
+        # Try direct validation first
+        with contextlib.suppress(Exception):
+            result = _validate_dict_or_model(
+                text, parse_param.response_format, parse_param.fuzzy_match_params
+            )
+            return result if not return_res_message else (result, None)
 
     async def _inner_parse(i):
         _, res = await branch.chat(
@@ -120,6 +131,14 @@ async def parse(
         res.metadata["is_parsed"] = True
         res.metadata["original_text"] = text
 
+        if parse_param.structure is not None:
+            return (
+                parse_param.structure.parse(
+                    res.response,
+                    fuzzy_match_params=parse_param.fuzzy_match_params,
+                ),
+                res,
+            )
         return (
             _validate_dict_or_model(
                 res.response,
@@ -159,23 +178,11 @@ def _is_lndl_operable(response_format: Any) -> bool:
 
 
 def _extract_lndl(text: str, operable: "Operable") -> Any:
-    """Route text through the LNDL Phase 1 extract path.
-
-    Extracts the first ```lndl fenced block from *text* and returns it as a
-    raw string.  Full structured resolution (via ``parse_lndl_fuzzy``) requires
-    Phase 2 modules and raises ``NotImplementedError`` until they land.
-
-    Phase 1 contract: if the text contains an ```lndl block, return its
-    content; otherwise return the raw text so the caller can decide how to
-    handle it.
-    """
+    """Route text through the LNDL Phase 1 extract path."""
     from lionagi.lndl.extract import extract_lndl_blocks
 
     blocks = extract_lndl_blocks(text)
     if blocks:
-        # Return the first block's raw content.
-        # TODO(lndl-phase-2): replace with parse_lndl_fuzzy(blocks[0], operable)
-        # once lexer/parser/ast/resolver are ported from beta.
         return blocks[0]
     return text
 
@@ -185,8 +192,6 @@ def _validate_dict_or_model(
     response_format: type[BaseModel] | dict | Any,
     fuzzy_match_params: FuzzyMatchKeysParams | dict = None,
 ):
-    # LNDL opt-in path: only activates when caller passes an Operable schema.
-    # No change in behaviour for BaseModel or dict response_format callers.
     if _is_lndl_operable(response_format):
         return _extract_lndl(text, response_format)
 
