@@ -62,7 +62,9 @@ class InstructionContent(MessageContent):
         return MessageRole.USER
 
     def with_updates(self, **kwargs: Any) -> "InstructionContent":
-        kwargs.pop("copy_containers", None)
+        import copy
+
+        deep = kwargs.pop("copy_containers", None) == "deep"
         if "primary" in kwargs:
             val = kwargs.pop("primary")
             if val is not None:
@@ -77,6 +79,8 @@ class InstructionContent(MessageContent):
         if "structure_format" in kwargs:
             kwargs["structure"] = kwargs.pop("structure_format")
         dict_ = self.to_dict()
+        if deep:
+            dict_ = copy.deepcopy(dict_)
         dict_.update(kwargs)
         return type(self)(**dict_)
 
