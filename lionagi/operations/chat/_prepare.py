@@ -26,7 +26,7 @@ def _prepare_run_kwargs(
     instruction: JsonValue | Instruction,
     param: ChatParam,
 ) -> tuple[Instruction, dict]:
-    to_exclude = {"imodel", "imodel_kw", "include_token_usage_to_model", "progression", "structure"}
+    to_exclude = {"imodel", "imodel_kw", "include_token_usage_to_model", "progression"}
     if isinstance(param, RunParam):
         to_exclude.add("stream_persist")
         to_exclude.add("persist_dir")
