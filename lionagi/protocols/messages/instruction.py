@@ -62,6 +62,20 @@ class InstructionContent(MessageContent):
         return MessageRole.USER
 
     def with_updates(self, **kwargs: Any) -> "InstructionContent":
+        kwargs.pop("copy_containers", None)
+        if "primary" in kwargs:
+            val = kwargs.pop("primary")
+            if val is not None:
+                kwargs["instruction"] = val
+        if "context" in kwargs:
+            ctx = kwargs.pop("context")
+            kwargs["prompt_context"] = (
+                ctx if isinstance(ctx, list) else [ctx] if ctx is not None else []
+            )
+        if "request_model" in kwargs:
+            kwargs["response_format"] = kwargs.pop("request_model")
+        if "structure_format" in kwargs:
+            kwargs["structure"] = kwargs.pop("structure_format")
         dict_ = self.to_dict()
         dict_.update(kwargs)
         return type(self)(**dict_)
@@ -108,7 +122,7 @@ class InstructionContent(MessageContent):
             inst.images.extend(imgs_list)
             inst.image_detail = data.get("image_detail") or inst.image_detail or "auto"
 
-        response_format = data.get("response_format")
+        response_format = data.get("response_format") or data.get("request_model")
         structure = data.get("structure")
 
         if response_format is not None:

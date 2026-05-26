@@ -146,10 +146,12 @@ async def communicate(
     if parse_param and chat_param.response_format:
         from lionagi.protocols.messages.assistant_response import AssistantResponse
 
+        # Pull structure from the instruction message
+        from lionagi.protocols.structure.base import Structure
+
         from ..parse.parse import parse
 
-        # Pull structure from the instruction message
-        if parse_param.structure is None and hasattr(ins, "content"):
+        if not isinstance(parse_param.structure, Structure) and hasattr(ins, "content"):
             si = getattr(ins.content, "_structure_instance", None)
             if si is not None:
                 parse_param = parse_param.with_updates(structure=si)

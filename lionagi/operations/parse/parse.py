@@ -15,6 +15,7 @@ from lionagi.ln import (
     to_list,
 )
 from lionagi.ln.fuzzy import FuzzyMatchKeysParams
+from lionagi.protocols.structure.base import Structure
 from lionagi.protocols.types import AssistantResponse
 
 from ..types import HandleValidation, ParseParam
@@ -91,10 +92,11 @@ async def parse(
     parse_param: ParseParam,
     return_res_message: bool = False,
 ) -> Any | tuple[Any, AssistantResponse | None]:
-    # When a Structure instance is provided, delegate to it
-    if parse_param.structure is not None:
+    structure = parse_param.structure if isinstance(parse_param.structure, Structure) else None
+
+    if structure is not None:
         with contextlib.suppress(Exception):
-            result = parse_param.structure.parse(
+            result = structure.parse(
                 text,
                 fuzzy_match_params=parse_param.fuzzy_match_params,
             )
@@ -131,9 +133,9 @@ async def parse(
         res.metadata["is_parsed"] = True
         res.metadata["original_text"] = text
 
-        if parse_param.structure is not None:
+        if structure is not None:
             return (
-                parse_param.structure.parse(
+                structure.parse(
                     res.response,
                     fuzzy_match_params=parse_param.fuzzy_match_params,
                 ),
