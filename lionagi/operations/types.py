@@ -11,6 +11,7 @@ from lionagi.ln import AlcallParams
 from lionagi.ln.fuzzy import FuzzyMatchKeysParams
 from lionagi.ln.types import ModelConfig, Params
 from lionagi.protocols.action.tool import ToolRef
+from lionagi.protocols.structure.base import Structure
 from lionagi.protocols.types import ID, SenderRecipient
 from lionagi.service.imodel import iModel
 from lionagi.utils import LIONAGI_HOME
@@ -54,6 +55,7 @@ class ChatParam(MorphParam):
     sender: SenderRecipient = None
     recipient: SenderRecipient = None
     response_format: type[BaseModel] | dict = None
+    structure: type[Structure] | str | None = None
     progression: ID.RefSeq = None
     tool_schemas: list[dict] = None
     images: list = None
@@ -68,13 +70,6 @@ class ChatParam(MorphParam):
 class RunParam(ChatParam):
     stream_persist: bool = False
     persist_dir: str | Path = LIONAGI_HOME / "logs" / "runs"
-    # Optional separate destination for the branch snapshot JSON. When
-    # set, the streaming buffer (.buffer.jsonl) still lands in
-    # ``persist_dir`` but the canonical ``{branch_id}.json`` snapshot
-    # lands here. The CLI uses this so the snapshot lives under
-    # ``runs/<run>/branches/`` where ``find_branch()`` looks, while
-    # the buffer stays under ``runs/<run>/stream/``. When None the
-    # snapshot falls back to ``persist_dir`` (pre-PR behavior).
     snapshot_dir: str | Path | None = None
 
 
@@ -104,6 +99,7 @@ class ParseParam(MorphParam):
 
     _config: ClassVar[ModelConfig] = ModelConfig(none_as_sentinel=True)
     response_format: type[BaseModel] | dict = None
+    structure: Structure | None = None
     fuzzy_match_params: FuzzyMatchKeysParams | dict = None
     handle_validation: HandleValidation = "raise"
     alcall_params: AlcallParams | dict = None

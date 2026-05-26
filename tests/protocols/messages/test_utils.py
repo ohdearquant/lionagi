@@ -44,11 +44,12 @@ def test_systemcontent_from_dict_datetime_handling():
     assert content.system_datetime == custom_datetime
 
 
-def test_instructioncontent_format_response_format():
-    """Test InstructionContent._format_response_format static method"""
-    # Test with valid response format
+def test_json_structure_format_response_format():
+    """Test JsonStructure._format_response_format static method"""
+    from lionagi.protocols.structure.json_structure import JsonStructure
+
     response_format = {"name": "string", "age": "integer"}
-    result = InstructionContent._format_response_format(response_format)
+    result = JsonStructure._format_response_format(response_format)
 
     assert "MUST RETURN JSON-PARSEABLE RESPONSE" in result
     assert "```json" in result
@@ -56,12 +57,12 @@ def test_instructioncontent_format_response_format():
     assert "age" in result
 
     # Test with None
-    result = InstructionContent._format_response_format(None)
-    assert result is None
+    result = JsonStructure._format_response_format(None)
+    assert result == ""
 
     # Test with empty dict
-    result = InstructionContent._format_response_format({})
-    assert result is None
+    result = JsonStructure._format_response_format({})
+    assert result == ""
 
 
 def test_instructioncontent_format_image_item():
@@ -113,16 +114,14 @@ def test_instructioncontent_from_dict_with_request_model():
     data = {"response_format": RequestModel, "instruction": "Test"}
     content = InstructionContent.from_dict(data)
 
-    # response_format stores the class
     assert content.response_format == RequestModel
-    assert content.request_model == RequestModel
-    assert content._model_class == RequestModel
+    assert content._structure_instance is not None
+    assert content._structure_instance.base == RequestModel
 
-    # Test schema dict auto-derivation
-    assert content._schema_dict is not None
-    assert isinstance(content._schema_dict, dict)
-    assert "name" in content._schema_dict
-    assert "age" in content._schema_dict
+    schema = content._structure_instance.request_schema()
+    assert isinstance(schema, type)
+    assert "name" in schema.model_fields
+    assert "age" in schema.model_fields
 
 
 def test_instructioncontent_from_dict_with_images():

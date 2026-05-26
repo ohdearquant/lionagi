@@ -129,9 +129,9 @@ def test_create_instruction_with_all_params():
     assert instruction.recipient == "assistant"
     assert instruction.content.image_detail == "high"
     # response_format as BaseModel: stores class internally, returns original
-    assert instruction.content._model_class == RequestModel
-    assert instruction.content.request_model == RequestModel
     assert instruction.content.response_format == RequestModel
+    assert instruction.content._structure_instance is not None
+    assert instruction.content._structure_instance.base == RequestModel
 
 
 def test_create_instruction_update_existing():
@@ -155,7 +155,7 @@ def test_create_instruction_default_context_extend(message_manager):
         context=["new"],
     )
 
-    assert instruction.content.context == ["base", "new"]
+    assert instruction.content.prompt_context == ["base", "new"]
 
 
 def test_create_instruction_context_replace(message_manager):
@@ -171,7 +171,7 @@ def test_create_instruction_context_replace(message_manager):
         handle_context="replace",
     )
 
-    assert instruction.content.context == ["new"]
+    assert instruction.content.prompt_context == ["new"]
 
 
 def test_create_instruction_response_format_instance(message_manager):
@@ -188,8 +188,8 @@ def test_create_instruction_response_format_instance(message_manager):
     # response_format stores the instance, internal fields handle the rest
     assert isinstance(instruction.content.response_format, InstanceModel)
     assert instruction.content.response_format.value == 3
-    assert instruction.content._model_class == InstanceModel
-    assert instruction.content.request_model == InstanceModel
+    assert instruction.content._structure_instance is not None
+    assert instruction.content._structure_instance.base == InstanceModel
 
 
 def test_add_message_instruction_context_extend(message_manager):
@@ -204,7 +204,7 @@ def test_add_message_instruction_context_extend(message_manager):
         context=["new"],
     )
 
-    assert initial.content.context == ["base", "new"]
+    assert initial.content.prompt_context == ["base", "new"]
 
 
 def test_add_message_instruction_context_replace(message_manager):
@@ -220,7 +220,7 @@ def test_add_message_instruction_context_replace(message_manager):
         handle_context="replace",
     )
 
-    assert initial.content.context == ["new"]
+    assert initial.content.prompt_context == ["new"]
 
 
 def test_create_system_basic():
@@ -477,9 +477,7 @@ def test_add_message_update_existing(message_manager):
 
 def test_add_message_multiple_types_error(message_manager):
     """Test that adding multiple message types raises error"""
-    with pytest.raises(
-        ValueError, match="Only one message type can be added at a time"
-    ):
+    with pytest.raises(ValueError, match="Only one message type can be added at a time"):
         message_manager.add_message(
             instruction="Test",
             assistant_response="Response",
@@ -490,9 +488,7 @@ def test_add_message_multiple_types_error(message_manager):
 
 def test_add_message_system_instruction_error(message_manager):
     """Test that adding system and instruction together raises error"""
-    with pytest.raises(
-        ValueError, match="Only one message type can be added at a time"
-    ):
+    with pytest.raises(ValueError, match="Only one message type can be added at a time"):
         message_manager.add_message(
             system="System message",
             instruction="Instruction",
@@ -564,9 +560,7 @@ async def test_a_add_message_action_response_with_empty_output(message_manager):
         recipient="user",
     )
     await message_manager.a_add_message(action_request=req)
-    requests_before = sum(
-        1 for m in message_manager.messages if isinstance(m, ActionRequest)
-    )
+    requests_before = sum(1 for m in message_manager.messages if isinstance(m, ActionRequest))
 
     # Feed the response with empty-string output — the common case for
     # a successful shell command with no stdout.
@@ -577,18 +571,12 @@ async def test_a_add_message_action_response_with_empty_output(message_manager):
         recipient="x",
     )
 
-    requests_after = sum(
-        1 for m in message_manager.messages if isinstance(m, ActionRequest)
-    )
-    responses_after = sum(
-        1 for m in message_manager.messages if isinstance(m, ActionResponse)
-    )
+    requests_after = sum(1 for m in message_manager.messages if isinstance(m, ActionRequest))
+    responses_after = sum(1 for m in message_manager.messages if isinstance(m, ActionResponse))
 
     # The ActionRequest was NOT duplicated, and an ActionResponse WAS
     # created for the empty output.
-    assert (
-        requests_after == requests_before
-    ), "ActionRequest was re-emitted (truthy fallback fired)"
+    assert requests_after == requests_before, "ActionRequest was re-emitted (truthy fallback fired)"
     assert responses_after == 1, "ActionResponse for empty output was dropped"
 
 
@@ -634,6 +622,5 @@ async def test_a_add_message_passes_through_prebuilt_action_response(
     # was already True at hook time (the bug R4 closed: live persist
     # used to see is_error=False and serialize the wrong state).
     assert any(
-        kind == "ActionResponse" and meta.get("is_error") is True
-        for kind, meta in captured
+        kind == "ActionResponse" and meta.get("is_error") is True for kind, meta in captured
     ), f"hook never observed final is_error state: {captured}"

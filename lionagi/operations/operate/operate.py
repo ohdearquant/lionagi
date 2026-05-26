@@ -158,10 +158,7 @@ def prepare_operate_kw(
     # caller passes a middle that needs persist_dir). Defaulting to
     # RunParam for CLI endpoints keeps the call sites free of path plumbing.
     is_cli = bool(getattr(chat_model, "is_cli", False))
-    use_run_param = (
-        is_cli or stream_persist or persist_dir is not None
-        or snapshot_dir is not None
-    )
+    use_run_param = is_cli or stream_persist or persist_dir is not None or snapshot_dir is not None
 
     param_cls = RunParam if use_run_param else ChatParam
     param_kw = dict(
@@ -179,6 +176,7 @@ def prepare_operate_kw(
         imodel=chat_model,
         imodel_kw=kwargs,
     )
+
     if use_run_param:
         param_kw["stream_persist"] = stream_persist
         if persist_dir is not None:
