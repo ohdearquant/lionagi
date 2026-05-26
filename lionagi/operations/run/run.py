@@ -18,6 +18,7 @@ from lionagi.protocols.messages import (
     AssistantResponseContent,
     Instruction,
 )
+
 from ..chat._prepare import _prepare_run_kwargs
 from ..types import ChatParam, ParseParam, RunParam
 
@@ -120,7 +121,7 @@ async def run(
     # consume ``timeout`` — pop it so it doesn't pollute create_event kwargs.
     _timeout = kw.pop("timeout", None)
     _stream_timeout: float | None = None
-    if isinstance(_timeout, (int, float)) and _timeout > 0:
+    if isinstance(_timeout, int | float) and _timeout > 0:
         _stream_timeout = float(_timeout)
 
     kw["stream"] = True
@@ -163,9 +164,7 @@ async def run(
 
                     case "tool_result":
                         orig_req = (
-                            pending_requests.pop(chunk.tool_id, None)
-                            if chunk.tool_id
-                            else None
+                            pending_requests.pop(chunk.tool_id, None) if chunk.tool_id else None
                         )
                         if orig_req is None:
                             continue
@@ -196,9 +195,7 @@ async def run(
                         pass
 
                     case "error":
-                        raise RuntimeError(
-                            chunk.content or "Stream error from CLI endpoint"
-                        )
+                        raise RuntimeError(chunk.content or "Stream error from CLI endpoint")
 
             if res := await _flush_response():
                 if hasattr(api_call, "to_dict"):
@@ -255,7 +252,10 @@ async def run_and_collect(
     run_param = _promote_to_run_param(chat_param)
 
     all_texts: list[str] = []
+    ins_msg = None
     async for msg in run(branch, instruction, run_param):
+        if isinstance(msg, Instruction) and ins_msg is None:
+            ins_msg = msg
         if isinstance(msg, AssistantResponse):
             text = msg.response or ""
             if text:
@@ -271,6 +271,14 @@ async def run_and_collect(
 
     if parse_param is None or parse_param.response_format is None:
         return full_text
+
+    # Pull structure from the instruction message
+    from lionagi.protocols.structure.base import Structure
+
+    if not isinstance(parse_param.structure, Structure) and ins_msg is not None:
+        si = getattr(ins_msg.content, "_structure_instance", None)
+        if si is not None:
+            parse_param = parse_param.with_updates(structure=si)
 
     from ..parse.parse import parse as _parse
 

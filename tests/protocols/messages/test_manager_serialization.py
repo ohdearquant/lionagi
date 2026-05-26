@@ -42,15 +42,11 @@ def test_to_chat_msgs_basic(message_manager):
 
 def test_to_chat_msgs_with_progression(message_manager):
     """Test conversion to chat messages with specific progression"""
-    msg1 = message_manager.add_message(
-        instruction="First", sender="user", recipient="assistant"
-    )
+    msg1 = message_manager.add_message(instruction="First", sender="user", recipient="assistant")
     msg2 = message_manager.add_message(
         assistant_response="Second", sender="assistant", recipient="user"
     )
-    msg3 = message_manager.add_message(
-        instruction="Third", sender="user", recipient="assistant"
-    )
+    msg3 = message_manager.add_message(instruction="Third", sender="user", recipient="assistant")
 
     # Get only first two messages
     chat_msgs = message_manager.to_chat_msgs(progression=[msg1.id, msg2.id])
@@ -59,9 +55,7 @@ def test_to_chat_msgs_with_progression(message_manager):
 
 def test_to_chat_msgs_empty_progression(message_manager):
     """Test conversion with empty progression"""
-    message_manager.add_message(
-        instruction="Test", sender="user", recipient="assistant"
-    )
+    message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
 
     chat_msgs = message_manager.to_chat_msgs(progression=[])
     assert chat_msgs == []
@@ -69,9 +63,7 @@ def test_to_chat_msgs_empty_progression(message_manager):
 
 def test_to_chat_msgs_invalid_progression(message_manager):
     """Test conversion with invalid progression raises error"""
-    message_manager.add_message(
-        instruction="Test", sender="user", recipient="assistant"
-    )
+    message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
 
     with pytest.raises(ValueError, match="invalid"):
         message_manager.to_chat_msgs(progression=["invalid_id"])
@@ -100,9 +92,7 @@ def test_remove_last_instruction_tool_schemas_no_instruction(message_manager):
 
 def test_concat_recent_action_responses_to_instruction(message_manager):
     """Test concatenating action responses to instruction"""
-    instruction = message_manager.add_message(
-        instruction="Test", context=[], sender="user"
-    )
+    instruction = message_manager.add_message(instruction="Test", context=[], sender="user")
 
     # Add action request and response
     request = message_manager.add_message(action_function="func", action_arguments={})
@@ -114,14 +104,12 @@ def test_concat_recent_action_responses_to_instruction(message_manager):
     message_manager.concat_recent_action_responses_to_instruction(instruction)
 
     # Check that response content was added to instruction context
-    assert len(instruction.content.context) > 0
+    assert len(instruction.content.prompt_context) > 0
 
 
 def test_progression_property(message_manager):
     """Test progression property"""
-    msg1 = message_manager.add_message(
-        instruction="First", sender="user", recipient="assistant"
-    )
+    msg1 = message_manager.add_message(instruction="First", sender="user", recipient="assistant")
     msg2 = message_manager.add_message(
         assistant_response="Second", sender="assistant", recipient="user"
     )
@@ -134,17 +122,13 @@ def test_message_manager_bool(message_manager):
     """Test bool evaluation of message manager"""
     assert not message_manager
 
-    message_manager.add_message(
-        instruction="Test", sender="user", recipient="assistant"
-    )
+    message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
     assert message_manager
 
 
 def test_message_manager_contains(message_manager):
     """Test contains operator for message manager"""
-    msg = message_manager.add_message(
-        instruction="Test", sender="user", recipient="assistant"
-    )
+    msg = message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
 
     assert msg in message_manager
 
@@ -161,12 +145,12 @@ def test_message_manager_with_response_format(message_manager):
         recipient="assistant",
     )
 
-    # response_format stores the class
     assert instruction.content.response_format == RequestModel
-    assert instruction.content.request_model == RequestModel
-    assert instruction.content._model_class == RequestModel
-    assert instruction.content._schema_dict is not None
-    assert isinstance(instruction.content._schema_dict, dict)
+    assert instruction.content._structure_instance is not None
+    assert instruction.content._structure_instance.base == RequestModel
+    schema = instruction.content._structure_instance.request_schema()
+    assert isinstance(schema, type)
+    assert "name" in schema.model_fields
 
 
 def test_message_manager_with_request_model(message_manager):
@@ -180,9 +164,7 @@ def test_message_manager_with_request_model(message_manager):
 
     # request_model may be stored in content or may not be exposed directly
     # Check if it's stored in the content or metadata
-    assert hasattr(instruction.content, "response_schema") or hasattr(
-        instruction, "metadata"
-    )
+    assert hasattr(instruction.content, "response_schema") or hasattr(instruction, "metadata")
 
 
 def test_message_manager_with_images(message_manager):

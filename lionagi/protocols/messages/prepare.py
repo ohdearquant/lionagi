@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -139,13 +140,11 @@ def prepare_messages_for_chat(
                 if _is_message(new_instruction)
                 else new_instruction
             )
-            new_content: InstructionContent = new_content.with_updates(copy_containers="deep")
+            new_content = copy.deepcopy(new_content)
             if to_chat:
                 chat_msg = {
                     "role": new_content.role.value,
-                    "content": new_content.render(
-                        new_content.structure_format, new_content.custom_renderer
-                    ),
+                    "content": new_content.rendered,
                 }
                 if chat_msg and chat_msg.get("content"):
                     return [chat_msg]
@@ -211,12 +210,12 @@ def prepare_messages_for_chat(
                 context_parts.append(
                     _aggregate_round_actions(pending_requests, pending_responses, round_num)
                 )
-                updates["context"] = _build_context(content, context_parts)
+                updates["prompt_context"] = _build_context(content, context_parts)
                 pending_requests.clear()
                 pending_responses.clear()
                 round_num += 1
             elif pending_actions:
-                updates["context"] = _build_context(content, pending_actions)
+                updates["prompt_context"] = _build_context(content, pending_actions)
                 pending_actions = []
                 round_num += 1
 
@@ -252,7 +251,7 @@ def prepare_messages_for_chat(
             )
             if isinstance(new_content_inner, InstructionContent):
                 curr = _get_text(new_content_inner, "instruction")
-                system_updates: dict[str, Any] = {"primary": f"{system_text}\n\n{curr}"}
+                system_updates: dict[str, Any] = {"instruction": f"{system_text}\n\n{curr}"}
                 ctx_parts: list[str] = []
                 if aggregate_actions and pending_responses:
                     if round_notifications:
@@ -268,13 +267,13 @@ def prepare_messages_for_chat(
                     ctx_parts.extend(pending_actions)
                     pending_actions = []
                 if ctx_parts:
-                    system_updates["context"] = _build_context(new_content_inner, ctx_parts)
+                    system_updates["prompt_context"] = _build_context(new_content_inner, ctx_parts)
                 _use_msgs.append(new_content_inner.with_updates(**system_updates))
                 new_instruction = None
                 system_embedded = True
         elif _use_msgs and isinstance(_use_msgs[0], InstructionContent):
             curr = _get_text(_use_msgs[0], "instruction")
-            _use_msgs[0] = _use_msgs[0].with_updates(primary=f"{system_text}\n\n{curr}")
+            _use_msgs[0] = _use_msgs[0].with_updates(instruction=f"{system_text}\n\n{curr}")
             system_embedded = True
 
     # Phase 5: Append new_instruction (with any remaining action outputs)
@@ -301,25 +300,21 @@ def prepare_messages_for_chat(
                 context_parts_final.extend(pending_actions)
                 pending_actions = []
             if context_parts_final:
-                final_updates["context"] = _build_context(new_content_final, context_parts_final)
+                final_updates["prompt_context"] = _build_context(
+                    new_content_final, context_parts_final
+                )
             if system_text and not system_embedded:
                 curr = _get_text(new_content_final, "instruction")
-                final_updates["primary"] = f"{system_text}\n\n{curr}"
+                final_updates["instruction"] = f"{system_text}\n\n{curr}"
         _use_msgs.append(new_content_final.with_updates(**final_updates))
 
     if to_chat:
         result = []
         for m in _use_msgs:
-            data = {}
-            if isinstance(m, InstructionContent):
-                data = {
-                    "structure_format": m.structure_format,
-                    "custom_renderer": m.custom_renderer,
-                }
             result.append(
                 {
                     "role": m.role.value,
-                    "content": m.render(**data),
+                    "content": m.rendered,
                 }
             )
         return result

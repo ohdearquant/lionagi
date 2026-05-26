@@ -31,12 +31,10 @@ def test_instruction_content_basic_initialization():
 
     assert content.instruction == "Test instruction"
     assert content.guidance is None
-    assert content.context == []
+    assert content.prompt_context == []
     assert content.plain_content is None
     assert content.tool_schemas == []
     assert content.response_format is None
-    assert content.response_model_cls is None
-    assert content.schema_dict is None
     assert content.images == []
     assert content.image_detail is None
 
@@ -46,7 +44,7 @@ def test_instruction_content_all_fields():
     content = InstructionContent(
         instruction="Do something",
         guidance="Be careful",
-        context=["context1", {"key": "value"}],
+        prompt_context=["context1", {"key": "value"}],
         tool_schemas=[{"name": "tool1", "type": "function"}],
         response_format={"result": "value"},
         images=["image1.jpg"],
@@ -55,19 +53,16 @@ def test_instruction_content_all_fields():
 
     assert content.instruction == "Do something"
     assert content.guidance == "Be careful"
-    assert len(content.context) == 2
+    assert len(content.prompt_context) == 2
     assert len(content.tool_schemas) == 1
     assert content.response_format == {"result": "value"}
-    assert content.schema_dict == {"result": "value"}
     assert len(content.images) == 1
     assert content.image_detail == "high"
 
 
 def test_instruction_content_rendered_text_only():
     """Test rendered property returns minimal_yaml formatted text"""
-    content = InstructionContent(
-        instruction="Test instruction", guidance="Test guidance"
-    )
+    content = InstructionContent(instruction="Test instruction", guidance="Test guidance")
 
     rendered = content.rendered
     assert isinstance(rendered, str)
@@ -79,7 +74,7 @@ def test_instruction_content_rendered_with_context():
     """Test rendered property includes context items"""
     content = InstructionContent(
         instruction="Test",
-        context=["context1", {"nested": "context"}],
+        prompt_context=["context1", {"nested": "context"}],
     )
 
     rendered = content.rendered
@@ -148,9 +143,7 @@ def test_instruction_content_rendered_multiple_images():
 
 def test_instruction_content_image_detail_auto():
     """Test image_detail defaults to 'auto' when images present"""
-    content = InstructionContent(
-        instruction="Test", images=["image.jpg"], image_detail="auto"
-    )
+    content = InstructionContent(instruction="Test", images=["image.jpg"], image_detail="auto")
 
     rendered = content.rendered
     assert rendered[1]["image_url"]["detail"] == "auto"
@@ -159,9 +152,7 @@ def test_instruction_content_image_detail_auto():
 def test_instruction_content_base64_image_handling():
     """Test base64 images are properly formatted"""
     base64_str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-    content = InstructionContent(
-        instruction="Test", images=[base64_str], image_detail="high"
-    )
+    content = InstructionContent(instruction="Test", images=[base64_str], image_detail="high")
 
     rendered = content.rendered
     assert rendered[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
@@ -187,8 +178,8 @@ def test_from_dict_with_context():
     data = {"instruction": "Test", "context": ["ctx1", "ctx2"]}
     content = InstructionContent.from_dict(data)
 
-    assert len(content.context) == 2
-    assert "ctx1" in content.context
+    assert len(content.prompt_context) == 2
+    assert "ctx1" in content.prompt_context
 
 
 def test_from_dict_context_single_item():
@@ -196,8 +187,8 @@ def test_from_dict_context_single_item():
     data = {"instruction": "Test", "context": "single_context"}
     content = InstructionContent.from_dict(data)
 
-    assert isinstance(content.context, list)
-    assert "single_context" in content.context
+    assert isinstance(content.prompt_context, list)
+    assert "single_context" in content.prompt_context
 
 
 def test_from_dict_with_tool_schemas():
@@ -237,11 +228,9 @@ def test_from_dict_with_pydantic_model_instance():
     data = {"instruction": "Test", "response_format": SampleRequestModel}
     content = InstructionContent.from_dict(data)
 
-    # response_format stores the model class
     assert content.response_format == SampleRequestModel
-    assert content.request_model == SampleRequestModel
-    # Internal _model_class should be set
-    assert content._model_class == SampleRequestModel
+    assert content._structure_instance is not None
+    assert content._structure_instance.base == SampleRequestModel
 
 
 def test_from_dict_with_pydantic_model_class():
@@ -249,14 +238,11 @@ def test_from_dict_with_pydantic_model_class():
     data = {"instruction": "Test", "response_format": SampleRequestModel}
     content = InstructionContent.from_dict(data)
 
-    # response_format stores the class
     assert content.response_format == SampleRequestModel
-    assert content._model_class == SampleRequestModel
-    assert content.request_model == SampleRequestModel
-    # Internal schema dict should be set
-    assert isinstance(content._schema_dict, dict)
-    assert "name" in content._schema_dict
-    assert "age" in content._schema_dict
+    assert content._structure_instance is not None
+    schema = content._structure_instance.request_schema()
+    assert "name" in schema.model_fields
+    assert "age" in schema.model_fields
 
 
 def test_from_dict_with_nested_pydantic_model():
@@ -264,23 +250,22 @@ def test_from_dict_with_nested_pydantic_model():
     data = {"instruction": "Test", "response_format": NestedRequestModel}
     content = InstructionContent.from_dict(data)
 
-    # response_format stores the class
     assert content.response_format == NestedRequestModel
-    assert content.request_model == NestedRequestModel
-    # Internal schema dict should have the nested structure
-    assert isinstance(content._schema_dict, dict)
-    assert "user" in content._schema_dict
+    assert content._structure_instance is not None
+    schema = content._structure_instance.request_schema()
+    assert "user" in schema.model_fields
 
 
 def test_from_dict_pydantic_model_auto_derives_response_format():
-    """Test from_dict derives schema dict from Pydantic model"""
+    """Test from_dict derives schema via structure from Pydantic model"""
     data = {"instruction": "Test", "response_format": SampleRequestModel}
     content = InstructionContent.from_dict(data)
 
-    # Should auto-derive schema dict internally
-    assert content.response_format == SampleRequestModel  # Keeps the original
-    assert content._schema_dict is not None
-    assert isinstance(content._schema_dict, dict)
+    assert content.response_format == SampleRequestModel
+    assert content._structure_instance is not None
+    schema = content._structure_instance.request_schema()
+    assert isinstance(schema, type)
+    assert "name" in schema.model_fields
 
 
 def test_from_dict_with_dict_response_schema():
@@ -338,7 +323,7 @@ def test_from_dict_empty_dict():
 
     assert content.instruction is None
     assert content.guidance is None
-    assert content.context == []
+    assert content.prompt_context == []
 
 
 # ============================================================================
@@ -384,7 +369,7 @@ def test_instruction_content_validator_with_dict():
     assert isinstance(instruction.content, InstructionContent)
     assert instruction.content.instruction == "Do this"
     assert instruction.content.guidance == "Carefully"
-    assert len(instruction.content.context) == 1
+    assert len(instruction.content.prompt_context) == 1
 
 
 def test_instruction_content_validator_with_none():
@@ -412,8 +397,8 @@ def test_instruction_with_context():
         recipient="assistant",
     )
 
-    assert len(instruction.content.context) == 2
-    assert {"key": "value"} in instruction.content.context
+    assert len(instruction.content.prompt_context) == 2
+    assert {"key": "value"} in instruction.content.prompt_context
 
 
 def test_instruction_with_guidance():
@@ -454,12 +439,11 @@ def test_instruction_with_pydantic_response_schema():
         recipient="assistant",
     )
 
-    # response_format stores the class
     assert instruction.content.response_format == SampleRequestModel
-    assert instruction.content.request_model == SampleRequestModel
-    # Should auto-derive schema dict internally
-    assert instruction.content._schema_dict is not None
-    assert isinstance(instruction.content._schema_dict, dict)
+    assert instruction.content._structure_instance is not None
+    schema = instruction.content._structure_instance.request_schema()
+    assert isinstance(schema, type)
+    assert "name" in schema.model_fields
 
 
 def test_instruction_with_explicit_response_format():
@@ -542,9 +526,7 @@ def test_instruction_rendered_property_with_images():
 
 def test_instruction_role_fixed_as_user():
     """Test Instruction role is always USER"""
-    instruction = Instruction(
-        content={"instruction": "Test"}, sender="user", recipient="assistant"
-    )
+    instruction = Instruction(content={"instruction": "Test"}, sender="user", recipient="assistant")
 
     assert instruction.role == MessageRole.USER
 
@@ -583,7 +565,7 @@ def test_minimal_yaml_rendering_strips_empty_fields():
     content = InstructionContent(
         instruction="Test",
         guidance=None,  # Should be stripped
-        context=[],  # Should be stripped
+        prompt_context=[],  # Should be stripped
         tool_schemas=[],  # Should be stripped
     )
 
@@ -598,7 +580,7 @@ def test_minimal_yaml_rendering_includes_non_empty_fields():
     content = InstructionContent(
         instruction="Do this",
         guidance="Be careful",
-        context=["ctx1"],
+        prompt_context=["ctx1"],
         tool_schemas=[{"name": "tool"}],
     )
 
@@ -626,13 +608,18 @@ def test_minimal_yaml_response_format_as_json_block():
 
 
 def test_minimal_yaml_response_schema_included():
-    """Test minimal_yaml includes response_format schema"""
+    """Test minimal_yaml includes ResponseSchema for BaseModel, ResponseFormat for dict"""
+    # Dict mode: only ResponseFormat (no model_json_schema available)
     schema = {"type": "object", "properties": {"name": {"type": "string"}}}
     content = InstructionContent(instruction="Test", response_format=schema)
-
     rendered = content.rendered
-    assert "responseschema" in rendered.lower() or "ResponseSchema:" in rendered
+    assert "responseformat" in rendered.lower() or "ResponseFormat:" in rendered
     assert "type" in rendered
+
+    # BaseModel mode: both ResponseSchema and ResponseFormat
+    content2 = InstructionContent(instruction="Test", response_format=SampleRequestModel)
+    rendered2 = content2.rendered
+    assert "responseschema" in rendered2.lower() or "ResponseSchema:" in rendered2
 
 
 # ============================================================================
@@ -742,7 +729,7 @@ def test_from_dict_preserves_field_types():
     }
     content = InstructionContent.from_dict(data)
 
-    assert isinstance(content.context, list)
+    assert isinstance(content.prompt_context, list)
     assert isinstance(content.tool_schemas, list)
     assert isinstance(content.images, list)
     assert isinstance(content.instruction, str)
