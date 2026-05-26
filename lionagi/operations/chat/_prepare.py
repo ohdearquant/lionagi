@@ -45,16 +45,13 @@ def _prepare_run_kwargs(
             _act_res.append(msg)
 
         if isinstance(msg, AssistantResponse):
-            _use_msgs.append(
-                msg.model_copy(update={"content": msg.content.with_updates()})
-            )
+            _use_msgs.append(msg.model_copy(update={"content": msg.content.with_updates()}))
 
         if isinstance(msg, Instruction):
             j = msg.model_copy(update={"content": msg.content.with_updates()})
             j.content.tool_schemas.clear()
             j.content.response_format = None
-            j.content._schema_dict = None
-            j.content._model_class = None
+            j.content._structure_instance = None
 
             if _act_res:
                 # Convert ActionResponseContent to dicts for proper rendering
@@ -93,9 +90,7 @@ def _prepare_run_kwargs(
                 )
             else:
                 d_.append(k.content)
-        j.content.prompt_context.extend(
-            [z for z in d_ if z not in j.content.prompt_context]
-        )
+        j.content.prompt_context.extend([z for z in d_ if z not in j.content.prompt_context])
         _use_ins = j
 
     _use_msgs = [msg for msg in _use_msgs if msg.role != MessageRole.UNSET]
@@ -106,7 +101,9 @@ def _prepare_run_kwargs(
         for i in _use_msgs[1:]:
             if isinstance(i, AssistantResponse):
                 if isinstance(_msgs[-1], AssistantResponse):
-                    _msgs[-1].content.assistant_response = (
+                    _msgs[
+                        -1
+                    ].content.assistant_response = (
                         f"{_msgs[-1].content.assistant_response}\n\n{i.content.assistant_response}"
                     )
                 else:
@@ -137,14 +134,10 @@ def _prepare_run_kwargs(
         elif len(messages) >= 1:
             first_instruction = messages[0]
             if not isinstance(first_instruction, Instruction):
-                raise ValueError(
-                    "First message in progression must be an Instruction or System"
-                )
+                raise ValueError("First message in progression must be an Instruction or System")
             first_instruction = first_instruction.model_copy(
                 update={
-                    "content": first_instruction.content.with_updates(
-                        guidance=f(first_instruction)
-                    )
+                    "content": first_instruction.content.with_updates(guidance=f(first_instruction))
                 }
             )
             messages[0] = first_instruction

@@ -143,9 +143,7 @@ def prepare_messages_for_chat(
             if to_chat:
                 chat_msg = {
                     "role": new_content.role.value,
-                    "content": new_content.render(
-                        new_content.structure_format, new_content.custom_renderer
-                    ),
+                    "content": new_content.rendered,
                 }
                 if chat_msg and chat_msg.get("content"):
                     return [chat_msg]
@@ -310,16 +308,10 @@ def prepare_messages_for_chat(
     if to_chat:
         result = []
         for m in _use_msgs:
-            data = {}
-            if isinstance(m, InstructionContent):
-                data = {
-                    "structure_format": m.structure_format,
-                    "custom_renderer": m.custom_renderer,
-                }
             result.append(
                 {
                     "role": m.role.value,
-                    "content": m.render(**data),
+                    "content": m.rendered,
                 }
             )
         return result
