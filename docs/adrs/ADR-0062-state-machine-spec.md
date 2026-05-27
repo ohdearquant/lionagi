@@ -3,8 +3,8 @@
 Status: proposed
 Date: 2026-05-27
 Decision owners: @governance-maintainers
-Depends on: ADR-0025 (session status), ADR-0028 (status reasons), ADR-0056 (play control), ADR-0059 (StateStore), ADR-0061 (universal scheduler)
-Related: ADR-0063 (task board work center)
+Depends on: ADR-0025 (session status), ADR-0028 (status reasons), ADR-0056 (play control), ADR-0059 (StateStore)
+Related: ADR-0061 (universal scheduler — consumes lifecycle_status and state_events defined here), ADR-0063 (task board work center)
 
 ## Context
 

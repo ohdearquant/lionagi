@@ -3,8 +3,8 @@
 Status: proposed
 Date: 2026-05-27
 Decision owners: @governance-maintainers
-Depends on: ADR-0009 (SQLite state layer), ADR-0027 (scheduler engine / state.db)
-Related: ADR-0033 (unified entity state model), ADR-0034 (frontend data/state), ADR-0053 (artifact persistence — schema columns consumed but not dependency-ordered), governance direction P18-P20
+Depends on: ADR-0009 (SQLite state layer), ADR-0027 (scheduler engine / state.db), ADR-0053 (artifact persistence — artifact columns consumed, must land first or Postgres runs in experimental mode)
+Related: ADR-0033 (unified entity state model), ADR-0034 (frontend data/state), governance direction P18-P20
 
 ## Context
 

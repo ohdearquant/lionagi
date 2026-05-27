@@ -3,8 +3,8 @@
 Status: proposed (rewrite after rejected review)
 Date: 2026-05-27
 Decision owners: @governance-maintainers
-Depends on: ADR-0059 (StateStore protocol)
-Related: ADR-0021 (structured artifacts), ADR-0029 (artifact contracts), ADR-0041 (immutable evidence nodes), ADR-0050 (operation context), ADR-0055 (Studio artifact viewer)
+Depends on: ADR-0009 (SQLite state layer), ADR-0029 (artifact contracts), ADR-0041 (immutable evidence nodes)
+Related: ADR-0021 (structured artifacts), ADR-0050 (operation context), ADR-0055 (Studio artifact viewer), ADR-0059 (Postgres backend — consumes artifact columns defined here)
 
 ## Context
 

@@ -4,7 +4,7 @@ Status: proposed
 Date: 2026-05-27
 Decision owners: @governance-maintainers
 Depends on: ADR-0053 (artifact persistence), ADR-0056 (play control), ADR-0058 (cost tracking), ADR-0059 (StateStore), ADR-0061 (universal scheduler), ADR-0062 (scheduled item state machine)
-Related: ADR-0034 (frontend data/state architecture), ADR-0047 (agent charter), ADR-0048 (segregation of duties)
+Related: ADR-0034 (frontend data/state architecture), ADR-0047 (agent charter), ADR-0048 (segregation of duties), ADR-0065 (task board schema — supersedes this ADR's schema subsection for the lionagi.work projection; use work_tasks table from ADR-0065 for lionagi.work persistence, work_items defined here for operator UI layer)
 
 ## Context
 

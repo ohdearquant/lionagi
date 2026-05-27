@@ -925,5 +925,3 @@ Negative:
 - ADR-0060: Unified Config Resolution
 - ADR-0061: Universal Scheduler
 - ADR-0066: Unified Execution Viewer
-
-Domain utility: SKIPPED - the requested lore suggest/compose tools were not available, so this ADR uses checked-in ADRs and code references as its evidence base.

@@ -796,5 +796,3 @@ Negative:
 - `apps/studio/server/services/shows.py`
 - `lionagi/cli/orchestrate/flow.py`
 - `lionagi/state/schema.sql`
-
-Domain utility: SKIPPED - no lore suggest/compose tool is available in this environment, so this ADR uses direct repository evidence and existing ADR patterns.

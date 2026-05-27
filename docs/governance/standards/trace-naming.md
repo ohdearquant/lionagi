@@ -95,7 +95,7 @@ Spans are telemetry projections. Authoritative records live in typed evidence an
 
 - Attribute keys: dot-separated lower-case.
 - Retention tiers: uppercase `MUTABLE`, `PROTECTED`, `IMMUTABLE`.
-- Gate verdict enums (`gate.verdict`): uppercase `ALLOW`, `DENY`, `SKIP` (ADR-0044 canonical values).
+- Gate verdict enums (`gate.verdict`): uppercase `ALLOW`, `DENY`, `ADVISORY` (ADR-0044 canonical values).
 - Gate enforcement in spans: uppercase `HARD`, `SOFT`, `ADVISORY`.
 - DSL enforcement values are lowercase (`hard`, `soft`, `advisory`) — map to uppercase in spans.
 - Booleans: native boolean.

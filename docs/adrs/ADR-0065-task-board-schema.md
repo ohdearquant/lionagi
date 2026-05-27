@@ -3,7 +3,7 @@
 **Status**: Proposed
 **Date**: 2026-05-27
 **Depends on**: ADR-0064 (work system integration), ADR-0009 (SQLite state layer)
-**Related**: ADR-0030 (attention queue), ADR-0031 (entity header pattern)
+**Related**: ADR-0030 (attention queue), ADR-0031 (entity header pattern), ADR-0063 (task board work center — this ADR supersedes ADR-0063's schema subsection for the lionagi.work projection; ADR-0063's work_items table governs the operator UI layer, this ADR's work_tasks table governs lionagi.work persistence)
 
 ## Context
 

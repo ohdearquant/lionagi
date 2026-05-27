@@ -126,7 +126,7 @@ listed here are permitted but must not conflict with the listed keys.
 | `governance.retention.tier` | string | Yes | Always `"IMMUTABLE"` for gate evaluations. |
 | `gate.id` | string | Yes | Gate function identifier, e.g. `"verify_in_registry"`. |
 | `gate.tool.name` | string | Yes | Tool name being guarded, e.g. `"file.write"`. |
-| `gate.verdict` | string | Yes | Uppercase: `"ALLOW"`, `"DENY"`, or `"SKIP"`. |
+| `gate.verdict` | string | Yes | Uppercase: `"ALLOW"`, `"DENY"`, or `"ADVISORY"`. |
 | `gate.enforcement` | string | Yes | `"HARD"`, `"SOFT"`, or `"ADVISORY"`. |
 | `gate.elapsed_ms` | float | Yes | Wall-clock gate evaluation time in milliseconds. |
 | `gate.evidence.hash` | string | Recommended | SHA-256 hash of the corresponding `GateResult` node. |

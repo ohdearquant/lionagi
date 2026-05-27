@@ -23,7 +23,7 @@ definitions and binds each ADR to the implementation play that will build or con
 | governed wrapper bypass rules | ADR-0043 | Runtime path enforced by ActionManager in P17. |
 | `GateResult` | ADR-0044 | Single canonical owner; removed from ADR-0043 and ADR-0050. |
 | `GateEnforcement` | ADR-0044 | `HARD`, `SOFT`, `ADVISORY`. |
-| `GateVerdict` | ADR-0044 | `ALLOW`, `DENY`, `SKIP`. |
+| `GateVerdict` | ADR-0044 | `ALLOW`, `DENY`, `ADVISORY`. |
 | `ToolGate` | ADR-0044 | Gate registration and evaluation contract. |
 | `BreakGlassReason` | ADR-0045 | Emergency reason taxonomy. |
 | `BreakGlassRequest` | ADR-0045 | Emergency request and attestation. |

@@ -1,6 +1,6 @@
 # ADR-0060: Unified Config Resolution
 
-Status: APPROVE-WITH-FIXES
+Status: Proposed
 Date: 2026-05-27
 Decision owners: @governance-maintainers
 Depends on: none
@@ -374,5 +374,3 @@ Acceptance checks:
 - Studio PUT and DELETE validate project rows and resolved project paths before touching disk.
 - Config endpoints return `401` without a valid bearer token when auth is configured.
 - No state.db or Postgres DDL is added for config resolution.
-
-Domain utility: SKIPPED - no lore suggest/compose tool is available in this execution environment.

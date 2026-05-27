@@ -1,6 +1,6 @@
 # ADR-0058: Play Cost Tracking
 
-Status: APPROVE-WITH-FIXES
+Status: Proposed
 Date: 2026-05-27
 Decision owners: @governance-maintainers
 Depends on: ADR-0059 (StateStore protocol), ADR-0060 (unified config resolution)
@@ -446,5 +446,3 @@ Acceptance checks:
 - Replay cost can be filtered by `runner_handles.id`.
 - Cost `GET` endpoints return `401` without a valid bearer token when auth is configured.
 - JSON columns listed above round-trip as objects.
-
-Domain utility: SKIPPED - no lore suggest/compose tool is available in this execution environment.

@@ -1,6 +1,6 @@
 # Governance Direction: lionagi Governed Orchestration
 
-**Version**: 1.0 | **Phase**: 2 — Synthesis and Standards | **Play**: P11  
+**Version**: 1.0 | **Phase**: 2 — Synthesis and Standards | **Play**: P11
 **Status**: Accepted — blocking all Phase 3-7 implementation
 
 This document is the master blueprint for lionagi's governed orchestration build-out (P12-P24). It
@@ -580,8 +580,9 @@ are the first cut targets if budget is exceeded.
 
 ## 8. Integration Plan
 
-The governance build is additive. Existing lionagi code is modified at well-defined extension points
-only. New modules live in `lionagi/protocols/governance/`. Existing modules receive narrow additions.
+The governance build is additive. After implementation, existing lionagi code will be modified at
+well-defined extension points only. New modules will live in `lionagi/protocols/governance/`
+(proposed — not yet created). Existing modules will receive narrow additions.
 
 ### 8.1 `lionagi/protocols/`
 

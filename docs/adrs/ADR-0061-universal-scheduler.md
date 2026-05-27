@@ -3,8 +3,8 @@
 Status: proposed
 Date: 2026-05-27
 Decision owners: @governance-maintainers
-Depends on: ADR-0027 (scheduled runs), ADR-0028 (status reasons), ADR-0056 (play control), ADR-0059 (StateStore), ADR-0060 (config resolution)
-Related: ADR-0062 (scheduled item state machine), ADR-0063 (task board work center)
+Depends on: ADR-0027 (scheduled runs), ADR-0028 (status reasons), ADR-0056 (play control), ADR-0059 (StateStore), ADR-0060 (config resolution), ADR-0062 (scheduled item state machine — lifecycle_status and state_events schema consumed here)
+Related: ADR-0063 (task board work center)
 
 ## Context
 
