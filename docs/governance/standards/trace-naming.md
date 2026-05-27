@@ -95,7 +95,7 @@ Spans are telemetry projections. Authoritative records live in typed evidence an
 
 - Attribute keys: dot-separated lower-case.
 - Retention tiers: uppercase `MUTABLE`, `PROTECTED`, `IMMUTABLE`.
-- Verdict enums: uppercase `PASS`, `FAIL`, `SKIP`, `PARTIAL`, `UNKNOWN`, `SUPERSEDED`.
+- Gate verdict enums (`gate.verdict`): uppercase `ALLOW`, `DENY`, `SKIP` (ADR-0044 canonical values).
 - Gate enforcement in spans: uppercase `HARD`, `SOFT`, `ADVISORY`.
 - DSL enforcement values are lowercase (`hard`, `soft`, `advisory`) — map to uppercase in spans.
 - Booleans: native boolean.
@@ -152,7 +152,7 @@ For charter-specific spans, use `charter.severity` with values `INFO`, `WARN`, `
     "governance.charter.id": "charter.reader.basic",
     "gate.id": "verify_in_registry",
     "gate.tool.name": "tool.write_file",
-    "gate.verdict": "FAIL",
+    "gate.verdict": "DENY",
     "gate.enforcement": "HARD",
     "gate.reason": "Tool is not in the ratified registry snapshot.",
     "gate.evidence.hash": "sha256:9ac1000000000000000000000000000000000000000000000000000000000001",

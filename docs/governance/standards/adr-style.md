@@ -152,7 +152,7 @@ ownership to ADR-0044 before any implementation begins.
 ## 9. Example A: Correct Header And Dependency Block
 
 ```markdown
-# ADR-0053: Charter DSL Compiler Targets
+# ADR-9001: Example — Compiler Targets For A New DSL Feature
 
 Status: proposed
 Date: 2026-05-27
@@ -164,14 +164,15 @@ Related: ADR-0048, ADR-0049, ADR-0050
 ```
 
 Why correct: dependencies name the owning ADRs for evidence, gates, charters, registry, and
-policy resolution — not generic prose.
+policy resolution — not generic prose. (ADR-9001 is a fictional example number; use the next
+available real number when writing an actual ADR.)
 
 ---
 
 ## 10. Example B: Resolving A Type Overlap
 
 ```markdown
-# ADR-0054: Gate Result Ownership Consolidation
+# ADR-9002: Example — Type Ownership Consolidation
 
 Status: accepted
 Date: 2026-06-03
@@ -188,3 +189,5 @@ projections in `OperationContext`, but must not define a second `GateResult` typ
 ```
 
 Why correct: resolves overlap by choosing a type owner instead of letting two ADRs drift.
+(ADR-9002 is a fictional example number; use the next available real number when writing an
+actual ADR.)

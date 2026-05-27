@@ -170,11 +170,11 @@ Governance is an additive runtime layer — it does not replace existing lionagi
 ### 3.1 Zero-Rewrite Principle
 
 Users bring their existing objects. lionagi wraps the user's existing object and governs its
-execution boundary. The adapter does not rewrite the user's framework code. A governed endpoint
+execution boundary. The adapter does not rewrite the user's framework code. A governed adapter
 has the shape:
 
 ```python
-GovernedEndpoint(user_object=their_existing_thing, charter=loaded_charter)
+GovernedAdapter(user_object=their_existing_thing, charter=loaded_charter)
 ```
 
 The adapter intercepts invocation, enforces the charter at the boundary, emits evidence, and returns
@@ -334,25 +334,28 @@ is the enterprise observability interface (SIEM, alerting, dashboards), not the 
 
 ### 5.2 Span Taxonomy Reference
 
-The canonical span registry is defined in [`docs/governance/standards/trace-naming.md`](standards/trace-naming.md).
+The canonical span registry is defined in
+[`docs/governance/standards/trace-naming.md`](standards/trace-naming.md) (section 4).
+That file is the authoritative source for span names, required attributes, and retention tiers.
+The summary below uses the same attribute names as trace-naming.md.
 The base taxonomy comes from P9. P11 adds the missing spans identified in the P9 critic verdict:
 
 **Base spans (P9)**:
 
-| Span Name | Trigger | Required Attributes |
-|-----------|---------|---------------------|
-| `governance.operation` | Operation start | `governance.charter_id`, `governance.policy.version`, `governance.actor.id`, `governance.actor.role` |
-| `gate.evaluate` | Gate execution | `gate.id`, `gate.tool.name`, `gate.enforcement`, `gate.result`, `gate.evidence_hash` |
-| `evidence.emit` | Evidence node creation | `evidence.kind`, `evidence.hash`, `evidence.chain_tip` |
-| `registry.lookup` | Registry entry check | `registry.category`, `registry.value`, `registry.scope`, `registry.result` |
-| `policy.resolve` | Policy resolution | `policy.release`, `policy.rule_id`, `policy.specificity`, `policy.decision` |
-| `certificate.mint` | Certificate creation | `certificate.id`, `certificate.chain_head`, `certificate.policy_version`, `certificate.gate_count` |
-| `sod.check` | SoD matrix evaluation | `sod.rule_id`, `sod.roles`, `sod.conflict_type`, `sod.result` |
+| Span Name | Trigger | Key Required Attributes |
+|-----------|---------|-------------------------|
+| `governance.operation` | Operation start | `governance.operation.name`, `governance.charter.id`, `governance.policy.version`, `governance.actor.id`, `governance.actor.role`, `governance.evidence.hash` |
+| `gate.evaluate` | Gate execution | `gate.id`, `gate.tool.name`, `gate.verdict`, `gate.enforcement`, `gate.policy.version`, `gate.charter.id`, `gate.evidence.hash`, `gate.reason` |
+| `evidence.emit` | Evidence node creation | `evidence.id`, `evidence.kind`, `evidence.chain.hash`, `evidence.previous.hash`, `evidence.tier`, `evidence.payload.hash` |
+| `registry.lookup` | Registry entry check | `registry.tool.name`, `registry.role`, `registry.allowed`, `registry.policy.version`, `registry.lookup.source`, `registry.evidence.hash` |
+| `policy.resolve` | Policy resolution | `policy.count`, `policy.strategy`, `policy.winner`, `policy.version`, `policy.conflict.count`, `policy.evidence.hash` |
+| `certificate.mint` | Certificate creation | `certificate.id`, `certificate.task.id`, `certificate.gates.passed`, `certificate.gates.failed`, `certificate.grade`, `certificate.defensibility`, `certificate.evidence.chain.hash`, `certificate.break.glass` |
+| `sod.check` | SoD matrix evaluation | `sod.role`, `sod.capability`, `sod.verdict`, `sod.policy.version`, `sod.evidence.hash` |
 
 **Additions from P9 critic verdict (P20 responsibility)**:
 
-| Span Name | Trigger | Required Attributes |
-|-----------|---------|---------------------|
+| Span Name | Trigger | Key Required Attributes |
+|-----------|---------|-------------------------|
 | `permit.issue` | JIT permit issued | `permit.id`, `permit.scope`, `permit.tool.name`, `permit.issuer.id`, `permit.subject.id`, `permit.expires.at`, `permit.evidence.hash` |
 | `permit.consume` | JIT permit consumed on tool call | `permit.id`, `permit.tool.name`, `permit.subject.id`, `permit.consumed.at`, `permit.consume.result`, `permit.evidence.hash` |
 | `permit.revoke` | JIT permit revoked before expiry | `permit.id`, `permit.revoked.by`, `permit.revoked.at`, `permit.revoke.reason`, `permit.evidence.hash` |
@@ -362,6 +365,8 @@ The base taxonomy comes from P9. P11 adds the missing spans identified in the P9
 | `breakglass.close` | Break-glass closed or revoked | `breakglass.window.id`, `breakglass.closed.at`, `breakglass.close.reason`, `breakglass.tool.call.count`, `breakglass.certificate.id` |
 | `breakglass.notify` | Emergency notification sent | `breakglass.window.id`, `breakglass.notification.target`, `breakglass.notification.kind`, `breakglass.notification.result` |
 | `gate.justify` | SOFT gate override with justification | `gate.id`, `gate.verdict`, `gate.enforcement`, `gate.justification`, `gate.justification.actor.id`, `gate.evidence.hash` |
+
+See trace-naming.md section 4 for the complete attribute list for every span type.
 
 ### 5.3 Enterprise Readiness Path
 
@@ -374,7 +379,7 @@ attributes onto opaque spans is expensive — declaring them in the schema creat
 | Sensitive data redaction | Evidence record field exclusion rules documented at emit time | P15 |
 | SIEM export | OTel collector-compatible span format; attribute naming follows OTel semconv | P20 |
 | Backpressure | Span export failure must not block evidence chain writes | P20 |
-| Alerting | `gate.result: DENY` and `breakglass.open` are alertable events | P20 |
+| Alerting | `gate.verdict: DENY` and `breakglass.open` are alertable events | P20 |
 | Cost tracking | `governance.operation` spans carry operation budget attributes | P18 |
 | Audit/ops separation | Audit spans go to immutable SIEM sink; ops spans go to mutable collector | P20 |
 
@@ -533,7 +538,7 @@ are the first cut targets if budget is exceeded.
 | **Scope** | Zero-rewrite governed endpoints for PydanticAI (`instrument_*` hooks), OpenAI Agents SDK (`AgentHook` event stream), and Anthropic Agent SDK (native tool-use block handling). Each adapter: ~200 LOC, accepts the user's existing agent/runner object, emits boundary evidence, enforces the compiled charter at the invocation boundary. Explicit claim matrix in docstring and test. |
 | **Dependencies** | P17, P20 |
 | **Measurement** | Contract tests with mocked typed event streams; package-shape validation confirms no framework internals are imported unconditionally; coarse/fine claim matrix documented; adversarial test: overclaiming internal tool call governance fails the claim matrix check |
-| **Files Modified** | `lionagi/providers/pydantic_ai/`, `lionagi/providers/openai_agents/`, `lionagi/providers/anthropic_agents/`, `tests/providers/test_governed_sdk_adapters.py` |
+| **Files Modified** | `lionagi/adapters/openai_agents.py`, `lionagi/adapters/anthropic_agents.py`, `tests/adapters/test_governed_sdk_adapters.py` |
 
 ### P22 — Framework Governed Endpoints (G2)
 
@@ -545,7 +550,7 @@ are the first cut targets if budget is exceeded.
 | **Scope** | Zero-rewrite governed wrappers for LangGraph (`CompiledStateGraph`), LlamaIndex (`AgentWorkflow`, `FunctionAgent`, `ReActAgent`, `QueryEngineTool`, `FunctionTool`), and CrewAI (`Crew`, `CrewPlan` preflight). Coarse boundary governance only. Fine mode available only for translated lionagi `Tool` objects. CrewAI hierarchical delegation is not governed in v0. |
 | **Dependencies** | P18, P19 |
 | **Measurement** | Contract tests for graph invoke, LlamaIndex tool translation, CrewPlan preflight; claim matrix documents what is and is not governed; unsupported delegation call fails closed with a descriptive `GovernanceViolationError`; coarse-only adapters emit boundary evidence correctly |
-| **Files Modified** | `lionagi/providers/langgraph/`, `lionagi/providers/llamaindex/`, `lionagi/providers/crewai/`, `tests/providers/test_governed_framework_adapters.py` |
+| **Files Modified** | `lionagi/adapters/langchain.py`, `lionagi/adapters/crewai.py`, `tests/adapters/test_governed_framework_adapters.py` |
 
 ### P23 — Governance Test and Adversarial Fixture Pack
 
@@ -632,24 +637,23 @@ remain unchanged — governance is opt-in at the `Session.flow()` or `Branch.act
 | `flow.py` | Add: `--charter` flag, flow-plan governance validation, certificate reporting |
 | `_orchestration.py` | Add: artifact evidence sidecars, run-end certificate hook |
 
-### 8.4 `lionagi/providers/`
+### 8.4 `lionagi/adapters/`
 
-New provider packages (P21, P22). Each package contains:
+New adapter modules (P21, P22). The base class is `GovernedAdapter` in
+`lionagi/adapters/governed_base.py` (ADR-0068). Each concrete adapter module contains
+the framework-specific `GovernedAdapter` subclass and its claim matrix.
 
-- `__init__.py` — public `GovernedEndpoint` class
-- `adapter.py` — framework-specific wrapping logic
-- `claim_matrix.py` — machine-readable claim matrix (used by adversarial tests)
+| Module | Exported Class | Target | Play |
+|--------|----------------|--------|------|
+| `lionagi/adapters/openai_agents.py` | `GovernedOpenAIAgent` | OpenAI Agents SDK | P21 |
+| `lionagi/adapters/anthropic_agents.py` | `GovernedAnthropicAgent` | Anthropic Agent SDK | P21 |
+| `lionagi/adapters/langchain.py` | `GovernedChain` | LangChain `Runnable`, `Chain`, `AgentExecutor` | P22 |
+| `lionagi/adapters/crewai.py` | `GovernedCrew` | CrewAI `Crew` | P22 |
 
-| Package | Target | Play |
-|---------|--------|------|
-| `lionagi/providers/pydantic_ai/` | PydanticAI agents | P21 |
-| `lionagi/providers/openai_agents/` | OpenAI Agents SDK | P21 |
-| `lionagi/providers/anthropic_agents/` | Anthropic Agent SDK | P21 |
-| `lionagi/providers/langgraph/` | LangGraph `CompiledStateGraph` | P22 |
-| `lionagi/providers/llamaindex/` | LlamaIndex agents and tools | P22 |
-| `lionagi/providers/crewai/` | CrewAI `Crew` and `CrewPlan` | P22 |
+Each adapter module exports exactly one concrete `GovernedAdapter` subclass. The claim matrix
+is documented in the class docstring and mirrored in the test fixture (`tests/adapters/`).
 
-No provider package is added until the substrate (P15-P17) and flow governance (P18) are complete
+No adapter module is added until the substrate (P15-P17) and flow governance (P18) are complete
 and verified. An adapter claiming governance before the substrate exists is a false claim.
 
 ### 8.5 `lionagi/tools/`
