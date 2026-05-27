@@ -470,10 +470,9 @@ are SHA-256 digests that reveal nothing about the underlying content.
 
 The following concerns are explicitly out of scope for this ADR and for `GovernanceTracer`:
 
-**No distributed span propagation in OSS.** `GovernanceTracer` does not implement W3C TraceContext
+**No distributed span propagation.** `GovernanceTracer` does not implement W3C TraceContext
 injection or extraction. In-process span correlation via `trace_id` and `parent_span_id` is
-supported. Cross-process span context propagation for multi-service deployments is a commercial
-offering.
+supported.
 
 **No automatic instrumentation of non-governance code.** `GovernanceTracer` only records spans
 for governance events. Application-level performance tracing (HTTP request durations, database
@@ -483,9 +482,7 @@ query times) is the responsibility of the application's chosen OTel SDK integrat
 dependencies. `GovernanceSpan.to_otel_dict()` produces an OTel-compatible dict; wiring that
 dict into OTel SDK types is the caller's responsibility.
 
-**No tenant-specific trace routing.** Routing spans from different tenants to different OTel
-collectors or namespaces requires tenant-aware export logic, which is a commercial feature.
-The OSS tracer emits all spans to the same in-process list.
+**No tenant-specific trace routing.** All spans are emitted to the same in-process list.
 
 **No span persistence.** `GovernanceTracer` holds spans in memory for the lifetime of the tracer
 object. Persistence to a durable store is out of scope; callers who need persistence export

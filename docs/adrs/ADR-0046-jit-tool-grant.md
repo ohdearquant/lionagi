@@ -480,9 +480,9 @@ required for post-incident reconstruction: given any tool call, the auditor can 
 - Agentic workflows that previously ran autonomously on high-risk tools now require an external
   authorization step. Pipelines must be redesigned to either obtain permits ahead of time (batch
   pre-authorization) or tolerate suspension while awaiting approval.
-- Human-in-the-loop latency is now on the critical path for any `requires_jit=True` tool. Studio
-  UI must surface permit requests clearly; a buried notification degrades the flow without
-  improving security.
+- Human-in-the-loop latency is now on the critical path for any `requires_jit=True` tool. The
+  operator interface must surface permit requests clearly; a buried notification degrades the
+  flow without improving security.
 - Orchestrators acting as authorizing parties create a trust chain that must be audited. An
   orchestrator that auto-approves every sub-agent request without human oversight negates the
   security benefit. ADR-0047 (Agent Charter) and ADR-0048 (Segregation of Duties) constrain
@@ -497,8 +497,7 @@ required for post-incident reconstruction: given any tool call, the auditor can 
 
 Explicitly out of scope:
 
-- **Federated permit issuance across tenants**: Cross-tenant grants and multi-tenant permit
-  federation are KHive territory. In v1, permits are scoped to a single lionagi process/session
+- **Federated permit issuance**: permits are scoped to a single lionagi process/session
   boundary.
 - **Automatic re-issuance on expiry**: A `PermitToken` that expires is not automatically renewed.
   Re-issuance requires a new authorization decision. Automatic renewal would convert a time-bounded
@@ -509,9 +508,9 @@ Explicitly out of scope:
   variable, or runtime mode that makes `requires_jit=True` tools executable without a valid
   token. Library mode (`LIONAGI_GOVERNED=false`) suppresses governance at the framework level,
   but does not affect tools that explicitly declare `requires_jit=True` in their own decorator.
-- **UI permit-approval interface**: Studio UI surface for displaying and approving permit
-  requests is out of scope for this ADR. The protocol (`PermitRequest` event, `request_permit`
-  API) is defined here; the UI implementation is a Studio concern.
+- **UI permit-approval interface**: The UI surface for displaying and approving permit requests
+  is out of scope for this ADR. The protocol (`PermitRequest` event, `request_permit` API) is
+  defined here; the UI implementation is a separate concern.
 - **Revocation of already-consumed tokens**: A consumed token is a historical record, not an
   active authorization. Revoking it has no security effect and is not supported.
 

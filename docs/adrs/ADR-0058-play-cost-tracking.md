@@ -10,8 +10,7 @@ Related: ADR-0022 (run provenance), ADR-0023 (hook system), ADR-0056 (play contr
 
 Governed orchestration needs cost records that are explainable, replayable, and safe to expose
 only to authorized operators. Cost is not a UI decoration: it reveals model choice, run cadence,
-task complexity, retries, and which parts of an orchestration consume the most budget. For an
-enterprise governance product, that is operational strategy.
+task complexity, retries, and which parts of an orchestration consume the most budget.
 
 The current flow runtime already has the right execution shape for attribution. `FlowAgent`,
 `FlowOp`, and `FlowPlan` are typed models for branch identity, operation identity, dependencies,

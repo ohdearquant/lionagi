@@ -57,7 +57,7 @@ transform methods that return new instances. Every evidence node emitted during 
 
 ### Why lionagi needs this
 
-Consider a KHive agent that calls `branch.operate()` three times in quick succession: one call
+Consider a governed agent that calls `branch.operate()` three times in quick succession: one call
 reads configuration, one writes a checkpoint, one invokes a sub-agent. All three run
 concurrently on the asyncio event loop. The write operation passes a `guard_paths` HARD gate
 and a `confirm_path_outside_workspace` SOFT gate with a provided justification. The read
@@ -655,11 +655,8 @@ Explicitly out of scope:
   using plain registered callables are unaffected.
 - **Cross-process context propagation**: distributing `OperationContext` across process
   boundaries (e.g., serializing `operation_id` into an HTTP header for a remote tool call and
-  reconstructing the causation chain at the receiver) is a KHive concern. Within a single
+  reconstructing the causation chain at the receiver) is not addressed here. Within a single
   lionagi session, context propagation is entirely in-process.
-- **Multi-tenant context isolation**: ensuring that `ServiceContext` and `OperationContext`
-  instances from different tenants cannot be interchanged requires storage-layer row security
-  and tenant-scoped session initialization. This is KHive v1 territory.
 - **Real-time context streaming**: broadcasting the accumulated `OperationContext` to an
   external observer as gates are evaluated (for live dashboards) is out of scope. The final
   snapshot is embedded in evidence; intermediate states are not surfaced.

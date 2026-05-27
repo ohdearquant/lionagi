@@ -47,10 +47,9 @@ rules from informational warnings.
 
 A coding agent with a file-editor tool and no explicit gate registration can overwrite files
 outside the project workspace if `PermissionPolicy` is in `mode="allow_all"` (the default for
-orchestrators). Nothing in the current system guarantees that `guard_paths` runs. When an agent
-in a governed context (KHive tenant, Lion Studio session with audit logging) executes a write
-outside bounds, there is no evidence artifact recording that the write was ungated — the
-operation silently succeeds and appears identical to an explicitly approved one. The gate tier
+orchestrators). Nothing in the current system guarantees that `guard_paths` runs. When an agent in a governed context executes a write outside bounds, there is no evidence
+artifact recording that the write was ungated — the operation silently succeeds and appears
+identical to an explicitly approved one. The gate tier
 structure ensures that HARD gates cannot be absent from governed tools (enforced by
 [ADR-0043](ADR-0043-governed-tool-declaration.md)), and that every gate evaluation — whether
 passed or failed — produces a `GateResult` that becomes evidence in the operation record
@@ -597,8 +596,9 @@ async def justify_gate(
 class DefaultJustificationPolicy:
     """Accept any non-empty justification from any actor.
 
-    Production deployments replace this with a policy that validates actor
-    identity, checks justification length, and/or requires corroborating evidence.
+    Deployments requiring stricter justification validation should replace this with a policy
+    that validates actor identity, checks justification length, and/or requires corroborating
+    evidence.
     """
 
     async def evaluate(
@@ -912,9 +912,6 @@ Explicitly out of scope:
   Threshold-based authorization is explicitly rejected (see prior research, Alternative 1).
 - **Gate composition DSL**: there is no `AND(gate_a, gate_b)` or `OR(gate_a, gate_b)` syntax.
   Composite logic is expressed by calling other gates inside an evaluator function.
-- **Multi-tenant policy stitching**: resolving gate inheritance across tenant hierarchies,
-  overriding organizational gates at the workspace level, and merging gate registries from
-  multiple policy sources are KHive-layer concerns addressed in ADR-0052.
 - **Human-approval workflows**: routing a SOFT override to a human approver UI, timeout
   handling, and async approval state machines are addressed in ADR-0046 (JIT Tool Grant).
 - **Gate versioning and migration**: upgrading a gate's enforcement tier across live sessions,
@@ -946,7 +943,7 @@ Explicitly out of scope:
 - [ADR-0046](ADR-0046-jit-tool-grant.md) — the JIT grant protocol handles human-in-the-loop approval for SOFT gate overrides
 - [ADR-0047](ADR-0047-agent-charter.md) — charters bind agents to specific gate sets; a gate not declared in the charter cannot be bypassed
 - [ADR-0050](ADR-0050-operation-context.md) — `OperationContext` is the active assertion that receives `GateResult` records at evaluation time
-- [ADR-0052](ADR-0052-policy-resolution.md) — most-specific-wins resolution for gate registries across tenant hierarchies (KHive layer)
+- [ADR-0052](ADR-0052-policy-resolution.md) — most-specific-wins resolution for gate registries across tenant hierarchies
 - [ADR-0033](ADR-0033-unified-entity-state-model.md) — `EvidenceRef` (8 kinds) is the shared substrate; `GateResult.evidence_refs` uses this type
 - [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md) — `Claim.confidence` is where probabilistic reasoning lives; explicitly not in gates
 - prior governance research `01_design/008-policy-gates/ADR-008-policy-gates.md` — source pattern (three-tier model, binary semantics, HashiCorp Sentinel inspiration)

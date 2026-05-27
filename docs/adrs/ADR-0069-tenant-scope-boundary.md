@@ -1,4 +1,4 @@
-# ADR-0069: Tenant Scope Boundary — OSS Hook Points vs Commercial Isolation
+# ADR-0069: Tenant Scope Boundary
 
 **Status**: accepted
 **Date**: 2026-05-27
@@ -17,37 +17,31 @@ parameter; ScopeLevel and PolicyResolutionResult define the hierarchy and record
 
 ## Context
 
-Multi-tenant AI agent platforms are a major requirement for enterprise deployments. Different
-organizations need different governance policies, tool allowlists, cost budgets, and audit
-segregation. The natural implementation question is: how much of tenant infrastructure does
-lionagi provide, and how much is left to commercial integrators?
+Multi-tenant AI agent deployments need different governance policies, tool allowlists, cost
+budgets, and audit segregation per organization. The natural implementation question is: how much
+of tenant infrastructure does lionagi provide?
 
-The triggering constraint is that lionagi is Apache-2.0 open-source software. Full tenant
-isolation — isolated data stores, per-tenant network routing, billing metering, tenant lifecycle
-management, and cross-tenant access control enforcement — is complex commercial infrastructure.
-Shipping that infrastructure as OSS would undermine the commercial viability of the platform and
-introduce maintenance burden for OSS contributors who have no need for multi-tenancy.
+Full tenant isolation — isolated data stores, per-tenant network routing, billing metering, tenant
+lifecycle management, and cross-tenant access control enforcement — is complex infrastructure.
+lionagi does not provide these capabilities. This ADR codifies the precise boundary: what lionagi
+provides (hook points and a named scope label) and what it explicitly does not provide (isolation
+infrastructure).
 
-At the same time, lionagi's governance system must not be designed in a way that makes commercial
-multi-tenancy impossible or awkward to add later. The resolution hierarchy introduced in
-ADR-0052 (Policy Resolution) has exactly four specificity levels:
+The resolution hierarchy introduced in ADR-0052 (Policy Resolution) has exactly four specificity
+levels:
 
 ```text
 resource (3) > role (2) > tenant (1) > global (0)
 ```
 
-The `TENANT` position at level 1 is not an accident. It is a deliberate API commitment: there is
-a named slot in the resolution hierarchy reserved for tenant-scoped policy rules. A commercial
-integration can write rules at that level without touching the OSS core.
+The `TENANT` position at level 1 is a deliberate API commitment: there is a named slot in the
+resolution hierarchy reserved for tenant-scoped policy rules. Integrations can write rules at that
+level without touching the core resolution engine.
 
 However, the mere existence of a `TENANT` scope label could mislead readers into believing that
-lionagi implements tenant isolation. It does not. This ADR codifies the precise boundary:
-what lionagi provides (hook points and a named scope label), and what it explicitly does not
-provide (isolation infrastructure).
+lionagi implements tenant isolation. It does not. This ADR codifies the distinction.
 
-The gap between those two things is the commercial value proposition.
-
-### What enterprise operators actually need
+### What deployments serving multiple organizations need
 
 When a governed deployment serves multiple organizations, each organization typically requires:
 
@@ -61,23 +55,21 @@ When a governed deployment serves multiple organizations, each organization typi
 Items 2–5 are infrastructure concerns. lionagi's governance system addresses item 1 through the
 scope hierarchy: a policy rule scoped to `tenant` applies only when the operation's `tenant_id`
 matches the rule's matching criteria. That is the entirety of lionagi's tenant support. Items
-2–5 are explicitly out of scope for OSS and require commercial overlay.
+2–5 require additional infrastructure outside the scope of this library.
 
 ### Why the label exists at all
 
-The `TENANT` scope level exists in the open-source resolution hierarchy for two reasons:
+The `TENANT` scope level exists for two reasons:
 
-**Reason 1: Future-proof API surface.** If commercial overlays are to set policy rules that
-apply organization-wide (more specific than global defaults, less specific than per-role rules),
-they need a named slot in the hierarchy to put those rules. Reserving that slot in the OSS
-schema means commercial integrations can write tenant-scoped charter rules today without waiting
-for a protocol revision.
+**Reason 1: Future-proof API surface.** Integrations that need to set policy rules applying
+organization-wide (more specific than global defaults, less specific than per-role rules) need
+a named slot in the hierarchy. Reserving that slot in the schema allows tenant-scoped charter
+rules to be written today without waiting for a protocol revision.
 
-**Reason 2: Interoperability surface.** A commercial tenant middleware that resolves the active
-tenant for an incoming request needs a standard field to write the result into. That field is
-`tenant_id` on `PolicyResolver.resolve()` and, transitively, on `OperationContext`. Making that
-field part of the OSS interface ensures commercial overlays can interoperate without forking the
-resolution engine.
+**Reason 2: Interoperability surface.** A tenant middleware that resolves the active tenant for
+an incoming request needs a standard field to write the result into. That field is `tenant_id`
+on `PolicyResolver.resolve()` and, transitively, on `OperationContext`. Making that field part
+of the interface ensures integrations can interoperate without forking the resolution engine.
 
 Neither reason requires lionagi to implement tenant storage, routing, or lifecycle management.
 
@@ -93,8 +85,7 @@ integer assignment `TENANT = 1` must not change without a superseding ADR.
 
 1. **`ScopeLevel.TENANT` (value 1)** — a named specificity level between `GLOBAL` (0) and
    `ROLE` (2) in the `ScopeLevel` IntEnum. The docstring on `ScopeLevel` explicitly states that
-   `TENANT` is a hook point for commercial offerings and that lionagi itself does not implement
-   tenant isolation.
+   lionagi does not implement tenant isolation.
 
 2. **`tenant_id` parameter in `PolicyResolver.resolve()`** — the resolver accepts a
    `tenant_id: str = ""` argument. When a tenant-scoped rule is present in the charter, the
@@ -116,32 +107,30 @@ integer assignment `TENANT = 1` must not change without a superseding ADR.
 5. **`OperationContext` carries tenant context** — while `OperationContext` (ADR-0050) does not
    define a `tenant_id` field directly (it captures actor, role, charter, policy release, and
    trace state), the `tenant_id` flows through `PolicyResolver.resolve()` as a resolution
-   parameter and is recorded in `PolicyResolutionResult.tenant_id`. A commercial overlay can
-   inject `tenant_id` into the resolution call via a pre-hook installed on `AgentConfig`.
+   parameter and is recorded in `PolicyResolutionResult.tenant_id`. An integration can inject
+   `tenant_id` into the resolution call via a pre-hook installed on `AgentConfig`.
 
 ### What lionagi does not provide
 
-The following are explicitly **not** part of lionagi OSS, now or in the future without a
-separate commercial offering:
+The following are explicitly **not** part of lionagi:
 
-| Capability | Why not in OSS |
+| Capability | Why not included |
 |---|---|
-| Tenant storage or database isolation | Requires multi-DB infrastructure, migration tooling, and connection pool management. Commercial concern. |
-| Tenant-aware routing or middleware | HTTP or gRPC middleware that resolves tenant from request headers, JWTs, or subdomains. Platform concern. |
-| Tenant billing or metering | Token counting, cost allocation, and invoicing per tenant. Business logic concern. |
-| Tenant configuration management | API surface for creating, updating, and deleting tenant configurations. Product concern. |
-| Cross-tenant access control enforcement | Preventing one tenant's agents from accessing another tenant's data or tools. Requires isolation the OSS does not provide. |
-| Tenant provisioning and lifecycle management | Onboarding, suspension, and de-provisioning flows. Product concern. |
-| Tenant-aware caching or state stores | Namespaced cache partitions that enforce tenant boundaries at the infrastructure level. Platform concern. |
-| Multi-database routing | Query routing based on tenant identity to isolated data stores. Infrastructure concern. |
+| Tenant storage or database isolation | Requires multi-DB infrastructure, migration tooling, and connection pool management. |
+| Tenant-aware routing or middleware | HTTP or gRPC middleware that resolves tenant from request headers, JWTs, or subdomains. |
+| Tenant billing or metering | Token counting, cost allocation, and invoicing per tenant. |
+| Tenant configuration management | API surface for creating, updating, and deleting tenant configurations. |
+| Cross-tenant access control enforcement | Preventing one tenant's agents from accessing another tenant's data or tools. Requires isolation that this library does not provide. |
+| Tenant provisioning and lifecycle management | Onboarding, suspension, and de-provisioning flows. |
+| Tenant-aware caching or state stores | Namespaced cache partitions that enforce tenant boundaries at the infrastructure level. |
+| Multi-database routing | Query routing based on tenant identity to isolated data stores. |
 
-The OSS boundary is precisely: lionagi can evaluate a permission rule that says "tenant acme
-may use tool X." It cannot enforce that a request truly originates from tenant acme, cannot
-prevent tenant beta's data from appearing in an acme evidence chain, and cannot prevent an
-operator from misconfiguring the `tenant_id` value passed to the resolver.
+The boundary is precisely: lionagi can evaluate a permission rule that says "tenant acme may use
+tool X." It cannot enforce that a request truly originates from tenant acme, cannot prevent tenant
+beta's data from appearing in an acme evidence chain, and cannot prevent an operator from
+misconfiguring the `tenant_id` value passed to the resolver.
 
-**Tenant labels are advisory without commercial isolation infrastructure.** This is not a
-deficiency — it is the intentional boundary.
+**Tenant labels are advisory without isolation infrastructure.** This is the intentional boundary.
 
 ---
 
@@ -149,9 +138,8 @@ deficiency — it is the intentional boundary.
 
 This ADR owns:
 
-- The definition of the tenant boundary in lionagi OSS.
+- The definition of the tenant scope boundary in lionagi.
 - The `ScopeLevel.TENANT = 1` API commitment.
-- Documentation of what constitutes an OSS-compatible vs. commercial-only tenant feature.
 
 This ADR does not own:
 
@@ -164,101 +152,25 @@ This ADR does not own:
 
 ## Non-Goals
 
-- **No tenant data model in OSS core.** There will be no `Tenant` entity, `TenantConfig`, or
+- **No tenant data model.** There will be no `Tenant` entity, `TenantConfig`, or
   `TenantStore` protocol in `lionagi.protocols` or `lionagi.agent`.
 
 - **No multi-database routing.** lionagi does not route operations to isolated databases based on
-  tenant identity. The OSS state model is single-namespace.
+  tenant identity. The state model is single-namespace.
 
 - **No tenant-aware caching.** There is no cache partitioning or cache-key namespacing by tenant
-  in the OSS session, branch, or DataLogger layers.
+  in the session, branch, or DataLogger layers.
 
-- **No SaaS billing hooks in OSS core.** Token consumption tracking and cost allocation are not
-  governance primitives. They are product features that commercial integrations may add via the
-  existing hook system.
+- **No billing hooks.** Token consumption tracking and cost allocation are not governance
+  primitives. Integrations may add them via the existing hook system.
 
 - **No tenant hierarchy or inheritance.** There is no parent-child tenant relationship, no
   tenant group that inherits from an organization root. The global scope is the broadest level;
   tenant is the next level. No tenant sub-hierarchy exists.
 
 - **No automatic tenant provisioning from charters.** Creating or deleting a "tenant" in lionagi
-  OSS means nothing beyond writing or removing tenant-scoped rules in a charter document. There
-  is no provisioning side-effect.
-
----
-
-## Commercial Integration Points
-
-A commercial overlay adds tenant isolation by attaching to the hook points lionagi exposes.
-No changes to the OSS core are required. The integration pattern has four steps:
-
-### Step 1: Tenant middleware that sets `tenant_id` in the resolution call
-
-The overlay installs a pre-hook via `AgentConfig.hook_handlers` that resolves the active tenant
-for the current request and injects it into the tool call context. The `PolicyResolver.to_pre_hook()`
-factory (ADR-0052) reads `tenant_id` from `args.get("tenant_id", "global")`. The commercial
-middleware writes that field before the hook runs.
-
-```python
-# Commercial overlay — not in OSS
-async def tenant_resolver_hook(tool_name: str, action: str, args: dict) -> dict | None:
-    # Resolve tenant from JWT, subdomain, or session metadata.
-    tenant_id = resolve_tenant_from_context()  # commercial implementation
-    args["tenant_id"] = tenant_id
-    return None  # pass through; PolicyResolver hook runs next
-```
-
-The hook chain order matters: the tenant resolution hook must run before the policy resolution
-hook. Both are installed via `AgentConfig.hook_handlers["security_pre:*"]`.
-
-### Step 2: Tenant-scoped rules in `CharterDocument`
-
-With a `tenant_id` flowing correctly, the charter author writes tenant-scoped permission rules:
-
-```yaml
-# Charter DSL v0 — tenant-scoped rule
-permissions:
-  default: deny
-  resolution:
-    specificity_order: [resource, role, tenant, global]
-    tie: deny
-  allow:
-    - rule_id: acme-read-only-default
-      scope: tenant
-      roles: [acme]          # DSL v0 uses roles field for tenant matching
-      action: allow
-      tools: [file_reader, web_search]
-      because: "acme tenant agents may read but not write by default"
-```
-
-This rule applies only when `tenant_id == "acme"` reaches the resolver. No charter compilation
-changes are required; the DSL v0 `PermissionRule` model already accepts `scope: "tenant"`.
-
-### Step 3: Tenant-aware evidence segregation
-
-The overlay registers an evidence post-hook that stamps each `ImmutableEvidenceNode`
-(ADR-0041) with the resolved `tenant_id` before it is written to the evidence store. Auditors
-can then filter evidence by tenant without cross-contamination.
-
-```python
-# Commercial overlay — not in OSS
-async def tenant_evidence_stamp_hook(evidence_node: dict, args: dict) -> None:
-    evidence_node.setdefault("metadata", {})["tenant_id"] = args.get("tenant_id", "")
-```
-
-The evidence node schema (ADR-0041) allows `metadata` passthrough. The OSS core does not strip
-or validate this field beyond the existing `metadata` dict type.
-
-### Step 4: Tenant-aware storage (TenantStore)
-
-The overlay implements an isolated storage backend — separate SQLite databases, PostgreSQL
-schemas, or cloud-object-storage prefixes — keyed by `tenant_id`. The commercial implementation
-registers this store as the DataLogger backend for sessions belonging to a given tenant. Because
-`DataLogger` accepts pluggable backends via the `lionagi/agent/` infrastructure, this requires
-no changes to the OSS logging layer.
-
-The full lifecycle — provisioning a store on tenant creation, migrating it on schema changes,
-archiving it on tenant de-provisioning — is entirely in the commercial layer.
+  means nothing beyond writing or removing tenant-scoped rules in a charter document. There is
+  no provisioning side-effect.
 
 ---
 
@@ -295,16 +207,16 @@ that writes both tenant and role rules for the same tool. Level 1 is the only po
 maintains strict ordering at every resolution step.
 
 **This ordering is a permanent API commitment.** Code that reads `ScopeLevel.TENANT` or
-`ScopeLevel.ROLE` must not assume that their relative integer values can change. Any commercial
-integration that relies on tenant overriding global but being overridden by role depends on this
-ordering. Changing it would be a breaking change requiring a new major version of the governance
-protocol and a superseding ADR.
+`ScopeLevel.ROLE` must not assume that their relative integer values can change. Any integration
+that relies on tenant overriding global but being overridden by role depends on this ordering.
+Changing it would be a breaking change requiring a new major version of the governance protocol
+and a superseding ADR.
 
 ---
 
 ## Security Considerations
 
-**Without commercial isolation, tenant labels are advisory only.**
+**Without isolation infrastructure, tenant labels are advisory only.**
 
 A deployment that writes tenant-scoped charter rules but does not install a tenant resolution
 middleware will fall back to `tenant_id = ""` (the default in `PolicyResolver.resolve()`). If a
@@ -313,72 +225,29 @@ regardless of the actual organizational origin. If it has a non-empty `roles` li
 never match (since `tenant_id = ""` is not in the list). Neither outcome constitutes a security
 isolation guarantee.
 
-**Data leakage across tenant boundaries is possible without commercial isolation.**
+**Data leakage across tenant boundaries is possible without isolation infrastructure.**
 
 If two organizations share a lionagi deployment and both use the same DataLogger backend without
 tenant-namespace segregation, evidence records from one organization are accessible to agents of
-the other. The OSS resolution layer has no mechanism to prevent this. It is the responsibility
-of the commercial overlay to provide storage isolation.
+the other. The resolution layer has no mechanism to prevent this. Storage isolation must be
+provided by the deployment infrastructure.
 
-**The OSS explicitly does not guarantee tenant isolation.** This is a design choice, not a
-deficiency. The guarantee boundary is:
+**lionagi does not guarantee tenant isolation.** This is a design choice, not a deficiency.
+The guarantee boundary is:
 
-> lionagi OSS guarantees that tenant-scoped permission rules are evaluated at specificity
-> level 1 in the resolution hierarchy. It does not guarantee that the tenant_id value passed
-> to the resolver is authentic, that storage is isolated between tenants, or that
-> cross-tenant evidence contamination is prevented.
+> lionagi guarantees that tenant-scoped permission rules are evaluated at specificity level 1
+> in the resolution hierarchy. It does not guarantee that the tenant_id value passed to the
+> resolver is authentic, that storage is isolated between tenants, or that cross-tenant evidence
+> contamination is prevented.
 
-Commercial deployments should treat this guarantee as a necessary but not sufficient condition
-for tenant isolation. The sufficient condition requires the commercial overlay.
+Deployments requiring full tenant isolation must provide additional infrastructure on top of
+this library.
 
 **Misconfiguration risk.** An operator who sets `tenant_id = "admin"` in every call — whether
 intentionally or by misconfiguration — will match all rules scoped to the `admin` tenant. There
 is no HMAC or cryptographic binding between the `tenant_id` string and the session identity.
-Authentication of the tenant claim is a commercial concern, typically implemented via verified
-JWT claims extracted in the tenant middleware hook.
-
----
-
-## Migration Path for Commercial Adopters
-
-Adopters moving from single-tenant OSS deployments to multi-tenant commercial deployments
-follow four incremental steps. Each step is backwards-compatible with the previous.
-
-**Step 1 — Use tenant scope labels in charters (OSS, no dependencies)**
-
-Write charter documents with tenant-scoped permission rules using `scope: "tenant"` and the
-tenant identifier in the `roles` field. The OSS `PolicyResolver` will evaluate these rules when
-a non-empty `tenant_id` is passed to `resolve()`. Existing single-tenant deployments can add
-these rules without any behavioral change (they receive `tenant_id = ""`, which matches only
-empty-`roles` tenant rules).
-
-Outcome: charter is ready for multi-tenant use. No isolation yet.
-
-**Step 2 — Install tenant middleware to inject verified `tenant_id` (commercial)**
-
-Add a pre-hook that extracts the tenant identity from the request context (JWT, mTLS certificate
-CN, subdomain, API key lookup) and writes it to `args["tenant_id"]`. Install this hook before
-the policy resolution hook in `AgentConfig.hook_handlers["security_pre:*"]`.
-
-Outcome: tenant-scoped rules are now evaluated against authenticated tenant claims. Policy
-segregation is enforced. Storage is still shared.
-
-**Step 3 — Add tenant-aware storage (commercial)**
-
-Implement a `TenantStore` backed by isolated data stores (separate databases, schema-namespaced
-tables, or cloud-storage prefixes). Register it as the DataLogger backend per session, keyed by
-the resolved `tenant_id`.
-
-Outcome: evidence records are now stored in isolation. Cross-tenant audit queries no longer
-return mixed results.
-
-**Step 4 — Enable cross-tenant audit and lifecycle management (commercial)**
-
-Add audit tooling that queries per-tenant evidence stores with cross-tenant aggregation for
-platform-level reporting (usage dashboards, compliance reports). Add provisioning APIs that
-create, suspend, and delete tenant configurations, charters, and storage partitions atomically.
-
-Outcome: full enterprise multi-tenancy with provisioning, audit, and lifecycle management.
+Authentication of the tenant claim is an infrastructure concern, typically implemented via
+verified JWT claims extracted in the tenant middleware hook.
 
 ---
 
@@ -397,8 +266,8 @@ This ADR does not introduce new types. The relevant types are owned by other ADR
 
 The `OperationContext` (ADR-0050) does not carry a `tenant_id` field directly. The tenant is
 propagated through the resolution call and captured in `PolicyResolutionResult.tenant_id`, which
-is logged via `DataLogger`. A commercial overlay that needs `tenant_id` on the evidence node
-must stamp it via a post-hook (see Commercial Integration Points, Step 3).
+is logged via `DataLogger`. An integration that needs `tenant_id` on the evidence node must
+stamp it via a post-hook.
 
 ---
 
@@ -440,7 +309,7 @@ def _rule_matches_tenant(rule: PermissionRule, tenant_id: str) -> bool:
     return tenant_id in rule.roles
 ```
 
-This is the complete OSS implementation of "tenant scope." There is no additional isolation logic,
+This is the complete implementation of "tenant scope." There is no additional isolation logic,
 no storage lookup, no middleware call. The `tenant_id` string is compared against a list of
 strings in the charter rule. That is all.
 
@@ -453,15 +322,15 @@ When a tenant-scoped rule wins resolution, `ResolutionResult.scope_level == 1` a
 the `DataLogger` via the `to_pre_hook()` integration path (ADR-0052). The justification field
 on `ResolutionResult` includes `scope=tenant` in its text.
 
-Commercial overlays that stamp `tenant_id` onto evidence nodes (Step 3 above) should record it
-under the key `metadata.tenant_id` in the `ImmutableEvidenceNode` (ADR-0041) `metadata` dict.
-This is a convention, not an OSS schema requirement.
+Integrations that stamp `tenant_id` onto evidence nodes should record it under the key
+`metadata.tenant_id` in the `ImmutableEvidenceNode` (ADR-0041) `metadata` dict. This is a
+convention, not a schema requirement.
 
 ---
 
 ## Test Requirements
 
-The OSS test suite must cover:
+The test suite must cover:
 
 1. A `PolicyResolver` configured with a tenant-scoped rule resolves ALLOW when `tenant_id`
    matches the rule's `roles` list.
@@ -487,24 +356,21 @@ is merged.
 
 **Positive**
 
-- The OSS/commercial boundary is explicit and formally documented. Investors, partners, and
-  enterprise evaluators can read this ADR and understand precisely what multi-tenancy guarantees
-  lionagi makes (none beyond scope-label evaluation) and what a commercial overlay must provide.
+- The tenant boundary is explicit and formally documented. Operators and integrators can read this
+  ADR and understand precisely what multi-tenancy guarantees lionagi makes (none beyond scope-label
+  evaluation) and what additional infrastructure is required.
 
-- The API surface for commercial multi-tenancy is stable and minimal. A commercial integration
-  requires no forking of the OSS codebase — only hook installation and a storage backend
-  implementation.
+- The API surface for multi-tenancy is stable and minimal. An integration requires no forking of
+  the core codebase — only hook installation and a storage backend implementation.
 
 - Existing single-tenant deployments are not affected. The `tenant_id` parameter defaults to
   `""`, and the resolution algorithm behaves identically to a deployment with no tenant-scoped
   rules.
 
-- The `ScopeLevel.TENANT = 1` commitment protects commercial integrators from a future OSS
-  protocol change that would break their tenant-policy ordering assumptions.
+- The `ScopeLevel.TENANT = 1` commitment protects integrators from a future protocol change that
+  would break tenant-policy ordering assumptions.
 
-- The documentation of the advisory-only security guarantee is accurate and prevents false
-  assurance. An enterprise evaluator who reads this ADR will not assume isolation they are not
-  getting.
+- The documentation of the advisory-only security guarantee prevents false assurance.
 
 **Negative**
 
@@ -516,19 +382,15 @@ is merged.
   dedicated `tenants` field in DSL v1 would be cleaner. DSL v0 is the current standard; this
   debt is tracked for the DSL v1 design cycle.
 
-- The tenant scope boundary creates a two-tier documentation requirement: the OSS documentation
-  must explain what is not provided, and the commercial documentation must explain what is
-  added. Keeping both in sync is an ongoing maintenance obligation.
-
 ---
 
 ## Alternatives Considered
 
 | Alternative | Why Rejected |
 |---|---|
-| Implement basic tenant isolation in OSS (e.g. separate SQLite per tenant) | Introduces infrastructure complexity into the OSS core that has no value for single-tenant library users. Creates a maintenance burden for OSS contributors. Undermines the commercial value proposition of the hosted offering. |
-| Remove tenant scope from OSS resolution hierarchy entirely | Forces commercial integrations to fork the resolution engine to add a tenant level. Breaks the interoperability surface. Creates two incompatible resolution algorithms. Rejected because the label costs nothing to keep and enables interoperability. |
-| Rename `TENANT` to `ORG` or `NAMESPACE` to avoid isolation connotations | The term "tenant" is the industry-standard vocabulary for multi-tenancy in SaaS and enterprise software. Renaming it would cause confusion in partner conversations. The ADR documentation makes the advisory-only semantics clear without needing to rename the concept. |
+| Implement basic tenant isolation (e.g. separate SQLite per tenant) | Introduces infrastructure complexity with no value for single-tenant users. Creates a maintenance burden with no corresponding benefit for most deployments. |
+| Remove tenant scope from resolution hierarchy entirely | Forces integrations that need tenant-level policy to fork the resolution engine. Breaks the interoperability surface. Creates two incompatible resolution algorithms. Rejected because the label costs nothing to keep and enables interoperability. |
+| Rename `TENANT` to `ORG` or `NAMESPACE` to avoid isolation connotations | "tenant" is the industry-standard vocabulary for multi-tenancy. The ADR documentation makes the advisory-only semantics clear without needing to rename the concept. |
 | Place tenant at level 2 (same as role) | Causes DENY-on-tie for any deployment that writes both a tenant rule and a role rule for the same tool at the same specificity. Breaks the useful pattern of "tenant sets a baseline, role refines it." Rejected because it makes the most common multi-tenant pattern impossible without resource-level overrides. |
 | Place tenant at level 0 (same as global) | Tenant rules cannot override global defaults, which removes the primary value of the tenant scope level. A tenant rule that cannot narrow or expand the global default is useless. Rejected. |
 
@@ -545,7 +407,7 @@ is merged.
 - [ADR-0047](ADR-0047-agent-charter.md) — the charter is the session-binding vehicle. Tenant-
   scoped rules appear in `CharterDocument.permissions`.
 - [ADR-0041](ADR-0041-immutable-evidence-nodes.md) — `ImmutableEvidenceNode` is the target for
-  commercial `metadata.tenant_id` stamping (Step 3 of migration path).
+  `metadata.tenant_id` stamping when needed by an integration.
 - [ADR-0044](ADR-0044-tool-gates.md) — resource-scoped gate enforcement (specificity 3) takes
   precedence over tenant-scoped rules (specificity 1).
 - [ADR-0046](ADR-0046-jit-tool-grant.md) — JIT grants are policy-scoped; tenant context flows

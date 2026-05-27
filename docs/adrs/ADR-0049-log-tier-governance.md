@@ -87,7 +87,7 @@ class LogTier(str, Enum):
                (ADR-0045), permit issuance/consumption (ADR-0046), charter
                activations (ADR-0047), operation context captures (ADR-0050).
                No deletion API exists. Write-once at the application layer;
-               DB-level triggers in KHive backend.
+               DB-level triggers enforced by the storage backend.
     """
 
     MUTABLE = "mutable"
@@ -198,7 +198,7 @@ class DataLogger:
     - There is no ``delete_immutable_log``. The method does not exist.
 
     ``dump()`` writes IMMUTABLE entries to a separate file (``*_immutable.*``)
-    that the KHive backend opens in append-only mode. MUTABLE and PROTECTED
+    that the storage backend opens in append-only mode. MUTABLE and PROTECTED
     entries go to the standard file.
     """
 
@@ -342,7 +342,7 @@ class DataLogger:
 
         MUTABLE and PROTECTED entries go to the standard path.
         IMMUTABLE entries go to ``<stem>_immutable<ext>`` in append mode.
-        The KHive backend opens that file append-only via DB triggers.
+        The storage backend opens that file append-only via DB triggers.
 
         IMMUTABLE entries are never cleared after dump.
         """
@@ -433,19 +433,19 @@ IMMUTABLE entries have no deletion path — not even with break-glass. There is 
 `delete_immutable_log()` method. Absence of API is the strongest enforcement: no administrative
 shortcut, no emergency override, no code path to misuse.
 
-### 5. Backend integration (KHive v1)
+### 5. Backend integration
 
-At the application layer (lionagi), `DataLogger` enforces tier semantics in Python. In the KHive
-backend, the persistence layer adds complementary DB-level triggers following prior research:
+At the application layer (lionagi), `DataLogger` enforces tier semantics in Python. A conforming
+storage backend adds complementary DB-level triggers:
 
 - A `BEFORE DELETE` trigger on the IMMUTABLE log table raises an exception unconditionally.
 - The `*_immutable.*` files written by `DataLogger.dump()` are opened in append-only mode by the
-  KHive ingestion worker.
+  storage ingestion worker.
 - PROTECTED log deletion events are written to the immutable table by the ingestion worker,
   providing a second enforcement layer independent of application code.
 
-These backend constraints are KHive territory and are out of scope for this ADR. The application-
-layer enforcement described in sections 2–4 is fully self-contained for lionagi v1.
+These backend constraints are storage-layer concerns and are out of scope for this ADR. The
+application-layer enforcement described in sections 2–4 is fully self-contained for lionagi v1.
 
 ## Consequences
 
@@ -464,7 +464,7 @@ layer enforcement described in sections 2–4 is fully self-contained for lionag
 
 - IMMUTABLE entries accumulate indefinitely in the Pile and in the `*_immutable.*` files.
   Long-running sessions must tolerate unbounded growth in the immutable partition. Archival to
-  cold storage is a KHive concern; lionagi has no automatic eviction.
+  cold storage is a deployment concern; lionagi has no automatic eviction.
 - Every `Log.create()` call that should emit at PROTECTED or IMMUTABLE tier requires an explicit
   `tier=` argument. Callers that omit it silently default to MUTABLE — a regression risk during
   migration.
@@ -480,14 +480,10 @@ Explicitly out of scope:
 
 - **Cryptographic signing of log entries.** Hash-chain integrity for evidence nodes is covered by
   ADR-0041. Log-level signing is a separate concern.
-- **Log encryption at rest.** Encryption is a deployment and KHive backend concern, not a
+- **Log encryption at rest.** Encryption is a deployment and storage-backend concern, not a
   per-entry feature of `DataLogger`.
-- **Distributed log replication.** Replication, WAL-based propagation, and multi-replica
-  consistency are KHive infrastructure concerns.
 - **Automatic tier classification.** Tier is always set explicitly at the call site. No heuristic,
   ML-based, or pattern-matching classifier determines tier post-hoc.
-- **Multi-tenant log isolation.** Per-tenant log namespacing, row-level security, and tenant-scoped
-  deletion policies are KHive territory. lionagi is a single-tenant library.
 - **Retention schedules and archival.** ADR-0049 defines deletion semantics, not retention periods.
   Archival policy (e.g., 7-year PROTECTED retention per SOC2 CC6.2) is a deployment concern.
 

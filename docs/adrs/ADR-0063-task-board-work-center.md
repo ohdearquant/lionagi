@@ -20,10 +20,10 @@ are listed directly from SQLite (`apps/studio/server/services/sessions.py:97`,
 schedules have their own CRUD/run history endpoints (`apps/studio/server/routers/schedules.py:63`,
 `apps/studio/server/routers/schedules.py:83`, `apps/studio/server/routers/schedules.py:136`).
 
-Those surfaces answer "what exists?" but not "what needs operator attention next?" An enterprise
-deployment needs a shared queue that covers running agent work, queued schedules, failed flows,
-manual approvals, charter-required reviews, cost overruns, and human tasks. Without it, operators
-must scan runs, sessions, shows, schedule runs, logs, and future cost endpoints independently.
+Those surfaces answer "what exists?" but not "what needs operator attention next?" A shared queue
+covering running agent work, queued schedules, failed flows, manual approvals, charter-required
+reviews, cost overruns, and human tasks is needed. Without it, operators must scan runs, sessions,
+shows, schedule runs, logs, and future cost endpoints independently.
 
 The platform is already close to a work model. Sessions expose invocation kind, agent, playbook,
 show linkage, timestamps, status, artifact contract, and project fields
@@ -424,13 +424,12 @@ paths only.
 |---|---|
 | Add filters to the Runs page only | Runs are sessions; they do not cover queued schedules, manual approvals, GTD items, charter tasks, or future non-session work. |
 | Treat schedules as the task board | Schedules define automation; operators also need one-off manual work, approval tasks, and play/session review items. |
-| Integrate an external ticket system first | Useful later, but PMF requires a native Studio command center with local governance and audit before external sync. |
+| Integrate an external ticket system first | A native Studio command center with local governance and audit is the correct foundation before external sync. |
 
 ## Consequences
 
 Positive: Studio becomes an operator command center with visibility, control, audit trail, cost
-awareness, and compliance workflow in one place. This is the product surface that turns scheduled
-automation into governed operations.
+awareness, and compliance workflow in one place.
 
 Negative: the board creates a new high-traffic aggregation surface. It must avoid duplicating source
 state and instead maintain idempotent projections from ADR-0062 events.

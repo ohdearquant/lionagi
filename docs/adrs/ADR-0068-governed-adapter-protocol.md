@@ -95,7 +95,7 @@ This ADR consumes, but does not own:
 - No request or response transformation. The adapter forwards arguments verbatim to the wrapped
   object and returns its result unchanged.
 - No tenant isolation. The adapter applies the charter supplied at construction time. Multi-tenant
-  charter routing is a commercial offering and is not included in the open-source protocol.
+  charter routing is not included in the adapter protocol.
 - No synchronous public API. `execute()` and all concrete `run()` methods are `async`. Sync
   callers must use `asyncio.run()` or an equivalent executor bridge.
 - No framework version pinning. Adapters support whatever version of the framework is installed
@@ -575,8 +575,7 @@ charter resolved from their configuration layer, not rely on adapter-level ambie
 
 Tenant isolation — routing different callers to different charters based on identity,
 namespace, or organizational membership — is not included in this protocol. The adapter applies
-exactly the charter supplied at construction time to every execution. Multi-tenant charter
-routing is part of the commercial governance offering.
+exactly the charter supplied at construction time to every execution.
 
 ## Alternatives Considered
 

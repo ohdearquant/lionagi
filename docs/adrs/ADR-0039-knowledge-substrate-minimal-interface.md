@@ -4,7 +4,6 @@
 **Date**: 2026-05-26
 **Depends on**: [ADR-0033](ADR-0033-unified-entity-state-model.md) (shared EvidenceRef definition)
 **Related**: [ADR-0028](ADR-0028-status-reason-model.md), [ADR-0029](ADR-0029-artifact-contract.md), [ADR-0030](ADR-0030-attention-queue.md), [ADR-0034](ADR-0034-frontend-data-and-state-architecture.md), [ADR-0035](ADR-0035-design-system-and-component-library.md)
-**Consumed by**: KHive v1 product (governed memory and evidence layer)
 
 ## Context
 
@@ -21,15 +20,6 @@ responses) but no structured *knowledge*. The gap:
 An agent that reviews 50 PRs learns nothing persistent. The next
 session starts cold. The operator can't ask "what has the agent learned
 about our codebase?" because there's no substrate to hold the answer.
-
-### The product thesis
-
-> KHive is the governed memory and evidence layer for internal agent
-> platforms.
-
-The knowledge substrate is what makes "governed memory" concrete. Without
-it, KHive is an observability dashboard (commodity). With it, KHive
-captures *what agents learn*, not just what they did.
 
 ### Design constraints
 
@@ -60,7 +50,7 @@ class KnowledgeStore(Protocol):
       - NullKnowledgeStore: no-op (library default, zero overhead)
       - MemoryKnowledgeStore: in-process dict (testing, short-lived scripts)
       - SQLiteKnowledgeStore: local file (Studio mode)
-      - KHiveKnowledgeStore: governed remote (commercial product)
+      - RemoteKnowledgeStore: governed remote store
     """
 
     async def write_claim(
@@ -458,16 +448,6 @@ branch = Branch(
     system="...",
     knowledge_store=SQLiteKnowledgeStore("~/.lionagi/knowledge.db"),
 )
-
-# Tier 3: Governed mode (KHive product)
-from khive import KHiveKnowledgeStore
-branch = Branch(
-    system="...",
-    knowledge_store=KHiveKnowledgeStore(
-        project="payments-platform",
-        require_approval_for=["verified"],  # Human-in-loop for verification
-    ),
-)
 ```
 
 Each tier adds capability without changing the Branch API. The developer's
@@ -543,10 +523,10 @@ This is the substrate in action: agents accumulate, agents recall, humans verify
 | Concern | Why excluded |
 |---------|-------------|
 | Storage schema | Data layer will change. Protocol is async interface only |
-| Embedding/vector search impl | Store implementation detail. MemoryStore uses substring; SQLiteStore might use FTS5; KHiveStore uses embeddings |
+| Embedding/vector search impl | Store implementation detail. MemoryStore uses substring; SQLiteStore might use FTS5; governed stores use embeddings |
 | Deduplication logic | Application-specific. Some stores merge duplicates, others keep all |
 | Retention policy | Operational config, not protocol |
-| Access control | KHive product concern, not library concern |
+| Access control | Store implementation concern, not protocol concern |
 | Export format (PROV, OTel) | Export adapter layer, not substrate interface |
 | Graph relationships between claims | v2 concern. v1 claims are independent units |
 
@@ -651,7 +631,7 @@ Each result carries claim_status, confidence, evidence count, and scope.
 - Evidence-first is enforced at the API level, not by convention
 - Protocol is storage-agnostic — can migrate without changing user code
 - Follows established Branch manager pattern (5th manager, not addon)
-- Progressive disclosure: Null → Memory → SQLite → KHive
+- Progressive disclosure: Null → Memory → SQLite → governed remote store
 - Frontend lens pattern avoids "empty graph browser" UX trap
 
 **Negative**
@@ -668,7 +648,7 @@ Explicitly out of scope for v1; some may move into v2:
 
 - **Graph relationships between claims** (claim → entails → claim, claim → contradicts → claim). Claims are independent units in v1. Edges are v2.
 - **Automated extraction from all messages** (e.g., LLM-driven claim mining from any tool result). Too noisy; v1 is opt-in via `branch.learn()` calls.
-- **Cross-project knowledge sharing**. Scope isolation first. Sharing is a governed feature requiring access control, which lives in KHive product mode, not the library protocol.
+- **Cross-project knowledge sharing**. Scope isolation first. Sharing is a governed feature requiring access control; it is deferred to a future extension of the store protocol.
 - **Inference / reasoning over claims**. The substrate stores knowledge; the agent reasons. We don't ship a rules engine over claims.
 - **Structured claim schemas** (typed templates beyond free-text). Free-text first; structure emerges from observed usage patterns, then becomes a v2 capability.
 - **Embedding model selection UI**. Implementation detail of the store. The user configures store, not internals.

@@ -799,20 +799,7 @@ def attach_policy_release(
 | 7 | Verify winner.bundle.verify_hash() | → DENY (PolicyResolutionError: "tampered bundle") |
 | 8 | Return winner.bundle | — |
 
-### 9. Library mode vs. KHive mode
-
-In library mode (open-source lionagi, single-agent, no multi-tenant deployment), policy
-resolution is trivial: the `AgentConfig.permissions` in use constitutes the single applicable
-policy. There is no `PolicyResolver`; the `PermissionPolicy` allowlist/denylist/confirm logic
-continues to apply directly. `OperationContext.policy_version_active` is `None` or a
-config-derived string.
-
-The full `PolicyResolver`, `PolicyRelease`, and staged rollout machinery is KHive territory:
-it becomes necessary when multiple tenants share a deployment and policies must be versioned,
-staged, and audited across organizational boundaries. The protocol (schemas and resolution
-algorithm above) is the same in both modes; the resolver is more sophisticated in KHive.
-
-### 10. Worked example
+### 9. Worked example
 
 An agent in `tenant=acme`, `role=reviewer`, calls `tool=write_pr` at Unix timestamp `t`.
 The active `PolicyRelease` contains four `ScopedPolicy` records:
@@ -835,7 +822,7 @@ Resolution result: `write_pr_requires_jit` applies. The gates declared in that b
 to `"write_pr_requires_jit@v3"`. The other three bundles remain authoritative for operations
 they are most-specific for.
 
-### 11. Two-Key Model — enforcement
+### 10. Two-Key Model — enforcement
 
 The structural separation in `PolicyBundle.__post_init__` (`authored_by != implemented_by`) is
 a construction-time check. The policy authorship record is stored in the bundle and covered by
@@ -891,10 +878,7 @@ Explicitly out of scope:
   supported. If weights are needed, supersede the lower-specificity policy with a new bundle
   at a higher specificity scope.
 - **Automatic policy generation from regulations**: tooling that reads GDPR or HIPAA text and
-  produces `PolicyBundle` records is a product concern, not a framework concern.
-- **Cross-tenant policy inheritance**: a policy defined at the global level that automatically
-  specializes for each tenant. This is a KHive concern addressed in the multi-tenant resolver
-  layer. The open-source framework has no tenant hierarchy.
+  produces `PolicyBundle` records is out of scope for this ADR.
 - **Runtime policy mutation**: a running session cannot modify its own policy. All changes must
   go through the release lifecycle (DRAFT → CANARY → ROLLING → ACTIVE) and apply only to
   sessions starting after the release reaches the applicable stage.
@@ -903,7 +887,7 @@ Explicitly out of scope:
   would re-introduce the conflict resolution problem this ADR solves.
 - **Automatic release promotion**: advancing a release from CANARY to ROLLING to ACTIVE requires
   explicit human action (or an external approval gate). Automated promotion based on error rates
-  is a deployment platform concern, not a framework concern.
+  is out of scope for this ADR.
 
 ## Alternatives Considered
 
@@ -911,7 +895,7 @@ Explicitly out of scope:
 |-------------|--------------|
 | First-match wins | Resolution depends on registration order. Two deployments with identically scoped policies but different registration sequences produce different results. Non-deterministic; not audit-defensible. |
 | Confidence-weighted merging | Assigns weights to each applicable policy and blends the result. Introduces a scoring function that is itself a policy decision, is difficult to audit, and violates the fail-closed principle — partial application of a policy that would deny is effectively a permit. |
-| Single global policy (current state) | `AgentConfig.permissions` is a single flat policy per agent with no versioning and no scope hierarchy. Adequate for library mode; rejected for multi-agent, multi-tenant deployments where role and resource overrides are required. |
+| Single global policy (current state) | `AgentConfig.permissions` is a single flat policy per agent with no versioning and no scope hierarchy. Adequate for single-agent use; rejected for multi-agent deployments where role and resource overrides are required. |
 | Most-specific-wins with permit-on-tie | The alternative to DENY-on-tie. Rejected because a tie indicates two equally-authoritative policies disagree. Picking one arbitrarily is non-deterministic. Denying forces policy authors to resolve the ambiguity explicitly, which is the correct outcome. |
 
 ## References

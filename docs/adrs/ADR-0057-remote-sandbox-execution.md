@@ -228,45 +228,18 @@ Required behavior:
 - Cross-session writes, expired tokens, revoked tokens, replayed tokens with mismatched sequence
   metadata, and oversized uploads are rejected and audited.
 
-### Credential Vending
+### Credential Security
 
 Full API keys, broad GitHub tokens, SSH private keys, and provider credentials must never be passed
-into arbitrary-code sandboxes. Runner start uses a token vending service:
+into arbitrary-code sandboxes. Runners receive only short-lived, scope-limited tokens bound to a
+single session and runner handle. Security invariants:
 
-```python
-class CredentialScope(StrEnum):
-    STATE_HEARTBEAT = "state:heartbeat"
-    STATE_STATUS = "state:status"
-    STATE_LOG_WRITE = "state:log_write"
-    STATE_ARTIFACT_WRITE = "state:artifact_write"
-    MODEL_BROKER = "model:broker"
-    SOURCE_BRANCH = "source:branch"
-
-
-class VendedCredential(BaseModel):
-    token: str
-    token_id: str
-    session_id: str
-    runner_ref: str
-    scopes: set[CredentialScope]
-    expires_at: float
-```
-
-Issuance rules:
-
-- The control service issues credentials only after a `RunnerHandle` exists.
-- The sandbox receives opaque short-lived tokens, not the host's full API keys.
-- Token secrets are returned once and stored only as salted hashes in `runner_handles.metadata_json`.
-- State ingest tokens have a maximum TTL of 15 minutes and may be renewed only by a valid heartbeat.
-- Model access uses a broker token where possible; the sandbox calls the broker, which holds the
-  real provider key server-side. If a provider cannot be brokered or scoped, that provider is not
-  available to the remote sandbox by default.
-- Source-control access is branch-scoped. Prefer deploy keys, fine-grained installation tokens, or
-  provider-native workspace identity restricted to the generated branch. Broad source-control
-  credentials are not injected.
-- Revocation is durable: `cancel`, `kill`, break-glass, cleanup, TTL expiry, and provider teardown
-  mark the token id revoked in `runner_handles.metadata_json`. Every ingest and broker request checks
-  hash, scope, session binding, expiry, and revocation.
+- Sandboxes receive opaque tokens, not host API keys.
+- Tokens are scoped to specific operations (state writes, model access, source reads).
+- Token TTLs are short (minutes, not hours) and renewed only by valid heartbeats.
+- Model access uses brokered tokens where possible — the sandbox never holds provider keys directly.
+- Source-control access is branch-scoped via deploy keys or fine-grained tokens.
+- Revocation is durable and checked on every request.
 
 ### Coupling and Testability
 
@@ -318,15 +291,15 @@ captures a diff artifact, supports cancel/kill, and cleans up according to the r
 Exit criteria: a fake remote runner can run without database credentials or host API keys and can
 upload status, logs, and artifacts using only scoped tokens.
 
-### Phase 3 - Remote Providers (600-1200 LOC per first provider)
+### Phase 3 - Remote Providers
 
-- Implement `DaytonaRunner` for managed workspaces. Estimate: 700 LOC including tests.
-- Implement `E2BRunner` for ephemeral sandbox runs. Estimate: 700 LOC including tests.
-- Implement `SSHRunner` for self-hosted isolated hosts. Estimate: 450 LOC.
-- Defer `CodespaceRunner` until GitHub workspace lifecycle control is a concrete requirement.
+Remote runner implementations follow the same `PlayRunner` contract as `LocalWorktreeRunner`.
+Provider-specific SDK usage is internal to each runner; the only durable state they publish is the
+ADR-0056 `RunnerHandle`. Providers are added incrementally as demand warrants — each must pass the
+same contract suite as `LocalWorktreeRunner`.
 
-Exit criteria: at least one ephemeral runner and one persistent workspace runner pass the same
-contract suite as `LocalWorktreeRunner`.
+Exit criteria: at least one ephemeral runner and one persistent workspace runner pass the shared
+contract suite.
 
 ### Phase 4 - Governance Hardening (350-650 LOC)
 

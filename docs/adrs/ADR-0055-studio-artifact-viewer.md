@@ -35,7 +35,7 @@ ADR-0055 adds no artifact table columns. It may add service functions, Pydantic 
 
 Phase 0 Studio remains a single-admin surface protected by `LIONAGI_STUDIO_AUTH_TOKEN`. When the token is set, every artifact route requires `Authorization: Bearer <token>`, including GET routes.
 
-Multi-tenant or shared remote Studio deployments require project/session authorization before enabling artifact reads. Until that authorization layer exists, shared deployments must either disable artifact routes or put Studio behind an equivalent authenticated administrative boundary. A valid single-admin token is treated as permission to read all artifacts visible to that Studio instance.
+Shared deployments require project/session authorization before enabling artifact reads. Until that authorization layer exists, shared deployments must either disable artifact routes or put Studio behind an equivalent authenticated administrative boundary. A valid single-admin token is treated as permission to read all artifacts visible to that Studio instance.
 
 ### API Response Models
 
@@ -286,7 +286,7 @@ Filesystem fallback is disabled by default and is not part of the production evi
 
 The viewer does not redact content. Artifact producers remain responsible for not writing secrets; Studio is responsible for not broadening access and not caching sensitive reads.
 
-Shared or multi-tenant deployments need resource-level authorization before artifact routes are enabled. The Phase 0 token model is an administrative model, not tenant isolation.
+Shared deployments need resource-level authorization before artifact routes are enabled. The Phase 0 token model is an administrative model.
 
 ## Migration
 

@@ -116,7 +116,7 @@ Example: `_Supersedes [ADR-0001](ADR-0001-lion-studio-internal-app.md)._`
 | [ADR-0066](ADR-0066-unified-execution-viewer.md) | Unified execution viewer | Proposed |
 | [ADR-0067](ADR-0067-studio-command-chat.md) | Studio command chat — universal AI-powered control panel | Proposed |
 | [ADR-0068](ADR-0068-governed-adapter-protocol.md) | Zero-rewrite governed adapter protocol | Accepted |
-| [ADR-0069](ADR-0069-tenant-scope-boundary.md) | Tenant scope boundary — OSS hook points vs commercial isolation | Accepted |
+| [ADR-0069](ADR-0069-tenant-scope-boundary.md) | Tenant scope boundary | Accepted |
 | [ADR-0070](ADR-0070-governance-tracing.md) | Governance tracing and observability | Accepted |
 
 See also [Decision Log](DECISION_LOG.md) for lightweight decisions that don't warrant a full ADR.

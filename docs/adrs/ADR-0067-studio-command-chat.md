@@ -8,7 +8,7 @@ Related: ADR-0054 (local state cleanup), ADR-0055 (artifact viewer), ADR-0064 (w
 
 ## Context
 
-Lion Studio must become a coherent product surface for orchestration, not only a monitoring UI over
+Lion Studio should provide a coherent surface for orchestration, not only a monitoring UI over
 terminal-oriented harnesses. Operators should be able to navigate, inspect, modify, run, schedule,
 pause, cancel, summarize, and clean up work through one natural-language panel while still seeing
 typed, auditable actions.
@@ -34,9 +34,9 @@ schemas. Studio Command Chat should use this LionAGI runtime directly. It must n
 Code, Codex, or any other harness provider as the chat backend. External harnesses may still be
 targets of flows during early phases, but they are not the chat control plane.
 
-The product requirement is broader than a chatbot. The panel must operate as a universal AI-powered
-control panel with typed tools, confirmations, history, search, context injection, rich inline
-responses, and a staged path away from CLI wrapping toward direct programmatic orchestration.
+The panel must operate as a universal AI-powered control panel with typed tools, confirmations,
+history, search, context injection, rich inline responses, and a staged path away from CLI wrapping
+toward direct programmatic orchestration.
 
 Coupling estimate after this decision: components `{ChatRouter, ChatCoordinator, BranchRuntime,
 StudioToolRegistry, ServerToolAdapters, ClientEffectBridge, ChatHistoryStore, ChatRateLimiter,
@@ -767,34 +767,13 @@ Leo uses brain posteriors to personalize:
 - **Context awareness**: Leo remembers what the operator was working on across sessions via brain
   event history, without requiring explicit "remember this" commands.
 
-### Progressive Product Independence
+### Extensibility
 
-Leo in Studio is the first step toward full product autonomy:
-
-1. **Phase 0**: Leo wraps CLI commands, learns user patterns → users stop switching to terminal
-2. **Phase 1**: Leo calls Studio APIs directly → CLI becomes fallback
-3. **Phase 2**: Leo queries StateStore directly → monitoring through chat
-4. **Phase 3**: Leo composes flows programmatically → new flows without CLI
-5. **Phase 4**: Leo orchestrates multi-step plans end-to-end → terminal optional
-6. **Future**: Leo replaces CLI orchestration entirely → full independence from external harnesses
-
-This progression means lionagi becomes a coherent product: plays fire from the frontend, scheduling
-happens through Leo, remote agents run isolated, and the entire workflow lifecycle is managed through
-one intelligent surface. Cloud offerings (remote Leo instances, hosted scheduling, managed play
-execution) follow naturally once the local product surface is complete.
-
-## Progressive Independence Phasing
-
-| Phase | Goal | Implementation | Harness dependency reduced | Estimated net LOC |
-| --- | --- | --- | --- | --- |
-| 0 | Useful chat with minimal backend surgery | WebSocket router, Branch runtime, history table, frontend panel, read tools, client effects, allowlisted `li` CLI wrappers for execute/schedule/control where APIs are not ready | Users stop switching to terminal for common Studio tasks, but execution still shells out for some commands | 2,200-3,200 |
-| 1 | Prefer Studio APIs over CLI | Replace wrappers with direct calls to runs, shows, schedules, control, artifact, cleanup, and config services; add confirmation workflow and idempotency | CLI becomes fallback, not primary tool path | 1,500-2,300 |
-| 2 | Direct StateStore queries for analytics and search | Add typed query adapters for sessions, shows, costs, artifacts, schedules, chat history, and health; add FTS search and cost chart renderers | Monitoring questions no longer invoke CLI or page-specific fetch glue | 1,000-1,600 |
-| 3 | Programmatic flow composition | Add `Session.flow()` / flow service adapter for create, draft, validate, and execute; canvas DAG and chat DAG share one typed spec | New flows no longer require CLI command rendering | 2,000-3,200 |
-| 4 | Chat as orchestrator | Chat coordinates multi-step plans, schedules, control gates, re-plans, artifacts, and task-board updates as first-class orchestration | Terminal usage becomes optional for normal Studio operation | 2,500-4,000 |
-
-Total expected net new or moved LOC across all phases: 9,200-14,300. Phase 0 is the minimum
-marketable slice; phases 1-4 are staged independence work.
+Leo in Studio is designed as an extensible operator interface. The initial implementation wraps
+CLI commands through a typed tool registry with confirmation gates. As Studio APIs mature, Leo
+can call them directly instead of shelling out, reducing latency and enabling richer interactions.
+The architecture supports incremental capability growth without requiring breaking changes to the
+chat protocol or security model.
 
 ## Failure Modes
 
@@ -861,7 +840,7 @@ If `chat_model` is `None`, `Branch` falls back to the existing iModel defaults.
 
 | Alternative | Why Rejected |
 | --- | --- |
-| Keep Studio as a conventional dashboard only | Does not meet the strategic goal of a coherent product surface where users can operate workflows without learning every page. |
+| Keep Studio as a conventional dashboard only | Users would need to learn every page independently to operate workflows; a unified control surface is more usable. |
 | Back the panel with Claude Code, Codex, or another harness | Violates the independence requirement. Harnesses may execute work during migration, but the chat control plane must be LionAGI-native. |
 | HTTP POST plus SSE streaming only | Existing SSE is good for one-way live data, but chat needs bidirectional confirmations, client-effect acknowledgements, cancellation, and context updates. |
 | Regex or command-intent router instead of a Branch with tools | Too brittle for contextual operations like failure explanation, DAG edits, and cost projection. It also duplicates tool semantics outside LionAGI. |

@@ -169,7 +169,7 @@ Good: bg-[var(--ls-critical-bg)]
 Bad:  bg-red-50
 ```
 
-**Prefix decision**: `--ls-` is the canonical design-token namespace. Lion Studio mode (open-source) uses these directly. KHive product mode inherits the same tokens but may override values in `themes/khive.css`. Token NAMES stay stable across product modes; only their VALUES vary.
+**Prefix decision**: `--ls-` is the canonical design-token namespace. Lion Studio uses these directly. Custom themes may override values in theme-specific CSS files. Token NAMES stay stable across themes; only their VALUES vary.
 
 The existing design token system in `globals.css` already uses CSS
 custom properties with dark mode via `.dark` class. This ADR extends

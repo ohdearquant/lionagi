@@ -4,7 +4,7 @@ Status: proposed
 Date: 2026-05-27
 Decision owners: @governance-maintainers
 Depends on: ADR-0009 (SQLite state layer), ADR-0027 (scheduler engine / state.db), ADR-0053 (artifact persistence — artifact columns consumed, must land first or Postgres runs in experimental mode)
-Related: ADR-0033 (unified entity state model), ADR-0034 (frontend data/state), governance direction P18-P20
+Related: ADR-0033 (unified entity state model), ADR-0034 (frontend data/state)
 
 ## Context
 
@@ -464,14 +464,12 @@ residual risk is operational Postgres tuning outside unit tests.
    internal allowlists, following the current `_validate_columns()` pattern.
 6. Full-text indexes expose message and artifact text to database readers. Backups and replicas
    are sensitive assets.
-7. The schema remains single-tenant. This ADR does not claim tenant isolation or row-level
-   authorization for hosted multi-tenant SaaS.
-8. Artifact payload limits and blob policy are owned by ADR-0053 and must be enforced before
+7. Artifact payload limits and blob policy are owned by ADR-0053 and must be enforced before
    accepting writes into either backend.
-9. Governance evidence and status transition rows are audit records. Deletion requires an
+8. Governance evidence and status transition rows are audit records. Deletion requires an
    explicit retention/archive ADR or command and must be recorded through `admin_events`.
-10. Money values introduced by later ADRs use integer cents in schema and Python types. Floats
-    are invalid for cost or pricing ledgers.
+9. Money values introduced by later ADRs use integer cents in schema and Python types. Floats
+   are invalid for cost or pricing ledgers.
 
 ## Migration
 

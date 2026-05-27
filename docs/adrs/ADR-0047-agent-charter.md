@@ -721,15 +721,12 @@ Explicitly out of scope:
   follow-on ADR after the base model is stable.
 - **Runtime charter mutation**: deliberately impossible. A running session cannot modify its own
   charter. Any change requires a new charter version, re-ratification, and explicit supersession.
-- **Charter UI or editor surface**: tooling for authoring, viewing, or approving charters is a
-  KHive product concern. This ADR specifies the data model and validation contract only.
-- **Multi-tenant charter namespacing**: multiple organizations sharing a lionagi deployment each
-  having isolated charter stores is a KHive concern. In the open-source framework, charter scope
-  is per-agent-id within a single deployment.
+- **Charter UI or editor surface**: this ADR specifies the data model and validation contract
+  only.
 - **Charter inheritance hierarchies**: e.g., an "org-level" charter whose constraints propagate
   down to per-agent charters. Out of scope; addressed in policy resolution (ADR-0052) if needed.
 - **Automatic constraint generation**: tooling that inspects gate registry and proposes constraints
-  automatically is a product concern, not a framework concern.
+  automatically is out of scope for this ADR.
 
 ## Alternatives Considered
 

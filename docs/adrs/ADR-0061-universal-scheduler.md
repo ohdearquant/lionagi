@@ -39,11 +39,11 @@ the current schedule row (`lionagi/state/schema.sql:402`, `lionagi/state/schema.
 evaluated inside one recursive `_fire()` call with a depth cap
 (`apps/studio/server/scheduler/engine.py:481`, `apps/studio/server/scheduler/engine.py:510`).
 
-The product context requires the scheduler to become the enterprise automation entry point, not a
-cron wrapper. Operators need to schedule single-agent tasks, fanout workers, DAG flows, playbooks,
-team coordination, shell maintenance, webhook-triggered flows, and chained schedules. The scheduler
-must therefore publish typed contracts, record durable state transitions, integrate with play
-control, and emit events that ADR-0063 can render as work items.
+The scheduler must become the universal automation entry point, not a cron wrapper. Operators need
+to schedule single-agent tasks, fanout workers, DAG flows, playbooks, team coordination, shell
+maintenance, webhook-triggered flows, and chained schedules. The scheduler must therefore publish
+typed contracts, record durable state transitions, integrate with play control, and emit events
+that ADR-0063 can render as work items.
 
 Coupling estimate after this decision: components `{SchedulerEngine, TriggerService,
 ActionRenderer, ExecutorRegistry, StateStore, StudioSchedulesAPI, LiScheduleCLI, EventBus}` with

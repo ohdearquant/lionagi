@@ -742,11 +742,7 @@ out of scope for this ADR.
 Explicitly out of scope:
 
 - **Human SoD**: this ADR governs agent actors (`Branch` instances) only. Human users have
-  their own authentication and authorization layer; their SoD is a product-level concern, not
-  a lionagi framework concern.
-- **Cross-tenant SoD**: conflict enforcement across isolated KHive tenants is a KHive
-  architectural concern, not a lionagi open-source concern. Multi-tenant actor identity
-  resolution is future scope.
+  their own authentication and authorization layer; their SoD is out of scope for this ADR.
 - **Automatic conflict matrix generation**: the conflict matrix is authored by humans and
   reviewed before activation. Automatic inference of conflicts from role capability overlap
   is deliberately excluded — it would produce false positives and obscure the policy intent.
@@ -758,7 +754,7 @@ Explicitly out of scope:
   the run. Policy changes take effect on the next flow construction.
 - **Cross-session global conflict tracking at scale**: the "global" scope in `SoDRule` is
   supported within a single lionagi node. Distributed global conflict tracking (across
-  horizontally scaled nodes) is out of scope and a KHive infrastructure concern.
+  horizontally scaled nodes) is out of scope.
 
 ## Alternatives Considered
 
