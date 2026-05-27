@@ -174,25 +174,26 @@ async def governed_flow(
         return result, None
 
     session_id = str(session.id)
-    controller = GovernedFlowController(charter=charter, session_id=session_id)
 
     if not parallel:
         max_concurrent = 1
 
-    executor = _GovernedExecutor(
-        controller=controller,
-        on_deny=on_deny,
-        session=session,
-        graph=graph,
-        context=context,
-        max_concurrent=max_concurrent,
-        verbose=verbose,
-        default_branch=branch,
-        alcall_params=alcall_params or AlcallParams(),
-    )
-    if on_progress is not None:
-        executor.on_progress = on_progress
+    with GovernedFlowController(charter=charter, session_id=session_id) as controller:
+        executor = _GovernedExecutor(
+            controller=controller,
+            on_deny=on_deny,
+            session=session,
+            graph=graph,
+            context=context,
+            max_concurrent=max_concurrent,
+            verbose=verbose,
+            default_branch=branch,
+            alcall_params=alcall_params or AlcallParams(),
+        )
+        if on_progress is not None:
+            executor.on_progress = on_progress
 
-    result = await executor.execute()
-    certificate = controller.mint_certificate()
+        result = await executor.execute()
+        certificate = controller.mint_certificate()
+
     return result, certificate
