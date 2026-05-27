@@ -1,12 +1,18 @@
 # Governance Direction: lionagi Governed Orchestration
 
-**Version**: 1.0 | **Phase**: 2 — Synthesis and Standards | **Play**: P11
+**Version**: 1.0 | **Phase**: 2 — Synthesis and Standards
 **Status**: Accepted — blocking all Phase 3-7 implementation
 
-This document is the master blueprint for lionagi's governed orchestration build-out (P12-P24). It
-records the strategic direction, architecture decisions, ADR verdicts, the full play list, integration
-plan, and risk register. Developers implementing P12-P24 must read this document in full before
-writing any code.
+> **Note on phase and play numbering**: This document uses P-numbers (P11, P12–P24) to refer to
+> sequential implementation phases in the governed orchestration build-out. P11 is the synthesis
+> phase that produced this document; P12–P24 are the 13 implementation phases described in
+> Section 7. Each P-number corresponds to a bounded scope of work (ADR revision, substrate
+> implementation, adapters, or docs) that feeds into the next.
+
+This document is the master blueprint for lionagi's governed orchestration build-out (implementation
+phases P12–P24). It records the strategic direction, architecture decisions, ADR verdicts, the full
+phase list, integration plan, and risk register. Developers beginning implementation must read this
+document in full before writing any code.
 
 ---
 
@@ -63,7 +69,7 @@ See: [`docs/governance/standards/dsl-style.md`](standards/dsl-style.md)
 
 - Typed records are created first; trace/span IDs are embedded in evidence
 - OTel spans carry evidence hashes for enterprise correlation
-- Span names follow the P9 taxonomy (see [`docs/governance/standards/trace-naming.md`](standards/trace-naming.md))
+- Span names follow the governance span taxonomy (see [`docs/governance/standards/trace-naming.md`](standards/trace-naming.md))
 - Enterprise readiness path: retention tiers, redaction, SIEM export, cost tracking, audit/ops separation
 
 **Provider Adapters — Two Waves**:
@@ -73,7 +79,7 @@ See: [`docs/governance/standards/dsl-style.md`](standards/dsl-style.md)
 
 ### 1.3 What We Are Not Building
 
-The following scope is explicitly cut from P12-P24. These items may reopen in a future show.
+The following scope is explicitly cut from the current implementation phases. These items may reopen in a future revision.
 
 | Cut Item | Rationale |
 |----------|-----------|
@@ -210,10 +216,10 @@ CrewAI task delegation chains) are observed boundary evidence, not governed lion
 coarse mode. Any adapter claiming fine governance for internal steps must register those steps as
 translated lionagi `Tool` objects with registry entries.
 
-### 3.4 G3 — Edge Adapters (Not In Scope for P12-P24)
+### 3.4 G3 — Edge Adapters (Not In Scope for Current Implementation)
 
 smolagents, OpenCode, and HuggingFace inference suites remain optional. They reopen only if
-P12-P23 complete ahead of schedule with clean adversarial test results.
+earlier implementation phases complete ahead of schedule with clean adversarial test results.
 
 ### 3.5 Adapter Claim Standards
 
@@ -310,7 +316,8 @@ At runtime, the compiled charter binding is the source of authority for:
 The same Pydantic schema that validates charters at runtime is exported as JSON Schema for IDE
 integration. Editor hints cannot drift from runtime validation because they share the same source.
 
-CLI commands:
+CLI commands (planned — not yet implemented; implementation is tracked in the charter parser and
+flow governance phases):
 
 - `li charter validate <file>` — parse + validate, report errors with line numbers
 - `li charter compile <file>` — full compilation through Phase 5, output runtime target summary
@@ -338,9 +345,8 @@ The canonical span registry is defined in
 [`docs/governance/standards/trace-naming.md`](standards/trace-naming.md) (section 4).
 That file is the authoritative source for span names, required attributes, and retention tiers.
 The summary below uses the same attribute names as trace-naming.md.
-The base taxonomy comes from P9. P11 adds the missing spans identified in the P9 critic verdict:
 
-**Base spans (P9)**:
+**Base spans**:
 
 | Span Name | Trigger | Key Required Attributes |
 |-----------|---------|-------------------------|
@@ -352,7 +358,7 @@ The base taxonomy comes from P9. P11 adds the missing spans identified in the P9
 | `certificate.mint` | Certificate creation | `certificate.id`, `certificate.task.id`, `certificate.gates.passed`, `certificate.gates.failed`, `certificate.grade`, `certificate.defensibility`, `certificate.evidence.chain.hash`, `certificate.break.glass` |
 | `sod.check` | SoD matrix evaluation | `sod.role`, `sod.capability`, `sod.verdict`, `sod.policy.version`, `sod.evidence.hash` |
 
-**Additions from P9 critic verdict (P20 responsibility)**:
+**Additional spans (permit, certificate, and break-glass lifecycle — implemented in the OTel tracing phase)**:
 
 | Span Name | Trigger | Key Required Attributes |
 |-----------|---------|-------------------------|
@@ -373,15 +379,15 @@ See trace-naming.md section 4 for the complete attribute list for every span typ
 The span schema is designed for enterprise readiness from the start. Retrofitting observability
 attributes onto opaque spans is expensive — declaring them in the schema creates the migration path.
 
-| Capability | Design Element | P-Number |
-|------------|---------------|----------|
-| Retention tiers | Log tier governance aligned with span retention fields | P15, P20 |
-| Sensitive data redaction | Evidence record field exclusion rules documented at emit time | P15 |
-| SIEM export | OTel collector-compatible span format; attribute naming follows OTel semconv | P20 |
-| Backpressure | Span export failure must not block evidence chain writes | P20 |
-| Alerting | `gate.verdict: DENY` and `breakglass.open` are alertable events | P20 |
-| Cost tracking | `governance.operation` spans carry operation budget attributes | P18 |
-| Audit/ops separation | Audit spans go to immutable SIEM sink; ops spans go to mutable collector | P20 |
+| Capability | Design Element | Implementation phase |
+|------------|---------------|----------------------|
+| Retention tiers | Log tier governance aligned with span retention fields | Evidence chain phase; OTel tracing phase |
+| Sensitive data redaction | Evidence record field exclusion rules documented at emit time | Evidence chain phase |
+| SIEM export | OTel collector-compatible span format; attribute naming follows OTel semconv | OTel tracing phase |
+| Backpressure | Span export failure must not block evidence chain writes | OTel tracing phase |
+| Alerting | `gate.verdict: DENY` and `breakglass.open` are alertable events | OTel tracing phase |
+| Cost tracking | `governance.operation` spans carry operation budget attributes | Flow governance integration phase |
+| Audit/ops separation | Audit spans go to immutable SIEM sink; ops spans go to mutable collector | OTel tracing phase |
 
 ---
 
@@ -414,13 +420,14 @@ bind the ADRs to the Charter DSL compilation pipeline and shared runtime types.
 
 ---
 
-## 7. Phase 3-7 Play List (P12-P24)
+## 7. Implementation Phase List
 
-13 plays. Maximum budget is 13 plays (P12-P24). No play may be added without explicit scope
-cut elsewhere. G3 adapters, REST evidence API, dashboards, and fine-grained framework internals
-are the first cut targets if budget is exceeded.
+13 phases (P12–P24). No phase may be added without explicit scope cut elsewhere. G3 adapters,
+REST evidence API, dashboards, and fine-grained framework internals are the first cut targets if
+budget is exceeded. P-numbers are sequential identifiers; each number corresponds to one bounded
+scope of work described below.
 
-### P12 — ADR Slate Consolidation
+### P12 — ADR Slate Consolidation (the governance consolidation phase)
 
 | Field | Value |
 |-------|-------|
@@ -428,7 +435,7 @@ are the first cut targets if budget is exceeded.
 | **Playbook** | feature |
 | **Effort** | medium |
 | **Scope** | Revise ADR-0042, 0043, 0044, 0045, 0046, 0047, 0050, 0051 to remove duplicated types and bind DSL/runtime ownership. Produce cross-reference table: which ADR owns each type. |
-| **Dependencies** | P11 (this document) |
+| **Dependencies** | This document |
 | **Measurement** | All revised ADRs cite evidence inventory; no duplicated `GateResult`; cross-reference table complete; ADR doc links to tests and implementation path |
 | **Files Modified** | `docs/adrs/ADR-0042-*.md`, `ADR-0043-*.md`, `ADR-0044-*.md`, `ADR-0045-*.md`, `ADR-0046-*.md`, `ADR-0047-*.md`, `ADR-0050-*.md`, `ADR-0051-*.md` |
 
@@ -523,7 +530,7 @@ are the first cut targets if budget is exceeded.
 | **Category** | F — Tracing |
 | **Playbook** | feature |
 | **Effort** | medium |
-| **Scope** | Project typed governance records onto OTel spans using the P9 span registry plus P11 additions (permit lifecycle, certificate lifecycle, break-glass open/close/notify, SOFT gate justification). Embed evidence hashes and trace/span IDs bidirectionally. Span export failure must not block evidence chain writes (backpressure). Retention tier alignment with log tier governance. |
+| **Scope** | Project typed governance records onto OTel spans using the full governance span registry defined in `standards/trace-naming.md` (base spans plus permit lifecycle, certificate lifecycle, break-glass open/close/notify, and SOFT gate justification spans). Embed evidence hashes and trace/span IDs bidirectionally. Span export failure must not block evidence chain writes (backpressure). Retention tier alignment with log tier governance. |
 | **Dependencies** | P19 |
 | **Measurement** | Every governance record type has a corresponding span; all span attribute names are dot-separated; `evidence.emit` span carries chain tip hash; `breakglass.open` span is alertable; evidence chain verification passes without OTel export; backpressure test confirms evidence writes complete when span export is blocked |
 | **Files Modified** | `lionagi/protocols/governance/tracing.py`, `lionagi/protocols/generic/log.py`, `tests/governance/test_tracing.py` |
@@ -550,7 +557,7 @@ are the first cut targets if budget is exceeded.
 | **Scope** | Zero-rewrite governed wrappers for LangGraph (`CompiledStateGraph`), LlamaIndex (`AgentWorkflow`, `FunctionAgent`, `ReActAgent`, `QueryEngineTool`, `FunctionTool`), and CrewAI (`Crew`, `CrewPlan` preflight). Coarse boundary governance only. Fine mode available only for translated lionagi `Tool` objects. CrewAI hierarchical delegation is not governed in v0. |
 | **Dependencies** | P18, P19 |
 | **Measurement** | Contract tests for graph invoke, LlamaIndex tool translation, CrewPlan preflight; claim matrix documents what is and is not governed; unsupported delegation call fails closed with a descriptive `GovernanceViolationError`; coarse-only adapters emit boundary evidence correctly |
-| **Files Modified** | `lionagi/adapters/langchain.py`, `lionagi/adapters/crewai.py`, `tests/adapters/test_governed_framework_adapters.py` |
+| **Files Modified** | `lionagi/adapters/langgraph.py`, `lionagi/adapters/crewai.py`, `tests/adapters/test_governed_framework_adapters.py` |
 
 ### P23 — Governance Test and Adversarial Fixture Pack
 
@@ -648,7 +655,7 @@ the framework-specific `GovernedAdapter` subclass and its claim matrix.
 |--------|----------------|--------|------|
 | `lionagi/adapters/openai_agents.py` | `GovernedOpenAIAgent` | OpenAI Agents SDK | P21 |
 | `lionagi/adapters/anthropic_agents.py` | `GovernedAnthropicAgent` | Anthropic Agent SDK | P21 |
-| `lionagi/adapters/langchain.py` | `GovernedChain` | LangChain `Runnable`, `Chain`, `AgentExecutor` | P22 |
+| `lionagi/adapters/langgraph.py` | `GovernedLangGraph` | LangGraph `CompiledStateGraph` | P22 |
 | `lionagi/adapters/crewai.py` | `GovernedCrew` | CrewAI `Crew` | P22 |
 
 Each adapter module exports exactly one concrete `GovernedAdapter` subclass. The claim matrix
@@ -695,16 +702,16 @@ via `branch.activate_charter(charter)` without requiring Session-level flow rewr
 
 | Risk | Likelihood (1-5) | Impact (1-5) | Mitigation | Recovery Rule |
 |------|-----------------|--------------|------------|---------------|
-| **DSL/runtime drift**: Charter compiles to targets the runtime does not enforce, creating a false governance claim | 3 | 5 | P13/P14 golden compile snapshots; activation fails closed on unresolved targets; each target type has a corresponding integration test in P18 | ADR-impl drift triggers the "match ADR or revise" recovery: pause implementation, revise the ADR, re-pass the gate |
-| **Coarse adapter overclaiming**: Adapter claims governance for internal framework calls that are not enforced | 4 | 5 | Claim matrix per adapter; adversarial test in P23 checks claim matrix against emitted evidence; coarse-only adapters emit boundary evidence only | Later bypass/test gaps queue a substrate patch or ADR amendment; adapter ships with explicit scope limitation in docs |
-| **`OperationContext` propagation ambiguity**: `contextvars` used as authoritative store, causing governance gaps under concurrency | 3 | 4 | Explicit propagation is the design; `contextvars` is bridge-only; P16 tests prove no authoritative hidden accumulation; async propagation tests cover concurrent operation paths | Substrate bug queues a foundation patch and blocks API widening until the fix is verified |
-| **`GateResult` type duplication**: Incompatible `GateResult` types across ADR-0044 and ADR-0050 cause certificate, span, and policy inconsistencies | 4 | 4 | P12 consolidates one canonical `GateResult` before any substrate implementation; cross-reference table in ADR revision locks ownership | ADR contradictions get a binding tie-break from P12; no implementation proceeds without resolution |
+| **DSL/runtime drift**: Charter compiles to targets the runtime does not enforce, creating a false governance claim | 3 | 5 | Golden compile snapshots from the DSL parser and compiler phases; activation fails closed on unresolved targets; each target type has a corresponding integration test in the flow governance phase | ADR-impl drift triggers the "match ADR or revise" recovery: pause implementation, revise the ADR, re-pass the gate |
+| **Coarse adapter overclaiming**: Adapter claims governance for internal framework calls that are not enforced | 4 | 5 | Claim matrix per adapter; the adversarial fixture pack phase checks claim matrix against emitted evidence; coarse-only adapters emit boundary evidence only | Later bypass/test gaps queue a substrate patch or ADR amendment; adapter ships with explicit scope limitation in docs |
+| **`OperationContext` propagation ambiguity**: `contextvars` used as authoritative store, causing governance gaps under concurrency | 3 | 4 | Explicit propagation is the design; `contextvars` is bridge-only; the OperationContext phase tests prove no authoritative hidden accumulation; async propagation tests cover concurrent operation paths | Substrate bug queues a foundation patch and blocks API widening until the fix is verified |
+| **`GateResult` type duplication**: Incompatible `GateResult` types across ADR-0044 and ADR-0050 cause certificate, span, and policy inconsistencies | 4 | 4 | The ADR consolidation phase establishes one canonical `GateResult` before any substrate implementation; cross-reference table in ADR revision locks ownership | ADR contradictions get a binding tie-break from the ADR consolidation phase; no implementation proceeds without resolution |
 | **Evidence integrity misrepresented**: Library-mode hash chains mistakenly claimed as tamper-proof storage | 3 | 5 | Documentation is explicit: library-mode tamper-evidence, sensitive-field exclusion, backend immutability is not provided by lionagi core; audit trail is advisory in adversarial custody settings | Any claim of tamper-proof storage triggers an immediate doc correction and governance violation |
 | **Break-glass undermines HARD gate semantics**: Emergency path is used to bypass normal governance as a convenience | 3 | 5 | Break-glass has a separate emergency lifecycle distinct from normal gate results; all activations emit immutable justification evidence; DEGRADED certificate signals non-standard run; lifecycle spans are alertable | Behavioral gaps queue a substrate/ADR coverage patch; repeated misuse triggers a policy tightening revision |
 | **External package APIs move before adapters land**: LangGraph, LlamaIndex, CrewAI, or SDK-native packages change their event or hook API | 3 | 3 | Runtime package validation at adapter import; contract tests use mocked event shapes with explicit version pins; `claim_matrix.py` documents which API version the claim matrix was verified against | Integration breakage triggers rollback to last verified version, patch, or documented incompatibility until upstream stabilizes |
-| **Deny-on-tie creates availability failures**: Common policies accidentally hit the tie-deny rule in production | 3 | 4 | Canary policy tests in P19; deny-on-tie test cases in P23 adversarial suite; clear error messages name the conflicting rule IDs; deny remains the integrity-safe default | Exploration blocker lets P11 drop dependent scope; later defects queue a policy patch with specificity adjustments |
+| **Deny-on-tie creates availability failures**: Common policies accidentally hit the tie-deny rule in production | 3 | 4 | Canary policy tests in the governance layer phase; deny-on-tie test cases in the adversarial fixture pack; clear error messages name the conflicting rule IDs; deny remains the integrity-safe default | Later defects queue a policy patch with specificity adjustments |
 | **Trace export becomes treated as compliance storage**: Teams use OTel export instead of the evidence chain for audits | 2 | 4 | Architecture documentation is explicit: spans are projections, evidence chain is authoritative; `certificate.mint` span does not contain the full certificate; evidence hash in spans is for correlation only | Integration breakage blocks downstream until the misuse is corrected and the evidence chain is adopted |
-| **Scope exceeds 13 plays**: Implementation finds the 13 plays insufficient and scope creeps | 4 | 4 | G3 adapters, REST evidence API, dashboards, and fine-grained framework internals are the first cut; P23 and P24 are deferrable if substrate plays slip | Budget/time pressure forces a minimum viable cut: G1+substrate+flow is the irreducible core; G2 and layer objects are deferrable |
+| **Scope exceeds 13 phases**: Implementation finds the 13 phases insufficient and scope creeps | 4 | 4 | G3 adapters, REST evidence API, dashboards, and fine-grained framework internals are the first cut; the adversarial fixture and docs phases are deferrable if substrate phases slip | Budget/time pressure forces a minimum viable cut: G1+substrate+flow is the irreducible core; G2 and layer objects are deferrable |
 
 ---
 
@@ -722,5 +729,5 @@ via `branch.activate_charter(charter)` without requiring Session-level flow rewr
 
 ---
 
-*This document is authoritative for P12-P24. Changes require a governance ADR revision or an explicit
-direction amendment with Ocean's approval.*
+*This document is authoritative for implementation phases P12–P24. Changes require a governance ADR
+revision or an explicit direction amendment with project maintainers' approval.*

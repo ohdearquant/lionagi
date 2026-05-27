@@ -946,6 +946,5 @@ Explicitly out of scope:
 - [ADR-0052](ADR-0052-policy-resolution.md) — most-specific-wins resolution for gate registries across tenant hierarchies
 - [ADR-0033](ADR-0033-unified-entity-state-model.md) — `EvidenceRef` (8 kinds) is the shared substrate; `GateResult.evidence_refs` uses this type
 - [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md) — `Claim.confidence` is where probabilistic reasoning lives; explicitly not in gates
-- prior governance research `01_design/008-policy-gates/ADR-008-policy-gates.md` — source pattern (three-tier model, binary semantics, HashiCorp Sentinel inspiration)
 - `lionagi/agent/permissions.py` — existing `PermissionPolicy`; not deprecated, gates layer on top
 - `lionagi/agent/hooks.py` — existing `guard_destructive`, `guard_paths`; migration path described in Section 8

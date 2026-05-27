@@ -135,6 +135,9 @@ class PersistentWorkEngine(WorkEngine):
 
 ### 4. Studio API surface
 
+All `/api/work/` routes require `Authorization: Bearer <token>` when
+`LIONAGI_STUDIO_AUTH_TOKEN` is set, consistent with other Studio API routes.
+
 ```text
 GET /api/work/tasks
     ?status=queued|running|completed|failed

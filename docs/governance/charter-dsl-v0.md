@@ -2,8 +2,8 @@
 
 **Version**: 0.1 | **Status**: Accepted | **Date**: 2026-05-27
 
-This document is the authoritative Charter DSL v0 reference. It supersedes the P6 exploration
-drafts (`charter-dsl-v0.md`, `charter_dsl_refined.yaml`) as canonical authoring guidance.
+This document is the authoritative Charter DSL v0 reference. It supersedes prior exploration
+drafts as canonical authoring guidance.
 Implementers write charters in this syntax; the compiler produces typed runtime targets;
 CLI and IDE tooling consume the same schema.
 
@@ -227,7 +227,7 @@ agents:
   - agent_id: agent.simple_reader
     actor_id_source: branch_id
     role: reader
-    allowed_models: [openai:gpt-5.4]
+    allowed_models: [provider:model-name]
     allowed_tools: [tool.read_file]
 
 registry:
@@ -337,23 +337,23 @@ agents:
   - agent_id: agent.orchestrator
     actor_id_source: branch_id
     role: orchestrator
-    allowed_models: [openai:gpt-5.4]
+    allowed_models: [provider:model-name]
     allowed_tools: []
     allowed_operations: [delegate, assign_role]
   - agent_id: agent.researcher
     actor_id_source: branch_id
     role: researcher
-    allowed_models: [openai:gpt-5.4]
+    allowed_models: [provider:model-name]
     allowed_tools: [tool.search, tool.read_file]
   - agent_id: agent.implementer
     actor_id_source: branch_id
     role: implementer
-    allowed_models: [openai:gpt-5.4]
+    allowed_models: [provider:model-name]
     allowed_tools: [tool.read_file, tool.write_file]
   - agent_id: agent.reviewer
     actor_id_source: branch_id
     role: reviewer
-    allowed_models: [openai:gpt-5.4]
+    allowed_models: [provider:model-name]
     allowed_tools: [tool.read_file]
 
 registry:
@@ -522,7 +522,7 @@ agents:
   - agent_id: agent.graph_runner
     actor_id_source: branch_id
     role: adapter_runner
-    allowed_models: [openai:gpt-5.4]
+    allowed_models: [provider:model-name]
     allowed_tools: [adapter.langgraph.invoke]
 
 registry:
@@ -649,6 +649,10 @@ The compiler emits typed runtime targets:
 
 ### CLI Commands
 
+> **Note**: The `li charter` and `li governance` commands are planned as part of the governance
+> build-out and are not yet implemented. The behaviours described below define the intended
+> contract; implementation is tracked in the relevant implementation phases.
+
 ```text
 li charter validate <path/to/charter.yaml>
 li charter compile  <path/to/charter.yaml> --out <path/to/compiled.json>
@@ -708,16 +712,16 @@ ordering differences inside maps do not affect the hash after normalization.
 
 ---
 
-## 8. Open Issues For Phase 3-7
+## 8. Open Issues For Implementation
 
 - ADR-0047 must be revised to define DSL-to-runtime binding, not only the Python `AgentCharter`
-  shape (P12).
+  shape (ADR consolidation phase).
 - ADR-0044 and ADR-0050 must consolidate `GateResult` to a single owner before implementation
-  begins (P12).
-- P9 trace taxonomy must be extended with permit lifecycle, certificate state transitions,
-  break-glass lifecycle, and soft-gate justification spans before P20 (tracked in
+  begins (ADR consolidation phase).
+- The governance span taxonomy must be extended with permit lifecycle, certificate state transitions,
+  break-glass lifecycle, and soft-gate justification spans before the OTel tracing phase (tracked in
   [standards/trace-naming.md](standards/trace-naming.md)).
 - `OperationContext` must remain explicit state. A `contextvars` bridge is allowed for async
-  propagation but must not become the authoritative governance store (P16).
+  propagation but must not become the authoritative governance store (OperationContext phase).
 - Boundary adapters must be documented and marketed honestly: they govern invocation boundaries,
-  not hidden internal effects (P22).
+  not hidden internal effects (framework governed endpoints phase).

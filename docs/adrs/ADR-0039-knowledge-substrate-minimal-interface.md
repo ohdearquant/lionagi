@@ -674,8 +674,6 @@ Explicitly out of scope for v1; some may move into v2:
 - [ADR-0033](ADR-0033-unified-entity-state-model.md) — Unified Entity State Model (canonical EvidenceRef definition)
 - [ADR-0034](ADR-0034-frontend-data-and-state-architecture.md) — Frontend Data & State Architecture (knowledge.* SSE events, knowledge query keys)
 - [ADR-0035](ADR-0035-design-system-and-component-library.md) — Design System & Component Library (KnowledgeLens, ClaimCard, ClaimStatusBadge components)
-- 06.md §7: Evidence-first policy (source design)
-- 06.md §3: Knowledge as lens, not destination (UI placement decision)
 - Branch architecture: 4-manager facade → 5-manager facade with KnowledgeStore
 - W3C PROV (future export target, not v1 schema)
 - Issue #1175: Knowledge substrate first-class in lionagi

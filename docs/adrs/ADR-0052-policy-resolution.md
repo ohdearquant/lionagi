@@ -672,8 +672,8 @@ class PolicyRelease(Element):
 
     Status lifecycle:
         DRAFT     → authored, not yet deployed to any sessions
-        CANARY    → active for <5% of new sessions (opt-in or random sample)
-        ROLLING   → active for a named tenant group (explicit list)
+        CANARY    → active for a subset of new sessions
+        ROLLING   → progressively active for new sessions
         ACTIVE    → global default; applies to all new sessions
         SUPERSEDED → replaced by a newer release; no new sessions pin to this
 
@@ -687,8 +687,6 @@ class PolicyRelease(Element):
         release_version:  Human-readable version string (e.g. "2026.05.1").
         status:           Current lifecycle stage.
         policies:         The ScopedPolicies included in this release.
-        canary_tenant_ids: Tenants opted into CANARY stage (empty = random 5%).
-        rolling_tenant_ids: Tenants in the ROLLING cohort.
         released_at:      Unix timestamp of transition to CANARY or later.
         superseded_by:    release_id of the successor, once SUPERSEDED.
     """
@@ -707,8 +705,6 @@ class PolicyRelease(Element):
     policies: Pile[ScopedPolicy] = Field(
         default_factory=lambda: Pile(item_type=ScopedPolicy, strict_type=True)
     )
-    canary_tenant_ids: tuple[str, ...]
-    rolling_tenant_ids: tuple[str, ...]
     released_at: float | None
     superseded_by: str | None = None
 
@@ -720,18 +716,10 @@ class PolicyRelease(Element):
     ) -> PolicyResolver | None:
         """Return a PolicyResolver if this release applies to tenant_id.
 
-        Returns None if the release is DRAFT or SUPERSEDED, or if the tenant
-        is not yet in scope for the current status (e.g. not in canary cohort
-        when status is CANARY).
+        Returns None if the release is DRAFT or SUPERSEDED.
         """
         if self.status in ("DRAFT", "SUPERSEDED"):
             return None
-        if self.status == "CANARY":
-            if self.canary_tenant_ids and tenant_id not in self.canary_tenant_ids:
-                return None
-        elif self.status == "ROLLING":
-            if tenant_id not in self.rolling_tenant_ids:
-                return None
         return PolicyResolver(
             base_policy=base_policy,
             policies=self.policies,
@@ -910,5 +898,3 @@ Explicitly out of scope:
 - [ADR-0051](ADR-0051-tool-registry-allowlists.md) — `PolicyBundle.registry_scope` selects which tool registry scope governs tool access
 - [ADR-0033](ADR-0033-unified-entity-state-model.md) — EvidenceRef 8 kinds; `PolicyBundle.allowed_evidence_kinds` is a subset of these
 - `lionagi/agent/config.py` — `AgentConfig` and `PermissionPolicy`; library-mode policy remains here
-- prior governance research `01_design/011-policy-resolution/ADR-011-policy-resolution.md` — lex specialis, deny-by-default, resource > role > tenant hierarchy
-- prior governance research `01_design/017-policy-release/ADR-017-policy-release.md` — staged rollout (CANARY → TENANT_GROUP → GLOBAL), Two-Key Model, immutable releases

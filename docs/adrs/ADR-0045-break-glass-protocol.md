@@ -566,4 +566,3 @@ Explicitly out of scope:
 - [ADR-0047](ADR-0047-agent-charter.md) — agent charters enumerate which gates are `overridable=False`
 - [ADR-0050](ADR-0050-operation-context.md) — operation context carried on every tool call during a break-glass window
 - [ADR-0033](ADR-0033-unified-entity-state-model.md) — `EvidenceRef` type used in `BreakGlassRequest.supporting_evidence`
-- prior governance research `01_design/016-break-glass/ADR-016-break-glass.md` — source pattern (DEGRADED defensibility, typed attestation, auto-notification, non-exportable default)

@@ -692,4 +692,3 @@ Explicitly out of scope:
 - [ADR-0045](ADR-0045-break-glass-protocol.md) — Break-glass paths run outside `execute_governed()`; they produce their own evidence records, not `OperationContext`-linked ones
 - [ADR-0033](ADR-0033-unified-entity-state-model.md) — `EvidenceRef` kinds (`tool_result`, `model_inference`, etc.) used by `ToolExecutionEvidence`
 - [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md) — `KnowledgeStore` protocol held in `ServiceContext.knowledge_store`
-- prior governance research `01_design/013-service-context/ADR-013-service-context.md` — source pattern: two-tier context, active assertion via `to_evidence_data()`, explicit propagation, immutable transforms

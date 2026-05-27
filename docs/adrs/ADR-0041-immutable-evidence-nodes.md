@@ -30,15 +30,14 @@ becomes evidence only when it is structurally impossible to alter it after the f
 
 ### The applicable design pattern
 
-prior research addresses this with a hash-chain pattern: every evidence node includes a
+A hash-chain pattern provides tamper evidence: every evidence node includes a
 `chain_hash = SHA256(payload_hash || prev_chain_hash)`. Appending a new node produces a new
 `chain_hash` that depends on every node before it; tampering with any earlier node invalidates all
-subsequent `chain_hash` values. prior research adds the supersession pattern: errors are
-corrected by inserting a new node with `supersedes_id` pointing backward, leaving the original
-untouched. prior research introduces `_sensitive_fields` as a `ClassVar[set[str]]`: fields
-excluded from the hash and from serialized output (raw tool inputs may contain secrets that should
-not appear in audit exports). These three patterns compose cleanly, and the translation to lionagi
-requires no new infrastructure.
+subsequent `chain_hash` values. The supersession pattern corrects errors by inserting a new node
+with `supersedes_id` pointing backward, leaving the original untouched. The `_sensitive_fields`
+mechanism (`ClassVar[set[str]]`) excludes fields from the hash and from serialized output so that
+raw tool inputs containing secrets do not appear in audit exports. These three patterns compose
+cleanly, and the translation to lionagi requires no new infrastructure.
 
 ### Why lionagi needs this
 
@@ -540,7 +539,7 @@ Explicitly out of scope for this ADR:
 | Timestamp-only ordering (no hash chain) | Timestamps can be spoofed or back-dated. They establish ordering only if the clock is trusted. A hash chain establishes ordering independently of wall time. |
 | Full Merkle tree from the start | Provides efficient subset proofs but requires a tree-construction algorithm, a root-hash management layer, and more complex verification. The operational benefit over a linear chain is negligible at v1 scale (thousands of nodes per session, not billions). |
 | Event sourcing (append-only event log, derived state) | Provides complete history but requires projections for current state, event schema versioning, and substantial infrastructure investment. The supersession pattern achieves the correction requirement with far less complexity. |
-| Bidirectional supersession pointers (`superseded_by_id` on original) | Requires either a two-phase write (insert new node, then update original) or a transaction. Backward-only `supersedes_id` allows a single atomic INSERT with no mutation of the original node, which aligns with the immutability contract. prior research makes this decision for the same reason. |
+| Bidirectional supersession pointers (`superseded_by_id` on original) | Requires either a two-phase write (insert new node, then update original) or a transaction. Backward-only `supersedes_id` allows a single atomic INSERT with no mutation of the original node, which aligns with the immutability contract. |
 
 ## References
 
@@ -550,7 +549,4 @@ Explicitly out of scope for this ADR:
 - [ADR-0049](ADR-0049-log-tier-governance.md) — Log Tier Governance classifies records as MUTABLE / PROTECTED / IMMUTABLE; `ImmutableEvidenceNode` is the mechanism backing the IMMUTABLE tier
 - [ADR-0028](ADR-0028-status-reason-model.md) — StatusReason model; evidence nodes may carry status reasons as domain fields
 - [ADR-0029](ADR-0029-artifact-contract.md) — Artifact contract; artifacts referenced by `EvidenceRef(kind="artifact")` benefit from chain provenance
-- prior governance research `01_design/006-evidence-chain-cep/ADR-006-evidence-chain-cep.md` — source pattern for hash-chained evidence; D1 (chain hash formula), D2 (backward-only supersession)
-- prior governance research `01_design/003-immutability/ADR-003-immutability.md` — source pattern for insert-only semantics, `_allowed_update_fields`, supersession over mutation
-- prior governance research `01_design/002-entity/ADR-002-entity.md` — source pattern for dual hashing (`content_hash` + `integrity_hash`) and `_sensitive_fields` ClassVar
 - NIST FIPS 180-4 — SHA-256 specification

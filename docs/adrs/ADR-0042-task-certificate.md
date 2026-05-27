@@ -35,11 +35,11 @@ adherence verifiable post-hoc.
 
 ### The applicable prior governance research insight
 
-prior research introduced the *decision certificate* pattern for people-operations workflows
-(terminations, adverse actions, PIP initiations). The core insight translates directly to agent
-governance: the certificate is the primary proof artifact — it proves *process* adherence, not
-*outcome* correctness. prior governance research further established that certificates are never revoked, only
-superseded. Revocation creates audit ambiguity ("did this decision happen?"); supersession
+The certificate pattern provides tamper-evident proof that a defined process was followed before
+a consequential action was taken. The core insight translates directly to agent governance: the
+certificate is the primary proof artifact — it proves *process* adherence, not *outcome*
+correctness. Prior governance research further established that certificates are never revoked,
+only superseded. Revocation creates audit ambiguity ("did this decision happen?"); supersession
 preserves the full correction trail ("this decision happened; a later decision is now
 authoritative"). In lionagi terms: if a task is re-run under a corrected policy, the original
 certificate is superseded, not erased. Both records remain.
@@ -542,4 +542,3 @@ Explicitly out of scope:
 - [ADR-0052](ADR-0052-policy-resolution.md) — policy version fetched for post-hoc verification replay
 - [ADR-0033](ADR-0033-unified-entity-state-model.md) — `EvidenceRef` substrate; certificates produce an `EvidenceRef` of kind `artifact`
 - [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md) — "Evidence is first-class, not logs" principle instantiated here
-- prior governance research `01_design/007-decision-certificate/ADR-007-decision-certificate.md` — source pattern (decision certificate architecture, supersession doctrine, attestation records)

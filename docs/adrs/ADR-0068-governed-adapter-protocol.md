@@ -49,16 +49,19 @@ pass-through: no governance module is imported, no gate is evaluated, `execute()
 `_call_wrapped()` and returns `(result, None)`. When a charter is supplied at construction time,
 `GovernedFlowController` is instantiated and the full governance lifecycle activates.
 
-Four concrete subclasses ship in `lionagi/adapters/`:
+Four concrete subclasses ship in `lionagi/adapters/` as optional adapters. Each requires its
+framework's package to be installed separately; none is bundled into the core `lionagi` package:
 
 - `langchain.py` — `GovernedChain` for LangChain `Runnable`, `Chain`, `AgentExecutor`
 - `crewai.py` — `GovernedCrew` for CrewAI `Crew`
 - `openai_agents.py` — `GovernedOpenAIAgent` for openai-agents `Agent` or `Runner`
 - `anthropic_agents.py` — `GovernedAnthropicAgent` for Anthropic Agent SDK `Agent`
+  (requires the optional `anthropic` package)
 
-New frameworks are supported by subclassing `GovernedAdapter` and implementing two methods:
-`_call_wrapped()` and optionally `_get_tool_name()`. The base class handles the full governance
-lifecycle without any changes.
+All four adapters are peers: the Anthropic adapter is one of several optional integrations, not
+a first-class or preferred integration. New frameworks are supported by subclassing
+`GovernedAdapter` and implementing two methods: `_call_wrapped()` and optionally
+`_get_tool_name()`. The base class handles the full governance lifecycle without any changes.
 
 `GovernanceViolationError` is defined as a standalone class in `governed_base.py`. It does not
 import from `lionagi.protocols.governance`. When the full governance module is available at
@@ -193,12 +196,15 @@ flows (ADR-0044) remain controlled by the charter and are not exposed through `o
 
 ### Supported Framework Adapters
 
-| Framework | Adapter Class | Import Path | Tool Name | Native Async | Sync Fallback |
-|-----------|--------------|-------------|-----------|:---:|:---:|
-| LangChain | `GovernedChain` | `lionagi.adapters.langchain` | `langchain.chain` | Yes (`ainvoke`) | `invoke` via executor |
-| CrewAI | `GovernedCrew` | `lionagi.adapters.crewai` | `crewai.crew` | Future (`akickoff`) | `kickoff` via executor |
-| openai-agents | `GovernedOpenAIAgent` | `lionagi.adapters.openai_agents` | `openai_agents.run` | Yes (`Runner.run`) | N/A |
-| Anthropic Agent SDK | `GovernedAnthropicAgent` | `lionagi.adapters.anthropic_agents` | `anthropic_agents.run` | Yes (`arun`) | `run` via executor |
+| Framework | Adapter Class | Import Path | Tool Name | Native Async | Sync Fallback | Optional Dependency |
+|-----------|--------------|-------------|-----------|:---:|:---:|---|
+| LangChain | `GovernedChain` | `lionagi.adapters.langchain` | `langchain.chain` | Yes (`ainvoke`) | `invoke` via executor | `langchain` |
+| CrewAI | `GovernedCrew` | `lionagi.adapters.crewai` | `crewai.crew` | Future (`akickoff`) | `kickoff` via executor | `crewai` |
+| openai-agents | `GovernedOpenAIAgent` | `lionagi.adapters.openai_agents` | `openai_agents.run` | Yes (`Runner.run`) | N/A | `openai-agents` |
+| Anthropic Agent SDK | `GovernedAnthropicAgent` | `lionagi.adapters.anthropic_agents` | `anthropic_agents.run` | Yes (`arun`) | `run` via executor | `anthropic` |
+
+All four adapters are optional. The `lionagi` core package does not require any of these
+framework dependencies. Install only the packages for the frameworks you use.
 
 LangChain async preference order: `ainvoke` → `invoke` (executor) → `arun` (legacy).
 CrewAI async preference order: `akickoff` → `kickoff` (executor).
@@ -474,7 +480,7 @@ from anthropic.agents import Agent  # Anthropic Agent SDK
 from lionagi.adapters.anthropic_agents import GovernedAnthropicAgent
 
 agent = Agent(
-    model="claude-opus-4-5",
+    model="<your-model>",   # e.g. the Anthropic model ID of your choice
     system_prompt="You are a document analyst.",
     tools=[...],
 )
