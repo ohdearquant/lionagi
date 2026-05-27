@@ -258,7 +258,6 @@ class ActionManager(Manager):
         if self._tool_governed(function_calling.function):
             ctx = get_operation_context()
             await self.execute_governed(function_calling.function, function_calling.arguments, ctx)
-            await function_calling.invoke()
             return function_calling
 
         try:

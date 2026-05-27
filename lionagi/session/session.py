@@ -324,7 +324,7 @@ class Session(Node, Relational):
         """
         charter = getattr(self, "_charter", None)
         if charter is not None:
-            from datetime import datetime
+            from datetime import datetime, timezone
             from uuid import uuid4
 
             from lionagi.protocols.governance.context import (
@@ -342,7 +342,7 @@ class Session(Node, Relational):
                     charter_hash=str(
                         getattr(charter, "charter_hash", getattr(charter, "hash", "unknown"))
                     ),
-                    pinned_at=datetime.utcnow(),
+                    pinned_at=datetime.now(tz=timezone.utc),
                 )
             else:
                 active_hash = getattr(charter, "charter_hash", None) or getattr(
