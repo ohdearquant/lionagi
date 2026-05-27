@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -331,11 +332,11 @@ class StateDB:
         # ``(kind, name)`` so unrelated definitions can still progress
         # in parallel.
         self._definition_locks: dict[tuple[str, str], Lock] = {}
-        # Nesting depth for transaction() context manager.  Depth 0 means
-        # no active transaction; depth 1 is the outermost real transaction
-        # (BEGIN IMMEDIATE); depths > 1 use SQLite SAVEPOINTs so that an
-        # exception caught inside an inner block rolls back only the inner
-        # writes, not the entire outer transaction.
+        # Nesting depth for transaction(). Zero means "no active transaction".
+        # Incremented on entry, decremented on exit. Helpers check this to
+        # decide whether to issue an immediate COMMIT or defer to the outermost
+        # transaction() exit. Depth 1 is the outermost BEGIN IMMEDIATE block;
+        # depths > 1 use SQLite SAVEPOINTs.
         self._txn_depth: int = 0
 
     # ── Connection lifecycle ───────────────────────────────────────────
@@ -365,9 +366,23 @@ class StateDB:
             raise RuntimeError("StateDB not open — call open() or use async with")
         return self._db
 
+    # ── Transaction helpers ────────────────────────────────────────────
+
+    async def _commit_if_not_in_txn(self) -> None:
+        """Commit only when no transaction() block is active.
+
+        Mutation helpers call this instead of ``self.db.commit()`` directly
+        so that, when they run inside a ``transaction()`` block, the commit
+        is deferred to the outermost context-manager exit — preserving the
+        all-or-nothing guarantee. Outside a transaction block the behaviour
+        is identical to a direct commit.
+        """
+        if self._txn_depth == 0:
+            await self.db.commit()
+
     @asynccontextmanager
-    async def transaction(self):
-        """Async context manager that supports nested transactions via SAVEPOINTs.
+    async def transaction(self) -> AsyncGenerator[None, None]:
+        """Async context manager for explicit multi-statement transactions.
 
         Outermost call (depth 0 → 1): issues ``BEGIN IMMEDIATE`` / ``COMMIT``
         or ``ROLLBACK`` so the full transaction is atomic and write-exclusive.
@@ -377,32 +392,34 @@ class StateDB:
         (rollback) so an inner exception that is caught by the outer block
         undoes only the inner writes, not the outer transaction.
 
-        This guarantees that partial inner writes never silently commit with
-        the outer transaction when the inner exception is suppressed.
+        The depth counter is incremented *before* the setup SQL so that a
+        failed ``BEGIN IMMEDIATE`` or ``SAVEPOINT`` (e.g. database locked)
+        decrements back to the original depth — no leak.
         """
         self._txn_depth += 1
         depth = self._txn_depth
-        sp_name = f"sp_{depth}"
-
-        if depth == 1:
-            await self.db.execute("BEGIN IMMEDIATE")
-        else:
-            await self.db.execute(f"SAVEPOINT {sp_name}")
-
+        try:
+            if depth == 1:
+                await self.db.execute("BEGIN IMMEDIATE")
+            else:
+                await self.db.execute(f"SAVEPOINT sp_{depth}")
+        except Exception:
+            self._txn_depth -= 1
+            raise
         try:
             yield
-        except BaseException:
+        except Exception:
             if depth == 1:
                 await self.db.rollback()
             else:
-                await self.db.execute(f"ROLLBACK TO {sp_name}")
-                await self.db.execute(f"RELEASE {sp_name}")
+                await self.db.execute(f"ROLLBACK TO SAVEPOINT sp_{depth}")
+                await self.db.execute(f"RELEASE SAVEPOINT sp_{depth}")
             raise
         else:
             if depth == 1:
                 await self.db.commit()
             else:
-                await self.db.execute(f"RELEASE {sp_name}")
+                await self.db.execute(f"RELEASE SAVEPOINT sp_{depth}")
         finally:
             self._txn_depth -= 1
 
@@ -542,7 +559,7 @@ class StateDB:
                     await self.db.execute(  # noqa: S608
                         f"ALTER TABLE {table} ADD COLUMN {name} {defn}"
                     )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     # Substring that appears in the ADR-0017 CHECK clause but not in the
     # ADR-0025 schema (the new schema has no CHECK on sessions.status).
@@ -653,7 +670,7 @@ class StateDB:
             await self.db.execute("ALTER TABLE sessions_new RENAME TO sessions")
             for idx_sql in index_sqls:
                 await self.db.execute(idx_sql)
-            await self.db.commit()
+            await self._commit_if_not_in_txn()
         finally:
             await self.db.execute("PRAGMA foreign_keys = ON")
 
@@ -718,7 +735,7 @@ class StateDB:
                 type_id,
             ),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def get_message(self, message_id: str) -> dict[str, Any] | None:
         cur = await self.db.execute(
@@ -751,7 +768,7 @@ class StateDB:
             (lion_class_str,),
         )
         row = await cur.fetchone()
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
         return row["type_id"]
 
     # ── Progressions ───────────────────────────────────────────────────
@@ -763,7 +780,7 @@ class StateDB:
             "INSERT OR IGNORE INTO progressions (id, created_at, collection) VALUES (?, ?, ?)",
             (progression_id, time.time(), json.dumps(collection or [])),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def get_progression(self, progression_id: str) -> list[str]:
         cur = await self.db.execute(
@@ -796,7 +813,7 @@ class StateDB:
                  )""",
             (message_id, progression_id, message_id),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     # ── Sessions ───────────────────────────────────────────────────────
 
@@ -878,7 +895,7 @@ class StateDB:
                 "updated_at = ? WHERE id = ?",
                 (now, session["invocation_id"]),
             )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
         # ADR-0026: auto-register the detected project so Studio's project
         # list is populated without any explicit studio action.
         project_name = session.get("project")
@@ -909,7 +926,7 @@ class StateDB:
             "WHERE id = ?",
             (ts, ts, session_id),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def update_session(self, session_id: str, **fields: Any) -> None:
         _validate_columns(fields, _SESSION_COLUMNS)
@@ -937,7 +954,7 @@ class StateDB:
             f"UPDATE sessions SET {sets} WHERE id = ?",  # noqa: S608
             vals,
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def update_artifact_verification(
         self,
@@ -948,7 +965,7 @@ class StateDB:
             "UPDATE sessions SET artifact_verification_json = ?, updated_at = ? WHERE id = ?",
             (_to_json_column(verification), time.time(), session_id),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     # ── Status reason model (ADR-0028) ───────────────────────────────
     # update_status() is the single sanctioned mutation point for any
@@ -1136,7 +1153,7 @@ class StateDB:
                    github = COALESCE(excluded.github, projects.github)""",
             (name, source, path, github, now, now, now),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def create_project(
         self,
@@ -1158,7 +1175,7 @@ class StateDB:
                VALUES (?, 'studio', ?, ?, ?, ?, ?, ?)""",
             (name, path, github, description, now, now, now),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def list_projects(self) -> list[dict[str, Any]]:
         """List all projects ordered by last_seen_at DESC, with session counts."""
@@ -1208,7 +1225,7 @@ class StateDB:
             f"UPDATE projects SET {sets} WHERE name = ?",  # noqa: S608
             vals,
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
         return cur.rowcount > 0
 
     async def delete_project(self, name: str) -> bool:
@@ -1222,7 +1239,7 @@ class StateDB:
             "DELETE FROM projects WHERE name = ? AND source = 'studio'",
             (name,),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
         return cur.rowcount > 0
 
     # ── Schedules (ADR-0027) ──────────────────────────────────────────
@@ -1270,7 +1287,7 @@ class StateDB:
                 schedule.get("updated_at", now),
             ),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def get_schedule(self, schedule_id: str) -> dict[str, Any] | None:
         cur = await self.db.execute("SELECT * FROM schedules WHERE id = ?", (schedule_id,))
@@ -1351,11 +1368,11 @@ class StateDB:
             f"UPDATE schedules SET {sets} WHERE id = ?",  # noqa: S608
             vals,
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def delete_schedule(self, schedule_id: str) -> bool:
         cur = await self.db.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
         return cur.rowcount > 0
 
     # ── Schedule Runs (ADR-0027) ──────────────────────────────────────
@@ -1386,7 +1403,7 @@ class StateDB:
                 run.get("created_at", now),
             ),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def update_schedule_run(
         self,
@@ -1450,7 +1467,7 @@ class StateDB:
                 f"UPDATE schedule_runs SET {sets} WHERE id = ?",  # noqa: S608
                 vals,
             )
-            await self.db.commit()
+            await self._commit_if_not_in_txn()
 
     async def list_schedule_runs(
         self,
@@ -1521,7 +1538,7 @@ class StateDB:
                 _to_json_column(invocation.get("node_metadata")),
             ),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def update_invocation(
         self,
@@ -1606,7 +1623,7 @@ class StateDB:
             # columns validated above; SQL is identifier-only interpolation.
             update_sql = f"UPDATE invocations SET {sets} WHERE id = ?"  # noqa: S608
             await self.db.execute(update_sql, vals)
-            await self.db.commit()
+            await self._commit_if_not_in_txn()
 
     async def get_invocation(self, invocation_id: str) -> dict[str, Any] | None:
         cur = await self.db.execute("SELECT * FROM invocations WHERE id = ?", (invocation_id,))
@@ -1736,7 +1753,7 @@ class StateDB:
                 "UPDATE artifacts SET content = ?, file_path = ?, updated_at = ? WHERE id = ?",
                 (content_json, file_path, now, existing_id),
             )
-            await self.db.commit()
+            await self._commit_if_not_in_txn()
             return existing_id
         art_id = uuid.uuid4().hex[:12]
         await self.db.execute(
@@ -1745,7 +1762,7 @@ class StateDB:
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (art_id, invocation_id, session_id, now, now, kind, name, content_json, file_path),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
         return art_id
 
     async def list_artifacts_for_invocation(self, invocation_id: str) -> list[dict[str, Any]]:
@@ -1797,7 +1814,7 @@ class StateDB:
                 actor,
             ),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
         return event_id
 
     async def list_admin_events(
@@ -1846,7 +1863,7 @@ class StateDB:
                 branch.get("agent_name"),
             ),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def get_branch(self, branch_id: str) -> dict[str, Any] | None:
         cur = await self.db.execute("SELECT * FROM branches WHERE id = ?", (branch_id,))
@@ -1872,7 +1889,7 @@ class StateDB:
             f"UPDATE branches SET {sets} WHERE id = ?",  # noqa: S608
             vals,
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def repair_branch_progression(
         self,
@@ -1914,7 +1931,7 @@ class StateDB:
             (branch_id,),
         )
         row = await cur.fetchone()
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
         if row is None:
             return None
         return row["progression_id"]
@@ -1940,7 +1957,7 @@ class StateDB:
             (session_id,),
         )
         row = await cur.fetchone()
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
         if row is None:
             return None
         return row["progression_id"]
@@ -2005,7 +2022,7 @@ class StateDB:
                 now,
             ),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def get_show(self, show_id: str) -> dict[str, Any] | None:
         cur = await self.db.execute("SELECT * FROM shows WHERE id = ?", (show_id,))
@@ -2097,7 +2114,7 @@ class StateDB:
                 f"UPDATE shows SET {sets} WHERE id = ?",  # noqa: S608
                 vals,
             )
-            await self.db.commit()
+            await self._commit_if_not_in_txn()
 
     # ── Plays ─────────────────────────────────────────────────────────
 
@@ -2140,7 +2157,7 @@ class StateDB:
                 now,
             ),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def get_play(self, play_id: str) -> dict[str, Any] | None:
         cur = await self.db.execute("SELECT * FROM plays WHERE id = ?", (play_id,))
@@ -2223,7 +2240,7 @@ class StateDB:
                 f"UPDATE plays SET {sets} WHERE id = ?",  # noqa: S608
                 vals,
             )
-            await self.db.commit()
+            await self._commit_if_not_in_txn()
 
     # ── Definitions ───────────────────────────────────────────────────
 
@@ -2284,7 +2301,7 @@ class StateDB:
                             message,
                         ),
                     )
-                    await self.db.commit()
+                    await self._commit_if_not_in_txn()
                     return next_version
                 except aiosqlite.IntegrityError as exc:
                     last_exc = exc
@@ -2346,7 +2363,7 @@ class StateDB:
                 now,
             ),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def get_runner_handle(self, session_id: str) -> Any:
         from lionagi.runtime.control import RunnerHandle, RunnerState
@@ -2423,7 +2440,7 @@ class StateDB:
                 now,
             ),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
         return {"id": cr_id, "action": action_val, "request_status": "pending"}
 
     async def claim_control_request(self, cr_id: str) -> None:
@@ -2432,7 +2449,7 @@ class StateDB:
             "UPDATE run_control_requests SET request_status='claimed', claimed_at=? WHERE id=?",
             (now, cr_id),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def complete_control_request(
         self,
@@ -2446,7 +2463,7 @@ class StateDB:
             "UPDATE run_control_requests SET request_status=?, completed_at=?, error=? WHERE id=?",
             (request_status, now, error, cr_id),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def transition_runner_state(
         self,
@@ -2470,7 +2487,7 @@ class StateDB:
             "UPDATE runner_handles SET state=?, updated_at=? WHERE session_id=?",
             (state_val, now, session_id),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
         handle.state = RunnerState(state_val)
         return handle
 
@@ -2505,7 +2522,7 @@ class StateDB:
                 now,
             ),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def get_work_item(self, item_id: str) -> dict[str, Any] | None:
         cur = await self.db.execute("SELECT * FROM work_items WHERE id = ?", (item_id,))
@@ -2550,7 +2567,7 @@ class StateDB:
             f"UPDATE work_items SET {', '.join(updates)} WHERE id = ?",  # noqa: S608
             tuple(params),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def save_worker_definition(self, definition: dict[str, Any]) -> None:
         now = time.time()
@@ -2577,7 +2594,7 @@ class StateDB:
                 now,
             ),
         )
-        await self.db.commit()
+        await self._commit_if_not_in_txn()
 
     async def get_worker_definition(self, name: str) -> dict[str, Any] | None:
         cur = await self.db.execute(
