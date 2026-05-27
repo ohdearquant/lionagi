@@ -622,15 +622,15 @@ class SchedulerEngine:
             if item.max_runs is not None and item.run_count >= item.max_runs:
                 item.status = STATUS_COMPLETED
             else:
-                item.status = STATUS_ACTIVE
                 next_run = self._compute_next_run(item)
-                if next_run is not None:
+                if next_run is None:
+                    # One-shot item (no cron_expr and no interval_seconds):
+                    # there is no future fire time, so complete it now rather
+                    # than leaving it active and letting it re-fire immediately.
+                    item.status = STATUS_COMPLETED
+                else:
                     item.next_run_at = next_run
-                # If no next_run (one-shot item), leave next_run_at unchanged;
-                # the item will not be returned by get_due_items again because
-                # status is not active… actually it IS active.  One-shot items
-                # without max_runs will re-fire immediately.  Callers should
-                # set max_runs=1 for true one-shot behaviour.
+                    item.status = STATUS_ACTIVE
         return True
 
     def mark_failed(self, item_id: str, error: str = "") -> bool:

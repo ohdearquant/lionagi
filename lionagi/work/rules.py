@@ -191,18 +191,27 @@ class Rule(BaseModel):
         def _do_match() -> bool:
             return bool(compiled.search(value))
 
+        _ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
-                future = _ex.submit(_do_match)
-                try:
-                    matched = future.result(timeout=REGEX_MATCH_TIMEOUT)
-                except concurrent.futures.TimeoutError:
-                    future.cancel()
-                    return (
-                        f"Rule {self.rule_id!r}: pattern match timed out after "
-                        f"{REGEX_MATCH_TIMEOUT}s — pattern may cause catastrophic backtracking."
-                    )
+            future = _ex.submit(_do_match)
+            try:
+                matched = future.result(timeout=REGEX_MATCH_TIMEOUT)
+            except concurrent.futures.TimeoutError:
+                future.cancel()
+                # wait=False so we don't block on catastrophic backtracking;
+                # cancel_futures=True signals the executor to drop the work item.
+                _ex.shutdown(wait=False, cancel_futures=True)
+                return (
+                    f"Rule {self.rule_id!r}: pattern match timed out after "
+                    f"{REGEX_MATCH_TIMEOUT}s — pattern may cause catastrophic backtracking."
+                )
+            except Exception as exc:  # noqa: BLE001
+                _ex.shutdown(wait=False)
+                return f"Rule {self.rule_id!r}: pattern match raised {type(exc).__name__}: {exc}."
+            else:
+                _ex.shutdown(wait=False)
         except Exception as exc:  # noqa: BLE001
+            _ex.shutdown(wait=False)
             return f"Rule {self.rule_id!r}: pattern match raised {type(exc).__name__}: {exc}."
 
         if not matched:
