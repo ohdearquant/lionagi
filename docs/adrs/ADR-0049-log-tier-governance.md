@@ -514,5 +514,3 @@ Explicitly out of scope:
   IMMUTABLE tier events
 - [ADR-0033](ADR-0033-unified-entity-state-model.md) — `EvidenceRef` kinds map to IMMUTABLE log
   event categories
-- prior governance research `01_design/034-audit-logging-governance/ADR-034-audit-logging-governance.md` — source
-  pattern; three-tier hierarchy, DB trigger approach, audit-of-auditing invariant

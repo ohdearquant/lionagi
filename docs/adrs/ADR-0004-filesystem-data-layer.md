@@ -3,6 +3,12 @@
 **Status**: Accepted
 **Date**: 2026-05-19 (revised 2026-05-20)
 
+---
+
+> **Related update**: [ADR-0033](ADR-0033-unified-entity-state-model.md) and [ADR-0034](ADR-0034-frontend-data-and-state-architecture.md) formalize how data flows from the filesystem layer through SQLite into the frontend. The hybrid filesystem-as-source-of-truth model here remains accurate; ADR-0033 adds `NormalizedState` as the read-side projection, and ADR-0034 specifies the sync contract for frontend consumption.
+
+---
+
 ## Context
 
 Lion Studio's backend serves runs, agents, playbooks, plugins, shows, and sessions.
@@ -100,12 +106,14 @@ into SQLite at any time.
 ## Consequences
 
 **Positive**
+
 - Authored content stays in git-friendly files editable by any tool.
 - Operational queries are fast (SQLite indexes, JOINs, aggregates).
 - No external database process — SQLite is embedded.
 - CLI and Studio share the same data without coordination protocol.
 
 **Negative**
+
 - Two data sources means two things to keep in sync.
 - Import commands needed for historical data migration.
 - Contributors must know which data lives where.

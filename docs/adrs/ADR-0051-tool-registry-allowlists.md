@@ -803,4 +803,3 @@ Explicitly out of scope for v1:
 - [ADR-0047](ADR-0047-agent-charter.md) — `allowed_tools` is a snapshot from the registry at charter ratification time
 - [ADR-0049](ADR-0049-log-tier-governance.md) — registry mutation events are IMMUTABLE tier log records
 - [ADR-0033](ADR-0033-unified-entity-state-model.md) — evidence shape reflected by `RegistryEvidence` records in `RegistryEntry.evidence`
-- prior governance research `01_design/031-registry-allowlists/ADR-031-registry-allowlists.md` — source pattern (tenant → scope, role/destination/tool registries → unified category discriminator)

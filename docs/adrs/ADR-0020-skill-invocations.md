@@ -9,7 +9,7 @@
 Lion Studio traces execution from sessions down to messages, but has no
 record of what triggered those sessions. The causal chain today:
 
-```
+```text
 ??? → Session → Branch → Messages → Tool Calls → Artifacts
 ```
 
@@ -104,6 +104,7 @@ CLI primitive: `agent`, `play`, `flow`, `fanout`, `show-play`).
 orchestration spawned this session?"
 
 The two are orthogonal:
+
 - `invocation_kind = 'play'` — this session was created by `li play`
 - `invocation_id = 'abc123'` — it was spawned as part of the `/show`
   invocation `abc123`
@@ -157,7 +158,7 @@ The runs list gains a **grouping mode**: when invocations exist, sessions
 can be grouped under their parent invocation. Default view is flat (current
 behavior); grouped view nests sessions under invocation headers:
 
-```
+```text
 ▼ /show "resolve lionagi issues" — 14 sessions, 6h 38m, completed
     play:backend — completed, 87 min
     play-gate:backend — completed, 3 min
@@ -176,7 +177,7 @@ The Runs page (`/runs/invocations`) uses a `View: Invocations | Sessions` toggle
 (see ChatGPT frontend design review, sections 1 and 5). The default view is grouped
 by invocation. Each parent row shows:
 
-```
+```text
 ▾ /show lionagi-issue-sweep                              worst: stale
   6 plays · 14 sessions · 9h elapsed · 7 artifacts · updated 10m ago
   Models: codex/gpt-5.5 ×10 · claude-sonnet-4-6 ×4
@@ -189,7 +190,7 @@ grouped row from showing a clean "running" state when one child is stale.
 
 Expanded child rows show two columns — **Status** (reported) and **Health** (derived):
 
-```
+```text
 Run          Agent        Model             Status       Health     Dur
 f82488be     reviewer     codex/gpt-5.5     running      stale      1h 34m
 462bb5ed     play-gate    claude-sonnet     running      stale      9h 46m
@@ -243,7 +244,7 @@ primitive type (`agent`, `play`, `flow`, `fanout`, `show-play`). The new
 
 The two compose:
 
-```
+```text
 invocation (skill="show", prompt="resolve lionagi issues")
   ├── session (invocation_kind="play", show_play_name="backend")
   ├── session (invocation_kind="agent", agent_name="play-gate")
@@ -261,6 +262,7 @@ User-created skills (files in `~/.lionagi/skills/`) work the same way.
 ## Consequences
 
 **Positive**
+
 - The full execution tree is traceable: skill → invocation → sessions →
   branches → messages.
 - Orchestrator skills get first-class lifecycle tracking without expanding
@@ -272,6 +274,7 @@ User-created skills (files in `~/.lionagi/skills/`) work the same way.
 - Marketplace plugins get attribution via the `plugin` column.
 
 **Negative**
+
 - Skills must explicitly call `li invoke start/end` to get tracking. Skills
   that don't are invisible at the invocation layer (sessions still tracked).
 - `node_metadata` is unstructured — no schema validation means skill-specific

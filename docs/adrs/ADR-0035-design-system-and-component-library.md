@@ -31,7 +31,7 @@ headless libraries designed specifically for this purpose.
 
 ADR-0013 itself noted: "This trade-off would not be acceptable for a
 public-facing product." The product direction has now changed — Studio
-is becoming the operational interface, not just Ocean's local tool.
+is becoming the operational interface, designed for use by development teams of varying sizes.
 
 ## Decision
 

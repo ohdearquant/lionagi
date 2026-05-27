@@ -706,74 +706,28 @@ carries `type: "dag_node"` with the node's `op_id` in the `id` field. Leo can us
 questions about that specific operation — its status, logs, cost, inputs, or outputs — without
 requiring the operator to identify the node by name.
 
-## Identity: This Agent Is Leo (λ₀)
+## System Prompt Template
 
-The Studio Command Chat agent is Leo (λ₀) — the global meta-orchestrator from the Lion ecosystem
-identity system. Leo is not "a chat feature bolted onto Studio." Leo IS the product surface through
-which operators interact with the entire intelligence operating system.
-
-### System Prompt Template
-
-The system prompt is assembled at session start by interpolating the current context snapshot and
-brain posteriors into a schematic template. Placeholder slots are resolved server-side before the
-`Branch` is initialized:
+The system prompt is assembled at session start by interpolating the current context snapshot into
+a schematic template. Placeholder slots are resolved server-side before the `Branch` is
+initialized:
 
 ```text
-You are Leo (λ₀), the Studio Command Chat agent for {project_name}.
+You are the Studio Command Chat agent for {project_name}.
 
 Current context:
 - Page: {current_route}
 - Selected: {selected_entity_summary}
-- User preference: {brain.verbosity} verbosity, {brain.output_format} format
 
 Available tools: {tool_list_summary}
 
-Style: {brain.tone} tone, {brain.technical_depth} depth.
 When unsure, ask — never execute destructive actions without confirmation.
 ```
 
 `{project_name}` is resolved via ADR-0026 project detection; falls back to `"this project"`.
 `{current_route}` and `{selected_entity_summary}` come from the most recent `StudioContextSnapshot`.
-`{brain.*}` slots are pulled from the operator's brain profile posteriors; if no profile exists the
-slot defaults are `standard` verbosity, `mixed` format, `direct` tone, and `intermediate` depth.
 `{tool_list_summary}` is a comma-separated list of available tool names for the current capability
 set, kept under 200 characters to avoid token bloat.
-
-### Brain Plugin Integration
-
-Each Studio user gets a dedicated brain profile (via the `brain` khive plugin). The brain profile
-stores:
-
-- **Priors and posteriors**: learned preferences for layout, verbosity, default model, theme, and
-  workflow patterns.
-- **Feedback loop**: explicit feedback events (`brain.feedback`) update posteriors so Leo adapts to
-  each operator over time.
-- **Profile resolution**: `brain.resolve` maps caller context (user ID, namespace, consumer kind) to
-  the correct profile. Multiple users on the same Studio instance get independent Leo experiences.
-- **Lifecycle**: profiles follow `brain.create_profile` → `brain.activate` → `brain.deactivate` →
-  `brain.archive`.
-
-### Personalization via Brain Profiles
-
-Leo uses brain posteriors to personalize:
-
-- **Frontend customization**: theme, layout density, default page, sidebar collapsed state,
-  preferred chart type, canvas zoom level. These preferences are stored as brain profile properties
-  and applied as client effects on session start.
-- **Response style**: verbosity level, technical depth, preferred output format (table vs prose vs
-  code). The system prompt template interpolates brain posteriors.
-- **Workflow defaults**: preferred model, default effort level, common tool presets, frequent
-  schedule patterns. Leo suggests based on learned patterns.
-- **Context awareness**: Leo remembers what the operator was working on across sessions via brain
-  event history, without requiring explicit "remember this" commands.
-
-### Extensibility
-
-Leo in Studio is designed as an extensible operator interface. The initial implementation wraps
-CLI commands through a typed tool registry with confirmation gates. As Studio APIs mature, Leo
-can call them directly instead of shelling out, reducing latency and enabling richer interactions.
-The architecture supports incremental capability growth without requiring breaking changes to the
-chat protocol or security model.
 
 ## Failure Modes
 

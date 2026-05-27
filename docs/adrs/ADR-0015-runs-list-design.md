@@ -23,7 +23,7 @@ distinguish 376 rows that mostly share the same name and status.
 Each row has a primary display name (computed from provenance) and a secondary
 meta line (session ID + supplementary context):
 
-```
+```text
 unimpl-adr-sweep / closeout-audit        show play   completed   1 br · 24 msg   15h ago
   session 20260520T0A7... · playbook show · agent orchestrator
 
@@ -58,6 +58,7 @@ absent, the row simply falls back to session ID and timestamp.
 | Updated | 150px | Visible | Relative timestamp, primary sort |
 
 Hidden columns (available via `[Columns]` toggle):
+
 - Started, Source kind, Playbook, Agent, Show topic, Show play, Session ID,
   Branches (split), Messages (split)
 
@@ -65,7 +66,7 @@ Hidden columns (available via `[Columns]` toggle):
 
 Dense two-row filter bar above the table:
 
-```
+```json
 [ Search name, id, show, play, playbook, agent... ]      [Columns ▾]
 Status: [All] [Running] [Completed] [Failed] [Aborted]
 Kind:   [All] [Agent] [Play] [Flow] [Fanout] [Show play]
@@ -91,6 +92,7 @@ keyboard navigation, and future expandable rows. Pagination is simpler.
 ### 5. Empty provenance handling
 
 During the transition period (most sessions have null provenance):
+
 - Rows with provenance get descriptive display names (show/play, playbook, agent)
 - Rows without provenance fall back to session name + timestamp
 - No "unlinked" labels, no "missing" indicators — absence is handled by
@@ -100,12 +102,14 @@ During the transition period (most sessions have null provenance):
 ## Consequences
 
 **Positive**
+
 - Every row is identifiable even when 100+ share the same session name.
 - Filters enable targeted diagnosis (show me all failed show-plays).
 - Pagination prevents render performance degradation.
 - Column toggle lets power users expose raw metadata when needed.
 
 **Negative**
+
 - Two-line rows use more vertical space per row (~52px vs ~36px).
 - Display-name algorithm requires client-side computation per row.
 - Filter state is local with one exception: the `?status=` query parameter is supported for dashboard deep links (ADR-0012). Other filter dimensions (kind, source, search) are local-only until deep-linking is needed.

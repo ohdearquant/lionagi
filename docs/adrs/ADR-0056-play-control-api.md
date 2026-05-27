@@ -81,9 +81,7 @@ from pydantic import BaseModel, Field
 
 class RunnerKind(StrEnum):
     LOCAL_WORKTREE = "local_worktree"
-    DAYTONA = "daytona"
-    E2B = "e2b"
-    CODESPACE = "codespace"
+    REMOTE_SANDBOX = "remote_sandbox"
     SSH = "ssh"
 
 

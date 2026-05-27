@@ -1,9 +1,15 @@
 # ADR-0030: Attention Queue
 
-**Status**: Proposed
+**Status**: Proposed — depends on [ADR-0033](ADR-0033-unified-entity-state-model.md), extended to include knowledge events per [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md)
 **Date**: 2026-05-23
 **Depends on**: ADR-0028 (status reason model) — without persisted reason codes, the queue's grouping and dismissal logic become frontend heuristics
 **Related**: ADR-0029 (artifact contract), ADR-0024 (session health), ADR-0031 (entity actions reuse)
+
+---
+
+> **Extension notice**: [ADR-0033](ADR-0033-unified-entity-state-model.md) provides the canonical severity computation (`derive_severity()`) and reason-code chain that the Attention Queue consumes. The Queue's severity values (`critical, warning, info, neutral`) now have uniform semantics across entity types because they all derive from NormalizedState. [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md) adds knowledge-related items to the Queue (disputed claims, low-confidence aged hypotheses, supersession anomalies) via a parallel `derive_claim_severity()` function emitting into the same Queue. The Queue's mechanics defined here are preserved; the sources of severity are now plural and unified.
+
+---
 
 ## Context
 

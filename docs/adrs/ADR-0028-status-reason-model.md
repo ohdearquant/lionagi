@@ -1,8 +1,14 @@
 # ADR-0028: Status Reason Model
 
-**Status**: Proposed
+**Status**: Proposed — extended by [ADR-0033](ADR-0033-unified-entity-state-model.md)
 **Date**: 2026-05-23
 **Extends**: ADR-0024 (session health), ADR-0025 (session status vocabulary), ADR-0017 (session lifecycle)
+
+---
+
+> **Extension notice**: [ADR-0033](ADR-0033-unified-entity-state-model.md) generalizes this ADR's reason-code chain to apply uniformly across ALL entity types (sessions, shows, plays, schedules, teams, invocations, knowledge claims). The `StateReason` dataclass in ADR-0033 directly implements this ADR's hot-path/cold-path model. The reason-code namespace defined here is extended with `knowledge.*` codes in ADR-0033 §"Reason code namespace". Implementations follow this ADR's mechanics; the canonical schema lives in ADR-0033.
+
+---
 
 ## Context
 

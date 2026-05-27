@@ -4,6 +4,12 @@
 **Date**: 2026-05-23
 **Related**: ADR-0031 (entity header pattern lands inside this nav structure)
 
+---
+
+> **Related update**: This ADR's navigation structure (Dashboard | Work | Library | Admin) is preserved. [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md) introduces knowledge as a "lens" pattern rather than a top-level nav section — knowledge surfaces contextually on entity detail pages (Run detail, Show detail) and via search/command palette. Promotion to top-level nav is deferred until curation workflows exist; this ADR's structure remains canonical for v1.
+
+---
+
 ## Context
 
 Studio's top navigation today lists ten entity types as siblings at

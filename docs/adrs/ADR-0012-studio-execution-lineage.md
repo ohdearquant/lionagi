@@ -4,13 +4,19 @@
 **Date**: 2026-05-20
 **Extends**: ADR-0009 (SQLite state layer), ADR-0010 (plugins), ADR-0011 (shows data model), ADR-0017 (session lifecycle)
 
+---
+
+> **Related update**: This ADR defines execution lineage and status display vocabulary. [ADR-0033](ADR-0033-unified-entity-state-model.md) formalizes the backend-owned `NormalizedState` that drives all status display, severity computation, and reason-code attachment. The display mappings here are preserved for backwards compatibility; new display code should consume `NormalizedState` directly. The lineage relationships (run → invocation → tool_call) remain authoritative for execution provenance.
+
+---
+
 ## Context
 
 Lion Studio does not have a UI naming problem. It has an **execution data-contract
 problem**. Users can see playbooks, agents, plugins, runs, and shows as isolated
 pages, but the causal chain between them is not surfaced:
 
-```
+```text
 Playbook / Agent → Show Play → Session → Branch → Messages / Tool Calls → Artifacts
 ```
 
@@ -58,11 +64,12 @@ enriched sessions is straightforward. Going the other direction is harder.
 
 ### 2. Navigation: keep "Runs", reorder, no Dashboard item
 
-```
+```text
 Playbooks | Agents | Plugins | Shows | Runs
 ```
 
 Changes from current (`Playbooks | Agents | Plugins | Runs | Shows`):
+
 - **Shows** moves before **Runs** — shows orchestrate plays that create sessions.
   Left-to-right matches causality.
 - **"Runs"** stays as the nav label. Users think "I ran a playbook," not "I created
@@ -100,7 +107,7 @@ Detail views show the raw status in a metadata section.
 **"Completed with errors" pattern**: Tool errors are diagnostic, not
 status-changing. A completed session with intermediate tool failures displays as:
 
-```
+```text
 completed · 112 intermediate tool errors
 ```
 
@@ -127,7 +134,7 @@ The run detail page restructures from a flat branch/message scroll to anchored
 sections with a sticky section nav. **Not tabs** — tabs hide information, which is
 wrong for a debugging tool.
 
-```
+```text
 Sticky section nav (dynamic ordering):
 [Overview] [Errors 112] [Branches 7] [Files 11] [Execution]
 
@@ -139,6 +146,7 @@ Each branch is an accordion.
 ```
 
 **Overview section** (new):
+
 - Verdict/outcome badge with error qualifier: `completed · 112 intermediate tool errors`
 - Duration with disambiguation: session duration vs branch duration when different
 - Branch count, message count, tool call count, error count (labeled "intermediate
@@ -176,7 +184,7 @@ context. This sidesteps the session-to-playbook resolution problem.
 For **declarative playbooks** (no steps/links), do not synthesize a fake graph.
 Show a linear execution summary instead:
 
-```
+```text
 Agent: architect → 47 tool calls → 11 files → Verdict: PASS
 ```
 
@@ -259,14 +267,14 @@ filters give better ROI. Search becomes important when artifacts are indexed.
 of sessions the UI can actually list and open — not filesystem run directories.
 If the runs page shows 376 sessions, the dashboard shows 376 runs.
 
-```
+```text
 INVENTORY    20 playbooks    17 agents    376 runs    2 shows
 ```
 
 The 549 filesystem run directories are visible on the runs page as import status,
 not on the dashboard:
 
-```
+```text
 Import status: 549 filesystem dirs detected · 376 indexed · 173 unindexed
 [Run import]
 ```
@@ -275,6 +283,7 @@ This separation keeps operational state on the dashboard and migration state whe
 it is actionable.
 
 Other improvements:
+
 - Metric cards clickable, routing to filtered runs list (`/runs?status=failed`).
 - "Needs attention" surfaces slow/stale when count > 0. Does NOT include
   intermediate tool errors (those are diagnostic, not operational).
@@ -285,6 +294,7 @@ Other improvements:
 
 **Phase 0 — Prerequisites** (implemented on `feat/studio-monitoring-polish`,
 pending merge):
+
 - Session schema enrichment + provenance columns (v2→v3 migration)
 - Show → Session drill-down (play accordion with session links)
 - Run detail anchored sections (Overview, Tool errors, Branches, Files)
@@ -311,6 +321,7 @@ pending merge):
 ## Consequences
 
 **Positive**
+
 - Full execution chain navigable: show → play → session → messages → artifacts.
 - Single query source (enriched sessions) eliminates count mismatches.
 - Status display mapping preserves raw state machine while showing consistent UI.
@@ -319,6 +330,7 @@ pending merge):
 - Zero new tables — enriched sessions avoid premature abstraction.
 
 **Negative**
+
 - Session table gains 7 nullable columns — acceptable at current scale, may need
   extraction to an `executions` table if the table becomes unwieldy.
 - Historical backfill for 26 plays requires manual/heuristic matching.

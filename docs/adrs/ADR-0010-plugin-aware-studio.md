@@ -33,6 +33,7 @@ A new service scans two locations for plugins:
 | Third-party | `~/.claude/plugins/cache/*/*/` | No (read-only) |
 
 For each plugin directory, the service:
+
 - Reads `.claude-plugin/plugin.json` for metadata (name, version, description)
 - Falls back to directory name if no manifest exists
 - Enumerates `skills/*/SKILL.md`, `agents/*.md`, `hooks/hooks.json`, `.mcp.json`
@@ -43,7 +44,7 @@ list for repo plugins. Third-party plugins are discovered by directory scan.
 
 ### 2. API surface
 
-```
+```text
 GET  /api/plugins/              → list all plugins with component counts
 GET  /api/plugins/{name}        → plugin detail: metadata + component lists
 GET  /api/plugins/{name}/skills/{skill}  → skill content (read-only)
@@ -62,6 +63,7 @@ Navigation changes from `Playbooks | Agents | Skills | Runs | Shows` to
 name or `Lion Marketplace`), component counts (N skills, M agents).
 
 **Plugin detail page**: tabbed layout:
+
 - **Skills** tab: two-pane list+detail, read-only SKILL.md viewer
 - **Agents** tab: agent names/descriptions with `Open in Agents →` cross-links
 - **Hooks** tab: `hooks.json` viewer (read-only)
@@ -94,11 +96,13 @@ Plugin components need explicit navigation to their editable counterparts and
 clear source/editability indicators:
 
 **Cross-links from plugin detail tabs**:
+
 - Agent tab: `Open in Agents →` link per agent (routes to `/agents/{name}`)
 - Skill tab: `View source` link, `Copy path` action
 - All tabs: `Open raw` for filesystem path
 
 **Source badges on plugin list and detail**:
+
 | Badge | Meaning |
 |-------|---------|
 | `Lion Marketplace` | From `marketplace/`, writable |
@@ -119,6 +123,7 @@ font with code fences in monospace, not the current all-monospace treatment.
 ### 6. Deferred: CLI sync, monitors, themes, LSP
 
 These are not part of this ADR:
+
 - `li plugin sync` CLI (marketplace → CC plugin install) — separate feature
 - Monitors, themes, LSP components — surface in Studio when usage warrants
 - Model-agnostic abstraction — current format is CC-native; abstract later
@@ -126,12 +131,14 @@ These are not part of this ADR:
 ## Consequences
 
 **Positive**
+
 - Skills and agents gain context: users see which plugin provides each capability.
 - Editing flows through existing definitions versioning — no new persistence layer.
 - Third-party plugin visibility without management complexity.
 - Direct alignment with CC's plugin model — what you see in Studio is what CC loads.
 
 **Negative**
+
 - Plugin discovery adds startup scan cost (~22ms for 4 plugins, negligible).
 - Two navigation paths to the same skill (Plugins → devx → commit vs. direct URL).
 - `plugin.json` may not exist for all marketplace plugins yet — fallback to dir name.

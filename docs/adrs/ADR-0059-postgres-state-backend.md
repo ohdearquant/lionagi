@@ -52,8 +52,8 @@ Studio also has a security gap: when `LIONAGI_STUDIO_AUTH_TOKEN` is set, current
 protects `/api/admin/*` GETs and mutating `/api/*` methods, but ordinary GET endpoints such as
 `/api/stats` are not covered (`apps/studio/server/app.py:52`, `apps/studio/server/app.py:86`).
 
-Postgres is added for production Studio, multi-worker schedulers, remote executors, managed
-backup, point-in-time recovery, operational metrics, and indexed search over shared state.
+Postgres is added for production Studio, multi-worker schedulers, remote executors, standard
+Postgres backup and WAL recovery, operational metrics, and indexed search over shared state.
 SQLite remains the default local backend. This ADR is therefore a backend-boundary decision,
 not a replacement of the local developer workflow.
 
@@ -65,7 +65,7 @@ flowchart LR
   Facade --> Store[StateStore protocol]
   Store --> SQLite[SQLiteStateStore]
   Store --> Postgres[PostgresStateStore]
-  Postgres --> PG[(Managed Postgres)]
+  Postgres --> PG[(Postgres)]
   SQLite --> DB[(state.db)]
 ```
 

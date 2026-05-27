@@ -30,12 +30,12 @@ counts role signatures, not actor distinctness).
 
 ### The applicable prior governance research insight
 
-prior research introduced SoD as a *data-driven gate at grant time* for human role assignments
-in SOX-governed finance workflows: the same person cannot initiate and approve a wire transfer;
-cannot modify a ledger and audit it; cannot grant privileged access and use it. The lion
-translation replaces "person" with "branch actor" (identified by `ln_id`, not by model name),
-"role grant" with "role assignment in a flow step", and "CFO approval" with "external attestation
-by a human or a distinct designated authority agent". The five conflict types carry over verbatim
+Prior research introduced SoD as a *data-driven gate at grant time* for role assignments: the
+same actor cannot both initiate and approve a state-changing action; cannot produce evidence and
+then audit it; cannot grant privileged access and use it. The lion translation replaces "person"
+with "branch actor" (identified by `ln_id`, not by model name), "role grant" with "role
+assignment in a flow step", and "external authority approval" with "external attestation by a
+human or a distinct designated authority agent". The five conflict types carry over verbatim
 because they are structural — they describe the shape of the bypass, not the domain in which
 it occurs.
 
@@ -64,7 +64,7 @@ Five conflict types are defined, translated from prior research to agent terms:
 | Conflict Type | Agent description | Canonical example |
 |---|---|---|
 | `TRANSACTION_DUAL_CONTROL` | Same actor both initiates and approves a state-changing action | branch writes code; branch reviews it |
-| `RECORD_CUSTODY` | Same actor both creates evidence and audits it | branch produces artifacts; branch audits the artifact trail |
+| `RECORD_CUSTODY` | Same actor both creates evidence and audits it | an agent that proposes a file deletion cannot also be the agent that logs the deletion event |
 | `AUDIT_INDEPENDENCE` | An actor's own outputs cannot be sole verification evidence | branch.verify() using only evidence from the same branch |
 | `APPROVAL_CHAIN` | Same actor appears more than once in an approval chain | branch is both L1 and L2 approver in a multi-step sign-off |
 | `ACCESS_CONTROL` | Same actor both grants tool access and uses the granted tool | branch issues a JIT grant (ADR-0046) and then exercises it |
@@ -559,7 +559,7 @@ chain (ADR-0041) as the rejection record.
 The `AUDIT_INDEPENDENCE` conflict type extends beyond flow role assignments to
 `branch.verify()` from ADR-0039. A verification claim whose `actor_id` is `X` cannot rely
 solely on evidence whose `actor_id` is also `X` within the same scope. This is the agent
-analogue of prior governance research's prohibition on a system administrator auditing their own changes.
+analogue of the general principle that an actor cannot audit their own outputs.
 
 At `branch.verify()` call time:
 
@@ -782,5 +782,3 @@ Explicitly out of scope:
 - [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md) — `branch.verify()` AUDIT_INDEPENDENCE check
 - [ADR-0033](ADR-0033-unified-entity-state-model.md) — EvidenceRef carries `actor_id`; used
   in `check_audit_independence`
-- prior governance research `01_design/032-segregation-of-duties/ADR-032-segregation-of-duties.md` — source
-  pattern (SOX Section 302/404 compliance, five conflict type taxonomy, exemption workflow)

@@ -63,7 +63,7 @@ FEAT(GATE): Added gate stuff.
 
 ## 3. PR Title Rules
 
-- Format: `[Pxx] type(scope): summary`.
+- Format: `type(scope): summary`.
 - Maximum 90 characters.
 - Scope must match the dominant commit scope.
 - Do not use marketing language.
@@ -71,18 +71,18 @@ FEAT(GATE): Added gate stuff.
 **Good**:
 
 ```text
-[P12] docs(adr): reconcile gate result and operation context ownership
-[P16] feat(charter): compile DSL registry and gate targets
-[P17] feat(gate): implement execute_governed with fail-closed exceptions
-[P20] feat(trace): emit permit and certificate lifecycle spans
+docs(adr): reconcile gate result and operation context ownership
+feat(charter): compile DSL registry and gate targets
+feat(gate): implement execute_governed with fail-closed exceptions
+feat(trace): emit permit and certificate lifecycle spans
 ```
 
 **Bad**:
 
 ```text
-[P12] Revolutionary governance overhaul
-[P16] Charter stuff
-feat(charter): compile DSL (missing play tag)
+Revolutionary governance overhaul
+Charter stuff
+feat: governance stuff (scope missing)
 ```
 
 ---
@@ -174,7 +174,7 @@ tests are written alongside the feature, not after.
 ## 7. Example B: PR Header And Body Summary
 
 ```markdown
-# [P16] feat(charter): compile DSL registry and gate targets
+# feat(charter): compile DSL registry and gate targets
 
 ## Summary
 

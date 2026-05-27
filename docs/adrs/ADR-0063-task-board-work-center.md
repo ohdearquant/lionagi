@@ -41,10 +41,10 @@ metadata, a state machine, and transition events. ADR-0063 consumes those events
 surface: the operator's command center.
 
 Coupling estimate after this decision: components `{WorkItemService, StateStore, EventBus,
-StudioTaskAPI, TaskBoardUI, Scheduler, PlayControl, CostService, CharterCompiler, GTDSync}` with
+StudioTaskAPI, TaskBoardUI, Scheduler, PlayControl, CostService, CharterCompiler, ExternalConnector}` with
 deps `{WorkItemService->StateStore, WorkItemService->EventBus, StudioTaskAPI->WorkItemService,
 TaskBoardUI->StudioTaskAPI, Scheduler->EventBus, PlayControl->EventBus, CostService->StateStore,
-CharterCompiler->WorkItemService, GTDSync->WorkItemService, WorkItemService->CostService}` gives
+CharterCompiler->WorkItemService, ExternalConnector->WorkItemService, WorkItemService->CostService}` gives
 `10 / (10 * 9) = 0.11`.
 
 ## Decision
@@ -60,9 +60,9 @@ The board has three standard views:
 3. **List** with filters for status, assignee, priority, labels, source, project, cost, and due date.
 
 Schedule runs and play runs create work items automatically. Manual tasks can be created from Studio
-or `li task create`. GTD plugin items may sync bidirectionally when configured. Charter constraints
-can create required work items, for example "review required before merge" or "approval required
-for shell schedule".
+or `li task create`. External task management systems may sync bidirectionally through a configured
+connector. Charter constraints can create required work items, for example "review required before
+merge" or "approval required for shell schedule".
 
 ### Work Item Types
 
@@ -127,7 +127,7 @@ class WorkItem(BaseModel):
     priority: Priority = Priority.P2
     labels: list[str] = Field(default_factory=list)
     due_at: float | None = None
-    source_type: Literal["manual", "schedule_run", "play", "session", "charter", "gtd"]
+    source_type: Literal["manual", "schedule_run", "play", "session", "charter", "external"]
     source_id: str | None = None
     project: str | None = None
     estimated_cost_cents: int | None = None
@@ -185,7 +185,7 @@ flowchart LR
   Scheduler[ADR-0061 schedule runs] --> Events[ADR-0062 transition events]
   Plays[plays and sessions] --> Events
   Charter[charter compiler] --> WorkSvc[WorkItemService]
-  GTD[GTD sync] <--> WorkSvc
+  Connector[external connector] <--> WorkSvc
   Events --> WorkSvc
   WorkSvc --> Store[StateStore]
   Store --> API[Studio task API]
@@ -269,7 +269,7 @@ CREATE TABLE IF NOT EXISTS work_item_events (
 
 CREATE TABLE IF NOT EXISTS board_views (
   id          TEXT PRIMARY KEY,
-  owner_id    TEXT NOT NULL,
+  owner_id    TEXT NOT NULL,  -- in the single-admin model, derived from the configured bearer token
   name        TEXT NOT NULL,
   view_type   TEXT NOT NULL CHECK(view_type IN ('kanban', 'timeline', 'list')),
   filters     JSON NOT NULL DEFAULT '{}',
@@ -312,7 +312,7 @@ format is `StateTransitionEvent` as defined in ADR-0062.
 | session | Create one item when a standalone `li agent`, `li o flow`, or `li o fanout` session starts without a schedule/play source. | session terminal states map to completed/failed/timed_out/cancelled |
 | manual | Created by Studio or `li task create`. | draft or queued |
 | charter | Created by charter compiler when a policy requires approval, review, or segregation-of-duties handoff. | queued or blocked |
-| GTD | Synced by connector when enabled. | external state maps through configured status map |
+| external connector | Synced by external task management connector when enabled. | external state maps through configured status map |
 
 Automatic creation is idempotent on `(source_type, source_id)`.
 
@@ -385,7 +385,7 @@ log lines into work item rows.
 | 1 | WorkItemService, automatic creation from schedule/play/session events, idempotency tests | 420-680 |
 | 2 | REST router, SSE stream, bulk actions, comments/events APIs | 380-620 |
 | 3 | Studio Kanban/list/timeline UI with filters, badges, live cost counter | 700-1100 |
-| 4 | `li task` CLI, GTD sync adapter, charter-created approval items | 420-780 |
+| 4 | `li task` CLI, external connector adapter, charter-created approval items | 420-780 |
 | 5 | Compliance hardening, SoD checks, audit export, migration docs | 260-420 |
 
 Testability target: `tau = 0.84`. The service layer is event-driven and can be tested without a

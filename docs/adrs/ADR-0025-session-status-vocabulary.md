@@ -1,8 +1,14 @@
 # ADR-0025: Session Status Vocabulary
 
-**Status**: Proposed
+**Status**: Superseded by [ADR-0033](ADR-0033-unified-entity-state-model.md)
 **Date**: 2026-05-21
 **Supersedes**: ADR-0017 §"Status vocabulary (sessions)" (partially — extends the vocabulary)
+
+---
+
+> **Supersession notice**: [ADR-0033](ADR-0033-unified-entity-state-model.md) fully supersedes this ADR. ADR-0025's six-value vocabulary (`running, completed, failed, timed_out, cancelled, aborted`) is preserved verbatim as `NormalizedState.lifecycle` for sessions/runs, but now sits alongside two new orthogonal axes (health and delivery). The standalone status field as defined here is deprecated; the unified `NormalizedState` object is authoritative. Read this ADR for the rationale behind the six terminal values; consult ADR-0033 for current state semantics.
+
+---
 
 ## Context
 
@@ -28,6 +34,7 @@ whether a "failed" run needs debugging or just a longer timeout.
 ### 2. No distinction between crash and error
 
 A session can fail because:
+
 - The model returned a malformed response → **error** (recoverable)
 - The Python process segfaulted → **crash** (infrastructure)
 - A dependency raised an exception → **error** (potentially recoverable)
@@ -40,6 +47,7 @@ error), but the status column doesn't record the distinction.
 ### 3. "Aborted" conflates user-initiated and system-initiated
 
 `aborted` covers both:
+
 - User pressed Ctrl-C → **user cancelled** (intentional)
 - Anyio task group cancelled a child → **system cancelled** (cascade)
 - Show abort sentinel → **orchestrator cancelled** (intentional, higher level)
@@ -233,13 +241,13 @@ Use color + icon + text together. Never rely on color alone.
 
 #### Pill anatomy
 
-```
+```json
 [ icon  label ]
 ```
 
 Sizing:
 
-```
+```text
 height: 20px
 padding-x: 6px
 font-size: 10px or 11px
@@ -250,7 +258,7 @@ border: 1px solid semantic border
 
 Dense table variant:
 
-```
+```text
 height: 18px
 font-size: 10px
 ```
@@ -276,7 +284,7 @@ was in place) are displayed as `legacy unclassified`:
 
 On the dashboard, legacy sessions appear only as a muted chip:
 
-```
+```text
 376 legacy sessions
 ```
 
@@ -288,11 +296,12 @@ from live operational metrics."
 When the reported status is `running` but the derived health is `stale`,
 the UI must not show a blue Running pill alone. Show the compound state:
 
-```
+```json
 [stale running]
 ```
 
 Rules:
+
 - **Do not show a blue Running pill alone when health is stale.**
 - In tables with separate Status and Health columns, show both:
   `Status: running` / `Health: stale`
@@ -377,6 +386,7 @@ if status in SESSION_TERMINAL_STATUSES:
 ## Consequences
 
 **Positive**
+
 - Timeout, user abort, and system cancellation are distinguishable in
   the DB and UI — each has a clear follow-up action.
 - Exit codes follow UNIX convention — familiar to operators, parseable
@@ -388,6 +398,7 @@ if status in SESSION_TERMINAL_STATUSES:
 - Python validation replaces SQLite CHECK — more flexible, same safety.
 
 **Negative**
+
 - Schema migration for CHECK constraint removal requires table rebuild
   or constraint relaxation. Pre-release, so acceptable.
 - Six statuses instead of four — slightly more to understand. Each maps

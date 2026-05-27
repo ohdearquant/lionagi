@@ -33,16 +33,16 @@ evidence shapes, and some emit none.
 
 ### The applicable prior governance research insight
 
-prior research establishes that "if there is ANY path that bypasses the enforcement pipeline,
-compliance is broken." The solution is not more policy configuration — it is a single mandatory
-pipeline (`CanonService.request()`) where every phase is non-optional and the underlying handler
-is unreachable from outside the pipeline. ADR-010 completes the picture: governance metadata
-(`@action` decorator, `ActionMeta` frozen dataclass) is attached to the handler at definition
-time, not assembled at invocation time. Co-location is what makes drift impossible.
+If there is ANY path that bypasses the enforcement pipeline, compliance is broken. The solution
+is not more policy configuration — it is a single mandatory pipeline where every phase is
+non-optional and the underlying handler is unreachable from outside the pipeline. Governance
+metadata must be attached to the handler at definition time, not assembled at invocation time.
+Co-location is what makes drift impossible.
 
 Translated to lionagi: the `@governed_tool` decorator plays the role of `@action`, and
-`ActionManager.execute_governed()` plays the role of `CanonService.request()`. The `Tool` class
-remains as the schema and callable carrier; governance metadata is a separate, frozen attachment.
+`ActionManager.execute_governed()` is the single enforcement point for all governed tool calls —
+no governed tool may bypass it. The `Tool` class remains as the schema and callable carrier;
+governance metadata is a separate, frozen attachment.
 
 ### Why lionagi needs this
 
@@ -819,5 +819,3 @@ Explicitly out of scope:
 - [ADR-0046](ADR-0046-jit-tool-grant.md) — JIT grants acquired at runtime; interact with SOFT gate resolution
 - [ADR-0033](ADR-0033-unified-entity-state-model.md) — `EvidenceRef` kinds (tool_result, model_inference, etc.) used in Phase 8 evidence nodes
 - [ADR-0023](ADR-0023-unified-hook-system.md) — Existing hook system; `guard_destructive`, `guard_paths`, `log_tool_use` are candidates for migration to gate declarations
-- prior governance research `01_design/010-action-declaration/ADR-010-action-declaration.md` — `@action` decorator and `ActionMeta` frozen dataclass pattern
-- prior governance research `01_design/012-single-enforcement/ADR-012-single-enforcement.md` — `CanonService.request()` single entry point; "any bypass breaks compliance"

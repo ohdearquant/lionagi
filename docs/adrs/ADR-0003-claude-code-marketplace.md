@@ -8,13 +8,13 @@
 
 lionagi is evolving from a Python SDK into a daily-driver agent runtime (ADR-0001). Users now reach for it for show direction, research workflows, memory hygiene, and the Lion Studio dashboard — capability sets that differ significantly in what they require. Installing all of these as a single undifferentiated package forces users to accept the full dependency surface when they may only want one slice.
 
-Claude Code's plugin marketplace provides a tested distribution primitive: a root `marketplace.json` manifest lists available plugins; each plugin lives at `marketplace/<name>/` with its own `plugin.json`, skills, agent profiles, and optional MCP server configuration. The khive repository at `/Users/lion/projects/khive/khive/marketplace/` has validated this pattern in production.
+Claude Code's plugin marketplace provides a tested distribution primitive: a root `marketplace.json` manifest lists available plugins; each plugin lives at `marketplace/<name>/` with its own `plugin.json`, skills, agent profiles, and optional MCP server configuration.
 
 ## Decision
 
 Adopt the Claude Code marketplace pattern inside the lionagi repository. The structure is:
 
-```
+```text
 .claude-plugin/marketplace.json          # root manifest
 marketplace/<plugin>/.claude-plugin/plugin.json  # per-plugin manifest
 marketplace/<plugin>/skills/             # bundled skills (added in later plays)
@@ -37,7 +37,7 @@ package are required for any of the four.
 
 | Plugin | Reason |
 |--------|--------|
-| `research` | Contains private trading IP that cannot be shipped in a public package. Removed entirely; no replacement planned in the public catalog. |
+| `research` | Removed entirely; no replacement planned in the public catalog. |
 | `kg-bridge` | Tight coupling to khive MCP server. lionagi's public marketplace must not depend on khive internals. Removed; khive users can configure the bridge manually. |
 
 ### Deferred plugins (v2.1+)
@@ -75,12 +75,14 @@ shipped in Phase 0 and why the remaining four were removed or deferred.
 ## Consequences
 
 **Positive**
+
 - Users install only the capability slices they need, keeping Claude Code context lean.
 - Each plugin can version independently; `studio` can ship a breaking MCP config change without bumping `devx`.
 - MCP server configuration can be bundled per plugin (`studio`, `mcp-bundle`) once the FastAPI backend route set is stable.
 - Clear ownership boundary: each plugin directory is a self-contained unit that external contributors or downstream forks can understand and extend.
 
 **Negative**
+
 - More manifests to maintain: root `marketplace.json` plus four `plugin.json` files (v2) must stay in sync as plugin names or descriptions change.
 - Skills authored in `firm/resources/skills/` (canonical) must be copied or symlinked into `marketplace/<plugin>/skills/` for external installs — two places to update per skill change.
 - The `plugin.json` schema is not yet finalized by Anthropic; field names or required keys may shift before GA, requiring a sweep across all four manifests.
@@ -99,7 +101,6 @@ shipped in Phase 0 and why the remaining four were removed or deferred.
 - [ADR-0001: Lion Studio as Internal App](ADR-0001-lion-studio-internal-app.md) — establishes monorepo boundary and daily-driver app direction
 - [ADR-0002: Lion Studio Tech Stack](ADR-0002-studio-tech-stack.md) — establishes FastAPI backend stack that the `studio` and `mcp-bundle` plugins depend on
 - [ADR-0004: Filesystem Data Layer](ADR-0004-filesystem-data-layer.md) — establishes the FastAPI backend route contracts that `studio` and `mcp-bundle` plugins will eventually configure
-- khive marketplace reference implementation: `/Users/lion/projects/khive/khive/marketplace/`
 
 ---
 

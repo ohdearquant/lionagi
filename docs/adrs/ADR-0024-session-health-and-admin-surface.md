@@ -1,8 +1,14 @@
 # ADR-0024: Session Health Classification and Admin Surface
 
-**Status**: Proposed
+**Status**: Proposed — extended by [ADR-0033](ADR-0033-unified-entity-state-model.md)
 **Date**: 2026-05-21
 **Extends**: ADR-0017 (session lifecycle), ADR-0019 (run lifecycle management)
+
+---
+
+> **Extension notice**: [ADR-0033](ADR-0033-unified-entity-state-model.md) integrates this ADR's SessionHealth enum as the `process_health` dimension of the unified `NormalizedState`. The six health values defined here (`healthy, idle, unresponsive, stale, orphaned, zombie`) are preserved and feed into the central severity computation. The admin doctor endpoint described here is preserved as the operational interface; the underlying health classification now flows through NormalizedState across all entity reads, not just admin queries.
+
+---
 
 ## Context
 
@@ -47,10 +53,12 @@ Problems:
 ### The admin page could do much more
 
 The admin page currently shows:
+
 - DB health strip (size, WAL size, WAL pending)
 - Phantom sessions table (checkbox + prune)
 
 It could be the operational control center:
+
 - Session health overview (not just phantoms)
 - Active resource usage (worktrees, disk, connections)
 - Maintenance actions (checkpoint, vacuum, import, prune)
@@ -154,7 +162,7 @@ DEFAULT_STALE_THRESHOLD = 6 * 3600
 
 #### New endpoints
 
-```
+```text
 GET  /api/admin/health          # Full health report
 POST /api/admin/transition      # Change session status (with guard)
 POST /api/admin/checkpoint      # Force WAL checkpoint
@@ -276,7 +284,7 @@ The admin page becomes a full operational console with a top action row,
 two-column layout (Session health + Maintenance), an intervention queue,
 and side-by-side Resources + Event log panels.
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ Admin                                                    Checked 12:52 PM    │
 │ Studio maintenance and diagnostics                                          │
@@ -322,7 +330,7 @@ and side-by-side Resources + Event log panels.
 Bulk transitions open a confirmation modal that preserves session records
 while marking them terminal:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │ Transition 4 sessions to failed?                                    │
 │                                                                     │
@@ -345,7 +353,7 @@ while marking them terminal:
 Prune remains visually secondary and is disabled unless sessions are terminal
 or explicitly eligible:
 
-```
+```text
 Prune selected
 disabled: active sessions must be transitioned or exported first
 ```
@@ -355,7 +363,7 @@ disabled: active sessions must be transitioned or exported first
 The dashboard (ADR-0019 §B4) replaces the four current cards with an
 operator-focused layout. Cards:
 
-```
+```text
 1. Attention
 2. Active Executions
 3. Outcomes
@@ -364,7 +372,7 @@ operator-focused layout. Cards:
 
 **Attention** (most important card):
 
-```
+```text
 attention =
   stale running sessions
   + zombie sessions
@@ -375,7 +383,8 @@ attention =
 ```
 
 Example card:
-```
+
+```text
 ATTENTION
 4
 4 stale · 0 failed · 0 needs review
@@ -385,7 +394,7 @@ Oldest: 17h 56m
 **Active Executions**: separates "active" from "healthy". A session can be
 reported as `running` but effectively `stale`:
 
-```
+```text
 ACTIVE EXECUTIONS
 6 invocations
 4 sessions · 6 plays
@@ -395,7 +404,7 @@ Oldest active: 17h 56m
 **Outcomes**: summarizes quality, not just completion. Shows structured outcome
 breakdown when verdicts exist:
 
-```
+```text
 OUTCOMES 24H
 37 completed
 0 failed · 1 request changes
@@ -405,7 +414,7 @@ Pass rate: 97%
 **Latency / SLA**: replaces the "Slow Runs" card with tail latency.
 Threshold is **60 minutes** (confirmed by ADR-0025):
 
-```
+```text
 LATENCY 24H
 P95 58m
 2 over 60m · median 5m 18s
@@ -420,13 +429,13 @@ P95 58m
 
 Do not show `(Null)` sessions in the main status breakdown. Rename to:
 
-```
+```text
 Legacy unclassified
 ```
 
 Display as a muted data-hygiene chip in the system strip:
 
-```
+```text
 System: healthy · DB 847.3 MB · WAL 4.0 MB · Conn 0 · Legacy 376
 ```
 
@@ -567,6 +576,7 @@ Transitions remain explicit admin actions.
 ## Consequences
 
 **Positive**
+
 - Graduated health model gives precise language for session state —
   "stale" and "orphaned" mean different things with different actions.
 - Transition preserves session data for debugging; prune is a separate
@@ -580,6 +590,7 @@ Transitions remain explicit admin actions.
   intervention.
 
 **Negative**
+
 - More complex classification logic — 6 health states instead of 3
   phantom reasons. Mitigated by clear decision tree and tests.
 - Background doctor scan adds CPU/IO load every 5 minutes. At our

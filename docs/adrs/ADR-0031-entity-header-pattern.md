@@ -4,6 +4,12 @@
 **Date**: 2026-05-23
 **Related**: ADR-0028 (status reasons surfaced in header), ADR-0030 (reuses EntityAction shape)
 
+---
+
+> **Related update**: [ADR-0035](ADR-0035-design-system-and-component-library.md) specifies the shadcn/Radix primitives (Dialog, DropdownMenu, Button) used to implement the entity actions defined here. The header's universal status display now renders [ADR-0033](ADR-0033-unified-entity-state-model.md)'s `NormalizedState` via the `StateStack` component in `components/lion/`. This ADR remains authoritative for the header's information architecture and action set; the rendering details flow through ADR-0035.
+
+---
+
 ## Context
 
 Studio's entity detail pages (`/shows/<topic>`, `/runs/<id>`,

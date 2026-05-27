@@ -3,6 +3,12 @@
 **Status**: Accepted
 **Date**: 2026-05-19 (revised 2026-05-20)
 
+---
+
+> **Related update**: This ADR defines the SSE transport. [ADR-0034](ADR-0034-frontend-data-and-state-architecture.md) §"SSE architecture" defines the higher-level event taxonomy, dispatch strategy, and integration with TanStack Query cache. ADR-0034 is the canonical owner of event names and envelope structure; this ADR remains authoritative for the wire protocol and reconnect mechanics.
+
+---
+
 ## Context
 
 Lion Studio needs live updates for three surfaces: session message streams
@@ -81,12 +87,14 @@ stop reconnecting.
 ## Consequences
 
 **Positive**
+
 - `EventSource` is native in all modern browsers; no client library.
 - Starlette `StreamingResponse` integrates with the existing FastAPI stack.
 - One-way constraint prevents bidirectional state complexity.
 - No WebSocket server, connection upgrade, or ping/pong management.
 
 **Negative**
+
 - SSE is strictly server-to-client. Any client-to-server action requires a
   separate REST endpoint.
 - HTTP/1.1 browser connection limits (6 per origin) constrain concurrent SSE
