@@ -27,7 +27,7 @@ Usage::
 
 from __future__ import annotations
 
-import concurrent.futures
+import multiprocessing
 import re
 from collections.abc import Callable
 from typing import Any, Literal
@@ -188,30 +188,31 @@ class Rule(BaseModel):
         except re.error as exc:
             return f"Rule {self.rule_id!r}: invalid regex pattern — {exc}."
 
-        _ex = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+        def _do_match(p: str, v: str, f: int, q: multiprocessing.Queue) -> None:  # type: ignore[type-arg]
+            q.put(bool(re.search(p, v, f)))
+
+        result_q: multiprocessing.Queue = multiprocessing.Queue()  # type: ignore[type-arg]
+        proc = multiprocessing.Process(target=_do_match, args=(pattern, value, flags, result_q))
+        proc.start()
+        proc.join(timeout=REGEX_MATCH_TIMEOUT)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=1)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=1)
+            return (
+                f"Rule {self.rule_id!r}: pattern match timed out after "
+                f"{REGEX_MATCH_TIMEOUT}s — pattern may cause catastrophic backtracking."
+            )
+        if proc.exitcode != 0:
+            return (
+                f"Rule {self.rule_id!r}: pattern match subprocess exited with code {proc.exitcode}."
+            )
         try:
-            future = _ex.submit(re.search, pattern, value, flags)
-            try:
-                result = future.result(timeout=REGEX_MATCH_TIMEOUT)
-                matched = bool(result)
-            except concurrent.futures.TimeoutError:
-                future.cancel()
-                _ex.shutdown(wait=False, cancel_futures=True)
-                return (
-                    f"Rule {self.rule_id!r}: pattern match timed out after "
-                    f"{REGEX_MATCH_TIMEOUT}s — pattern may cause catastrophic backtracking."
-                )
-            except Exception as exc:  # noqa: BLE001
-                _ex.shutdown(wait=False)
-                return f"Rule {self.rule_id!r}: pattern match raised {type(exc).__name__}: {exc}."
-            else:
-                _ex.shutdown(wait=False)
-        except Exception as exc:  # noqa: BLE001
-            try:
-                _ex.shutdown(wait=False)
-            except Exception:  # noqa: BLE001, S110
-                pass
-            return f"Rule {self.rule_id!r}: pattern match raised {type(exc).__name__}: {exc}."
+            matched = result_q.get_nowait()
+        except Exception:  # noqa: BLE001
+            return f"Rule {self.rule_id!r}: pattern match produced no result."
 
         if not matched:
             return self.message or (
