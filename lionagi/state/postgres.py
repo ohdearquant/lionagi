@@ -320,8 +320,10 @@ class PostgresStore:
 
         On the outermost call, acquires a pool connection, stores it in
         :attr:`_txn_conn`, and opens an asyncpg transaction.  Nested calls
-        increment :attr:`_txn_depth` and reuse the same connection so that
-        all DML participates in the single outermost transaction.
+        use ``conn.transaction()`` inside the existing transaction, which
+        asyncpg implements via ``SAVEPOINT`` automatically, so an inner
+        failure rolls back only the inner block without aborting the outer
+        transaction.
 
         :attr:`_txn_conn` is only cleared and the pool connection only
         released when the outermost call unwinds (depth returns to 0),
@@ -340,9 +342,15 @@ class PostgresStore:
                     self._txn_depth -= 1
                     self._txn_conn = None
         else:
-            # Nested call: reuse the already-acquired connection.
+            # Nested call: asyncpg creates a SAVEPOINT inside the existing
+            # transaction, so an exception here rolls back only this block.
+            conn = self._txn_conn
+            if conn is None:
+                self._txn_depth -= 1
+                raise RuntimeError("Nested transaction() called but no connection acquired")
             try:
-                yield
+                async with conn.transaction():
+                    yield
             finally:
                 self._txn_depth -= 1
 

@@ -248,20 +248,35 @@ class SQLiteStore:
         """Commit on success, rollback on exception.
 
         Increments :attr:`_txn_depth` on entry and decrements it in the
-        ``finally`` block.  Actual commit/rollback only occurs when the
-        outermost call unwinds (depth returns to 0), so nested
-        ``transaction()`` calls are safe and do not prematurely reset the
-        transaction state.
+        ``finally`` block.  On the outermost call (depth == 1) a real
+        ``BEGIN IMMEDIATE`` / ``COMMIT`` / ``ROLLBACK`` is issued.  Nested
+        calls use ``SAVEPOINT sp_{depth}`` so that an inner failure can be
+        rolled back independently without aborting the outer transaction.
         """
         self._txn_depth += 1
+        depth = self._txn_depth
+        try:
+            if depth == 1:
+                await self._db.execute("BEGIN IMMEDIATE")
+            else:
+                await self._db.execute(f"SAVEPOINT sp_{depth}")
+        except Exception:
+            self._txn_depth -= 1
+            raise
         try:
             yield
-            if self._txn_depth == 1:
-                await self._db.commit()
         except Exception:
-            if self._txn_depth == 1:
+            if depth == 1:
                 await self._db.rollback()
+            else:
+                await self._db.execute(f"ROLLBACK TO SAVEPOINT sp_{depth}")
+                await self._db.execute(f"RELEASE SAVEPOINT sp_{depth}")
             raise
+        else:
+            if depth == 1:
+                await self._db.commit()
+            else:
+                await self._db.execute(f"RELEASE SAVEPOINT sp_{depth}")
         finally:
             self._txn_depth -= 1
 
