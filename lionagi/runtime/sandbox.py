@@ -47,8 +47,6 @@ class SandboxConfig(BaseModel):
 
     sandbox_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     timeout_seconds: int = Field(default=300, gt=0)
-    max_memory_mb: int | None = Field(default=None, ge=1)
-    allowed_paths: list[str] | None = Field(default=None)
     env_vars: dict[str, str] | None = Field(default=None)
     working_dir: str | None = Field(default=None)
 
@@ -222,14 +220,20 @@ class LocalSandboxBackend:
     async def upload(self, sandbox_id: str, local_path: str, remote_path: str) -> None:
         """Copy a local file into the sandbox directory."""
         entry = self._get_entry(sandbox_id)
-        dest = os.path.join(entry.tmp_dir, remote_path.lstrip("/"))
-        os.makedirs(os.path.dirname(dest) or entry.tmp_dir, exist_ok=True)
+        dest = os.path.realpath(os.path.join(entry.tmp_dir, remote_path.lstrip("/")))
+        sandbox_root = os.path.realpath(entry.tmp_dir)
+        if not dest.startswith(sandbox_root + os.sep) and dest != sandbox_root:
+            raise ValueError(f"remote_path {remote_path!r} resolves outside sandbox boundary")
+        os.makedirs(os.path.dirname(dest) or sandbox_root, exist_ok=True)
         shutil.copy2(local_path, dest)
 
     async def download(self, sandbox_id: str, remote_path: str) -> bytes:
         """Read a file from the sandbox directory and return its bytes."""
         entry = self._get_entry(sandbox_id)
-        src = os.path.join(entry.tmp_dir, remote_path.lstrip("/"))
+        src = os.path.realpath(os.path.join(entry.tmp_dir, remote_path.lstrip("/")))
+        sandbox_root = os.path.realpath(entry.tmp_dir)
+        if not src.startswith(sandbox_root + os.sep) and src != sandbox_root:
+            raise ValueError(f"remote_path {remote_path!r} resolves outside sandbox boundary")
         with open(src, "rb") as fh:
             return fh.read()
 

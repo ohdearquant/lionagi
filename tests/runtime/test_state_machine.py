@@ -10,9 +10,7 @@ Covers:
 - History recording
 - Query helpers (can_trigger, available_triggers)
 - Reset semantics
-- StateMachineDefinition validation
-- Pre-built RUNNER_LIFECYCLE all valid paths
-- Pre-built SCHEDULE_LIFECYCLE all valid paths
+- StateMachineDefinition validation and create
 - Edge cases: self-transitions, multiple guards, thread safety
 """
 
@@ -25,8 +23,6 @@ from collections.abc import Callable
 import pytest
 
 from lionagi.runtime.state_machine import (
-    RUNNER_LIFECYCLE,
-    SCHEDULE_LIFECYCLE,
     HistoryEntry,
     StateMachine,
     StateMachineDefinition,
@@ -395,201 +391,7 @@ def test_definition_create_returns_state_machine() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 9. RUNNER_LIFECYCLE — all valid paths
-# ---------------------------------------------------------------------------
-
-
-def test_runner_lifecycle_validates() -> None:
-    RUNNER_LIFECYCLE.validate()  # must not raise
-
-
-def test_runner_normal_start_stop() -> None:
-    sm = RUNNER_LIFECYCLE.create()
-    sm.trigger("start")
-    assert sm.state == "starting"
-    sm.trigger("started")
-    assert sm.state == "running"
-    sm.trigger("stop")
-    assert sm.state == "stopping"
-    sm.trigger("stopped")
-    assert sm.state == "stopped"
-    sm.trigger("reset")
-    assert sm.state == "idle"
-
-
-def test_runner_pause_resume() -> None:
-    sm = RUNNER_LIFECYCLE.create()
-    sm.trigger("start")
-    sm.trigger("started")
-    sm.trigger("pause")
-    assert sm.state == "pausing"
-    sm.trigger("paused")
-    assert sm.state == "paused"
-    sm.trigger("resume")
-    assert sm.state == "running"
-
-
-def test_runner_stop_from_paused() -> None:
-    sm = RUNNER_LIFECYCLE.create()
-    sm.trigger("start")
-    sm.trigger("started")
-    sm.trigger("pause")
-    sm.trigger("paused")
-    sm.trigger("stop")
-    assert sm.state == "stopping"
-    sm.trigger("stopped")
-    assert sm.state == "stopped"
-
-
-def test_runner_fail_from_running() -> None:
-    sm = RUNNER_LIFECYCLE.create()
-    sm.trigger("start")
-    sm.trigger("started")
-    sm.trigger("fail")
-    assert sm.state == "failed"
-    sm.trigger("reset")
-    assert sm.state == "idle"
-
-
-def test_runner_fail_from_starting() -> None:
-    sm = RUNNER_LIFECYCLE.create()
-    sm.trigger("start")
-    sm.trigger("fail")
-    assert sm.state == "failed"
-
-
-def test_runner_stop_from_pausing() -> None:
-    sm = RUNNER_LIFECYCLE.create()
-    sm.trigger("start")
-    sm.trigger("started")
-    sm.trigger("pause")
-    sm.trigger("stop")
-    assert sm.state == "stopping"
-
-
-def test_runner_stop_from_starting() -> None:
-    sm = RUNNER_LIFECYCLE.create()
-    sm.trigger("start")
-    sm.trigger("stop")
-    assert sm.state == "stopping"
-
-
-def test_runner_fail_from_stopping() -> None:
-    sm = RUNNER_LIFECYCLE.create()
-    sm.trigger("start")
-    sm.trigger("started")
-    sm.trigger("stop")
-    sm.trigger("fail")
-    assert sm.state == "failed"
-
-
-def test_runner_invalid_transition_from_idle() -> None:
-    sm = RUNNER_LIFECYCLE.create()
-    with pytest.raises(StateMachineError):
-        sm.trigger("pause")
-
-
-def test_runner_history_across_full_lifecycle() -> None:
-    sm = RUNNER_LIFECYCLE.create()
-    sm.trigger("start")
-    sm.trigger("started")
-    sm.trigger("stop")
-    sm.trigger("stopped")
-    h = sm.history
-    assert [e.trigger for e in h] == ["start", "started", "stop", "stopped"]
-
-
-# ---------------------------------------------------------------------------
-# 10. SCHEDULE_LIFECYCLE — all valid paths
-# ---------------------------------------------------------------------------
-
-
-def test_schedule_lifecycle_validates() -> None:
-    SCHEDULE_LIFECYCLE.validate()  # must not raise
-
-
-def test_schedule_normal_run() -> None:
-    sm = SCHEDULE_LIFECYCLE.create()
-    sm.trigger("activate")
-    assert sm.state == "active"
-    sm.trigger("run")
-    assert sm.state == "running"
-    sm.trigger("complete")
-    assert sm.state == "completed"
-
-
-def test_schedule_fail_from_running() -> None:
-    sm = SCHEDULE_LIFECYCLE.create()
-    sm.trigger("activate")
-    sm.trigger("run")
-    sm.trigger("fail")
-    assert sm.state == "failed"
-
-
-def test_schedule_fail_from_active() -> None:
-    sm = SCHEDULE_LIFECYCLE.create()
-    sm.trigger("activate")
-    sm.trigger("fail")
-    assert sm.state == "failed"
-
-
-def test_schedule_pause_resume_from_active() -> None:
-    sm = SCHEDULE_LIFECYCLE.create()
-    sm.trigger("activate")
-    sm.trigger("pause")
-    assert sm.state == "paused"
-    sm.trigger("resume")
-    assert sm.state == "active"
-
-
-def test_schedule_pause_from_running() -> None:
-    sm = SCHEDULE_LIFECYCLE.create()
-    sm.trigger("activate")
-    sm.trigger("run")
-    sm.trigger("pause")
-    assert sm.state == "paused"
-
-
-def test_schedule_cancel_from_pending() -> None:
-    sm = SCHEDULE_LIFECYCLE.create()
-    sm.trigger("cancel")
-    assert sm.state == "cancelled"
-
-
-def test_schedule_cancel_from_active() -> None:
-    sm = SCHEDULE_LIFECYCLE.create()
-    sm.trigger("activate")
-    sm.trigger("cancel")
-    assert sm.state == "cancelled"
-
-
-def test_schedule_cancel_from_running() -> None:
-    sm = SCHEDULE_LIFECYCLE.create()
-    sm.trigger("activate")
-    sm.trigger("run")
-    sm.trigger("cancel")
-    assert sm.state == "cancelled"
-
-
-def test_schedule_cancel_from_paused() -> None:
-    sm = SCHEDULE_LIFECYCLE.create()
-    sm.trigger("activate")
-    sm.trigger("pause")
-    sm.trigger("cancel")
-    assert sm.state == "cancelled"
-
-
-def test_schedule_invalid_transition_completed() -> None:
-    sm = SCHEDULE_LIFECYCLE.create()
-    sm.trigger("activate")
-    sm.trigger("run")
-    sm.trigger("complete")
-    with pytest.raises(StateMachineError):
-        sm.trigger("run")
-
-
-# ---------------------------------------------------------------------------
-# 11. Edge cases
+# 9. Edge cases
 # ---------------------------------------------------------------------------
 
 
@@ -641,18 +443,31 @@ def test_multiple_guards_all_evaluated_in_order() -> None:
 
 
 def test_thread_safety_concurrent_triggers() -> None:
-    """Multiple threads triggering the machine do not corrupt state."""
-    # Use RUNNER_LIFECYCLE so we have a valid multi-step graph.
-    # Each thread creates its own machine instance (machines are not shared
-    # across threads in normal use), but we also verify a single machine
-    # under concurrent lock contention.
+    """Multiple threads triggering independent machine instances do not corrupt state."""
+    # Use an inline multi-step definition to exercise the full locking path.
+    _LIFECYCLE = StateMachineDefinition(
+        name="thread_test",
+        states=["idle", "starting", "running", "stopping", "stopped", "failed"],
+        initial="idle",
+        transitions=[
+            Transition("idle", "starting", "start"),
+            Transition("starting", "running", "started"),
+            Transition("running", "stopping", "stop"),
+            Transition("stopping", "stopped", "stopped"),
+            Transition("starting", "failed", "fail"),
+            Transition("running", "failed", "fail"),
+            Transition("stopped", "idle", "reset"),
+            Transition("failed", "idle", "reset"),
+        ],
+    )
+
     errors: list[BaseException] = []
     results: list[str] = []
     lock = threading.Lock()
 
     def run_lifecycle() -> None:
         try:
-            sm = RUNNER_LIFECYCLE.create()
+            sm = _LIFECYCLE.create()
             sm.trigger("start")
             sm.trigger("started")
             sm.trigger("stop")

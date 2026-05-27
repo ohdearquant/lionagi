@@ -284,11 +284,11 @@ class CostLedger:
         )
 
         with self._lock:
+            if self._budget_usd is not None and self._total_cost + cost > self._budget_usd:
+                raise BudgetExceededError(self._budget_usd, self._total_cost + cost)
             self._entries.append(entry)
             self._total_cost += cost
             self._total_tokens += total_tokens
-            if self._budget_usd is not None and self._total_cost > self._budget_usd:
-                raise BudgetExceededError(self._budget_usd, self._total_cost)
 
         return entry
 

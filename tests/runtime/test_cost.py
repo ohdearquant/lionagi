@@ -283,6 +283,30 @@ class TestCostLedgerBudget:
         ledger = CostLedger()
         assert not ledger.is_over_budget()
 
+    def test_over_budget_entry_not_recorded(self) -> None:
+        """The rejected entry must NOT appear in the ledger."""
+        ledger = CostLedger(budget_usd=0.0)
+        with pytest.raises(BudgetExceededError):
+            ledger.record("gpt-4.1-mini", 10000, 10000)
+        # The ledger must still be empty: no entry was committed.
+        assert ledger.total_cost() == pytest.approx(0.0)
+        assert len(ledger.entries()) == 0
+
+    def test_second_call_over_budget_does_not_corrupt_first(self) -> None:
+        """A budget violation on the second call must not corrupt the first entry."""
+        table = PricingTable({"cheap": (0.001, 0.001), "expensive": (100.0, 100.0)})
+        ledger = CostLedger(budget_usd=0.01, pricing=table)
+        # First call is under budget.
+        e1 = ledger.record("cheap", 1, 1)
+        first_total = ledger.total_cost()
+        # Second call would blow the budget.
+        with pytest.raises(BudgetExceededError):
+            ledger.record("expensive", 1000, 1000)
+        # Ledger state must reflect only the first entry.
+        assert ledger.total_cost() == pytest.approx(first_total)
+        assert len(ledger.entries()) == 1
+        assert ledger.entries()[0].entry_id == e1.entry_id
+
 
 # ===========================================================================
 # CostLedger — entries filtering

@@ -1,11 +1,13 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Generic state machine for runtime and schedule lifecycles.
+"""Generic state machine building blocks for runtime lifecycles.
 
 Provides a table-driven state machine that is thread-safe, auditable via a
-history log, and composable through pre-built definitions for the runner and
-schedule lifecycles defined in ADR-0062.
+history log, and composable through ``StateMachineDefinition``.  Callers
+define their own state vocabularies using ``State``, ``Transition``, and
+``StateMachineDefinition``; this module intentionally ships no pre-built
+definitions so there is a single source of truth for each lifecycle.
 """
 
 from __future__ import annotations
@@ -338,123 +340,8 @@ class StateMachineDefinition:
         return list(self._transitions)
 
 
-# ---------------------------------------------------------------------------
-# Pre-built definitions
-# ---------------------------------------------------------------------------
-
-#: Runner lifecycle — mirrors the control plane states in ``control.py``.
-#:
-#: ASCII state diagram::
-#:
-#:   [start]
-#:      │
-#:      ▼
-#:   ┌──────┐  start   ┌──────────┐  started  ┌─────────┐
-#:   │ idle │ ───────► │ starting │ ─────────► │ running │◄──┐
-#:   └──────┘          └──────────┘            └─────────┘   │
-#:      ▲                                       │  │  │       │ resume
-#:      │ reset                         pause   │  │  │fail   │
-#:      │                               ▼       │  │  ▼       │
-#:      │                         ┌────────┐    │  │ ┌────────┐
-#:      │                         │pausing │    │  │ │ failed │
-#:      │                         └────────┘    │  │ └────────┘
-#:      │                               │paused │  │
-#:      │                               ▼       │  │ stop
-#:      │                         ┌────────┐    │  ▼
-#:      │                         │ paused │    │ ┌──────────┐  stopped  ┌─────────┐
-#:      │                         └────────┘    └►│ stopping │ ─────────►│ stopped │
-#:      │                                         └──────────┘           └─────────┘
-#:      │                                                                      │
-#:      └──────────────────────────────────────────────────────────────────────┘
-#:                                   (reset)
-RUNNER_LIFECYCLE: StateMachineDefinition = StateMachineDefinition(
-    name="runner",
-    states=["idle", "starting", "running", "pausing", "paused", "stopping", "stopped", "failed"],
-    initial="idle",
-    transitions=[
-        # Normal start path
-        Transition("idle", "starting", "start"),
-        Transition("starting", "running", "started"),
-        # Pause / resume
-        Transition("running", "pausing", "pause"),
-        Transition("pausing", "paused", "paused"),
-        Transition("paused", "running", "resume"),
-        # Stop from any active state
-        Transition("running", "stopping", "stop"),
-        Transition("pausing", "stopping", "stop"),
-        Transition("paused", "stopping", "stop"),
-        Transition("starting", "stopping", "stop"),
-        Transition("stopping", "stopped", "stopped"),
-        # Failure paths
-        Transition("starting", "failed", "fail"),
-        Transition("running", "failed", "fail"),
-        Transition("pausing", "failed", "fail"),
-        Transition("paused", "failed", "fail"),
-        Transition("stopping", "failed", "fail"),
-        # Reset from terminal states
-        Transition("stopped", "idle", "reset"),
-        Transition("failed", "idle", "reset"),
-    ],
-)
-
-#: Schedule run lifecycle — mirrors the ``ScheduleRunState`` vocabulary in
-#: ADR-0062.
-#:
-#: ASCII state diagram::
-#:
-#:   [trigger]
-#:      │
-#:      ▼
-#:   ┌─────────┐  activate  ┌────────┐  run   ┌─────────┐
-#:   │ pending │ ──────────►│ active │────────►│ running │
-#:   └─────────┘            └────────┘         └─────────┘
-#:                           │  │  │            │  │  │  │
-#:                  cancel   │  │  │   complete  │  │  │  │ fail
-#:                           │  │  │            ▼  │  │  ▼
-#:                           │  │  │     ┌───────────┐ ┌────────┐
-#:                           │  │  │     │ completed │ │ failed │
-#:                           │  │  │     └───────────┘ └────────┘
-#:                           │  │  │
-#:                    pause  │  │  │ cancel
-#:                           ▼  │  ▼
-#:                     ┌────────┐ ┌───────────┐
-#:                     │ paused │ │ cancelled │
-#:                     └────────┘ └───────────┘
-#:                          │
-#:                          │ resume
-#:                          ▼
-#:                       (active)
-SCHEDULE_LIFECYCLE: StateMachineDefinition = StateMachineDefinition(
-    name="schedule_run",
-    states=["pending", "active", "running", "paused", "completed", "failed", "cancelled"],
-    initial="pending",
-    transitions=[
-        # Activation
-        Transition("pending", "active", "activate"),
-        # Run
-        Transition("active", "running", "run"),
-        # Completion
-        Transition("running", "completed", "complete"),
-        # Failure
-        Transition("running", "failed", "fail"),
-        Transition("active", "failed", "fail"),
-        # Pause / resume
-        Transition("active", "paused", "pause"),
-        Transition("running", "paused", "pause"),
-        Transition("paused", "active", "resume"),
-        # Cancel
-        Transition("pending", "cancelled", "cancel"),
-        Transition("active", "cancelled", "cancel"),
-        Transition("running", "cancelled", "cancel"),
-        Transition("paused", "cancelled", "cancel"),
-    ],
-)
-
-
 __all__ = [
     "HistoryEntry",
-    "RUNNER_LIFECYCLE",
-    "SCHEDULE_LIFECYCLE",
     "State",
     "StateMachine",
     "StateMachineDefinition",

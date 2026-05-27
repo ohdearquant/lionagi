@@ -32,8 +32,6 @@ from lionagi.runtime.sandbox import (
 def test_sandbox_config_defaults():
     cfg = SandboxConfig()
     assert cfg.timeout_seconds == 300
-    assert cfg.max_memory_mb is None
-    assert cfg.allowed_paths is None
     assert cfg.env_vars is None
     assert cfg.working_dir is None
     assert isinstance(cfg.sandbox_id, str)
@@ -44,15 +42,11 @@ def test_sandbox_config_explicit_fields():
     cfg = SandboxConfig(
         sandbox_id="test-123",
         timeout_seconds=60,
-        max_memory_mb=512,
-        allowed_paths=["/tmp", "/home"],
         env_vars={"FOO": "bar"},
         working_dir="/tmp",
     )
     assert cfg.sandbox_id == "test-123"
     assert cfg.timeout_seconds == 60
-    assert cfg.max_memory_mb == 512
-    assert cfg.allowed_paths == ["/tmp", "/home"]
     assert cfg.env_vars == {"FOO": "bar"}
     assert cfg.working_dir == "/tmp"
 
@@ -432,3 +426,53 @@ async def test_sandbox_manager_custom_backend():
     manager = SandboxManager(backend=backend)
     await manager.run_isolated("echo backend")
     assert _CountingBackend.execute_count == 1
+
+
+# ---------------------------------------------------------------------------
+# LocalSandboxBackend — path traversal prevention
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upload_path_traversal_rejected():
+    """upload() must reject paths that escape the sandbox root."""
+    backend = LocalSandboxBackend()
+    cfg = SandboxConfig()
+    sandbox_id = await backend.create(cfg)
+    try:
+        with pytest.raises(ValueError, match="outside sandbox boundary"):
+            await backend.upload(sandbox_id, __file__, "../../etc/passwd")
+    finally:
+        await backend.destroy(sandbox_id)
+
+
+@pytest.mark.asyncio
+async def test_download_path_traversal_rejected():
+    """download() must reject paths that escape the sandbox root."""
+    backend = LocalSandboxBackend()
+    cfg = SandboxConfig()
+    sandbox_id = await backend.create(cfg)
+    try:
+        with pytest.raises(ValueError, match="outside sandbox boundary"):
+            await backend.download(sandbox_id, "../../etc/passwd")
+    finally:
+        await backend.destroy(sandbox_id)
+
+
+@pytest.mark.asyncio
+async def test_upload_normal_subdir_allowed():
+    """upload() must succeed for a normal relative path inside the sandbox."""
+    backend = LocalSandboxBackend()
+    cfg = SandboxConfig()
+    sandbox_id = await backend.create(cfg)
+    fd, local_path = tempfile.mkstemp()
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(b"safe content")
+        await backend.upload(sandbox_id, local_path, "subdir/file.txt")
+        data = await backend.download(sandbox_id, "subdir/file.txt")
+        assert data == b"safe content"
+    finally:
+        if os.path.exists(local_path):
+            os.unlink(local_path)
+        await backend.destroy(sandbox_id)
