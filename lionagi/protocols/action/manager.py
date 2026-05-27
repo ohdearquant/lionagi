@@ -257,7 +257,16 @@ class ActionManager(Manager):
         function_calling = self.match_tool(func_call)
         if self._tool_governed(function_calling.function):
             ctx = get_operation_context()
-            await self.execute_governed(function_calling.function, function_calling.arguments, ctx)
+            result = await self.execute_governed(
+                function_calling.function, function_calling.arguments, ctx
+            )
+            # Copy result back onto the FunctionCalling so callers see a
+            # fully-populated event (response set, status COMPLETED), not the
+            # original PENDING shell that execute_governed never touched.
+            from lionagi.protocols.generic.event import EventStatus
+
+            function_calling.execution.response = result
+            function_calling.status = EventStatus.COMPLETED
             return function_calling
 
         try:

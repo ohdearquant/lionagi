@@ -331,6 +331,7 @@ class Session(Node, Relational):
                 OperationContext,
                 PolicyPin,
                 PolicyPinMismatchError,
+                _operation_context_var,
                 set_operation_context,
             )
 
@@ -361,7 +362,7 @@ class Session(Node, Relational):
                 trace_id=uuid4().hex,
                 span_id=uuid4().hex[:16],
             )
-            set_operation_context(op_ctx)
+            _ctx_token = set_operation_context(op_ctx)
 
         from lionagi.operations.flow import flow
 
@@ -369,17 +370,21 @@ class Session(Node, Relational):
         if isinstance(branch, str | UUID):
             branch = self.branches[branch]
 
-        return await flow(
-            session=self,
-            graph=graph,
-            branch=branch,
-            context=context,
-            parallel=parallel,
-            max_concurrent=max_concurrent,
-            verbose=verbose,
-            alcall_params=alcall_params,
-            on_progress=on_progress,
-        )
+        try:
+            return await flow(
+                session=self,
+                graph=graph,
+                branch=branch,
+                context=context,
+                parallel=parallel,
+                max_concurrent=max_concurrent,
+                verbose=verbose,
+                alcall_params=alcall_params,
+                on_progress=on_progress,
+            )
+        finally:
+            if charter is not None:
+                _operation_context_var.reset(_ctx_token)
 
 
 __all__ = ("Session",)

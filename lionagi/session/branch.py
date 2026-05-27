@@ -951,14 +951,21 @@ class Branch(Element, Relational):
 
                 raise GovernanceMissingContextError("OperationContext required in governed mode")
         else:
-            from lionagi.protocols.governance.context import set_operation_context
+            from lionagi.protocols.governance.context import (
+                _operation_context_var,
+                set_operation_context,
+            )
 
-            set_operation_context(ctx)
+            _ctx_token = set_operation_context(ctx)
             _pms["ctx"] = ctx
 
         from lionagi.operations.operate.operate import operate, prepare_operate_kw
 
-        return await operate(self, **prepare_operate_kw(self, **_pms))
+        try:
+            return await operate(self, **prepare_operate_kw(self, **_pms))
+        finally:
+            if ctx is not None:
+                _operation_context_var.reset(_ctx_token)
 
     async def communicate(
         self,
