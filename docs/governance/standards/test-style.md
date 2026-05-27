@@ -131,7 +131,7 @@ Required assertions per category:
 
 **Gates**:
 
-- Hard gate exceptions deny the call; `result.verdict == "FAIL"` and `result.enforcement == "HARD"`.
+- Hard gate exceptions deny the call; `result.verdict == "DENY"` and `result.enforcement == "HARD"`.
 - Soft gate override requires both `justification` and `justification_actor_id`.
 - Advisory gate failures produce warning evidence but do not block execution.
 
@@ -163,7 +163,7 @@ def test_gate_registry_denies_unknown_tool(gate_evaluator, operation_context):
         operation_context=operation_context,
     )
 
-    assert result.verdict == "FAIL"
+    assert result.verdict == "DENY"
     assert result.enforcement == "HARD"
     assert result.reason_code == "GOV-2101"
     assert result.evidence_hash.startswith("sha256:")
