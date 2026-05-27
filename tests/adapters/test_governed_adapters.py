@@ -250,7 +250,7 @@ class TestGovernedAdapterWithGovernance:
 
     @pytest.mark.asyncio
     async def test_on_deny_log(self):
-        """on_deny='log' emits a warning and returns (None, None) on DENY verdict."""
+        """on_deny='log' emits a warning but CONTINUES execution (returns real result)."""
         from lionagi.adapters.governed_base import GovernedAdapter
 
         class AdapterH(GovernedAdapter):
@@ -258,7 +258,7 @@ class TestGovernedAdapterWithGovernance:
                 return "test.log"
 
             async def _call_wrapped(self, *a, **kw):
-                return "should_not_reach"
+                return "execution_proceeded"
 
         adapter = AdapterH(MagicMock(), on_deny="log")
         adapter._controller = self._mock_controller("deny")
@@ -267,8 +267,8 @@ class TestGovernedAdapterWithGovernance:
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
                 result, cert = await adapter.execute()
-        assert result is None
-        assert cert is None
+        # Execution must have continued — real result, not None
+        assert result == "execution_proceeded"
         # A warning should have been emitted
         assert any("denied" in str(warning.message).lower() for warning in w)
 

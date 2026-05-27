@@ -161,6 +161,43 @@ async def test_sqlite_transaction_rollback_leaves_prior_data_intact(store: SQLit
     assert "transient" not in names
 
 
+async def test_sqlite_execute_insert_inside_transaction_is_atomic(store: SQLiteStore):
+    """execute_insert() inside transaction() must NOT auto-commit.
+
+    Inserts two rows via execute_insert() then raises before the transaction
+    closes.  Neither row should be visible after rollback — verifying that
+    the _in_txn flag correctly suppresses the per-call commit.
+    """
+    with pytest.raises(ValueError, match="rollback_me"):
+        async with store.transaction():
+            await store.execute_insert("INSERT INTO items (name) VALUES (?)", ("row_a",))
+            await store.execute_insert("INSERT INTO items (name) VALUES (?)", ("row_b",))
+            raise ValueError("rollback_me")
+
+    rows = await store.execute("SELECT name FROM items")
+    names = [r["name"] for r in rows]
+    assert "row_a" not in names, "row_a should not be committed after rollback"
+    assert "row_b" not in names, "row_b should not be committed after rollback"
+
+
+async def test_sqlite_executemany_inside_transaction_is_atomic(store: SQLiteStore):
+    """executemany() inside transaction() must NOT auto-commit.
+
+    Inserts three rows via executemany() then raises before the transaction
+    closes.  No rows should be visible after rollback.
+    """
+    with pytest.raises(RuntimeError, match="abort_many"):
+        async with store.transaction():
+            await store.executemany(
+                "INSERT INTO items (name) VALUES (?)",
+                [("m1",), ("m2",), ("m3",)],
+            )
+            raise RuntimeError("abort_many")
+
+    rows = await store.execute("SELECT name FROM items")
+    assert rows == [], "No rows should survive a rolled-back executemany"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SQLiteStore — satisfies StateStore protocol
 # ─────────────────────────────────────────────────────────────────────────────

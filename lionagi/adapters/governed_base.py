@@ -147,7 +147,16 @@ class GovernedAdapter:
 
         gate_result = self._pre_op_check(tool_name)
         if gate_result is not None and self._is_denied(gate_result):
-            return self._handle_deny(gate_result)
+            if self._on_deny == "log":
+                warnings.warn(
+                    f"Governance gate denied operation '{tool_name}' "
+                    f"(gate={getattr(gate_result, 'gate_id', '?')}); "
+                    f"continuing due to on_deny='log'.",
+                    stacklevel=2,
+                )
+                # Fall through to execution below
+            else:
+                return self._handle_deny(gate_result)
 
         t0 = time.perf_counter()
         result = await self._call_wrapped(*args, **kwargs)

@@ -207,6 +207,7 @@ class PostgresStore:
             ) from exc
         self._dsn = dsn
         self._pool: Any = None  # asyncpg.Pool, typed as Any to avoid hard import
+        self._txn_conn: Any = None  # set to the connection during transaction()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -262,8 +263,15 @@ class PostgresStore:
 
         The SQL is translated from SQLite to PostgreSQL dialect before
         execution via :func:`translate_sql`.
+
+        When called inside a :meth:`transaction` block the already-acquired
+        transaction connection is reused so the query participates in the
+        ongoing transaction.
         """
         pg_sql = translate_sql(sql)
+        if self._txn_conn is not None:
+            rows = await self._txn_conn.fetch(pg_sql, *params)
+            return [self._record_to_dict(r) for r in rows]
         async with self._pg_pool.acquire() as conn:
             rows = await conn.fetch(pg_sql, *params)
         return [self._record_to_dict(r) for r in rows]
@@ -278,28 +286,49 @@ class PostgresStore:
 
         For best results, write INSERT … RETURNING id and call
         :meth:`execute` directly.
+
+        When called inside a :meth:`transaction` block the transaction
+        connection is reused so the insert is atomic with the surrounding
+        transaction.
         """
         pg_sql = translate_sql(sql)
-        async with self._pg_pool.acquire() as conn:
+        if self._txn_conn is not None:
             # asyncpg.execute returns a status string, not rows.
-            # For insert-and-return-id, callers should use RETURNING.
-            # We execute and return 0 as a safe default; callers that need
-            # the real id should use execute() with RETURNING.
+            await self._txn_conn.execute(pg_sql, *params)
+            return 0
+        async with self._pg_pool.acquire() as conn:
             await conn.execute(pg_sql, *params)
         return 0
 
     async def executemany(self, sql: str, params_list: list[tuple]) -> None:
-        """Execute *sql* once per item in *params_list* via asyncpg executemany."""
+        """Execute *sql* once per item in *params_list* via asyncpg executemany.
+
+        When called inside a :meth:`transaction` block the transaction
+        connection is reused.
+        """
         pg_sql = translate_sql(sql)
+        if self._txn_conn is not None:
+            await self._txn_conn.executemany(pg_sql, params_list)
+            return
         async with self._pg_pool.acquire() as conn:
             await conn.executemany(pg_sql, params_list)
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
-        """Async context manager wrapping an asyncpg transaction."""
+        """Async context manager wrapping an asyncpg transaction.
+
+        Stores the acquired connection in :attr:`_txn_conn` so that
+        :meth:`execute`, :meth:`execute_insert`, and :meth:`executemany`
+        called within this block all participate in the same transaction
+        rather than acquiring separate pool connections.
+        """
         async with self._pg_pool.acquire() as conn:
-            async with conn.transaction():
-                yield
+            self._txn_conn = conn
+            try:
+                async with conn.transaction():
+                    yield
+            finally:
+                self._txn_conn = None
 
     async def apply_schema(self, schema_sql: str) -> None:
         """Execute a multi-statement DDL script (for initial schema setup).

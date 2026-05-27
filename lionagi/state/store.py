@@ -167,6 +167,7 @@ class SQLiteStore:
     def __init__(self, db_path: str | Path) -> None:
         self._path = str(db_path)
         self._conn: aiosqlite.Connection | None = None
+        self._in_txn: bool = False  # True while inside a transaction() block
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -221,25 +222,44 @@ class SQLiteStore:
         return [self._row_to_dict(r) for r in rows]
 
     async def execute_insert(self, sql: str, params: tuple = ()) -> int:
-        """Execute an INSERT and return lastrowid."""
+        """Execute an INSERT and return lastrowid.
+
+        When called inside a :meth:`transaction` block the commit is deferred
+        to the transaction boundary.  Outside a transaction an implicit commit
+        is issued immediately so the row is visible to subsequent reads.
+        """
         cur = await self._db.execute(sql, params)
-        await self._db.commit()
+        if not self._in_txn:
+            await self._db.commit()
         return cur.lastrowid or 0
 
     async def executemany(self, sql: str, params_list: list[tuple]) -> None:
-        """Execute *sql* once per item in *params_list*."""
+        """Execute *sql* once per item in *params_list*.
+
+        Commit behaviour mirrors :meth:`execute_insert`: deferred inside a
+        :meth:`transaction` block, immediate otherwise.
+        """
         await self._db.executemany(sql, params_list)
-        await self._db.commit()
+        if not self._in_txn:
+            await self._db.commit()
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
-        """Commit on success, rollback on exception."""
+        """Commit on success, rollback on exception.
+
+        Sets :attr:`_in_txn` for the duration so that :meth:`execute_insert`
+        and :meth:`executemany` suppress their per-call auto-commits, keeping
+        all writes within this transaction atomic.
+        """
+        self._in_txn = True
         try:
             yield
             await self._db.commit()
         except Exception:
             await self._db.rollback()
             raise
+        finally:
+            self._in_txn = False
 
     async def execute_script(self, sql: str) -> None:
         """Execute a multi-statement SQL script (DDL setup helper)."""
