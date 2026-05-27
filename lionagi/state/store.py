@@ -167,7 +167,7 @@ class SQLiteStore:
     def __init__(self, db_path: str | Path) -> None:
         self._path = str(db_path)
         self._conn: aiosqlite.Connection | None = None
-        self._in_txn: bool = False  # True while inside a transaction() block
+        self._txn_depth: int = 0  # nesting counter; >0 while inside a transaction() block
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -229,7 +229,7 @@ class SQLiteStore:
         is issued immediately so the row is visible to subsequent reads.
         """
         cur = await self._db.execute(sql, params)
-        if not self._in_txn:
+        if not self._txn_depth > 0:
             await self._db.commit()
         return cur.lastrowid or 0
 
@@ -240,26 +240,30 @@ class SQLiteStore:
         :meth:`transaction` block, immediate otherwise.
         """
         await self._db.executemany(sql, params_list)
-        if not self._in_txn:
+        if not self._txn_depth > 0:
             await self._db.commit()
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
         """Commit on success, rollback on exception.
 
-        Sets :attr:`_in_txn` for the duration so that :meth:`execute_insert`
-        and :meth:`executemany` suppress their per-call auto-commits, keeping
-        all writes within this transaction atomic.
+        Increments :attr:`_txn_depth` on entry and decrements it in the
+        ``finally`` block.  Actual commit/rollback only occurs when the
+        outermost call unwinds (depth returns to 0), so nested
+        ``transaction()`` calls are safe and do not prematurely reset the
+        transaction state.
         """
-        self._in_txn = True
+        self._txn_depth += 1
         try:
             yield
-            await self._db.commit()
+            if self._txn_depth == 1:
+                await self._db.commit()
         except Exception:
-            await self._db.rollback()
+            if self._txn_depth == 1:
+                await self._db.rollback()
             raise
         finally:
-            self._in_txn = False
+            self._txn_depth -= 1
 
     async def execute_script(self, sql: str) -> None:
         """Execute a multi-statement SQL script (DDL setup helper)."""

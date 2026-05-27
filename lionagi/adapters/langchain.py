@@ -94,7 +94,7 @@ class GovernedChain(GovernedAdapter):
         if hasattr(chain, "invoke"):
             import asyncio
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, lambda: chain.invoke(user_input, **kwargs))
         if hasattr(chain, "arun"):
             # Legacy LangChain Chain.arun() API

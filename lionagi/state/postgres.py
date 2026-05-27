@@ -207,7 +207,8 @@ class PostgresStore:
             ) from exc
         self._dsn = dsn
         self._pool: Any = None  # asyncpg.Pool, typed as Any to avoid hard import
-        self._txn_conn: Any = None  # set to the connection during transaction()
+        self._txn_conn: Any = None  # set to the connection during the outermost transaction()
+        self._txn_depth: int = 0  # nesting counter; >0 while inside a transaction() block
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -317,18 +318,33 @@ class PostgresStore:
     async def transaction(self) -> AsyncIterator[None]:
         """Async context manager wrapping an asyncpg transaction.
 
-        Stores the acquired connection in :attr:`_txn_conn` so that
-        :meth:`execute`, :meth:`execute_insert`, and :meth:`executemany`
-        called within this block all participate in the same transaction
-        rather than acquiring separate pool connections.
+        On the outermost call, acquires a pool connection, stores it in
+        :attr:`_txn_conn`, and opens an asyncpg transaction.  Nested calls
+        increment :attr:`_txn_depth` and reuse the same connection so that
+        all DML participates in the single outermost transaction.
+
+        :attr:`_txn_conn` is only cleared and the pool connection only
+        released when the outermost call unwinds (depth returns to 0),
+        preventing premature connection release that would cause inner-block
+        DML to acquire separate pool connections outside the transaction.
         """
-        async with self._pg_pool.acquire() as conn:
-            self._txn_conn = conn
+        self._txn_depth += 1
+        if self._txn_depth == 1:
+            # Outermost call: acquire a connection and start the transaction.
+            async with self._pg_pool.acquire() as conn:
+                self._txn_conn = conn
+                try:
+                    async with conn.transaction():
+                        yield
+                finally:
+                    self._txn_depth -= 1
+                    self._txn_conn = None
+        else:
+            # Nested call: reuse the already-acquired connection.
             try:
-                async with conn.transaction():
-                    yield
+                yield
             finally:
-                self._txn_conn = None
+                self._txn_depth -= 1
 
     async def apply_schema(self, schema_sql: str) -> None:
         """Execute a multi-statement DDL script (for initial schema setup).

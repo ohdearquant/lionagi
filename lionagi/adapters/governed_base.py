@@ -208,22 +208,20 @@ class GovernedAdapter:
             return False
 
     def _handle_deny(self, gate_result: Any) -> tuple[Any, Any]:
-        """Apply on_deny policy for a hard denial."""
+        """Apply on_deny policy for a hard denial.
+
+        Only handles ``"raise"`` and ``"skip"`` — the ``"log"`` case is
+        handled inline in :meth:`execute` before this method is called, so
+        it never reaches here.
+        """
         if self._on_deny == "raise":
             msg = (
                 f"Gate {getattr(gate_result, 'gate_id', '?')} denied: "
                 f"{getattr(gate_result, 'justification', 'governance denied')}"
             )
             raise GovernanceViolationError(msg)
-        if self._on_deny == "skip":
-            return None, None
-        # "log"
-        warnings.warn(
-            f"Governance gate denied operation '{self._get_tool_name()}' "
-            f"(gate={getattr(gate_result, 'gate_id', '?')}); continuing due to on_deny='log'.",
-            stacklevel=4,
-        )
-        return None, None  # caller must handle None result
+        # "skip"
+        return None, None
 
     def _post_op_record(
         self,

@@ -83,7 +83,7 @@ class GovernedCrew(GovernedAdapter):
         if hasattr(crew, "kickoff"):
             import asyncio
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, lambda: crew.kickoff(**kwargs))
         raise AttributeError(
             f"Wrapped CrewAI object {type(crew).__name__!r} has neither .akickoff() nor .kickoff()."

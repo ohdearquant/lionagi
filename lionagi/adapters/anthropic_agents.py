@@ -87,7 +87,7 @@ class GovernedAnthropicAgent(GovernedAdapter):
         if hasattr(agent, "run"):
             import asyncio
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, lambda: agent.run(query, **kwargs))
         raise AttributeError(
             f"Wrapped Anthropic agent {type(agent).__name__!r} has neither "
