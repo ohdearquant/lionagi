@@ -19,7 +19,7 @@ discovers those by scanning `skills/` and `agents/` subdirectories.
 `plugin.json` for every lionagi marketplace plugin does NOT enumerate `skills` or `agents` arrays.
 The Claude Code plugin loader auto-discovers skill and agent files from the directory layout:
 
-```
+```text
 marketplace/<plugin>/
   .claude-plugin/plugin.json   # metadata only — no skills/agents arrays
   skills/                      # auto-discovered by CC loader
@@ -32,11 +32,13 @@ arrays) would create a redundancy that lags the actual directory contents.
 ## Consequences
 
 **Positive**
+
 - Adding a skill file to `skills/` is immediately effective; no manifest update required.
 - Manifest stays small and readable — metadata only.
 - Consistent with the only production reference implementation available at time of decision.
 
 **Negative**
+
 - Auto-discovery behavior is undocumented by Anthropic and may change before GA. If the CC
   loader stops auto-discovering from directory layout, all four plugins break silently — there
   is no explicit manifest to fall back on.

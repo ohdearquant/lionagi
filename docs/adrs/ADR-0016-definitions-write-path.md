@@ -38,6 +38,7 @@ versioning works, and what rollback means.
 the current state.
 
 When Studio saves a definition:
+
 1. Validate `kind` and `name` (see "Route parameter validation" below).
 2. Acquire the per-`(kind, name)` in-process lock (`_DEFINITION_LOCKS`).
 3. Insert a new row in `definitions` with the content, incremented version number,
@@ -63,6 +64,7 @@ operation. Invalid values return **422 Unprocessable Entity**.
 `kind` must be one of the supported definition kinds: `agent`, `playbook`.
 
 `name` must be a non-empty single path component. The following are rejected:
+
 - Path separators: `/`, `\`
 - NUL byte: `\x00`
 - Dot components: `.`, `..`
@@ -79,7 +81,7 @@ not on restricting symlink targets.
 
 ### Save semantics
 
-```
+```text
 POST /api/definitions/{kind}/{name}
   body: { content: string, message?: string }
   →
@@ -104,7 +106,7 @@ Definition identity is `(kind, name)`. This is unique because marketplace agents
 
 ### Rollback semantics
 
-```
+```text
 POST /api/definitions/{kind}/{name}/rollback?version=N
   →
   1. SELECT content FROM definitions WHERE kind=? AND name=? AND version=?
@@ -135,6 +137,7 @@ Studio is open, (3) git provides the ultimate conflict resolution layer.
 ## Consequences
 
 **Positive**
+
 - Clear boundary: definitions are the only things Studio writes. Everything else
   is read-only or import-only.
 - Disk-as-truth means git, grep, vim, and Claude Code all see the same file.
@@ -142,6 +145,7 @@ Studio is open, (3) git provides the ultimate conflict resolution layer.
 - Simple CRUD surface — no complex state machine or workflow engine.
 
 **Negative**
+
 - Disk and SQLite can drift if a write to one succeeds and the other fails.
   Mitigation: DB write first (data integrity gate). If the DB write fails the
   exception propagates and disk is not touched. If the disk write fails after a

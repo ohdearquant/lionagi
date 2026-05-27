@@ -14,6 +14,7 @@ or surfaced:
 
 **Sessions** have `agent_name` (TEXT) — the agent profile name from
 `-a reviewer`. But:
+
 - No `model` column. The resolved model spec (`claude/claude-sonnet-4-6`,
   `openai/gpt-4.1`) is not stored.
 - No `provider` column. Whether the run used Claude Code, Codex, OpenAI
@@ -24,6 +25,7 @@ or surfaced:
   agents get `NULL`.
 
 **Branches** have `node_metadata` JSON which *can* hold `chat_model`, but:
+
 - The write path in `agent.py` only copies `chat_model` if it's in
   `branch_dict` — and it's frequently missing (empty in 5/5 sampled rows).
 - Flow ops create multiple branches with different models — the per-branch
@@ -108,7 +110,7 @@ Not a security hash — just a content fingerprint.
 The model string stored must be the **fully resolved** spec, not the
 input. Resolution chain:
 
-```
+```text
 User input: "sonnet"
   → parse_model_spec(): ModelSpec(model="claude/claude-sonnet-4-6")
   → agent profile override: (none, use parsed)
@@ -140,7 +142,7 @@ a badge or tooltip shows "2 models" with the breakdown.
 
 Each step/branch shows its own model and agent:
 
-```
+```text
 Step: explorer (claude/claude-sonnet-4-6, effort=high)
   [messages...]
 
@@ -154,7 +156,7 @@ When `agent_name` is set and the agent definition file exists, the run
 detail page shows a link to the agent profile. The `agent_hash` enables
 a "definition changed since this run" indicator:
 
-```
+```text
 Agent: reviewer (definition changed since this run)
 ```
 
@@ -170,6 +172,7 @@ path can extract model from `run.json` → `manifest.model_spec` if present.
 ## Consequences
 
 **Positive**
+
 - Every run discloses its model, provider, and effort level — no guessing.
 - Multi-model flows show per-branch model, not just the session default.
 - Agent definition snapshots via hash enable "drift since this run" detection.
@@ -177,6 +180,7 @@ path can extract model from `run.json` → `manifest.model_spec` if present.
 - Fully resolved model specs are stable and comparable.
 
 **Negative**
+
 - Four new columns on sessions, three on branches. Reconciled via
   `_reconcile_columns()` — no migration runner needed.
 - Write path changes in `agent.py`, `flow.py`, `fanout.py`,

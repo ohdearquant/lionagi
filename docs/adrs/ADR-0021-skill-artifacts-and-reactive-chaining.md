@@ -12,6 +12,7 @@ orchestration. But three deeper questions remain:
 ### 1. Where does show data live?
 
 Shows currently have dual persistence:
+
 - **DB**: `shows` + `plays` tables (ADR-0011) — status, metadata, FKs.
 - **Filesystem**: `$HOME/khive-work/shows/<topic>/` — prompts, intents,
   verdicts, logs, agent artifacts, worktrees.
@@ -63,7 +64,7 @@ typing the next command. The pieces exist but don't connect.
 Create `lionagi/outcomes/` as the shared location for skill result types.
 These are the **contract** between skill producers and Studio consumers.
 
-```
+```text
 lionagi/outcomes/
   __init__.py
   _base.py          # SkillOutcome base
@@ -156,6 +157,7 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_kind ON artifacts(kind);
 ```
 
 The split:
+
 - **DB (`content` JSON)**: structured outcomes — verdicts, results,
   analyses. Queryable, displayable, chainable.
 - **Filesystem (`file_path`)**: large blobs — full logs, generated code,
@@ -340,6 +342,7 @@ Start with two event sources, add more as needed:
 | **Manual** | `li chain fire <name>` | `manual.fired` |
 
 Future (not in this ADR):
+
 - GitHub webhooks (`pr.opened`, `pr.merged`, `issue.created`)
 - File watch (`file.changed` in a watched directory)
 - Invocation completion (`invocation.completed` with outcome filter)
@@ -372,7 +375,7 @@ The invocations page shows the final outcome of each step.
 The `ReviewVerdictCard` renders the structured verdict as a severity/category
 breakdown with blocking findings, not plain text:
 
-```
+```text
 ┌────────────────────────────────────────────────────────────────────┐
 │ REQUEST CHANGES                                  reviewer · 5m 27s │
 ├────────────────────────────────────────────────────────────────────┤
@@ -407,7 +410,7 @@ minor suggestions in a collapsed section.
 
 The `GateVerdictCard` renders as an acceptance criteria checklist:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │ GATE VERDICT: REJECT                                                │
 ├─────────────────────────────────────────────────────────────────────┤
@@ -432,7 +435,7 @@ next action are surfaced prominently, not buried in a text field.
 
 The `CIResultCard` renders as a test/build/lint matrix with command timings:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │ CI RESULT: PASSED                                                   │
 ├─────────────────────────────────────────────────────────────────────┤
@@ -452,7 +455,7 @@ applicable. Commands section shows the actual commands run with durations.
 
 ### Summary: the full stack
 
-```
+```text
 Chain (pr-review-chain.yaml)
   → Trigger (pr.opened / schedule / manual)
     → Invocation (skill="codex-pr-review", ADR-0020)
@@ -468,6 +471,7 @@ Chain (pr-review-chain.yaml)
 ## Consequences
 
 **Positive**
+
 - Skills have a typed output contract. Studio knows how to render a
   `ReviewVerdict` vs a `CIResult` without parsing markdown.
 - Artifacts are queryable — "show me all failed reviews this week" is a
@@ -481,6 +485,7 @@ Chain (pr-review-chain.yaml)
   skill invocation.
 
 **Negative**
+
 - New package (`lionagi/outcomes/`) adds to the import surface. Mitigated
   by lazy imports and clear scope boundary.
 - Artifact writes add DB operations to skill execution paths. At our

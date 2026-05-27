@@ -45,7 +45,7 @@ Problems:
 
 The resolution chain:
 
-```
+```text
 agent.md → parse_model_spec() → iModel.__init__(endpoint=...) → iModel.invoke()
                                   ↑                                ↑
                               provider, model known            payload, response, tokens known
@@ -53,6 +53,7 @@ agent.md → parse_model_spec() → iModel.__init__(endpoint=...) → iModel.inv
 ```
 
 The info exists at two points:
+
 - **Branch creation**: model spec, provider, effort are resolved and
   passed to `iModel.__init__()`. This is when session-level provenance
   should be captured.
@@ -328,6 +329,7 @@ class Session:
 ### Hook isolation
 
 Hooks MUST NOT:
+
 - Block the operation they're observing (async with timeout, fire-and-forget on failure)
 - Modify the operation's data (hooks are observers, not interceptors — except `TOOL_PRE` which can raise to block)
 - Hold references to the bus after session end (GC-safe)
@@ -338,7 +340,7 @@ fire-and-observe.
 
 ### Package structure
 
-```
+```text
 lionagi/hooks/
   __init__.py          # exports HookBus, HookPoint, hook decorator
   bus.py               # HookBus, HookPoint enum, StopHook
@@ -354,6 +356,7 @@ window, it moves to `lionagi/hooks/_legacy/`.
 ## Consequences
 
 **Positive**
+
 - Model/provider/tokens flow from iModel layer to DB persistence via
   a single bus — no more data gap.
 - Agent profiles can configure hooks declaratively — no code changes for
@@ -368,6 +371,7 @@ window, it moves to `lionagi/hooks/_legacy/`.
   leaks.
 
 **Negative**
+
 - Deprecation period for `HookRegistry` and `AgentConfig.hook_handlers`
   means two code paths temporarily coexist.
 - Hook handler names in agent YAML must be resolvable — typos fail silently

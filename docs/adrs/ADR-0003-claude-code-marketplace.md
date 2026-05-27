@@ -14,7 +14,7 @@ Claude Code's plugin marketplace provides a tested distribution primitive: a roo
 
 Adopt the Claude Code marketplace pattern inside the lionagi repository. The structure is:
 
-```
+```text
 .claude-plugin/marketplace.json          # root manifest
 marketplace/<plugin>/.claude-plugin/plugin.json  # per-plugin manifest
 marketplace/<plugin>/skills/             # bundled skills (added in later plays)
@@ -75,12 +75,14 @@ shipped in Phase 0 and why the remaining four were removed or deferred.
 ## Consequences
 
 **Positive**
+
 - Users install only the capability slices they need, keeping Claude Code context lean.
 - Each plugin can version independently; `studio` can ship a breaking MCP config change without bumping `devx`.
 - MCP server configuration can be bundled per plugin (`studio`, `mcp-bundle`) once the FastAPI backend route set is stable.
 - Clear ownership boundary: each plugin directory is a self-contained unit that external contributors or downstream forks can understand and extend.
 
 **Negative**
+
 - More manifests to maintain: root `marketplace.json` plus four `plugin.json` files (v2) must stay in sync as plugin names or descriptions change.
 - Skills authored in `firm/resources/skills/` (canonical) must be copied or symlinked into `marketplace/<plugin>/skills/` for external installs — two places to update per skill change.
 - The `plugin.json` schema is not yet finalized by Anthropic; field names or required keys may shift before GA, requiring a sweep across all four manifests.

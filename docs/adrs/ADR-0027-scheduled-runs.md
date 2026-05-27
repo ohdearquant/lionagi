@@ -96,6 +96,7 @@ can define `on_fail` and/or `on_success` as action definitions that are themselv
 ```
 
 When an action completes, exit code determines which edge to follow:
+
 - `exit_code == 0` → `on_success` (if defined)
 - `exit_code != 0` → `on_fail` (if defined)
 
@@ -193,6 +194,7 @@ async def lifespan(app: FastAPI):
 ```
 
 The engine is a single `asyncio.Task` that:
+
 1. Queries `schedules WHERE enabled=1 AND next_fire_at <= now` every 30 seconds
 2. For GitHub schedules: polls the API, fires only when new events are found
 3. Fires due schedules (subject to overlap check)
@@ -201,7 +203,7 @@ The engine is a single `asyncio.Task` that:
 
 ### 8. API Endpoints
 
-```
+```text
 GET    /api/schedules/                  List schedules
 POST   /api/schedules/                  Create schedule
 GET    /api/schedules/{id}              Get schedule detail
@@ -226,7 +228,7 @@ scheduled run — zero new UI work for session grouping.
 
 Schedule management from the terminal, without requiring Studio UI:
 
-```
+```text
 li schedule list                          # List all schedules (enabled/disabled)
 li schedule create <name> --trigger cron --cron "0 0 * * *" \
     --action play --playbook perf-opt     # Create a cron schedule
@@ -269,7 +271,8 @@ have in SQLite and asyncio.
 ### 13. File Map
 
 New files:
-```
+
+```text
 apps/studio/server/scheduler/__init__.py
 apps/studio/server/scheduler/engine.py       # SchedulerEngine, tick loop
 apps/studio/server/scheduler/github.py       # GitHub polling, ETag, auth
@@ -282,7 +285,8 @@ lionagi/tools/schedule.py                    # Agent-accessible schedule tools
 ```
 
 Modified files:
-```
+
+```text
 apps/studio/server/app.py                    # Add lifespan hook, register router
 lionagi/state/schema.sql                     # Add schedules + schedule_runs tables
 lionagi/state/db.py                          # Add migration columns + schedule CRUD
@@ -293,6 +297,7 @@ pyproject.toml                               # Add croniter dependency
 ## Consequences
 
 **Positive**
+
 - Studio becomes an active operator, not just a passive monitor
 - DAG conditional chains (on_fail/on_success, recursive) are a differentiator vs. every competitor
 - Subprocess isolation means schedule failures cannot crash the Studio server
@@ -303,6 +308,7 @@ pyproject.toml                               # Add croniter dependency
 - DAG of DAG composition: schedule → flow → operations, all graphs
 
 **Negative**
+
 - In-process scheduler means Studio server must be running for schedules to fire
 - GitHub polling is less responsive than webhooks (min ~60s latency vs instant)
 - `croniter` is a new dependency (though minimal)

@@ -41,7 +41,7 @@ The React frontend is built at CI/release time. The built static files
 are included in the Python package under `lionagi/studio/static/`. The
 FastAPI server serves them directly.
 
-```
+```text
 pip install lionagi[studio]    # or: pip install lionagi (if studio becomes default)
 li studio                      # starts uvicorn, serves frontend + API on 127.0.0.1:8765
 ```
@@ -187,6 +187,7 @@ embed the same uvicorn server and open a webview to `127.0.0.1:8765`.
 ## Consequences
 
 **Positive**
+
 - One-command install and start (`pip install lionagi[studio] && li studio`).
 - Full host access — no Docker isolation getting in the way of local dev tooling.
 - No frontend toolchain required for users (Node.js, npm stay in CI only).
@@ -194,6 +195,7 @@ embed the same uvicorn server and open a webview to `127.0.0.1:8765`.
 - Compatible with future desktop wrapper without architecture changes.
 
 **Negative**
+
 - CI must build the frontend and include it in the wheel. Adds a build step.
 - `lionagi[studio]` wheel is larger (~2-5 MB for built React assets).
 - Docker mode has documented limitations around host access — users who expect
