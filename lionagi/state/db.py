@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -330,6 +331,12 @@ class StateDB:
         # ``(kind, name)`` so unrelated definitions can still progress
         # in parallel.
         self._definition_locks: dict[tuple[str, str], Lock] = {}
+        # Nesting depth for transaction() context manager.  Depth 0 means
+        # no active transaction; depth 1 is the outermost real transaction
+        # (BEGIN IMMEDIATE); depths > 1 use SQLite SAVEPOINTs so that an
+        # exception caught inside an inner block rolls back only the inner
+        # writes, not the entire outer transaction.
+        self._txn_depth: int = 0
 
     # ── Connection lifecycle ───────────────────────────────────────────
 
@@ -357,6 +364,47 @@ class StateDB:
         if self._db is None:
             raise RuntimeError("StateDB not open — call open() or use async with")
         return self._db
+
+    @asynccontextmanager
+    async def transaction(self):
+        """Async context manager that supports nested transactions via SAVEPOINTs.
+
+        Outermost call (depth 0 → 1): issues ``BEGIN IMMEDIATE`` / ``COMMIT``
+        or ``ROLLBACK`` so the full transaction is atomic and write-exclusive.
+
+        Nested calls (depth > 1): issues ``SAVEPOINT sp_{depth}`` /
+        ``RELEASE sp_{depth}`` (commit) or ``ROLLBACK TO sp_{depth}``
+        (rollback) so an inner exception that is caught by the outer block
+        undoes only the inner writes, not the outer transaction.
+
+        This guarantees that partial inner writes never silently commit with
+        the outer transaction when the inner exception is suppressed.
+        """
+        self._txn_depth += 1
+        depth = self._txn_depth
+        sp_name = f"sp_{depth}"
+
+        if depth == 1:
+            await self.db.execute("BEGIN IMMEDIATE")
+        else:
+            await self.db.execute(f"SAVEPOINT {sp_name}")
+
+        try:
+            yield
+        except BaseException:
+            if depth == 1:
+                await self.db.rollback()
+            else:
+                await self.db.execute(f"ROLLBACK TO {sp_name}")
+                await self.db.execute(f"RELEASE {sp_name}")
+            raise
+        else:
+            if depth == 1:
+                await self.db.commit()
+            else:
+                await self.db.execute(f"RELEASE {sp_name}")
+        finally:
+            self._txn_depth -= 1
 
     async def _apply_pragmas(self) -> None:
         await self.db.execute("PRAGMA journal_mode = WAL")
@@ -967,8 +1015,9 @@ class StateDB:
         now = time.time()
 
         # Single transaction: status + denormalized reason + transition row.
-        await self.db.execute("BEGIN IMMEDIATE")
-        try:
+        # Uses transaction() so nested calls from an outer transaction use a
+        # SAVEPOINT and roll back only the inner writes on exception.
+        async with self.transaction():
             # Lookup previous status. NOT FOUND raises before any write.
             # noqa: S608 — `table` is allowlisted via _reason_entity_table.
             cur = await self.db.execute(
@@ -1023,10 +1072,6 @@ class StateDB:
                     metadata_json,
                 ),
             )
-            await self.db.commit()
-        except BaseException:
-            await self.db.rollback()
-            raise
 
     async def list_sessions(
         self,
