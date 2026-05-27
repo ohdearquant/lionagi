@@ -24,6 +24,7 @@ from ..types import (
 )
 
 if TYPE_CHECKING:
+    from lionagi.protocols.governance.context import OperationContext
     from lionagi.service.imodel import iModel
     from lionagi.session.branch import Branch, ToolRef
 
@@ -66,6 +67,7 @@ def prepare_operate_kw(
     persist_dir: str | None = None,
     snapshot_dir: str | None = None,
     middle: Middle | None = None,
+    ctx: "OperationContext | None" = None,
     **kwargs,
 ) -> dict:
     # Handle deprecated parameters
@@ -221,6 +223,7 @@ def prepare_operate_kw(
         "clear_messages": clear_messages,
         "operative": operative,
         "middle": middle,
+        "ctx": ctx,
     }
 
 
@@ -238,6 +241,7 @@ async def operate(
     field_models: list[FieldModel | Spec] | None = None,
     operative: Union["Operative", None] = None,
     middle: Middle | None = None,
+    ctx: "OperationContext | None" = None,
 ) -> BaseModel | dict | str | None:
     """Execute operation with optional action handling.
 
@@ -258,6 +262,11 @@ async def operate(
     Returns:
         Result of operation
     """
+    if ctx is not None:
+        from lionagi.protocols.governance.context import set_operation_context
+
+        set_operation_context(ctx)
+
     _cctx = chat_param
     _pctx = (
         parse_param.with_updates(handle_validation="return_value")
@@ -335,6 +344,9 @@ async def operate(
         clear_messages,
         skip_validation=skip_validation,
     )
+
+    if ctx is not None and ctx.operation_budget is not None:
+        ctx.operation_budget.record_usage(tokens=0, calls=1)
 
     if skip_validation:
         return result

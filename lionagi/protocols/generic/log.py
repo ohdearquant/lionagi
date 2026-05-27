@@ -6,7 +6,7 @@ from __future__ import annotations
 import atexit
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
@@ -15,6 +15,11 @@ from lionagi.utils import create_path, to_dict
 
 from .element import Element
 from .pile import Pile
+
+if TYPE_CHECKING:
+    from lionagi.protocols.governance.evidence import (
+        EvidenceChain,
+    )
 
 __all__ = (
     "DataLoggerConfig",
@@ -31,9 +36,7 @@ class DataLoggerConfig(BaseModel):
     persist_dir: str | Path = "./data/logs"
     subfolder: str | None = None
     file_prefix: str | None = None
-    capacity: int | None = (
-        None  # None means unbounded; set a value for long-running sessions
-    )
+    capacity: int | None = None  # None means unbounded; set a value for long-running sessions
     extension: str = ".json"
     use_timestamp: bool = True
     hash_digits: int | None = Field(5, ge=0, le=10)
@@ -85,11 +88,13 @@ class Log(Element):
         return self
 
     @classmethod
-    def create(cls, content: Element | dict) -> Log:
+    def create(cls, content: Element | dict, *, tier: Any = None) -> Log:
         """
         Create a new Log from an Element, storing a dict snapshot
         of the element's data.
         """
+        from lionagi.protocols.governance.evidence import LogTier
+
         if isinstance(content, Element | HashableModel):
             content = content.to_dict(mode="json")
         else:
@@ -101,7 +106,10 @@ class Log(Element):
             )
             return cls(content={"error": "No content to log."})
 
-        return cls(content=content)
+        log = cls(content=content)
+        if tier == LogTier.IMMUTABLE:
+            log._immutable = True
+        return log
 
 
 class DataLogger:
@@ -139,21 +147,119 @@ class DataLogger:
             self.logs = Pile(collections=logs, item_type=Log, strict_type=True)
         self._config = _config
 
+        from lionagi.protocols.governance.evidence import EvidenceChain  # noqa: F401
+
+        self.protected_logs: Pile = Pile(
+            collections=[], item_type={Log}, strict_type=True, append_only=True
+        )
+        self.evidence_chain: EvidenceChain = EvidenceChain()
+        self.immutable_logs: Pile = self.evidence_chain.nodes
+
         # Auto-dump on exit
         if self._config.auto_save_on_exit:
             atexit.register(self.save_at_exit)
+
+    def emit(
+        self,
+        record: Any,
+        tier: Any = None,
+        *,
+        sensitive_fields: list[str] | None = None,
+    ) -> Any:
+        """
+        Emit a record with tier-based routing.
+
+        MUTABLE → self.logs (standard pile)
+        PROTECTED → self.protected_logs (append-only pile)
+        IMMUTABLE → self.evidence_chain (append-only + hash chain)
+        """
+        from lionagi.protocols.governance.evidence import (
+            LogTier,
+            _filter_sensitive,
+        )
+
+        if tier is None:
+            tier = LogTier.MUTABLE
+
+        if isinstance(record, Log):
+            if tier == LogTier.MUTABLE:
+                if self._config.capacity and len(self.logs) >= self._config.capacity:
+                    try:
+                        self.dump(clear=self._config.clear_after_dump)
+                    except Exception as e:
+                        logger.error(f"Failed to auto-dump logs: {e}")
+                self.logs.include(record)
+                return record
+            if tier == LogTier.PROTECTED:
+                self.protected_logs.include(record)
+                return record
+            # IMMUTABLE: extract content for EvidenceNode
+            record = record.content
+
+        if isinstance(record, dict):
+            payload = _filter_sensitive(record, sensitive_fields)
+        elif isinstance(record, Element | HashableModel):
+            payload = _filter_sensitive(record.to_dict(mode="json"), sensitive_fields)
+        else:
+            payload = _filter_sensitive(
+                to_dict(record, recursive=True, suppress=True), sensitive_fields
+            )
+
+        if tier == LogTier.MUTABLE:
+            log_ = Log.create(payload, tier=tier)
+            if self._config.capacity and len(self.logs) >= self._config.capacity:
+                try:
+                    self.dump(clear=self._config.clear_after_dump)
+                except Exception as e:
+                    logger.error(f"Failed to auto-dump logs: {e}")
+            self.logs.include(log_)
+            return log_
+
+        if tier == LogTier.PROTECTED:
+            log_ = Log.create(payload, tier=tier)
+            self.protected_logs.include(log_)
+            return log_
+
+        if tier == LogTier.IMMUTABLE:
+            node = self.evidence_chain.append(
+                payload,
+                tier=LogTier.IMMUTABLE,
+                sensitive_fields=sensitive_fields,
+            )
+            return node
+
+        raise ValueError(f"Unsupported log tier: {tier!r}")
+
+    async def aemit(
+        self,
+        record: Any,
+        tier: Any = None,
+        *,
+        sensitive_fields: list[str] | None = None,
+    ) -> Any:
+        """Asynchronously emit a record with tier-based routing."""
+        async with self.logs:
+            return self.emit(record, tier=tier, sensitive_fields=sensitive_fields)
+
+    def verify_immutable(self) -> Any:
+        """Verify the integrity of the immutable evidence chain."""
+        return self.evidence_chain.verify()
+
+    @property
+    def immutable_records(self) -> Pile:
+        """Return the immutable evidence nodes after verifying chain integrity."""
+        verification = self.verify_immutable()
+        if not verification.valid:
+            raise ValueError(verification.message)
+        return self.evidence_chain.nodes
 
     def log(self, log_: Any) -> None:
         """
         Add a log synchronously. If capacity is reached, auto-dump to file.
         """
-        log_ = Log.create(log_) if not isinstance(log_, Log) else log_
-        if self._config.capacity and len(self.logs) >= self._config.capacity:
-            try:
-                self.dump(clear=self._config.clear_after_dump)
-            except Exception as e:
-                logger.error(f"Failed to auto-dump logs: {e}")
-        self.logs.include(log_)
+        from lionagi.protocols.governance.evidence import LogTier
+
+        self.emit(log_, tier=LogTier.MUTABLE)
 
     async def alog(self, log_: Any) -> None:
         """

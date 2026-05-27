@@ -7,6 +7,15 @@ from typing import Any
 from pydantic import BaseModel
 
 from lionagi.protocols._concepts import Manager
+from lionagi.protocols.governance.context import OperationContext, get_operation_context
+from lionagi.protocols.governance.evidence import EvidenceChain, LogTier
+from lionagi.protocols.governance.gates import (
+    GateExecutor,
+    GateResult,
+    GateVerdict,
+    GovernanceViolationError,
+)
+from lionagi.protocols.governance.targets import GateRegistration
 from lionagi.protocols.messages.action_request import ActionRequest
 from lionagi.utils import to_list
 
@@ -35,6 +44,8 @@ class ActionManager(Manager):
         """
         super().__init__()
         self.registry: dict[str, Tool] = {}
+        self._governance_artifacts: Any | None = None
+        self._evidence_chain: EvidenceChain | None = None
 
         tools = []
         if args:
@@ -43,6 +54,81 @@ class ActionManager(Manager):
             tools.extend(to_list(kwargs.values(), dropna=True, flatten=True))
 
         self.register_tools(tools, update=True)
+
+    @property
+    def evidence_chain(self) -> EvidenceChain | None:
+        return self._evidence_chain
+
+    @evidence_chain.setter
+    def evidence_chain(self, value: EvidenceChain | None) -> None:
+        self._evidence_chain = value
+
+    @property
+    def governance_artifacts(self) -> Any | None:
+        return self._governance_artifacts
+
+    @governance_artifacts.setter
+    def governance_artifacts(self, value: Any | None) -> None:
+        self._governance_artifacts = value
+
+    def _governance_gate_registrations(self) -> list[GateRegistration]:
+        if self._governance_artifacts is None:
+            return []
+
+        regs = getattr(self._governance_artifacts, "gates", None)
+        if regs is not None:
+            return list(regs)
+
+        if isinstance(self._governance_artifacts, list):
+            return list(self._governance_artifacts)
+
+        return []
+
+    def _governance_gate_for_tool(self, tool_name: str) -> list[GateRegistration]:
+        return [
+            reg for reg in self._governance_gate_registrations() if reg.target_tool == tool_name
+        ]
+
+    def _tool_governed(self, tool_name: str) -> bool:
+        return bool(self._governance_gate_for_tool(tool_name))
+
+    def _emit_governance_evidence(
+        self,
+        tool_call: FunctionCalling,
+        pre_gate: GateResult,
+        post_gate: GateResult | None = None,
+    ) -> None:
+        chain = self._evidence_chain
+        if chain is None:
+            return
+
+        ctx = get_operation_context()
+        content: dict[str, Any] = {
+            "type": "governance.tool_call",
+            "tool": {
+                "name": tool_call.function,
+                "arguments": tool_call.arguments,
+            },
+            "result": tool_call.execution.to_dict(),
+            "gates": {
+                "pre": pre_gate.to_dict(),
+                "post": post_gate.to_dict() if post_gate is not None else None,
+            },
+        }
+
+        if ctx is not None:
+            content["trace"] = {
+                "trace_id": ctx.trace_id,
+                "span_id": ctx.span_id,
+                "actor_id": ctx.actor_id,
+                "actor_role": ctx.actor_role,
+                "policy_ref": pre_gate.policy_ref or ctx.policy_pin.charter_id,
+            }
+
+        node = chain.append(content, tier=LogTier.IMMUTABLE)
+        pre_gate.evidence_ref = node.node_hash
+        if post_gate is not None:
+            post_gate.evidence_ref = node.node_hash
 
     def __contains__(self, tool: FuncToolRef) -> bool:
         """
@@ -103,9 +189,7 @@ class ActionManager(Manager):
             )
         self.registry[tool.function] = tool
 
-    def register_tools(
-        self, tools: list[FuncTool] | FuncTool, update: bool = False
-    ) -> None:
+    def register_tools(self, tools: list[FuncTool] | FuncTool, update: bool = False) -> None:
         """
         Register multiple tools at once.
 
@@ -123,9 +207,7 @@ class ActionManager(Manager):
         for t in tools_list:
             self.register_tool(t, update=update)
 
-    def match_tool(
-        self, action_request: ActionRequest | BaseModel | dict
-    ) -> FunctionCalling:
+    def match_tool(self, action_request: ActionRequest | BaseModel | dict) -> FunctionCalling:
         """
         Convert an ActionRequest (or dict with "function"/"arguments")
         into a `FunctionCalling` instance by finding the matching tool.
@@ -173,11 +255,117 @@ class ActionManager(Manager):
             `FunctionCalling` event after it completes execution.
         """
         function_calling = self.match_tool(func_call)
+        if self._tool_governed(function_calling.function):
+            ctx = get_operation_context()
+            await self.execute_governed(function_calling.function, function_calling.arguments, ctx)
+            await function_calling.invoke()
+            return function_calling
+
         try:
             await function_calling.invoke()
-        except Exception:
-            pass  # Error captured in function_calling.execution
+        except Exception:  # noqa: S110
+            pass
         return function_calling
+
+    async def execute(self, tool_name: str, arguments: dict) -> Any:
+        """Execute a registered tool by name with no governance overhead."""
+        tool = self.registry.get(tool_name)
+        if not isinstance(tool, Tool):
+            raise ValueError(f"Function {tool_name} is not registered.")
+        function_calling = FunctionCalling(func_tool=tool, arguments=arguments)
+        await function_calling.invoke()
+        return function_calling.response
+
+    async def execute_governed(
+        self,
+        tool_name: str,
+        arguments: dict,
+        ctx: OperationContext | None = None,
+    ) -> Any:
+        """Execute a tool with pre/post governance gate checks and evidence recording.
+
+        Falls back to execute() when ctx is None or no gate registrations apply
+        to tool_name. Hard DENY raises GovernanceViolationError after recording
+        a denial EvidenceNode. Advisory gates record evidence and let execution
+        proceed.
+        """
+        # (a) No governance context — ungoverned fallback
+        if ctx is None:
+            return await self.execute(tool_name, arguments)
+
+        # (b) Gate registrations for this tool; fall back if none
+        registrations = self._governance_gate_for_tool(tool_name)
+        if not registrations:
+            return await self.execute(tool_name, arguments)
+
+        chain = self._evidence_chain
+
+        # (c) Pre-gate evaluation
+        executor = GateExecutor(registrations)
+        gate_result = executor.evaluate(tool_name, ctx)
+
+        # (d) DENY — record denial node, raise
+        if gate_result.verdict == GateVerdict.DENY:
+            if chain is not None:
+                node = chain.append(
+                    {
+                        "event": "gate_deny",
+                        "tool_name": tool_name,
+                        "gate_id": gate_result.gate_id,
+                        "justification": gate_result.justification,
+                        "policy_ref": gate_result.policy_ref or ctx.policy_pin.charter_hash,
+                        "actor_id": ctx.actor_id,
+                        "actor_role": ctx.actor_role,
+                        "trace_id": ctx.trace_id,
+                    },
+                    tier=LogTier.IMMUTABLE,
+                )
+                gate_result.evidence_ref = node.node_hash
+                ctx.embed_evidence(chain)
+            raise GovernanceViolationError(gate_result)
+
+        # (e) ADVISORY — record advisory node, continue
+        if gate_result.verdict == GateVerdict.ADVISORY:
+            if chain is not None:
+                node = chain.append(
+                    {
+                        "event": "gate_advisory",
+                        "tool_name": tool_name,
+                        "gate_id": gate_result.gate_id,
+                        "justification": gate_result.justification,
+                        "actor_id": ctx.actor_id,
+                        "trace_id": ctx.trace_id,
+                    },
+                    tier=LogTier.IMMUTABLE,
+                )
+                gate_result.evidence_ref = node.node_hash
+
+        # (f) Execute the tool
+        result = await self.execute(tool_name, arguments)
+
+        # (g) Post-execution evidence sidecar
+        if chain is not None:
+            sensitive = {"secret", "token", "password", "key"}
+            sanitized_args = {
+                k: v for k, v in arguments.items() if not any(s in k.lower() for s in sensitive)
+            }
+            node = chain.append(
+                {
+                    "event": "tool_execution",
+                    "tool_name": tool_name,
+                    "arguments": sanitized_args,
+                    "result_summary": str(result)[:500],
+                    "gate_verdict": gate_result.to_dict(),
+                    "actor_id": ctx.actor_id,
+                    "actor_role": ctx.actor_role,
+                    "trace_id": ctx.trace_id,
+                    "span_id": ctx.span_id,
+                },
+                tier=LogTier.IMMUTABLE,
+            )
+            ctx.embed_evidence(chain)
+
+        return result
 
     @property
     def schema_list(self) -> list[dict[str, Any]]:
@@ -217,9 +405,7 @@ class ActionManager(Manager):
                 return {"tools": self.schema_list}
             return []
         else:
-            schemas = self._get_tool_schema(
-                tools, auto_register=auto_register, update=update
-            )
+            schemas = self._get_tool_schema(tools, auto_register=auto_register, update=update)
             return {"tools": schemas}
 
     def _get_tool_schema(
@@ -355,18 +541,14 @@ class ActionManager(Manager):
                             "function": {
                                 "name": tool.name,
                                 "description": (
-                                    tool.description
-                                    if hasattr(tool, "description")
-                                    else None
+                                    tool.description if hasattr(tool, "description") else None
                                 ),
                                 "parameters": tool.inputSchema,
                             },
                         }
                 except Exception as schema_error:
                     # If schema extraction fails, let Tool auto-generate from function signature
-                    logging.warning(
-                        f"Could not extract schema for {tool.name}: {schema_error}"
-                    )
+                    logging.warning(f"Could not extract schema for {tool.name}: {schema_error}")
                     tool_schema = None
 
                 try:
@@ -427,13 +609,9 @@ class ActionManager(Manager):
         for server_name in server_names:
             try:
                 # Register using server reference
-                tools = await self.register_mcp_server(
-                    {"server": server_name}, update=update
-                )
+                tools = await self.register_mcp_server({"server": server_name}, update=update)
                 all_tools[server_name] = tools
-                logger.info(
-                    "Registered %d tools from server '%s'", len(tools), server_name
-                )
+                logger.info("Registered %d tools from server '%s'", len(tools), server_name)
             except Exception as e:
                 logger.warning("Failed to register server '%s': %s", server_name, e)
                 all_tools[server_name] = []
@@ -496,9 +674,7 @@ async def load_mcp_tools(
         server_names = list(MCPConnectionPool._configs.keys())
 
     if server_names is None:
-        raise ValueError(
-            "Either provide server_names or config_path to discover servers"
-        )
+        raise ValueError("Either provide server_names or config_path to discover servers")
 
     # Register all servers
     for server_name in server_names:

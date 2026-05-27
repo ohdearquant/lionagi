@@ -24,6 +24,7 @@ from lionagi.protocols.generic import (
     Pile,
     Progression,
 )
+from lionagi.protocols.governance.evidence import LogTier
 from lionagi.protocols.messages import (
     ActionRequest,
     ActionResponse,
@@ -38,13 +39,14 @@ from lionagi.protocols.messages import (
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.manager import iModel, iModelManager
 from lionagi.tools.base import LionTool
-from lionagi.utils import copy
 
 from .prompts import LION_SYSTEM_MESSAGE
 
 if TYPE_CHECKING:
     from lionagi.operations.operate.operative import Operative
     from lionagi.operations.types import Middle
+    from lionagi.protocols.governance.context import OperationContext
+    from lionagi.protocols.governance.evidence import EvidenceChain, EvidenceNode
 
 
 __all__ = ("Branch",)
@@ -100,6 +102,7 @@ class Branch(Element, Relational):
     _imodel_manager: iModelManager | None = PrivateAttr(None)
     _log_manager: DataLogger | None = PrivateAttr(None)
     _operation_manager: OperationManager | None = PrivateAttr(None)
+    _evidence_chain: Any = PrivateAttr(None)
 
     def __init__(
         self,
@@ -119,6 +122,7 @@ class Branch(Element, Relational):
         system_template_context: dict = None,
         logs: Pile[Log] = None,
         use_lion_system_message: bool = False,
+        evidence_chain: Any = None,
         **kwargs,
     ):
         """
@@ -227,6 +231,12 @@ class Branch(Element, Relational):
 
         self._operation_manager = OperationManager()
 
+        # --- EvidenceChain (optional governance) ---
+        self._evidence_chain = evidence_chain
+        if self._evidence_chain is not None:
+            self._log_manager.evidence_chain = self._evidence_chain
+            self._log_manager.immutable_logs = self._evidence_chain.nodes
+
     # -------------------------------------------------------------------------
     # Properties to expose managers and core data
     # -------------------------------------------------------------------------
@@ -253,6 +263,35 @@ class Branch(Element, Relational):
     def mdls(self) -> iModelManager:
         """Returns the associated iModelManager."""
         return self._imodel_manager
+
+    @property
+    def evidence_chain(self) -> "EvidenceChain | None":
+        """The branch-scoped evidence chain, if any."""
+        return self._evidence_chain
+
+    def _ensure_evidence_chain(self) -> "EvidenceChain":
+        if self._evidence_chain is None:
+            from lionagi.protocols.governance.evidence import EvidenceChain
+
+            self._evidence_chain = EvidenceChain()
+            self.metadata["evidence_chain_id"] = str(self._evidence_chain.id)
+            self.metadata["evidence_chain_tip"] = self._evidence_chain.tip_hash
+            self._log_manager.evidence_chain = self._evidence_chain
+            self._log_manager.immutable_logs = self._evidence_chain.nodes
+        return self._evidence_chain
+
+    def emit_evidence(
+        self,
+        content: dict[str, Any],
+        tier: LogTier = LogTier.IMMUTABLE,
+        *,
+        sensitive_fields: list[str] | None = None,
+    ) -> "EvidenceNode":
+        """Append an evidence record to the branch-scoped evidence chain."""
+        chain = self._ensure_evidence_chain()
+        node = chain.append(content, tier=tier, sensitive_fields=sensitive_fields)
+        self.metadata["evidence_chain_tip"] = chain.tip_hash
+        return node
 
     @property
     def progression(self) -> Progression:
@@ -368,21 +407,15 @@ class Branch(Element, Relational):
         """
         if sender is not None:
             if not ID.is_id(sender):
-                raise ValueError(
-                    f"Cannot clone Branch: '{sender}' is not a valid sender ID."
-                )
+                raise ValueError(f"Cannot clone Branch: '{sender}' is not a valid sender ID.")
             sender = ID.get_id(sender)
 
         system = self.msgs.system.clone() if self.msgs.system else None
         tools = (
-            list(self._action_manager.registry.values())
-            if self._action_manager.registry
-            else None
+            list(self._action_manager.registry.values()) if self._action_manager.registry else None
         )
         # Transfer iModels: CLI endpoints get a fresh copy, API endpoints share
-        chat_model = (
-            self.chat_model.copy() if self.chat_model.is_cli else self.chat_model
-        )
+        chat_model = self.chat_model.copy() if self.chat_model.is_cli else self.chat_model
         parse_model = (
             self.parse_model.copy()
             if (self.parse_model is not self.chat_model and self.parse_model.is_cli)
@@ -411,9 +444,7 @@ class Branch(Element, Relational):
             tools = tools.to_tool()
         self._action_manager.register_tool(tools, update=update)
 
-    def register_tools(
-        self, tools: FuncTool | list[FuncTool] | LionTool, update: bool = False
-    ):
+    def register_tools(self, tools: FuncTool | list[FuncTool] | LionTool, update: bool = False):
         """
         Registers one or more tools in the ActionManager.
 
@@ -719,18 +750,14 @@ class Branch(Element, Relational):
     async def parse(
         self,
         text: str,
-        handle_validation: Literal[
-            "raise", "return_value", "return_none"
-        ] = "return_value",
+        handle_validation: Literal["raise", "return_value", "return_none"] = "return_value",
         max_retries: int = 3,
         request_type: type[BaseModel] = None,
         operative: "Operative" = None,
         similarity_algo="jaro_winkler",
         similarity_threshold: float = 0.85,
         fuzzy_match: bool = True,
-        handle_unmatched: Literal[
-            "ignore", "raise", "remove", "fill", "force"
-        ] = "force",
+        handle_unmatched: Literal["ignore", "raise", "remove", "fill", "force"] = "force",
         fill_value: Any = None,
         fill_mapping: dict[str, Any] | None = None,
         strict: bool = False,
@@ -776,11 +803,7 @@ class Branch(Element, Relational):
                 Parsed model instance, or a fallback based on `handle_validation`.
         """
 
-        _pms = {
-            k: v
-            for k, v in locals().items()
-            if k not in ("self", "_pms") and v is not None
-        }
+        _pms = {k: v for k, v in locals().items() if k not in ("self", "_pms") and v is not None}
         from lionagi.operations.parse.parse import parse, prepare_parse_kws
 
         return await parse(self, **prepare_parse_kws(self, **_pms))
@@ -812,13 +835,12 @@ class Branch(Element, Relational):
         verbose_action: bool = False,
         field_models: list[FieldModel] = None,
         exclude_fields: list | dict | None = None,
-        handle_validation: Literal[
-            "raise", "return_value", "return_none"
-        ] = "return_value",
+        handle_validation: Literal["raise", "return_value", "return_none"] = "return_value",
         include_token_usage_to_model: bool = False,
         stream_persist: bool = False,
         persist_dir: str | None = None,
         middle: "Middle | None" = None,
+        ctx: "OperationContext | None" = None,
         **kwargs,
     ) -> list | BaseModel | None | dict | str:
         """
@@ -911,10 +933,29 @@ class Branch(Element, Relational):
         _pms = {
             k: v
             for k, v in locals().items()
-            if k not in ("self", "_pms", "kwargs") and v is not None
+            if k not in ("self", "_pms", "kwargs", "ctx") and v is not None
         }
         if kwargs:
             _pms.update(kwargs)
+
+        if ctx is None:
+            from lionagi.protocols.governance.context import get_operation_context
+
+            ctx = get_operation_context()
+
+        if ctx is None:
+            if getattr(self, "_charter", None) is not None:
+                from lionagi.protocols.governance.context import (
+                    GovernanceMissingContextError,
+                )
+
+                raise GovernanceMissingContextError("OperationContext required in governed mode")
+        else:
+            from lionagi.protocols.governance.context import set_operation_context
+
+            set_operation_context(ctx)
+            _pms["ctx"] = ctx
+
         from lionagi.operations.operate.operate import operate, prepare_operate_kw
 
         return await operate(self, **prepare_operate_kw(self, **_pms))
@@ -1015,11 +1056,7 @@ class Branch(Element, Relational):
         suppress_errors: bool = True,
         call_params: AlcallParams = None,
     ) -> list[ActionResponse]:
-        _pms = {
-            k: v
-            for k, v in locals().items()
-            if k not in ("self", "_pms") and v is not None
-        }
+        _pms = {k: v for k, v in locals().items() if k not in ("self", "_pms") and v is not None}
         from lionagi.operations.act.act import act, prepare_act_kw
 
         return await act(self, **prepare_act_kw(self, **_pms))
@@ -1085,7 +1122,7 @@ class Branch(Element, Relational):
 
         return await interpret(self, **prepare_interpret_kw(self, **_pms))
 
-    async def ReAct(
+    async def ReAct(  # noqa: N802
         self,
         instruct: "Instruct | dict[str, Any]",
         interpret: bool = False,
@@ -1187,9 +1224,7 @@ class Branch(Element, Relational):
 
         # Remove potential duplicate parameters from kwargs
         kwargs_filtered = {
-            k: v
-            for k, v in kwargs.items()
-            if k not in {"verbose_analysis", "verbose_action"}
+            k: v for k, v in kwargs.items() if k not in {"verbose_analysis", "verbose_action"}
         }
 
         return await ReAct(
@@ -1220,7 +1255,7 @@ class Branch(Element, Relational):
             **kwargs_filtered,
         )
 
-    async def ReActStream(
+    async def ReActStream(  # noqa: N802
         self,
         instruct: "Instruct | dict[str, Any]",
         interpret: bool = False,
@@ -1256,9 +1291,7 @@ class Branch(Element, Relational):
         )
 
         # Convert Instruct to dict if needed
-        instruct_dict = (
-            instruct.to_dict() if isinstance(instruct, Instruct) else dict(instruct)
-        )
+        instruct_dict = instruct.to_dict() if isinstance(instruct, Instruct) else dict(instruct)
 
         # Build InterpretContext if interpretation requested
         intp_param = None

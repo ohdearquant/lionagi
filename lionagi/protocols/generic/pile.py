@@ -40,6 +40,10 @@ T = TypeVar("T", bound=E)
 _ADAPTER_REGISTERED = False
 
 
+class PileAppendOnlyError(RuntimeError):
+    """Raised when a mutating operation is attempted on an append-only Pile."""
+
+
 def synchronized(func: Callable):
     @wraps(func)
     def wrapper(self: Pile, *args, **kwargs):
@@ -203,12 +207,18 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         description="Specify if enforce a strict type check",
         frozen=True,
     )
+    append_only: bool = Field(
+        default=False,
+        description="If true, allow appending new items but reject mutation, deletion, and reordering.",
+        frozen=True,
+    )
 
     _EXTRA_FIELDS: ClassVar[set[str]] = {
         "collections",
         "item_type",
         "progression",
         "strict_type",
+        "append_only",
     }
 
     def __pydantic_extra__(self) -> dict[str, FieldInfo]:
@@ -224,6 +234,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
     def _validate_before(cls, data: dict[str, Any]) -> dict[str, Any]:
         item_type = _validate_item_type(data.get("item_type"))
         strict_type = data.get("strict_type", False)
+        append_only = data.get("append_only", False)
         collections = _validate_collections(data.get("collections"), item_type, strict_type)
         progression = None
         if "order" in data:
@@ -236,6 +247,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
             "item_type": item_type,
             "progression": progression,
             "strict_type": strict_type,
+            "append_only": append_only,
             **{k: v for k, v in data.items() if k not in cls._EXTRA_FIELDS},
         }
 
@@ -246,6 +258,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         item_type: set[type[T]] = None,
         order: ID.RefSeq = None,
         strict_type: bool = False,
+        append_only: bool = False,
         **kwargs,
     ) -> None:
         """Initialize a Pile instance.
@@ -255,6 +268,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
             item_type: Allowed types for items in the pile.
             order: Initial order of items (as Progression).
             strict_type: If True, enforce strict type checking.
+            append_only: If True, reject mutation, deletion, and reordering.
         """
         data = Pile._validate_before(
             {
@@ -262,6 +276,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
                 "item_type": item_type,
                 "progression": order,
                 "strict_type": strict_type,
+                "append_only": append_only,
                 **kwargs,
             }
         )
@@ -281,6 +296,10 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         if v is None:
             return None
         return [c.class_name(full=True) for c in v]
+
+    def _raise_if_append_only(self, operation: str) -> None:
+        if self.append_only:
+            raise PileAppendOnlyError(f"Cannot {operation} on append-only Pile.")
 
     # Sync Interface methods
     @override
@@ -317,8 +336,23 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         Raises:
             TypeError: If item type not allowed.
             KeyError: If key invalid.
+            PileAppendOnlyError: If pile is append-only.
         """
+        self._raise_if_append_only("__setitem__")
         self._setitem(key, item)
+
+    def __delitem__(
+        self,
+        key: ID.Ref | ID.RefSeq | int | slice,
+        /,
+    ) -> None:
+        """Delete an item or items from the Pile.
+
+        Raises:
+            PileAppendOnlyError: If pile is append-only.
+        """
+        self._raise_if_append_only("__delitem__")
+        self.pop(key)
 
     @synchronized
     def pop(
@@ -338,7 +372,9 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
         Raises:
             KeyError: If key not found and no default.
+            PileAppendOnlyError: If pile is append-only.
         """
+        self._raise_if_append_only("pop")
         return self._pop(key, default)
 
     def remove(
@@ -353,7 +389,9 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
         Raises:
             ValueError: If item not found.
+            PileAppendOnlyError: If pile is append-only.
         """
+        self._raise_if_append_only("remove")
         if isinstance(item, int | slice):
             raise TypeError("Invalid item type for remove, should be ID or Item(s)")
         if item in self:
@@ -367,8 +405,15 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
         Args:
             item: Item(s) to include.
+
+        Raises:
+            PileAppendOnlyError: If pile is append-only and any item already exists.
         """
         item_dict = _validate_collections(item, self.item_type, self.strict_type)
+        if self.append_only:
+            existing = [i for i in item_dict if i in self.collections]
+            if existing:
+                raise PileAppendOnlyError("Cannot replace existing items on append-only Pile.")
 
         item_order = []
         for i in item_dict.keys():
@@ -388,7 +433,11 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
         Args:
             item: Item(s) to exclude.
+
+        Raises:
+            PileAppendOnlyError: If pile is append-only.
         """
+        self._raise_if_append_only("exclude")
         item = to_list_type(item)
         exclude_list = []
         for i in item:
@@ -399,7 +448,12 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
     @synchronized
     def clear(self) -> None:
-        """Remove all items."""
+        """Remove all items.
+
+        Raises:
+            PileAppendOnlyError: If pile is append-only.
+        """
+        self._raise_if_append_only("clear")
         self._clear()
 
     @synchronized
@@ -415,8 +469,13 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
         Raises:
             TypeError: If item types not allowed.
+            PileAppendOnlyError: If pile is append-only and any item already exists.
         """
         others = _validate_collections(other, self.item_type, self.strict_type)
+        if self.append_only:
+            existing = [i for i in others if i in self.collections]
+            if existing:
+                raise PileAppendOnlyError("Cannot update existing items on append-only Pile.")
         for i in others.keys():
             if i in self.collections:
                 self.collections[i] = others[i]
@@ -434,7 +493,9 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         Raises:
             IndexError: If index out of range.
             TypeError: If item type not allowed.
+            PileAppendOnlyError: If pile is append-only.
         """
+        self._raise_if_append_only("insert")
         self._insert(index, item)
 
     @synchronized
@@ -447,7 +508,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         Raises:
             TypeError: If item type not allowed.
         """
-        self.update(item)
+        self.include(item)
 
     @synchronized
     def get(
@@ -823,6 +884,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         key: ID.Ref | ID.RefSeq | int | slice,
         item: ID.Item | ID.ItemSeq,
     ) -> None:
+        self._raise_if_append_only("_setitem")
         item_dict = _validate_collections(item, self.item_type, self.strict_type)
 
         item_order = []
@@ -898,6 +960,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         key: ID.Ref | ID.RefSeq | int | slice,
         default: D = UNDEFINED,
     ) -> T | Pile | D:
+        self._raise_if_append_only("_pop")
         if isinstance(key, int | slice):
             try:
                 pops = self.progression[key]
@@ -930,10 +993,12 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
                 return default
 
     def _clear(self) -> None:
+        self._raise_if_append_only("_clear")
         self.collections.clear()
         self.progression.clear()
 
     def _insert(self, index: int, item: ID.Item):
+        self._raise_if_append_only("_insert")
         item_dict = _validate_collections(item, self.item_type, self.strict_type)
 
         item_order = []
@@ -1168,6 +1233,6 @@ if not _ADAPTER_REGISTERED:
 
 Pile = Pile
 
-__all__ = ("Pile",)
+__all__ = ("Pile", "PileAppendOnlyError")
 
 # File: lionagi/protocols/generic/pile.py

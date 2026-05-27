@@ -24,7 +24,7 @@ from lionagi.protocols.types import (
 
 from .._errors import ItemNotFoundError
 from ..ln import lcall
-from ..protocols.generic import Flow, Progression
+from ..protocols.generic import Flow
 from ..protocols.messages import Message
 from ..service.imodel import iModel
 from .branch import ActionManager, Branch, OperationManager, Tool
@@ -76,9 +76,7 @@ class Session(Node, Relational):
         for i in branches:
             _take_in_branch(i)
 
-    def register_operation(
-        self, operation: str, func: Callable, *, update: bool = False
-    ):
+    def register_operation(self, operation: str, func: Callable, *, update: bool = False):
         self._operation_manager.register(operation, func, update=update)
 
     def operation(self, name: str = None, *, update: bool = False):
@@ -126,8 +124,8 @@ class Session(Node, Relational):
         """Get a branch by its ID or name."""
 
         with contextlib.suppress(ItemNotFoundError, ValueError):
-            id = ID.get_id(branch)
-            return self.branches[id]
+            branch_id = ID.get_id(branch)
+            return self.branches[branch_id]
 
         if isinstance(branch, str):
             if b := self._lookup_branch_by_name(branch):
@@ -324,10 +322,51 @@ class Session(Node, Relational):
             alcall_params: Parameters for async parallel call execution
             on_progress: Callback(op_id, name, status, elapsed_s) for progress tracking
         """
+        charter = getattr(self, "_charter", None)
+        if charter is not None:
+            from datetime import datetime
+            from uuid import uuid4
+
+            from lionagi.protocols.governance.context import (
+                OperationContext,
+                PolicyPin,
+                PolicyPinMismatchError,
+                set_operation_context,
+            )
+
+            pin = getattr(charter, "policy_pin", None)
+            if pin is None:
+                pin = PolicyPin(
+                    charter_id=str(getattr(charter, "id", "unknown")),
+                    charter_version=str(getattr(charter, "version", "0.0.0")),
+                    charter_hash=str(
+                        getattr(charter, "charter_hash", getattr(charter, "hash", "unknown"))
+                    ),
+                    pinned_at=datetime.utcnow(),
+                )
+            else:
+                active_hash = getattr(charter, "charter_hash", None) or getattr(
+                    charter, "hash", None
+                )
+                if active_hash and pin.charter_hash != active_hash:
+                    raise PolicyPinMismatchError(
+                        f"PolicyPin hash {pin.charter_hash!r} does not match "
+                        f"active charter hash {active_hash!r}"
+                    )
+
+            op_ctx = OperationContext(
+                actor_id=str(self.id),
+                actor_role="session",
+                policy_pin=pin,
+                trace_id=uuid4().hex,
+                span_id=uuid4().hex[:16],
+            )
+            set_operation_context(op_ctx)
+
         from lionagi.operations.flow import flow
 
         branch = default_branch or self.default_branch
-        if isinstance(branch, (str, UUID)):
+        if isinstance(branch, str | UUID):
             branch = self.branches[branch]
 
         return await flow(

@@ -134,9 +134,9 @@ def function_to_schema(
             # Default type to string and update if type hint is available
             param_type = "string"
             if param.annotation is not inspect.Parameter.empty:
-                param_type = py_json_msp.get(
-                    param.annotation.__name__, param.annotation.__name__
-                )
+                ann = param.annotation
+                ann_name = ann if isinstance(ann, str) else getattr(ann, "__name__", str(ann))
+                param_type = py_json_msp.get(ann_name, ann_name)
             # Extract parameter description from docstring, if available
             param_description = parametert_description.get(name)
 

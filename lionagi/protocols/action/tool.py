@@ -77,10 +77,19 @@ class Tool(Element):
         description="Whether to enforce strict validation of function parameters",
     )
 
+    governance_meta: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional governance metadata from `@governed_tool`.",
+    )
+
     @model_validator(mode="before")
     def _validate_callable_config(cls, data):
         mcp_config = data.get("mcp_config")
         func_callable = data.get("func_callable")
+        # Accept `func` as a shorthand alias for `func_callable`
+        if func_callable is None and "func" in data:
+            func_callable = data.pop("func")
+            data["func_callable"] = func_callable
 
         if mcp_config is not None:
             if func_callable is not None:
@@ -147,9 +156,7 @@ class Tool(Element):
         """This is not implemented, as Tools are not typically created from arbitrary dicts."""
         raise NotImplementedError("`Tool.from_dict` is not supported.")
 
-    def to_dict(
-        self, mode: Literal["python", "json", "db"] = "python", **kw
-    ) -> dict[str, Any]:
+    def to_dict(self, mode: Literal["python", "json", "db"] = "python", **kw) -> dict[str, Any]:
         """
         Serialize the Tool to a dict, including the `function` name.
 
