@@ -1,6 +1,6 @@
 # ADR-0042: Task Certificate — Signed Proof of Process Adherence
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0041](ADR-0041-immutable-evidence-nodes.md) (certificates are evidence nodes; chain hash required)
 **Related**: [ADR-0044](ADR-0044-tool-gates.md) (gates passed/failed recorded in certificate), [ADR-0045](ADR-0045-break-glass-protocol.md) (break-glass path produces DEGRADED certificate), [ADR-0050](ADR-0050-operation-context.md) (operation context serialized into certificate), [ADR-0033](ADR-0033-unified-entity-state-model.md) (EvidenceRef substrate), [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md) (evidence as first-class artifact)
@@ -17,10 +17,10 @@ governed*. There is no single artifact that answers:
 - Which policy version governed this run?
 - Is the evidence chain for this task intact and unmodified?
 
-This gap has concrete consequences. KHive's audit surface — and any operator deploying lionagi
-for consequential workloads — needs a tamper-evident record that proves process was followed,
-independently of whether the outcome was correct. Without this, "the agent said it followed the
-rules" is the only evidence available, which is not evidence at all.
+This gap has concrete consequences. Any operator deploying lionagi for consequential workloads
+needs a tamper-evident record that proves process was followed, independently of whether the
+outcome was correct. Without this, "the agent said it followed the rules" is the only evidence
+available, which is not evidence at all.
 
 The cross-cutting principle **"Evidence is first-class, not logs"** applies directly: a DataLogger
 entry recording that a gate check occurred is operational telemetry. A `TaskCertificate`
@@ -457,9 +457,8 @@ automatically:
 
 A `BREAK_GLASS` certificate may still reach `MINTED` state. A `DEGRADED` certificate is a
 legitimate, auditable record — it is not an error condition. It is the system correctly
-recording that an exception was taken. The operator's audit surface (KHive) can filter for
-`defensibility=DEGRADED` to surface tasks that require human review without rejecting them
-outright.
+recording that an exception was taken. Operators can filter for `defensibility=DEGRADED` to surface tasks that require human review
+without rejecting them outright.
 
 ### 8. Certificate Storage
 
@@ -490,8 +489,8 @@ and `task_id`; the full certificate content lives in the evidence store.
 
 **Negative**
 
-- Storage growth is unbounded for long-lived KHive deployments. Superseded certificates are
-  never deleted. Operators must provision accordingly.
+- Storage growth is unbounded for long-lived sessions. Superseded certificates are never deleted.
+  Operators must provision accordingly.
 - Adding `emit_certificate` / `mint_certificate` calls to every governed task path increases
   surface area for implementation bugs. The minting precondition checks must be exhaustive
   or they provide false assurance.
@@ -511,13 +510,9 @@ Explicitly out of scope:
   (evaluation, human review).
 - **Cryptographic signing with asymmetric keys (RSA/Ed25519)**: prior research uses
   RSA-4096. For v1 lionagi, SHA-256 content hashing and chain integrity (ADR-0041) are
-  sufficient. Key management infrastructure for asymmetric signing is deferred to a future
-  ADR targeting KHive enterprise deployments.
+  sufficient. Key management infrastructure for asymmetric signing is deferred to a future ADR.
 - **Human-signing UI**: The `Attestation` dataclass supports human attestations.
-  The UI for collecting them is a KHive product concern, not a lionagi framework concern.
-- **Multi-tenant certificate namespacing**: Certificates for different tenants sharing a
-  KHive deployment must be isolated. Tenant namespacing is deferred to KHive's multi-tenancy
-  layer.
+  The UI for collecting them is not defined here.
 - **Certificate revocation**: Deliberately absent. See supersession doctrine (section 5).
   Implementing revocation would undermine the audit guarantees this ADR is designed to provide.
 - **Per-tool-call certificates**: Tool gates (ADR-0044) produce `GateRecord` entries that

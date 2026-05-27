@@ -1,6 +1,6 @@
 # ADR-0041: Immutable Evidence Nodes
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0033](ADR-0033-unified-entity-state-model.md) (EvidenceRef definition), [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md) (Claim, KnowledgeStore protocol)
 **Related**: [ADR-0042](ADR-0042-task-certificate.md), [ADR-0049](ADR-0049-log-tier-governance.md), [ADR-0028](ADR-0028-status-reason-model.md), [ADR-0029](ADR-0029-artifact-contract.md)
@@ -53,7 +53,7 @@ the Python level, before any storage layer is involved.
 
 Introduce `ImmutableEvidenceNode` as the base class for all evidence-grade records in lionagi.
 `EvidenceRef` (ADR-0033) and `Claim` (ADR-0039) acquire these properties via mixin or subclass.
-DB-level enforcement is explicitly deferred to KHive v1 (see Non-Goals).
+DB-level enforcement is explicitly deferred to the storage layer (see Non-Goals).
 
 ### 1. Core data model
 
@@ -383,8 +383,8 @@ class Claim(ImmutableEvidenceNode):
 construction and can be verified at any time.  If application code mutates an attribute after
 construction, `verify_content()` will return `False` on the next check.
 
-DB-level triggers that block `UPDATE` and `DELETE` on the underlying table are a **v2 / KHive
-concern**, not a v1 library concern.  The reasons:
+DB-level triggers that block `UPDATE` and `DELETE` on the underlying table are a storage-layer
+concern, not a library concern.  The reasons:
 
 1. lionagi is a library; it ships no migrations and makes no assumptions about the storage
    backend.  Different deployments use SQLite, Postgres, or in-process dicts.
@@ -392,8 +392,8 @@ concern**, not a v1 library concern.  The reasons:
    a DB trigger.
 3. The Python-level guarantee is sufficient for library mode: evidence is tamper-*evident* (you
    can detect mutation) even if not tamper-*proof* (a sufficiently privileged process could still
-   modify storage directly).  Tamper-proof enforcement requires the governed storage layer that
-   KHive will provide.
+   modify storage directly).  Tamper-proof enforcement requires a governed storage layer with
+   DB-level immutability.
 
 The `KnowledgeStore` protocol (ADR-0039) should document that a conforming implementation MUST
 persist `ImmutableEvidenceNode` instances without modifying their `content_hash`, `chain_hash`,
@@ -518,7 +518,7 @@ Explicitly out of scope for this ADR:
 
 - **Full Merkle trees**: Not needed for v1.  A linear hash chain suffices to detect insertion,
   deletion, or mutation of any single node.  Merkle trees enable efficient proofs over large
-  subsets; that capability belongs to a future KHive indexing ADR.
+  subsets; that capability belongs to a future indexing ADR.
 - **Cryptographic signing**: Digital signatures (ECDSA, Ed25519) over chain tips or individual
   nodes are covered by [ADR-0042](ADR-0042-task-certificate.md) (Task Certificate).  This ADR
   establishes the hash structure that signing will cover, not the signing mechanism itself.
@@ -526,11 +526,7 @@ Explicitly out of scope for this ADR:
   chain synchronization are not relevant to the single-process or single-tenant deployment
   scenarios lionagi targets in v1.
 - **DB-level triggers**: PostgreSQL `BEFORE UPDATE` / `BEFORE DELETE` triggers that enforce
-  immutability at the storage layer are a KHive v1 concern.  The `KnowledgeStore` protocol
-  contract documents the expectation; enforcement is left to governed store implementations.
-- **Multi-tenant chain isolation**: Ensuring that chain nodes from different tenants cannot be
-  interleaved requires tenant-scoped chain roots and storage-layer row security.  This is KHive
-  territory (see also ADR-0039's note on multi-tenant concerns).
+  immutability at the storage layer are left to store implementations.
 - **Retroactive chain repair**: If a chain is found to be invalid (e.g., due to a store bug),
   this ADR does not define a repair protocol.  Invalid chains should be flagged and escalated;
   repair requires operator intervention.

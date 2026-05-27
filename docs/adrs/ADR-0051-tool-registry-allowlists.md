@@ -1,6 +1,6 @@
 # ADR-0051: Tool Registry Allowlists
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0041](ADR-0041-immutable-evidence-nodes.md), [ADR-0043](ADR-0043-governed-tool-declaration.md), [ADR-0044](ADR-0044-tool-gates.md), [ADR-0047](ADR-0047-agent-charter.md)
 **Related**: [ADR-0046](ADR-0046-jit-tool-grant.md), [ADR-0049](ADR-0049-log-tier-governance.md), [ADR-0050](ADR-0050-operation-context.md), [ADR-0033](ADR-0033-unified-entity-state-model.md)
@@ -45,8 +45,8 @@ and it fails closed by default.
 Translated to lionagi: `ToolRegistryPolicy` holds `RegistryEntry` objects in a `Pile`;
 `verify_in_registry` is installed as a security pre-hook on the existing `Tool.preprocessor`
 path used by `ActionManager` ([ADR-0043](ADR-0043-governed-tool-declaration.md)); and
-`PermissionPolicy.allow` in library mode is re-expressed as an in-memory policy element so that
-the same code path is exercised whether the caller is a library user or a KHive tenant.
+`PermissionPolicy.allow` is re-expressed as an in-memory policy element so that the same code
+path is exercised for all callers.
 
 ### Why lionagi needs this
 
@@ -65,8 +65,8 @@ pipeline, and that fails closed on a missing entry, makes this omission structur
 Introduce `ToolRegistryPolicy` (append-only, scoped, audited) and `RegistryEntry` (frozen
 `Element` with full attribution) as the canonical allowlist mechanism for governed tool access.
 The `verify_in_registry` HARD gate ([ADR-0044](ADR-0044-tool-gates.md)) consults the policy before
-every governed tool call. In library mode, `PermissionPolicy` constructs an in-memory policy
-element; in KHive, the same Element records are backend-persisted.
+every governed tool call. `PermissionPolicy` constructs an in-memory policy element that can be
+backed by persistent storage when a durable backend is configured.
 
 ### 1. Scope enum
 
@@ -85,7 +85,7 @@ class RegistryScope(Enum):
     """
 
     GLOBAL = "global"    # all agents and sessions; system-wide approval
-    PROJECT = "project"  # one project (KHive project_id or Studio workspace)
+    PROJECT = "project"  # one project
     AGENT = "agent"      # one agent_id within a project
     SESSION = "session"  # one session_id; highest specificity, lowest lifetime
 ```
@@ -281,8 +281,8 @@ class ToolRegistryPolicy(Element):
 
     All writes produce an IMMUTABLE evidence record (ADR-0041). Reads are O(n) in v1
     (n = active entries per category). Pile supplies managed identity lookup and
-    synchronized mutation for library-mode policy state; KHive can persist the same
-    Element records behind the same API.
+    synchronized mutation for in-memory policy state; a durable backend may persist
+    the same Element records behind the same API.
     """
 
     model_config = ConfigDict(
@@ -529,9 +529,9 @@ class ToolRegistryPolicy(Element):
     ) -> RegistryEvidence:
         """Record IMMUTABLE evidence for a registry mutation or grant.
 
-        In library mode, the record is retained in a Pile and also written to the
-        bound Branch DataLogger when one is available. In KHive, the backend can
-        persist the same Element payload to the immutable evidence store
+        The record is retained in a Pile and also written to the bound Branch
+        DataLogger when one is available. When a durable backend is configured,
+        the same Element payload may be persisted to the immutable evidence store
         (ADR-0041, ADR-0049 IMMUTABLE tier).
         """
         evidence = RegistryEvidence(
@@ -728,18 +728,6 @@ terminates the current agent session and initiates a new one with the updated ch
 intentional: a charter represents a point-in-time, signed commitment; runtime mutability would
 undermine the guarantees [ADR-0042](ADR-0042-task-certificate.md) (Task Certificate) depends on.
 
-### 8. Library mode vs. KHive mode
-
-The `ToolRegistryPolicy` element is usable with zero configuration in library mode. An in-memory
-policy is created per `AgentConfig` and backs the allow dimension that previously lived only in
-`PermissionPolicy.allow`. No persistence is implied; the policy lifetime is the process lifetime.
-
-In KHive, the registry is backend-persisted. `Registry._emit_registry_evidence` writes to the
-IMMUTABLE evidence tier ([ADR-0049](ADR-0049-log-tier-governance.md)). Multi-actor approval
-workflows (e.g., two-of-three human approvers before a tool is added to a production registry)
-are implemented at the KHive layer by gating the `Registry.add()` call behind an approval flow
-— the `Registry` class itself is unaware of this orchestration.
-
 `PermissionPolicy` is not removed. It continues to express deny rules and escalation paths that
 have no registry equivalent. The registry governs the allowlist dimension; `PermissionPolicy`
 governs the deny and escalate dimensions. Both are consulted on every governed tool call.
@@ -758,17 +746,17 @@ governs the deny and escalate dimensions. Both are consulted on every governed t
   absent allowlist no longer implies permission.
 - Expiry is first-class: JIT grants (ADR-0046) expire at session end without requiring explicit
   revocation; the audit record of the expired grant is preserved.
-- Library and KHive users share the same `Registry` API; behavioral differences are in the
-  persistence and evidence-emission backends, not in the allowlist logic.
+- The `Registry` API is the same regardless of persistence backend; behavioral differences are in
+  the evidence-emission backend, not in the allowlist logic.
 
 **Negative**
 
 - Increased API surface: agents that previously relied on `PermissionPolicy(mode="allow_all")`
   must now populate a registry. Migration requires explicit approval records for every previously
   implicit permission.
-- Append-only growth: registries accumulate superseded and expired entries indefinitely. In KHive,
-  storage tiering of historical entries is a backend concern; in library mode, old entries are
-  garbage-collected with the process.
+- Append-only growth: registries accumulate superseded and expired entries indefinitely. Old entries
+  are garbage-collected with the process in in-memory configurations; durable backends manage
+  storage tiering of historical entries.
 - Expiry management is a new operational concern: SESSION-scoped entries expire silently. Long-lived
   agents that acquire SESSION-scoped grants must renew them or escalate to AGENT/PROJECT scope.
 
@@ -778,22 +766,18 @@ governs the deny and escalate dimensions. Both are consulted on every governed t
 
 Explicitly out of scope for v1:
 
-- **Multi-tenant registry isolation**: KHive's tenant-scoped registry (where Tenant A cannot see
-  Tenant B's entries) is a KHive v1 concern. The `Registry` class has no tenant_id; the KHive
-  backend adds this as a partitioning key.
 - **Wildcard or regex matching**: `value` is exact-match only. `"write_*"` is not a valid value;
   each tool must have an explicit entry. Pattern matching introduces ambiguity in scope resolution
   and is deliberately deferred.
 - **Multi-actor approval workflows**: requiring two-of-three human approvers before `Registry.add()`
-  completes is a KHive workflow concern, not a library concern. The `Registry` class does not model
-  approval state machines.
-- **Automatic allowlist propagation across tenants**: a GLOBAL entry in one KHive tenant does not
-  propagate to another. Propagation is an explicit KHive federation concern.
+  completes is out of scope for v1. The `Registry` class does not model approval state machines.
+- **Automatic allowlist propagation across deployments**: a GLOBAL entry in one deployment does not
+  propagate to another. Cross-deployment propagation is an explicit deployment concern.
 - **Dynamic registry mutation by agents**: agents may request that a tool be added to a registry
   (via the JIT grant flow, ADR-0046), but agents do not call `Registry.add()` directly. That
   decision is reserved for humans or orchestrators with explicit approval authority.
-- **Performance caching layer**: in-memory caching to reduce O(n) lookup cost is deferred to the
-  KHive backend. Library-mode registries are small enough that O(n) is acceptable at v1.
+- **Performance caching layer**: in-memory caching to reduce O(n) lookup cost is deferred to
+  persistence backends. In-memory registries are small enough that O(n) is acceptable at v1.
 
 ---
 

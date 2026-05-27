@@ -1,6 +1,6 @@
 # ADR-0047: Agent Charter — Enforceable Governance Document
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0044](ADR-0044-tool-gates.md) (charter constraints bind to gate_ids), [ADR-0051](ADR-0051-tool-registry-allowlists.md) (charter declares the tool allowlist), [ADR-0052](ADR-0052-policy-resolution.md) (charter version is part of the policy bundle), [ADR-0050](ADR-0050-operation-context.md) (active charter version captured in evidence)
 **Related**: [ADR-0041](ADR-0041-immutable-evidence-nodes.md) (charter ratification hash follows the same SHA-256 pattern), [ADR-0042](ADR-0042-task-certificate.md) (certificate records active charter version), [ADR-0046](ADR-0046-jit-tool-grant.md) (JIT grant gates appear as charter constraints), [ADR-0048](ADR-0048-agent-segregation-of-duties.md) (SoD constraints are declared in the charter)
@@ -721,15 +721,12 @@ Explicitly out of scope:
   follow-on ADR after the base model is stable.
 - **Runtime charter mutation**: deliberately impossible. A running session cannot modify its own
   charter. Any change requires a new charter version, re-ratification, and explicit supersession.
-- **Charter UI or editor surface**: tooling for authoring, viewing, or approving charters is a
-  KHive product concern. This ADR specifies the data model and validation contract only.
-- **Multi-tenant charter namespacing**: multiple organizations sharing a lionagi deployment each
-  having isolated charter stores is a KHive concern. In the open-source framework, charter scope
-  is per-agent-id within a single deployment.
+- **Charter UI or editor surface**: this ADR specifies the data model and validation contract
+  only.
 - **Charter inheritance hierarchies**: e.g., an "org-level" charter whose constraints propagate
   down to per-agent charters. Out of scope; addressed in policy resolution (ADR-0052) if needed.
 - **Automatic constraint generation**: tooling that inspects gate registry and proposes constraints
-  automatically is a product concern, not a framework concern.
+  automatically is out of scope for this ADR.
 
 ## Alternatives Considered
 

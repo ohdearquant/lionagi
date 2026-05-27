@@ -1,6 +1,6 @@
 # ADR-0045: Break-Glass Protocol — DEGRADED-Defensibility Override
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0044](ADR-0044-tool-gates.md) (HARD gates being overridden), [ADR-0042](ADR-0042-task-certificate.md) (BREAK_GLASS certificate state), [ADR-0041](ADR-0041-immutable-evidence-nodes.md) (attestation as evidence node)
 **Related**: [ADR-0050](ADR-0050-operation-context.md), [ADR-0047](ADR-0047-agent-charter.md), [ADR-0033](ADR-0033-unified-entity-state-model.md), [ADR-0043](ADR-0043-governed-tool-declaration.md)
@@ -417,8 +417,6 @@ Programmatic export requires:
 1. An elevated permission grant (`EXPORT_BREAK_GLASS`) on the calling actor.
 2. An explicit export request that itself produces an audit evidence node,
    recording who exported what and when.
-3. In KHive (multi-tenant layer): a Legal review workflow before the grant is
-   issued.
 
 This is not obscurity — the evidence node exists and is queryable by authorized
 operators. Non-exportability means it cannot leave the platform boundary in a
@@ -515,9 +513,9 @@ generous for genuine emergencies and punishing for misuse.
 - Genuinely time-critical emergencies may find the 50-char attestation a
   bottleneck. The minimum is low enough (roughly two sentences) that this
   concern is largely theoretical, but it is real.
-- In library mode (no KHive), the rate-limit and non-exportability semantics
-  are enforced in-process and can be bypassed by a caller with full Python
-  access. Full enforcement requires the KHive governed evidence layer.
+- In library mode, the rate-limit and non-exportability semantics are enforced
+  in-process and can be bypassed by a caller with full Python access. Full
+  enforcement requires a governed evidence layer with durable storage.
 
 ---
 
@@ -539,9 +537,8 @@ Explicitly out of scope:
   cover subsequent gate failures. Each failing gate in a new action requires
   its own `overridden_gates` declaration. Open-ended "override everything" is
   not supported.
-- **Multi-tenant policy**: which reason codes are available to which tenants,
-  cross-tenant audit visibility, and Legal-review workflow for exports are
-  KHive-layer concerns and are not defined here.
+- **Policy customization**: which reason codes are available in a given deployment
+  context is a deployment-layer concern and is not defined here.
 - **Retroactive reclassification**: a DEGRADED certificate cannot be upgraded
   to FULL defensibility after the fact, even if subsequent review concludes the
   action was correct. The state at time of action is preserved permanently.

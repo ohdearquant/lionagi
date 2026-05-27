@@ -1,6 +1,6 @@
 # ADR-0050: Operation Context — Active Assertion in Evidence
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0041](ADR-0041-immutable-evidence-nodes.md), [ADR-0043](ADR-0043-governed-tool-declaration.md), [ADR-0044](ADR-0044-tool-gates.md), [ADR-0047](ADR-0047-agent-charter.md)
 **Related**: [ADR-0042](ADR-0042-task-certificate.md), [ADR-0045](ADR-0045-break-glass-protocol.md), [ADR-0046](ADR-0046-jit-tool-grant.md), [ADR-0049](ADR-0049-log-tier-governance.md), [ADR-0051](ADR-0051-tool-registry-allowlists.md), [ADR-0052](ADR-0052-policy-resolution.md), [ADR-0033](ADR-0033-unified-entity-state-model.md), [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md)
@@ -57,7 +57,7 @@ transform methods that return new instances. Every evidence node emitted during 
 
 ### Why lionagi needs this
 
-Consider a KHive agent that calls `branch.operate()` three times in quick succession: one call
+Consider a governed agent that calls `branch.operate()` three times in quick succession: one call
 reads configuration, one writes a checkpoint, one invokes a sub-agent. All three run
 concurrently on the asyncio event loop. The write operation passes a `guard_paths` HARD gate
 and a `confirm_path_outside_workspace` SOFT gate with a provided justification. The read
@@ -175,42 +175,16 @@ mid-session; changes require starting a new session.
 
 ### 2. `GateResult` — Atomic Gate Outcome
 
-`GateResult` is the unit stored in `OperationContext.gate_results`. It is a frozen record of one
-gate's evaluation outcome, captured at evaluation time and never modified.
+Gate evaluation results use `GateResult` as defined in
+[ADR-0044](ADR-0044-tool-gates.md). `OperationContext` records gate results
+via `with_gate_result()` and serializes them into every evidence node via
+`to_evidence_data()`, but does not redefine the type.
 
-```python
-from __future__ import annotations
-
-import time
-from typing import Literal
-
-from pydantic import ConfigDict, Field
-
-from lionagi.protocols.generic.element import Element
-
-
-class GateResult(Element):
-    """Immutable record of a single gate evaluation (ADR-0044).
-
-    Accumulated into ``OperationContext.gate_results`` via
-    ``with_gate_result()``; serialized into every evidence node.
-    """
-
-    model_config = ConfigDict(
-        frozen=True,
-        arbitrary_types_allowed=True,
-        use_enum_values=True,
-        populate_by_name=True,
-        extra="forbid",
-    )
-
-    gate_id: str
-    gate_tier: Literal["HARD", "SOFT", "ADVISORY"]
-    passed: bool
-    reason: str
-    justification: str | None = None
-    evaluated_at: float = Field(default_factory=time.time)
-```
+The canonical fields (`gate_id`, `enforcement`, `passed`, `reason`,
+`justification`, `justification_actor_id`, `evaluated_at`, `evidence_refs`)
+are owned by ADR-0044. The `GateResultProjection` in the cross-reference
+document refers to ADR-0050's read-only use of that type — it is a reference,
+not a duplicate schema.
 
 ---
 
@@ -681,11 +655,8 @@ Explicitly out of scope:
   using plain registered callables are unaffected.
 - **Cross-process context propagation**: distributing `OperationContext` across process
   boundaries (e.g., serializing `operation_id` into an HTTP header for a remote tool call and
-  reconstructing the causation chain at the receiver) is a KHive concern. Within a single
+  reconstructing the causation chain at the receiver) is not addressed here. Within a single
   lionagi session, context propagation is entirely in-process.
-- **Multi-tenant context isolation**: ensuring that `ServiceContext` and `OperationContext`
-  instances from different tenants cannot be interchanged requires storage-layer row security
-  and tenant-scoped session initialization. This is KHive v1 territory.
 - **Real-time context streaming**: broadcasting the accumulated `OperationContext` to an
   external observer as gates are evaluated (for live dashboards) is out of scope. The final
   snapshot is embedded in evidence; intermediate states are not surfaced.

@@ -1,6 +1,6 @@
 # ADR-0043: Governed Tool Declaration
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0041](ADR-0041-immutable-evidence-nodes.md), [ADR-0050](ADR-0050-operation-context.md)
 **Related**: [ADR-0044](ADR-0044-tool-gates.md), [ADR-0051](ADR-0051-tool-registry-allowlists.md), [ADR-0033](ADR-0033-unified-entity-state-model.md), [ADR-0023](ADR-0023-unified-hook-system.md)
@@ -46,7 +46,7 @@ remains as the schema and callable carrier; governance metadata is a separate, f
 
 ### Why lionagi needs this
 
-Consider a KHive agent writing to a code repository. The `write_file` tool must: confirm that the
+Consider an agent writing to a code repository. The `write_file` tool must: confirm that the
 target path is inside an allowed workspace (HARD gate), require an explicit justification when the
 path is outside a designated source tree (SOFT gate), log a warning when the diff exceeds 500
 lines (ADVISORY gate), and emit an evidence node that links the write operation to its operation
@@ -507,8 +507,8 @@ class ActionManager:
     ) -> Any:
         """Execute an ungoverned tool without the governance pipeline.
 
-        Only available in library mode.  KHive mode raises ``GovernanceModeError``
-        from this method at startup configuration.
+        Only available in library mode.  Strict governance mode raises
+        ``GovernanceModeError`` from this method at startup configuration.
 
         Ungoverned tools registered via ``branch.register_tools([plain_function])``
         continue to work through this path with zero configuration changes.
@@ -643,9 +643,10 @@ The governance pipeline is opt-in at the tool definition site:
 | `def my_tool(...): ...` | False | `execute_raw()` — legacy behavior |
 | `@governed_tool(...) async def my_tool(...): ...` | True | `execute_governed()` — mandatory pipeline |
 
-KHive mode (commercial) will configure `ActionManager` to reject ungoverned tools at
-registration time: `execute_raw()` raises `GovernanceModeError` when `khive_mode=True`.
-This is a configuration flag, not a code change — library-mode callers are unaffected.
+Deployments requiring strict governance may configure `ActionManager` to reject ungoverned tools
+at registration time: `execute_raw()` raises `GovernanceModeError` when strict governance mode
+is enabled. This is a configuration flag, not a code change — library-mode callers are
+unaffected.
 
 ---
 
@@ -781,9 +782,9 @@ Explicitly out of scope:
   ADR-0044. This ADR only declares the gate slots and the execution order.
 - **JIT grants and break-glass overrides**: an agent acquiring a tool grant at runtime is
   ADR-0046. This ADR does not address dynamic permission escalation.
-- **Multi-tenant policy resolution** (which gates apply to which tenants): this is ADR-0052.
-  The `GovernedToolMeta` carries tool-level declarations; tenant-level policy overlay is
-  a KHive concern resolved before Phase 3.
+- **Policy resolution** (which gates apply in a given context): this is ADR-0052.
+  The `GovernedToolMeta` carries tool-level declarations; policy overlay is resolved before
+  Phase 3.
 - **Tool registry** (where governed tools are stored, how they are discovered, what allowlists
   look like): this is ADR-0051. This ADR concerns declaration at definition time; the
   registry concern is how those declarations are indexed at runtime.
@@ -804,7 +805,7 @@ Explicitly out of scope:
 | **Policy-only enforcement** (extend `PermissionPolicy` with gate declarations) | Enforcement metadata remains at the call site (agent constructor), not the tool definition. Two agents registering the same `write_file` function can have inconsistent policies. Drift is structurally permitted. Violates principle #3. |
 | **Separate config files** (`governance.yaml` mapping function names to gate lists) | Config files desync from code: rename a function, forget to update the config, governance silently breaks. Co-location is not optional when the goal is "every constraint enforced." |
 | **Multiple decorators** (`@gate_check`, `@emit_evidence`, `@fail_closed` separately) | Ordering between decorators is implicit. A developer can apply `@emit_evidence` without `@gate_check`. There is no single place to read the full governance specification of a tool. Evidence correlation across phases is lost. Rejected per prior research `Decorator-Only Pattern`. |
-| **No governed tools** (keep current `PermissionPolicy` as the only layer) | Sufficient for library mode. Insufficient for KHive, where a regulated customer requires an audit trail that demonstrates every tool call was gated and every result was evidenced — not merely that a policy was configured. |
+| **No governed tools** (keep current `PermissionPolicy` as the only layer) | Sufficient for library mode. Insufficient for governed deployments where the audit trail must demonstrate every tool call was gated and every result was evidenced — not merely that a policy was configured. |
 
 ---
 
