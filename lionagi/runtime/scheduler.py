@@ -346,8 +346,9 @@ def next_cron_fire(parsed: dict[str, Any], after: float) -> float:
         # specific integer
         return t == value
 
-    # Start from the next whole minute after ``after``
-    start_ts = math.ceil(after / 60 + 1) * 60
+    # Start from the next whole minute strictly after ``after``.
+    # floor(after/60) gives the current minute; +1 advances to the next.
+    start_ts = (math.floor(after / 60) + 1) * 60
     # Four years in minutes
     max_minutes = 4 * 365 * 24 * 60 + 1  # includes leap years
 
