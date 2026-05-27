@@ -1,7 +1,13 @@
 # ADR-0013: Zero Component-Library UI
 
-**Status**: Accepted
+**Status**: Superseded by [ADR-0035](ADR-0035-design-system-and-component-library.md) for product surfaces
 **Date**: 2026-05-20
+
+---
+
+> **Supersession notice**: This ADR's "no external component library" decision is superseded by [ADR-0035](ADR-0035-design-system-and-component-library.md) for all product surfaces (Dashboard, tables, modals, dropdowns, etc.). ADR-0035 adopts shadcn/ui + Radix primitives because the threshold conditions documented below (3+ of: modals, popovers, combobox, multi-select, ARIA tabs) have all been met. The zero-dependency principle remains valid for content rendering (markdown) and visualization (ReactFlow/dagre) — see ADR-0035 §"NOT adopted" for the preserved scope.
+
+---
 
 ## Context
 
@@ -87,6 +93,7 @@ data display still follow the zero-library rule.
 ## Consequences
 
 **Positive**
+
 - Zero dependency means zero upgrade churn, zero breaking changes from upstream,
   zero style conflicts or specificity wars.
 - Every component matches the design system exactly — no overriding library
@@ -96,6 +103,7 @@ data display still follow the zero-library rule.
   we want, the status pills use exactly the tokens we define.
 
 **Negative**
+
 - Accessibility is incomplete. A screen reader user would have a degraded
   experience on some interactive elements.
 - Some patterns (focus trap, click-outside-to-close, scroll lock on overlay)

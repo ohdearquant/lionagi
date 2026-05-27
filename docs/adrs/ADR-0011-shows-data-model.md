@@ -4,6 +4,12 @@
 **Date**: 2026-05-20
 **Extends**: ADR-0009 (SQLite state layer), ADR-0010 (plugin-aware Studio)
 
+---
+
+> **Related update**: The shows/plays schema defined here stores structural and operational state. [ADR-0033](ADR-0033-unified-entity-state-model.md) adds `NormalizedState` columns (health, delivery, reason_codes) additively to these tables. The lifecycle vocabularies for Shows and Plays in ADR-0033 §"Per-entity lifecycle vocabularies" are derived from this ADR's status enums. This ADR remains authoritative for the table structure and cardinality; ADR-0033 governs the meaning of state values written to those tables.
+
+---
+
 ## Context
 
 Shows (multi-play DAGs orchestrated by the `show` skill) currently exist only
@@ -140,7 +146,7 @@ accessible: `plays.session_id` → `sessions` → `branches` → `progressions` 
 
 ### Read path (Studio API)
 
-```
+```text
 GET /api/shows/           → SELECT from shows table (fast, no filesystem)
 GET /api/shows/{topic}    → shows row + plays rows + _show.md from disk
 GET /api/shows/{topic}/plays/{name}
@@ -250,7 +256,7 @@ ADR-0012), not `/sessions/{session_id}`.
 The plays table uses a single **State** column with a primary lifecycle pill
 plus optional secondary badges for gate and integration:
 
-```
+```json
 [completed] [passed] [merged]      ← full provenance
 [completed]                        ← no gate, no merge
 [awaiting gate]                    ← running_complete
@@ -263,6 +269,7 @@ a single compound pill (hard to scan because dimensions aren't visually
 separable).
 
 **Badge colors**:
+
 - Lifecycle: pending (amber), running (blue), awaiting_gate (amber),
   completed (green), failed (red), aborted (gray)
 - Gate: passed (green outline), failed (red outline), skipped (gray outline)
@@ -279,7 +286,7 @@ lifecycle + gate + review badges per ADR-0012's status vocabulary.
 The PlayDag renders as a **compact dependency graph strip above the plays
 table**, not a competing primary view:
 
-```
+```text
 Dependency graph                                        [Hide graph]
 ┌────────────────────────────────────────────────────────────────────┐
 │  compact PlayDag, fitView, 150–170px tall                          │
@@ -290,6 +297,7 @@ Dependency graph                                        [Hide graph]
 ```
 
 Height scales with play count:
+
 - ≤4 plays: 112px
 - 5–20 plays: 160px
 - 21+ plays: 220px with scroll/pan
@@ -301,6 +309,7 @@ a plain status table and loses the orchestration identity of the page.
 ### Show status provenance (added post-review)
 
 Show status includes provenance to address trust concerns:
+
 - `active` — at least one play running or pending
 - `completed` — all plays merged and final gate passed (or inferred from filesystem)
 - `aborted` — `_ABORT` file exists
@@ -317,6 +326,7 @@ indicate confidence level.
 ## Consequences
 
 **Positive**
+
 - Show → play → session → message drill-down via foreign keys.
 - Fast list/filter queries without filesystem scanning.
 - Structural queries: blocked plays, critical path, cross-show stats.
@@ -326,6 +336,7 @@ indicate confidence level.
 - Status normalization eliminates contradictory displays across pages.
 
 **Negative**
+
 - Dual write: every `_meta.json` update must also update SQLite. If the
   show skill crashes between writes, they can drift. Mitigation: the
   `li state import-shows` command can re-sync from filesystem at any time.

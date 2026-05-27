@@ -3,6 +3,12 @@
 **Status**: Accepted
 **Date**: 2026-05-20
 
+---
+
+> **Related update**: This ADR establishes SQLite as the current persistent state layer. [ADR-0033](ADR-0033-unified-entity-state-model.md) introduces `NormalizedState` (lifecycle × health × delivery) as the contract for entity state; the SQLite schema here is the current materialization of that contract. [ADR-0034](ADR-0034-frontend-data-and-state-architecture.md) §"Backend-frontend sync contract" specifies how this layer's reads flow to the frontend. The schema extensions for the new dimensions are in ADR-0033 Appendix A. SQLite-specific details remain authoritative; future stores (Postgres, distributed) will materialize the same NormalizedState model differently.
+
+---
+
 ## Context
 
 Lion Studio's filesystem-only backend (ADR-0004) works for post-hoc review but
@@ -129,7 +135,7 @@ Branch config (provider, model, system_prompt, tools, effort) lives in
 > stored in `node_metadata` JSON on the branch row, not as top-level columns. A
 > dedicated branch fork protocol may promote these to first-class columns in a
 > future migration if query patterns require it.
-
+>
 > **`system_msg_id` is first-class.** Unlike fork pointers, the system prompt
 > reference is promoted to a top-level column because (a) every live persist
 > path writes it during branch initialization, (b) the Studio inbox/branch view
@@ -174,6 +180,7 @@ grep, git, symlinks).  ADR-0004 remains valid for these.
 ### Supporting code changes (same session)
 
 **`Branch.to_dict()` streamlined** (commits 7ac31109, a36b5542):
+
 - Added `mode` parameter: `"python"` (default), `"json"`, `"db"`.
 - `mode="db"` renames `metadata` → `node_metadata`.
 - Optional flags: `include_logs`, `include_log_config`,
@@ -182,6 +189,7 @@ grep, git, symlinks).  ADR-0004 remains valid for these.
 - `parse_model` only included when it differs from `chat_model`.
 
 **`create_message()` extracted** (commit 8f6c6d94):
+
 - `MessageManager.create_message()` is now a `@staticmethod` — can be used
   without a MessageManager instance.
 - Standalone `create_message()` function exported from
@@ -190,6 +198,7 @@ grep, git, symlinks).  ADR-0004 remains valid for these.
   insertion and system message replacement.
 
 **`iModel.to_dict()` slimmed** (commits 7ac31109, a36b5542):
+
 - `request_options` excluded by default (bulk, not useful for persistence).
 - `processor_config` excluded by default.
 
@@ -218,6 +227,7 @@ on legacy versions) can drop the autocheckpoint setting or run
 ## Consequences
 
 **Positive**
+
 - Session/branch/message model has a persistent representation that mirrors the
   runtime 1:1. Round-trip `to_dict(mode="db")` → INSERT → SELECT → `from_dict()`
   is lossless.
@@ -230,6 +240,7 @@ on legacy versions) can drop the autocheckpoint setting or run
 - Agent/playbook file-based contract preserved.
 
 **Negative**
+
 - `aiosqlite` is now a mandatory dependency (promoted from `lionagi[sqlite]` optional).
 - JSON array for progression ordering limits query-side operations (no
   `WHERE message_id IN progression` without JSON parsing).

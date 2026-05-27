@@ -1,8 +1,14 @@
 # ADR-0017: Session Lifecycle and Status Derivation
 
-**Status**: Accepted
+**Status**: Partially superseded by [ADR-0033](ADR-0033-unified-entity-state-model.md) — see Supersession Notice
 **Date**: 2026-05-20
 **Extends**: ADR-0009 (SQLite state layer), ADR-0012 (execution lineage)
+
+---
+
+> **Supersession notice**: [ADR-0033](ADR-0033-unified-entity-state-model.md) supersedes ADR-0017's "Status vocabulary" section (replaced by the unified `NormalizedState.lifecycle` axis) and the single-axis status derivation. ADR-0017's lifecycle enum is preserved as one of three orthogonal axes in NormalizedState (lifecycle × health × delivery). Read this ADR for historical context; treat [ADR-0033](ADR-0033-unified-entity-state-model.md) as authoritative for status semantics going forward.
+
+---
 
 ## Context
 
@@ -92,7 +98,7 @@ For filesystem imports (`source_kind='imported_fs'`), status is derived from:
 
 Duration is computed, not stored:
 
-```
+```text
 duration_ms = (ended_at - started_at) * 1000   -- if both present
 duration_ms = NULL                               -- if session still running
 ```
@@ -178,6 +184,7 @@ re-running the message sweep.
 ## Consequences
 
 **Positive**
+
 - Runs list and dashboard can query session status directly — no derivation logic.
 - Four-status vocabulary is simple and unambiguous.
 - Duration is computable from two timestamps without a stored column.
@@ -185,6 +192,7 @@ re-running the message sweep.
 - Clean separation: session status = "did it run?", play status = "was output accepted?"
 
 **Negative**
+
 - Three new columns on the sessions table (part of the collapsed v1 schema; reconciled into pre-release DBs by `StateDB._reconcile_columns()`).
 - CLI session init and finalize must write status — requires hooks or explicit calls.
 - Imported sessions may have imprecise timestamps if run.json is sparse.

@@ -1,9 +1,15 @@
 # ADR-0029: Artifact Contract
 
-**Status**: Proposed
+**Status**: Proposed — extended by [ADR-0033](ADR-0033-unified-entity-state-model.md) and referenced by [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md)
 **Date**: 2026-05-23
 **Extends**: ADR-0021 (skill artifacts, structured outcomes), ADR-0012 (run-step provenance)
 **Related**: ADR-0028 (status reasons — writes `run.failed.missing_artifact`)
+
+---
+
+> **Extension notice**: [ADR-0033](ADR-0033-unified-entity-state-model.md) integrates this ADR's contract verification result into the `delivery` dimension of `NormalizedState`: artifact verification outcomes map to `passed` (all required present), `partial` (some present), `missing` (required absent), or `invalid` (present but failing contract). The evidence captured from verification feeds NormalizedState.reasons[] as structured proof. [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md) treats artifacts as a first-class evidence kind (`kind="artifact"` in EvidenceRef) for knowledge claims. The artifact contract mechanics defined here remain authoritative; the contract result is consumed by two downstream systems.
+
+---
 
 ## Context
 
