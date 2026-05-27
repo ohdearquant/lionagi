@@ -96,7 +96,7 @@ class CharterCompiler:
         result.policy_pin = PolicyPin(
             charter_hash=charter_hash,
             version=version,
-            activated_at=datetime.datetime.utcnow().isoformat(),
+            activated_at=datetime.datetime.now(tz=datetime.timezone.utc).isoformat(),
         )
 
         return result

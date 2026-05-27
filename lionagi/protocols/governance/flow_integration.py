@@ -3,17 +3,28 @@
 
 """GovernedFlowController: governance integration point for Session.flow() (P18).
 
-Usage pattern::
+Usage pattern (context manager — preferred)::
+
+    with GovernedFlowController(charter="path/to/charter.yaml", session_id=sid) as ctrl:
+        result = ctrl.pre_op_check(tool_name, ctx)
+        ctrl.post_op_record(tool_name, args_hash, result_hash, result, elapsed_ms)
+        cert = ctrl.mint_certificate()
+
+Usage pattern (manual lifecycle)::
 
     controller = GovernedFlowController(charter="path/to/charter.yaml", session_id=session_id)
-    # Before each op:
-    result = controller.pre_op_check(tool_name, ctx)
-    # After each op:
-    controller.post_op_record(tool_name, args_hash, result_hash, result, elapsed_ms)
-    # At completion:
-    cert = controller.mint_certificate()
+    try:
+        # Before each op:
+        result = controller.pre_op_check(tool_name, ctx)
+        # After each op:
+        controller.post_op_record(tool_name, args_hash, result_hash, result, elapsed_ms)
+        # At completion:
+        cert = controller.mint_certificate()
+    finally:
+        controller.close()
 
 If *charter* is None the controller is a no-op pass-through (backward compat).
+``close()`` is idempotent and safe to call multiple times.
 """
 
 from __future__ import annotations
@@ -219,3 +230,24 @@ class GovernedFlowController:
             ops_allowed=self._ops_allowed,
             gate_results_summary=dict(self._gate_results_summary),
         )
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────
+
+    def close(self) -> None:
+        """Reset the OperationContext ContextVar set during construction.
+
+        Idempotent: safe to call multiple times.  Must be called when the
+        controller is no longer in scope so the context does not leak to
+        subsequent operations on the same thread/task.
+        """
+        if self._ctx_token is not None:
+            from lionagi.protocols.governance.context import _operation_context_var
+
+            _operation_context_var.reset(self._ctx_token)
+            self._ctx_token = None
+
+    def __enter__(self) -> GovernedFlowController:
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        self.close()

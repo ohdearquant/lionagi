@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from enum import Enum
 from typing import Any
 
@@ -125,6 +126,13 @@ class EvidenceChain(Element):
     tip_hash: str = Field(default=GENESIS_HASH)
     node_count: int = Field(default=0)
 
+    def model_post_init(self, __context: Any) -> None:
+        super().model_post_init(__context)
+        # Lock is not a Pydantic field (not serialisable); bypass the model
+        # validator using object.__setattr__ so Pydantic's extra="forbid"
+        # does not raise.
+        object.__setattr__(self, "_lock", threading.Lock())
+
     def append(
         self,
         content: dict[str, Any],
@@ -133,15 +141,16 @@ class EvidenceChain(Element):
         sensitive_fields: list[str] | None = None,
     ) -> EvidenceNode:
         filtered = _filter_sensitive(content, sensitive_fields)
-        node = EvidenceNode(
-            content=filtered,
-            previous_hash=self.tip_hash,
-            tier=tier,
-            sensitive_fields=list(sensitive_fields or []),
-        )
-        self.nodes.include(node)
-        self.tip_hash = node.node_hash
-        self.node_count += 1
+        with self._lock:  # type: ignore[attr-defined]
+            node = EvidenceNode(
+                content=filtered,
+                previous_hash=self.tip_hash,
+                tier=tier,
+                sensitive_fields=list(sensitive_fields or []),
+            )
+            self.nodes.include(node)
+            self.tip_hash = node.node_hash
+            self.node_count += 1
         return node
 
     def verify(self) -> ChainVerification:
