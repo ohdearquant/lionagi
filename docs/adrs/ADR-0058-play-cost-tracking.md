@@ -1,6 +1,6 @@
 # ADR-0058: Play Cost Tracking
 
-Status: Proposed
+Status: proposed
 Date: 2026-05-27
 Decision owners: @governance-maintainers
 Depends on: ADR-0059 (StateStore protocol), ADR-0060 (unified config resolution)

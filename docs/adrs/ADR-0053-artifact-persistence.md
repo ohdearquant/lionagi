@@ -1,6 +1,6 @@
 # ADR-0053: Artifact Persistence in State Database
 
-Status: proposed (rewrite after rejected review)
+Status: proposed
 Date: 2026-05-27
 Decision owners: @governance-maintainers
 Depends on: ADR-0009 (SQLite state layer), ADR-0029 (artifact contracts), ADR-0041 (immutable evidence nodes)

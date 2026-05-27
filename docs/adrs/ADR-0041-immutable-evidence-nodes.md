@@ -1,6 +1,6 @@
 # ADR-0041: Immutable Evidence Nodes
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0033](ADR-0033-unified-entity-state-model.md) (EvidenceRef definition), [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md) (Claim, KnowledgeStore protocol)
 **Related**: [ADR-0042](ADR-0042-task-certificate.md), [ADR-0049](ADR-0049-log-tier-governance.md), [ADR-0028](ADR-0028-status-reason-model.md), [ADR-0029](ADR-0029-artifact-contract.md)

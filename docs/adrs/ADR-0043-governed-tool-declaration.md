@@ -1,6 +1,6 @@
 # ADR-0043: Governed Tool Declaration
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0041](ADR-0041-immutable-evidence-nodes.md), [ADR-0050](ADR-0050-operation-context.md)
 **Related**: [ADR-0044](ADR-0044-tool-gates.md), [ADR-0051](ADR-0051-tool-registry-allowlists.md), [ADR-0033](ADR-0033-unified-entity-state-model.md), [ADR-0023](ADR-0023-unified-hook-system.md)

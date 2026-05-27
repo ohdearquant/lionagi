@@ -1,6 +1,6 @@
 # ADR-0064: Work System Integration
 
-**Status**: Accepted
+**Status**: accepted
 **Date**: 2026-05-27
 **Related**: ADR-0023 (unified hook system), ADR-0029 (artifact contract), ADR-0031 (entity header pattern)
 

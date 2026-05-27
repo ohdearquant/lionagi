@@ -1,6 +1,6 @@
 # ADR-0046: JIT Tool Grant — No Standing Capability for High-Risk Tools
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0043](ADR-0043-governed-tool-declaration.md), [ADR-0044](ADR-0044-tool-gates.md)
 **Related**: [ADR-0041](ADR-0041-immutable-evidence-nodes.md), [ADR-0045](ADR-0045-break-glass-protocol.md), [ADR-0047](ADR-0047-agent-charter.md), [ADR-0051](ADR-0051-tool-registry-allowlists.md)

@@ -1,6 +1,6 @@
 # ADR-0048: Agent Segregation of Duties (SoD)
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0047](ADR-0047-agent-charter.md) (SoD rules are charter constraints; charter enforces them at role-assignment time), [ADR-0046](ADR-0046-jit-tool-grant.md) (JIT grant issuer and consumer must be distinct actors), [ADR-0044](ADR-0044-tool-gates.md) (SoD enforcement surfaces as a HARD gate on role assignment), [ADR-0042](ADR-0042-task-certificate.md) (certificates require multi-actor attestation; SoD ensures those actors are genuinely distinct)
 **Related**: [ADR-0041](ADR-0041-immutable-evidence-nodes.md) (exemption evidence is an immutable node), [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md) (branch.verify claims cannot use self-produced evidence), [ADR-0033](ADR-0033-unified-entity-state-model.md) (EvidenceRef carries actor_id for independence checks)

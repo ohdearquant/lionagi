@@ -1,6 +1,6 @@
 # ADR-0070: Governance Tracing and Observability
 
-**Status**: Accepted
+**Status**: accepted
 **Date**: 2026-05-27
 **Depends on**: [ADR-0041](ADR-0041-immutable-evidence-nodes.md) (EvidenceChain), [ADR-0042](ADR-0042-task-certificate.md) (TaskCertificate), [ADR-0044](ADR-0044-tool-gates.md) (GateResult), [ADR-0045](ADR-0045-break-glass-protocol.md) (BreakGlassWindow)
 **Related**: [ADR-0048](ADR-0048-agent-segregation-of-duties.md) (SoD), [ADR-0049](ADR-0049-log-tier-governance.md) (LogTier), [ADR-0050](ADR-0050-operation-context.md) (OperationContext), [ADR-0052](ADR-0052-policy-resolution.md) (PolicyResolution)
@@ -129,10 +129,10 @@ listed here are permitted but must not conflict with the listed keys.
 | `gate.verdict` | string | Yes | Uppercase: `"ALLOW"`, `"DENY"`, or `"ADVISORY"`. |
 | `gate.enforcement` | string | Yes | `"HARD"`, `"SOFT"`, or `"ADVISORY"`. |
 | `gate.elapsed_ms` | float | Yes | Wall-clock gate evaluation time in milliseconds. |
-| `gate.evidence.hash` | string | Recommended | SHA-256 hash of the corresponding `GateResult` node. |
-| `gate.reason` | string | Recommended | Human-readable explanation of the verdict. |
-| `gate.policy.version` | string | Recommended | Policy release identifier active at evaluation time. |
-| `gate.charter.id` | string | Recommended | Charter identifier active at evaluation time. |
+| `gate.evidence.hash` | string | Yes | SHA-256 hash of the corresponding `GateResult` node. |
+| `gate.reason` | string | Yes | Human-readable explanation of the verdict. |
+| `gate.policy.version` | string | Yes | Policy release identifier active at evaluation time. |
+| `gate.charter.id` | string | Yes | Charter identifier active at evaluation time. |
 | `governance.severity` | string | Recommended | `"INFO"` for ALLOW, `"ERROR"` for DENY, `"WARN"` for soft override. |
 
 The span `status` is set to `"error"` when `gate.verdict == "DENY"` and `"ok"` otherwise.

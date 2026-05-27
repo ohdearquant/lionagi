@@ -1,6 +1,6 @@
 # ADR-0042: Task Certificate — Signed Proof of Process Adherence
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0041](ADR-0041-immutable-evidence-nodes.md) (certificates are evidence nodes; chain hash required)
 **Related**: [ADR-0044](ADR-0044-tool-gates.md) (gates passed/failed recorded in certificate), [ADR-0045](ADR-0045-break-glass-protocol.md) (break-glass path produces DEGRADED certificate), [ADR-0050](ADR-0050-operation-context.md) (operation context serialized into certificate), [ADR-0033](ADR-0033-unified-entity-state-model.md) (EvidenceRef substrate), [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md) (evidence as first-class artifact)

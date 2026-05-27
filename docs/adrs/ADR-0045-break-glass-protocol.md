@@ -1,6 +1,6 @@
 # ADR-0045: Break-Glass Protocol — DEGRADED-Defensibility Override
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0044](ADR-0044-tool-gates.md) (HARD gates being overridden), [ADR-0042](ADR-0042-task-certificate.md) (BREAK_GLASS certificate state), [ADR-0041](ADR-0041-immutable-evidence-nodes.md) (attestation as evidence node)
 **Related**: [ADR-0050](ADR-0050-operation-context.md), [ADR-0047](ADR-0047-agent-charter.md), [ADR-0033](ADR-0033-unified-entity-state-model.md), [ADR-0043](ADR-0043-governed-tool-declaration.md)

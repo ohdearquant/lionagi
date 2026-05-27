@@ -1,6 +1,6 @@
 # ADR-0044: Tool Gates — Three-Tier Binary Enforcement
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0043](ADR-0043-governed-tool-declaration.md), [ADR-0041](ADR-0041-immutable-evidence-nodes.md)
 **Related**: [ADR-0045](ADR-0045-break-glass-protocol.md), [ADR-0050](ADR-0050-operation-context.md), [ADR-0046](ADR-0046-jit-tool-grant.md), [ADR-0033](ADR-0033-unified-entity-state-model.md)

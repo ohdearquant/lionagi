@@ -1,6 +1,6 @@
 # ADR-0056: Play Control API - Runner Control Plane
 
-Status: proposed (rewrite after rejected review)
+Status: proposed
 Date: 2026-05-27
 Decision owners: @governance-maintainers
 Depends on: ADR-0053 (artifact persistence), ADR-0058 (play cost tracking), ADR-0059 (Postgres state backend)

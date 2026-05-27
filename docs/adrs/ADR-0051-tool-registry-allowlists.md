@@ -1,6 +1,6 @@
 # ADR-0051: Tool Registry Allowlists
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0041](ADR-0041-immutable-evidence-nodes.md), [ADR-0043](ADR-0043-governed-tool-declaration.md), [ADR-0044](ADR-0044-tool-gates.md), [ADR-0047](ADR-0047-agent-charter.md)
 **Related**: [ADR-0046](ADR-0046-jit-tool-grant.md), [ADR-0049](ADR-0049-log-tier-governance.md), [ADR-0050](ADR-0050-operation-context.md), [ADR-0033](ADR-0033-unified-entity-state-model.md)

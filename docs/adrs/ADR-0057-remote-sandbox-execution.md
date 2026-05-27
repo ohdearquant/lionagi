@@ -1,6 +1,6 @@
 # ADR-0057: Remote Sandbox Execution Behind PlayRunner
 
-Status: proposed (rewrite after rejected review)
+Status: proposed
 Date: 2026-05-27
 Decision owners: @governance-maintainers
 Depends on: ADR-0056 (play control API), ADR-0059 (Postgres state backend), ADR-0060 (unified config resolution)

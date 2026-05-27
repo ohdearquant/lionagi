@@ -1,6 +1,6 @@
 # ADR-0049: Log Tier Governance
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0041](ADR-0041-immutable-evidence-nodes.md), [ADR-0045](ADR-0045-break-glass-protocol.md)
 **Related**: [ADR-0042](ADR-0042-task-certificate.md), [ADR-0044](ADR-0044-tool-gates.md), [ADR-0046](ADR-0046-jit-tool-grant.md), [ADR-0047](ADR-0047-agent-charter.md), [ADR-0050](ADR-0050-operation-context.md)

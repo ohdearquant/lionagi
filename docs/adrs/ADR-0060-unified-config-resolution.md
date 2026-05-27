@@ -1,6 +1,6 @@
 # ADR-0060: Unified Config Resolution
 
-Status: Proposed
+Status: proposed
 Date: 2026-05-27
 Decision owners: @governance-maintainers
 Depends on: none

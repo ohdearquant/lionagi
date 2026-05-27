@@ -84,6 +84,10 @@ Example: `_Supersedes [ADR-0001](ADR-0001-lion-studio-internal-app.md)._`
 | [ADR-0030](ADR-0030-attention-queue.md) | Attention queue | Proposed |
 | [ADR-0031](ADR-0031-entity-header-pattern.md) | Entity header pattern | Proposed |
 | [ADR-0032](ADR-0032-navigation-reorganization.md) | Navigation reorganization | Proposed |
+| [ADR-0033](ADR-0033-unified-entity-state-model.md) | Unified entity state model | Proposed |
+| [ADR-0034](ADR-0034-frontend-data-and-state-architecture.md) | Frontend data and state architecture | Proposed |
+| [ADR-0035](ADR-0035-design-system-and-component-library.md) | Design system and component library | Proposed |
+| [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md) | Knowledge substrate minimal interface | Proposed |
 | [ADR-0041](ADR-0041-immutable-evidence-nodes.md) | Immutable evidence nodes | Proposed |
 | [ADR-0042](ADR-0042-task-certificate.md) | Task certificate — signed proof of process adherence | Proposed |
 | [ADR-0043](ADR-0043-governed-tool-declaration.md) | Governed tool declaration | Proposed |

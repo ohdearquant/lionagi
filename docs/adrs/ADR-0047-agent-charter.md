@@ -1,6 +1,6 @@
 # ADR-0047: Agent Charter — Enforceable Governance Document
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0044](ADR-0044-tool-gates.md) (charter constraints bind to gate_ids), [ADR-0051](ADR-0051-tool-registry-allowlists.md) (charter declares the tool allowlist), [ADR-0052](ADR-0052-policy-resolution.md) (charter version is part of the policy bundle), [ADR-0050](ADR-0050-operation-context.md) (active charter version captured in evidence)
 **Related**: [ADR-0041](ADR-0041-immutable-evidence-nodes.md) (charter ratification hash follows the same SHA-256 pattern), [ADR-0042](ADR-0042-task-certificate.md) (certificate records active charter version), [ADR-0046](ADR-0046-jit-tool-grant.md) (JIT grant gates appear as charter constraints), [ADR-0048](ADR-0048-agent-segregation-of-duties.md) (SoD constraints are declared in the charter)

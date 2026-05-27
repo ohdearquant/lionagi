@@ -1,12 +1,14 @@
 # ADR-0069: Tenant Scope Boundary — OSS Hook Points vs Commercial Isolation
 
-**Status**: Accepted
+**Status**: accepted
 **Date**: 2026-05-27
 **Decision owners**: @governance-maintainers
 **Supersedes**: none
 **Superseded by**: none
-**Depends on**: [ADR-0050](ADR-0050-operation-context.md) (OperationContext carries tenant_id),
-[ADR-0052](ADR-0052-policy-resolution.md) (PolicyResolver and ScopeLevel define the hierarchy)
+**Depends on**: [ADR-0050](ADR-0050-operation-context.md) (OperationContext provides the
+per-operation context for policy evaluation; does not carry tenant_id directly),
+[ADR-0052](ADR-0052-policy-resolution.md) (PolicyResolver accepts tenant_id as an input
+parameter; ScopeLevel and PolicyResolutionResult define the hierarchy and record resolved tenant)
 **Related**: [ADR-0047](ADR-0047-agent-charter.md) (charter is the session-binding vehicle),
 [ADR-0051](ADR-0051-tool-registry-allowlists.md) (registry entries are policy-scoped),
 [ADR-0044](ADR-0044-tool-gates.md) (gates selected by active policy)

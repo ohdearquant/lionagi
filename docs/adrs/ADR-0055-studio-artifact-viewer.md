@@ -1,6 +1,6 @@
 # ADR-0055: Studio Artifact Viewer and File Reference Resolution
 
-Status: proposed (rewrite after approve-with-fixes review)
+Status: proposed
 Date: 2026-05-27
 Decision owners: @governance-maintainers
 Depends on: ADR-0053 (artifact persistence), ADR-0059 (StateStore protocol)

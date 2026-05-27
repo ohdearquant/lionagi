@@ -1,6 +1,6 @@
 # ADR-0052: Policy Resolution and Staged Release
 
-**Status**: Proposed
+**Status**: proposed
 **Date**: 2026-05-26
 **Depends on**: [ADR-0044](ADR-0044-tool-gates.md) (policies select which gates run), [ADR-0047](ADR-0047-agent-charter.md) (charter pins policy_release_version), [ADR-0050](ADR-0050-operation-context.md) (active policy version captured in operation evidence), [ADR-0051](ADR-0051-tool-registry-allowlists.md) (registry entries are policy-scoped)
 **Related**: [ADR-0041](ADR-0041-immutable-evidence-nodes.md) (bundle hash follows the same SHA-256 pattern), [ADR-0042](ADR-0042-task-certificate.md) (certificate records active policy version), [ADR-0045](ADR-0045-break-glass-protocol.md) (break-glass resolves against a named policy), [ADR-0046](ADR-0046-jit-tool-grant.md) (JIT grants are policy-scoped)
