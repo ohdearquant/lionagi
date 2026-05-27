@@ -184,22 +184,18 @@ class Rule(BaseModel):
         pattern = self.params.get("pattern", "")
         flags = int(self.params.get("flags", 0))
         try:
-            compiled = re.compile(pattern, flags)
+            re.compile(pattern, flags)
         except re.error as exc:
             return f"Rule {self.rule_id!r}: invalid regex pattern — {exc}."
 
-        def _do_match() -> bool:
-            return bool(compiled.search(value))
-
-        _ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        _ex = concurrent.futures.ProcessPoolExecutor(max_workers=1)
         try:
-            future = _ex.submit(_do_match)
+            future = _ex.submit(re.search, pattern, value, flags)
             try:
-                matched = future.result(timeout=REGEX_MATCH_TIMEOUT)
+                result = future.result(timeout=REGEX_MATCH_TIMEOUT)
+                matched = bool(result)
             except concurrent.futures.TimeoutError:
                 future.cancel()
-                # wait=False so we don't block on catastrophic backtracking;
-                # cancel_futures=True signals the executor to drop the work item.
                 _ex.shutdown(wait=False, cancel_futures=True)
                 return (
                     f"Rule {self.rule_id!r}: pattern match timed out after "
@@ -211,7 +207,10 @@ class Rule(BaseModel):
             else:
                 _ex.shutdown(wait=False)
         except Exception as exc:  # noqa: BLE001
-            _ex.shutdown(wait=False)
+            try:
+                _ex.shutdown(wait=False)
+            except Exception:  # noqa: BLE001, S110
+                pass
             return f"Rule {self.rule_id!r}: pattern match raised {type(exc).__name__}: {exc}."
 
         if not matched:
