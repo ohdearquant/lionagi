@@ -240,9 +240,21 @@ class WorkEngine:
         work).
 
         Returns the task_id.
+
+        Raises:
+            ValueError: No workers registered, *worker_id* not found, or *form*
+                is in a status that cannot be submitted.
+            RuntimeError: Worker is at its concurrency limit.
         """
         import asyncio
         import inspect
+
+        _submittable = {"draft", "filled", "validated"}
+        if form.status not in _submittable:
+            raise ValueError(
+                f"Cannot submit a form in {form.status!r} status.  "
+                f"Only {sorted(_submittable)} forms are accepted."
+            )
 
         with self._lock:
             slot = self._resolve_slot(worker_id)
