@@ -1,4 +1,4 @@
-# Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
 """Break-glass emergency override mechanism for governance gates.
@@ -31,9 +31,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from lionagi.protocols.governance.dsl import BreakGlassDef
-from lionagi.protocols.governance.evidence import EvidenceChain, LogTier
-from lionagi.protocols.governance.gates import GateResult, GateVerdict
+from lionagi.governance.dsl import BreakGlassDef
+from lionagi.governance.evidence import EvidenceChain, LogTier
+from lionagi.governance.gates import GateResult, GateVerdict
 
 __all__ = [
     "BreakGlassDisabledError",

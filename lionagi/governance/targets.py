@@ -1,4 +1,4 @@
-# Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
 """Runtime target types produced by the Charter DSL compiler (P14).
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from lionagi.protocols.governance.dsl import Enforcement
+from .dsl import Enforcement
 
 __all__ = [
     "CharterPermissionPolicy",
@@ -37,7 +37,7 @@ class RegistryEntry(BaseModel):
     """Compiled registry allowlist entry.
 
     Note: this is the *runtime* registry entry, narrower than the DSL source
-    model ``lionagi.protocols.governance.dsl.RegistryEntry``.
+    model ``lionagi.governance.dsl.RegistryEntry``.
     """
 
     tool_name: str = ""

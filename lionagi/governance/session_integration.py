@@ -1,23 +1,5 @@
-# Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-
-"""Session.flow() governance integration (P18).
-
-Provides ``governed_flow()`` — a drop-in wrapper around ``Session.flow()``
-that applies a CharterDocument to every FlowOp in the DAG.  When no charter
-is supplied the function delegates directly to ``Session.flow()`` with zero
-overhead (backward compatible).
-
-Typical usage::
-
-    result, cert = await governed_flow(
-        session,
-        graph,
-        charter="path/to/charter.yaml",
-        on_deny="raise",   # or "skip"
-    )
-    # cert is None when no charter was supplied
-"""
 
 from __future__ import annotations
 
@@ -31,10 +13,11 @@ from lionagi.operations.flow import DependencyAwareExecutor
 from lionagi.operations.flow import flow as _ungoverned_flow
 from lionagi.operations.node import Operation
 from lionagi.protocols.generic.event import Event
-from lionagi.protocols.governance.certificate import TaskCertificate
-from lionagi.protocols.governance.flow_integration import GovernedFlowController
-from lionagi.protocols.governance.gates import GateVerdict, GovernanceViolationError
 from lionagi.protocols.types import EventStatus
+
+from .certificate import TaskCertificate
+from .flow_integration import GovernedFlowController
+from .gates import GateVerdict, GovernanceViolationError
 
 if TYPE_CHECKING:
     from lionagi.protocols.graph.graph import Graph

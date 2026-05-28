@@ -1,7 +1,7 @@
-# Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Lightweight in-process governance span recorder (P19).
+"""Lightweight in-process governance span recorder.
 
 Emits structured spans for every governance event — gate evaluations,
 evidence appends, certificate mints, break-glass activations, SoD checks,
@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from lionagi.protocols.governance.certificate import TaskCertificate
+    from .certificate import TaskCertificate
 
 __all__ = [
     "GovernanceSpan",

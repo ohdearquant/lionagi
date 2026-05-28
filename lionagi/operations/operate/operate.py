@@ -24,7 +24,7 @@ from ..types import (
 )
 
 if TYPE_CHECKING:
-    from lionagi.protocols.governance.context import OperationContext
+    from lionagi.governance.context import OperationContext
     from lionagi.service.imodel import iModel
     from lionagi.session.branch import Branch, ToolRef
 
@@ -264,7 +264,7 @@ async def operate(
     """
     _operate_ctx_token = None
     if ctx is not None:
-        from lionagi.protocols.governance.context import (
+        from lionagi.governance.context import (
             _operation_context_var,
             set_operation_context,
         )

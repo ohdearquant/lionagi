@@ -6,16 +6,16 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from lionagi.protocols._concepts import Manager
-from lionagi.protocols.governance.context import OperationContext, get_operation_context
-from lionagi.protocols.governance.evidence import EvidenceChain, LogTier
-from lionagi.protocols.governance.gates import (
+from lionagi.governance.context import OperationContext, get_operation_context
+from lionagi.governance.evidence import EvidenceChain, LogTier
+from lionagi.governance.gates import (
     GateExecutor,
     GateResult,
     GateVerdict,
     GovernanceViolationError,
 )
-from lionagi.protocols.governance.targets import GateRegistration
+from lionagi.governance.targets import GateRegistration
+from lionagi.protocols._concepts import Manager
 from lionagi.protocols.messages.action_request import ActionRequest
 from lionagi.utils import to_list
 

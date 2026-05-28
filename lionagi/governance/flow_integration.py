@@ -35,18 +35,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from lionagi.protocols.governance.certificate import CertificateGrade, TaskCertificate
-from lionagi.protocols.governance.compiler import CharterCompiler, CompilationResult
-from lionagi.protocols.governance.context import (
+from lionagi.governance.certificate import CertificateGrade, TaskCertificate
+from lionagi.governance.compiler import CharterCompiler, CompilationResult
+from lionagi.governance.context import (
     OperationContext,
     set_operation_context,
 )
-from lionagi.protocols.governance.context import (
+from lionagi.governance.context import (
     PolicyPin as ContextPolicyPin,
 )
-from lionagi.protocols.governance.dsl import CharterDocument
-from lionagi.protocols.governance.evidence import EvidenceChain, LogTier
-from lionagi.protocols.governance.gates import GateExecutor, GateResult, GateVerdict
+from lionagi.governance.dsl import CharterDocument
+from lionagi.governance.evidence import EvidenceChain, LogTier
+from lionagi.governance.gates import GateExecutor, GateResult, GateVerdict
 
 __all__ = ["GovernedFlowController"]
 
@@ -91,7 +91,7 @@ class GovernedFlowController:
         if isinstance(charter, CharterDocument):
             self._charter_doc = charter
         else:
-            from lionagi.protocols.governance.charter import parse_charter
+            from lionagi.governance.charter import parse_charter
 
             self._charter_doc = parse_charter(charter)
 
@@ -241,7 +241,7 @@ class GovernedFlowController:
         subsequent operations on the same thread/task.
         """
         if self._ctx_token is not None:
-            from lionagi.protocols.governance.context import _operation_context_var
+            from lionagi.governance.context import _operation_context_var
 
             _operation_context_var.reset(self._ctx_token)
             self._ctx_token = None

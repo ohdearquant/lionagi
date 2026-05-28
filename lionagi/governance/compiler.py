@@ -1,4 +1,4 @@
-# Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
 """Six-phase Charter DSL compiler (P14).
@@ -19,12 +19,12 @@ import hashlib
 
 from pydantic import BaseModel, Field
 
-from lionagi.protocols.governance.dsl import (
+from lionagi.governance.dsl import (
     AttachLevel,
     CharterDocument,
     CharterStatus,
 )
-from lionagi.protocols.governance.targets import (
+from lionagi.governance.targets import (
     CharterPermissionPolicy,
     EvidenceRequirement,
     GateRegistration,
@@ -32,7 +32,7 @@ from lionagi.protocols.governance.targets import (
     SoDRule,
     TraceExpectation,
 )
-from lionagi.protocols.governance.targets import RegistryEntry as RuntimeRegistryEntry
+from lionagi.governance.targets import RegistryEntry as RuntimeRegistryEntry
 
 __all__ = [
     "CharterActivationError",

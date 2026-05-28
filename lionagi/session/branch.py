@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field, JsonValue, PrivateAttr, field_serializer
 
 from lionagi.config import settings
+from lionagi.governance.evidence import LogTier
 from lionagi.ln import AlcallParams
 from lionagi.ln.types import Unset
 from lionagi.models.field_model import FieldModel
@@ -24,7 +25,6 @@ from lionagi.protocols.generic import (
     Pile,
     Progression,
 )
-from lionagi.protocols.governance.evidence import LogTier
 from lionagi.protocols.messages import (
     ActionRequest,
     ActionResponse,
@@ -43,10 +43,10 @@ from lionagi.tools.base import LionTool
 from .prompts import LION_SYSTEM_MESSAGE
 
 if TYPE_CHECKING:
+    from lionagi.governance.context import OperationContext
+    from lionagi.governance.evidence import EvidenceChain, EvidenceNode
     from lionagi.operations.operate.operative import Operative
     from lionagi.operations.types import Middle
-    from lionagi.protocols.governance.context import OperationContext
-    from lionagi.protocols.governance.evidence import EvidenceChain, EvidenceNode
 
 
 __all__ = ("Branch",)
@@ -271,7 +271,7 @@ class Branch(Element, Relational):
 
     def _ensure_evidence_chain(self) -> "EvidenceChain":
         if self._evidence_chain is None:
-            from lionagi.protocols.governance.evidence import EvidenceChain
+            from lionagi.governance.evidence import EvidenceChain
 
             self._evidence_chain = EvidenceChain()
             self.metadata["evidence_chain_id"] = str(self._evidence_chain.id)
@@ -939,19 +939,19 @@ class Branch(Element, Relational):
             _pms.update(kwargs)
 
         if ctx is None:
-            from lionagi.protocols.governance.context import get_operation_context
+            from lionagi.governance.context import get_operation_context
 
             ctx = get_operation_context()
 
         if ctx is None:
             if getattr(self, "_charter", None) is not None:
-                from lionagi.protocols.governance.context import (
+                from lionagi.governance.context import (
                     GovernanceMissingContextError,
                 )
 
                 raise GovernanceMissingContextError("OperationContext required in governed mode")
         else:
-            from lionagi.protocols.governance.context import (
+            from lionagi.governance.context import (
                 _operation_context_var,
                 set_operation_context,
             )

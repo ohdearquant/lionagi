@@ -12,8 +12,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from lionagi.governance.dsl import AttachLevel
 from lionagi.protocols.action.tool import Tool
-from lionagi.protocols.governance.dsl import AttachLevel
 
 __all__ = ["governed_tool"]
 

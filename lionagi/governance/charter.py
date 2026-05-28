@@ -1,4 +1,4 @@
-# Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
 """Charter DSL v0 parser, validator, and JSON Schema export.
@@ -18,7 +18,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from lionagi.protocols.governance.dsl import (
+from lionagi.governance.dsl import (
     _EXECUTABLE_TOKENS,
     _WILDCARD_CHARS,
     CharterDocument,

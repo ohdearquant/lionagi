@@ -327,7 +327,7 @@ class Session(Node, Relational):
             from datetime import datetime, timezone
             from uuid import uuid4
 
-            from lionagi.protocols.governance.context import (
+            from lionagi.governance.context import (
                 OperationContext,
                 PolicyPin,
                 PolicyPinMismatchError,

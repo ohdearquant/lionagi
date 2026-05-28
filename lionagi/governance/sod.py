@@ -1,4 +1,4 @@
-# Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
 """Separation of Duties (SoD) enforcement for the governance layer.
@@ -11,9 +11,9 @@ is allowed to proceed.
 
 Typical usage::
 
-    from lionagi.protocols.governance.sod import SoDEnforcer
-    from lionagi.protocols.governance.compiler import CharterCompiler
-    from lionagi.protocols.governance.charter import parse_charter
+    from lionagi.governance.sod import SoDEnforcer
+    from lionagi.governance.compiler import CharterCompiler
+    from lionagi.governance.charter import parse_charter
 
     doc = parse_charter(yaml_text)
     result = CharterCompiler().compile(doc)
@@ -35,7 +35,7 @@ from typing import NamedTuple
 
 from pydantic import BaseModel, Field
 
-from lionagi.protocols.governance.targets import SoDRule
+from .targets import SoDRule
 
 __all__ = [
     "ActorRecord",

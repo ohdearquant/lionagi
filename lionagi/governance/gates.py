@@ -16,8 +16,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from lionagi.protocols.governance.dsl import Enforcement
-from lionagi.protocols.governance.targets import GateRegistration
+from lionagi.governance.dsl import Enforcement
+from lionagi.governance.targets import GateRegistration
 
 __all__ = [
     "GateVerdict",

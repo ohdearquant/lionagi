@@ -17,7 +17,7 @@ from .element import Element
 from .pile import Pile
 
 if TYPE_CHECKING:
-    from lionagi.protocols.governance.evidence import (
+    from lionagi.governance.evidence import (
         EvidenceChain,
     )
 
@@ -93,7 +93,7 @@ class Log(Element):
         Create a new Log from an Element, storing a dict snapshot
         of the element's data.
         """
-        from lionagi.protocols.governance.evidence import LogTier
+        from lionagi.governance.evidence import LogTier
 
         if isinstance(content, Element | HashableModel):
             content = content.to_dict(mode="json")
@@ -147,7 +147,7 @@ class DataLogger:
             self.logs = Pile(collections=logs, item_type=Log, strict_type=True)
         self._config = _config
 
-        from lionagi.protocols.governance.evidence import EvidenceChain  # noqa: F401
+        from lionagi.governance.evidence import EvidenceChain  # noqa: F401
 
         self.protected_logs: Pile = Pile(
             collections=[], item_type={Log}, strict_type=True, append_only=True
@@ -173,7 +173,7 @@ class DataLogger:
         PROTECTED → self.protected_logs (append-only pile)
         IMMUTABLE → self.evidence_chain (append-only + hash chain)
         """
-        from lionagi.protocols.governance.evidence import (
+        from lionagi.governance.evidence import (
             LogTier,
             _filter_sensitive,
         )
@@ -257,7 +257,7 @@ class DataLogger:
         """
         Add a log synchronously. If capacity is reached, auto-dump to file.
         """
-        from lionagi.protocols.governance.evidence import LogTier
+        from lionagi.governance.evidence import LogTier
 
         self.emit(log_, tier=LogTier.MUTABLE)
 

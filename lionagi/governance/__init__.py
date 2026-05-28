@@ -1,18 +1,18 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-from lionagi.protocols.governance.breakglass import (
+from lionagi.governance.breakglass import (
     BreakGlassDisabledError,
     BreakGlassInactiveError,
     BreakGlassMissingAttestationError,
     BreakGlassRecord,
     BreakGlassSession,
 )
-from lionagi.protocols.governance.certificate import (
+from lionagi.governance.certificate import (
     CertificateGrade,
     TaskCertificate,
 )
-from lionagi.protocols.governance.charter import (
+from lionagi.governance.charter import (
     CharterParseError,
     CharterParser,
     CharterValidationError,
@@ -20,12 +20,12 @@ from lionagi.protocols.governance.charter import (
     parse_charter,
     validate_charter,
 )
-from lionagi.protocols.governance.compiler import (
+from lionagi.governance.compiler import (
     CharterActivationError,
     CharterCompiler,
     CompilationResult,
 )
-from lionagi.protocols.governance.context import (
+from lionagi.governance.context import (
     BudgetExceededError,
     GovernanceMissingContextError,
     OperationBudget,
@@ -34,8 +34,8 @@ from lionagi.protocols.governance.context import (
     get_operation_context,
     set_operation_context,
 )
-from lionagi.protocols.governance.context import PolicyPin as ContextPolicyPin
-from lionagi.protocols.governance.dsl import (
+from lionagi.governance.context import PolicyPin as ContextPolicyPin
+from lionagi.governance.dsl import (
     ActorIdSource,
     AgentDef,
     AttachDef,
@@ -64,7 +64,7 @@ from lionagi.protocols.governance.dsl import (
     SodScope,
     TraceDef,
 )
-from lionagi.protocols.governance.evidence import (
+from lionagi.governance.evidence import (
     GENESIS_HASH,
     ChainVerification,
     ChainVerifier,
@@ -73,29 +73,29 @@ from lionagi.protocols.governance.evidence import (
     LogTier,
     compute_node_hash,
 )
-from lionagi.protocols.governance.flow_integration import GovernedFlowController
-from lionagi.protocols.governance.gates import (
+from lionagi.governance.flow_integration import GovernedFlowController
+from lionagi.governance.gates import (
     GateExecutor,
     GateResult,
     GateVerdict,
     GovernanceViolationError,
 )
-from lionagi.protocols.governance.governed_tool import governed_tool
-from lionagi.protocols.governance.jit_grant import (
+from lionagi.governance.governed_tool import governed_tool
+from lionagi.governance.jit_grant import (
     JITGrantStore,
     PermitToken,
     check_jit_grant,
     jit_gate_override,
 )
-from lionagi.protocols.governance.resolution import (
+from lionagi.governance.resolution import (
     PermissionVerdict,
     PolicyResolver,
     ResolutionResult,
     ScopeLevel,
 )
-from lionagi.protocols.governance.session_integration import governed_flow
-from lionagi.protocols.governance.sod import SoDEnforcer, SoDViolation
-from lionagi.protocols.governance.targets import (
+from lionagi.governance.session_integration import governed_flow
+from lionagi.governance.sod import SoDEnforcer, SoDViolation
+from lionagi.governance.targets import (
     CharterPermissionPolicy,
     EvidenceRequirement,
     GateRegistration,
@@ -103,8 +103,8 @@ from lionagi.protocols.governance.targets import (
     SoDRule,
     TraceExpectation,
 )
-from lionagi.protocols.governance.targets import RegistryEntry as RuntimeRegistryEntry
-from lionagi.protocols.governance.tracing import (
+from lionagi.governance.targets import RegistryEntry as RuntimeRegistryEntry
+from lionagi.governance.tracing import (
     GovernanceSpan,
     GovernanceTracer,
     SpanName,

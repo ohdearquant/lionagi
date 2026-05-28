@@ -18,12 +18,12 @@ attach rules without touching the open-source core.
 
 Typical usage::
 
-    from lionagi.protocols.governance.dsl import (
+    from lionagi.governance.dsl import (
         PermissionResolution,
         PermissionRule,
         PermissionsDef,
     )
-    from lionagi.protocols.governance.resolution import (
+    from lionagi.governance.resolution import (
         PermissionVerdict,
         PolicyResolver,
     )
@@ -66,7 +66,7 @@ from typing import NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lionagi.protocols.governance.dsl import PermissionRule, PermissionsDef
+from lionagi.governance.dsl import PermissionRule, PermissionsDef
 
 __all__ = [
     "PermissionVerdict",

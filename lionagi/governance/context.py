@@ -1,4 +1,4 @@
-# Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from lionagi.protocols.generic.element import Element
 
 if TYPE_CHECKING:
-    from lionagi.protocols.governance.evidence import EvidenceChain
+    from lionagi.governance.evidence import EvidenceChain
 
 
 class BudgetExceededError(Exception):
