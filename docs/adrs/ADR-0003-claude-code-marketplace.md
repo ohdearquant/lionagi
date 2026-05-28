@@ -8,7 +8,7 @@
 
 lionagi is evolving from a Python SDK into a daily-driver agent runtime (ADR-0001). Users now reach for it for show direction, research workflows, memory hygiene, and the Lion Studio dashboard — capability sets that differ significantly in what they require. Installing all of these as a single undifferentiated package forces users to accept the full dependency surface when they may only want one slice.
 
-Claude Code's plugin marketplace provides a tested distribution primitive: a root `marketplace.json` manifest lists available plugins; each plugin lives at `marketplace/<name>/` with its own `plugin.json`, skills, agent profiles, and optional MCP server configuration. The khive repository at `/Users/lion/projects/khive/khive/marketplace/` has validated this pattern in production.
+Claude Code's plugin marketplace provides a tested distribution primitive: a root `marketplace.json` manifest lists available plugins; each plugin lives at `marketplace/<name>/` with its own `plugin.json`, skills, agent profiles, and optional MCP server configuration.
 
 ## Decision
 
@@ -37,7 +37,7 @@ package are required for any of the four.
 
 | Plugin | Reason |
 |--------|--------|
-| `research` | Contains private trading IP that cannot be shipped in a public package. Removed entirely; no replacement planned in the public catalog. |
+| `research` | Removed entirely; no replacement planned in the public catalog. |
 | `kg-bridge` | Tight coupling to khive MCP server. lionagi's public marketplace must not depend on khive internals. Removed; khive users can configure the bridge manually. |
 
 ### Deferred plugins (v2.1+)
@@ -101,7 +101,6 @@ shipped in Phase 0 and why the remaining four were removed or deferred.
 - [ADR-0001: Lion Studio as Internal App](ADR-0001-lion-studio-internal-app.md) — establishes monorepo boundary and daily-driver app direction
 - [ADR-0002: Lion Studio Tech Stack](ADR-0002-studio-tech-stack.md) — establishes FastAPI backend stack that the `studio` and `mcp-bundle` plugins depend on
 - [ADR-0004: Filesystem Data Layer](ADR-0004-filesystem-data-layer.md) — establishes the FastAPI backend route contracts that `studio` and `mcp-bundle` plugins will eventually configure
-- khive marketplace reference implementation: `/Users/lion/projects/khive/khive/marketplace/`
 
 ---
 

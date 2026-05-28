@@ -48,6 +48,10 @@ When a new ADR supersedes an old one, set the old ADR's status line to
 `Superseded by ADR-NNNN` and reference the old ADR in the new one's body.
 Example: `_Supersedes [ADR-0001](ADR-0001-lion-studio-internal-app.md)._`
 
+## Skipped Numbers
+
+Numbers 0036–0038 and 0040 were reserved for future use and have no corresponding ADR files.
+
 ## Index
 
 | ADR | Title | Status |
@@ -88,18 +92,18 @@ Example: `_Supersedes [ADR-0001](ADR-0001-lion-studio-internal-app.md)._`
 | [ADR-0034](ADR-0034-frontend-data-and-state-architecture.md) | Frontend data and state architecture | Proposed |
 | [ADR-0035](ADR-0035-design-system-and-component-library.md) | Design system and component library | Proposed |
 | [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md) | Knowledge substrate minimal interface | Proposed |
-| [ADR-0041](ADR-0041-immutable-evidence-nodes.md) | Immutable evidence nodes | Proposed |
-| [ADR-0042](ADR-0042-task-certificate.md) | Task certificate — signed proof of process adherence | Proposed |
-| [ADR-0043](ADR-0043-governed-tool-declaration.md) | Governed tool declaration | Proposed |
-| [ADR-0044](ADR-0044-tool-gates.md) | Tool gates — three-tier binary enforcement | Proposed |
-| [ADR-0045](ADR-0045-break-glass-protocol.md) | Break-glass protocol — DEGRADED-defensibility override | Proposed |
-| [ADR-0046](ADR-0046-jit-tool-grant.md) | JIT tool grant — no standing capability for high-risk tools | Proposed |
-| [ADR-0047](ADR-0047-agent-charter.md) | Agent charter — enforceable governance document | Proposed |
-| [ADR-0048](ADR-0048-agent-segregation-of-duties.md) | Agent segregation of duties | Proposed |
-| [ADR-0049](ADR-0049-log-tier-governance.md) | Log tier governance | Proposed |
-| [ADR-0050](ADR-0050-operation-context.md) | Operation context — active assertion in evidence | Proposed |
-| [ADR-0051](ADR-0051-tool-registry-allowlists.md) | Tool registry allowlists | Proposed |
-| [ADR-0052](ADR-0052-policy-resolution.md) | Policy resolution and staged release | Proposed |
+| [ADR-0041](ADR-0041-immutable-evidence-nodes.md) | Immutable evidence nodes | Accepted |
+| [ADR-0042](ADR-0042-task-certificate.md) | Task certificate — signed proof of process adherence | Accepted (revision required — see ADR consolidation phase) |
+| [ADR-0043](ADR-0043-governed-tool-declaration.md) | Governed tool declaration | Accepted (revision required — see ADR consolidation phase) |
+| [ADR-0044](ADR-0044-tool-gates.md) | Tool gates — three-tier binary enforcement | Accepted (revision required — see ADR consolidation phase) |
+| [ADR-0045](ADR-0045-break-glass-protocol.md) | Break-glass protocol — DEGRADED-defensibility override | Accepted (revision required — see ADR consolidation phase) |
+| [ADR-0046](ADR-0046-jit-tool-grant.md) | JIT tool grant — no standing capability for high-risk tools | Accepted (revision required — see ADR consolidation phase) |
+| [ADR-0047](ADR-0047-agent-charter.md) | Agent charter — enforceable governance document | Accepted (revision required — see ADR consolidation phase) |
+| [ADR-0048](ADR-0048-agent-segregation-of-duties.md) | Agent segregation of duties | Accepted |
+| [ADR-0049](ADR-0049-log-tier-governance.md) | Log tier governance | Accepted |
+| [ADR-0050](ADR-0050-operation-context.md) | Operation context — active assertion in evidence | Accepted (revision required — see ADR consolidation phase) |
+| [ADR-0051](ADR-0051-tool-registry-allowlists.md) | Tool registry allowlists | Accepted (revision required — see ADR consolidation phase) |
+| [ADR-0052](ADR-0052-policy-resolution.md) | Policy resolution and staged release | Accepted |
 | [ADR-0053](ADR-0053-artifact-persistence.md) | Artifact persistence in state database | Proposed |
 | [ADR-0054](ADR-0054-local-state-cleanup.md) | Local state file cleanup and DB migration completion | Proposed |
 | [ADR-0055](ADR-0055-studio-artifact-viewer.md) | Studio artifact viewer and file reference resolution | Proposed |

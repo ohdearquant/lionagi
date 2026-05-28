@@ -23,11 +23,13 @@ optional dependencies (Starlette, FastAPI, and related packages). All existing S
 ## Consequences
 
 **Positive**
+
 - Single repository: types, tests, and CI stay in sync without cross-repo coordination.
 - Optional install surface keeps the base SDK lightweight for users who don't need the UI.
 - `li studio start` CLI entrypoint integrates naturally with the existing `lionagi.cli` structure.
 
 **Negative**
+
 - The lionagi `pyproject.toml` gains optional dependencies that must be kept current.
 - Contributors working only on the SDK must be aware that `apps/studio/` exists and not break it.
 
@@ -40,5 +42,4 @@ optional dependencies (Starlette, FastAPI, and related packages). All existing S
 
 ## References
 
-- Show plan: `/Users/lion/khive-work/shows/lion-studio-init/_show.md`
 - [ADR-0002](ADR-0002-studio-tech-stack.md) — selects the tech stack for Lion Studio

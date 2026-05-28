@@ -29,14 +29,13 @@ be enforced, not just documented) means a `requires_jit=True` annotation on a to
 unless the runtime actually blocks execution when no valid grant exists. This ADR introduces the
 `JITGrant` and `PermitToken` constructs that make both principles operational for high-risk tools.
 
-### The applicable prior governance research insight
+### Core design insight
 
-prior research addresses standing capability in human-facing sensitive operations (terminations,
-compensation changes) using a two-layer model: a `PermitToken` that binds one certificate to one
+The JIT grant model uses a two-layer approach: a `PermitToken` that binds one certificate to one
 execution (replay prevention), and a JIT role that removes the standing capability from the actor
-entirely so the action is invisible in the UI until the grant is active. The core insight
-translates directly to agent governance: the primary mechanism is the permit (transaction binding,
-single-use); the secondary mechanism is JIT (no standing power). Both layers must hold. Disabling
+entirely so the action is unavailable until the grant is active. The primary mechanism is the
+permit (transaction binding, single-use); the secondary mechanism is JIT (no standing power).
+Both layers must hold. Disabling
 either degrades security — permit-only allows replay within the window; JIT-only allows replay
 because there is no per-transaction binding.
 
@@ -539,4 +538,3 @@ Explicitly out of scope:
 - [ADR-0048](ADR-0048-agent-segregation-of-duties.md) — SoD: an agent cannot approve its own JIT grant
 - [ADR-0051](ADR-0051-tool-registry-allowlists.md) — privileged tier of the tool registry enforces JIT at registration time
 - [ADR-0033](ADR-0033-unified-entity-state-model.md) — `EvidenceRef` kinds used in audit table above
-- prior governance research `01_design/015-jit-role/ADR-015-jit-role.md` — source pattern (defense-in-depth with permit + JIT roles)

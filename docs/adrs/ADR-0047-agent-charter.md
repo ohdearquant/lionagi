@@ -664,7 +664,7 @@ reviewer_charter_draft = AgentCharter(
     allowed_models=("openai/gpt-4.1", "anthropic/claude-sonnet-4-6"),
     policy_release_version="policy-bundle:v2026.05",
     ratified_at=time.time(),
-    ratified_by=("ocean@example.com", "security-team@example.com"),
+    ratified_by=("operator@example.com", "security-lead@example.com"),
     ratification_hash="",   # computed by activate_charter()
     active=False,
     superseded_by=None,
@@ -751,4 +751,3 @@ Explicitly out of scope:
 - [ADR-0033](ADR-0033-unified-entity-state-model.md) — EvidenceRef; charter version is embedded in evidence metadata
 - `lionagi/agent/config.py` — `AgentConfig`; charter augments rather than replaces this
 - `lionagi/agent/hooks.py` — built-in hooks (`guard_destructive`, `guard_paths`, `log_tool_use`) referenced as `hook_name` values
-- prior governance research `01_design/025-charter/ADR-025-charter.md` — source pattern (constraints must have enforcement binding, ratification hash, single active per tenant)

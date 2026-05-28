@@ -55,5 +55,4 @@ arrays) would create a redundancy that lags the actual directory contents.
 
 - `_show.md:111` — decision confirmed: `plugin.json` stays as-is; CC loader auto-discovers
 - `marketplace-plugins-core/_intent.md:49` — acceptance item: CC auto-discovery confirmed
-- khive marketplace reference: `/Users/lion/projects/khive/khive/marketplace/`
 - [ADR-0003](ADR-0003-claude-code-marketplace.md) — marketplace structure this decision extends

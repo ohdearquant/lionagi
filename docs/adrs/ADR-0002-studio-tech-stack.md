@@ -36,12 +36,14 @@ and introduces redundant engineering for capabilities the chosen stack provides 
 ## Consequences
 
 **Positive**
+
 - DAG visualisation, runs polling loop, and agent editor all have proven library support.
 - Python backend stays idiomatic with lionagi's own codebase (FastAPI + Pydantic).
 - SSE support is first-class via Starlette `StreamingResponse` — no third-party adapter required.
 - Port 8765 is consistent across all Studio documentation and tooling.
 
 **Negative**
+
 - `npm install` requires `--legacy-peer-deps` due to an ESLint 9 / `@eslint/js` 10 peer conflict
   in the dependency tree (see Appendix A).
 - TypeScript symbol names (`WorkerFormData`, `listWorkers`) reflect an earlier naming layer;
@@ -64,7 +66,6 @@ and introduces redundant engineering for capabilities the chosen stack provides 
 
 ## References
 
-- Show plan: `/Users/lion/khive-work/shows/lion-studio-init/_show.md`
 - [ADR-0001](ADR-0001-lion-studio-internal-app.md) — establishes `apps/studio/` as the home
 - [ADR-0006](ADR-0006-sse-live-streaming.md) — SSE protocol decision (uses this stack)
 

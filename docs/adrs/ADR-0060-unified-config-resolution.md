@@ -64,10 +64,11 @@ class ResourceKind(StrEnum):
 
 class SourceTier(StrEnum):
     PROJECT_LIONAGI = "project_lionagi"
-    PROJECT_CLAUDE = "project_claude"
     USER_LIONAGI = "user_lionagi"
-    USER_CLAUDE = "user_claude"
     PLUGIN = "plugin"
+    # Plugin-contributed tiers (example: Claude Code integration plugin)
+    # PROJECT_CLAUDE = "project_claude"
+    # USER_CLAUDE    = "user_claude"
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,11 +113,14 @@ The canonical cascade is:
 
 ```text
 project .lionagi/
-project .claude/
 ~/.lionagi/
-~/.claude/
 plugin defaults
 ```
+
+> **Note:** Claude Code integration is available as an optional plugin that contributes
+> resources from `.claude/` directories. When that plugin is installed and enabled, it
+> adds `project .claude/` and `~/.claude/` tiers between `~/.lionagi/` and plugin
+> defaults. These tiers are plugin-contributed, not first-class resolver tiers.
 
 Within each root, the resolver checks literal candidates for the resource kind. It never expands
 untrusted glob patterns from user input. Resource names must be non-empty bare names: no path
@@ -213,7 +217,7 @@ it for config writes.
 ADR-0060 has no `state.db` or Postgres schema changes. It uses:
 
 ```text
-resource files under .lionagi/ and .claude/
+resource files under .lionagi/ (and .claude/ when the Claude Code plugin contributes them)
 ~/.lionagi/.config-sync-manifest.json
 generated .lionagi/agents.md or ~/.lionagi/agents.md
 existing projects.path rows for Studio project root validation
@@ -279,9 +283,12 @@ li config sync [kind] [--dry-run] [--reset] [--json]
 li config agents-md [--cwd PATH] [--global] [--stdout] [--dry-run]
 ```
 
-`li config sync` materializes compatibility links from `~/.claude/<kind>/` and plugin defaults into
-`~/.lionagi/<kind>/`. It records managed paths in `~/.lionagi/.config-sync-manifest.json`, never
-overwrites user-owned files, and removes only manifest-owned links on `--reset`.
+`li config sync` materializes compatibility links from plugin-contributed roots and plugin defaults
+into `~/.lionagi/<kind>/`. It records managed paths in `~/.lionagi/.config-sync-manifest.json`,
+never overwrites user-owned files, and removes only manifest-owned links on `--reset`. When the
+Claude Code integration plugin is active, it may also contribute links from `~/.claude/<kind>/`
+through the plugin sync extension point — that behavior is plugin-owned, not built into the core
+sync command.
 
 Estimate: 260 LOC for CLI, 180 LOC for sync helpers, 300 LOC of tests.
 
@@ -345,7 +352,8 @@ Studio mutating endpoints never accept client-supplied filesystem roots. They re
 row, validate the project path, and write only under that project's `.lionagi/` directory.
 
 API responses must not leak absolute paths. Use display paths relative to the selected project or
-user root, plus a root label such as `project_lionagi` or `user_lionagi`.
+user root, plus a root label such as `project_lionagi`, `user_lionagi`, or the plugin-contributed
+label when a plugin tier resolved the resource.
 
 Generated `agents.md` may include private operating instructions. The generator should use
 owner-readable permissions where supported and should include a generated-file header so operators

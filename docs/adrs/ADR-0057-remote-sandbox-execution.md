@@ -45,7 +45,7 @@ definition itself is loaded through the ADR-0060 resource resolver.
 
 Implement remote and local execution as `PlayRunner` backends that import the canonical protocol and
 types from ADR-0056. The first backend is `LocalWorktreeRunner`; remote backends include
-`DaytonaRunner`, `E2BRunner`, `CodespaceRunner`, and `SSHRunner` as demand warrants.
+`EphemeralSandboxRunner`, `PersistentWorkspaceRunner`, and `SSHRunner` as demand warrants.
 
 ```python
 # lionagi/runtime/runners/base.py
@@ -116,8 +116,8 @@ def build_runner(name: str, *, cwd: Path | None = None) -> PlayRunner:
 Canonical runner files live in the ADR-0060 cascade:
 
 ```yaml
-# .lionagi/runners/daytona.yaml
-kind: daytona
+# .lionagi/runners/remote_sandbox.yaml
+kind: remote_sandbox
 image: ghcr.io/lionagi/lionagi-sandbox:latest
 limits:
   timeout_s: 2400
@@ -142,7 +142,7 @@ Playbooks may select the runner by name without embedding secrets:
 
 ```yaml
 name: guarded-review
-runner: daytona
+runner: remote_sandbox
 runner_limits:
   timeout_s: 2400
   cpu_count: 4
@@ -152,7 +152,7 @@ runner_limits:
 CLI flags may override the runner name:
 
 ```bash
-li play guarded-review --runner daytona
+li play guarded-review --runner remote_sandbox
 li o flow "review the PR" --runner local_worktree
 ```
 
@@ -369,9 +369,9 @@ fast local workflows, but they do not isolate process, network, resources, or in
 
 ### Provider-Specific Studio Routes
 
-Rejected. Provider-specific routes would leak Daytona/E2B/Codespaces semantics into Studio and
-duplicate status, logs, artifacts, and control behavior. The `PlayRunner` protocol keeps providers
-behind one contract.
+Rejected. Provider-specific routes would leak remote-provider semantics into Studio and duplicate
+status, logs, artifacts, and control behavior. The `PlayRunner` protocol keeps providers behind
+one contract.
 
 ### 0057-Owned Execution Tables
 
@@ -387,8 +387,8 @@ authenticated runner ingest with scoped tokens.
 
 ### Kubernetes Runner First
 
-Deferred. Kubernetes is credible for enterprise deployments, but it adds operational assumptions not
-yet present in lionagi. It can be added later as another `PlayRunner` backend.
+Deferred. Kubernetes is credible for larger self-hosted deployments, but it adds operational
+assumptions not yet present in lionagi. It can be added later as another `PlayRunner` backend.
 
 ## Consequences
 
