@@ -23,20 +23,20 @@ import time
 
 import pytest
 
-from lionagi.protocols.governance.breakglass import (
+from lionagi.governance.breakglass import (
     BreakGlassDisabledError,
     BreakGlassMissingAttestationError,
     BreakGlassRecord,
     BreakGlassSession,
 )
-from lionagi.protocols.governance.dsl import (
+from lionagi.governance.dsl import (
     BreakGlassAttestation,
     BreakGlassDef,
     BreakGlassNotification,
     EvidenceDef,
 )
-from lionagi.protocols.governance.evidence import EvidenceChain, LogTier
-from lionagi.protocols.governance.gates import GateResult, GateVerdict
+from lionagi.governance.evidence import EvidenceChain, LogTier
+from lionagi.governance.gates import GateResult, GateVerdict
 
 # ---------------------------------------------------------------------------
 # Fixtures

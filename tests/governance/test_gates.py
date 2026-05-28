@@ -7,19 +7,19 @@ from datetime import datetime
 
 import pytest
 
-from lionagi.protocols.action.manager import ActionManager
-from lionagi.protocols.governance.context import OperationContext
-from lionagi.protocols.governance.context import PolicyPin as ContextPolicyPin
-from lionagi.protocols.governance.dsl import Enforcement
-from lionagi.protocols.governance.evidence import EvidenceChain
-from lionagi.protocols.governance.gates import (
+from lionagi.governance.context import OperationContext
+from lionagi.governance.context import PolicyPin as ContextPolicyPin
+from lionagi.governance.dsl import Enforcement
+from lionagi.governance.evidence import EvidenceChain
+from lionagi.governance.gates import (
     GateExecutor,
     GateResult,
     GateVerdict,
     GovernanceViolationError,
 )
-from lionagi.protocols.governance.governed_tool import governed_tool
-from lionagi.protocols.governance.targets import GateRegistration
+from lionagi.governance.governed_tool import governed_tool
+from lionagi.governance.targets import GateRegistration
+from lionagi.protocols.action.manager import ActionManager
 
 # ---------------------------------------------------------------------------
 # Module-level tool callables — NO type annotations.

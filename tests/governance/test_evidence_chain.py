@@ -5,9 +5,7 @@ import time
 
 import pytest
 
-from lionagi.protocols.generic.log import DataLogger
-from lionagi.protocols.generic.pile import Pile, PileAppendOnlyError
-from lionagi.protocols.governance.evidence import (
+from lionagi.governance.evidence import (
     GENESIS_HASH,
     ChainVerification,
     EvidenceChain,
@@ -15,6 +13,8 @@ from lionagi.protocols.governance.evidence import (
     LogTier,
     compute_node_hash,
 )
+from lionagi.protocols.generic.log import DataLogger
+from lionagi.protocols.generic.pile import Pile, PileAppendOnlyError
 
 # ---------------------------------------------------------------------------
 # 1. Happy path

@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi.protocols.governance.jit_grant (ADR-0046)."""
+"""Tests for lionagi.governance.jit_grant (ADR-0046)."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ import time
 
 import pytest
 
-from lionagi.protocols.governance.gates import GateResult, GateVerdict
-from lionagi.protocols.governance.jit_grant import (
+from lionagi.governance.gates import GateResult, GateVerdict
+from lionagi.governance.jit_grant import (
     JITGrantStore,
     PermitToken,
     check_jit_grant,

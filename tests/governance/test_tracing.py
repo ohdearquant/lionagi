@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi.protocols.governance.tracing (P19).
+"""Tests for lionagi.governance.tracing (P19).
 
 Covers:
   - GovernanceSpan: creation, start/end timing, attributes, events, status
@@ -19,8 +19,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from lionagi.protocols.governance.certificate import CertificateGrade, TaskCertificate
-from lionagi.protocols.governance.tracing import (
+from lionagi.governance.certificate import CertificateGrade, TaskCertificate
+from lionagi.governance.tracing import (
     GovernanceSpan,
     GovernanceTracer,
     SpanEvent,

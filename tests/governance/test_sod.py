@@ -24,12 +24,12 @@ from collections.abc import Callable
 
 import pytest
 
-from lionagi.protocols.governance.sod import (
+from lionagi.governance.sod import (
     ActorRecord,
     SoDEnforcer,
     SoDViolation,
 )
-from lionagi.protocols.governance.targets import SoDRule
+from lionagi.governance.targets import SoDRule
 
 # ──────────────────────────────── Helpers ────────────────────────────────────
 

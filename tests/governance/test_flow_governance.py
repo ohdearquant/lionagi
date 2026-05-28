@@ -21,13 +21,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from lionagi.protocols.governance.certificate import CertificateGrade, TaskCertificate
-from lionagi.protocols.governance.context import (
+from lionagi.governance.certificate import CertificateGrade, TaskCertificate
+from lionagi.governance.context import (
     BudgetExceededError,
     OperationBudget,
 )
-from lionagi.protocols.governance.flow_integration import GovernedFlowController
-from lionagi.protocols.governance.gates import GateVerdict, GovernanceViolationError
+from lionagi.governance.flow_integration import GovernedFlowController
+from lionagi.governance.gates import GateVerdict, GovernanceViolationError
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Charter YAML fixtures

@@ -21,9 +21,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lionagi.protocols.governance.certificate import CertificateGrade, TaskCertificate
-from lionagi.protocols.governance.gates import GateVerdict, GovernanceViolationError
-from lionagi.protocols.governance.session_integration import governed_flow
+from lionagi.governance.certificate import CertificateGrade, TaskCertificate
+from lionagi.governance.gates import GateVerdict, GovernanceViolationError
+from lionagi.governance.session_integration import governed_flow
 from lionagi.protocols.types import EventStatus
 
 CHARTER_FULL = textwrap.dedent("""\
@@ -213,7 +213,7 @@ async def test_no_charter_returns_none_certificate():
     expected = {"completed_operations": [op.id], "operation_results": {op.id: "ok"}}
 
     with patch(
-        "lionagi.protocols.governance.session_integration._ungoverned_flow",
+        "lionagi.governance.session_integration._ungoverned_flow",
         new=AsyncMock(return_value=expected),
     ):
         result, cert = await governed_flow(session, graph, charter=None)
@@ -229,7 +229,7 @@ async def test_flow_with_charter_mints_certificate():
     op = _make_op("op.safe", result="value")
     graph = _make_graph([op])
 
-    from lionagi.protocols.governance.session_integration import _GovernedExecutor
+    from lionagi.governance.session_integration import _GovernedExecutor
 
     with patch.object(
         _GovernedExecutor,
@@ -256,7 +256,7 @@ async def test_certificate_grade_full_for_safe_ops():
     op = _make_op("op.safe")
     graph = _make_graph([op])
 
-    from lionagi.protocols.governance.session_integration import _GovernedExecutor
+    from lionagi.governance.session_integration import _GovernedExecutor
 
     async def fake_execute(self):
         gate = self._controller.pre_op_check("op.safe", ctx=None)
@@ -283,8 +283,8 @@ async def test_deny_raises_governance_violation_error():
     op = _make_op("op.blocked")
     graph = _make_graph([op])
 
-    from lionagi.protocols.governance.flow_integration import GovernedFlowController
-    from lionagi.protocols.governance.session_integration import (
+    from lionagi.governance.flow_integration import GovernedFlowController
+    from lionagi.governance.session_integration import (
         _RAISE,
         _GovernedExecutor,
     )
@@ -315,7 +315,7 @@ async def test_deny_skip_marks_op_skipped_not_raises():
     op = _make_op("op.blocked")
     graph = _make_graph([op])
 
-    from lionagi.protocols.governance.session_integration import _SKIP, _GovernedExecutor
+    from lionagi.governance.session_integration import _SKIP, _GovernedExecutor
 
     async def fake_execute(self):
         gate = self._controller.pre_op_check("op.blocked", ctx=None)
@@ -343,7 +343,7 @@ async def test_advisory_allows_execution_downgrades_to_partial():
     op = _make_op("op.watched")
     graph = _make_graph([op])
 
-    from lionagi.protocols.governance.session_integration import _GovernedExecutor
+    from lionagi.governance.session_integration import _GovernedExecutor
 
     async def fake_execute(self):
         gate = self._controller.pre_op_check("op.watched", ctx=None)
@@ -372,7 +372,7 @@ async def test_certificate_op_count_matches_recorded_ops():
     ops = [_make_op(f"op.safe_{i}") for i in range(3)]
     graph = _make_graph(ops)
 
-    from lionagi.protocols.governance.session_integration import _GovernedExecutor
+    from lionagi.governance.session_integration import _GovernedExecutor
 
     async def fake_execute(self):
         for i in range(3):
@@ -401,8 +401,8 @@ async def test_evidence_chain_has_entry_per_op():
     ops = [_make_op(f"op.safe_{i}") for i in range(2)]
     graph = _make_graph(ops)
 
-    from lionagi.protocols.governance.flow_integration import GovernedFlowController
-    from lionagi.protocols.governance.session_integration import _GovernedExecutor
+    from lionagi.governance.flow_integration import GovernedFlowController
+    from lionagi.governance.session_integration import _GovernedExecutor
 
     captured_controller: list[GovernedFlowController] = []
 
@@ -442,7 +442,7 @@ async def test_certificate_contains_correct_charter_id():
     op = _make_op("op.safe")
     graph = _make_graph([op])
 
-    from lionagi.protocols.governance.session_integration import _GovernedExecutor
+    from lionagi.governance.session_integration import _GovernedExecutor
 
     async def fake_execute(self):
         return {
@@ -479,7 +479,7 @@ async def test_no_charter_delegates_to_flow_unchanged():
         }
 
     with patch(
-        "lionagi.protocols.governance.session_integration._ungoverned_flow",
+        "lionagi.governance.session_integration._ungoverned_flow",
         new=AsyncMock(side_effect=fake_flow),
     ):
         result, cert = await governed_flow(
@@ -501,7 +501,7 @@ async def test_certificate_started_before_completed():
     op = _make_op("op.safe")
     graph = _make_graph([op])
 
-    from lionagi.protocols.governance.session_integration import _GovernedExecutor
+    from lionagi.governance.session_integration import _GovernedExecutor
 
     async def fake_execute(self):
         return {

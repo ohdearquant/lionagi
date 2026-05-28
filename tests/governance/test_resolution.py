@@ -24,12 +24,12 @@ Coverage goals:
 
 import pytest
 
-from lionagi.protocols.governance.dsl import (
+from lionagi.governance.dsl import (
     PermissionResolution,
     PermissionRule,
     PermissionsDef,
 )
-from lionagi.protocols.governance.resolution import (
+from lionagi.governance.resolution import (
     PermissionVerdict,
     PolicyResolver,
     ResolutionResult,

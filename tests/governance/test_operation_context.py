@@ -7,7 +7,7 @@ from datetime import datetime
 
 import pytest
 
-from lionagi.protocols.governance.context import (
+from lionagi.governance.context import (
     BudgetExceededError,
     GovernanceMissingContextError,
     OperationBudget,

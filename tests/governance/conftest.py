@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.protocols.governance.context import (
+from lionagi.governance.context import (
     _operation_context_var,
 )
 

@@ -15,13 +15,13 @@ import textwrap
 import pytest
 from pydantic import ValidationError
 
-from lionagi.protocols.governance.charter import (
+from lionagi.governance.charter import (
     CharterValidationError,
     charter_json_schema,
     parse_charter,
     validate_charter,
 )
-from lionagi.protocols.governance.dsl import (
+from lionagi.governance.dsl import (
     CharterDocument,
     CharterKind,
     CharterStatus,
@@ -367,7 +367,7 @@ class TestValidateCharter:
 
     def test_sod_role_not_declared(self):
         doc = parse_charter(MINIMAL_AGENT_CHARTER)
-        from lionagi.protocols.governance.dsl import ConflictType, SodRule, SodScope
+        from lionagi.governance.dsl import ConflictType, SodRule, SodScope
 
         doc.sod.rules.append(
             SodRule(
@@ -1039,21 +1039,21 @@ class TestEnforcementNormalization:
 
 class TestCharterParser:
     def test_parse_returns_document(self):
-        from lionagi.protocols.governance.charter import CharterParser
+        from lionagi.governance.charter import CharterParser
 
         doc = CharterParser.parse(MINIMAL_AGENT_CHARTER)
         assert isinstance(doc, CharterDocument)
         assert doc.charter_dsl == "0.1"
 
     def test_schema_returns_dict_with_properties(self):
-        from lionagi.protocols.governance.charter import CharterParser
+        from lionagi.governance.charter import CharterParser
 
         schema = CharterParser.schema()
         assert isinstance(schema, dict)
         assert "properties" in schema
 
     def test_legacy_apiVersion_rejected(self):
-        from lionagi.protocols.governance.charter import (
+        from lionagi.governance.charter import (
             CharterParseError,
             CharterParser,
         )
@@ -1063,7 +1063,7 @@ class TestCharterParser:
             CharterParser.parse(yaml_text)
 
     def test_legacy_apiVersion_error_includes_migrate_hint(self):
-        from lionagi.protocols.governance.charter import (
+        from lionagi.governance.charter import (
             CharterParseError,
             CharterParser,
         )
@@ -1074,7 +1074,7 @@ class TestCharterParser:
         assert "charter.version" in str(exc_info.value)
 
     def test_wildcard_raises_charter_parse_error(self):
-        from lionagi.protocols.governance.charter import (
+        from lionagi.governance.charter import (
             CharterParseError,
             CharterParser,
         )
@@ -1086,7 +1086,7 @@ class TestCharterParser:
             CharterParser.parse(bad)
 
     def test_tab_raises_charter_parse_error(self):
-        from lionagi.protocols.governance.charter import (
+        from lionagi.governance.charter import (
             CharterParseError,
             CharterParser,
         )
@@ -1096,19 +1096,19 @@ class TestCharterParser:
             CharterParser.parse(bad)
 
     def test_parse_example_a(self):
-        from lionagi.protocols.governance.charter import CharterParser
+        from lionagi.governance.charter import CharterParser
 
         doc = CharterParser.parse(EXAMPLE_A)
         assert doc.metadata.charter_id == "charter.simple_reader"
 
     def test_import_from_package(self):
-        from lionagi.protocols.governance import CharterParseError, CharterParser
+        from lionagi.governance import CharterParseError, CharterParser
 
         assert CharterParser is not None
         assert CharterParseError is not None
 
     def test_prose_field_with_question_mark_accepted(self):
-        from lionagi.protocols.governance import CharterParser
+        from lionagi.governance import CharterParser
 
         # '?' in a prose 'because' field must not trigger wildcard rejection
         yaml_text = MINIMAL_AGENT_CHARTER.replace(
@@ -1122,7 +1122,7 @@ class TestCharterParser:
         import ast
         import inspect
 
-        import lionagi.protocols.governance.dsl as dsl_mod
+        import lionagi.governance.dsl as dsl_mod
 
         # Read source via file path to avoid sys.modules manipulation
         # that would poison other test modules' import caches.

@@ -18,13 +18,13 @@ import textwrap
 
 import pytest
 
-from lionagi.protocols.governance.charter import parse_charter
-from lionagi.protocols.governance.compiler import (
+from lionagi.governance.charter import parse_charter
+from lionagi.governance.compiler import (
     CharterActivationError,
     CharterCompiler,
     CompilationResult,
 )
-from lionagi.protocols.governance.targets import (
+from lionagi.governance.targets import (
     CharterPermissionPolicy,
     EvidenceRequirement,
     GateRegistration,
@@ -259,7 +259,7 @@ class TestHappyPath:
         assert len(result.gates) == 2
 
     def test_gate_enforcement_preserved(self):
-        from lionagi.protocols.governance.dsl import Enforcement
+        from lionagi.governance.dsl import Enforcement
 
         doc = parse_charter(SESSION_CHARTER)
         result = _make_compiler().compile(doc)
@@ -690,7 +690,7 @@ class TestAdversarial:
 
 class TestPublicApi:
     def test_targets_importable_from_governance(self):
-        from lionagi.protocols.governance import (
+        from lionagi.governance import (
             CharterActivationError,
             CharterCompiler,
             CharterPermissionPolicy,
