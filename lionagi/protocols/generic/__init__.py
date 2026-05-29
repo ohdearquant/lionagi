@@ -5,7 +5,7 @@ from .element import ID, Element
 from .event import Event, EventStatus, Execution
 from .flow import Flow
 from .log import DataLogger, DataLoggerConfig, Log
-from .pile import Pile
+from .pile import Pile, PileAppendOnlyError
 from .processor import Executor, Processor
 from .progression import Progression
 
@@ -19,6 +19,7 @@ __all__ = (
     "DataLogger",
     "DataLoggerConfig",
     "Pile",
+    "PileAppendOnlyError",
     "Progression",
     "Processor",
     "Executor",
