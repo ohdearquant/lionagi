@@ -1,0 +1,84 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from lionagi.ln.types import Enum, ModelConfig, Params
+from lionagi.protocols._concepts import Composable
+
+__all__ = (
+    "Pattern",
+    "PatternKind",
+    "Mode",
+)
+
+_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
+
+
+class PatternKind(Enum):
+    OTHER = "other"
+    ROLE = "role"
+    MODE = "mode"
+
+
+@dataclass(init=False, frozen=True, slots=True)
+class Pattern(Params, Composable):
+    """Abstract, composable atom of agent configuration.
+
+    A frozen value object with a name and description. Concrete patterns
+    subclass it (Role, Mode) and override ``kind``.
+    """
+
+    _config = ModelConfig(
+        none_as_sentinel=True,
+        empty_as_sentinel=True,
+    )
+
+    name: str
+    description: str
+
+    @property
+    def kind(self) -> PatternKind:
+        return PatternKind.OTHER
+
+
+def _parse_frontmatter(text: str) -> tuple[dict, str]:
+    """Split YAML frontmatter from markdown body. Returns (meta, body)."""
+    import yaml
+
+    fm_match = _FRONTMATTER_RE.match(text)
+    if not fm_match:
+        raise ValueError("Missing YAML frontmatter.")
+    meta = yaml.safe_load(fm_match.group(1)) or {}
+    body = text[fm_match.end() :]
+    return meta, body
+
+
+@dataclass(init=False, frozen=True, slots=True)
+class Mode(Pattern):
+    """Cognitive overlay — shapes *how* an agent reasons."""
+
+    behaviors: str = ""
+    conflicts_with: frozenset = field(default_factory=frozenset)
+
+    @property
+    def kind(self) -> PatternKind:
+        return PatternKind.MODE
+
+    @classmethod
+    def from_md(cls, s: str, /) -> Mode:
+        meta, body = _parse_frontmatter(s)
+        return cls(
+            name=meta["name"],
+            description=meta.get("description", ""),
+            behaviors=body.strip(),
+            conflicts_with=frozenset(meta.get("conflicts_with") or ()),
+        )
+
+    @classmethod
+    def from_file(cls, path: Path, /) -> Mode:
+        return cls.from_md(path.read_text(encoding="utf-8"))

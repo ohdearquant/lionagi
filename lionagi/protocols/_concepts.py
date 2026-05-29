@@ -17,10 +17,12 @@ __all__ = (
     "Condition",
     "Collective",
     "Ordering",
+    "Composable",
+    "Composed",
 )
 
 
-class Observer(ABC):
+class Observer(ABC):  # noqa: B024
     """Base for all observers."""
 
     pass
@@ -32,22 +34,33 @@ class Manager(Observer):
     pass
 
 
-class Relational(ABC):
+class Relational(ABC):  # noqa: B024
     """Base for graph-connectable objects."""
 
     pass
 
 
-class Sendable(ABC):
+class Sendable(ABC):  # noqa: B024
     """Sendable entities must define 'sender' and 'recipient'."""
 
     pass
 
 
-class Observable(ABC):
+class Observable(ABC):  # noqa: B024
     """Observable entities must define 'id'."""
 
     pass
+
+
+class Composable(ABC):  # noqa: B024
+    """A item that can be composed into a composed entity."""
+
+
+class Composed(ABC):
+    @classmethod
+    @abstractmethod
+    def compose(cls, members: tuple[Composable, ...]):
+        """Compose from components."""
 
 
 class Communicatable(Observable):
