@@ -131,7 +131,10 @@ def _validate_progression(value: Any, collections: dict[UUID, T], /) -> Progress
 
 
 def _validate_collections(value: Any, item_type: set | None, strict_type: bool, /) -> dict[str, T]:
-    if not value:
+    # Short-circuit genuinely empty input (None, empty list/dict/str) but NOT a
+    # single Observable that happens to be falsy — e.g. an empty Progression or
+    # Pile is a valid item whose len() is 0, and must not be silently dropped.
+    if not value and not isinstance(value, Observable):
         return {}
 
     value = to_list_type(value)
