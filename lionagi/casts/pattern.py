@@ -14,10 +14,10 @@ __all__ = (
 
 
 class Pattern(BaseModel):
-    """Composable atom of agent configuration.
+    """Composable, frozen atom of agent configuration.
 
-    NOT an Element — no UUID, no persistence. Patterns are templates,
-    not entities. Actors are entities; Patterns configure them.
+    A configuration template with no identity or persistence of its own;
+    patterns compose into a Profile that configures an Actor.
     """
 
     model_config = ConfigDict(frozen=True)

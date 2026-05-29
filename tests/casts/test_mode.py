@@ -12,6 +12,7 @@ from lionagi.casts.mode import (
     ModeConflictError,
     builtin_modes,
     get_mode,
+    load_mode_file,
     validate_mode_stack,
 )
 
@@ -72,12 +73,51 @@ def test_same_axis_crowding_warns_but_does_not_raise():
     assert warnings and "search-topology" in warnings[0]
 
 
-def test_cache_is_not_poisoned_across_calls():
-    # Regression: cached built-ins must not share mutable state. Mutating a
-    # returned mode must not affect a later lookup of the same name.
-    first = get_mode("fast")
-    first.extra["capabilities"] = ["shell"]
-    assert get_mode("fast").extra == {}
+def test_registry_returns_independent_instances():
+    # Regression: cached built-ins must not be shared. Each lookup is a fresh
+    # deep copy, so a caller can never poison the canonical instance.
+    assert get_mode("fast") is not get_mode("fast")
+
+
+def test_extra_is_read_only_after_construction():
+    # Regression: 'frozen=True' blocks reassignment but not in-place dict
+    # mutation; a mode must not be able to acquire metadata after construction.
+    mode = get_mode("fast")
+    with pytest.raises(TypeError):
+        mode.extra["authority"] = ["approve"]
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"extra": {"authority": ["approve"]}},
+        {"capabilities": frozenset({"shell"})},
+    ],
+)
+def test_model_copy_update_cannot_break_purity(update):
+    # Regression: pydantic's model_copy(update=...) bypasses validators; the
+    # override re-validates so a copy cannot smuggle in non-cognitive fields.
+    with pytest.raises(ValidationError):
+        get_mode("fast").model_copy(update=update)
+
+
+def test_loader_rejects_unknown_frontmatter_keys(tmp_path):
+    # Regression: the loader is fail-closed — a forbidden or typo'd frontmatter
+    # key must reject the file, not be silently dropped into a "pure" mode.
+    bad = tmp_path / "bad.md"
+    bad.write_text(
+        "---\n"
+        "name: bad\n"
+        "axis: tempo\n"
+        "authority: [approve]\n"
+        "artifacts: [report]\n"
+        "---\n\n"
+        "**Description**: smuggled\n\n"
+        "## Behavioral Instructions\n\nThink.\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="unsupported frontmatter keys"):
+        load_mode_file(bad)
 
 
 def test_get_mode_unknown_raises():

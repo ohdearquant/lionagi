@@ -55,15 +55,26 @@ is why the roster carries the *marked* pole of each axis, not both poles — the
 default already occupies the unmarked pole, so a "focused" or "intuitive" mode
 would be redundant with no mode at all.
 
-**2. The cognitive-only contract is enforced.** A `Mode` contributes a
+**2. The cognitive-only contract is enforced, and total.** A `Mode` contributes a
 behavioral instruction to the system prompt and selection metadata, and nothing
 else. It never grants capabilities or resources, carries authority, or produces
-artifacts — those belong to roles and other patterns. A `model_validator`
-rejects any `Mode` constructed with non-empty `capabilities`, `resources`,
-`authority`, `boundaries`, or `extra` (the inherited escape-hatch dict, which
-would otherwise smuggle non-cognitive metadata past the contract), and `kind` is
-a `Literal["mode"]` so a wrong discriminator is rejected at construction rather
-than silently accepted. The contract is a runtime invariant, not a convention.
+artifacts — those belong to roles and other patterns. The contract is a runtime
+invariant, not a convention, and holds at every boundary a mode can enter through:
+
+- **Construction.** A `model_validator` rejects any `Mode` built with non-empty
+  `capabilities`, `resources`, `authority`, `boundaries`, or `extra` (the
+  inherited escape-hatch dict, which would otherwise smuggle non-cognitive
+  metadata past the contract). `kind` is a `Literal["mode"]` so a wrong
+  discriminator is rejected up front rather than silently accepted.
+- **The markdown loader.** `.md` files are the source of truth, so the loader is
+  fail-closed: a file declaring any frontmatter key outside the closed schema (a
+  forbidden field like `authority`, or a typo) is rejected, not silently dropped
+  into an apparently pure mode.
+- **After construction.** `frozen=True` blocks field reassignment but not
+  mutation of the contained `extra` dict, so `extra` is pinned to a read-only
+  mapping — `mode.extra["authority"] = ...` raises. `model_copy` re-validates,
+  because pydantic's `update=` otherwise bypasses validators and could mint an
+  impure copy.
 
 **3. Axes are organizational; `conflicts_with` is the mechanism.** Each mode
 declares an `axis` (its cognitive dimension) and an explicit `conflicts_with`
@@ -86,9 +97,10 @@ context, not by a formal parameter. This merges the prototypes' `anticipatory`
 **5. Modes are authored as markdown, loaded on demand.** Each mode is a
 `roles/modes/*.md` file: YAML frontmatter for structured selection/composition
 metadata, and a body with a one-line `Description` and a `Behavioral
-Instructions` paragraph. `builtin_modes()` parses them lazily (cached); the
-module import stays O(1) and does no file I/O. Markdown keeps the prompt text
-reviewable as prose while the frontmatter stays machine-parseable.
+Instructions` paragraph. `builtin_modes()` parses them lazily (cached) and
+fail-closed (decision 2); the module import stays O(1) and does no file I/O.
+Markdown keeps the prompt text reviewable as prose while the frontmatter stays
+machine-parseable.
 
 ## The Mode Schema
 
@@ -111,10 +123,11 @@ exactly like any other pattern.
 | `when_not_to_use` | `tuple[str, ...]` | Over-use / failure conditions. |
 
 A `Mode` must **not** carry `capabilities`, `resources`, `authority`,
-`boundaries`, or a non-empty `extra`. These belong to roles and patterns; a mode
-that needs one is misfiled. The `model_validator` enforces this at construction,
-and `builtin_modes()` returns deep copies so a caller cannot mutate a returned
-mode and poison the cached registry.
+`boundaries`, or a non-empty `extra` — these belong to roles and patterns; a mode
+that needs one is misfiled. This is enforced at construction, at the loader, and
+after construction (decision 2). `builtin_modes()` additionally returns deep
+copies, so a caller holds an independent instance and can never poison the
+cached registry.
 
 ## The Axis Model
 

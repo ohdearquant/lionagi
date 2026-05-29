@@ -1,44 +1,29 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Mode: composable cognitive overlays — how an agent reasons.
+"""Mode: composable cognitive overlays — *how* an agent reasons.
 
-A Mode is a kind of :class:`~lionagi.casts.pattern.Pattern` that constrains
-*how* an actor thinks, distinct from a Role (what it does, its authority and
-artifacts) and from capability/resource patterns (what it may touch). Modes are
-pure cognitive overlays::
+A Mode is a :class:`~lionagi.casts.pattern.Pattern` (``kind="mode"``) that shapes
+reasoning only. Purity contract, enforced at construction *and* at the markdown
+loader: a mode never grants capabilities or resources, carries authority, sets
+boundaries, or holds ``extra`` metadata. It contributes one behavioral
+instruction (the inherited ``prompt``) plus selection metadata — nothing that
+reaches the runtime Branch. Authority, access, and artifacts belong to roles.
 
-    role + mode(s) + capabilities + resources  ->  Profile  ->  Actor  ->  Branch
+Modes stack onto an actor. ``conflicts_with`` is the hard rule the orchestrator
+enforces; ``axis`` only groups related controls and is *not* the conflict
+mechanism. The 14 built-ins are authored as markdown under ``roles/modes/*.md``
+and loaded on demand.
 
-The mode contract (enforced at construction): a Mode never grants capabilities
-or resources, carries authority, or produces artifacts. It contributes a
-behavioral instruction to the system prompt and nothing else. Those other
-concerns belong to roles and patterns.
-
-Modes are *marked deviations* from a default reasoning policy — balanced tempo,
-focused search, ordinary epistemic hygiene, pragmatic solutioning, cooperative
-stance, role-governed output. Each mode marks one deviation, organized on a
-small set of cognitive ``axes``.
-
-Composition: modes stack. ``conflicts_with`` is the hard rule the orchestrator
-enforces (e.g. ``fast`` cannot coexist with ``slow`` or ``systematic``). The
-``axis`` field is *organizational* — it groups related controls and backs the
-soft heuristic "do not stack several modes from the same axis"; it is NOT the
-conflict mechanism. Same-axis modes (``evidential`` + ``probabilistic``)
-routinely compose, while cross-axis modes (``fast`` + ``systematic``) conflict,
-so conflicts are declared explicitly per mode, not inferred from the axis.
-
-The 14 built-in modes are authored as markdown under ``roles/modes/*.md`` and
-loaded on demand via :func:`builtin_modes`.
+Design rationale, the full roster, and the axis model:
+``docs/adrs/ADR-0071-cognitive-mode-model.md``.
 
 Usage::
 
     from lionagi.casts.mode import get_mode, validate_mode_stack
 
-    fast = get_mode("fast")
-    evidential = get_mode("evidential")
-    validate_mode_stack([fast, evidential])            # ok -> []
-    validate_mode_stack([get_mode("fast"), get_mode("slow")])  # ModeConflictError
+    validate_mode_stack([get_mode("fast"), get_mode("evidential")])  # ok -> []
+    validate_mode_stack([get_mode("fast"), get_mode("slow")])        # ModeConflictError
 """
 
 from __future__ import annotations
@@ -93,6 +78,18 @@ class ModeConflictError(ValueError):
         super().__init__(
             f"Modes '{a}' and '{b}' conflict and cannot be composed in the same stack."
         )
+
+
+class _ReadOnlyDict(dict):
+    """A dict that refuses mutation — used so a frozen Mode's ``extra`` cannot
+    acquire metadata in place (``frozen=True`` blocks reassignment, not the
+    mutation of a contained ``dict``). Stays a real ``dict`` so it serializes
+    and deep-copies natively."""
+
+    def _readonly(self, *_a, **_k):
+        raise TypeError("Mode.extra is read-only")
+
+    __setitem__ = __delitem__ = clear = pop = popitem = setdefault = update = _readonly
 
 
 class Mode(Pattern):
@@ -172,7 +169,20 @@ class Mode(Pattern):
                 f"Mode '{self.name}' must not carry {violations}; modes constrain "
                 "cognition only — move these to a role or pattern."
             )
+        # extra is now empty; pin it read-only so it cannot be mutated in place.
+        if not isinstance(self.extra, _ReadOnlyDict):
+            object.__setattr__(self, "extra", _ReadOnlyDict())
         return self
+
+    def model_copy(self, *, update: dict | None = None, deep: bool = False) -> Mode:
+        """Re-validate on copy. Pydantic's ``update=`` bypasses validators, which
+        would otherwise let a copy smuggle in non-cognitive fields the purity
+        contract forbids. Every Mode field is immutable, so ``deep`` is moot —
+        the reconstruction is always independent."""
+        data = {**self.__dict__, "extra": dict(self.extra)}
+        if update:
+            data.update(update)
+        return type(self).model_validate(data)
 
     @property
     def instruction(self) -> str:
@@ -186,6 +196,24 @@ class Mode(Pattern):
 # ──────────────────────── Markdown loading ─────────────────────────────
 
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
+
+# The closed frontmatter contract. The loader is fail-closed: a mode file
+# declaring anything outside this set (a forbidden field like `authority`, or a
+# typo) is rejected rather than silently dropped — the .md files are the source
+# of truth, so an invalid definition must not normalize into an apparently pure mode.
+_MODE_FRONTMATTER_KEYS = frozenset(
+    {
+        "name",
+        "axis",
+        "tier",
+        "phase_scope",
+        "overhead",
+        "conflicts_with",
+        "composes_well_with",
+        "when_to_use",
+        "when_not_to_use",
+    }
+)
 
 
 def _inline_field(body: str, label: str) -> str:
@@ -211,6 +239,13 @@ def load_mode_file(path: Path) -> Mode:
 
     meta = yaml.safe_load(fm_match.group(1)) or {}
     body = text[fm_match.end() :]
+
+    unknown = set(meta) - _MODE_FRONTMATTER_KEYS
+    if unknown:
+        raise ValueError(
+            f"Mode file {path.name} has unsupported frontmatter keys: {sorted(unknown)}. "
+            f"Allowed: {sorted(_MODE_FRONTMATTER_KEYS)}."
+        )
 
     return Mode(
         name=meta["name"],
