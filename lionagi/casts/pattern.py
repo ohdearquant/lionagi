@@ -3,156 +3,82 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from lionagi.ln.types import Enum, ModelConfig, Params
+from lionagi.protocols._concepts import Composable
 
 __all__ = (
     "Pattern",
-    "Role",
+    "PatternKind",
+    "Mode",
 )
 
+_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 
-class Pattern(BaseModel):
-    """Composable, frozen atom of agent configuration.
 
-    A configuration template with no identity or persistence of its own;
-    patterns compose into a Profile that configures an Actor.
+class PatternKind(Enum):
+    OTHER = "other"
+    ROLE = "role"
+    MODE = "mode"
+
+
+@dataclass(init=False, frozen=True, slots=True)
+class Pattern(Params, Composable):
+    """Abstract, composable atom of agent configuration.
+
+    A frozen value object with a name and description. Concrete patterns
+    subclass it (Role, Mode) and override ``kind``.
     """
 
-    model_config = ConfigDict(frozen=True)
-
-    name: str = Field(..., description="Pattern identifier.")
-
-    kind: str = Field(
-        default="generic",
-        description=(
-            "Pattern type: 'role', 'mode', 'tool', 'model', 'governance', 'domain', 'generic'."
-        ),
+    _config = ModelConfig(
+        none_as_sentinel=True,
+        empty_as_sentinel=True,
     )
 
-    capabilities: frozenset[str] = Field(
-        default_factory=frozenset,
-        description="Operations this pattern enables.",
-    )
+    name: str
+    description: str
 
-    resources: frozenset[str] = Field(
-        default_factory=frozenset,
-        description="Service/tool scopes this pattern grants.",
-    )
+    @property
+    def kind(self) -> PatternKind:
+        return PatternKind.OTHER
 
-    prompt: str = Field(
-        default="",
-        description="Behavioral instructions contributed by this pattern.",
-    )
 
-    effort: str | None = Field(
-        default=None,
-        description="Effort signal: low, medium, high.",
-    )
+def _parse_frontmatter(text: str) -> tuple[dict, str]:
+    """Split YAML frontmatter from markdown body. Returns (meta, body)."""
+    import yaml
 
-    authority: tuple[str, ...] = Field(
-        default_factory=tuple,
-        description="What this pattern authorizes the actor to do.",
-    )
+    fm_match = _FRONTMATTER_RE.match(text)
+    if not fm_match:
+        raise ValueError("Missing YAML frontmatter.")
+    meta = yaml.safe_load(fm_match.group(1)) or {}
+    body = text[fm_match.end() :]
+    return meta, body
 
-    boundaries: tuple[str, ...] = Field(
-        default_factory=tuple,
-        description="What this pattern forbids.",
-    )
 
-    extra: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Pattern-specific metadata (charter_ref, model spec, etc.).",
-    )
+@dataclass(init=False, frozen=True, slots=True)
+class Mode(Pattern):
+    """Cognitive overlay — shapes *how* an agent reasons."""
 
-    # ── Composition ─────────────────────────────────────────────────
+    behaviors: str = ""
+    conflicts_with: frozenset = field(default_factory=frozenset)
+
+    @property
+    def kind(self) -> PatternKind:
+        return PatternKind.MODE
 
     @classmethod
-    def compose(cls, patterns: list[Pattern], *, name: str = "composed") -> Pattern:
-        """Merge multiple patterns into one.
-
-        Composition is additive:
-        - capabilities, resources: union
-        - prompt: concatenate (insertion order)
-        - authority, boundaries: concatenate
-        - effort: last non-None wins
-        - extra: shallow merge (later keys override)
-        """
-        caps: set[str] = set()
-        res: set[str] = set()
-        prompts: list[str] = []
-        auth: list[str] = []
-        bounds: list[str] = []
-        effort: str | None = None
-        extra: dict[str, Any] = {}
-        kinds: set[str] = set()
-
-        for p in patterns:
-            caps.update(p.capabilities)
-            res.update(p.resources)
-            if p.prompt:
-                prompts.append(p.prompt)
-            auth.extend(p.authority)
-            bounds.extend(p.boundaries)
-            if p.effort is not None:
-                effort = p.effort
-            extra.update(p.extra)
-            kinds.add(p.kind)
-
-        kind = "composed" if len(kinds) > 1 else next(iter(kinds), "generic")
-
+    def from_md(cls, s: str, /) -> Mode:
+        meta, body = _parse_frontmatter(s)
         return cls(
-            name=name,
-            kind=kind,
-            capabilities=frozenset(caps),
-            resources=frozenset(res),
-            prompt="\n\n".join(prompts),
-            effort=effort,
-            authority=tuple(auth),
-            boundaries=tuple(bounds),
-            extra=extra,
+            name=meta["name"],
+            description=meta.get("description", ""),
+            behaviors=body.strip(),
+            conflicts_with=frozenset(meta.get("conflicts_with") or ()),
         )
 
-    def __add__(self, other: Pattern) -> Pattern:
-        return Pattern.compose([self, other], name=f"{self.name}+{other.name}")
-
-    def __repr__(self) -> str:
-        return f"Pattern(name='{self.name}', kind='{self.kind}')"
-
-
-class Role(Pattern):
-    """Behavioral pattern — mission, principles, anti-patterns, escalations.
-
-    Loaded from roles/*.md with YAML frontmatter + markdown body.
-    Kind is always 'role'.
-    """
-
-    kind: Literal["role"] = "role"
-
-    mission: str = Field(default="", description="One-sentence behavioral mission.")
-
-    principles: tuple[str, ...] = Field(
-        default_factory=tuple,
-        description="Load-bearing behavioral rules.",
-    )
-
-    anti_patterns: tuple[str, ...] = Field(
-        default_factory=tuple,
-        description="Failure modes specific to this role.",
-    )
-
-    escalations: tuple[str, ...] = Field(
-        default_factory=tuple,
-        description="Conditions that trigger escalation to orchestrator.",
-    )
-
-    artifacts: tuple[str, ...] = Field(
-        default_factory=tuple,
-        description="Concrete outputs this role produces.",
-    )
-
-    level: str = Field(
-        default="L1",
-        description="Behavioral purity: L1 (pure), L2 (artifact), L3 (domain), L4 (pack-specialized).",
-    )
+    @classmethod
+    def from_file(cls, path: Path, /) -> Mode:
+        return cls.from_md(path.read_text(encoding="utf-8"))
