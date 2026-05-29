@@ -38,7 +38,6 @@ from lionagi.protocols.messages import (
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.manager import iModel, iModelManager
 from lionagi.tools.base import LionTool
-from lionagi.utils import copy
 
 from .prompts import LION_SYSTEM_MESSAGE
 
@@ -100,6 +99,7 @@ class Branch(Element, Relational):
     _imodel_manager: iModelManager | None = PrivateAttr(None)
     _log_manager: DataLogger | None = PrivateAttr(None)
     _operation_manager: OperationManager | None = PrivateAttr(None)
+    _observer: Any = PrivateAttr(None)
 
     def __init__(
         self,
@@ -334,6 +334,18 @@ class Branch(Element, Relational):
             return getattr(self, operation)
         return self._operation_manager.registry.get(operation)
 
+    async def emit(self, event: Any) -> list[Any]:
+        """Emit an event to the owning session's observer, if attached.
+
+        Set by ``Session.include_branches``. When the branch is standalone
+        (no session), emission is a no-op returning ``[]``. This is how a
+        tool or operation running in a branch raises a typed structured-output
+        event into the session's reactive bus.
+        """
+        if self._observer is None:
+            return []
+        return await self._observer.emit(event)
+
     # -------------------------------------------------------------------------
     # Cloning
     # -------------------------------------------------------------------------
@@ -368,21 +380,15 @@ class Branch(Element, Relational):
         """
         if sender is not None:
             if not ID.is_id(sender):
-                raise ValueError(
-                    f"Cannot clone Branch: '{sender}' is not a valid sender ID."
-                )
+                raise ValueError(f"Cannot clone Branch: '{sender}' is not a valid sender ID.")
             sender = ID.get_id(sender)
 
         system = self.msgs.system.clone() if self.msgs.system else None
         tools = (
-            list(self._action_manager.registry.values())
-            if self._action_manager.registry
-            else None
+            list(self._action_manager.registry.values()) if self._action_manager.registry else None
         )
         # Transfer iModels: CLI endpoints get a fresh copy, API endpoints share
-        chat_model = (
-            self.chat_model.copy() if self.chat_model.is_cli else self.chat_model
-        )
+        chat_model = self.chat_model.copy() if self.chat_model.is_cli else self.chat_model
         parse_model = (
             self.parse_model.copy()
             if (self.parse_model is not self.chat_model and self.parse_model.is_cli)
@@ -411,9 +417,7 @@ class Branch(Element, Relational):
             tools = tools.to_tool()
         self._action_manager.register_tool(tools, update=update)
 
-    def register_tools(
-        self, tools: FuncTool | list[FuncTool] | LionTool, update: bool = False
-    ):
+    def register_tools(self, tools: FuncTool | list[FuncTool] | LionTool, update: bool = False):
         """
         Registers one or more tools in the ActionManager.
 
@@ -719,18 +723,14 @@ class Branch(Element, Relational):
     async def parse(
         self,
         text: str,
-        handle_validation: Literal[
-            "raise", "return_value", "return_none"
-        ] = "return_value",
+        handle_validation: Literal["raise", "return_value", "return_none"] = "return_value",
         max_retries: int = 3,
         request_type: type[BaseModel] = None,
         operative: "Operative" = None,
         similarity_algo="jaro_winkler",
         similarity_threshold: float = 0.85,
         fuzzy_match: bool = True,
-        handle_unmatched: Literal[
-            "ignore", "raise", "remove", "fill", "force"
-        ] = "force",
+        handle_unmatched: Literal["ignore", "raise", "remove", "fill", "force"] = "force",
         fill_value: Any = None,
         fill_mapping: dict[str, Any] | None = None,
         strict: bool = False,
@@ -776,11 +776,7 @@ class Branch(Element, Relational):
                 Parsed model instance, or a fallback based on `handle_validation`.
         """
 
-        _pms = {
-            k: v
-            for k, v in locals().items()
-            if k not in ("self", "_pms") and v is not None
-        }
+        _pms = {k: v for k, v in locals().items() if k not in ("self", "_pms") and v is not None}
         from lionagi.operations.parse.parse import parse, prepare_parse_kws
 
         return await parse(self, **prepare_parse_kws(self, **_pms))
@@ -812,9 +808,7 @@ class Branch(Element, Relational):
         verbose_action: bool = False,
         field_models: list[FieldModel] = None,
         exclude_fields: list | dict | None = None,
-        handle_validation: Literal[
-            "raise", "return_value", "return_none"
-        ] = "return_value",
+        handle_validation: Literal["raise", "return_value", "return_none"] = "return_value",
         include_token_usage_to_model: bool = False,
         stream_persist: bool = False,
         persist_dir: str | None = None,
@@ -1015,11 +1009,7 @@ class Branch(Element, Relational):
         suppress_errors: bool = True,
         call_params: AlcallParams = None,
     ) -> list[ActionResponse]:
-        _pms = {
-            k: v
-            for k, v in locals().items()
-            if k not in ("self", "_pms") and v is not None
-        }
+        _pms = {k: v for k, v in locals().items() if k not in ("self", "_pms") and v is not None}
         from lionagi.operations.act.act import act, prepare_act_kw
 
         return await act(self, **prepare_act_kw(self, **_pms))
@@ -1085,7 +1075,7 @@ class Branch(Element, Relational):
 
         return await interpret(self, **prepare_interpret_kw(self, **_pms))
 
-    async def ReAct(
+    async def ReAct(  # noqa: N802
         self,
         instruct: "Instruct | dict[str, Any]",
         interpret: bool = False,
@@ -1187,9 +1177,7 @@ class Branch(Element, Relational):
 
         # Remove potential duplicate parameters from kwargs
         kwargs_filtered = {
-            k: v
-            for k, v in kwargs.items()
-            if k not in {"verbose_analysis", "verbose_action"}
+            k: v for k, v in kwargs.items() if k not in {"verbose_analysis", "verbose_action"}
         }
 
         return await ReAct(
@@ -1220,7 +1208,7 @@ class Branch(Element, Relational):
             **kwargs_filtered,
         )
 
-    async def ReActStream(
+    async def ReActStream(  # noqa: N802
         self,
         instruct: "Instruct | dict[str, Any]",
         interpret: bool = False,
@@ -1256,9 +1244,7 @@ class Branch(Element, Relational):
         )
 
         # Convert Instruct to dict if needed
-        instruct_dict = (
-            instruct.to_dict() if isinstance(instruct, Instruct) else dict(instruct)
-        )
+        instruct_dict = instruct.to_dict() if isinstance(instruct, Instruct) else dict(instruct)
 
         # Build InterpretContext if interpretation requested
         intp_param = None
