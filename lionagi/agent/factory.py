@@ -63,7 +63,6 @@ async def create_agent(
 
     if config.model:
         from lionagi.cli._providers import (
-            _CLAUDE_PROVIDER_NAMES,
             PROVIDER_EFFORT_KWARG,
             parse_model_spec,
         )
@@ -95,13 +94,14 @@ async def create_agent(
 
     branch = Branch(**branch_kwargs)
 
-    if config.system_prompt:
+    system_message = config.build_system_message()
+    if system_message:
         if config.lion_system:
             from lionagi.session.prompts import LION_SYSTEM_MESSAGE
 
-            full_prompt = LION_SYSTEM_MESSAGE.strip() + "\n\n" + config.system_prompt
+            full_prompt = LION_SYSTEM_MESSAGE.strip() + "\n\n" + system_message
         else:
-            full_prompt = config.system_prompt
+            full_prompt = system_message
         branch.msgs.set_system(branch.msgs.create_system(system=full_prompt))
 
     _apply_permissions(config)
@@ -130,9 +130,7 @@ def _apply_permissions(config: AgentConfig) -> None:
         return
 
     # Finding 13: insert permission hook into security_pre phase, not pre phase
-    config.hook_handlers.setdefault("security_pre:*", []).insert(
-        0, policy.to_pre_hook()
-    )
+    config.hook_handlers.setdefault("security_pre:*", []).insert(0, policy.to_pre_hook())
 
 
 def _tool_hooks(config: AgentConfig, phase: str, tool_name: str) -> list[Callable]:

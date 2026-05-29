@@ -43,6 +43,8 @@ class AgentConfig:
     model: str | None = None
     effort: str | None = None
     system_prompt: str = ""
+    role: str | None = None
+    modes: list[str] = field(default_factory=list)
     tools: list[str] = field(default_factory=list)
     hook_handlers: dict[str, list[Callable]] = field(default_factory=dict)
     permissions: dict[str, Any] = field(default_factory=dict)
@@ -65,6 +67,30 @@ class AgentConfig:
     def on_error(self, tool_name: str, handler: Callable) -> AgentConfig:
         self.hook_handlers.setdefault(f"error:{tool_name}", []).append(handler)
         return self
+
+    def build_system_message(self) -> str:
+        """Compose the system prompt from role + modes + literal system_prompt.
+
+        ``role`` (a built-in role name or Role) contributes its behavioral body;
+        each entry in ``modes`` (a built-in mode name or Mode) contributes its
+        behaviors; ``system_prompt`` is appended as extra preamble. With no role
+        or modes set, this returns ``system_prompt`` unchanged (backward
+        compatible).
+        """
+        from lionagi.casts.pattern import Mode, Role
+
+        parts: list[str] = []
+        if self.role:
+            role = self.role if not isinstance(self.role, str) else Role.load(self.role)
+            if role.body:
+                parts.append(role.body)
+        for m in self.modes:
+            mode = m if not isinstance(m, str) else Mode.load(m)
+            if mode.behaviors:
+                parts.append(mode.behaviors)
+        if self.system_prompt:
+            parts.append(self.system_prompt)
+        return "\n\n".join(parts)
 
     @classmethod
     def coding(
