@@ -246,7 +246,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["lionagi"]
-artifacts = ["lionagi/py.typed"]
+artifacts = [
+    "lionagi/py.typed",
+    "lionagi/casts/roles/modes/*.md",
+]
 
 [tool.hatch.build]
 exclude = [
