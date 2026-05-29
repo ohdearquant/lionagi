@@ -492,7 +492,7 @@ def trace_certificate_mint(
     """
     duration_ms = (certificate.completed_at - certificate.started_at).total_seconds() * 1000.0
     attrs: dict[str, Any] = {
-        "certificate.id": certificate.certificate_id,
+        "certificate.id": str(certificate.id),
         "certificate.task.id": certificate.session_id,
         "certificate.grade": certificate.grade.value,
         "certificate.gates.passed": certificate.ops_allowed,

@@ -41,8 +41,7 @@ __all__ = [
 ]
 
 
-class CharterActivationError(Exception):
-    """Raised when charter activation fails (hash mismatch or unresolved target)."""
+from lionagi.governance.errors import CharterActivationError
 
 
 class CompilationResult(BaseModel):

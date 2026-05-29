@@ -9,7 +9,7 @@ import threading
 from enum import Enum
 from typing import Any
 
-from pydantic import ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi._class_registry import LION_CLASS_REGISTRY
 from lionagi.protocols.generic.element import Element
@@ -101,7 +101,7 @@ class EvidenceNode(Element):
         return data
 
 
-class ChainVerification(Element):
+class ChainVerification(BaseModel):
     valid: bool
     checked_count: int = 0
     expected_count: int = 0

@@ -2,9 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from lionagi.governance.breakglass import (
-    BreakGlassDisabledError,
-    BreakGlassInactiveError,
-    BreakGlassMissingAttestationError,
     BreakGlassRecord,
     BreakGlassSession,
 )
@@ -13,7 +10,6 @@ from lionagi.governance.certificate import (
     TaskCertificate,
 )
 from lionagi.governance.charter import (
-    CharterParseError,
     CharterParser,
     CharterValidationError,
     charter_json_schema,
@@ -21,16 +17,12 @@ from lionagi.governance.charter import (
     validate_charter,
 )
 from lionagi.governance.compiler import (
-    CharterActivationError,
     CharterCompiler,
     CompilationResult,
 )
 from lionagi.governance.context import (
-    BudgetExceededError,
-    GovernanceMissingContextError,
     OperationBudget,
     OperationContext,
-    PolicyPinMismatchError,
     get_operation_context,
     set_operation_context,
 )
@@ -64,6 +56,17 @@ from lionagi.governance.dsl import (
     SodScope,
     TraceDef,
 )
+from lionagi.governance.errors import (
+    BreakGlassDisabledError,
+    BreakGlassInactiveError,
+    BreakGlassMissingAttestationError,
+    BudgetExceededError,
+    CharterActivationError,
+    CharterParseError,
+    GovernanceMissingContextError,
+    GovernanceViolationError,
+    PolicyPinMismatchError,
+)
 from lionagi.governance.evidence import (
     GENESIS_HASH,
     ChainVerification,
@@ -78,7 +81,6 @@ from lionagi.governance.gates import (
     GateExecutor,
     GateResult,
     GateVerdict,
-    GovernanceViolationError,
 )
 from lionagi.governance.governed_tool import governed_tool
 from lionagi.governance.jit_grant import (
@@ -93,7 +95,6 @@ from lionagi.governance.resolution import (
     ResolutionResult,
     ScopeLevel,
 )
-from lionagi.governance.session_integration import governed_flow
 from lionagi.governance.sod import SoDEnforcer, SoDViolation
 from lionagi.governance.targets import (
     CharterPermissionPolicy,
@@ -184,7 +185,6 @@ __all__ = [
     "CertificateGrade",
     "TaskCertificate",
     "GovernedFlowController",
-    "governed_flow",
     "GovernanceSpan",
     "GovernanceTracer",
     "SpanName",

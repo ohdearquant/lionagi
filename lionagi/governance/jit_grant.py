@@ -1,22 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Just-in-time (JIT) tool grant: temporary single-use permits for privileged tool calls.
-
-ADR-0046: JIT Tool Grant.
-
-A JIT grant is a no-standing-capability, time-bounded permit that allows a
-specific agent role to invoke a normally-denied tool exactly once (or up to
-``max_uses`` times).  Permits are issued by an authorized grantor, consumed
-atomically when the tool is invoked, and can be revoked before consumption.
-
-Public surface
---------------
-PermitToken       — immutable record of a single grant
-JITGrantStore     — thread-safe in-memory store for active permits
-check_jit_grant   — find and consume a matching permit for (tool_id, role)
-jit_gate_override — convert a DENY GateResult to ALLOW when a valid permit exists
-"""
+"""Just-in-time (JIT) tool grant: temporary single-use permits for privileged tool calls (ADR-0046)."""
 
 from __future__ import annotations
 
@@ -36,30 +21,11 @@ __all__ = [
     "jit_gate_override",
 ]
 
-# ---------------------------------------------------------------------------
-# PermitToken
-# ---------------------------------------------------------------------------
-
 PermitScope = Literal["session", "flow", "global"]
 
 
 class PermitToken(BaseModel):
-    """Immutable record of a single JIT grant permit.
-
-    Fields
-    ------
-    token_id        : Unique UUID for this permit.
-    tool_id         : The tool that this permit authorises.
-    grantee_role    : The role the permit was issued to.
-    grantor         : Identifier of the issuing authority.
-    reason          : Human-readable justification for the grant.
-    max_uses        : Maximum number of times the permit may be consumed.
-    uses_remaining  : How many consumptions remain (decremented on each consume).
-    created_at      : Unix timestamp (float) of issuance.
-    expires_at      : Unix timestamp (float) after which the permit is invalid.
-    scope           : Permit scope — "session", "flow", or "global".
-    revoked         : True once the permit has been explicitly revoked.
-    """
+    """Frozen record of a single JIT grant permit."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -76,40 +42,27 @@ class PermitToken(BaseModel):
     revoked: bool = False
 
     def is_active(self, now: float | None = None) -> bool:
-        """Return True if the permit is not expired, not revoked, and has uses remaining."""
+        """Return True if not expired, not revoked, and uses remain."""
         t = now if now is not None else time.time()
         return not self.revoked and self.uses_remaining > 0 and t < self.expires_at
 
     def with_uses_remaining(self, n: int) -> PermitToken:
-        """Return a copy of this token with uses_remaining set to *n*."""
         return self.model_copy(update={"uses_remaining": n})
 
     def revoke(self) -> PermitToken:
-        """Return a revoked copy of this token."""
         return self.model_copy(update={"revoked": True})
-
-
-# ---------------------------------------------------------------------------
-# JITGrantStore
-# ---------------------------------------------------------------------------
 
 
 class JITGrantStore:
     """Thread-safe in-memory store for active JIT permit tokens.
 
-    All mutating operations are protected by a single ``threading.Lock`` to
-    ensure that concurrent consume calls for a single-use token cannot both
-    succeed.
+    A single lock ensures concurrent consume calls on a single-use token cannot both succeed.
     """
 
     def __init__(self) -> None:
         self._lock: threading.Lock = threading.Lock()
         # token_id -> PermitToken (authoritative copy)
         self._tokens: dict[str, PermitToken] = {}
-
-    # ------------------------------------------------------------------
-    # Issuance
-    # ------------------------------------------------------------------
 
     def issue(
         self,
@@ -121,22 +74,7 @@ class JITGrantStore:
         ttl_seconds: float = 300.0,
         scope: PermitScope = "session",
     ) -> PermitToken:
-        """Issue a new JIT permit and store it.
-
-        Parameters
-        ----------
-        tool_id       : Identifier of the tool being permitted.
-        grantee_role  : Role that may consume this permit.
-        grantor       : Identifier of the issuing authority.
-        reason        : Justification for the grant.
-        max_uses      : Number of consumptions allowed (default 1).
-        ttl_seconds   : Lifetime of the permit in seconds (default 300).
-        scope         : Permit scope — "session", "flow", or "global".
-
-        Returns
-        -------
-        The newly issued PermitToken.
-        """
+        """Issue a new JIT permit and store it."""
         now = time.time()
         token = PermitToken(
             tool_id=tool_id,
@@ -154,26 +92,11 @@ class JITGrantStore:
             self._tokens[token.token_id] = token
         return token
 
-    # ------------------------------------------------------------------
-    # Consumption
-    # ------------------------------------------------------------------
-
     def consume(self, token_id: str, tool_id: str, role: str) -> bool:
-        """Attempt to consume one use of the permit.
+        """Atomically consume one use of the permit; returns False if invalid.
 
-        The consume is atomic: under the lock we check validity, decrement
-        ``uses_remaining``, and write the updated token back.  This prevents
-        two concurrent callers from both consuming a single-use token.
-
-        Parameters
-        ----------
-        token_id : Token to consume.
-        tool_id  : Must match the token's ``tool_id``.
-        role     : Must match the token's ``grantee_role``.
-
-        Returns
-        -------
-        True if the permit was valid and has been decremented; False otherwise.
+        Under the lock: check validity, decrement uses_remaining, write back.
+        Prevents two concurrent callers from both consuming a single-use token.
         """
         now = time.time()
         with self._lock:
@@ -190,21 +113,8 @@ class JITGrantStore:
             self._tokens[token_id] = updated
             return True
 
-    # ------------------------------------------------------------------
-    # Revocation
-    # ------------------------------------------------------------------
-
     def revoke(self, token_id: str) -> bool:
-        """Mark a permit as revoked.
-
-        Parameters
-        ----------
-        token_id : Token to revoke.
-
-        Returns
-        -------
-        True if the token existed and was not already revoked; False otherwise.
-        """
+        """Mark a permit as revoked; returns False if already revoked or missing."""
         with self._lock:
             token = self._tokens.get(token_id)
             if token is None:
@@ -214,26 +124,12 @@ class JITGrantStore:
             self._tokens[token_id] = token.revoke()
             return True
 
-    # ------------------------------------------------------------------
-    # Queries
-    # ------------------------------------------------------------------
-
     def list_active(
         self,
         role: str | None = None,
         tool_id: str | None = None,
     ) -> list[PermitToken]:
-        """Return all currently active tokens, optionally filtered.
-
-        Parameters
-        ----------
-        role    : If given, restrict to tokens with this ``grantee_role``.
-        tool_id : If given, restrict to tokens with this ``tool_id``.
-
-        Returns
-        -------
-        List of active PermitToken objects (snapshot under the lock).
-        """
+        """Return all currently active tokens, optionally filtered by role and/or tool_id."""
         now = time.time()
         with self._lock:
             tokens = list(self._tokens.values())
@@ -250,12 +146,7 @@ class JITGrantStore:
         return result
 
     def cleanup_expired(self) -> int:
-        """Remove expired tokens from the store.
-
-        Returns
-        -------
-        Number of tokens removed.
-        """
+        """Remove expired tokens from the store; returns count removed."""
         now = time.time()
         with self._lock:
             expired_ids = [tid for tid, token in self._tokens.items() if token.expires_at <= now]

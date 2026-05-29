@@ -43,22 +43,11 @@ __all__ = [
     "BreakGlassSession",
 ]
 
-# ---------------------------------------------------------------------------
-# Errors
-# ---------------------------------------------------------------------------
-
-
-class BreakGlassDisabledError(Exception):
-    """Raised when attempting to activate a session whose charter has disabled break-glass."""
-
-
-class BreakGlassInactiveError(Exception):
-    """Raised when an operation requires an active session but none is active."""
-
-
-class BreakGlassMissingAttestationError(ValueError):
-    """Raised when required attestation fields are missing or empty."""
-
+from lionagi.governance.errors import (
+    BreakGlassDisabledError,
+    BreakGlassInactiveError,
+    BreakGlassMissingAttestationError,
+)
 
 # ---------------------------------------------------------------------------
 # Data model

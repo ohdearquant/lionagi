@@ -9,57 +9,15 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from lionagi.protocols.generic.element import Element
-
 if TYPE_CHECKING:
     from lionagi.governance.evidence import EvidenceChain
 
 
-class BudgetExceededError(Exception):
-    """Raised when an OperationBudget limit is breached.
-
-    Accepts either the legacy string-message form::
-
-        BudgetExceededError("some message")
-
-    or the structured form used by GovernedFlowController::
-
-        BudgetExceededError(budget=op_budget, requested=1)
-    """
-
-    def __init__(
-        self,
-        budget_or_msg: OperationBudget | str | None = None,
-        requested: int = 1,
-        message: str = "",
-    ) -> None:
-        if isinstance(budget_or_msg, str):
-            self.budget = None
-            self.requested = requested
-            super().__init__(budget_or_msg)
-        elif budget_or_msg is not None:
-            self.budget = budget_or_msg
-            self.requested = requested
-            remaining = (
-                (budget_or_msg.max_calls - budget_or_msg.calls_used)
-                if budget_or_msg.max_calls is not None
-                else None
-            )
-            super().__init__(
-                message or f"Budget exceeded: {remaining} remaining, {requested} requested"
-            )
-        else:
-            self.budget = None
-            self.requested = requested
-            super().__init__(message or "Budget exceeded")
-
-
-class GovernanceMissingContextError(Exception):
-    pass
-
-
-class PolicyPinMismatchError(Exception):
-    pass
+from lionagi.governance.errors import (
+    BudgetExceededError,
+    GovernanceMissingContextError,
+    PolicyPinMismatchError,
+)
 
 
 class PolicyPin(BaseModel):
@@ -69,7 +27,7 @@ class PolicyPin(BaseModel):
     pinned_at: datetime
 
 
-class OperationBudget(Element):
+class OperationBudget(BaseModel):
     max_tokens: int | None = None
     max_calls: int | None = None
     max_duration_seconds: float | None = None
@@ -90,7 +48,7 @@ class OperationBudget(Element):
             raise BudgetExceededError(self, calls)
 
 
-class OperationContext(Element):
+class OperationContext(BaseModel):
     actor_id: str
     actor_role: str
     policy_pin: PolicyPin

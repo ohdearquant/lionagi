@@ -25,6 +25,7 @@ from lionagi.governance.dsl import (
     CharterKind,
     CharterStatus,
 )
+from lionagi.governance.errors import CharterParseError
 
 __all__ = [
     "CharterParseError",
@@ -51,15 +52,6 @@ _VALID_TOP_KEYS = frozenset(
 )
 
 _REQUIRED_SPECIFICITY_ORDER = ["resource", "role", "tenant", "global"]
-
-
-class CharterParseError(Exception):
-    """Raised by CharterParser.parse() for charter format violations."""
-
-    def __init__(self, message: str, line: int | None = None) -> None:
-        self.line = line
-        prefix = f"[line {line}] " if line is not None else ""
-        super().__init__(f"{prefix}{message}")
 
 
 class CharterValidationError:

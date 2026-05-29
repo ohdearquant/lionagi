@@ -29,7 +29,6 @@ If *charter* is None the controller is a no-op pass-through (backward compat).
 
 from __future__ import annotations
 
-import hashlib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,10 +48,6 @@ from lionagi.governance.evidence import EvidenceChain, LogTier
 from lionagi.governance.gates import GateExecutor, GateResult, GateVerdict
 
 __all__ = ["GovernedFlowController"]
-
-
-def _hash_str(value: str) -> str:
-    return hashlib.sha256(value.encode()).hexdigest()
 
 
 class GovernedFlowController:

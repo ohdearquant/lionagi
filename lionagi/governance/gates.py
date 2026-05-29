@@ -17,6 +17,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from lionagi.governance.dsl import Enforcement
+from lionagi.governance.errors import GovernanceViolationError
 from lionagi.governance.targets import GateRegistration
 
 __all__ = [
@@ -61,12 +62,6 @@ class GateResult(BaseModel):
             evidence_ref=d.get("evidence_ref"),
             elapsed_ms=d.get("elapsed_ms", 0.0),
         )
-
-
-class GovernanceViolationError(Exception):
-    def __init__(self, result: GateResult) -> None:
-        self.result = result
-        super().__init__(f"Gate {result.gate_id} denied: {result.justification}")
 
 
 class GateExecutor:
