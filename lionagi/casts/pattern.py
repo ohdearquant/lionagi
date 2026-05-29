@@ -14,6 +14,7 @@ __all__ = (
     "Pattern",
     "PatternKind",
     "Mode",
+    "Role",
 )
 
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
@@ -82,3 +83,32 @@ class Mode(Pattern):
     @classmethod
     def from_file(cls, path: Path, /) -> Mode:
         return cls.from_md(path.read_text(encoding="utf-8"))
+
+
+@dataclass(init=False, frozen=True, slots=True)
+class Role(Pattern):
+    """Behavioral pattern — what an agent does and the discipline it follows.
+
+    The markdown body (mission, principles, anti-patterns, artifacts) composes
+    into the system prompt. The frontmatter ``description`` is the dense,
+    orchestrator-facing selection signal and is not part of the prompt body.
+    """
+
+    body: str = ""
+
+    @property
+    def kind(self) -> PatternKind:
+        return PatternKind.ROLE
+
+    @classmethod
+    def from_md(cls, s: str, /) -> Role:
+        meta, body = _parse_frontmatter(s)
+        return cls(
+            name=meta["name"],
+            description=meta.get("description", ""),
+            body=body.strip(),
+        )
+
+    @classmethod
+    def from_file(cls, path: str | Path, /) -> Role:
+        return cls.from_md(Path(path).read_text(encoding="utf-8"))
