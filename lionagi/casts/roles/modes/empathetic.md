@@ -1,6 +1,5 @@
 ---
 name: empathetic
-type: cognitive-mode
 axis: perspective
 tier: core
 phase_scope: all

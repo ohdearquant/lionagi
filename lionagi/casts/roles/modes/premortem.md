@@ -1,6 +1,5 @@
 ---
 name: premortem
-type: cognitive-mode
 axis: skeptical-stress
 tier: core
 phase_scope: pre

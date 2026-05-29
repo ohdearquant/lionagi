@@ -1,6 +1,5 @@
 ---
 name: probabilistic
-type: cognitive-mode
 axis: epistemic-accounting
 tier: core
 phase_scope: all

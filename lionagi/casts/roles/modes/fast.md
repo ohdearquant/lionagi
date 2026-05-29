@@ -1,6 +1,5 @@
 ---
 name: fast
-type: cognitive-mode
 axis: tempo
 tier: core
 phase_scope: all

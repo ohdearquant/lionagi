@@ -1,6 +1,5 @@
 ---
 name: constraint-solving
-type: cognitive-mode
 axis: feasibility
 tier: core
 phase_scope: during

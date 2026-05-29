@@ -1,6 +1,5 @@
 ---
 name: socratic
-type: cognitive-mode
 axis: perspective
 tier: extended
 phase_scope: all

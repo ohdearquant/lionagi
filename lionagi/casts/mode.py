@@ -106,7 +106,7 @@ class Mode(Pattern):
     Kind is always ``"mode"``.
     """
 
-    kind: str = Field(default="mode", frozen=True)
+    kind: Literal["mode"] = "mode"
 
     description: str = Field(
         default="",
@@ -163,6 +163,7 @@ class Mode(Pattern):
                 ("resources", self.resources),
                 ("authority", self.authority),
                 ("boundaries", self.boundaries),
+                ("extra", self.extra),
             )
             if value
         ]
@@ -234,8 +235,12 @@ def _load_all() -> tuple[Mode, ...]:
 
 
 def builtin_modes() -> dict[str, Mode]:
-    """Return the built-in mode registry as a fresh ``name -> Mode`` dict."""
-    return {m.name: m for m in _load_all()}
+    """Return the built-in mode registry as a fresh ``name -> Mode`` dict.
+
+    Each call returns independent deep copies. A caller that mutates a returned
+    mode cannot poison the cached canonical instances or any other caller.
+    """
+    return {m.name: m.model_copy(deep=True) for m in _load_all()}
 
 
 def get_mode(name: str) -> Mode:

@@ -1,6 +1,5 @@
 ---
 name: systematic
-type: cognitive-mode
 axis: search-topology
 tier: core
 phase_scope: during

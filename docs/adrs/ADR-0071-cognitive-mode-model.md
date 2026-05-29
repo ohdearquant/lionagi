@@ -60,8 +60,10 @@ behavioral instruction to the system prompt and selection metadata, and nothing
 else. It never grants capabilities or resources, carries authority, or produces
 artifacts — those belong to roles and other patterns. A `model_validator`
 rejects any `Mode` constructed with non-empty `capabilities`, `resources`,
-`authority`, or `boundaries`. The contract is a runtime invariant, not a
-convention.
+`authority`, `boundaries`, or `extra` (the inherited escape-hatch dict, which
+would otherwise smuggle non-cognitive metadata past the contract), and `kind` is
+a `Literal["mode"]` so a wrong discriminator is rejected at construction rather
+than silently accepted. The contract is a runtime invariant, not a convention.
 
 **3. Axes are organizational; `conflicts_with` is the mechanism.** Each mode
 declares an `axis` (its cognitive dimension) and an explicit `conflicts_with`
@@ -108,9 +110,11 @@ exactly like any other pattern.
 | `when_to_use` | `tuple[str, ...]` | Selection triggers. |
 | `when_not_to_use` | `tuple[str, ...]` | Over-use / failure conditions. |
 
-A `Mode` must **not** carry `capabilities`, `resources`, `authority`, or
-`boundaries`. These belong to roles and patterns; a mode that needs one is
-misfiled. The `model_validator` enforces this at construction.
+A `Mode` must **not** carry `capabilities`, `resources`, `authority`,
+`boundaries`, or a non-empty `extra`. These belong to roles and patterns; a mode
+that needs one is misfiled. The `model_validator` enforces this at construction,
+and `builtin_modes()` returns deep copies so a caller cannot mutate a returned
+mode and poison the cached registry.
 
 ## The Axis Model
 

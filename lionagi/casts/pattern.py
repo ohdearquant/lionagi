@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -128,7 +128,7 @@ class Role(Pattern):
     Kind is always 'role'.
     """
 
-    kind: str = Field(default="role", frozen=True)
+    kind: Literal["role"] = "role"
 
     mission: str = Field(default="", description="One-sentence behavioral mission.")
 

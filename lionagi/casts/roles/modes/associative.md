@@ -1,6 +1,5 @@
 ---
 name: associative
-type: cognitive-mode
 axis: search-topology
 tier: extended
 phase_scope: during

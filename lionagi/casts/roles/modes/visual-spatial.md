@@ -1,6 +1,5 @@
 ---
 name: visual-spatial
-type: cognitive-mode
 axis: perspective
 tier: extended
 phase_scope: pre

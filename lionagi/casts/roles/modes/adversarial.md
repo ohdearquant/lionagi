@@ -1,6 +1,5 @@
 ---
 name: adversarial
-type: cognitive-mode
 axis: skeptical-stress
 tier: core
 phase_scope: post

@@ -1,6 +1,5 @@
 ---
 name: metacognitive
-type: cognitive-mode
 axis: self-monitoring
 tier: core
 phase_scope: continuous
