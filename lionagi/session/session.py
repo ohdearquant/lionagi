@@ -3,8 +3,11 @@
 
 import contextlib
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from .observer import SessionObserver
 
 from pydantic import Field, JsonValue, PrivateAttr, field_serializer, model_validator
 from typing_extensions import Self
@@ -24,7 +27,7 @@ from lionagi.protocols.types import (
 
 from .._errors import ItemNotFoundError
 from ..ln import lcall
-from ..protocols.generic import Flow, Progression
+from ..protocols.generic import Flow
 from ..protocols.messages import Message
 from ..service.imodel import iModel
 from .branch import ActionManager, Branch, OperationManager, Tool
@@ -48,6 +51,7 @@ class Session(Node, Relational):
     name: str = Field(default="Session")
     user: SenderRecipient | None = None
     _operation_manager: OperationManager = PrivateAttr(default_factory=OperationManager)
+    _observer: Any = PrivateAttr(default=None)
 
     @field_serializer("user")
     def _serialize_user(self, value: SenderRecipient | None) -> JsonValue:
@@ -76,9 +80,7 @@ class Session(Node, Relational):
         for i in branches:
             _take_in_branch(i)
 
-    def register_operation(
-        self, operation: str, func: Callable, *, update: bool = False
-    ):
+    def register_operation(self, operation: str, func: Callable, *, update: bool = False):
         self._operation_manager.register(operation, func, update=update)
 
     def operation(self, name: str = None, *, update: bool = False):
@@ -106,6 +108,60 @@ class Session(Node, Relational):
 
         return decorator
 
+    async def run_operation(
+        self, operation: str, *, branch: Branch | ID.Ref | None = None, **kwargs: Any
+    ) -> Any:
+        """Directly invoke a registered operation (or built-in branch method).
+
+        Resolves ``operation`` via ``branch.get_operation`` — a registered
+        ``@session.operation()`` function or a built-in verb (chat, operate,
+        ReAct, …) — and calls it with ``**kwargs``. The direct counterpart to
+        graph execution: handy for observer handlers and one-off calls.
+        """
+        b = branch or self.default_branch
+        if isinstance(b, str | UUID):
+            b = self.branches[b]
+        meth = b.get_operation(operation)
+        if meth is None:
+            raise ValueError(f"Unknown operation: {operation!r}")
+        return await meth(**kwargs)
+
+    # ==================== Reactive event observation ====================
+
+    @property
+    def observer(self) -> "SessionObserver":
+        """Lazily-created reactive event dispatcher bound to this session."""
+        if self._observer is None:
+            from .observer import SessionObserver
+
+            self._observer = SessionObserver(session=self)
+        return self._observer
+
+    def observe(self, event_type: type, handler: Callable | None = None) -> Any:
+        """Subscribe a handler to an event type. Usable as a decorator.
+
+        Handlers receive ``(event, session)`` and fire when a matching event
+        is emitted. Mirrors ``@session.operation()``.
+        """
+        return self.observer.observe(event_type, handler)
+
+    def route(self, condition: Callable, *, into: str) -> "SessionObserver":
+        """Auto-append emitted events matching ``condition`` to a named stream."""
+        return self.observer.route(condition, into=into)
+
+    def gate(self, check: Callable) -> "SessionObserver":
+        """Set the permission gate run before an emitted event is honored.
+
+        The governance seam — charter/gate mediation plugs in here. Return
+        falsy (or raise) to deny: the event is still recorded, but no
+        observers fire.
+        """
+        return self.observer.gate(check)
+
+    async def emit(self, event: Any) -> list[Any]:
+        """Emit an event: gate → record → route → dispatch. Returns handler results."""
+        return await self.observer.emit(event)
+
     @model_validator(mode="after")
     def _initialize_branches(self) -> Self:
         if self.default_branch is None:
@@ -126,8 +182,8 @@ class Session(Node, Relational):
         """Get a branch by its ID or name."""
 
         with contextlib.suppress(ItemNotFoundError, ValueError):
-            id = ID.get_id(branch)
-            return self.branches[id]
+            id_ = ID.get_id(branch)
+            return self.branches[id_]
 
         if isinstance(branch, str):
             if b := self._lookup_branch_by_name(branch):
@@ -327,7 +383,7 @@ class Session(Node, Relational):
         from lionagi.operations.flow import flow
 
         branch = default_branch or self.default_branch
-        if isinstance(branch, (str, UUID)):
+        if isinstance(branch, str | UUID):
             branch = self.branches[branch]
 
         return await flow(
