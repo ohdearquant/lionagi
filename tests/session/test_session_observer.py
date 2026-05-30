@@ -1,0 +1,115 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+"""Session reactive observation: observe / emit / gate / route + run_operation,
+and the observer→operation composition that makes a Session a useful orchestrator.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from lionagi.protocols.generic.event import Event
+from lionagi.session.session import Session
+
+
+class DepthRequested(Event):
+    question: str = ""
+    novelty: float = 0.7
+
+
+class Noticed(Event):
+    note: str = ""
+
+
+async def test_run_operation_direct_invoke():
+    s = Session()
+
+    @s.operation()
+    async def deepen(question: str):
+        return f"deepened: {question}"
+
+    assert await s.run_operation("deepen", question="RAFT") == "deepened: RAFT"
+
+
+async def test_run_operation_unknown_raises():
+    s = Session()
+    with pytest.raises(ValueError, match="Unknown operation"):
+        await s.run_operation("nope")
+
+
+async def test_observe_and_emit_passes_session():
+    s = Session()
+    seen = []
+
+    @s.observe(DepthRequested)
+    async def on_depth(event, session):
+        # handler receives the bound Session
+        assert session is s
+        seen.append(event.question)
+        return "ok"
+
+    results = await s.emit(DepthRequested(question="x"))
+    assert seen == ["x"]
+    assert results == ["ok"]
+
+
+async def test_gate_denies_dispatch_but_records():
+    s = Session()
+    fired = []
+
+    @s.observe(DepthRequested)
+    def on_depth(event, session):
+        fired.append(event.question)
+
+    s.gate(lambda e: getattr(e, "novelty", 1) > 0.5)
+
+    await s.emit(DepthRequested(question="high", novelty=0.9))
+    await s.emit(DepthRequested(question="low", novelty=0.1))  # gated out
+
+    assert fired == ["high"]  # only the allowed one dispatched
+    # both recorded (audit trail)
+    assert len(s.observer.by_type(DepthRequested)) == 2
+
+
+async def test_route_condition_stream():
+    s = Session()
+    s.route(lambda e: getattr(e, "novelty", 0) > 0.7, into="high_novelty")
+
+    await s.emit(DepthRequested(question="a", novelty=0.9))
+    await s.emit(DepthRequested(question="b", novelty=0.2))
+
+    streamed = [e.question for e in s.observer.stream("high_novelty")]
+    assert streamed == ["a"]
+
+
+async def test_observer_triggers_operation():
+    """The synthesis: an observed event drives a registered operation."""
+    s = Session()
+
+    @s.operation()
+    async def record(note: str):
+        return f"recorded: {note}"
+
+    @s.observe(Noticed)
+    async def on_notice(event, session):
+        return await session.run_operation("record", note=event.note)
+
+    results = await s.emit(Noticed(note="cross-thread link"))
+    assert results == ["recorded: cross-thread link"]
+
+
+async def test_multiple_handlers_same_event():
+    s = Session()
+    calls = []
+
+    @s.observe(Noticed)
+    def first(event, session):
+        calls.append("first")
+
+    @s.observe(Noticed)
+    def second(event, session):
+        calls.append("second")
+
+    await s.emit(Noticed(note="x"))
+    assert calls == ["first", "second"]
