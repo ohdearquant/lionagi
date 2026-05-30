@@ -13,10 +13,31 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from pydantic import BaseModel, Field
+
 if TYPE_CHECKING:
     from lionagi.ln.types import Operable
 
-__all__ = ("render_capabilities_prompt", "CAP_BEGIN", "CAP_END")
+__all__ = (
+    "render_capabilities_prompt",
+    "CapabilityViolation",
+    "CAP_BEGIN",
+    "CAP_END",
+)
+
+
+class CapabilityViolation(BaseModel):
+    """An agent tried to emit a capability outside its grant.
+
+    Raised onto the bus (not silently dropped) so governance can react —
+    ``session.observe(CapabilityViolation)`` to warn/steer/halt, or inspect via
+    the bus audit trail. The offending block is not validated or honored.
+    """
+
+    offending: list[str] = Field(description="Emitted keys outside the grant.")
+    allowed: list[str] = Field(description="The granted capability names.")
+    block: dict | None = Field(default=None, description="The raw rejected block.")
+
 
 # Idempotency markers so a re-grant replaces (rather than stacks) the block.
 CAP_BEGIN = "<!-- lionagi:capabilities -->"

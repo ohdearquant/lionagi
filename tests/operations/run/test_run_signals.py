@@ -59,15 +59,17 @@ def _assistant(text: str) -> AssistantResponse:
 
 
 def test_extract_single_capability():
-    bundles = _attempt_extract('{"finding": {"claim": "x", "confidence": 0.9}}', _grant())
-    assert len(bundles) == 1
+    bundles, violations = _attempt_extract(
+        '{"finding": {"claim": "x", "confidence": 0.9}}', _grant()
+    )
+    assert len(bundles) == 1 and not violations
     assert isinstance(bundles[0].finding, Finding)
     assert bundles[0].finding.claim == "x" and bundles[0].finding.confidence == 0.9
 
 
 def test_extract_multiple_keys_one_block():
     text = '```json\n{"finding": {"claim": "y"}, "question": {"text": "why?"}}\n```'
-    bundles = _attempt_extract(text, _grant())
+    bundles, _ = _attempt_extract(text, _grant())
     assert len(bundles) == 1
     assert bundles[0].finding.claim == "y"
     assert bundles[0].question.text == "why?"
@@ -82,25 +84,51 @@ def test_extract_multiple_blocks_one_message():
         '```json\n{"finding": {"claim": "second", "confidence": 0.9}}\n```\n'
         "done."
     )
-    bundles = _attempt_extract(text, _grant())
+    bundles, _ = _attempt_extract(text, _grant())
     assert len(bundles) == 2
     assert [b.finding.claim for b in bundles] == ["first", "second"]
 
 
 def test_extract_prose_returns_empty():
-    assert _attempt_extract("just thinking out loud", _grant()) == []
+    assert _attempt_extract("just thinking out loud", _grant()) == ([], [])
 
 
 def test_extract_non_capability_json_ignored():
     # valid JSON, keys disjoint from the grant → ordinary output, not a capability
-    assert _attempt_extract('{"unrelated": 1}', _grant()) == []
+    assert _attempt_extract('{"unrelated": 1}', _grant()) == ([], [])
 
 
-def test_extract_illegal_emission_dropped(caplog):
-    # 'secret' is outside the grant → illegal; that block is dropped
-    out = _attempt_extract('{"finding": {"claim": "z"}, "secret": {"x": 1}}', _grant())
-    assert out == []
+def test_extract_illegal_emission_becomes_violation(caplog):
+    from lionagi.session.capabilities import CapabilityViolation
+
+    # 'secret' is outside the grant → not honored, recorded as a violation
+    bundles, violations = _attempt_extract(
+        '{"finding": {"claim": "z"}, "secret": {"x": 1}}', _grant()
+    )
+    assert bundles == []  # the mixed block is not honored
+    assert len(violations) == 1
+    v = violations[0]
+    assert isinstance(v, CapabilityViolation)
+    assert v.offending == ["secret"]
+    assert "finding" in v.allowed and "question" in v.allowed
     assert any("Illegal capability emission" in r.message for r in caplog.records)
+
+
+async def test_violation_emitted_as_bus_signal():
+    from lionagi.session.capabilities import CapabilityViolation
+
+    s = Session()
+    caught = []
+    s.observe(CapabilityViolation, lambda v, _: caught.append(v.offending))
+
+    branch = s.default_branch
+    branch.capabilities = _grant()
+    # a mixed block reaches past the grant (finding granted, secret not)
+    await _emit_message_signal(
+        branch, _assistant('{"finding": {"claim": "z"}, "secret": {"x": 1}}')
+    )
+
+    assert caught == [["secret"]]  # governance observer fired on the over-grant
 
 
 # -- assistant capability bundle → bus, observed by TYPE --------------------

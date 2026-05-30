@@ -31,8 +31,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _attempt_extract(text: str, capabilities: Operable) -> list[Any]:
-    """Parse capability emissions out of an assistant message into bundles.
+def _attempt_extract(text: str, capabilities: Operable) -> tuple[list[Any], list[Any]]:
+    """Parse capability emissions out of an assistant message.
 
     A capability is a named typed field (a ``Spec``); ``capabilities`` is the
     ``Operable`` of names the agent is allowed to produce. We pull every JSON
@@ -44,23 +44,25 @@ def _attempt_extract(text: str, capabilities: Operable) -> list[Any]:
     - keys ⊆ grant → validated via ``create_model`` into a bundle (a dynamic
       model with one field per present capability);
     - any key outside the grant → an *illegal* emission (the agent reaching
-      past its capabilities): dropped with a warning.
+      past its capabilities): not honored, recorded as a ``CapabilityViolation``.
 
-    Returns one bundle per valid block (often one, but the model may emit many
-    in a single response).
+    Returns ``(bundles, violations)`` — both lists, since one response may
+    carry several blocks.
     """
     if not text or not isinstance(text, str):
-        return []
+        return [], []
     from lionagi.ln.fuzzy._extract_json import extract_json
+    from lionagi.session.capabilities import CapabilityViolation
 
     try:
         data = extract_json(text, fuzzy_parse=True, return_one_if_single=False)
     except Exception:
-        return []
+        return [], []
     blocks = data if isinstance(data, list) else [data]
 
     allowed = capabilities.allowed()
     bundles: list[Any] = []
+    violations: list[Any] = []
     for block in blocks:
         if not isinstance(block, dict) or not block:
             continue
@@ -73,6 +75,13 @@ def _attempt_extract(text: str, capabilities: Operable) -> list[Any]:
                 keys - allowed,
                 allowed,
             )
+            violations.append(
+                CapabilityViolation(
+                    offending=sorted(keys - allowed),
+                    allowed=sorted(allowed),
+                    block=block,
+                )
+            )
             continue
         model = capabilities.create_model(include=keys)
         try:
@@ -80,7 +89,7 @@ def _attempt_extract(text: str, capabilities: Operable) -> list[Any]:
         except Exception as e:
             logger.debug("Capability block failed validation, skipped: %s", e)
             continue
-    return bundles
+    return bundles, violations
 
 
 async def _emit_message_signal(branch: Branch, msg: RoledMessage) -> None:
@@ -101,14 +110,20 @@ async def _emit_message_signal(branch: Branch, msg: RoledMessage) -> None:
     from lionagi.session.signal import (
         ActionRequestSignal,
         ActionResponseSignal,
+        Signal,
         StructuredOutput,
     )
 
     if isinstance(msg, AssistantResponse):
         capabilities = getattr(branch, "_capabilities", None)
         if capabilities is not None:
-            for bundle in _attempt_extract(msg.response, capabilities):
+            bundles, violations = _attempt_extract(msg.response, capabilities)
+            for bundle in bundles:
                 await branch.emit(StructuredOutput(data=bundle))
+            # Over-grant attempts become observable governance events, not
+            # silent drops — session.observe(CapabilityViolation) can react.
+            for violation in violations:
+                await branch.emit(Signal(data=violation))
     elif isinstance(msg, ActionRequest):
         await branch.emit(ActionRequestSignal(data=msg))
     elif isinstance(msg, ActionResponse):
