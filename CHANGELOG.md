@@ -4,6 +4,62 @@
 All notable changes to lionagi are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.26.12] - 2026-05-29
+
+Reactive capability bus + casts Role/Mode composition.
+
+### Added
+
+- **Reactive capability bus** (ADR-0072) — an agent's turn becomes an
+  observable, typed event stream. A *capability* is a named, typed
+  structured-output field an agent may emit inline as a fenced ```json block in
+  its ordinary text; a `SessionObserver` dispatches each to handlers in real
+  time, mid-run, without a dedicated emit tool. Built on lionagi's own
+  primitives (`Element`/`Pile`/`Flow`/`Observer`). (#1204, #1206, #1207)
+  - `Signal` / `StructuredOutput` envelopes, plus run-lifecycle
+    `RunStart` / `RunEnd` / `RunFailed` signals.
+  - **Filter DSL** (`lionagi.ln.types`): `TypeFilter`, `SpecFilter`,
+    `FieldRef` (via `Spec.q`), composable with `& | ~`. Subscribe by type
+    (`session.observe(Finding)`) or by named-field value
+    (`session.observe(flower.q == "rose")`).
+  - `branch.grant_capabilities(operable)` opts a branch into per-message
+    emission and injects a schema-derived instruction block; the legality rule
+    is `set(keys) ⊆ grant`, with over-grant attempts surfaced as an observable
+    `CapabilityViolation`. `response_format` (strict final parse) and
+    capabilities (per-message emission) remain orthogonal knobs.
+- **Casts Role/Mode pattern** — a thin `Pattern` dataclass with a dense
+  built-in role roster and a default operational pack; `AgentConfig` composes
+  `role` + `modes` into the system prompt. (#1200, #1202, #1205)
+- **`Structure` / `JsonStructure`** (`protocols/structure/`) — composable
+  schema builders wrapping `Operable`, handling both `BaseModel` and `dict`
+  response formats as first-class citizens. Wired through `ChatParam` /
+  `ParseParam`; `communicate()` and `run_and_collect()` extract the structure
+  from the instruction as the single source of truth for rendering + parsing.
+  (#1159)
+- **`lionagi.testing`** module — test infrastructure shipped with the library
+  so the CLI and downstream consumers can be tested without real API calls:
+  `ScriptedEndpoint` (`provider="scripted"`), `ScriptModel` (YAML/JSON/dict
+  fixtures with positional + `when:` matching), and `TestBranch` factories.
+  Consolidates 20+ ad-hoc inline mocks. (#1151)
+
+### Changed
+
+- **`InstructionContent` refactored** to delegate rendering/parsing to an
+  auto-created `JsonStructure` when `response_format` is set. Removes the
+  internal `_schema_dict`, `_model_class`, `custom_renderer`,
+  `structure_format`, `render()`, `response_model_cls`, and `schema_dict`
+  members. Public `branch.operate`/`communicate` behavior is unchanged. (#1159)
+
+### Fixed
+
+- **`Pile.include` dropped falsy `Observable` items** — items whose truthiness
+  is `False` were silently skipped on include. (#1203)
+
+### Docs
+
+- Governance ADR series 0053–0070, charter DSL v0, and governance standards;
+  OSS-purity cleanup of the ADR corpus. (#1185, #1190)
+
 ## [0.26.11] - 2026-05-25
 
 ### Fixed
