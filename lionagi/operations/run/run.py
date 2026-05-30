@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from dataclasses import fields
@@ -121,8 +122,18 @@ async def _emit_message_signal(branch: Branch, msg: RoledMessage) -> None:
         capabilities = getattr(branch, "_capabilities", None)
         if capabilities is not None:
             bundles, violations = _attempt_extract(msg.response, capabilities)
-            for bundle in bundles:
-                await branch.emit(StructuredOutput(data=bundle))
+            role_name: str | None = getattr(capabilities, "name", None)
+            if bundles:
+                # Emit all bundles concurrently — a slow handler on one bundle
+                # must not serialize the others.
+                from lionagi.ln.concurrency import gather as _gather
+
+                await _gather(
+                    *(
+                        branch.emit(StructuredOutput(data=b, emitter_role=role_name))
+                        for b in bundles
+                    )
+                )
             # Over-grant attempts become observable governance events, not
             # silent drops — session.observe(CapabilityViolation) can react.
             for violation in violations:
@@ -211,6 +222,14 @@ async def run(
 
         model.streaming_process_func = _persist_chunk
 
+    # Background signal tasks — scheduled non-blocking, awaited in finally.
+    # Keeps the stream loop from stalling on slow observer handlers.
+    _signal_tasks: list[asyncio.Task] = []
+
+    def _schedule_signal(msg: Any) -> None:
+        if getattr(branch, "_observer", None) is not None:
+            _signal_tasks.append(asyncio.ensure_future(_emit_message_signal(branch, msg)))
+
     # Accumulation buffers
     thinking_parts: list[str] = []
     text_parts: list[str] = []
@@ -274,7 +293,7 @@ async def run(
 
                         case "tool_use":
                             if res := await _flush_response():
-                                await _emit_message_signal(branch, res)
+                                _schedule_signal(res)
                                 _check_control(branch)
                                 yield res
 
@@ -287,7 +306,7 @@ async def run(
                             if chunk.tool_id:
                                 pending_requests[chunk.tool_id] = act_req
                             await branch.msgs.a_add_message(action_request=act_req)
-                            await _emit_message_signal(branch, act_req)
+                            _schedule_signal(act_req)
                             _check_control(branch)
                             yield act_req
 
@@ -298,11 +317,6 @@ async def run(
                             if orig_req is None:
                                 continue
 
-                            # Build the ActionResponse and attach is_error BEFORE
-                            # a_add_message so the live-persist hook (and any other
-                            # on_message_added callback) observes the final state.
-                            # Doing it after the await would let the hook serialize
-                            # an incomplete row that omits the error marker.
                             act_res = branch.msgs.create_action_response(
                                 action_request=orig_req,
                                 action_output=chunk.tool_output,
@@ -318,7 +332,7 @@ async def run(
                                 sender=branch.user or "user",
                                 recipient=branch.id,
                             )
-                            await _emit_message_signal(branch, act_res)
+                            _schedule_signal(act_res)
                             _check_control(branch)
                             yield act_res
 
@@ -333,12 +347,19 @@ async def run(
                         call_meta = Note.from_dict(api_call.to_dict())
                         call_meta.pop(["execution", "response"], None)
                         res.metadata["api_call_meta"] = call_meta.to_dict()
-                    await _emit_message_signal(branch, res)
+                    _schedule_signal(res)
                     _check_control(branch)
                     yield res
         except _StopStream:
             pass
     finally:
+        # Drain all background signal tasks before returning so handler
+        # results and exceptions are not silently lost.
+        if _signal_tasks:
+            from lionagi.ln.concurrency import gather as _gather
+
+            await _gather(*_signal_tasks, return_exceptions=True)
+
         # Restore original streaming func
         model.streaming_process_func = prev_stream_func
 

@@ -35,22 +35,47 @@ filter is applied to ``signal.data``; the full envelope is stored in the Flow.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Callable
 from typing import Any
 
-from lionagi.ln.types import Filter, TypeFilter, as_filter
+from lionagi.ln.types import Filter, RoleFilter, TypeFilter, as_filter
 from lionagi.protocols._concepts import Observable, Observer
 
 from ..protocols.generic.flow import Flow
 from ..protocols.generic.progression import Progression
 from .signal import Signal
 
-__all__ = ("SessionObserver",)
+__all__ = ("SessionObserver", "RoleFilter")
 
 Handler = Callable[[Any, "SessionObserver"], Any]
 Predicate = Callable[[Any], bool]
 Gate = Callable[[Any], Any]
+
+
+class _KeyAndRoleFilter(Filter):
+    """Conjunction of a payload filter (key) and a role filter (event envelope).
+
+    Used when ``observe(SomeType, role="researcher")`` is called — the type is
+    checked against the *payload* and the role against the *event* envelope.
+    Plain ``Filter.__and__`` composition would pass the payload to both, which
+    silently drops role matches because the payload carries no ``emitter_role``.
+    """
+
+    __slots__ = ("_key", "_role")
+
+    def __init__(self, key: Filter, role: RoleFilter) -> None:
+        self._key = key
+        self._role = role
+
+    def matches(self, payload: Any) -> list[Any]:
+        # This is only called directly (not via _match) when used in non-Session
+        # contexts; return key matches since role context is unavailable.
+        return list(self._key.matches(payload))
+
+    def __repr__(self) -> str:
+        return f"({self._key!r} & {self._role!r})"
 
 
 def _payload(obj: Any) -> Any:
@@ -67,18 +92,34 @@ class SessionObserver(Observer):
         self._subs: list[tuple[Filter, Handler]] = []
         self._routes: list[tuple[Predicate, str]] = []
         self._gate: Gate | None = None
+        self._pending_tasks: list[asyncio.Task] = []
 
     # -- Registration ---------------------------------------------------------
 
-    def observe(self, key: type | Filter | Predicate, handler: Handler | None = None) -> Any:
+    def observe(
+        self,
+        key: type | Filter | Predicate | None = None,
+        handler: Handler | None = None,
+        *,
+        role: str | None = None,
+    ) -> Any:
         """Subscribe a handler. Usable as a decorator.
 
         ``key`` is a type (→ ``TypeFilter``), a ``Filter`` (e.g.
         ``spec.q == value``), or a plain predicate. Handlers receive
         ``(matched, ctx)`` — for a type, the matched instance (the payload or a
         matching field); for a value/predicate filter, the payload.
+
+        ``role`` subscribes by the emitting agent's role name (a ``RoleFilter``).
+        When both ``key`` and ``role`` are provided the filter is their conjunction.
         """
-        flt = as_filter(key)
+        if role is not None:
+            role_flt = RoleFilter(role)
+            flt: Filter = role_flt if key is None else _KeyAndRoleFilter(as_filter(key), role_flt)
+        elif key is not None:
+            flt = as_filter(key)
+        else:
+            raise TypeError("observe() requires at least one of 'key' or 'role'")
 
         def _register(fn: Handler) -> Handler:
             self._subs.append((flt, fn))
@@ -134,26 +175,43 @@ class SessionObserver(Observer):
 
         # Each subscription is a Filter; it yields the matched value(s) handed
         # to the handler. ctx is the bound Session when attached, else self.
+        # Async handlers run concurrently via asyncio.gather so a slow handler
+        # does not serialise subsequent emissions on the same event.
         ctx = self.session if self.session is not None else self
-        results: list[Any] = []
+        sync_results: list[Any] = []
+        coros: list[Any] = []
         for flt, handler in self._subs:
             for matched in self._match(flt, event, payload):
                 out = handler(matched, ctx)
                 if inspect.isawaitable(out):
-                    out = await out
-                results.append(out)
-        return results
+                    coros.append(out)
+                else:
+                    sync_results.append(out)
+        if coros:
+            from lionagi.ln.concurrency import gather as _gather
+
+            async_results: list[Any] = list(await _gather(*coros))
+        else:
+            async_results = []
+        return sync_results + async_results
 
     @staticmethod
     def _match(flt: Filter, event: Any, payload: Any) -> list[Any]:
         """Matched values for a filter against an emitted event.
 
-        Filters run on the *payload* (a Signal's ``data``). Additionally, an
-        envelope-type subscription — ``observe(RunEnd)`` / ``observe(Signal)`` —
-        matches the Signal itself by exact ``isinstance``, so lifecycle signals
-        (whose payload is unset or a different type) are observable by their own
-        type without field-scanning the envelope.
+        Filters normally run on the *payload* (a Signal's ``data``). Two
+        exceptions:
+        - A ``TypeFilter`` for a Signal subtype matches the envelope itself so
+          lifecycle signals (``RunEnd``, etc.) are observable by their own type.
+        - A ``RoleFilter`` matches the envelope to access ``emitter_role``; the
+          handler receives the payload (Signal.data), not the envelope.
         """
+        if isinstance(flt, RoleFilter):
+            return flt.matches(event)
+        if isinstance(flt, _KeyAndRoleFilter):
+            if not flt._role.matches(event):
+                return []
+            return list(flt._key.matches(payload))
         matched = list(flt.matches(payload))
         if event is not payload and isinstance(flt, TypeFilter) and isinstance(event, flt.type_):
             matched.append(event)

@@ -31,7 +31,7 @@ import operator
 from collections.abc import Callable
 from typing import Any
 
-__all__ = ("Filter", "TypeFilter", "SpecFilter", "FieldRef", "as_filter")
+__all__ = ("Filter", "TypeFilter", "SpecFilter", "FieldRef", "RoleFilter", "as_filter")
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +128,43 @@ def as_filter(x: Filter | type | Callable) -> Filter:
     if callable(x):
         return SpecFilter(x, getattr(x, "__name__", "predicate"))
     raise TypeError(f"Cannot use {x!r} as a Filter")
+
+
+class RoleFilter(Filter):
+    """Matches a Signal whose ``emitter_role`` equals the subscribed role name.
+
+    Unlike ``TypeFilter`` / ``SpecFilter``, which operate on the payload, a
+    ``RoleFilter`` operates on the Signal *envelope* — it lets observers subscribe
+    to "anything emitted by a Researcher" without enumerating each capability type
+    that role can produce.
+
+    Usage::
+
+        session.observe(role="researcher", handler=...)
+
+    The matched value handed to the handler is the Signal's payload (``data``),
+    or the Signal itself when ``data`` is None.
+
+    The filter only matches Signals that carry an ``emitter_role`` attribute set to
+    the subscribed role name; events without that attribute (plain payloads) never
+    match.
+    """
+
+    __slots__ = ("role",)
+
+    def __init__(self, role: str) -> None:
+        self.role = role
+
+    def matches(self, event: Any) -> list[Any]:
+        # Called with the *event* (Signal envelope) by SessionObserver._match.
+        role = getattr(event, "emitter_role", None)
+        if role != self.role:
+            return []
+        payload = getattr(event, "data", None)
+        return [payload] if payload is not None else [event]
+
+    def __repr__(self) -> str:
+        return f"RoleFilter({self.role!r})"
 
 
 class FieldRef:
