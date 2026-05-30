@@ -99,10 +99,7 @@ def classify_session_health(
         # produced a single message AND no artifacts on disk. This is
         # a session that crashed before doing anything; transitioning
         # it to failed is harmless, deleting it is also safe.
-        if (
-            not has_artifacts
-            and (session.get("message_count") or 0) == 0
-        ):
+        if not has_artifacts and (session.get("message_count") or 0) == 0:
             return SessionHealth.ORPHANED
         return SessionHealth.STALE
 

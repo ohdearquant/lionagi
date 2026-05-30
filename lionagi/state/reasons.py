@@ -26,6 +26,8 @@ VALID_ENTITY_TYPES: Final[frozenset[str]] = frozenset(
         "invocation",
         "team",
         "schedule_run",
+        "runner_handle",
+        "work_item",
     }
 )
 
@@ -46,6 +48,8 @@ ENTITY_TABLE_ALIASES: Final[dict[str, str]] = {
     "invocations": "invocation",
     "teams": "team",
     "schedule_runs": "schedule_run",
+    "runner_handles": "runner_handle",
+    "work_items": "work_item",
 }
 
 
@@ -124,6 +128,26 @@ class ScheduleReasons:
     SKIPPED_MISSED_FIRE = "schedule.skipped.missed_fire"
 
 
+class RunnerReasons:
+    """Control-plane transitions for runtime runner handles."""
+
+    PAUSED = "runner.paused.operator"
+    RESUMED = "runner.resumed.operator"
+    CANCELLED = "runner.cancelled.operator"
+    KILLED = "runner.killed.operator"
+    FAILED = "runner.failed.executor"
+    RETRIED = "runner.retried.operator"
+
+
+class WorkItemReasons:
+    """ADR-0065 work-item lifecycle outcomes."""
+
+    STARTED = "work_item.started.executor"
+    COMPLETED = "work_item.completed.ok"
+    FAILED = "work_item.failed.exception"
+    CANCELLED = "work_item.cancelled.operator"
+
+
 # ── Validator ────────────────────────────────────────────────────────
 
 
@@ -150,6 +174,8 @@ VALID_REASON_CODES: Final[frozenset[str]] = _collect(
     PlayReasons,
     ShowReasons,
     ScheduleReasons,
+    RunnerReasons,
+    WorkItemReasons,
 ) | {LEGACY_IMPORTED}
 
 
@@ -205,6 +231,8 @@ ENTITY_TYPE_TO_TABLE: Final[dict[str, str]] = {
     "invocation": "invocations",
     "team": "teams",
     "schedule_run": "schedule_runs",
+    "runner_handle": "runner_handles",
+    "work_item": "work_items",
 }
 
 
