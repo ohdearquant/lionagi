@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from lionagi.casts.emission import Finding, Verdict
+from lionagi.casts.emission import (
+    EscalationRequest,
+    Finding,
+    Verdict,
+    build_emission_operable,
+)
 from lionagi.casts.pack import Pack, RolePolicy
 from lionagi.casts.pattern import PatternKind, Role, list_roles
 
@@ -61,6 +66,34 @@ def test_role_emission_contract():
     assert op is not None
     # a role with no emission contract yields no operable
     assert Role(name="x", description="d").emission_operable() is None
+
+
+@pytest.mark.parametrize("name", list_roles())
+def test_every_role_emission_operable_well_formed(name):
+    # every declared emits tuple imports cleanly; operable presence tracks
+    # whether the role emits, and EscalationRequest appears exactly once.
+    role = Role.load(name)
+    op = role.emission_operable()
+    if role.emits:
+        assert op is not None, name
+        models = [s.base_type for s in op.__op_fields__]
+        assert models.count(EscalationRequest) == 1, name
+    else:
+        assert op is None, name
+
+
+def test_build_emission_operable_escalation_not_duplicated():
+    # a role already declaring EscalationRequest must not get a second one
+    op = build_emission_operable((Verdict, EscalationRequest))
+    models = [s.base_type for s in op.__op_fields__]
+    assert models.count(EscalationRequest) == 1
+    assert build_emission_operable(()) is None
+
+
+def test_role_load_rejects_noncanonical_alias():
+    # the underscore module stem is not a valid canonical name
+    with pytest.raises(ValueError, match="Unknown role"):
+        Role.load("postmortem_lead")
 
 
 def test_pack_loads_policy():

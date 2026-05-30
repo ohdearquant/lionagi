@@ -31,6 +31,12 @@ def test_mode_dashed_name_loads():
     assert m.kind == PatternKind.MODE
 
 
+def test_mode_load_rejects_noncanonical_alias():
+    # the underscore module stem is not a valid canonical name
+    with pytest.raises(ValueError, match="Unknown mode"):
+        Mode.load("constraint_solving")
+
+
 def test_mode_is_frozen():
     m = Mode(name="x", description="test", behaviors="do stuff")
     with pytest.raises(AttributeError):
