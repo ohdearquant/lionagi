@@ -148,7 +148,7 @@ studio = [
     "fastapi>=0.115",
     "uvicorn>=0.34",
     "pyyaml>=6.0",
-    "starlette>=0.46.2",
+    "starlette>=0.46.2",  # TODO: bump to >=0.47.0 once ag2[nlip] drops fastapi<0.116.0 constraint (starlette 0.46.3 never released; CVE fix is in 0.47.0+)
     # F-A4-9 (ADR-0018 §"li studio extras dependency"): aiosqlite is required
     # by the studio services that query state.db directly (sessions, shows, runs,
     # definitions). It is also listed as a core dep but explicit in the extra
