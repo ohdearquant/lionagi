@@ -12,6 +12,7 @@ from ._sentinel import (
     not_sentinel,
 )
 from .base import DataClass, Enum, KeysDict, KeysLike, Meta, ModelConfig, Params
+from .filters import FieldRef, Filter, SpecFilter, TypeFilter, as_filter
 from .operable import Operable
 from .spec import CommonMeta, Spec
 
@@ -40,4 +41,10 @@ __all__ = (
     "Spec",
     "CommonMeta",
     "Operable",
+    # Filter DSL
+    "Filter",
+    "TypeFilter",
+    "SpecFilter",
+    "FieldRef",
+    "as_filter",
 )

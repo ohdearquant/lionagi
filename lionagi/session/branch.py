@@ -52,6 +52,25 @@ __all__ = ("Branch",)
 _DEFAULT_ALCALL_PARAMS = None
 
 
+def _strip_capability_block(text: str) -> str:
+    """Remove a previously-injected capability block (between its markers)."""
+    if not text:
+        return ""
+    from .capabilities import CAP_BEGIN, CAP_END
+
+    start = text.find(CAP_BEGIN)
+    if start == -1:
+        return text
+    end = text.find(CAP_END, start)
+    if end == -1:
+        # Unbalanced markers (truncated block, or the begin marker appears in
+        # the user's own prompt): leave the text intact rather than discard
+        # everything after the marker — silent prompt corruption is worse than
+        # a stale block, which a re-grant overwrites cleanly.
+        return text
+    return (text[:start] + text[end + len(CAP_END) :]).strip()
+
+
 class Branch(Element, Relational):
     """
     Manages a conversation 'branch' with messages, tools, and iModels.
@@ -100,6 +119,7 @@ class Branch(Element, Relational):
     _log_manager: DataLogger | None = PrivateAttr(None)
     _operation_manager: OperationManager | None = PrivateAttr(None)
     _observer: Any = PrivateAttr(None)
+    _capabilities: Any = PrivateAttr(None)
 
     def __init__(
         self,
@@ -345,6 +365,57 @@ class Branch(Element, Relational):
         if self._observer is None:
             return []
         return await self._observer.emit(event)
+
+    @property
+    def capabilities(self) -> Any:
+        """The agent's capability grant — an ``Operable`` of named typed
+        ``Spec``s the agent is allowed to emit. The streaming run loop parses
+        each assistant message against it: keys must be a subset of
+        ``capabilities.allowed()`` (else the emission is illegal and dropped),
+        and present capabilities are raised as a ``StructuredOutput`` bundle
+        onto the session bus. ``None`` (default) disables per-message
+        extraction; tool-use signals still fire.
+
+        Set the runtime grant directly (pure data, no prompt change), or use
+        :meth:`grant_capabilities` to also tell the model what it may emit.
+        """
+        return self._capabilities
+
+    @capabilities.setter
+    def capabilities(self, operable: Any) -> None:
+        self._capabilities = operable
+
+    def grant_capabilities(self, operable: Any, *, prompt: bool = True) -> None:
+        """Opt this branch into per-message capability emission.
+
+        Sets the runtime grant and (when ``prompt``) injects an idempotent
+        capability-instruction block into the system message so the model knows
+        which structured fields it may emit. Re-granting replaces the block;
+        :meth:`revoke_capabilities` removes it. Old strict behavior
+        (``operate(response_format=...)``) is untouched — that's the
+        final-output parse; this is per-message emission.
+        """
+        self._capabilities = operable
+        if prompt:
+            from .capabilities import CAP_BEGIN, CAP_END, render_capabilities_prompt
+
+            block = f"{CAP_BEGIN}\n{render_capabilities_prompt(operable)}\n{CAP_END}"
+            base = _strip_capability_block(self._system_text())
+            combined = f"{base.rstrip()}\n\n{block}" if base.strip() else block
+            self.msgs.set_system(self.msgs.create_system(system=combined))
+
+    def revoke_capabilities(self) -> None:
+        """Clear the capability grant and remove its system-prompt block."""
+        self._capabilities = None
+        base = _strip_capability_block(self._system_text())
+        if self.msgs.system is not None:
+            self.msgs.set_system(self.msgs.create_system(system=base or None))
+
+    def _system_text(self) -> str:
+        sys_msg = self.msgs.system
+        if sys_msg is None:
+            return ""
+        return sys_msg.content.system_message or ""
 
     # -------------------------------------------------------------------------
     # Cloning
@@ -911,7 +982,30 @@ class Branch(Element, Relational):
             _pms.update(kwargs)
         from lionagi.operations.operate.operate import operate, prepare_operate_kw
 
-        return await operate(self, **prepare_operate_kw(self, **_pms))
+        # Run lifecycle on the bus: RunStart → RunEnd(result) | RunFailed(exc).
+        # This is orthogonal to capabilities (no grant required) — it reports
+        # the run, not an exercised capability. ``RunEnd.data`` unwraps so
+        # ``session.observe(ResultType)`` still fires on the final result; the
+        # per-message capability bundles (run loop) are distinct payloads, so
+        # there is no double-emit. No-op when the branch is standalone.
+        has_observer = self._observer is not None
+        if has_observer:
+            from .signal import RunStart
+
+            await self.emit(RunStart())
+        try:
+            result = await operate(self, **prepare_operate_kw(self, **_pms))
+        except Exception as exc:
+            if has_observer:
+                from .signal import RunFailed
+
+                await self.emit(RunFailed(data=exc))
+            raise
+        if has_observer:
+            from .signal import RunEnd
+
+            await self.emit(RunEnd(data=result))
+        return result
 
     async def communicate(
         self,

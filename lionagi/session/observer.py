@@ -22,8 +22,15 @@ Usage::
     await obs.emit(DepthRequested(question="..."))   # a tool/branch emits
 
 ``emit`` runs the chain: gate (govern) → store in Flow → route to streams →
-dispatch to type-subscribed observers. The gate is where charter/gate
+dispatch to Filter-subscribed observers. The gate is where charter/gate
 mediation plugs in; an observer firing is the honored capability.
+
+Subscriptions are :class:`Filter`s. ``observe(MyModel)`` is sugar for a
+``TypeFilter`` — it fires when the payload *is* a ``MyModel`` or carries a
+``MyModel``-typed field, handing the matched instance to the handler.
+``observe(spec.q == "rose")`` is a ``SpecFilter`` — it fires on a named field's
+value, handing the payload. When the emitted object is a :class:`Signal`, the
+filter is applied to ``signal.data``; the full envelope is stored in the Flow.
 """
 
 from __future__ import annotations
@@ -32,17 +39,23 @@ import inspect
 from collections.abc import Callable
 from typing import Any
 
-from lionagi.protocols._concepts import Observer
+from lionagi.ln.types import Filter, TypeFilter, as_filter
+from lionagi.protocols._concepts import Observable, Observer
 
-from ..protocols.generic.event import Event
 from ..protocols.generic.flow import Flow
 from ..protocols.generic.progression import Progression
+from .signal import Signal
 
 __all__ = ("SessionObserver",)
 
-Handler = Callable[[Event, "SessionObserver"], Any]
-Condition = Callable[[Event], bool]
-Gate = Callable[[Event], Any]
+Handler = Callable[[Any, "SessionObserver"], Any]
+Predicate = Callable[[Any], bool]
+Gate = Callable[[Any], Any]
+
+
+def _payload(obj: Any) -> Any:
+    """The value handlers/filters see: a Signal's data, else the object."""
+    return obj.data if isinstance(obj, Signal) else obj
 
 
 class SessionObserver(Observer):
@@ -51,22 +64,29 @@ class SessionObserver(Observer):
     def __init__(self, session: Any = None) -> None:
         self.session = session
         self.flow: Flow = Flow(name="session-events")
-        self._handlers: dict[type[Event], list[Handler]] = {}
-        self._routes: list[tuple[Condition, str]] = []
+        self._subs: list[tuple[Filter, Handler]] = []
+        self._routes: list[tuple[Predicate, str]] = []
         self._gate: Gate | None = None
 
     # -- Registration ---------------------------------------------------------
 
-    def observe(self, event_type: type[Event], handler: Handler | None = None) -> Any:
-        """Subscribe a handler to an event type. Usable as a decorator."""
+    def observe(self, key: type | Filter | Predicate, handler: Handler | None = None) -> Any:
+        """Subscribe a handler. Usable as a decorator.
+
+        ``key`` is a type (→ ``TypeFilter``), a ``Filter`` (e.g.
+        ``spec.q == value``), or a plain predicate. Handlers receive
+        ``(matched, ctx)`` — for a type, the matched instance (the payload or a
+        matching field); for a value/predicate filter, the payload.
+        """
+        flt = as_filter(key)
 
         def _register(fn: Handler) -> Handler:
-            self._handlers.setdefault(event_type, []).append(fn)
+            self._subs.append((flt, fn))
             return fn
 
         return _register if handler is None else _register(handler)
 
-    def route(self, condition: Condition, *, into: str) -> SessionObserver:
+    def route(self, condition: Predicate, *, into: str) -> SessionObserver:
         """Auto-append events matching ``condition`` to a named stream."""
         self._routes.append((condition, into))
         return self
@@ -83,37 +103,65 @@ class SessionObserver(Observer):
 
     # -- Emission / dispatch --------------------------------------------------
 
-    async def emit(self, event: Event) -> list[Any]:
-        """Run the chain: gate → store → route → dispatch. Returns handler results."""
+    async def emit(self, event: Observable) -> list[Any]:
+        """Run the chain: gate → store → route → dispatch. Returns handler results.
+
+        ``event`` is any Observable — a :class:`Signal` (whose ``data`` is the
+        payload) or a bare element. Gate, route-conditions, and handlers all
+        operate on the *payload*; the full envelope is stored in the Flow.
+        """
+        payload = _payload(event)
+
+        # The gate may deny by returning falsy OR by raising — both deny while
+        # the event is still recorded below (documented audit contract).
         allowed = True
         if self._gate is not None:
-            verdict = self._gate(event)
-            if inspect.isawaitable(verdict):
-                verdict = await verdict
-            allowed = bool(verdict)
+            try:
+                verdict = self._gate(payload)
+                if inspect.isawaitable(verdict):
+                    verdict = await verdict
+                allowed = bool(verdict)
+            except Exception:
+                allowed = False
 
         self.flow.add_item(event)  # always recorded (audit trail)
         if not allowed:
             return []
 
         for condition, name in self._routes:
-            if condition(event):
+            if condition(payload):
                 self._ensure_stream(name).append(event)
 
-        # Handlers receive (event, ctx) where ctx is the bound Session when
-        # one is attached, else the observer itself.
+        # Each subscription is a Filter; it yields the matched value(s) handed
+        # to the handler. ctx is the bound Session when attached, else self.
         ctx = self.session if self.session is not None else self
         results: list[Any] = []
-        for handler in self._handlers.get(type(event), []):
-            out = handler(event, ctx)
-            if inspect.isawaitable(out):
-                out = await out
-            results.append(out)
+        for flt, handler in self._subs:
+            for matched in self._match(flt, event, payload):
+                out = handler(matched, ctx)
+                if inspect.isawaitable(out):
+                    out = await out
+                results.append(out)
         return results
+
+    @staticmethod
+    def _match(flt: Filter, event: Any, payload: Any) -> list[Any]:
+        """Matched values for a filter against an emitted event.
+
+        Filters run on the *payload* (a Signal's ``data``). Additionally, an
+        envelope-type subscription — ``observe(RunEnd)`` / ``observe(Signal)`` —
+        matches the Signal itself by exact ``isinstance``, so lifecycle signals
+        (whose payload is unset or a different type) are observable by their own
+        type without field-scanning the envelope.
+        """
+        matched = list(flt.matches(payload))
+        if event is not payload and isinstance(flt, TypeFilter) and isinstance(event, flt.type_):
+            matched.append(event)
+        return matched
 
     # -- Reads ----------------------------------------------------------------
 
-    def stream(self, name: str) -> list[Event]:
+    def stream(self, name: str) -> list[Any]:
         """Events in a named condition-stream, in arrival order."""
         try:
             prog = self.flow.get_progression(name)
@@ -121,8 +169,14 @@ class SessionObserver(Observer):
             return []
         return [self.flow.items[uid] for uid in prog]
 
-    def by_type(self, event_type: type[Event]) -> list[Event]:
-        return [e for e in self.flow.items if isinstance(e, event_type)]
+    def by_type(self, event_type: type) -> list[Any]:
+        """Stored items whose payload is — or carries a field of — ``event_type``.
+
+        Also matches the envelope by exact type, so lifecycle signals
+        (``by_type(RunEnd)``) are retrievable like dispatch-time subscriptions.
+        """
+        flt = TypeFilter(event_type)
+        return [e for e in self.flow.items if self._match(flt, e, _payload(e))]
 
     def _ensure_stream(self, name: str) -> Progression:
         try:
@@ -133,5 +187,4 @@ class SessionObserver(Observer):
             return prog
 
     def __repr__(self) -> str:
-        subs = {t.__name__: len(h) for t, h in self._handlers.items()}
-        return f"SessionObserver(events={len(self.flow.items)}, handlers={subs})"
+        return f"SessionObserver(events={len(self.flow.items)}, subscriptions={len(self._subs)})"

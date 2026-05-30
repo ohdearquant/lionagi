@@ -122,5 +122,7 @@ Numbers 0036–0038 and 0040 were reserved for future use and have no correspond
 | [ADR-0068](ADR-0068-governed-adapter-protocol.md) | Zero-rewrite governed adapter protocol | Accepted |
 | [ADR-0069](ADR-0069-tenant-scope-boundary.md) | Tenant scope boundary | Accepted |
 | [ADR-0070](ADR-0070-governance-tracing.md) | Governance tracing and observability | Accepted |
+| [ADR-0071](ADR-0071-cognitive-mode-model.md) | Cognitive mode model | Accepted |
+| [ADR-0072](ADR-0072-reactive-capability-bus.md) | Reactive capability bus | Accepted |
 
 See also [Decision Log](DECISION_LOG.md) for lightweight decisions that don't warrant a full ADR.
