@@ -7,5 +7,14 @@ from .branch import Branch
 from .exchange import Exchange
 from .observer import SessionObserver
 from .session import Session
+from .signal import Signal, StructuredOutput
 
-__all__ = ["Branch", "Exchange", "Message", "Session", "SessionObserver"]
+__all__ = [
+    "Branch",
+    "Exchange",
+    "Message",
+    "Session",
+    "SessionObserver",
+    "Signal",
+    "StructuredOutput",
+]

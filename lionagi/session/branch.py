@@ -911,7 +911,15 @@ class Branch(Element, Relational):
             _pms.update(kwargs)
         from lionagi.operations.operate.operate import operate, prepare_operate_kw
 
-        return await operate(self, **prepare_operate_kw(self, **_pms))
+        result = await operate(self, **prepare_operate_kw(self, **_pms))
+        # A structured output is a capability emission: raise it onto the
+        # session's reactive bus so type-subscribed observers fire. No-op
+        # when the branch is standalone (no observer attached).
+        if self._observer is not None and isinstance(result, BaseModel):
+            from .signal import StructuredOutput
+
+            await self.emit(StructuredOutput(data=result))
+        return result
 
     async def communicate(
         self,
