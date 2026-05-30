@@ -70,6 +70,7 @@ class Session(Node, Relational):
 
             branch.user = self.id
             branch._operation_manager = self._operation_manager
+            branch._observer = self.observer
             if not self.exchange.has(branch.id):
                 self.exchange.register(branch.id)
             if self.default_branch is None:
