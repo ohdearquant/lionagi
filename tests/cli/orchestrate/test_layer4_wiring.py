@@ -203,6 +203,8 @@ def test_translate_permissions_deny_all():
     # Lowercase names (bash/edit/read) are silently ignored → fail-open.
     assert "Bash" in denied
     assert "Edit" in denied
+    assert "MultiEdit" in denied  # multi-file edit: privilege-escalation risk
+    assert "Task" in denied  # sub-agent spawn: privilege-escalation risk
     assert "Read" in denied
     assert "Write" in denied
 
@@ -256,10 +258,12 @@ def test_translate_permissions_tool_names_are_real_claude_vocabulary():
 
     # Real PascalCase tool names the claude CLI honours.  "mcp__*" is a glob
     # used for MCP servers; its prefix "mcp__" is the canonical prefix.
+    # MultiEdit and Task sourced from models.py:629,647 parse-site evidence.
     _KNOWN_CC_TOOLS = {
         "Bash",
         "Read",
         "Edit",
+        "MultiEdit",
         "Write",
         "Glob",
         "Grep",
@@ -283,6 +287,36 @@ def test_translate_permissions_tool_names_are_real_claude_vocabulary():
         assert tool in _KNOWN_CC_TOOLS or tool.startswith("mcp__"), (
             f"deny_all emits {tool!r} — not a real claude CLI tool name (fail-open)"
         )
+
+
+def test_translate_permissions_deny_all_covers_dangerous_tools():
+    """deny_all must block every dangerous tool the parse-site recognises.
+
+    The dangerous tools are those that write files (Edit, MultiEdit, Write,
+    NotebookEdit), execute shell commands (Bash), and spawn sub-agents (Task).
+    This is a COMPLETENESS check: the denylist must be a SUPERSET of these names.
+    A subset check (vocabulary test) is necessary but not sufficient; this test
+    catches omissions like MultiEdit or Task being left off the denylist.
+
+    Source for the dangerous tool list:
+      providers/anthropic/claude_code/models.py:629,634,647
+      (parse-site recognises Edit/MultiEdit, Bash, Task/Agent)
+    """
+    from lionagi.agent.adapters.claude_code import translate_permissions
+    from lionagi.agent.permissions import PermissionPolicy
+
+    # Minimum set that deny_all MUST block — add new dangerous tools here as
+    # the claude CLI adds them.
+    _DANGEROUS_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit", "Bash", "Task"}
+
+    result = translate_permissions(PermissionPolicy.deny_all())
+    denied = set(result.get("disallowed_tools", []))
+
+    missing = _DANGEROUS_TOOLS - denied
+    assert not missing, (
+        f"deny_all is non-exhaustive for dangerous tools — missing: {sorted(missing)}. "
+        "Add them to the appropriate zone in _TOOL_MAP in claude_code.py."
+    )
 
 
 # ── build_worker_branch: profile path unchanged ──────────────────────────────
