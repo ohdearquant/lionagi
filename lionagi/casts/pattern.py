@@ -15,6 +15,8 @@ __all__ = (
     "PatternKind",
     "Mode",
     "Role",
+    "list_roles",
+    "list_modes",
 )
 
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
@@ -129,3 +131,45 @@ class Role(Pattern):
     def load(cls, name: str, /) -> Role:
         """Load a built-in role by name from the packaged roles/."""
         return cls.from_md(_read_pattern_md(f"{name}.md"))
+
+
+def list_roles() -> list[str]:
+    """Return sorted names of all available roles (packaged + user-local).
+
+    Uses file stems so names round-trip through Role.load(name).
+    Excludes TEMPLATE; the modes/ subdirectory is skipped automatically
+    because it has no .md extension.
+    """
+    from importlib.resources import files
+
+    pkg = files("lionagi.casts").joinpath("roles")
+    names: set[str] = set()
+    for item in pkg.iterdir():
+        n = item.name
+        if n.endswith(".md") and n != "TEMPLATE.md":
+            names.add(n[:-3])
+    user_dir = Path.home() / ".lionagi" / "roles"
+    if user_dir.is_dir():
+        for p in user_dir.glob("*.md"):
+            names.add(p.stem)
+    return sorted(names)
+
+
+def list_modes() -> list[str]:
+    """Return sorted names of all available modes (packaged + user-local).
+
+    Uses file stems so names round-trip through Mode.load(name).
+    """
+    from importlib.resources import files
+
+    pkg = files("lionagi.casts").joinpath("roles", "modes")
+    names: set[str] = set()
+    for item in pkg.iterdir():
+        n = item.name
+        if n.endswith(".md"):
+            names.add(n[:-3])
+    user_dir = Path.home() / ".lionagi" / "modes"
+    if user_dir.is_dir():
+        for p in user_dir.glob("*.md"):
+            names.add(p.stem)
+    return sorted(names)
