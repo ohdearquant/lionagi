@@ -435,9 +435,7 @@ function RunsPageInner() {
               <th className="px-3 py-2.5 font-medium">
                 {viewMode === "invocations" ? "Invocation" : "Run"}
               </th>
-              <th className="px-3 py-2.5 font-medium">Model</th>
               <th className="px-3 py-2.5 font-medium">Status</th>
-              <th className="px-3 py-2.5 font-medium">Health</th>
               <th className="px-3 py-2.5 font-medium">
                 {viewMode === "invocations" ? "Sessions" : "Activity"}
               </th>
@@ -534,7 +532,7 @@ function RunsPageInner() {
               )
             ) : runs.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-3 py-14 text-center text-body text-content-muted">
+                <td colSpan={4} className="px-3 py-14 text-center text-body text-content-muted">
                   <span className="block mb-1 text-[11px]">{empty.runs}</span>
                   {(statuses.length > 0 || playbook) && (
                     <span className="text-meta">Try adjusting your filters.</span>
