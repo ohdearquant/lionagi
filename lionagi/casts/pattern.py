@@ -59,6 +59,13 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     return meta, body
 
 
+def _read_pattern_md(*parts: str) -> str:
+    """Read a packaged pattern markdown file under casts/roles/ (wheel-safe)."""
+    from importlib.resources import files
+
+    return files("lionagi.casts").joinpath("roles", *parts).read_text(encoding="utf-8")
+
+
 @dataclass(init=False, frozen=True, slots=True)
 class Mode(Pattern):
     """Cognitive overlay — shapes *how* an agent reasons."""
@@ -83,6 +90,11 @@ class Mode(Pattern):
     @classmethod
     def from_file(cls, path: Path, /) -> Mode:
         return cls.from_md(path.read_text(encoding="utf-8"))
+
+    @classmethod
+    def load(cls, name: str, /) -> Mode:
+        """Load a built-in mode by name from the packaged roles/modes/."""
+        return cls.from_md(_read_pattern_md("modes", f"{name}.md"))
 
 
 @dataclass(init=False, frozen=True, slots=True)
@@ -112,3 +124,8 @@ class Role(Pattern):
     @classmethod
     def from_file(cls, path: str | Path, /) -> Role:
         return cls.from_md(Path(path).read_text(encoding="utf-8"))
+
+    @classmethod
+    def load(cls, name: str, /) -> Role:
+        """Load a built-in role by name from the packaged roles/."""
+        return cls.from_md(_read_pattern_md(f"{name}.md"))
