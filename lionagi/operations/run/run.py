@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 from dataclasses import fields
 from typing import TYPE_CHECKING, Any
@@ -23,8 +24,91 @@ from ..chat._prepare import _prepare_run_kwargs
 from ..types import ChatParam, ParseParam, RunParam
 
 if TYPE_CHECKING:
+    from lionagi.ln.types import Operable
     from lionagi.protocols.messages.message import RoledMessage
     from lionagi.session.branch import Branch
+
+logger = logging.getLogger(__name__)
+
+
+def _attempt_extract(text: str, capabilities: Operable) -> Any | None:
+    """Parse a capability emission out of an assistant message into one bundle.
+
+    A capability is a named typed field (a ``Spec``); ``capabilities`` is the
+    ``Operable`` of names the agent is allowed to produce. We pull JSON (raw or
+    ```json-fenced, fuzzy-tolerant) from ``text`` and, per Ocean's rule,
+    require ``set(keys) ⊆ capabilities.allowed()``:
+
+    - no capability keys at all → ordinary prose/JSON, returns ``None``;
+    - keys ⊆ grant → validate via ``create_model`` and return the bundle: a
+      dynamic model with one field per present capability (a single response
+      can carry several — observers/filters then key off the named fields);
+    - any key outside the grant → an *illegal* emission (the agent reaching
+      past its capabilities): dropped with a warning, returns ``None``.
+    """
+    if not text or not isinstance(text, str):
+        return None
+    from lionagi.ln.fuzzy._extract_json import extract_json
+
+    try:
+        data = extract_json(text, fuzzy_parse=True)
+    except Exception:
+        return None
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not isinstance(data, dict) or not data:
+        return None
+
+    allowed = capabilities.allowed()
+    keys = set(data.keys())
+    if keys.isdisjoint(allowed):
+        return None  # not a capability emission
+    if not keys <= allowed:
+        logger.warning(
+            "Illegal capability emission: keys %s outside grant %s",
+            keys - allowed,
+            allowed,
+        )
+        return None
+
+    model = capabilities.create_model(include=keys)
+    try:
+        return model.model_validate(data)
+    except Exception:
+        return None
+
+
+async def _emit_message_signal(branch: Branch, msg: RoledMessage) -> None:
+    """Raise the stream message onto the session bus as a typed Signal.
+
+    AssistantResponse → extract the capability bundle (when a grant is set) and
+    emit it as one StructuredOutput; filters fan out by named field, so one
+    response can satisfy several observers. ActionRequest/ActionResponse →
+    tool-use / tool-result signals. No-op when the branch has no observer.
+    """
+    if getattr(branch, "_observer", None) is None:
+        return
+    from lionagi.protocols.messages import (
+        ActionRequest,
+        ActionResponse,
+        AssistantResponse,
+    )
+    from lionagi.session.signal import (
+        ActionRequestSignal,
+        ActionResponseSignal,
+        StructuredOutput,
+    )
+
+    if isinstance(msg, AssistantResponse):
+        capabilities = getattr(branch, "_capabilities", None)
+        if capabilities is not None:
+            bundle = _attempt_extract(msg.response, capabilities)
+            if bundle is not None:
+                await branch.emit(StructuredOutput(data=bundle))
+    elif isinstance(msg, ActionRequest):
+        await branch.emit(ActionRequestSignal(data=msg))
+    elif isinstance(msg, ActionResponse):
+        await branch.emit(ActionResponseSignal(data=msg))
 
 
 async def run(
@@ -149,6 +233,7 @@ async def run(
 
                     case "tool_use":
                         if res := await _flush_response():
+                            await _emit_message_signal(branch, res)
                             yield res
 
                         act_req = branch.msgs.create_action_request(
@@ -160,6 +245,7 @@ async def run(
                         if chunk.tool_id:
                             pending_requests[chunk.tool_id] = act_req
                         await branch.msgs.a_add_message(action_request=act_req)
+                        await _emit_message_signal(branch, act_req)
                         yield act_req
 
                     case "tool_result":
@@ -189,6 +275,7 @@ async def run(
                             sender=branch.user or "user",
                             recipient=branch.id,
                         )
+                        await _emit_message_signal(branch, act_res)
                         yield act_res
 
                     case "result":
@@ -202,6 +289,7 @@ async def run(
                     call_meta = Note.from_dict(api_call.to_dict())
                     call_meta.pop(["execution", "response"], None)
                     res.metadata["api_call_meta"] = call_meta.to_dict()
+                await _emit_message_signal(branch, res)
                 yield res
     finally:
         # Restore original streaming func

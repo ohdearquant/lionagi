@@ -7,9 +7,16 @@ from .branch import Branch
 from .exchange import Exchange
 from .observer import SessionObserver
 from .session import Session
-from .signal import Signal, StructuredOutput
+from .signal import (
+    ActionRequestSignal,
+    ActionResponseSignal,
+    Signal,
+    StructuredOutput,
+)
 
 __all__ = [
+    "ActionRequestSignal",
+    "ActionResponseSignal",
     "Branch",
     "Exchange",
     "Message",

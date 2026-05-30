@@ -58,9 +58,7 @@ class CommonMeta(Enum):
                 raise ValueError("Validators must be a list of functions or a function")
 
     @classmethod
-    def prepare(
-        cls, *args: Meta, metadata: tuple[Meta, ...] = None, **kw: Any
-    ) -> tuple[Meta, ...]:
+    def prepare(cls, *args: Meta, metadata: tuple[Meta, ...] = None, **kw: Any) -> tuple[Meta, ...]:
         """Prepare metadata tuple from various inputs, checking for duplicates.
 
         Args:
@@ -161,9 +159,7 @@ class Spec:
                 or str(type(base_type)) == "<class 'types.UnionType'>"
             )
             if not is_valid_type:
-                raise ValueError(
-                    f"base_type must be a type or type annotation, got {base_type}"
-                )
+                raise ValueError(f"base_type must be a type or type annotation, got {base_type}")
 
         # Check for async default factory and warn
         if kw.get("default_factory") and is_coro_func(kw["default_factory"]):
@@ -214,6 +210,19 @@ class Spec:
     def name(self) -> MaybeUndefined[str]:
         """Get the field name from metadata."""
         return self.get(CommonMeta.NAME.value)
+
+    @property
+    def q(self):
+        """A :class:`FieldRef` for this spec's name — the entry point to the
+        filter DSL (``spec.q == value``, ``spec.q > value``, ...).
+
+        Lives here rather than on ``Spec`` directly because ``Spec.__eq__`` is
+        load-bearing (sets, dedup, caches); ``q`` hands out a fresh FieldRef
+        whose operators build :class:`SpecFilter`s instead.
+        """
+        from .filters import FieldRef
+
+        return FieldRef(self.name)
 
     @property
     def is_nullable(self) -> bool:
@@ -310,9 +319,7 @@ class Spec:
             return self.with_updates(default_factory=default)
         return self.with_updates(default=default)
 
-    def with_validator(
-        self, validator: Callable[..., Any] | list[Callable[..., Any]]
-    ) -> Spec:
+    def with_validator(self, validator: Callable[..., Any] | list[Callable[..., Any]]) -> Spec:
         """Create spec with validator(s).
 
         Args:
@@ -360,14 +367,10 @@ class Spec:
 
             # Handle nullable case - wrap in Optional-like union
             actual_type = (
-                Any
-                if is_sentinel(self.base_type, none_as_sentinel=True)
-                else self.base_type
+                Any if is_sentinel(self.base_type, none_as_sentinel=True) else self.base_type
             )
             current_metadata = (
-                ()
-                if is_sentinel(self.metadata, none_as_sentinel=True)
-                else self.metadata
+                () if is_sentinel(self.metadata, none_as_sentinel=True) else self.metadata
             )
 
             if any(m.key == "nullable" and m.value for m in current_metadata):
@@ -409,9 +412,7 @@ class Spec:
             exclude = set()
         if exclude_common:
             exclude = exclude | CommonMeta.allowed()
-        return {
-            meta.key: meta.value for meta in self.metadata if meta.key not in exclude
-        }
+        return {meta.key: meta.value for meta in self.metadata if meta.key not in exclude}
 
 
 def _is_factory(obj: Any) -> tuple[bool, bool]:

@@ -22,8 +22,14 @@ from typing import Any
 from pydantic import BaseModel
 
 from ..protocols.generic.element import Element
+from ..protocols.messages import ActionRequest, ActionResponse
 
-__all__ = ("Signal", "StructuredOutput")
+__all__ = (
+    "Signal",
+    "StructuredOutput",
+    "ActionRequestSignal",
+    "ActionResponseSignal",
+)
 
 
 class Signal(Element):
@@ -36,3 +42,19 @@ class StructuredOutput(Signal):
     """A Signal whose payload is a structured (typed) model."""
 
     data: BaseModel
+
+
+class ActionRequestSignal(Signal):
+    """A tool-use emission. ``data`` is the originating ``ActionRequest``.
+
+    Lets observers react to tool calls and track per-tool usage:
+    ``session.observe(ActionRequest)`` fires for every tool invocation.
+    """
+
+    data: ActionRequest
+
+
+class ActionResponseSignal(Signal):
+    """A tool-result emission. ``data`` is the resolved ``ActionResponse``."""
+
+    data: ActionResponse

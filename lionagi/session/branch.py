@@ -100,6 +100,7 @@ class Branch(Element, Relational):
     _log_manager: DataLogger | None = PrivateAttr(None)
     _operation_manager: OperationManager | None = PrivateAttr(None)
     _observer: Any = PrivateAttr(None)
+    _capabilities: Any = PrivateAttr(None)
 
     def __init__(
         self,
@@ -345,6 +346,22 @@ class Branch(Element, Relational):
         if self._observer is None:
             return []
         return await self._observer.emit(event)
+
+    @property
+    def capabilities(self) -> Any:
+        """The agent's capability grant — an ``Operable`` of named typed
+        ``Spec``s the agent is allowed to emit. The streaming run loop parses
+        each assistant message against it: keys must be a subset of
+        ``capabilities.allowed()`` (else the emission is illegal and dropped),
+        and each present capability is raised as a ``StructuredOutput`` onto the
+        session bus. ``None`` (default) disables per-message extraction;
+        tool-use signals still fire.
+        """
+        return self._capabilities
+
+    @capabilities.setter
+    def capabilities(self, operable: Any) -> None:
+        self._capabilities = operable
 
     # -------------------------------------------------------------------------
     # Cloning
