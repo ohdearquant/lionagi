@@ -73,8 +73,57 @@ def test_list_modes_is_sorted():
 
 
 def test_list_modes_matches_disk_stems():
-    disk = sorted(p.stem for p in MODES_DIR.glob("*.md"))
+    disk = sorted(p.stem for p in MODES_DIR.glob("*.md") if p.stem != "TEMPLATE")
     assert list_modes() == disk
+
+
+def test_list_modes_excludes_template(monkeypatch):
+    """MIN-1: list_modes must exclude TEMPLATE.md, symmetric with list_roles.
+
+    We inject a fake TEMPLATE.md item into the iterable at the pattern module
+    level to avoid recursion in importlib.resources mocking.
+    """
+    from importlib.resources import files
+
+    import lionagi.casts.pattern as pattern_mod
+
+    real_pkg = files("lionagi.casts").joinpath("roles", "modes")
+
+    class _FakeItem:
+        def __init__(self, name: str):
+            self.name = name
+
+    class _FakePkgWithTemplate:
+        def iterdir(self):
+            real_items = list(real_pkg.iterdir())
+            return iter(real_items + [_FakeItem("TEMPLATE.md")])
+
+    fake_pkg = _FakePkgWithTemplate()
+
+    _real_files = pattern_mod.__builtins__  # keep for reference only
+
+    # Patch files() inside list_modes via monkeypatching the importlib call
+    # indirectly by replacing the joinpath result:
+    import importlib.resources as _ir
+
+    real_files_fn = _ir.files
+
+    def patched_files(package):
+        result = real_files_fn(package)
+
+        class _PatchedResult:
+            def joinpath(self, *parts):
+                inner = result.joinpath(*parts)
+                if parts == ("roles", "modes"):
+                    return fake_pkg
+                return inner
+
+        return _PatchedResult()
+
+    monkeypatch.setattr(_ir, "files", patched_files)
+
+    modes = list_modes()
+    assert "TEMPLATE" not in modes
 
 
 def test_list_modes_user_dir_merge(tmp_path, monkeypatch):

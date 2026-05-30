@@ -272,3 +272,186 @@ async def test_create_agent_agentconfig_still_works():
     config = AgentConfig()
     branch = await create_agent(config, load_settings=False)
     assert isinstance(branch, Branch)
+
+
+# ---------------------------------------------------------------------------
+# MAJ-2: AgentSpec new fields (hook_handlers, cwd, yolo) + from_config round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_agentspec_default_new_fields():
+    """New fields default to safe values: empty dict, None, False."""
+    spec = AgentSpec.compose("analyst")
+    assert spec.hook_handlers == {}
+    assert spec.cwd is None
+    assert spec.yolo is False
+
+
+def test_from_config_preserves_hook_handlers():
+    """from_config must copy hook_handlers so guards survive the round-trip."""
+    config = AgentConfig(role="analyst")
+    calls = []
+
+    async def my_guard(tool_name, action, args):
+        calls.append(tool_name)
+
+    config.pre("bash", my_guard)
+    spec = AgentSpec.from_config(config)
+    assert "pre:bash" in spec.hook_handlers
+    assert spec.hook_handlers["pre:bash"] == [my_guard]
+
+
+def test_from_config_preserves_cwd():
+    """from_config must copy cwd so workspace root survives the round-trip."""
+    config = AgentConfig(role="analyst", cwd="/tmp/workspace")
+    spec = AgentSpec.from_config(config)
+    assert spec.cwd == "/tmp/workspace"
+
+
+def test_from_config_preserves_yolo():
+    """from_config must copy yolo flag."""
+    config = AgentConfig(role="analyst", yolo=True)
+    spec = AgentSpec.from_config(config)
+    assert spec.yolo is True
+
+
+def test_from_config_hook_handlers_is_a_copy():
+    """from_config must copy hook_handlers (shallow), not share the reference."""
+    config = AgentConfig(role="analyst")
+
+    async def hook(tool_name, action, args):
+        pass
+
+    config.pre("bash", hook)
+    spec = AgentSpec.from_config(config)
+    # Mutating the copy must not affect the original and vice-versa
+    spec.hook_handlers["pre:bash"].clear()
+    assert len(config.hook_handlers["pre:bash"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# MAJ-2: _create_agent_from_spec threads cwd into bridge → CodingToolkit
+# ---------------------------------------------------------------------------
+
+
+async def test_create_agent_agentspec_cwd_threads_to_bridge(tmp_path, monkeypatch):
+    """cwd on AgentSpec must reach CodingToolkit's workspace_root."""
+    from pathlib import Path
+
+    import lionagi.tools.coding as coding_mod
+
+    captured_roots: list[Path] = []
+    real_init = coding_mod.CodingToolkit.__init__
+
+    def spy_init(self, workspace_root=None, **kw):
+        captured_roots.append(workspace_root)
+        real_init(self, workspace_root=workspace_root, **kw)
+
+    monkeypatch.setattr(coding_mod.CodingToolkit, "__init__", spy_init)
+
+    spec = AgentSpec.compose("implementer", tools=["coding"])
+    import dataclasses
+
+    spec = dataclasses.replace(spec, cwd=str(tmp_path))
+    branch = await create_agent(spec, load_settings=False)
+    assert isinstance(branch, Branch)
+    assert captured_roots and captured_roots[0] == tmp_path
+
+
+# ---------------------------------------------------------------------------
+# MAJ-1: spec path honours load_settings / trust_project_settings
+# ---------------------------------------------------------------------------
+
+
+async def test_create_agent_agentspec_load_settings_false_no_call(monkeypatch):
+    """load_settings=False on AgentSpec path must not call apply_hooks_from_settings."""
+    import lionagi.agent.settings as settings_mod
+
+    calls = []
+    real = settings_mod.load_settings
+
+    def spy(project_dir=None, *, include_project=True):
+        calls.append(include_project)
+        return real(project_dir, include_project=include_project)
+
+    monkeypatch.setattr(settings_mod, "load_settings", spy)
+
+    spec = AgentSpec.compose("analyst")
+    await create_agent(spec, load_settings=False)
+    assert calls == []
+
+
+async def test_create_agent_agentspec_load_settings_true_passes_trust(monkeypatch):
+    """load_settings=True on AgentSpec path must forward trust_project_settings."""
+    import lionagi.agent.settings as settings_mod
+
+    calls = []
+    real = settings_mod.load_settings
+
+    def spy(project_dir=None, *, include_project=True):
+        calls.append(include_project)
+        return real(project_dir, include_project=include_project)
+
+    monkeypatch.setattr(settings_mod, "load_settings", spy)
+
+    spec = AgentSpec.compose("analyst")
+    await create_agent(spec, load_settings=True, trust_project_settings=False)
+    assert calls == [False]
+
+
+async def test_create_agent_agentspec_mcp_loaded_when_trusted(tmp_path, monkeypatch):
+    """MAJ-1: _load_mcp is now reached on the spec path when trusted."""
+    from lionagi.protocols.action.manager import ActionManager
+
+    project = tmp_path / "project"
+    project.mkdir()
+    mcp_file = project / ".mcp.json"
+    mcp_file.write_text('{"mcpServers": {"demo": {"command": "true"}}}')
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    calls = []
+
+    async def fake_load_mcp(self, config_path, server_names=None, update=False):
+        calls.append(config_path)
+        return {}
+
+    monkeypatch.setattr(ActionManager, "load_mcp_config", fake_load_mcp)
+
+    import dataclasses
+
+    spec = AgentSpec.compose("analyst")
+    spec = dataclasses.replace(spec, cwd=str(project))
+    await create_agent(spec, load_settings=False, trust_project_settings=True)
+
+    assert calls == [str(mcp_file)]
+
+
+# ---------------------------------------------------------------------------
+# MIN-2: yolo kwarg flows through spec path
+# ---------------------------------------------------------------------------
+
+
+async def test_create_agent_agentspec_yolo_kwargs_applied(monkeypatch):
+    """MIN-2: yolo=True on AgentSpec must pass PROVIDER_YOLO_KWARGS to iModel."""
+    import lionagi.cli._providers as providers_mod
+    import lionagi.service.imodel as imodel_mod
+
+    monkeypatch.setitem(providers_mod.PROVIDER_EFFORT_KWARG, "openai", "reasoning_effort")
+    monkeypatch.setitem(providers_mod.PROVIDER_YOLO_KWARGS, "openai", {"stream": True})
+
+    captured: dict = {}
+    real_init = imodel_mod.iModel.__init__
+
+    def spy_init(self, *args, **kwargs):
+        captured.update(kwargs)
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(imodel_mod.iModel, "__init__", spy_init)
+
+    spec = AgentSpec.compose("analyst", model="openai/gpt-4.1-mini")
+    import dataclasses
+
+    spec = dataclasses.replace(spec, yolo=True)
+    branch = await create_agent(spec, load_settings=False)
+    assert isinstance(branch, Branch)
+    assert captured.get("stream") is True

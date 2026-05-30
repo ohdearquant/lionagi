@@ -50,7 +50,10 @@ async def create_agent(
     if isinstance(config, AgentSpec):
         return await _create_agent_from_spec(
             config,
+            load_settings=load_settings,
+            project_dir=project_dir,
             trust_project_settings=trust_project_settings,
+            trusted_hook_modules=trusted_hook_modules,
         )
 
     if load_settings:
@@ -122,9 +125,19 @@ async def create_agent(
 async def _create_agent_from_spec(
     spec: AgentSpec,
     *,
+    load_settings: bool = True,
+    project_dir: str | None = None,
     trust_project_settings: bool = False,
+    trusted_hook_modules: set[str] | frozenset[str] | None = None,
 ) -> Branch:
-    """Create a Branch from an AgentSpec (orchestration-facing path)."""
+    """Create a Branch from an AgentSpec (orchestration-facing path).
+
+    MAJ-1: load_settings / trust_project_settings / trusted_hook_modules are
+    now live — settings hooks and MCP are applied on the spec path exactly as
+    on the AgentConfig path.
+    MAJ-2: spec.hook_handlers / spec.cwd / spec.yolo are threaded into the
+    bridge AgentConfig so guard hooks and workspace survive the round-trip.
+    """
     from lionagi.service.imodel import iModel
 
     branch_kwargs = {}
@@ -147,6 +160,11 @@ async def _create_agent_from_spec(
             kwarg = PROVIDER_EFFORT_KWARG.get(provider)
             if kwarg:
                 extra[kwarg] = effort
+        # MIN-2: MAJ-2 — apply yolo kwargs on the spec path (mirrors config path)
+        if spec.yolo:
+            from lionagi.cli._providers import PROVIDER_YOLO_KWARGS
+
+            extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
 
         branch_kwargs["chat_model"] = iModel(
             provider=provider,
@@ -167,13 +185,35 @@ async def _create_agent_from_spec(
             full_prompt = system_message
         branch.msgs.set_system(branch.msgs.create_system(system=full_prompt))
 
-    # Use a minimal AgentConfig bridge for tool registration and permissions
-    # so we don't duplicate _register_tools/_apply_permissions logic.
-    bridge = AgentConfig(tools=list(spec.tools))
+    # Build a bridge AgentConfig carrying hook_handlers and cwd so that
+    # _register_tools/_apply_permissions/_load_mcp all receive the full spec.
+    # MAJ-2: copy hook_handlers (shallow — lists are mutable, caller owns them)
+    # and cwd so guard hooks and workspace root survive the round-trip.
+    bridge = AgentConfig(
+        tools=list(spec.tools),
+        hook_handlers={k: list(v) for k, v in spec.hook_handlers.items()},
+        cwd=spec.cwd,
+    )
     if spec.permissions is not None:
         bridge.permissions = spec.permissions
+
+    # MAJ-1: apply settings hooks onto the bridge when load_settings is True.
+    if load_settings:
+        from .settings import apply_hooks_from_settings
+        from .settings import load_settings as _load
+
+        settings = _load(project_dir, include_project=trust_project_settings)
+        apply_hooks_from_settings(
+            bridge,
+            settings,
+            trusted_hook_modules=trusted_hook_modules,
+        )
+
     _apply_permissions(bridge)
     _register_tools(branch, bridge)
+
+    # MAJ-1: load MCP tools on the spec path, mirroring the AgentConfig path.
+    await _load_mcp(branch, bridge, trust_project_settings=trust_project_settings)
 
     if op := spec.capability_operable():
         branch.grant_capabilities(op)

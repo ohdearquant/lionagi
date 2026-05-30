@@ -159,6 +159,7 @@ def list_modes() -> list[str]:
     """Return sorted names of all available modes (packaged + user-local).
 
     Uses file stems so names round-trip through Mode.load(name).
+    Excludes TEMPLATE; symmetric with list_roles().
     """
     from importlib.resources import files
 
@@ -166,7 +167,7 @@ def list_modes() -> list[str]:
     names: set[str] = set()
     for item in pkg.iterdir():
         n = item.name
-        if n.endswith(".md"):
+        if n.endswith(".md") and n != "TEMPLATE.md":
             names.add(n[:-3])
     user_dir = Path.home() / ".lionagi" / "modes"
     if user_dir.is_dir():

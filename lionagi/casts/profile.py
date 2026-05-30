@@ -24,6 +24,11 @@ class Profile:
     modes: tuple[Mode, ...] = ()
 
     def __post_init__(self) -> None:
+        # MIN-4 (deferred): duplicate mode names (same name, different Mode objects)
+        # silently overwrite the earlier entry. No error is raised; mutual
+        # conflict-checking is skipped for the duplicate pair. Deferred — the
+        # caller (compose) round-trips through Mode.load which produces a single
+        # canonical instance, so duplicates are unlikely in practice.
         seen: dict[str, Mode] = {}
         for m in self.modes:
             for other in seen.values():

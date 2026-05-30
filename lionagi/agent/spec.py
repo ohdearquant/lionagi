@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from lionagi.casts.pack import Pack
@@ -38,6 +39,10 @@ class AgentSpec:
     # Bridge field: captures AgentConfig.system_prompt that has no AgentSpec
     # equivalent. Appended after role+modes in build_system_message().
     extra_prompt: str | None = None
+    # MAJ-2: preserve hook_handlers / cwd / yolo from AgentConfig round-trips.
+    hook_handlers: dict[str, list[Callable]] = field(default_factory=dict)
+    cwd: str | None = None
+    yolo: bool = False
 
     @classmethod
     def compose(
@@ -120,6 +125,11 @@ class AgentSpec:
         Contract conflict resolution: AgentConfig.system_prompt has no direct
         AgentSpec equivalent. It is preserved in extra_prompt and appended to
         the composed system message by build_system_message().
+
+        MAJ-2: hook_handlers, cwd, and yolo are now preserved so guard hooks
+        and workspace directory survive the AgentConfig → AgentSpec round-trip.
+        mcp_servers / mcp_config_path are not carried (MCP is loaded by
+        _create_agent_from_spec via the trust_project_settings path).
         """
         from .permissions import PermissionPolicy
 
@@ -143,6 +153,12 @@ class AgentSpec:
             pack="default",
             lion_system=config.lion_system,
             extra_prompt=config.system_prompt or None,
+            # MAJ-2: carry hook_handlers, cwd, yolo through the bridge.
+            # Deep-copy the lists so the spec's hook_handlers is independent of
+            # the source config (callers may mutate either side post-bridge).
+            hook_handlers={k: list(v) for k, v in config.hook_handlers.items()},
+            cwd=config.cwd,
+            yolo=config.yolo,
         )
 
 
@@ -176,7 +192,12 @@ def _resolve_permissions(
 
 
 def _load_pack(pack: str | Pack) -> Pack | None:
-    """Load a Pack by name or return it directly if already a Pack."""
+    """Load a Pack by name or return it directly if already a Pack.
+
+    MIN-3 (deferred): re-reads default.yaml from disk on every
+    build_system_message() call. Functionally correct; memoization deferred
+    until profiled as a real bottleneck.
+    """
     if isinstance(pack, Pack):
         return pack
     if pack == "default":
