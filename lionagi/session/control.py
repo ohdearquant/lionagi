@@ -9,7 +9,7 @@ from enum import Enum
 __all__ = ("LoopDirective", "LoopControl", "LoopBreak")
 
 
-class LoopDirective(str, Enum):
+class LoopDirective(Enum):
     CONTINUE = "continue"
     CANCEL = "cancel"
     BREAK = "break"

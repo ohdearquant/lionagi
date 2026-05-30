@@ -19,13 +19,12 @@ from lionagi.session.signal import StructuredOutput
 
 class TestControlTypes:
     def test_loop_directive_values(self):
-        assert LoopDirective.CONTINUE == "continue"
-        assert LoopDirective.CANCEL == "cancel"
-        assert LoopDirective.BREAK == "break"
+        assert LoopDirective.CONTINUE.value == "continue"
+        assert LoopDirective.CANCEL.value == "cancel"
+        assert LoopDirective.BREAK.value == "break"
 
-    def test_loop_directive_is_str(self):
-        # str subclass so it can be used as a plain string
-        assert isinstance(LoopDirective.BREAK, str)
+    def test_loop_directive_members(self):
+        assert set(LoopDirective.__members__) == {"CONTINUE", "CANCEL", "BREAK"}
 
     def test_loop_control_frozen(self):
         lc = LoopControl(directive=LoopDirective.CANCEL)

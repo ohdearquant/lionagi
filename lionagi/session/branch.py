@@ -44,6 +44,7 @@ from .prompts import LION_SYSTEM_MESSAGE
 if TYPE_CHECKING:
     from lionagi.operations.operate.operative import Operative
     from lionagi.operations.types import Middle
+    from lionagi.session.control import LoopControl, LoopDirective
 
 
 __all__ = ("Branch",)
@@ -120,7 +121,7 @@ class Branch(Element, Relational):
     _operation_manager: OperationManager | None = PrivateAttr(None)
     _observer: Any = PrivateAttr(None)
     _capabilities: Any = PrivateAttr(None)
-    _loop_control: Any = PrivateAttr(None)
+    _loop_control: "LoopControl | None" = PrivateAttr(None)
 
     def __init__(
         self,
@@ -367,7 +368,7 @@ class Branch(Element, Relational):
             return []
         return await self._observer.emit(event)
 
-    def control(self, directive: Any, *, reason: str | None = None) -> None:
+    def control(self, directive: "LoopDirective", *, reason: str | None = None) -> None:
         """Queue a loop-control directive.
 
         Called from an observer handler to steer the in-flight run.
@@ -377,7 +378,7 @@ class Branch(Element, Relational):
 
         self._loop_control = LoopControl(directive, reason)
 
-    def poll_control(self) -> Any:
+    def poll_control(self) -> "LoopControl | None":
         """Return and CLEAR any queued directive (one-shot).
 
         Returns ``None`` when no directive is pending.
