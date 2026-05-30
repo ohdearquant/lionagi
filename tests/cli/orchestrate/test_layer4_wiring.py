@@ -197,7 +197,14 @@ def test_translate_permissions_deny_all():
     result = translate_permissions(PermissionPolicy.deny_all())
     assert result["permission_mode"] == "default"
     assert "disallowed_tools" in result
-    assert len(result["disallowed_tools"]) > 0
+    denied = result["disallowed_tools"]
+    assert len(denied) > 0
+    # Must use real PascalCase tool names that the claude CLI recognises.
+    # Lowercase names (bash/edit/read) are silently ignored → fail-open.
+    assert "Bash" in denied
+    assert "Edit" in denied
+    assert "Read" in denied
+    assert "Write" in denied
 
 
 def test_translate_permissions_read_only():
@@ -206,9 +213,12 @@ def test_translate_permissions_read_only():
 
     result = translate_permissions(PermissionPolicy.read_only())
     assert result["permission_mode"] == "default"
-    # editor and bash should be denied
+    # editor and bash should be denied with real PascalCase names
     denied = result.get("disallowed_tools", [])
-    assert "edit" in denied or "bash" in denied
+    assert "Edit" in denied or "Bash" in denied
+    # Confirm no stale lowercase names that the CLI won't honour
+    assert "edit" not in denied
+    assert "bash" not in denied
 
 
 def test_translate_permissions_rules_custom():
@@ -224,8 +234,55 @@ def test_translate_permissions_rules_custom():
     assert result["permission_mode"] == "default"
     allowed = result.get("allowed_tools", [])
     denied = result.get("disallowed_tools", [])
-    assert "read" in allowed
-    assert "bash" in denied
+    # reader zone → "Read" (PascalCase)
+    assert "Read" in allowed
+    assert "read" not in allowed  # no stale lowercase
+    # bash zone → "Bash" (PascalCase)
+    assert "Bash" in denied
+    assert "bash" not in denied  # no stale lowercase
+
+
+def test_translate_permissions_tool_names_are_real_claude_vocabulary():
+    """Emitted tool names must be a subset of the real claude CLI vocabulary.
+
+    This test catches the fail-open bug where invented or lowercase names are
+    passed to --disallowedTools / --allowedTools and silently ignored by the
+    claude binary.  Canonical PascalCase names are from:
+      - providers/anthropic/claude_code/models.py  (ClaudeCodeRequest fields)
+      - tests/service/connections/providers/test_cli_cancellation.py (live usage)
+    """
+    from lionagi.agent.adapters.claude_code import _ALL_CC_TOOLS, translate_permissions
+    from lionagi.agent.permissions import PermissionPolicy
+
+    # Real PascalCase tool names the claude CLI honours.  "mcp__*" is a glob
+    # used for MCP servers; its prefix "mcp__" is the canonical prefix.
+    _KNOWN_CC_TOOLS = {
+        "Bash",
+        "Read",
+        "Edit",
+        "Write",
+        "Glob",
+        "Grep",
+        "WebSearch",
+        "WebFetch",
+        "Task",
+        "NotebookEdit",
+    }
+
+    # Every tool name baked into _ALL_CC_TOOLS must be either a known real name
+    # or the MCP glob pattern.
+    for tool in _ALL_CC_TOOLS:
+        assert tool in _KNOWN_CC_TOOLS or tool.startswith("mcp__"), (
+            f"_ALL_CC_TOOLS contains {tool!r} which is not a real claude CLI tool "
+            "name.  This would cause --disallowedTools to silently ignore it (fail-open)."
+        )
+
+    # Spot-check: deny_all must not emit any invented/lowercase names.
+    deny_result = translate_permissions(PermissionPolicy.deny_all())
+    for tool in deny_result.get("disallowed_tools", []):
+        assert tool in _KNOWN_CC_TOOLS or tool.startswith("mcp__"), (
+            f"deny_all emits {tool!r} — not a real claude CLI tool name (fail-open)"
+        )
 
 
 # ── build_worker_branch: profile path unchanged ──────────────────────────────
@@ -412,3 +469,111 @@ async def test_observer_wiring_records_escalation_request(tmp_path):
 
     assert len(escalations) == 1
     assert escalations[0].reason == "test escalation"
+
+
+# ── MAJ-1: profile-only role survives _run_flow_inner validation ─────────────
+
+
+@pytest.mark.asyncio
+async def test_plan_accepts_profile_only_role(tmp_path):
+    """A role not in casts list_roles() but present in list_agents() must pass
+    validation.  Contradicting this was the MAJ-1 regression — the role gate
+    was hard-rejecting profile-only agents before build_worker_branch ran.
+
+    ADR-0073 guarantees existing flows keep working; profile-only roles were
+    previously accepted via the profile resolution path.
+    """
+    from unittest.mock import patch
+
+    from lionagi.cli.orchestrate.flow import FlowOp
+
+    plan = FlowPlan(
+        agents=[FlowAgent(id="a1", role="my_custom_profile_agent")],
+        operations=[FlowOp(id="o1", agent_id="a1", instruction="do work")],
+    )
+    builder = _FakeBuilder()
+    env = _make_env(builder, plan, tmp_path)
+
+    # "my_custom_profile_agent" is NOT a casts role, but IS a known profile agent.
+    # list_roles is imported at module level in flow.py; list_agents is imported
+    # lazily inside _get_known_agents so we patch it at its definition site.
+    with patch(
+        "lionagi.cli.orchestrate.flow.list_roles", return_value=["implementer", "researcher"]
+    ):
+        with patch(
+            "lionagi.cli.orchestrate.flow.list_modes",
+            return_value=["adversarial", "systematic", "fast", "slow"],
+        ):
+            with patch(
+                "lionagi.cli._agents.list_agents",
+                return_value=["my_custom_profile_agent"],
+            ):
+                result = await _run_flow_inner("codex/gpt-5.5", "task", env=env, dry_run=True)
+
+    # Must NOT produce an "Invalid plan" role-rejection error.
+    assert "unknown role" not in result.lower(), f"Profile-only role was rejected: {result!r}"
+    assert "Invalid plan" not in result or "unknown role" not in result
+
+
+# ── MAJ-2: warn on non-claude provider with permissions set ─────────────────
+
+
+def test_build_worker_branch_warns_unenforced_permissions_non_claude(tmp_path, capsys):
+    """build_worker_branch must emit a warn() when permissions is set on a
+    non-claude provider (no adapter → policy silently dropped → fail-open).
+    """
+    import logging
+    from unittest.mock import patch
+
+    orc_branch = Branch(name="orchestrator")
+    session = Session(default_branch=orc_branch)
+    run_mock = MagicMock()
+    run_mock.agent_artifact_dir.return_value = tmp_path / "artifacts" / "a1"
+    (tmp_path / "artifacts" / "a1").mkdir(parents=True, exist_ok=True)
+
+    env = OrchestrationEnv(
+        run=run_mock,
+        session=session,
+        orc_branch=orc_branch,
+        builder=MagicMock(),
+        orc_profile=None,
+        # codex provider — no permission adapter
+        default_model_spec="codex/gpt-4.1",
+        bare=False,
+        effort=None,
+        theme=None,
+        yolo=False,
+        bypass=False,
+        verbose=False,
+        fast=False,
+        cwd=None,
+    )
+
+    warn_records: list[str] = []
+
+    with patch(
+        "lionagi.cli.orchestrate._orchestration.load_agent_profile",
+        side_effect=FileNotFoundError("no profile"),
+    ):
+        with patch(
+            "lionagi.cli.orchestrate._orchestration.warn",
+            side_effect=lambda msg: warn_records.append(msg),
+        ) as mock_warn:
+            build_worker_branch(
+                env,
+                agent_id="a1",
+                role="researcher",
+                model_override=None,
+                explicit_name="researcher-1",
+                agent_permissions="deny_all",
+            )
+
+    assert mock_warn.called, (
+        "Expected warn() to be called for non-claude provider with permissions set"
+    )
+    combined = " ".join(warn_records).lower()
+    assert (
+        "unenforced" in combined
+        or "no permission adapter" in combined
+        or "unrestricted" in combined
+    )

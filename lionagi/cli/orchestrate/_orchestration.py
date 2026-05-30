@@ -43,7 +43,7 @@ from lionagi.state.artifact_verifier import (
 )
 
 from .._agents import AgentProfile, load_agent_profile
-from .._logging import hint
+from .._logging import hint, warn
 from .._providers import build_imodel_from_spec, resolve_persisted_effort
 from .._runs import RunDir, allocate_run, save_last_branch_pointer
 
@@ -508,6 +508,16 @@ def build_worker_branch(
 
             _perm_kwargs = _tp(w_spec.permissions)
             w_imodel.endpoint.config.kwargs.update(_perm_kwargs)
+        else:
+            # MAJ-2: No permission adapter exists for this provider.  The policy
+            # was validated but cannot be enforced — the worker will have full
+            # tool access regardless of the preset.  Fail-open by design until a
+            # provider-specific adapter is implemented.
+            warn(
+                f"Worker {explicit_name or role!r} has permissions="
+                f"{w_spec.permissions.mode!r} but provider {_provider!r} has no "
+                "permission adapter — preset is unenforced. Worker runs unrestricted."
+            )
 
     # Team mode APPENDS the coord section — does not replace the base.
     team_section = team_worker_system(env.team_data, wname)

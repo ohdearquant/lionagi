@@ -941,13 +941,30 @@ async def _run_flow_inner(
     # agent time is spent, same stance as the dep-cycle check above.
     known_modes = set(list_modes())
     known_roles = set(list_roles())
+    # Profile-only agents live in ~/.lionagi/agents/ (a DIFFERENT namespace from
+    # casts roles).  The ADR-0073 guarantee is that existing flows keep working,
+    # so we accept a role that resolves via list_agents() even when it is not a
+    # casts role.  list_agents() is imported lazily to avoid the filesystem scan
+    # for plans that use only casts roles.
+    _known_profile_agents: set[str] | None = None
+
+    def _get_known_agents() -> set[str]:
+        nonlocal _known_profile_agents
+        if _known_profile_agents is None:
+            from lionagi.cli._agents import list_agents as _list_agents
+
+            _known_profile_agents = set(_list_agents())
+        return _known_profile_agents
+
     for a in plan.agents:
-        # Unknown role check (skip bare-model specs containing '/')
+        # Unknown role check (skip bare-model specs containing '/').
+        # Accept: (1) known casts role, OR (2) known profile-only agent name.
         if "/" not in a.role and a.role not in known_roles:
-            return (
-                f"Invalid plan: FlowAgent {a.id!r} has unknown role {a.role!r}. "
-                f"Known roles: {sorted(known_roles)}"
-            )
+            if a.role not in _get_known_agents():
+                return (
+                    f"Invalid plan: FlowAgent {a.id!r} has unknown role {a.role!r}. "
+                    f"Known roles: {sorted(known_roles)}"
+                )
         # Unknown modes
         for m in a.modes:
             if m not in known_modes:
@@ -955,7 +972,13 @@ async def _run_flow_inner(
                     f"Invalid plan: FlowAgent {a.id!r} has unknown mode {m!r}. "
                     f"Known modes: {sorted(known_modes)}"
                 )
-        # Mode conflict check: reuse Profile.__post_init__ logic
+        # Mode conflict check: reuse Profile.__post_init__ logic.
+        # For bare-model specs (containing '/') we substitute "implementer" as the
+        # placeholder role because mode conflicts (e.g. fast vs slow) are
+        # role-independent in the current ontology — no mode is accepted or rejected
+        # based on which specific role is being composed.  The substitution is
+        # therefore sound: it catches real conflicts without masking any role-specific
+        # constraint that does not yet exist.
         if a.modes:
             try:
                 from lionagi.casts.profile import Profile as _Profile
