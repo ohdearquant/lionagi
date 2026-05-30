@@ -332,6 +332,8 @@ def build_worker_branch(
     model_override: str | None = None,
     explicit_name: str | None = None,
     system_prompt_override: str | None = None,
+    agent_modes: list[str] | None = None,
+    agent_permissions: str | None = None,
 ) -> tuple[Branch, str, AgentProfile | None]:
     """Phase C — resolve model/profile/effort/system and build a Branch.
 
@@ -420,13 +422,92 @@ def build_worker_branch(
     else:
         wname = env.assign_name(role)
 
-    # Base system prompt: explicit override > profile > BARE.
+    # ── AgentSpec fallback: casts role with no profile file ─────────
+    # Profile-file path (resolve_worker_spec hit) is the FIRST priority —
+    # preserved for backward compatibility.  Casts AgentSpec is used ONLY
+    # when no profile file matched AND the role is a known casts role.
+    w_spec: Any = None
+    if not env.bare and w_profile is None and system_prompt_override is None:
+        from lionagi.casts.pattern import list_roles as _list_roles
+
+        if role in set(_list_roles()):
+            from lionagi.agent.spec import AgentSpec as _AgentSpec
+
+            # Determine default tool suite by zone.
+            # Write-capable roles get the coding suite; discovery and verdict
+            # roles get read-only tools; others get nothing by default.
+            # Override by passing explicit tools via AgentSpec.compose if needed.
+            _write_roles = frozenset(
+                {
+                    "implementer",
+                    "refactorer",
+                    "migrator",
+                    "prototyper",
+                    "deployer",
+                    "operator",
+                    "writer",
+                    "scribe",
+                    "curator",
+                    "modeler",
+                    "architect",
+                }
+            )
+            _read_roles = frozenset(
+                {
+                    "researcher",
+                    "analyst",
+                    "explorer",
+                    "critic",
+                    "reviewer",
+                    "auditor",
+                    "investigator",
+                    "troubleshooter",
+                    "assessor",
+                    "contrarian",
+                    "commentator",
+                    "synthesizer",
+                }
+            )
+            if role in _write_roles:
+                _default_tools: tuple[str, ...] = ("coding",)
+            elif role in _read_roles:
+                _default_tools = ("reader", "search")
+            else:
+                _default_tools = ()
+
+            w_spec = _AgentSpec.compose(
+                role=role,
+                modes=agent_modes or [],
+                model=w_model,
+                effort=w_effort,
+                tools=_default_tools,
+                permissions=agent_permissions,
+            )
+
+    # Base system prompt: explicit override > profile > casts AgentSpec > BARE.
     if system_prompt_override is not None:
         base_system = system_prompt_override
     elif not env.bare and w_profile and w_profile.system_prompt:
         base_system = w_profile.system_prompt
+    elif w_spec is not None:
+        from lionagi.session.prompts import LION_SYSTEM_MESSAGE as _LION_SYS
+
+        base_system = _LION_SYS.strip() + "\n\n" + w_spec.build_system_message()
     else:
         base_system = BARE_WORKER_SYSTEM
+
+    # Apply permission adapter for claude_code provider when using casts path.
+    # The permission adapter translates the PermissionPolicy to endpoint kwargs
+    # that the claude_code backend enforces natively.  For lionagi-native tools
+    # (registered via ActionManager), the existing security_pre hook path
+    # applies instead.
+    if w_spec is not None and w_spec.permissions is not None:
+        _provider = w_model.split("/")[0] if "/" in w_model else w_model
+        if _provider in ("claude_code", "claude"):
+            from lionagi.agent.adapters.claude_code import translate_permissions as _tp
+
+            _perm_kwargs = _tp(w_spec.permissions)
+            w_imodel.endpoint.config.kwargs.update(_perm_kwargs)
 
     # Team mode APPENDS the coord section — does not replace the base.
     team_section = team_worker_system(env.team_data, wname)
@@ -439,6 +520,12 @@ def build_worker_branch(
         name=wname,
     )
     env.session.include_branches(wb)
+
+    # Grant capabilities for casts-path workers after session attachment.
+    # include_branches sets branch._observer so grant_capabilities can emit.
+    if w_spec is not None:
+        if op := w_spec.capability_operable():
+            wb.grant_capabilities(op)
 
     # Register live persist hook on this new branch
     if env._live_persist:

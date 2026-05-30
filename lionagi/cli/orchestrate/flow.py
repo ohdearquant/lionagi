@@ -14,11 +14,12 @@ from pydantic import Field, field_validator
 
 from lionagi import Branch, FieldModel
 from lionagi._errors import TimeoutError as LionTimeoutError
+from lionagi.casts.pattern import Mode, Role, list_modes, list_roles
 from lionagi.ln.concurrency import move_on_after
 from lionagi.models import HashableModel
 from lionagi.operations.fields import Instruct
 
-from .._agents import AgentProfile, list_agents, load_agent_profile
+from .._agents import AgentProfile
 from .._logging import progress
 from .._providers import parse_model_spec
 from ._common import _create_fanout_team, _format_result_json, _post_results_to_team
@@ -243,6 +244,22 @@ class FlowAgent(HashableModel):
             "Role name from the available-agents roster (e.g. 'researcher', "
             "'implementer', 'critic'). Determines the agent's profile "
             "(system prompt, default model, effort). Do not invent roles."
+        ),
+    )
+    modes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Cognitive overlays applied on top of the role, e.g. "
+            "['adversarial', 'systematic'].  Each entry must be a name "
+            "returned by list_modes().  Conflicting mode pairs are rejected "
+            "before execution."
+        ),
+    )
+    permissions: str | None = Field(
+        default=None,
+        description=(
+            "Permission preset for this worker: safe | read_only | "
+            "allow_all | deny_all.  Null inherits the flow default."
         ),
     )
     model: str | None = Field(
@@ -787,28 +804,47 @@ async def _run_flow_inner(
     builder = env.builder
 
     # ── Phase 0: Orchestrator plans the DAG ──────────────────────────
-    # Build role roster for orchestrator guidance
-    available_roles = list_agents()
+    # Build role roster from the casts ontology so the planner has
+    # structured signal: role descriptions, available modes, and the
+    # permission presets.  Profile-file agents still resolve normally in
+    # build_worker_branch; the planner just needs selection metadata.
+    _all_roles = list_roles()
+    _role_lines: list[str] = []
+    for _rname in _all_roles:
+        try:
+            _r = Role.load(_rname)
+            _desc = f" — {_r.description}" if _r.description else ""
+            _role_lines.append(f"  {_rname}{_desc}")
+        except Exception:
+            _role_lines.append(f"  {_rname}")
+    _all_modes = list_modes()
+    _mode_lines: list[str] = []
+    for _mname in _all_modes:
+        try:
+            _m = Mode.load(_mname)
+            _mdesc = f" — {_m.description}" if _m.description else ""
+            _mode_lines.append(f"  {_mname}{_mdesc}")
+        except Exception:
+            _mode_lines.append(f"  {_mname}")
+    _perm_lines = [
+        "  allow_all  — no restrictions (use for write-capable roles needing full tool access)",
+        "  read_only  — reader/search tools only; editor and bash denied",
+        "  safe       — read + edit allowed; dangerous bash patterns denied with escalation",
+        "  deny_all   — all tools denied (analysis-only)",
+    ]
+    roles_guidance = (
+        "AVAILABLE ROLES (set FlowAgent.role to one of these):\n"
+        + "\n".join(_role_lines)
+        + "\n\nAVAILABLE MODES (optional cognitive overlays — set FlowAgent.modes):\n"
+        + "\n".join(_mode_lines)
+        + "\n\nPERMISSION PRESETS (optional — set FlowAgent.permissions):\n"
+        + "\n".join(_perm_lines)
+    )
     if env.bare:
-        roles_guidance = (
-            f"Available roles: {', '.join(available_roles)}. "
-            f"All workers use model {model_spec}. "
-            f"Roles define behavioral focus only — model is fixed."
+        roles_guidance += (
+            f"\n\nAll workers use model {model_spec}. "
+            "Roles define behavioral focus only — model is fixed."
         )
-    else:
-        role_details = []
-        for role in available_roles:
-            try:
-                rp = load_agent_profile(role)
-                rm = rp.model or model_spec
-                detail = f"{role} (model: {rm}"
-                if rp.effort:
-                    detail += f", effort: {rp.effort}"
-                detail += ")"
-                role_details.append(detail)
-            except FileNotFoundError:
-                role_details.append(f"{role} (model: {model_spec})")
-        roles_guidance = f"Available agents: {'; '.join(role_details)}."
 
     budget_note = ""
     if max_ops > 0:
@@ -850,6 +886,19 @@ async def _run_flow_inner(
         reason=True,
     )
 
+    # ── Observer wiring: record escalations and verdicts ────────────
+    # v1: record only.  Reactive re-planning (e.g. observe Verdict REJECT →
+    # re-plan the DAG, or EscalationRequest → reassign the op) would hook in
+    # here by updating `plan` or emitting a control directive on the session.
+    from lionagi.casts.capabilities import EscalationRequest, Verdict
+
+    _escalations: list = []
+    _verdicts: list = []
+
+    if hasattr(session, "observe"):
+        session.observe(EscalationRequest, lambda e, _ctx: _escalations.append(e))
+        session.observe(Verdict, lambda v, _ctx: _verdicts.append(v))
+
     progress("Planning DAG...")
 
     result0 = await session.flow(builder.get_graph())
@@ -887,6 +936,41 @@ async def _run_flow_inner(
                 f"Invalid plan: op {op.id!r} references unknown agent "
                 f"{op.agent_id!r} (known: {sorted(agent_ids)})"
             )
+
+    # Validate FlowAgent.modes and permissions — fail closed before any
+    # agent time is spent, same stance as the dep-cycle check above.
+    known_modes = set(list_modes())
+    known_roles = set(list_roles())
+    for a in plan.agents:
+        # Unknown role check (skip bare-model specs containing '/')
+        if "/" not in a.role and a.role not in known_roles:
+            return (
+                f"Invalid plan: FlowAgent {a.id!r} has unknown role {a.role!r}. "
+                f"Known roles: {sorted(known_roles)}"
+            )
+        # Unknown modes
+        for m in a.modes:
+            if m not in known_modes:
+                return (
+                    f"Invalid plan: FlowAgent {a.id!r} has unknown mode {m!r}. "
+                    f"Known modes: {sorted(known_modes)}"
+                )
+        # Mode conflict check: reuse Profile.__post_init__ logic
+        if a.modes:
+            try:
+                from lionagi.casts.profile import Profile as _Profile
+
+                _Profile.compose(role=a.role if "/" not in a.role else "implementer", modes=a.modes)
+            except ValueError as exc:
+                return f"Invalid plan: FlowAgent {a.id!r} has conflicting modes — {exc}"
+        # Unknown permission preset
+        if a.permissions is not None:
+            _valid_presets = {"safe", "read_only", "allow_all", "deny_all"}
+            if a.permissions not in _valid_presets:
+                return (
+                    f"Invalid plan: FlowAgent {a.id!r} has unknown permissions preset "
+                    f"{a.permissions!r}. Valid: {sorted(_valid_presets)}"
+                )
 
     # Reject plans exceeding the hard op count cap before sorting.
     if len(plan.operations) > 200:
@@ -1019,6 +1103,8 @@ async def _run_flow_inner(
             role=a.role,
             model_override=a.model,
             explicit_name=agent_id_to_name[a.id],
+            agent_modes=a.modes or None,
+            agent_permissions=a.permissions,
         )
 
     # ── Helper: build context + add a node for a single op ──────────
