@@ -52,6 +52,21 @@ __all__ = ("Branch",)
 _DEFAULT_ALCALL_PARAMS = None
 
 
+def _strip_capability_block(text: str) -> str:
+    """Remove a previously-injected capability block (between its markers)."""
+    if not text:
+        return ""
+    from .capabilities import CAP_BEGIN, CAP_END
+
+    start = text.find(CAP_BEGIN)
+    if start == -1:
+        return text
+    end = text.find(CAP_END, start)
+    if end == -1:
+        return text[:start]
+    return (text[:start] + text[end + len(CAP_END) :]).strip()
+
+
 class Branch(Element, Relational):
     """
     Manages a conversation 'branch' with messages, tools, and iModels.
@@ -353,15 +368,50 @@ class Branch(Element, Relational):
         ``Spec``s the agent is allowed to emit. The streaming run loop parses
         each assistant message against it: keys must be a subset of
         ``capabilities.allowed()`` (else the emission is illegal and dropped),
-        and each present capability is raised as a ``StructuredOutput`` onto the
-        session bus. ``None`` (default) disables per-message extraction;
-        tool-use signals still fire.
+        and present capabilities are raised as a ``StructuredOutput`` bundle
+        onto the session bus. ``None`` (default) disables per-message
+        extraction; tool-use signals still fire.
+
+        Set the runtime grant directly (pure data, no prompt change), or use
+        :meth:`grant_capabilities` to also tell the model what it may emit.
         """
         return self._capabilities
 
     @capabilities.setter
     def capabilities(self, operable: Any) -> None:
         self._capabilities = operable
+
+    def grant_capabilities(self, operable: Any, *, prompt: bool = True) -> None:
+        """Opt this branch into per-message capability emission.
+
+        Sets the runtime grant and (when ``prompt``) injects an idempotent
+        capability-instruction block into the system message so the model knows
+        which structured fields it may emit. Re-granting replaces the block;
+        :meth:`revoke_capabilities` removes it. Old strict behavior
+        (``operate(response_format=...)``) is untouched — that's the
+        final-output parse; this is per-message emission.
+        """
+        self._capabilities = operable
+        if prompt:
+            from .capabilities import CAP_BEGIN, CAP_END, render_capabilities_prompt
+
+            block = f"{CAP_BEGIN}\n{render_capabilities_prompt(operable)}\n{CAP_END}"
+            base = _strip_capability_block(self._system_text())
+            combined = f"{base.rstrip()}\n\n{block}" if base.strip() else block
+            self.msgs.set_system(self.msgs.create_system(system=combined))
+
+    def revoke_capabilities(self) -> None:
+        """Clear the capability grant and remove its system-prompt block."""
+        self._capabilities = None
+        base = _strip_capability_block(self._system_text())
+        if self.msgs.system is not None:
+            self.msgs.set_system(self.msgs.create_system(system=base or None))
+
+    def _system_text(self) -> str:
+        sys_msg = self.msgs.system
+        if sys_msg is None:
+            return ""
+        return sys_msg.content.system_message or ""
 
     # -------------------------------------------------------------------------
     # Cloning
