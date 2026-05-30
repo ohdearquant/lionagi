@@ -73,9 +73,7 @@ async def test_create_agent_coding_all_tools_async():
     config = AgentConfig.coding()
     branch = await _make(config)
     for name, tool in branch.acts.registry.items():
-        assert asyncio.iscoroutinefunction(
-            tool.func_callable
-        ), f"Tool '{name}' is not async"
+        assert asyncio.iscoroutinefunction(tool.func_callable), f"Tool '{name}' is not async"
 
 
 # ---------------------------------------------------------------------------
@@ -170,18 +168,14 @@ async def test_create_agent_load_settings_false_no_side_effects(monkeypatch):
         called.append(True)
         return {}
 
-    monkeypatch.setattr(
-        "lionagi.agent.settings.load_settings", fake_load, raising=False
-    )
+    monkeypatch.setattr("lionagi.agent.settings.load_settings", fake_load, raising=False)
 
     config = AgentConfig()
     await create_agent(config, load_settings=False)
     assert called == [], "load_settings was called despite load_settings=False"
 
 
-async def test_create_agent_does_not_autoload_project_mcp_without_trust(
-    tmp_path, monkeypatch
-):
+async def test_create_agent_does_not_autoload_project_mcp_without_trust(tmp_path, monkeypatch):
     from lionagi.protocols.action.manager import ActionManager
 
     project = tmp_path / "project"
@@ -282,9 +276,7 @@ async def test_create_agent_parses_model_provider_effort_and_yolo_kwargs(monkeyp
     import lionagi.cli._providers as providers_mod
     import lionagi.service.imodel as imodel_mod
 
-    monkeypatch.setitem(
-        providers_mod.PROVIDER_EFFORT_KWARG, "openai", "reasoning_effort"
-    )
+    monkeypatch.setitem(providers_mod.PROVIDER_EFFORT_KWARG, "openai", "reasoning_effort")
     monkeypatch.setitem(providers_mod.PROVIDER_YOLO_KWARGS, "openai", {"stream": True})
 
     real_init = imodel_mod.iModel.__init__
@@ -311,9 +303,7 @@ async def test_create_agent_parses_model_provider_effort_and_yolo_kwargs(monkeyp
 # ---------------------------------------------------------------------------
 
 
-async def test_create_agent_does_not_load_project_settings_without_trust(
-    tmp_path, monkeypatch
-):
+async def test_create_agent_does_not_load_project_settings_without_trust(tmp_path, monkeypatch):
     import lionagi.agent.settings as settings_mod
 
     (tmp_path / ".lionagi").mkdir(parents=True)
@@ -386,9 +376,7 @@ async def test_create_agent_model_without_slash_uses_model_as_provider(monkeypat
 
 
 async def test_create_agent_system_prompt_without_lion_system():
-    config = AgentConfig(
-        system_prompt="You are a helpful assistant.", lion_system=False
-    )
+    config = AgentConfig(system_prompt="You are a helpful assistant.", lion_system=False)
     branch = await create_agent(config, load_settings=False)
     sys_msg = branch.msgs.system
     assert sys_msg is not None
@@ -495,7 +483,6 @@ async def test_attach_hooks_adds_postprocessor_for_standalone_tool():
 
 
 async def test_register_coding_tools_skips_malformed_keys():
-
     config = AgentConfig.coding()
     config.hook_handlers["malformed_no_colon"] = [lambda *a: None]
     branch = await _make(config)
@@ -570,3 +557,54 @@ async def test_load_mcp_breaks_at_lionagi_dir(tmp_path, monkeypatch):
     )
 
     assert calls and calls[0] == str(mcp_file)
+
+
+# ---------------------------------------------------------------------------
+# AgentSpec path: create_agent accepts AgentSpec (back-compat with AgentConfig)
+# ---------------------------------------------------------------------------
+
+
+async def test_create_agent_agentspec_returns_branch():
+    from lionagi.agent.spec import AgentSpec
+
+    spec = AgentSpec.compose("analyst")
+    branch = await create_agent(spec, load_settings=False)
+    assert isinstance(branch, Branch)
+
+
+async def test_create_agent_agentspec_system_message_contains_role_body():
+    from lionagi.agent.spec import AgentSpec
+
+    spec = AgentSpec.compose("analyst")
+    branch = await create_agent(spec, load_settings=False)
+    assert spec.profile.role.body in branch.msgs.system.rendered
+
+
+async def test_create_agent_agentspec_with_tools_registers_tool():
+    from lionagi.agent.spec import AgentSpec
+
+    spec = AgentSpec.compose("analyst", tools=["reader"])
+    branch = await create_agent(spec, load_settings=False)
+    assert "reader_tool" in branch.acts.registry
+
+
+async def test_create_agent_agentspec_with_permissions_wires_preprocessor():
+    from lionagi.agent.spec import AgentSpec
+
+    spec = AgentSpec.compose("analyst", tools=["reader"], permissions="deny_all")
+    branch = await create_agent(spec, load_settings=False)
+    reader_tool = branch.acts.registry.get("reader_tool")
+    assert reader_tool is not None
+    assert reader_tool.preprocessor is not None
+
+
+async def test_create_agent_agentspec_deny_all_preprocessor_raises():
+    from lionagi.agent.spec import AgentSpec
+
+    spec = AgentSpec.compose("analyst", tools=["reader"], permissions="deny_all")
+    branch = await create_agent(spec, load_settings=False)
+    reader_tool = branch.acts.registry["reader_tool"]
+    import pytest
+
+    with pytest.raises(PermissionError):
+        await reader_tool.preprocessor({"action": "read", "path": "/tmp/x.py"})

@@ -11,11 +11,11 @@ from lionagi.session.branch import Branch
 from .config import AgentConfig
 
 if TYPE_CHECKING:
-    pass
+    from .spec import AgentSpec
 
 
 async def create_agent(
-    config: AgentConfig,
+    config: AgentConfig | AgentSpec,
     *,
     load_settings: bool = True,
     project_dir: str | None = None,
@@ -45,6 +45,14 @@ async def create_agent(
     Returns:
         A Branch ready to use with tools registered and hooks applied.
     """
+    from .spec import AgentSpec
+
+    if isinstance(config, AgentSpec):
+        return await _create_agent_from_spec(
+            config,
+            trust_project_settings=trust_project_settings,
+        )
+
     if load_settings:
         from .settings import apply_hooks_from_settings
         from .settings import load_settings as _load
@@ -107,6 +115,68 @@ async def create_agent(
     _apply_permissions(config)
     _register_tools(branch, config)
     await _load_mcp(branch, config, trust_project_settings=trust_project_settings)
+
+    return branch
+
+
+async def _create_agent_from_spec(
+    spec: AgentSpec,
+    *,
+    trust_project_settings: bool = False,
+) -> Branch:
+    """Create a Branch from an AgentSpec (orchestration-facing path)."""
+    from lionagi.service.imodel import iModel
+
+    branch_kwargs = {}
+
+    if spec.model:
+        from lionagi.cli._providers import (
+            PROVIDER_EFFORT_KWARG,
+            parse_model_spec,
+        )
+
+        ms = parse_model_spec(spec.model)
+        if "/" in ms.model:
+            provider, model_name = ms.model.split("/", 1)
+        else:
+            provider = model_name = ms.model
+
+        extra = {}
+        effort = spec.effort or ms.effort
+        if effort:
+            kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+            if kwarg:
+                extra[kwarg] = effort
+
+        branch_kwargs["chat_model"] = iModel(
+            provider=provider,
+            model=model_name,
+            api_key="dummy",
+            **extra,
+        )
+
+    branch = Branch(**branch_kwargs)
+
+    system_message = spec.build_system_message()
+    if system_message:
+        if spec.lion_system:
+            from lionagi.session.prompts import LION_SYSTEM_MESSAGE
+
+            full_prompt = LION_SYSTEM_MESSAGE.strip() + "\n\n" + system_message
+        else:
+            full_prompt = system_message
+        branch.msgs.set_system(branch.msgs.create_system(system=full_prompt))
+
+    # Use a minimal AgentConfig bridge for tool registration and permissions
+    # so we don't duplicate _register_tools/_apply_permissions logic.
+    bridge = AgentConfig(tools=list(spec.tools))
+    if spec.permissions is not None:
+        bridge.permissions = spec.permissions
+    _apply_permissions(bridge)
+    _register_tools(branch, bridge)
+
+    if op := spec.capability_operable():
+        branch.grant_capabilities(op)
 
     return branch
 
