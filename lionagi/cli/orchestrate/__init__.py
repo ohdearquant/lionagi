@@ -12,6 +12,7 @@ from lionagi.ln.concurrency import run_async
 
 from .._logging import hint, log_error
 from .._providers import add_common_cli_args
+from .charter import add_charter_subparser, run_charter
 from .fanout import _run_fanout
 from .flow import _run_flow
 
@@ -264,7 +265,9 @@ def add_orchestrate_subparser(
     )
     add_common_cli_args(fl)
 
-    return {"fanout": fo, "flow": fl}
+    ch = add_charter_subparser(orch_sub)
+
+    return {"fanout": fo, "flow": fl, "charter": ch}
 
 
 def _scan_argv_for_playbook_name(argv: list[str]) -> str | None:
@@ -951,6 +954,9 @@ def run_orchestrate(args: argparse.Namespace) -> int:
         from lionagi.cli.agent import _EXIT_CODE_BY_TERMINAL_STATUS
 
         return _EXIT_CODE_BY_TERMINAL_STATUS.get(terminal_status, 0)
+
+    if args.orch_command == "charter":
+        return run_charter(args)
 
     log_error(f"Unknown orchestrate command: {args.orch_command}")
     return 1

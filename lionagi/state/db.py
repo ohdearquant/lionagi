@@ -2273,6 +2273,282 @@ class StateDB:
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    # ── Runner handles (ADR-0056) ────────────────────────────────────
+
+    async def upsert_runner_handle(self, handle: Any) -> None:
+        now = time.time()
+        d = handle.model_dump() if hasattr(handle, "model_dump") else dict(handle)
+        state_val = d["state"]
+        if hasattr(state_val, "value"):
+            state_val = state_val.value
+        started = d.get("started_at")
+        if hasattr(started, "timestamp"):
+            started = started.timestamp()
+        metadata_json = json.dumps(d.get("metadata") or {})
+        await self.db.execute(
+            """INSERT INTO runner_handles (session_id, state, runner_type, pid, started_at, metadata, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id) DO UPDATE SET
+                 state=excluded.state, runner_type=excluded.runner_type,
+                 pid=excluded.pid, metadata=excluded.metadata, updated_at=excluded.updated_at""",
+            (
+                d["session_id"],
+                state_val,
+                d.get("runner_type", "local"),
+                d.get("pid"),
+                started,
+                metadata_json,
+                now,
+            ),
+        )
+        await self.db.commit()
+
+    async def get_runner_handle(self, session_id: str) -> Any:
+        from lionagi.runtime.control import RunnerHandle, RunnerState
+
+        cur = await self.db.execute(
+            "SELECT * FROM runner_handles WHERE session_id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        from datetime import datetime, timezone
+
+        started = d.get("started_at")
+        if isinstance(started, int | float):
+            started = datetime.fromtimestamp(started, tz=timezone.utc)
+        meta = d.get("metadata", "{}")
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        return RunnerHandle(
+            session_id=d["session_id"],
+            state=RunnerState(d["state"]),
+            runner_type=d.get("runner_type", "local"),
+            pid=d.get("pid"),
+            started_at=started,
+            metadata=meta,
+        )
+
+    async def create_control_request(
+        self,
+        *,
+        target_type: str,
+        target_id: str,
+        resolved_session_id: str,
+        action: Any,
+        requested_by: str | None = None,
+        reason: str | None = None,
+        idempotency_key: str | None = None,
+        expected_state: Any | None = None,
+        grace_seconds: float = 5.0,
+        cascade: bool = False,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        cr_id = uuid.uuid4().hex[:12]
+        now = time.time()
+        action_val = action.value if hasattr(action, "value") else str(action)
+        expected_val = (
+            expected_state.value
+            if hasattr(expected_state, "value")
+            else (str(expected_state) if expected_state else None)
+        )
+        metadata_json = json.dumps(metadata) if metadata else None
+        await self.db.execute(
+            """INSERT INTO run_control_requests
+               (id, target_type, target_id, resolved_session_id, action,
+                requested_by, reason, idempotency_key, expected_state,
+                grace_seconds, cascade, request_status, metadata, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                cr_id,
+                target_type,
+                target_id,
+                resolved_session_id,
+                action_val,
+                requested_by,
+                reason,
+                idempotency_key,
+                expected_val,
+                grace_seconds,
+                1 if cascade else 0,
+                "pending",
+                metadata_json,
+                now,
+            ),
+        )
+        await self.db.commit()
+        return {"id": cr_id, "action": action_val, "request_status": "pending"}
+
+    async def claim_control_request(self, cr_id: str) -> None:
+        now = time.time()
+        await self.db.execute(
+            "UPDATE run_control_requests SET request_status='claimed', claimed_at=? WHERE id=?",
+            (now, cr_id),
+        )
+        await self.db.commit()
+
+    async def complete_control_request(
+        self,
+        cr_id: str,
+        *,
+        request_status: str = "completed",
+        error: str | None = None,
+    ) -> None:
+        now = time.time()
+        await self.db.execute(
+            "UPDATE run_control_requests SET request_status=?, completed_at=?, error=? WHERE id=?",
+            (request_status, now, error, cr_id),
+        )
+        await self.db.commit()
+
+    async def transition_runner_state(
+        self,
+        session_id: str,
+        *,
+        new_state: Any,
+        reason_code: str,
+        reason_summary: str = "",
+        actor: str | None = None,
+        source: str = "executor",
+        control_request_id: str | None = None,
+    ) -> Any:
+        from lionagi.runtime.control import RunnerState
+
+        state_val = new_state.value if hasattr(new_state, "value") else str(new_state)
+        handle = await self.get_runner_handle(session_id)
+        if handle is None:
+            raise LookupError(f"runner handle not found: {session_id!r}")
+        now = time.time()
+        await self.db.execute(
+            "UPDATE runner_handles SET state=?, updated_at=? WHERE session_id=?",
+            (state_val, now, session_id),
+        )
+        await self.db.commit()
+        handle.state = RunnerState(state_val)
+        return handle
+
+    async def list_runner_controls(self, session_id: str) -> list[dict[str, Any]]:
+        cur = await self.db.execute(
+            "SELECT * FROM run_control_requests WHERE resolved_session_id=? ORDER BY created_at DESC",
+            (session_id,),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Work items (ADR-0065) ────────────────────────────────────────
+
+    async def create_work_item(self, item: dict[str, Any]) -> None:
+        now = time.time()
+        item_id = item.get("id") or uuid.uuid4().hex[:12]
+        args_json = json.dumps(item.get("args", {}))
+        deps_json = json.dumps(item.get("depends_on", []))
+        await self.db.execute(
+            """INSERT INTO work_items (id, worker_name, status, priority, args, depends_on,
+               session_id, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                item_id,
+                item["worker_name"],
+                item.get("status", "pending"),
+                item.get("priority", 0),
+                args_json,
+                deps_json,
+                item.get("session_id"),
+                now,
+                now,
+            ),
+        )
+        await self.db.commit()
+
+    async def get_work_item(self, item_id: str) -> dict[str, Any] | None:
+        cur = await self.db.execute("SELECT * FROM work_items WHERE id = ?", (item_id,))
+        row = await cur.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    async def list_work_items(
+        self,
+        *,
+        session_id: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        cur = await self.db.execute(
+            f"SELECT * FROM work_items{where} ORDER BY priority DESC, created_at",  # noqa: S608
+            tuple(params),
+        )
+        rows = await cur.fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    async def update_work_item(self, item_id: str, **fields: Any) -> None:
+        allowed = {"status", "priority", "args", "result", "error", "started_at", "completed_at"}
+        updates: list[str] = ["updated_at = ?"]
+        params: list[Any] = [time.time()]
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if k in ("args", "result", "depends_on"):
+                v = json.dumps(v)
+            updates.append(f"{k} = ?")
+            params.append(v)
+        params.append(item_id)
+        await self.db.execute(
+            f"UPDATE work_items SET {', '.join(updates)} WHERE id = ?",  # noqa: S608
+            tuple(params),
+        )
+        await self.db.commit()
+
+    async def save_worker_definition(self, definition: dict[str, Any]) -> None:
+        now = time.time()
+        def_id = definition.get("id") or uuid.uuid4().hex[:12]
+        cur = await self.db.execute(
+            "SELECT MAX(version) as max_v FROM worker_definitions WHERE name = ?",
+            (definition["name"],),
+        )
+        row = await cur.fetchone()
+        version = (row["max_v"] or 0) + 1 if row and row["max_v"] else 1
+        await self.db.execute(
+            """INSERT INTO worker_definitions (id, name, description, definition_yaml, version, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET
+                 definition_yaml=excluded.definition_yaml, description=excluded.description,
+                 version=excluded.version, updated_at=excluded.updated_at""",
+            (
+                def_id,
+                definition["name"],
+                definition.get("description"),
+                definition["definition_yaml"],
+                version,
+                now,
+                now,
+            ),
+        )
+        await self.db.commit()
+
+    async def get_worker_definition(self, name: str) -> dict[str, Any] | None:
+        cur = await self.db.execute(
+            "SELECT * FROM worker_definitions WHERE name = ?",
+            (name,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_worker_definitions(self) -> list[dict[str, Any]]:
+        cur = await self.db.execute(
+            "SELECT * FROM worker_definitions ORDER BY name",
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
     # ── Helpers ────────────────────────────────────────────────────────
 
     @staticmethod
@@ -2290,6 +2566,8 @@ class StateDB:
             "action_args",
             "artifact_contract_json",
             "artifact_verification_json",
+            "args",
+            "result",
         ):
             if key in d and isinstance(d[key], str):
                 try:

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactFlow, {
   Background,
   Controls,
-  MiniMap,
   addEdge,
   useNodesState,
   useEdgesState,
@@ -331,13 +330,7 @@ export default function WorkerCanvas({
             showInteractive={false}
             className="!bg-surface-raised !border-edge !shadow-none [&>button]:!bg-surface-raised [&>button]:!border-edge [&>button]:!text-content-secondary [&>button:hover]:!bg-surface-overlay [&>button:hover]:!text-content-primary"
           />
-          {nodes.length > 10 ? (
-            <MiniMap
-              nodeColor={() => "var(--edge-strong)"}
-              maskColor="rgba(0, 0, 0, 0.5)"
-              className="!bg-surface-raised !border-edge"
-            />
-          ) : null}
+          {/* MiniMap removed — hinders DAG navigation */}
 
           {/* Custom SVG markers */}
           <svg>
