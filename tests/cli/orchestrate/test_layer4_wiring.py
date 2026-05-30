@@ -54,9 +54,10 @@ class _FakeSession:
     def __init__(self, builder, plan):
         self.builder = builder
         self.plan = plan
+        self.observed_types: list = []
 
     def observe(self, event_type, handler):
-        pass  # no-op for testing
+        self.observed_types.append(event_type)
 
     async def flow(self, _graph, **_kwargs):
         plan_root = self.builder.added[0]["id"]
@@ -145,6 +146,11 @@ async def test_plan_accepts_valid_agent_with_modes_and_permissions(tmp_path):
     result = await _run_flow_inner("codex/gpt-5.5", "task", env=env, dry_run=True)
     # Should NOT be an "Invalid plan" error
     assert "Invalid plan" not in result
+    # _run_flow_inner must have registered EscalationRequest and Verdict observers
+    from lionagi.casts.capabilities import EscalationRequest, Verdict
+
+    assert EscalationRequest in env.session.observed_types
+    assert Verdict in env.session.observed_types
 
 
 # ── Planner roster includes roles, modes, permissions ───────────────────────
