@@ -192,7 +192,8 @@ enforcement.
 - `lionagi/ln/types/filters.py` — `Filter`, `TypeFilter`, `SpecFilter`,
   `FieldRef`, `as_filter`; `Spec.q` in `spec.py`.
 - `lionagi/session/signal.py` — `Signal`, `StructuredOutput`,
-  `ActionRequestSignal`, `ActionResponseSignal`.
+  `ActionRequestSignal`, `ActionResponseSignal`, and the run-lifecycle
+  `RunStart` / `RunEnd` / `RunFailed`.
 - `lionagi/session/observer.py` — `SessionObserver` (gate → store → route →
   dispatch; Filter-based).
 - `lionagi/session/capabilities.py` — `render_capabilities_prompt`,
