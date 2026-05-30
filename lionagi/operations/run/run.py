@@ -31,51 +31,56 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _attempt_extract(text: str, capabilities: Operable) -> Any | None:
-    """Parse a capability emission out of an assistant message into one bundle.
+def _attempt_extract(text: str, capabilities: Operable) -> list[Any]:
+    """Parse capability emissions out of an assistant message into bundles.
 
     A capability is a named typed field (a ``Spec``); ``capabilities`` is the
-    ``Operable`` of names the agent is allowed to produce. We pull JSON (raw or
-    ```json-fenced, fuzzy-tolerant) from ``text`` and, per Ocean's rule,
-    require ``set(keys) ⊆ capabilities.allowed()``:
+    ``Operable`` of names the agent is allowed to produce. We pull every JSON
+    object out of ``text`` (raw or ```json-fenced, fuzzy-tolerant) — a single
+    message may carry several blocks — and per block, per Ocean's rule, require
+    ``set(keys) ⊆ capabilities.allowed()``:
 
-    - no capability keys at all → ordinary prose/JSON, returns ``None``;
-    - keys ⊆ grant → validate via ``create_model`` and return the bundle: a
-      dynamic model with one field per present capability (a single response
-      can carry several — observers/filters then key off the named fields);
+    - no capability keys → ordinary prose/JSON, skipped;
+    - keys ⊆ grant → validated via ``create_model`` into a bundle (a dynamic
+      model with one field per present capability);
     - any key outside the grant → an *illegal* emission (the agent reaching
-      past its capabilities): dropped with a warning, returns ``None``.
+      past its capabilities): dropped with a warning.
+
+    Returns one bundle per valid block (often one, but the model may emit many
+    in a single response).
     """
     if not text or not isinstance(text, str):
-        return None
+        return []
     from lionagi.ln.fuzzy._extract_json import extract_json
 
     try:
-        data = extract_json(text, fuzzy_parse=True)
+        data = extract_json(text, fuzzy_parse=True, return_one_if_single=False)
     except Exception:
-        return None
-    if isinstance(data, list):
-        data = data[0] if data else None
-    if not isinstance(data, dict) or not data:
-        return None
+        return []
+    blocks = data if isinstance(data, list) else [data]
 
     allowed = capabilities.allowed()
-    keys = set(data.keys())
-    if keys.isdisjoint(allowed):
-        return None  # not a capability emission
-    if not keys <= allowed:
-        logger.warning(
-            "Illegal capability emission: keys %s outside grant %s",
-            keys - allowed,
-            allowed,
-        )
-        return None
-
-    model = capabilities.create_model(include=keys)
-    try:
-        return model.model_validate(data)
-    except Exception:
-        return None
+    bundles: list[Any] = []
+    for block in blocks:
+        if not isinstance(block, dict) or not block:
+            continue
+        keys = set(block.keys())
+        if keys.isdisjoint(allowed):
+            continue  # not a capability emission
+        if not keys <= allowed:
+            logger.warning(
+                "Illegal capability emission: keys %s outside grant %s",
+                keys - allowed,
+                allowed,
+            )
+            continue
+        model = capabilities.create_model(include=keys)
+        try:
+            bundles.append(model.model_validate(block))
+        except Exception as e:
+            logger.debug("Capability block failed validation, skipped: %s", e)
+            continue
+    return bundles
 
 
 async def _emit_message_signal(branch: Branch, msg: RoledMessage) -> None:
@@ -102,8 +107,7 @@ async def _emit_message_signal(branch: Branch, msg: RoledMessage) -> None:
     if isinstance(msg, AssistantResponse):
         capabilities = getattr(branch, "_capabilities", None)
         if capabilities is not None:
-            bundle = _attempt_extract(msg.response, capabilities)
-            if bundle is not None:
+            for bundle in _attempt_extract(msg.response, capabilities):
                 await branch.emit(StructuredOutput(data=bundle))
     elif isinstance(msg, ActionRequest):
         await branch.emit(ActionRequestSignal(data=msg))
