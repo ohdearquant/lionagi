@@ -112,12 +112,17 @@ class SessionObserver(Observer):
         """
         payload = _payload(event)
 
+        # The gate may deny by returning falsy OR by raising — both deny while
+        # the event is still recorded below (documented audit contract).
         allowed = True
         if self._gate is not None:
-            verdict = self._gate(payload)
-            if inspect.isawaitable(verdict):
-                verdict = await verdict
-            allowed = bool(verdict)
+            try:
+                verdict = self._gate(payload)
+                if inspect.isawaitable(verdict):
+                    verdict = await verdict
+                allowed = bool(verdict)
+            except Exception:
+                allowed = False
 
         self.flow.add_item(event)  # always recorded (audit trail)
         if not allowed:
@@ -132,12 +137,27 @@ class SessionObserver(Observer):
         ctx = self.session if self.session is not None else self
         results: list[Any] = []
         for flt, handler in self._subs:
-            for matched in flt.matches(payload):
+            for matched in self._match(flt, event, payload):
                 out = handler(matched, ctx)
                 if inspect.isawaitable(out):
                     out = await out
                 results.append(out)
         return results
+
+    @staticmethod
+    def _match(flt: Filter, event: Any, payload: Any) -> list[Any]:
+        """Matched values for a filter against an emitted event.
+
+        Filters run on the *payload* (a Signal's ``data``). Additionally, an
+        envelope-type subscription — ``observe(RunEnd)`` / ``observe(Signal)`` —
+        matches the Signal itself by exact ``isinstance``, so lifecycle signals
+        (whose payload is unset or a different type) are observable by their own
+        type without field-scanning the envelope.
+        """
+        matched = list(flt.matches(payload))
+        if event is not payload and isinstance(flt, TypeFilter) and isinstance(event, flt.type_):
+            matched.append(event)
+        return matched
 
     # -- Reads ----------------------------------------------------------------
 
@@ -150,9 +170,13 @@ class SessionObserver(Observer):
         return [self.flow.items[uid] for uid in prog]
 
     def by_type(self, event_type: type) -> list[Any]:
-        """Stored items whose payload is — or carries a field of — ``event_type``."""
+        """Stored items whose payload is — or carries a field of — ``event_type``.
+
+        Also matches the envelope by exact type, so lifecycle signals
+        (``by_type(RunEnd)``) are retrievable like dispatch-time subscriptions.
+        """
         flt = TypeFilter(event_type)
-        return [e for e in self.flow.items if flt.matches(_payload(e))]
+        return [e for e in self.flow.items if self._match(flt, e, _payload(e))]
 
     def _ensure_stream(self, name: str) -> Progression:
         try:

@@ -63,7 +63,11 @@ def _strip_capability_block(text: str) -> str:
         return text
     end = text.find(CAP_END, start)
     if end == -1:
-        return text[:start]
+        # Unbalanced markers (truncated block, or the begin marker appears in
+        # the user's own prompt): leave the text intact rather than discard
+        # everything after the marker — silent prompt corruption is worse than
+        # a stale block, which a re-grant overwrites cleanly.
+        return text
     return (text[:start] + text[end + len(CAP_END) :]).strip()
 
 
@@ -978,14 +982,29 @@ class Branch(Element, Relational):
             _pms.update(kwargs)
         from lionagi.operations.operate.operate import operate, prepare_operate_kw
 
-        result = await operate(self, **prepare_operate_kw(self, **_pms))
-        # A structured output is a capability emission: raise it onto the
-        # session's reactive bus so type-subscribed observers fire. No-op
-        # when the branch is standalone (no observer attached).
-        if self._observer is not None and isinstance(result, BaseModel):
-            from .signal import StructuredOutput
+        # Run lifecycle on the bus: RunStart → RunEnd(result) | RunFailed(exc).
+        # This is orthogonal to capabilities (no grant required) — it reports
+        # the run, not an exercised capability. ``RunEnd.data`` unwraps so
+        # ``session.observe(ResultType)`` still fires on the final result; the
+        # per-message capability bundles (run loop) are distinct payloads, so
+        # there is no double-emit. No-op when the branch is standalone.
+        has_observer = self._observer is not None
+        if has_observer:
+            from .signal import RunStart
 
-            await self.emit(StructuredOutput(data=result))
+            await self.emit(RunStart())
+        try:
+            result = await operate(self, **prepare_operate_kw(self, **_pms))
+        except Exception as exc:
+            if has_observer:
+                from .signal import RunFailed
+
+                await self.emit(RunFailed(data=exc))
+            raise
+        if has_observer:
+            from .signal import RunEnd
+
+            await self.emit(RunEnd(data=result))
         return result
 
     async def communicate(

@@ -35,10 +35,11 @@ def _attempt_extract(text: str, capabilities: Operable) -> tuple[list[Any], list
     """Parse capability emissions out of an assistant message.
 
     A capability is a named typed field (a ``Spec``); ``capabilities`` is the
-    ``Operable`` of names the agent is allowed to produce. We pull every JSON
-    object out of ``text`` (raw or ```json-fenced, fuzzy-tolerant) — a single
-    message may carry several blocks — and per block, per Ocean's rule, require
-    ``set(keys) ⊆ capabilities.allowed()``:
+    ``Operable`` of names the agent is allowed to produce. We pull every fenced
+    ````json`` block out of ``text`` (fuzzy-tolerant; the injected prompt asks
+    the model to fence its emissions) — a single message may carry several
+    blocks; un-fenced JSON embedded in prose is *not* extracted — and per block,
+    per Ocean's rule, require ``set(keys) ⊆ capabilities.allowed()``:
 
     - no capability keys → ordinary prose/JSON, skipped;
     - keys ⊆ grant → validated via ``create_model`` into a bundle (a dynamic

@@ -111,6 +111,34 @@ def test_revoke_clears_and_strips():
     assert "Base prompt." in sys_text
 
 
+def test_strip_leaves_unbalanced_markers_intact():
+    # If the begin marker is present without a matching end marker (truncated
+    # block, or the user's own prompt contains the marker text), stripping must
+    # NOT discard everything after it — that would corrupt the user's prompt.
+    from lionagi.session.branch import _strip_capability_block
+
+    text = f"Important user instructions.\n{CAP_BEGIN}\nhalf a block, no end"
+    assert _strip_capability_block(text) == text  # unchanged
+
+    # A balanced block is still removed cleanly.
+    balanced = f"Keep me.\n{CAP_BEGIN}\nblock body\n{CAP_END}\nKeep me too."
+    stripped = _strip_capability_block(balanced)
+    assert CAP_BEGIN not in stripped and CAP_END not in stripped
+    assert "Keep me." in stripped and "Keep me too." in stripped
+
+
+def test_grant_then_revoke_preserves_user_marker_text():
+    # A user system prompt that happens to contain the begin marker is not
+    # corrupted by a grant/revoke cycle when its block is balanced.
+    s = Session()
+    branch = s.default_branch
+    branch.msgs.set_system(branch.msgs.create_system(system="Base prompt."))
+    branch.grant_capabilities(_grant())
+    branch.revoke_capabilities()
+    sys_text = branch.msgs.system.content.system_message
+    assert "Base prompt." in sys_text
+
+
 # -- end-to-end: grant → emit → observe -------------------------------------
 
 

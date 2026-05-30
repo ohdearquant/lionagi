@@ -26,11 +26,14 @@ the Operable system (sets, dedup, caches).
 
 from __future__ import annotations
 
+import logging
 import operator
 from collections.abc import Callable
 from typing import Any
 
 __all__ = ("Filter", "TypeFilter", "SpecFilter", "FieldRef", "as_filter")
+
+logger = logging.getLogger(__name__)
 
 
 def field_values(payload: Any) -> dict[str, Any]:
@@ -87,18 +90,29 @@ class SpecFilter(Filter):
 
     Built by ``FieldRef`` comparisons (``spec.q == value``), by composition,
     and by wrapping a plain callable. Hands back the payload on a match.
+
+    ``safe`` (set by ``FieldRef``) swallows exceptions — a missing or
+    type-incompatible field is just a non-match, by design. Arbitrary user
+    predicates wrapped via :func:`as_filter` are **not** safe: their exceptions
+    are logged with the predicate repr (so a buggy subscription is visible) and
+    then treated as a non-match rather than silently disappearing.
     """
 
-    __slots__ = ("_fn", "_repr")
+    __slots__ = ("_fn", "_repr", "safe")
 
-    def __init__(self, fn: Callable[[Any], bool], repr_: str = "SpecFilter") -> None:
+    def __init__(
+        self, fn: Callable[[Any], bool], repr_: str = "SpecFilter", *, safe: bool = False
+    ) -> None:
         self._fn = fn
         self._repr = repr_
+        self.safe = safe
 
     def matches(self, payload: Any) -> list[Any]:
         try:
             return [payload] if self._fn(payload) else []
         except Exception:
+            if not self.safe:
+                logger.warning("Filter predicate %s raised on payload", self._repr, exc_info=True)
             return []
 
     def __repr__(self) -> str:
@@ -137,7 +151,7 @@ class FieldRef:
                 return False
             return op(values[name], other)
 
-        return SpecFilter(check, f"{name}{sym}{other!r}")
+        return SpecFilter(check, f"{name}{sym}{other!r}", safe=True)
 
     def __eq__(self, other: Any) -> SpecFilter:  # type: ignore[override]
         return self._cmp(operator.eq, other, "==")
@@ -162,6 +176,6 @@ class FieldRef:
 
     def present(self) -> SpecFilter:
         name = self.name
-        return SpecFilter(lambda p: field_values(p).get(name) is not None, f"{name}?")
+        return SpecFilter(lambda p: field_values(p).get(name) is not None, f"{name}?", safe=True)
 
     __hash__ = None  # type: ignore[assignment]  # __eq__ returns a Filter, not a bool

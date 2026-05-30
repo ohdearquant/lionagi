@@ -87,8 +87,12 @@ those Specs, held on `branch.capabilities` (the runtime carrier). The streaming
 `run` loop — the single chokepoint for both `branch.run` and operate-CLI — parses
 every assistant message:
 
-- Pull every JSON object out of the text (raw or ```json-fenced,
-  fuzzy-tolerant). A single response may carry several blocks.
+- Pull every fenced ```json block out of the text (fuzzy-tolerant; the
+  injected prompt instructs the model to fence its emissions). A single
+  response may carry several blocks. A response that is *itself* one JSON
+  object is also parsed, but un-fenced JSON **embedded in surrounding prose**
+  is not extracted — fencing is the contract, which avoids false positives on
+  incidental JSON.
 - Per block, apply the legality rule **`set(keys) ⊆ grant`**:
   - **disjoint** (no granted keys) → ordinary prose/JSON, ignored;
   - **subset** → validate via `operable.create_model(include=keys)
@@ -109,8 +113,25 @@ the extractor validates against, plus the prose mirror of the `keys ⊆ grant`
 rule — so the prose can never drift from what is actually extractable.
 
 `response_format` (the final-output strict parse) and `capabilities`
-(per-message emission) are **independent, orthogonal knobs**. With no grant,
-behavior is exactly as before.
+(per-message emission) are **independent, orthogonal knobs**.
+
+### Run lifecycle signals
+
+`branch.operate` emits a lifecycle triple onto the bus: `RunStart` →
+`RunEnd(data=result)` on success, or `RunFailed(data=exc)` on error. These are
+orthogonal to capabilities — they report the *run*, not an exercised
+capability, so they require **no grant**. Observe them by their own envelope
+type (`session.observe(RunEnd)`); because `RunEnd.data` unwraps, a plain
+`session.observe(ResultType)` also fires on the final result. The per-message
+capability bundles are distinct dynamic-model payloads, so there is no
+double-emit between the two channels.
+
+Lifecycle emission is gated only on *having a session observer attached* — a
+**standalone branch (no observer) emits nothing, so its behavior is exactly as
+before.** Within a session, the final result is intentionally surfaced on the
+bus (it is the most important event of the run); this replaces the earlier,
+ambiguous "emit any `BaseModel` result as `StructuredOutput`" path, which
+conflated lifecycle with capability emission and could double-fire on CLI.
 
 ### Governing principle: the observer registry *is* the capability registry
 

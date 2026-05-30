@@ -104,3 +104,29 @@ def test_field_ref_not_hashable():
 
     with pytest.raises(TypeError):
         {flower.q}  # noqa: B018
+
+
+# -- exception handling: FieldRef-safe vs user-predicate visible ------------
+
+
+def test_field_ref_filter_safe_on_missing_field():
+    # A FieldRef comparison on a payload lacking the field is a quiet non-match.
+    flower = Spec(str, name="flower_name")
+    flt = flower.q == "rose"
+    assert flt.safe is True
+    assert flt.matches(Bundle(flower_name="rose")) == [Bundle(flower_name="rose")]
+    # a model without the field — safe, returns no match, raises nothing
+    assert flt.matches(Finding(claim="x")) == []
+
+
+def test_user_predicate_exception_is_logged_not_silent(caplog):
+    import logging
+
+    def boom(_payload):
+        raise RuntimeError("predicate bug")
+
+    flt = as_filter(boom)
+    assert flt.safe is False
+    with caplog.at_level(logging.WARNING, logger="lionagi.ln.types.filters"):
+        assert flt.matches(Finding(claim="x")) == []  # no crash, no match
+    assert any("raised on payload" in r.message for r in caplog.records)

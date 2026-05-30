@@ -29,6 +29,9 @@ __all__ = (
     "StructuredOutput",
     "ActionRequestSignal",
     "ActionResponseSignal",
+    "RunStart",
+    "RunEnd",
+    "RunFailed",
 )
 
 
@@ -58,3 +61,24 @@ class ActionResponseSignal(Signal):
     """A tool-result emission. ``data`` is the resolved ``ActionResponse``."""
 
     data: ActionResponse
+
+
+# -- Run lifecycle ------------------------------------------------------------
+# Lifecycle signals report the *fact* that a run began / ended / failed — a
+# concern orthogonal to capability emission (which requires a grant). They fire
+# whenever a session observer is attached, regardless of grant; a standalone
+# branch (no observer) emits nothing, so its behavior is unchanged. Observed by
+# their own envelope type (``session.observe(RunEnd)``); ``RunEnd.data`` also
+# unwraps so ``session.observe(MyModel)`` fires on the final result.
+
+
+class RunStart(Signal):
+    """A run is beginning. ``data`` is unset (a lifecycle marker)."""
+
+
+class RunEnd(Signal):
+    """A run completed. ``data`` is the final result (model, dict, or text)."""
+
+
+class RunFailed(Signal):
+    """A run raised. ``data`` is the exception that aborted it."""

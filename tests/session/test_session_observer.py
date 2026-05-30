@@ -72,6 +72,27 @@ async def test_gate_denies_dispatch_but_records():
     assert len(s.observer.by_type(DepthRequested)) == 2
 
 
+async def test_gate_raise_denies_but_still_records():
+    # A gate that raises denies dispatch — but the event is still recorded,
+    # and the exception does not propagate out of emit (audit contract).
+    s = Session()
+    fired = []
+
+    @s.observe(DepthRequested)
+    def on_depth(event, session):
+        fired.append(event.question)
+
+    def raising_gate(_event):
+        raise RuntimeError("gate exploded")
+
+    s.gate(raising_gate)
+
+    results = await s.emit(DepthRequested(question="x", novelty=0.9))
+    assert results == []  # no dispatch
+    assert fired == []
+    assert len(s.observer.by_type(DepthRequested)) == 1  # recorded despite raise
+
+
 async def test_route_condition_stream():
     s = Session()
     s.route(lambda e: getattr(e, "novelty", 0) > 0.7, into="high_novelty")
