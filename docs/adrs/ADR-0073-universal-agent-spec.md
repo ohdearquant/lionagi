@@ -186,9 +186,13 @@ def capability_models(role: str) -> tuple[type[BaseModel], ...]:
 def capability_operable(role: str) -> Operable | None:
     """Build the Operable grant for a role. None when the role has no
     capabilities mapped (then the caller skips grant_capabilities)."""
-    models = capability_models(role)
-    if not models:
+    # Errata (PR #1211): the earlier pseudocode used `if not models: return None`,
+    # which can never be True because capability_models() always returns at least
+    # (EscalationRequest,).  The correct guard is `if role not in ROLE_CAPABILITIES`,
+    # which matches the implementation in lionagi/casts/capabilities.py:203.
+    if role not in ROLE_CAPABILITIES:
         return None
+    models = capability_models(role)
     specs = tuple(Spec(m, name=_field_name(m)) for m in models)
     return Operable(specs, name=f"{role}_capabilities")
 ```

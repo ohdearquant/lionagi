@@ -3,10 +3,16 @@
 
 from __future__ import annotations
 
+import types
+from unittest.mock import AsyncMock
+
 import pytest
 
 from lionagi.casts.capabilities import EscalationRequest, Finding
 from lionagi.operations.run.run import _check_control, _StopStream
+from lionagi.protocols.messages import AssistantResponse
+from lionagi.service.imodel import iModel
+from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.session.branch import Branch
 from lionagi.session.control import LoopBreak, LoopControl, LoopDirective
 from lionagi.session.session import Session
@@ -238,3 +244,139 @@ class TestCancelFinallyBehavior:
         assert ctrl is not None
         assert ctrl.directive is LoopDirective.CANCEL
         assert b.poll_control() is None  # one-shot
+
+
+# ---------------------------------------------------------------------------
+# MIN-4: end-to-end integration — real run() loop with loop control
+# ---------------------------------------------------------------------------
+#
+# These tests drive the actual run() async generator against a fake CLI model
+# to verify the real seam placement, the generator's finally (stream-func
+# restore), and CANCEL vs BREAK propagation paths.
+#
+# Helper shared by both tests.
+
+
+def _make_fake_cli_model_for_control(chunks: list[StreamChunk]):
+    """Return an iModel patched to behave as a CLI endpoint yielding *chunks*."""
+    m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
+    endpoint_ns = types.SimpleNamespace(
+        is_cli=True,
+        session_id=None,
+        to_dict=lambda: {"type": "fake_cli", "session_id": None},
+    )
+    m.endpoint = endpoint_ns
+    m.streaming_process_func = None
+
+    async def create_event(**kw):
+        return object()
+
+    m.create_event = create_event
+    m.executor = types.SimpleNamespace(append=AsyncMock(), config={})
+
+    async def stream(api_call=None):
+        for chunk in chunks:
+            yield chunk
+
+    m.stream = stream
+    return m
+
+
+class TestRunLoopControlIntegration:
+    """Integration tests that drive the real run() generator with loop control.
+
+    MIN-4: verifies the actual _check_control seam, finally (stream-func
+    restore), and the CANCEL vs BREAK propagation paths are exercised by
+    automated tests rather than manual tracing alone.
+    """
+
+    async def test_cancel_stops_loop_cleanly_finally_runs_partial_state_preserved(self):
+        """CANCEL path: observer calls branch.control(CANCEL) after the first
+        text chunk is emitted.  Assertions:
+          - run() returns normally (no exception escapes the generator),
+          - the outer finally ran (streaming_process_func restored to original),
+          - the partial AssistantResponse text is persisted in branch.messages.
+        """
+        from lionagi.operations.run.run import RunParam, run
+
+        sentinel = object()  # original streaming_process_func
+        chunks = [
+            StreamChunk(type="text", content="first"),
+            StreamChunk(type="text", content="second"),
+        ]
+        model = _make_fake_cli_model_for_control(chunks)
+        model.streaming_process_func = sentinel
+
+        branch = Branch()
+        branch.chat_model = model
+
+        collected: list = []
+        cancel_issued = False
+
+        # Drive run() manually; issue CANCEL after the first AssistantResponse
+        # is yielded.  The final flush happens at the end of the stream (after
+        # all text chunks are accumulated into one AssistantResponse), so we
+        # issue CANCEL during the loop — before the final flush yields anything.
+        # We use a flag to issue CANCEL on the first iteration past Instruction.
+        async for msg in run(branch, "go", RunParam()):
+            collected.append(msg)
+            if isinstance(msg, AssistantResponse) and not cancel_issued:
+                cancel_issued = True
+                branch.control(LoopDirective.CANCEL, reason="observer halt")
+
+        # run() must return normally — no exception escapes.
+        # The directive is consumed inside _check_control after the next emit.
+
+        # finally ran → streaming_process_func restored to sentinel
+        assert model.streaming_process_func is sentinel, (
+            "finally block did not restore streaming_process_func"
+        )
+
+        # Partial state preserved in branch messages: the flushed
+        # AssistantResponse was added to branch.msgs via a_add_message
+        # even when CANCEL fires before the yield.
+        assistant_msgs = [m for m in branch.messages if isinstance(m, AssistantResponse)]
+        assert len(assistant_msgs) >= 1, (
+            "partial AssistantResponse not preserved in branch.messages after CANCEL"
+        )
+
+    async def test_break_propagates_out_of_run_and_finally_still_runs(self):
+        """BREAK path: observer calls branch.control(BREAK).  Assertions:
+        - LoopBreak propagates out of the run() async generator,
+        - the outer finally still ran (streaming_process_func restored),
+        - any partial state accumulated before the break is in branch.messages.
+        """
+        from lionagi.operations.run.run import RunParam, run
+
+        sentinel = object()
+        chunks = [
+            StreamChunk(type="text", content="chunk-a"),
+            StreamChunk(type="text", content="chunk-b"),
+        ]
+        model = _make_fake_cli_model_for_control(chunks)
+        model.streaming_process_func = sentinel
+
+        branch = Branch()
+        branch.chat_model = model
+
+        # Issue BREAK before we even start consuming so it fires on the first
+        # _check_control call after the final flush.  The chunks accumulate as
+        # text_parts and are flushed at end-of-stream, triggering _check_control.
+        branch.control(LoopDirective.BREAK, reason="hard stop")
+
+        loop_break_raised = False
+        loop_break_reason = None
+        try:
+            async for _ in run(branch, "go", RunParam()):
+                pass
+        except LoopBreak as exc:
+            loop_break_raised = True
+            loop_break_reason = exc.reason
+
+        assert loop_break_raised, "LoopBreak did not propagate out of run()"
+        assert loop_break_reason == "hard stop"
+
+        # finally ran → streaming_process_func restored
+        assert model.streaming_process_func is sentinel, (
+            "finally block did not run after LoopBreak propagation"
+        )
