@@ -879,23 +879,30 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             return 1
 
         if background:
+            import os as _os
             import subprocess
+            import uuid as _uuid
             from pathlib import Path as _Path
 
+            # Pre-generate the session ID so the parent can print a monitor handle
+            # before the subprocess starts. The subprocess picks it up via env var.
+            bg_session_id = str(_uuid.uuid4())
             bg_args = [a for a in sys.argv[1:] if a != "--background"]
             log_root = _Path(args.save).expanduser()
             log_root.mkdir(parents=True, exist_ok=True)
             log_path = log_root / "flow.log"
+            bg_env = {**_os.environ, "LIONAGI_SESSION_ID": bg_session_id}
             with open(log_path, "w") as log_f:
                 proc = subprocess.Popen(  # noqa: S603
                     [sys.executable, "-m", "lionagi.cli", *bg_args],
                     stdout=log_f,
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
+                    env=bg_env,
                 )
             hint(f"Flow running in background (PID {proc.pid})")
+            hint(f"Session: {bg_session_id[:16]}  →  li monitor {bg_session_id[:16]}")
             hint(f"Output: {log_path}")
-            hint(f"Monitor: tail -f {log_path}")
             return 0
 
         synth = args.with_synthesis
