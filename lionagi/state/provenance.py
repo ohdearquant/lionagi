@@ -48,9 +48,7 @@ def _hash_file(path: Path) -> str:
     return hashlib.sha256(data).hexdigest()[:_AGENT_HASH_LEN]
 
 
-def resolve_model_spec(
-    provider: str | None, model: str | None
-) -> str | None:
+def resolve_model_spec(provider: str | None, model: str | None) -> str | None:
     """Produce the canonical ``"provider/model"`` string for storage.
 
     ADR-0022 requires the stored value to be the resolved spec, not the

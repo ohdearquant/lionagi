@@ -559,3 +559,85 @@ CREATE INDEX IF NOT EXISTS idx_status_transitions_reason
   ON status_transitions(reason_code, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_status_transitions_created
   ON status_transitions(created_at DESC);
+
+-- ── Runner handles (ADR-0056) ───────────────────────────────────────────
+-- One row per active runner, keyed by the session it executes.
+
+CREATE TABLE IF NOT EXISTS runner_handles (
+  session_id      TEXT    PRIMARY KEY REFERENCES sessions(id),
+  state           TEXT    NOT NULL DEFAULT 'pending',
+  runner_type     TEXT    NOT NULL DEFAULT 'local',
+  pid             INTEGER,
+  started_at      REAL    NOT NULL,
+  metadata        JSON    NOT NULL DEFAULT '{}',
+  updated_at      REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_runner_handles_state
+  ON runner_handles(state);
+
+-- ── Run control requests (ADR-0056) ─────────────────────────────────────
+-- Append-only log of control verbs dispatched against runners.
+
+CREATE TABLE IF NOT EXISTS run_control_requests (
+  id                    TEXT    PRIMARY KEY,
+  target_type           TEXT    NOT NULL,
+  target_id             TEXT    NOT NULL,
+  resolved_session_id   TEXT    NOT NULL REFERENCES sessions(id),
+  action                TEXT    NOT NULL,
+  requested_by          TEXT,
+  reason                TEXT,
+  idempotency_key       TEXT,
+  expected_state        TEXT,
+  grace_seconds         REAL,
+  cascade               INTEGER NOT NULL DEFAULT 0,
+  request_status        TEXT    NOT NULL DEFAULT 'pending',
+  error                 TEXT,
+  metadata              JSON,
+  created_at            REAL    NOT NULL,
+  claimed_at            REAL,
+  completed_at          REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_control_session
+  ON run_control_requests(resolved_session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_run_control_status
+  ON run_control_requests(request_status);
+
+-- ── Work items (ADR-0065) ──────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS work_items (
+  id              TEXT    PRIMARY KEY,
+  worker_name     TEXT    NOT NULL,
+  status          TEXT    NOT NULL DEFAULT 'pending'
+                  CHECK(status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
+  priority        INTEGER NOT NULL DEFAULT 0,
+  args            JSON    NOT NULL DEFAULT '{}',
+  depends_on      JSON    NOT NULL DEFAULT '[]',
+  result          JSON,
+  error           TEXT,
+  session_id      TEXT    REFERENCES sessions(id),
+  created_at      REAL    NOT NULL,
+  updated_at      REAL    NOT NULL,
+  started_at      REAL,
+  completed_at    REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status);
+CREATE INDEX IF NOT EXISTS idx_work_items_worker ON work_items(worker_name);
+CREATE INDEX IF NOT EXISTS idx_work_items_priority ON work_items(priority DESC);
+CREATE INDEX IF NOT EXISTS idx_work_items_session ON work_items(session_id) WHERE session_id IS NOT NULL;
+
+-- ── Worker definitions (ADR-0065) ──────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS worker_definitions (
+  id              TEXT    PRIMARY KEY,
+  name            TEXT    NOT NULL UNIQUE,
+  description     TEXT,
+  definition_yaml TEXT    NOT NULL,
+  version         INTEGER NOT NULL DEFAULT 1,
+  created_at      REAL    NOT NULL,
+  updated_at      REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_worker_defs_name ON worker_definitions(name);
