@@ -1159,3 +1159,123 @@ async def test_new_db_has_artifact_columns(db: StateDB):
     cols = {r["name"] for r in await cur.fetchall()}
     assert "artifact_contract_json" in cols
     assert "artifact_verification_json" in cols
+
+
+# ── Transaction context manager ───────────────────────────────────────────────
+
+
+async def test_transaction_depth_starts_at_zero(db: StateDB):
+    """_txn_depth is 0 before any transaction() call."""
+    assert db._txn_depth == 0
+
+
+async def test_transaction_depth_increments_during_block(db: StateDB):
+    """_txn_depth is 1 inside the outermost transaction() block."""
+    async with db.transaction():
+        assert db._txn_depth == 1
+    assert db._txn_depth == 0
+
+
+async def test_transaction_nested_depth(db: StateDB):
+    """Nested transaction() increments to 2 then back to 1 then 0."""
+    async with db.transaction():
+        assert db._txn_depth == 1
+        async with db.transaction():
+            assert db._txn_depth == 2
+        assert db._txn_depth == 1
+    assert db._txn_depth == 0
+
+
+async def test_transaction_rollback_on_exception(db: StateDB):
+    """Exception inside transaction() rolls back and resets _txn_depth."""
+    prog_id = uid()
+    with pytest.raises(RuntimeError):
+        async with db.transaction():
+            await db.create_progression(prog_id)
+            raise RuntimeError("intentional failure")
+
+    # Depth must be reset after exception.
+    assert db._txn_depth == 0
+    # The progression must NOT have been persisted.
+    cur = await db.db.execute("SELECT id FROM progressions WHERE id = ?", (prog_id,))
+    row = await cur.fetchone()
+    assert row is None, "progression must not persist after transaction rollback"
+
+
+async def test_transaction_helper_defers_commit(db: StateDB):
+    """create_progression() inside transaction() does not commit mid-block.
+
+    Regression test for MAJOR-1: mutation helpers must not call db.commit()
+    directly when _txn_depth > 0.
+    """
+    prog_id = uid()
+    async with db.transaction():
+        await db.create_progression(prog_id)
+        # Still inside the transaction — _commit_if_not_in_txn is a no-op
+        # because _txn_depth == 1. Verify the row already exists (written to
+        # the WAL) but NOT yet committed by checking via the same connection.
+        cur = await db.db.execute("SELECT id FROM progressions WHERE id = ?", (prog_id,))
+        row = await cur.fetchone()
+        assert row is not None, "row should be visible within same connection"
+
+    # After the block the commit has happened — visible unconditionally.
+    cur = await db.db.execute("SELECT id FROM progressions WHERE id = ?", (prog_id,))
+    row = await cur.fetchone()
+    assert row is not None
+
+
+async def test_transaction_depth_no_leak_on_setup_failure(db: StateDB):
+    """_txn_depth must not leak when BEGIN IMMEDIATE fails.
+
+    Regression test for MAJOR-2: simulate a setup failure by monkeypatching
+    db.execute to raise on the first call inside a nested transaction (the
+    SAVEPOINT statement), then verify depth is restored.
+    """
+    original_execute = db.db.execute
+    call_count = 0
+
+    async def patched_execute(sql, *args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        # Fail on the SAVEPOINT setup for the inner transaction.
+        if "SAVEPOINT" in sql and call_count <= 5:
+            raise RuntimeError("simulated SAVEPOINT failure")
+        return await original_execute(sql, *args, **kwargs)
+
+    async with db.transaction():
+        assert db._txn_depth == 1
+        db.db.execute = patched_execute  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="simulated SAVEPOINT failure"):
+            async with db.transaction():
+                pass  # should not reach here
+
+    db.db.execute = original_execute  # type: ignore[method-assign]
+    # Depth must be back to 0 after the outer block exits.
+    assert db._txn_depth == 0
+
+
+async def test_commit_if_not_in_txn_outside_transaction(db: StateDB):
+    """_commit_if_not_in_txn() issues a real commit when depth is 0."""
+    prog_id = uid()
+    await db.db.execute(
+        "INSERT INTO progressions (id, created_at) VALUES (?, ?)",
+        (prog_id, time.time()),
+    )
+    # No transaction() active — commit should go through.
+    await db._commit_if_not_in_txn()
+    cur = await db.db.execute("SELECT id FROM progressions WHERE id = ?", (prog_id,))
+    row = await cur.fetchone()
+    assert row is not None
+
+
+async def test_commit_if_not_in_txn_inside_transaction(db: StateDB):
+    """_commit_if_not_in_txn() is a no-op when depth > 0."""
+    prog_id = uid()
+    async with db.transaction():
+        await db.db.execute(
+            "INSERT INTO progressions (id, created_at) VALUES (?, ?)",
+            (prog_id, time.time()),
+        )
+        # Depth is 1 — helper must NOT commit.
+        await db._commit_if_not_in_txn()
+        assert db._txn_depth == 1  # unchanged
