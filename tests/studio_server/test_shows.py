@@ -1,0 +1,232 @@
+"""Hermetic tests for the /api/shows routes.
+
+All filesystem roots are redirected to tmp_path via monkeypatching so these
+tests run on any machine without pre-existing show directories.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+from pathlib import Path
+
+import pytest
+
+fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
+from fastapi.testclient import TestClient  # noqa: E402 — must follow importorskip
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def shows_root(tmp_path: Path) -> Path:
+    return tmp_path / "shows"
+
+
+@pytest.fixture()
+def patched_app(shows_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Return a TestClient whose SHOWS_ROOT is redirected to a tmp directory.
+
+    Also redirects DEFAULT_DB_PATH to a non-existent fake DB so that
+    _list_shows_db() returns no rows (forcing the filesystem fallback that
+    reads from the patched SHOWS_ROOT, not the real state.db).
+    """
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.config as config_mod
+    import lionagi.studio.services.shows as shows_mod
+
+    shows_root.mkdir(parents=True, exist_ok=True)
+    fake_db = tmp_path / "state.db"  # does not exist → _db_available() returns False
+    monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(shows_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(shows_mod, "_DB", str(fake_db))
+
+    from lionagi.studio.app import app
+
+    return TestClient(app)
+
+
+@pytest.fixture()
+def show_with_play(shows_root: Path) -> str:
+    """Create a minimal show directory with one play and return its topic."""
+    topic = "test-show"
+    show_dir = shows_root / topic
+    play_dir = show_dir / "play-001"
+    play_dir.mkdir(parents=True)
+
+    (show_dir / "_show.md").write_text("# Show: test-show\n\nA test show.")
+    meta = {
+        "status": "success",
+        "started_at": "2024-01-01T00:00:00Z",
+        "branch": "show/test-show/play-001",
+    }
+    (play_dir / "_meta.json").write_text(json.dumps(meta))
+    verdict = {"gate_passed": True}
+    (play_dir / "_verdict.json").write_text(json.dumps(verdict))
+
+    return topic
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_shows_list_returns_array(patched_app):
+    r = patched_app.get("/api/shows")
+    assert r.status_code == 200
+    assert isinstance(r.json(), list)
+
+
+def test_shows_list_contains_fixture(patched_app, show_with_play):
+    r = patched_app.get("/api/shows")
+    assert r.status_code == 200
+    topics = {item["topic"] for item in r.json()}
+    assert show_with_play in topics
+
+
+def test_show_detail_has_meta(patched_app, show_with_play):
+    r = patched_app.get(f"/api/shows/{show_with_play}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["topic"] == show_with_play
+    assert isinstance(data["show_md"], str)
+    plays = data["plays"]
+    assert isinstance(plays, list)
+    assert len(plays) > 0
+
+
+def test_show_detail_status_source_is_filesystem_without_db(patched_app, show_with_play):
+    """GET /api/shows/{topic} must set status_source == 'filesystem' strictly
+    when no DB is available (H-BE-1 filesystem path).
+
+    ADR-0011 §"Show status provenance": the patched_app fixture forces a
+    non-existent fake DB path, so _db_available() returns False and the
+    filesystem fallback path is taken.  status_source must be exactly
+    "filesystem", not "sqlite" or any other value.
+    """
+    r = patched_app.get(f"/api/shows/{show_with_play}")
+    assert r.status_code == 200
+    data = r.json()
+    assert "status_source" in data, "status_source field missing from GET /api/shows/{topic}"
+    assert data["status_source"] == "filesystem", (
+        f"status_source must be 'filesystem' (no DB), got {data['status_source']!r}"
+    )
+
+
+def test_show_detail_not_found(patched_app):
+    r = patched_app.get("/api/shows/nonexistent-topic")
+    assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Path traversal tests (Fix 1)
+# ---------------------------------------------------------------------------
+
+
+def test_path_traversal_encoded_dotdot_shows(patched_app):
+    """URL-encoded %2e%2e must not escape SHOWS_ROOT."""
+    r = patched_app.get("/api/shows/%2e%2e")
+    assert r.status_code == 404
+
+
+def test_path_traversal_encoded_slash_shows(patched_app):
+    """Encoded slash in topic must be rejected."""
+    r = patched_app.get("/api/shows/aaa%2Fbbb")
+    assert r.status_code == 404
+
+
+def test_path_traversal_double_dotdot_shows(patched_app):
+    """Double dotdot segment must be rejected."""
+    r = patched_app.get("/api/shows/../../../etc")
+    # FastAPI normalises raw /.. to 404 before it reaches our code.
+    # Either way, must not be 200.
+    assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM: strict status_source provenance (H-BE-1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def sqlite_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Return a TestClient backed by a real SQLite DB with one show row.
+
+    The DB is populated with a row in the 'shows' table so that get_show()
+    takes the SQLite code path and sets status_source == 'sqlite'.
+    """
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.config as config_mod
+    import lionagi.studio.services.shows as shows_mod
+
+    shows_root = tmp_path / "shows"
+    shows_root.mkdir(parents=True)
+    fake_db = tmp_path / "state.db"
+
+    monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(shows_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(shows_mod, "_DB", str(fake_db))
+
+    # Create the show directory on disk so safe_path_join() passes and
+    # show_dir.is_dir() is True inside get_show().
+    topic = "sqlite-show"
+    show_dir = shows_root / topic
+    show_dir.mkdir(parents=True)
+    (show_dir / "_show.md").write_text(f"# Show: {topic}\n\nA SQLite-backed test show.")
+
+    # Populate the DB schema and insert one show row so _db_available() returns
+    # True and the SELECT * FROM shows WHERE topic = ? query finds a row.
+    async def _seed_db():
+        async with state_db_mod.StateDB() as db:
+            await db.db.execute(
+                """INSERT INTO shows (id, topic, goal, status, show_dir, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(uuid.uuid4()),
+                    topic,
+                    "test goal",
+                    "active",
+                    str(show_dir),
+                    0.0,
+                    0.0,
+                ),
+            )
+            await db.db.commit()
+
+    # Python 3.10+: asyncio.get_event_loop() raises in a fresh thread.
+    # CI xdist workers start without a loop. Use a fresh loop per fixture.
+    _loop = asyncio.new_event_loop()
+    try:
+        _loop.run_until_complete(_seed_db())
+    finally:
+        _loop.close()
+
+    from lionagi.studio.app import app
+
+    return TestClient(app), topic
+
+
+def test_show_detail_status_source_is_sqlite_with_db(sqlite_patched_app):
+    """GET /api/shows/{topic} must set status_source == 'sqlite' strictly
+    when the show exists in SQLite (H-BE-1 SQLite path).
+
+    ADR-0011 §"Show status provenance": when the show row is found in the DB,
+    status_source must be exactly 'sqlite', not 'filesystem'.
+    """
+    client, topic = sqlite_patched_app
+    r = client.get(f"/api/shows/{topic}")
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    data = r.json()
+    assert "status_source" in data, "status_source field missing from response"
+    assert data["status_source"] == "sqlite", (
+        f"status_source must be 'sqlite' when show row exists in DB, got {data['status_source']!r}"
+    )

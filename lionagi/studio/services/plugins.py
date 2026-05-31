@@ -13,9 +13,9 @@ from ._path_safety import public_path, safe_path_join
 # ---------------------------------------------------------------------------
 
 _THIS = Path(__file__).resolve()
-# plugins.py is at apps/studio/server/services/plugins.py
-# parents: [0]=services, [1]=server, [2]=studio, [3]=apps, [4]=repo root
-_REPO_ROOT = _THIS.parents[4]
+# plugins.py is at lionagi/studio/services/plugins.py
+# parents: [0]=services, [1]=studio, [2]=lionagi, [3]=repo root
+_REPO_ROOT = _THIS.parents[3]
 MARKETPLACE_DIR = _REPO_ROOT / "marketplace"
 
 # Fallback: if the server is running from a pip-install, try LIONAGI_HOME.parent

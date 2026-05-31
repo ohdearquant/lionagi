@@ -58,9 +58,9 @@ def public_path(path: Path, *, fallback_name: bool = True) -> str:
     Falls back to just the filename when the path cannot be made relative.
     """
     resolved = path.resolve()
-    # parents from _path_safety.py (apps/studio/server/services/):
-    # [0]=services [1]=server [2]=studio [3]=apps [4]=repo_root
-    _repo_root = Path(__file__).resolve().parents[4]
+    # parents from _path_safety.py (lionagi/studio/services/):
+    # [0]=services [1]=studio [2]=lionagi [3]=repo_root
+    _repo_root = Path(__file__).resolve().parents[3]
     roots = [_repo_root, Path.home()]
     for root in roots:
         try:
