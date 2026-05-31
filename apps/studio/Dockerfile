@@ -39,9 +39,9 @@ RUN pip install --no-cache-dir ".[studio]"
 # Backend is now inside lionagi/studio/ (installed via pip above)
 
 # Copy marketplace + plugin manifest so Studio's Library/Skills/Agents
-# views resolve resources. plugins.py uses _THIS.parents[4] which lands
-# at /app inside the container; MARKETPLACE_DIR = /app/marketplace and
-# MARKETPLACE_MANIFEST = /app/.claude-plugin/marketplace.json.
+# views resolve resources. plugins.py tries _THIS.parents[3] first then
+# falls back to LIONAGI_HOME paths; in the container, /app/lionagi/ on
+# sys.path makes parents[3] = /app.
 COPY marketplace/ ./marketplace/
 COPY .claude-plugin/ ./.claude-plugin/
 
@@ -55,4 +55,4 @@ VOLUME /root/.lionagi
 
 EXPOSE 8765 3000
 
-CMD ["sh", "-c", "uvicorn apps.studio.server.app:app --host 0.0.0.0 --port 8765 & cd apps/studio/frontend && npx next start --port 3000 --hostname 0.0.0.0"]
+CMD ["sh", "-c", "uvicorn lionagi.studio.app:app --host 0.0.0.0 --port 8765 & cd apps/studio/frontend && npx next start --port 3000 --hostname 0.0.0.0"]

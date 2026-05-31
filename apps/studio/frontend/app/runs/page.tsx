@@ -129,7 +129,7 @@ function StatusFilterChip({
 function SkeletonRow() {
   return (
     <tr className="border-b border-edge-subtle">
-      {[60, 28, 28, 52].map((w, i) => (
+      {[60, 28, 20, 20, 28, 52].map((w, i) => (
         <td key={i} className="px-3 py-2.5">
           <div
             className="skeleton h-3 rounded"
@@ -173,13 +173,18 @@ function SessionRow({
           )}
         </div>
       </td>
+      <td className="px-3 py-2 text-meta text-content-muted font-mono">
+        {run.model ?? <span className="text-content-muted/40">—</span>}
+      </td>
       <td className="px-3 py-2">
-        <div className="flex items-center gap-1 flex-wrap">
-          <StatusPill value={run.status} kind="lifecycle" />
-          {run.effective_health && (
-            <StatusPill value={run.effective_health} kind="neutral" tone="pending" />
-          )}
-        </div>
+        <StatusPill value={run.status} kind="lifecycle" />
+      </td>
+      <td className="px-3 py-2">
+        {run.effective_health ? (
+          <StatusPill value={run.effective_health} kind="neutral" tone="pending" />
+        ) : (
+          <span className="text-meta text-content-muted/40">—</span>
+        )}
       </td>
       <td className="px-3 py-2">
         <div className="flex items-center gap-2 flex-wrap">
@@ -435,9 +440,7 @@ function RunsPageInner() {
               <th className="px-3 py-2.5 font-medium">
                 {viewMode === "invocations" ? "Invocation" : "Run"}
               </th>
-              <th className="px-3 py-2.5 font-medium">Model</th>
               <th className="px-3 py-2.5 font-medium">Status</th>
-              <th className="px-3 py-2.5 font-medium">Health</th>
               <th className="px-3 py-2.5 font-medium">
                 {viewMode === "invocations" ? "Sessions" : "Activity"}
               </th>
@@ -454,7 +457,7 @@ function RunsPageInner() {
             ) : viewMode === "invocations" ? (
               invocationGroups.length === 0 && ungroupedRuns.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-3 py-14 text-center text-body text-content-muted">
+                  <td colSpan={6} className="px-3 py-14 text-center text-body text-content-muted">
                     <span className="block mb-1 text-[11px]">{empty.runs}</span>
                     {(statuses.length > 0 || playbook) && (
                       <span className="text-meta">Try adjusting your filters.</span>
@@ -504,13 +507,16 @@ function RunsPageInner() {
                               </span>
                             </div>
                           </td>
+                          <td className="px-3 py-2 text-meta text-content-muted/40">—</td>
                           <td className="px-3 py-2">
-                            <div className="flex items-center gap-1 flex-wrap">
-                              <StatusPill value={st} kind="lifecycle" />
-                              {health && (
-                                <StatusPill value={health} kind="neutral" tone="pending" />
-                              )}
-                            </div>
+                            <StatusPill value={st} kind="lifecycle" />
+                          </td>
+                          <td className="px-3 py-2">
+                            {health ? (
+                              <StatusPill value={health} kind="neutral" tone="pending" />
+                            ) : (
+                              <span className="text-meta text-content-muted/40">—</span>
+                            )}
                           </td>
                           <td className="px-3 py-2 text-content-secondary">
                             {group.sessions.length} session
@@ -534,7 +540,7 @@ function RunsPageInner() {
               )
             ) : runs.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-3 py-14 text-center text-body text-content-muted">
+                <td colSpan={4} className="px-3 py-14 text-center text-body text-content-muted">
                   <span className="block mb-1 text-[11px]">{empty.runs}</span>
                   {(statuses.length > 0 || playbook) && (
                     <span className="text-meta">Try adjusting your filters.</span>

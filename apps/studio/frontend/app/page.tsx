@@ -8,7 +8,7 @@ import StatusPill from "@/components/StatusPill";
 import Timestamp from "@/components/Timestamp";
 import Duration from "@/components/Duration";
 import TimeRangeChips, { type TimeRange, rangeToSeconds } from "@/components/TimeRangeChips";
-import { API_BASE, getStats } from "@/lib/api";
+import { API_BASE, getShow, getStats } from "@/lib/api";
 import type { DbStats, StudioStats } from "@/lib/api";
 import type { RunSummary, ShowSummary } from "@/lib/types";
 
@@ -17,11 +17,7 @@ const RUNNING_STATES = new Set(["running", "executing", "in_progress", "director
 // a deliberate bound (amber, retry); aborted = Ctrl-C, cancelled = system
 // cancellation (both neutral). Keeping them out of FAILED_STATES so the
 // "Failed" dashboard card only counts actual errors.
-const FAILED_STATES = new Set([
-  "failed",
-  "error",
-  "failure",
-]);
+const FAILED_STATES = new Set(["failed", "error", "failure"]);
 const COMPLETED_STATES = new Set([
   "completed",
   "done",
@@ -76,8 +72,35 @@ export default function DashboardPage() {
         if (!active) return;
         setStats(statsRes);
         setAllRuns(runsRes.runs ?? []);
-        setShows(showsRes ?? []);
+        const showsList = showsRes ?? [];
+        setShows(showsList);
         setFetchError(null);
+        // #1161: list endpoint reads latest_status from SQLite (always "active");
+        // detail endpoint reads from _show.md and returns the real status.
+        // Fire concurrent detail fetches to patch the displayed statuses.
+        if (showsList.length > 0) {
+          const settled = await Promise.allSettled(
+            showsList.map((s: ShowSummary) =>
+              getShow(s.topic).then((d) => ({
+                topic: s.topic,
+                status: d.status ?? s.latest_status,
+              })),
+            ),
+          );
+          if (active) {
+            const resolved = new Map<string, string>();
+            for (const r of settled) {
+              if (r.status === "fulfilled") resolved.set(r.value.topic, r.value.status);
+            }
+            if (resolved.size > 0) {
+              setShows((prev) =>
+                prev.map((s) =>
+                  resolved.has(s.topic) ? { ...s, latest_status: resolved.get(s.topic)! } : s,
+                ),
+              );
+            }
+          }
+        }
       } catch {
         if (active) setFetchError("API unreachable — data may be stale");
       }
@@ -124,9 +147,7 @@ export default function DashboardPage() {
       ...failed,
       ...stale.filter((s) => !failed.includes(s)),
       ...stuck.filter((s) => !failed.includes(s) && !stale.includes(s)),
-      ...needsReview.filter(
-        (n) => !failed.includes(n) && !stale.includes(n) && !stuck.includes(n),
-      ),
+      ...needsReview.filter((n) => !failed.includes(n) && !stale.includes(n) && !stuck.includes(n)),
     ]
       .sort((a, b) => (b.started_at ?? 0) - (a.started_at ?? 0))
       .slice(0, 8);
@@ -135,7 +156,18 @@ export default function DashboardPage() {
       .sort((a, b) => (b.started_at ?? 0) - (a.started_at ?? 0))
       .slice(0, 8);
 
-    return { scoped, running, failed, completed, needsReview, slow, stuck, stale, attention, recent };
+    return {
+      scoped,
+      running,
+      failed,
+      completed,
+      needsReview,
+      slow,
+      stuck,
+      stale,
+      attention,
+      recent,
+    };
   }, [allRuns, windowSec, now]);
 
   const rangeLabel = range === "all" ? "all time" : range;
@@ -160,18 +192,18 @@ export default function DashboardPage() {
         <MetricCard
           label="Running now"
           value={buckets.running.length}
-          hint={buckets.stuck.length > 0 ? `${buckets.stuck.length} stuck >${STUCK_RUN_SECONDS / 60}m` : `${rangeLabel}`}
+          hint={
+            buckets.stuck.length > 0
+              ? `${buckets.stuck.length} stuck >${STUCK_RUN_SECONDS / 60}m`
+              : `${rangeLabel}`
+          }
           tone={buckets.running.length > 0 ? "running" : "neutral"}
           icon={buckets.running.length > 0 ? "◐" : "○"}
         />
         <MetricCard
           label="Stale"
           value={buckets.stale.length}
-          hint={
-            buckets.stale.length > 0
-              ? "no activity past threshold"
-              : "all running runs active"
-          }
+          hint={buckets.stale.length > 0 ? "no activity past threshold" : "no stale activity"}
           tone={buckets.stale.length > 0 ? "pending" : "neutral"}
           icon={buckets.stale.length > 0 ? "◴" : "·"}
         />
@@ -228,11 +260,7 @@ export default function DashboardPage() {
       {/* Two-column: Needs attention | Recent activity */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <section>
-          <SectionHeader
-            title="Needs attention"
-            count={buckets.attention.length}
-            href="/runs"
-          />
+          <SectionHeader title="Needs attention" count={buckets.attention.length} href="/runs" />
           {buckets.attention.length === 0 ? (
             <div className="rounded border border-status-success/25 bg-status-success-bg px-4 py-4 text-body text-status-success shadow-card">
               <span className="font-semibold">All clean.</span>{" "}
@@ -417,11 +445,7 @@ function SystemHealthCard({ db }: { db: DbStats | undefined }) {
         <div>
           <div className="text-content-muted">Last checkpoint</div>
           <div className="text-content-secondary">
-            {db.last_checkpoint_at ? (
-              <Timestamp value={db.last_checkpoint_at} />
-            ) : (
-              "unavailable"
-            )}
+            {db.last_checkpoint_at ? <Timestamp value={db.last_checkpoint_at} /> : "unavailable"}
           </div>
         </div>
       </div>

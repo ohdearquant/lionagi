@@ -30,6 +30,10 @@ if not MARKETPLACE_DIR.exists():
         pass
 
 MARKETPLACE_MANIFEST = _REPO_ROOT / ".claude-plugin" / "marketplace.json"
+if not MARKETPLACE_MANIFEST.exists():
+    _mf_fallback = MARKETPLACE_DIR.parent / ".claude-plugin" / "marketplace.json"
+    if _mf_fallback.exists():
+        MARKETPLACE_MANIFEST = _mf_fallback
 THIRDPARTY_DIR = Path.home() / ".claude" / "plugins" / "cache"
 
 
