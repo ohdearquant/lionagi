@@ -510,7 +510,7 @@ def build_worker_branch(
             _provider = getattr(getattr(w_imodel, "endpoint", None), "config", None)
             _provider_name = getattr(_provider, "provider", "") or ""
             if "claude" in _provider_name.lower():
-                from lionagi.agent.adapters.claude_code import translate_permissions
+                from lionagi.providers.anthropic.claude_code.models import translate_permissions
 
                 _perm_kwargs = translate_permissions(w_spec.permissions)
                 if _provider is not None:

@@ -12,15 +12,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lionagi.agent.adapters.claude_code import (
-    _ALL_TOOLS,
-    _TOOL_MAP,
-    translate_permissions,
-)
 from lionagi.agent.permissions import PermissionPolicy
 from lionagi.casts.emission import EscalationRequest, Verdict
 from lionagi.casts.pattern import list_modes, list_roles
 from lionagi.cli.orchestrate.flow import FlowAgent, FlowOp, FlowPlan
+from lionagi.providers.anthropic.claude_code.models import (
+    PERMISSION_TOOL_MAP,
+    translate_permissions,
+)
 
 # ── FlowAgent field tests ────────────────────────────────────────────────
 
@@ -245,27 +244,27 @@ def test_planner_roster_permission_presets_documented():
 def test_translate_permissions_allow_all():
     policy = PermissionPolicy.allow_all()
     result = translate_permissions(policy)
-    assert result == {"bypassPermissions": True}
+    assert result == {"permission_mode": "bypassPermissions"}
 
 
 def test_translate_permissions_deny_all():
     policy = PermissionPolicy.deny_all()
     result = translate_permissions(policy)
-    assert "disallowedTools" in result
-    # All non-wildcard tools should be disallowed
-    for tool in _ALL_TOOLS:
-        assert tool in result["disallowedTools"]
+    assert "disallowed_tools" in result
+    all_tools = [t for ts in PERMISSION_TOOL_MAP.values() for t in ts if not t.endswith("*")]
+    for tool in all_tools:
+        assert tool in result["disallowed_tools"]
 
 
 def test_translate_permissions_read_only():
     policy = PermissionPolicy.read_only()
     result = translate_permissions(policy)
     # Should allow reader tools
-    assert "allowedTools" in result or "disallowedTools" in result
+    assert "allowed_tools" in result or "disallowed_tools" in result
     # Editor tools should be disallowed
-    if "disallowedTools" in result:
-        for editor_tool in _TOOL_MAP["editor"]:
-            assert editor_tool in result["disallowedTools"]
+    if "disallowed_tools" in result:
+        for editor_tool in PERMISSION_TOOL_MAP["editor"]:
+            assert editor_tool in result["disallowed_tools"]
 
 
 def test_translate_permissions_rules_mode():
@@ -276,16 +275,16 @@ def test_translate_permissions_rules_mode():
     )
     result = translate_permissions(policy)
     # Reader tools should be in allowedTools
-    if "allowedTools" in result:
-        assert "Read" in result["allowedTools"]
+    if "allowed_tools" in result:
+        assert "Read" in result["allowed_tools"]
     # Bash should be in disallowedTools
-    if "disallowedTools" in result:
-        assert "Bash" in result["disallowedTools"]
+    if "disallowed_tools" in result:
+        assert "Bash" in result["disallowed_tools"]
 
 
 def test_tool_map_tool_names_are_pascal_case():
-    """Tool names in _TOOL_MAP must be PascalCase (or mcp__* wildcard)."""
-    for zone, tools in _TOOL_MAP.items():
+    """Tool names in PERMISSION_TOOL_MAP must be PascalCase (or mcp__* wildcard)."""
+    for zone, tools in PERMISSION_TOOL_MAP.items():
         for tool in tools:
             if tool.endswith("*"):
                 continue  # wildcard exempted
@@ -296,22 +295,22 @@ def test_tool_map_tool_names_are_pascal_case():
 
 def test_translate_permissions_tool_name_vocabulary():
     """Verify specific expected tool names are present in the map."""
-    editor_tools = _TOOL_MAP["editor"]
+    editor_tools = PERMISSION_TOOL_MAP["editor"]
     assert "Edit" in editor_tools
     assert "Write" in editor_tools
     assert "MultiEdit" in editor_tools
     assert "NotebookEdit" in editor_tools
 
-    assert _TOOL_MAP["bash"] == ["Bash"]
-    assert _TOOL_MAP["reader"] == ["Read"]
+    assert PERMISSION_TOOL_MAP["bash"] == ["Bash"]
+    assert PERMISSION_TOOL_MAP["reader"] == ["Read"]
 
-    search_tools = _TOOL_MAP["search"]
+    search_tools = PERMISSION_TOOL_MAP["search"]
     assert "Grep" in search_tools
     assert "Glob" in search_tools
     assert "WebSearch" in search_tools
     assert "WebFetch" in search_tools
 
-    assert _TOOL_MAP["spawn"] == ["Task"]
+    assert PERMISSION_TOOL_MAP["spawn"] == ["Task"]
 
 
 # ── build_worker_branch: profile path unchanged ──────────────────────────
