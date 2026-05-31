@@ -1,4 +1,5 @@
 """Tests for #1015 teams read-only viewer."""
+
 from __future__ import annotations
 
 import json
@@ -11,10 +12,12 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 
 def _make_client(monkeypatch, teams_root: Path) -> TestClient:
-    import apps.studio.server.services.teams as teams_mod
+    import lionagi.studio.services.teams as teams_mod
+
     monkeypatch.setattr(teams_mod, "_TEAMS_ROOT", teams_root)
 
-    from apps.studio.server.app import app
+    from lionagi.studio.app import app
+
     return TestClient(app)
 
 
@@ -56,7 +59,12 @@ def test_teams_list_missing_directory_returns_empty(tmp_path, monkeypatch):
 
 def test_team_detail_returns_full_json(tmp_path, monkeypatch):
     teams_root = tmp_path / "teams"
-    team_data = {"id": "abc123", "name": "Test Team", "members": ["x"], "messages": [{"from": "a", "to": "b"}]}
+    team_data = {
+        "id": "abc123",
+        "name": "Test Team",
+        "members": ["x"],
+        "messages": [{"from": "a", "to": "b"}],
+    }
     _write_team(teams_root, "abc123.json", team_data)
     client = _make_client(monkeypatch, teams_root)
 

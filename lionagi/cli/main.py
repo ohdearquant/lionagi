@@ -28,6 +28,7 @@ from .orchestrate import (
     inject_playbook_schema_into_parser,
     run_orchestrate,
 )
+from .schedule import add_schedule_subparser, run_schedule
 from .skill import run_skill
 from .state import add_state_subparser, run_state
 from .studio import add_studio_subparser, run_studio
@@ -68,6 +69,17 @@ def _print_playbook_help(name: str) -> int:
             print(f"  {flag:<24} {help_text}{default_str}")
 
     print(f'\nRun: li play {name} "<prompt>"')
+    print(
+        "\nCommon flags (forwarded to `li o flow`):\n"
+        "  --bypass              Bypass all codex approvals/sandbox\n"
+        "  --team-mode [NAME]    Create a fresh team for this flow\n"
+        "  --timeout SECONDS     Hard wall-clock timeout\n"
+        "  --save DIR            Save outputs to directory\n"
+        "  --cwd DIR             Working directory for CLI endpoints\n"
+        "  --effort LEVEL        Override effort level\n"
+        "  --yolo                Auto-approve tool calls\n"
+        "\n  Full list: li o flow --help"
+    )
     return 0
 
 
@@ -205,7 +217,10 @@ def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
         # artifact contract, and prints the result without firing.
         return _handle_play_check(rest[1:])
     if head.startswith("-"):
-        log_error("li play NAME must come before flags")
+        log_error(
+            "li play NAME must come before flags\n"
+            'Usage: li play <name> "<prompt>" [--bypass --team-mode TEAM --timeout N ...]'
+        )
         return 1
     if "--help" in rest[1:] or "-h" in rest[1:]:
         return _print_playbook_help(head)
@@ -255,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     add_agent_subparser(sub)
     add_team_subparser(sub)
     add_studio_subparser(sub)
+    add_schedule_subparser(sub)
     add_state_subparser(sub)
     add_invoke_subparser(sub)
     add_kill_subparser(sub)
@@ -290,6 +306,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command in ("monitor", "mon"):
         return run_monitor(args)
+
+    if args.command == "schedule":
+        return run_schedule(args)
 
     parser.print_help()
     return 1

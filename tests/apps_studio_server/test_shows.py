@@ -34,9 +34,9 @@ def patched_app(shows_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     _list_shows_db() returns no rows (forcing the filesystem fallback that
     reads from the patched SHOWS_ROOT, not the real state.db).
     """
-    import apps.studio.server.config as config_mod
-    import apps.studio.server.services.shows as shows_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.config as config_mod
+    import lionagi.studio.services.shows as shows_mod
 
     shows_root.mkdir(parents=True, exist_ok=True)
     fake_db = tmp_path / "state.db"  # does not exist → _db_available() returns False
@@ -46,7 +46,7 @@ def patched_app(shows_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(shows_mod, "DEFAULT_DB_PATH", fake_db)
     monkeypatch.setattr(shows_mod, "_DB", str(fake_db))
 
-    from apps.studio.server.app import app
+    from lionagi.studio.app import app
 
     return TestClient(app)
 
@@ -162,9 +162,9 @@ def sqlite_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     The DB is populated with a row in the 'shows' table so that get_show()
     takes the SQLite code path and sets status_source == 'sqlite'.
     """
-    import apps.studio.server.config as config_mod
-    import apps.studio.server.services.shows as shows_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.config as config_mod
+    import lionagi.studio.services.shows as shows_mod
 
     shows_root = tmp_path / "shows"
     shows_root.mkdir(parents=True)
@@ -210,7 +210,7 @@ def sqlite_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     finally:
         _loop.close()
 
-    from apps.studio.server.app import app
+    from lionagi.studio.app import app
 
     return TestClient(app), topic
 
@@ -228,6 +228,5 @@ def test_show_detail_status_source_is_sqlite_with_db(sqlite_patched_app):
     data = r.json()
     assert "status_source" in data, "status_source field missing from response"
     assert data["status_source"] == "sqlite", (
-        f"status_source must be 'sqlite' when show row exists in DB, "
-        f"got {data['status_source']!r}"
+        f"status_source must be 'sqlite' when show row exists in DB, got {data['status_source']!r}"
     )

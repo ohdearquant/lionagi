@@ -36,10 +36,7 @@ COPY pyproject.toml README.md LICENSE ./
 COPY lionagi/ ./lionagi/
 RUN pip install --no-cache-dir ".[studio]"
 
-# Copy backend
-COPY apps/studio/server/ ./apps/studio/server/
-COPY apps/__init__.py ./apps/__init__.py
-COPY apps/studio/__init__.py ./apps/studio/__init__.py
+# Backend is now inside lionagi/studio/ (installed via pip above)
 
 # Copy marketplace + plugin manifest so Studio's Library/Skills/Agents
 # views resolve resources. plugins.py uses _THIS.parents[4] which lands

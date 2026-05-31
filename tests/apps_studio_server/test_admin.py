@@ -47,9 +47,9 @@ async def _seed_running_session(
 
 
 def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
-    import apps.studio.server.services.admin as admin_mod
-    import apps.studio.server.services.sessions as sessions_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.admin as admin_mod
+    import lionagi.studio.services.sessions as sessions_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
@@ -57,7 +57,7 @@ def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
     monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
 
-    from apps.studio.server.app import app
+    from lionagi.studio.app import app
 
     return TestClient(app)
 
@@ -233,7 +233,7 @@ def test_admin_transition_requires_reason(tmp_path, monkeypatch):
 
 def test_admin_transition_rejects_healthy_session(tmp_path, monkeypatch):
     """ADR-0024 health guard: fresh running session with recent activity → 422."""
-    import apps.studio.server.services.admin as admin_mod
+    import lionagi.studio.services.admin as admin_mod
 
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
@@ -267,7 +267,7 @@ def test_admin_transition_guard_re_evaluates_health_per_call(tmp_path, monkeypat
     This verifies the merged per-session classify+UPDATE loop correctly re-reads
     state, minimizing the TOCTOU window between health check and destructive write.
     """
-    import apps.studio.server.services.admin as admin_mod
+    import lionagi.studio.services.admin as admin_mod
 
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
@@ -336,8 +336,8 @@ def test_admin_transition_with_reason_code_succeeds(tmp_path, monkeypatch):
     sid = str(uuid.uuid4())
     _run(_seed_running_session(db_path, sid))
     # Pin classifier: no phantom cause, IDLE health → operator's code wins.
-    import apps.studio.server.services.admin as admin_svc
     import lionagi.state.health as health_mod
+    import lionagi.studio.services.admin as admin_svc
     from lionagi.state.health import SessionHealth
 
     monkeypatch.setattr(admin_svc, "_classify_phantom", lambda *a, **kw: None)
@@ -436,8 +436,8 @@ def test_admin_transition_phantom_classifier_override(
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
     _run(_seed_running_session(db_path, sid))
-    import apps.studio.server.services.admin as admin_svc
     import lionagi.state.health as health_mod
+    import lionagi.studio.services.admin as admin_svc
     from lionagi.state.health import SessionHealth
 
     monkeypatch.setattr(admin_svc, "_classify_phantom", lambda *a, **kw: phantom_reason)
@@ -506,8 +506,8 @@ def test_admin_transition_legacy_reason_backwards_compat(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     sid = str(uuid.uuid4())
     _run(_seed_running_session(db_path, sid))
-    import apps.studio.server.services.admin as admin_svc
     import lionagi.state.health as health_mod
+    import lionagi.studio.services.admin as admin_svc
     from lionagi.state.health import SessionHealth
 
     monkeypatch.setattr(admin_svc, "_classify_phantom", lambda *a, **kw: None)

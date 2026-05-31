@@ -118,3 +118,42 @@ def test_play_check_playbook_without_contract(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert result == 0
     assert "no `artifacts:` block declared" in out
+
+
+# ─── #1194: `li play <name> --help` surfaces forwarded global flags ───
+
+
+def test_play_help_shows_common_flags(tmp_path, monkeypatch, capsys):
+    """li play <name> --help must surface the forwarded li o flow flags."""
+    pb_path = tmp_path / "mypb.playbook.yaml"
+    pb_path.write_text(
+        "name: mypb\nmodel: claude/sonnet\ndescription: My playbook\nprompt: do something\n"
+    )
+
+    from lionagi.cli import orchestrate as _orch
+
+    monkeypatch.setattr(_orch, "_resolve_playbook_path", lambda n: (pb_path, None))
+
+    result = _handle_play_shortcut(["play", "mypb", "--help"])
+    out = capsys.readouterr().out
+    assert result == 0
+    # Forwarded flags must appear in help output.
+    assert "--bypass" in out
+    assert "--team-mode" in out
+    assert "--timeout" in out
+
+
+def test_play_flag_before_name_includes_usage(caplog):
+    """li play --flag returns 1 and the error message includes a usage line."""
+    import logging
+
+    err_logger = logging.getLogger("lionagi.cli.error")
+    err_logger.handlers.clear()
+    err_logger.propagate = True
+
+    with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
+        result = _handle_play_shortcut(["play", "--bypass"])
+
+    assert result == 1
+    full_msg = " ".join(r.message for r in caplog.records)
+    assert "Usage" in full_msg or "li play" in full_msg

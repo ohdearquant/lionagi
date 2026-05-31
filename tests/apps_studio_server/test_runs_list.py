@@ -1,4 +1,5 @@
 """Tests for #1012 paginated, filtered runs list."""
+
 from __future__ import annotations
 
 import asyncio
@@ -27,25 +28,28 @@ async def _seed_sessions(db_path: Path, sessions: list[dict]) -> None:
         for s in sessions:
             pid = str(uuid.uuid4())
             await db.create_progression(pid)
-            await db.create_session({
-                "id": s.get("id", str(uuid.uuid4())),
-                "progression_id": pid,
-                "name": s.get("name"),
-                "status": s.get("status", "completed"),
-                "playbook_name": s.get("playbook_name"),
-                "started_at": s.get("started_at", time.time()),
-            })
+            await db.create_session(
+                {
+                    "id": s.get("id", str(uuid.uuid4())),
+                    "progression_id": pid,
+                    "name": s.get("name"),
+                    "status": s.get("status", "completed"),
+                    "playbook_name": s.get("playbook_name"),
+                    "started_at": s.get("started_at", time.time()),
+                }
+            )
 
 
 def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
-    import apps.studio.server.services.sessions as sessions_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.sessions as sessions_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
 
-    from apps.studio.server.app import app
+    from lionagi.studio.app import app
+
     return TestClient(app)
 
 
@@ -120,20 +124,20 @@ async def _seed_running_session_with_activity(
     async with StateDB(db_path) as db:
         pid = str(uuid.uuid4())
         await db.create_progression(pid)
-        await db.create_session({
-            "id": session_id,
-            "progression_id": pid,
-            "name": "test-stale",
-            "status": "running",
-            "invocation_kind": invocation_kind,
-            "started_at": last_message_at,
-            "last_message_at": last_message_at,
-        })
+        await db.create_session(
+            {
+                "id": session_id,
+                "progression_id": pid,
+                "name": "test-stale",
+                "status": "running",
+                "invocation_kind": invocation_kind,
+                "started_at": last_message_at,
+                "last_message_at": last_message_at,
+            }
+        )
 
 
-def test_runs_list_threshold_crossing_session_reports_stale_not_unresponsive(
-    tmp_path, monkeypatch
-):
+def test_runs_list_threshold_crossing_session_reports_stale_not_unresponsive(tmp_path, monkeypatch):
     """Running session past its kind-aware threshold → effective_health='stale'.
 
     The full ADR-0024 classifier returns UNRESPONSIVE (process alive + past
