@@ -4,6 +4,18 @@
 All notable changes to lionagi are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.26.14] - 2026-05-30
+
+### Fixed
+
+- **Dockerfile CMD target** — Docker image CMD still referenced the old
+  `apps.studio.server.app:app` after the backend moved to `lionagi/studio/`
+  in v0.26.13. Updated to `lionagi.studio.app:app`. Also added
+  `MARKETPLACE_MANIFEST` fallback for pip-installed environments.
+- **Dropped `[nlip]` optional dep group** — removed from pyproject.toml;
+  users who need nlip install `ag2[nlip]` directly. Starlette pinned
+  `>=0.46.2,<1.0` for FastAPI 0.115 compat.
+
 ## [0.26.13] - 2026-05-30
 
 Universal AgentSpec, inline emission contracts, loop control, Studio in-wheel, and a large CLI/Studio bug-fix sweep.

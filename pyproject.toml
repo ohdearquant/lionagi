@@ -1,6 +1,6 @@
 [project]
 name = "lionagi"
-version = "0.26.13"
+version = "0.26.14"
 description = "An Intelligence Operating System."
 authors = [
     { name = "HaiyangLi", email = "quantocean.li@gmail.com" },
