@@ -20,15 +20,27 @@ import sys
 
 from ._logging import configure_cli_logging, log_error
 from .agent import add_agent_subparser, run_agent
+
+try:
+    from .config import add_config_subparser, run_config
+except ImportError:
+    add_config_subparser = None  # type: ignore[assignment]
+    run_config = None  # type: ignore[assignment]
 from .invoke import add_invoke_subparser, run_invoke
 from .kill import add_kill_subparser, run_kill
+
+try:
+    from .mcp import add_mcp_subparser, run_mcp
+except ImportError:
+    add_mcp_subparser = None  # type: ignore[assignment]
+    run_mcp = None  # type: ignore[assignment]
 from .monitor import add_monitor_subparser, run_monitor
 from .orchestrate import (
     add_orchestrate_subparser,
     inject_playbook_schema_into_parser,
     run_orchestrate,
 )
-from .schedule import add_schedule_subparser, run_schedule
+from .schedule import add_schedule_subcommand, run_schedule
 from .skill import run_skill
 from .state import add_state_subparser, run_state
 from .studio import add_studio_subparser, run_studio
@@ -269,12 +281,16 @@ def main(argv: list[str] | None = None) -> int:
     orch_parsers = add_orchestrate_subparser(sub)
     add_agent_subparser(sub)
     add_team_subparser(sub)
+    if add_mcp_subparser is not None:
+        add_mcp_subparser(sub)
     add_studio_subparser(sub)
-    add_schedule_subparser(sub)
     add_state_subparser(sub)
+    if add_config_subparser is not None:
+        add_config_subparser(sub)
     add_invoke_subparser(sub)
     add_kill_subparser(sub)
     add_monitor_subparser(sub)
+    add_schedule_subcommand(sub)
 
     # If the user is invoking `li o flow -p NAME`, inject the playbook's
     # declared args as flags on the flow sub-parser BEFORE argparse runs,
@@ -285,6 +301,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command in ("orchestrate", "o"):
         return run_orchestrate(args)
+
+    if args.command == "config" and run_config is not None:
+        return run_config(args)
 
     if args.command == "agent":
         return run_agent(args)
@@ -300,6 +319,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "invoke":
         return run_invoke(args)
+
+    if args.command == "mcp" and run_mcp is not None:
+        return run_mcp(args)
 
     if args.command == "kill":
         return run_kill(args)
