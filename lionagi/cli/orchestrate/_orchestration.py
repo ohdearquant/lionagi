@@ -25,6 +25,7 @@ does not justify the abstraction. Revisit when a third arrives.
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -299,7 +300,14 @@ def setup_orchestration(
         log_config=DataLoggerConfig(auto_save_on_exit=False),
         name="orchestrator",
     )
-    session = Session(default_branch=orc_branch)
+    # Honour a pre-generated session ID passed by the --background launcher so
+    # `li monitor <id>` works immediately after the parent prints the handle.
+    _session_id_env = os.environ.get("LIONAGI_SESSION_ID")
+    session = (
+        Session(id=_session_id_env, default_branch=orc_branch)
+        if _session_id_env
+        else Session(default_branch=orc_branch)
+    )
     builder = OperationGraphBuilder(pattern_name)
 
     return OrchestrationEnv(
