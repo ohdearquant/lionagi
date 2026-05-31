@@ -14,6 +14,8 @@ from pydantic import Field, field_validator
 
 from lionagi import Branch, FieldModel
 from lionagi._errors import TimeoutError as LionTimeoutError
+from lionagi.casts.emission import EscalationRequest, Verdict
+from lionagi.casts.pattern import Mode, Role, list_modes, list_roles
 from lionagi.ln.concurrency import move_on_after
 from lionagi.models import HashableModel
 from lionagi.operations.fields import Instruct
@@ -244,6 +246,16 @@ class FlowAgent(HashableModel):
             "'implementer', 'critic'). Determines the agent's profile "
             "(system prompt, default model, effort). Do not invent roles."
         ),
+    )
+    modes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Cognitive overlays e.g. ['adversarial', 'systematic']. Must be from list_modes()."
+        ),
+    )
+    permissions: str | None = Field(
+        default=None,
+        description="Permission preset: safe | read_only | allow_all | deny_all.",
     )
     model: str | None = Field(
         default=None,
@@ -787,28 +799,72 @@ async def _run_flow_inner(
     builder = env.builder
 
     # ── Phase 0: Orchestrator plans the DAG ──────────────────────────
-    # Build role roster for orchestrator guidance
-    available_roles = list_agents()
+    # Build role roster for orchestrator guidance from the casts ontology
+    _casts_roles = list_roles()
+    _casts_modes = list_modes()
+
+    _role_lines = []
+    for _rname in _casts_roles:
+        try:
+            _r = Role.load(_rname)
+            _role_lines.append(f"  {_rname}: {_r.description}")
+        except Exception:
+            _role_lines.append(f"  {_rname}")
+
+    _mode_lines = []
+    for _mname in _casts_modes:
+        try:
+            _m = Mode.load(_mname)
+            _mode_lines.append(f"  {_mname}: {_m.description}")
+        except Exception:
+            _mode_lines.append(f"  {_mname}")
+
+    _perm_lines = [
+        "  allow_all: bypass all permission checks (default for orchestrators)",
+        "  deny_all: block all tool access",
+        "  read_only: allow reader/search/context, deny editor/bash",
+        "  safe: allow reader/editor/search/context, deny destructive bash",
+    ]
+
     if env.bare:
         roles_guidance = (
-            f"Available roles: {', '.join(available_roles)}. "
-            f"All workers use model {model_spec}. "
-            f"Roles define behavioral focus only — model is fixed."
+            "AVAILABLE ROLES:\n"
+            + "\n".join(_role_lines)
+            + "\n\nAVAILABLE MODES:\n"
+            + "\n".join(_mode_lines)
+            + "\n\nPERMISSION PRESETS:\n"
+            + "\n".join(_perm_lines)
+            + f"\n\nAll workers use model {model_spec}. "
+            "Roles define behavioral focus only — model is fixed."
         )
     else:
-        role_details = []
-        for role in available_roles:
+        # Also include profile-based agents for backward compat
+        _profile_roles = list_agents()
+        _profile_lines = []
+        for _prole in _profile_roles:
             try:
-                rp = load_agent_profile(role)
-                rm = rp.model or model_spec
-                detail = f"{role} (model: {rm}"
-                if rp.effort:
-                    detail += f", effort: {rp.effort}"
-                detail += ")"
-                role_details.append(detail)
+                _rp = load_agent_profile(_prole)
+                _rm = _rp.model or model_spec
+                _detail = f"  {_prole} (model: {_rm}"
+                if _rp.effort:
+                    _detail += f", effort: {_rp.effort}"
+                _detail += ")"
+                _profile_lines.append(_detail)
             except FileNotFoundError:
-                role_details.append(f"{role} (model: {model_spec})")
-        roles_guidance = f"Available agents: {'; '.join(role_details)}."
+                _profile_lines.append(f"  {_prole} (model: {model_spec})")
+
+        roles_guidance = (
+            "AVAILABLE ROLES:\n"
+            + "\n".join(_role_lines)
+            + "\n\nAVAILABLE MODES:\n"
+            + "\n".join(_mode_lines)
+            + "\n\nPERMISSION PRESETS:\n"
+            + "\n".join(_perm_lines)
+        )
+        if _profile_lines:
+            roles_guidance += "\n\nPROFILE-BASED AGENTS (custom .lionagi configs):\n" + "\n".join(
+                _profile_lines
+            )
 
     budget_note = ""
     if max_ops > 0:
@@ -913,6 +969,49 @@ async def _run_flow_inner(
             "The truncated ops (often terminal synthesis/critic) will not run. "
             "Raise --max-ops or design a tighter plan."
         )
+
+    # ── Validate modes, permissions, and role/mode conflicts ─────────
+    _valid_roles = set(list_roles())
+    _valid_modes = set(list_modes())
+    _valid_perms = {"safe", "read_only", "allow_all", "deny_all"}
+    _profile_roles = set(list_agents())
+
+    for a in plan.agents:
+        # Role validation: must be a casts role OR a profile-defined agent
+        if a.role not in _valid_roles and a.role not in _profile_roles:
+            return (
+                f"Invalid plan: agent {a.id!r} has unknown role {a.role!r}. "
+                f"Valid casts roles: {sorted(_valid_roles)}. "
+                f"Profile agents: {sorted(_profile_roles)}."
+            )
+        # Mode validation
+        for _mode in a.modes:
+            if _mode not in _valid_modes:
+                return (
+                    f"Invalid plan: agent {a.id!r} has unknown mode {_mode!r}. "
+                    f"Valid modes: {sorted(_valid_modes)}."
+                )
+        # Mode conflict validation (only for casts roles)
+        if a.role in _valid_roles and a.modes:
+            from lionagi.agent.spec import AgentSpec
+
+            try:
+                AgentSpec.compose(a.role, modes=list(a.modes))
+            except ValueError as _e:
+                return f"Invalid plan: agent {a.id!r} mode conflict — {_e}"
+        # Permission preset validation
+        if a.permissions is not None and a.permissions not in _valid_perms:
+            return (
+                f"Invalid plan: agent {a.id!r} has unknown permission preset "
+                f"{a.permissions!r}. Valid: {sorted(_valid_perms)}."
+            )
+
+    # ── Observer wiring for EscalationRequest / Verdict events ───────
+    _escalations: list = []
+    _verdicts: list = []
+    if hasattr(session, "observe"):
+        session.observe(EscalationRequest, lambda e, _ctx: _escalations.append(e))
+        session.observe(Verdict, lambda v, _ctx: _verdicts.append(v))
 
     dag_lines = []
     for op in plan.operations:
@@ -1019,6 +1118,8 @@ async def _run_flow_inner(
             role=a.role,
             model_override=a.model,
             explicit_name=agent_id_to_name[a.id],
+            agent_modes=list(a.modes) if a.modes else None,
+            agent_permissions=a.permissions,
         )
 
     # ── Helper: build context + add a node for a single op ──────────

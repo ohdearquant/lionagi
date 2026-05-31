@@ -43,7 +43,7 @@ from lionagi.state.artifact_verifier import (
 )
 
 from .._agents import AgentProfile, load_agent_profile
-from .._logging import hint
+from .._logging import hint, warn
 from .._providers import build_imodel_from_spec, resolve_persisted_effort
 from .._runs import RunDir, allocate_run, save_last_branch_pointer
 
@@ -332,6 +332,8 @@ def build_worker_branch(
     model_override: str | None = None,
     explicit_name: str | None = None,
     system_prompt_override: str | None = None,
+    agent_modes: list[str] | None = None,
+    agent_permissions: str | None = None,
 ) -> tuple[Branch, str, AgentProfile | None]:
     """Phase C — resolve model/profile/effort/system and build a Branch.
 
@@ -420,9 +422,70 @@ def build_worker_branch(
     else:
         wname = env.assign_name(role)
 
-    # Base system prompt: explicit override > profile > BARE.
+    # ── Casts AgentSpec fallback ──────────────────────────────────────
+    # When no profile was resolved and no system_prompt_override was given,
+    # check if the role is a known casts role and compose an AgentSpec from it.
+    # This enables modes + emission contracts for the new casts-native roles.
+    w_spec = None
+    if (
+        not env.bare
+        and w_profile is None
+        and system_prompt_override is None
+        and agent_modes is not None
+    ):
+        try:
+            from lionagi.casts.pattern import list_roles as _list_roles
+
+            if role in set(_list_roles()):
+                from lionagi.agent.spec import AgentSpec
+
+                # Determine default tool zone by role heuristic
+                _write_roles = {
+                    "implementer",
+                    "refactorer",
+                    "migrator",
+                    "prototyper",
+                    "deployer",
+                    "operator",
+                }
+                _reader_roles = {
+                    "researcher",
+                    "analyst",
+                    "auditor",
+                    "investigator",
+                    "reviewer",
+                    "critic",
+                }
+                if role in _write_roles:
+                    _tools: tuple[str, ...] = ("coding",)
+                elif role in _reader_roles:
+                    _tools = ("reader", "search")
+                else:
+                    _tools = ()
+
+                w_spec = AgentSpec.compose(
+                    role,
+                    modes=agent_modes,
+                    permissions=agent_permissions,
+                    tools=_tools,
+                )
+        except Exception:
+            import logging as _logging
+
+            _logging.getLogger("lionagi.cli").debug(
+                "Casts AgentSpec fallback skipped for role %r: %s",
+                role,
+                "profile path is authoritative",
+                exc_info=True,
+            )
+
+    # Base system prompt: explicit override > casts spec > profile > BARE.
     if system_prompt_override is not None:
         base_system = system_prompt_override
+    elif w_spec is not None:
+        from lionagi.session.prompts import LION_SYSTEM_MESSAGE
+
+        base_system = LION_SYSTEM_MESSAGE.strip() + "\n\n" + w_spec.build_system_message()
     elif not env.bare and w_profile and w_profile.system_prompt:
         base_system = w_profile.system_prompt
     else:
@@ -439,6 +502,31 @@ def build_worker_branch(
         name=wname,
     )
     env.session.include_branches(wb)
+
+    # ── Casts permissions + emission wiring ──────────────────────────
+    if w_spec is not None:
+        # Translate permissions to endpoint kwargs for claude/claude_code providers
+        if w_spec.permissions is not None:
+            _provider = getattr(getattr(w_imodel, "endpoint", None), "config", None)
+            _provider_name = getattr(_provider, "provider", "") or ""
+            if "claude" in _provider_name.lower():
+                from lionagi.agent.adapters.claude_code import translate_permissions
+
+                _perm_kwargs = translate_permissions(w_spec.permissions)
+                if _provider is not None:
+                    for _k, _v in _perm_kwargs.items():
+                        w_imodel.endpoint.config.kwargs[_k] = _v
+            else:
+                warn(
+                    f"Permission preset {w_spec.permissions.mode!r} set for agent "
+                    f"{agent_id!r} but provider {_provider_name!r} does not support "
+                    "permission translation — permissions will not be enforced."
+                )
+
+        # Grant emission capabilities when the role declares them
+        _op = w_spec.emission_operable()
+        if _op is not None and hasattr(wb, "grant_capabilities"):
+            wb.grant_capabilities(_op)
 
     # Register live persist hook on this new branch
     if env._live_persist:
