@@ -2273,6 +2273,170 @@ class StateDB:
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    # ── Runner handles (ADR-0056) ────────────────────────────────────
+
+    async def upsert_runner_handle(self, handle: Any) -> None:
+        now = time.time()
+        d = handle.model_dump() if hasattr(handle, "model_dump") else dict(handle)
+        state_val = d["state"]
+        if hasattr(state_val, "value"):
+            state_val = state_val.value
+        started = d.get("started_at")
+        if hasattr(started, "timestamp"):
+            started = started.timestamp()
+        metadata_json = json.dumps(d.get("metadata") or {})
+        await self.db.execute(
+            """INSERT INTO runner_handles (session_id, state, runner_type, pid, started_at, metadata, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id) DO UPDATE SET
+                 state=excluded.state, runner_type=excluded.runner_type,
+                 pid=excluded.pid, metadata=excluded.metadata, updated_at=excluded.updated_at""",
+            (
+                d["session_id"],
+                state_val,
+                d.get("runner_type", "local"),
+                d.get("pid"),
+                started,
+                metadata_json,
+                now,
+            ),
+        )
+        await self.db.commit()
+
+    async def get_runner_handle(self, session_id: str) -> Any:
+        from lionagi.runtime.control import RunnerHandle, RunnerState
+
+        cur = await self.db.execute(
+            "SELECT * FROM runner_handles WHERE session_id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        from datetime import datetime, timezone
+
+        started = d.get("started_at")
+        if isinstance(started, int | float):
+            started = datetime.fromtimestamp(started, tz=timezone.utc)
+        meta = d.get("metadata", "{}")
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        return RunnerHandle(
+            session_id=d["session_id"],
+            state=RunnerState(d["state"]),
+            runner_type=d.get("runner_type", "local"),
+            pid=d.get("pid"),
+            started_at=started,
+            metadata=meta,
+        )
+
+    async def create_control_request(
+        self,
+        *,
+        target_type: str,
+        target_id: str,
+        resolved_session_id: str,
+        action: Any,
+        requested_by: str | None = None,
+        reason: str | None = None,
+        idempotency_key: str | None = None,
+        expected_state: Any | None = None,
+        grace_seconds: float = 5.0,
+        cascade: bool = False,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        cr_id = uuid.uuid4().hex[:12]
+        now = time.time()
+        action_val = action.value if hasattr(action, "value") else str(action)
+        expected_val = (
+            expected_state.value
+            if hasattr(expected_state, "value")
+            else (str(expected_state) if expected_state else None)
+        )
+        metadata_json = json.dumps(metadata) if metadata else None
+        await self.db.execute(
+            """INSERT INTO run_control_requests
+               (id, target_type, target_id, resolved_session_id, action,
+                requested_by, reason, idempotency_key, expected_state,
+                grace_seconds, cascade, request_status, metadata, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                cr_id,
+                target_type,
+                target_id,
+                resolved_session_id,
+                action_val,
+                requested_by,
+                reason,
+                idempotency_key,
+                expected_val,
+                grace_seconds,
+                1 if cascade else 0,
+                "pending",
+                metadata_json,
+                now,
+            ),
+        )
+        await self.db.commit()
+        return {"id": cr_id, "action": action_val, "request_status": "pending"}
+
+    async def claim_control_request(self, cr_id: str) -> None:
+        now = time.time()
+        await self.db.execute(
+            "UPDATE run_control_requests SET request_status='claimed', claimed_at=? WHERE id=?",
+            (now, cr_id),
+        )
+        await self.db.commit()
+
+    async def complete_control_request(
+        self,
+        cr_id: str,
+        *,
+        request_status: str = "completed",
+        error: str | None = None,
+    ) -> None:
+        now = time.time()
+        await self.db.execute(
+            "UPDATE run_control_requests SET request_status=?, completed_at=?, error=? WHERE id=?",
+            (request_status, now, error, cr_id),
+        )
+        await self.db.commit()
+
+    async def transition_runner_state(
+        self,
+        session_id: str,
+        *,
+        new_state: Any,
+        reason_code: str,
+        reason_summary: str = "",
+        actor: str | None = None,
+        source: str = "executor",
+        control_request_id: str | None = None,
+    ) -> Any:
+        from lionagi.runtime.control import RunnerState
+
+        state_val = new_state.value if hasattr(new_state, "value") else str(new_state)
+        handle = await self.get_runner_handle(session_id)
+        if handle is None:
+            raise LookupError(f"runner handle not found: {session_id!r}")
+        now = time.time()
+        await self.db.execute(
+            "UPDATE runner_handles SET state=?, updated_at=? WHERE session_id=?",
+            (state_val, now, session_id),
+        )
+        await self.db.commit()
+        handle.state = RunnerState(state_val)
+        return handle
+
+    async def list_runner_controls(self, session_id: str) -> list[dict[str, Any]]:
+        cur = await self.db.execute(
+            "SELECT * FROM run_control_requests WHERE resolved_session_id=? ORDER BY created_at DESC",
+            (session_id,),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
     # ── Helpers ────────────────────────────────────────────────────────
 
     @staticmethod
