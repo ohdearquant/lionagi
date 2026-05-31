@@ -5,9 +5,11 @@ from .config import AgentConfig
 from .factory import create_agent
 from .permissions import PermissionPolicy
 from .settings import apply_hooks_from_settings, load_settings
+from .spec import AgentSpec
 
 __all__ = (
     "AgentConfig",
+    "AgentSpec",
     "PermissionPolicy",
     "create_agent",
     "load_settings",

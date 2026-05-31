@@ -42,6 +42,7 @@ from typing import Any
 import yaml
 
 from .config import AgentConfig
+from .spec import AgentSpec
 
 logger = logging.getLogger(__name__)
 
@@ -92,12 +93,12 @@ def load_settings(
 
 
 def apply_hooks_from_settings(
-    config: AgentConfig,
+    config: AgentSpec | AgentConfig,
     settings: dict[str, Any] | None = None,
     *,
     trusted_hook_modules: set[str] | frozenset[str] | None = None,
-) -> AgentConfig:
-    """Apply hook configuration from settings dict to an AgentConfig.
+) -> AgentSpec | AgentConfig:
+    """Apply hook configuration from settings dict to an AgentSpec (or legacy AgentConfig).
 
     Resolves hook specs (shell commands, Python import paths) into callables
     and registers them on the config.
