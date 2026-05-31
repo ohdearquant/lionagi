@@ -65,13 +65,39 @@ def run_studio(args: argparse.Namespace) -> int:
     return _studio_start(args)
 
 
-def _find_frontend_dir() -> Path | None:
+def _find_repo_root() -> Path | None:
+    """Return the lionagi repo root if we're running from a source checkout."""
     pkg_root = Path(__file__).resolve().parents[1]
     repo_root = pkg_root.parent
+    if (repo_root / "apps" / "studio").is_dir():
+        return repo_root
+    return None
+
+
+def _find_frontend_dir() -> Path | None:
+    repo_root = _find_repo_root()
+    if repo_root is None:
+        return None
     candidate = repo_root / "apps" / "studio" / "frontend"
     if (candidate / "package.json").exists():
         return candidate
     return None
+
+
+def _ensure_apps_importable() -> bool:
+    """Add repo root to sys.path so `apps.studio.server.app` is importable.
+
+    Returns True if the apps package is available (either already on path or
+    we added the repo root). Returns False if running from an installed wheel
+    with no source checkout nearby.
+    """
+    repo_root = _find_repo_root()
+    if repo_root is None:
+        return False
+    repo_root_str = str(repo_root)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
+    return True
 
 
 def _has_docker() -> bool:
@@ -128,6 +154,14 @@ def _studio_start(args: argparse.Namespace) -> int:
 
 def _start_backend_only(host: str, port: int) -> int:
     import uvicorn
+
+    if not _ensure_apps_importable():
+        print(
+            "Error: studio backend not found. Run from the lionagi repo root or install "
+            "the full studio package.",
+            file=sys.stderr,
+        )
+        return 1
 
     print(f"Lion Studio API: http://{host}:{port}")
     uvicorn.run("lionagi.studio.app:app", host=host, port=port)
@@ -245,6 +279,16 @@ def _start_local(
         print(f"Lion Studio UI:  http://{host}:{frontend_port}")
     print(f"Lion Studio API: http://{host}:{port}")
     print("Press Ctrl+C to stop")
+
+    if not _ensure_apps_importable():
+        if frontend_proc:
+            frontend_proc.terminate()
+        print(
+            "Error: studio backend not found. Run from the lionagi repo root or install "
+            "the full studio package.",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         uvicorn.run("lionagi.studio.app:app", host=host, port=port)
