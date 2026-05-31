@@ -282,10 +282,13 @@ def build_chat_model(
     theme: str | None,
     effort: str | None = None,
     fast: bool = False,
+    bypass: bool = False,
 ) -> iModel | str:
     """Legacy: for agent.py compat. Returns bare spec string when no flags."""
     extra: dict = {}
-    if yolo:
+    if bypass:
+        extra.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))
+    elif yolo:
         extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
     if fast:
         extra.update(PROVIDER_FAST_KWARGS.get(provider, {}))
