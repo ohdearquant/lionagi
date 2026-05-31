@@ -138,13 +138,22 @@ class Session(Node, Relational):
             self._observer = SessionObserver(session=self)
         return self._observer
 
-    def observe(self, event_type: type, handler: Callable | None = None) -> Any:
-        """Subscribe a handler to an event type. Usable as a decorator.
+    def observe(
+        self,
+        event_type: type | None = None,
+        handler: Callable | None = None,
+        *,
+        role: str | None = None,
+    ) -> Any:
+        """Subscribe a handler to an event type or emitter role. Usable as a decorator.
 
         Handlers receive ``(event, session)`` and fire when a matching event
         is emitted. Mirrors ``@session.operation()``.
+
+        ``role`` subscribes by the emitting agent's role name — fires on anything
+        emitted by an agent with that role regardless of capability type.
         """
-        return self.observer.observe(event_type, handler)
+        return self.observer.observe(event_type, handler, role=role)
 
     def route(self, condition: Callable, *, into: str) -> "SessionObserver":
         """Auto-append emitted events matching ``condition`` to a named stream."""

@@ -39,6 +39,8 @@ class Signal(Element):
     """An Observable envelope carrying a payload into the reactive bus."""
 
     data: Any = None
+    emitter_role: str | None = None
+    """Role name of the emitting agent, set at emit time for ``RoleFilter`` routing."""
 
 
 class StructuredOutput(Signal):
