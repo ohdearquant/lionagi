@@ -713,6 +713,7 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
         CLAUDE_CLI,
         *request.as_cmd_args(),
         cwd=str(workspace),
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,  # isolate from parent's SIGINT

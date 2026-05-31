@@ -69,15 +69,19 @@ Only three conflict declarations exist in the current roster:
 - `slow` conflicts with `[fast]`
 - `systematic` conflicts with `[fast]`
 
-### Modes are authored as lean markdown
+### Modes are authored as inline Python modules
 
-Each mode is a `roles/modes/*.md` file. YAML frontmatter carries `name`,
-`description` (dense — includes phase, overhead, and pairing info compressed
-into one line), and optionally `conflicts_with`. The body after the frontmatter
-delimiter IS the behaviors text — no heading, no additional sections.
+Each mode is one `roles/modes/<stem>.py` file exposing a single `MODE = Mode(...)`.
+The module stem uses underscores; the canonical `name` may contain dashes
+(`constraint_solving.py` → `name="constraint-solving"`). `description` is dense —
+phase, overhead, and pairing info compressed into one line — and `behaviors` is
+the cognitive-overlay text composed into system prompts; `conflicts_with` is
+optional. Roles/modes are a closed built-in set (not user-definable — users
+extend via packs); `list_modes()` is the roster source and `Mode.load(name)`
+resolves a canonical name. There is no markdown or YAML frontmatter.
 
-`description` lives in metadata because it is meant for orchestrators or agents
-to pick the mode they need; it is not part of the mode's behavioral content.
+`description` is separate from `behaviors` because it is meant for orchestrators
+or agents to pick the mode they need; it is not part of the behavioral content.
 
 ## The Mode Schema
 
@@ -118,8 +122,8 @@ mode's `description`, not a separate field or enum).
   without inheriting speculative ones they don't.
 - Mode purity requires zero runtime enforcement — no validators, no special
   dict subclass, no model_copy override. Less code, fewer failure modes.
-- The lean markdown format makes editing a mode trivial — one file, clear
-  structure, no boilerplate fields.
+- The inline-Python module format makes editing a mode trivial — one file, one
+  `MODE` object, no boilerplate fields and no frontmatter parsing.
 - `conflicts_with` is the single mechanism for composition rules, mode-mode
   only. Simple to reason about, simple to extend.
 
@@ -143,7 +147,8 @@ mode's `description`, not a separate field or enum).
 
 ## References
 
-- `lionagi/casts/pattern.py` — `Pattern`, `PatternKind`, `Mode`,
-  `_parse_frontmatter`.
+- `lionagi/casts/pattern.py` — `Pattern`, `PatternKind`, `Mode`, `Mode.load`,
+  `list_modes`.
 - `lionagi/protocols/_concepts.py` — `Composable`, `Composed` ABCs.
-- `lionagi/casts/roles/modes/*.md` — the fourteen built-in mode definitions.
+- `lionagi/casts/roles/modes/*.py` — the fourteen built-in mode definitions
+  (one `MODE` per module).

@@ -28,6 +28,8 @@ if TYPE_CHECKING:
     from lionagi.protocols.messages.message import RoledMessage
     from lionagi.session.branch import Branch
 
+from lionagi.session.control import LoopBreak, LoopDirective
+
 logger = logging.getLogger(__name__)
 
 
@@ -129,6 +131,24 @@ async def _emit_message_signal(branch: Branch, msg: RoledMessage) -> None:
         await branch.emit(ActionRequestSignal(data=msg))
     elif isinstance(msg, ActionResponse):
         await branch.emit(ActionResponseSignal(data=msg))
+
+
+class _StopStream(Exception):  # noqa: N818
+    """Internal sentinel used for observer-requested clean cancellation."""
+
+    def __init__(self, reason: str | None = None) -> None:
+        super().__init__(reason or "stream cancelled by observer")
+        self.reason = reason
+
+
+def _check_control(branch: Branch) -> None:
+    ctrl = branch.poll_control()
+    if ctrl is None or ctrl.directive is LoopDirective.CONTINUE:
+        return
+    if ctrl.directive is LoopDirective.BREAK:
+        raise LoopBreak(ctrl.reason)
+    if ctrl.directive is LoopDirective.CANCEL:
+        raise _StopStream(ctrl.reason)
 
 
 async def run(
@@ -233,84 +253,91 @@ async def run(
     await model.executor.append(api_call)
 
     try:
-        # ``anyio.fail_after(None)`` is a no-op context, so we can wrap
-        # unconditionally and let the no-timeout case pay the (small)
-        # context-manager cost rather than branching the stream loop.
-        with anyio.fail_after(_stream_timeout):
-            async for chunk in model.stream(api_call=api_call):
-                match chunk.type:
-                    case "system":
-                        if sid := chunk.metadata.get("session_id"):
-                            endpoint.session_id = sid
+        try:
+            # ``anyio.fail_after(None)`` is a no-op context, so we can wrap
+            # unconditionally and let the no-timeout case pay the (small)
+            # context-manager cost rather than branching the stream loop.
+            with anyio.fail_after(_stream_timeout):
+                async for chunk in model.stream(api_call=api_call):
+                    match chunk.type:
+                        case "system":
+                            if sid := chunk.metadata.get("session_id"):
+                                endpoint.session_id = sid
 
-                    case "thinking":
-                        if chunk.content:
-                            thinking_parts.append(chunk.content)
+                        case "thinking":
+                            if chunk.content:
+                                thinking_parts.append(chunk.content)
 
-                    case "text":
-                        if chunk.content:
-                            text_parts.append(chunk.content)
+                        case "text":
+                            if chunk.content:
+                                text_parts.append(chunk.content)
 
-                    case "tool_use":
-                        if res := await _flush_response():
-                            await _emit_message_signal(branch, res)
-                            yield res
+                        case "tool_use":
+                            if res := await _flush_response():
+                                await _emit_message_signal(branch, res)
+                                _check_control(branch)
+                                yield res
 
-                        act_req = branch.msgs.create_action_request(
-                            function=chunk.tool_name or "",
-                            arguments=chunk.tool_input or {},
-                            sender=branch.id,
-                            recipient=branch.user or "user",
-                        )
-                        if chunk.tool_id:
-                            pending_requests[chunk.tool_id] = act_req
-                        await branch.msgs.a_add_message(action_request=act_req)
-                        await _emit_message_signal(branch, act_req)
-                        yield act_req
+                            act_req = branch.msgs.create_action_request(
+                                function=chunk.tool_name or "",
+                                arguments=chunk.tool_input or {},
+                                sender=branch.id,
+                                recipient=branch.user or "user",
+                            )
+                            if chunk.tool_id:
+                                pending_requests[chunk.tool_id] = act_req
+                            await branch.msgs.a_add_message(action_request=act_req)
+                            await _emit_message_signal(branch, act_req)
+                            _check_control(branch)
+                            yield act_req
 
-                    case "tool_result":
-                        orig_req = (
-                            pending_requests.pop(chunk.tool_id, None) if chunk.tool_id else None
-                        )
-                        if orig_req is None:
-                            continue
+                        case "tool_result":
+                            orig_req = (
+                                pending_requests.pop(chunk.tool_id, None) if chunk.tool_id else None
+                            )
+                            if orig_req is None:
+                                continue
 
-                        # Build the ActionResponse and attach is_error BEFORE
-                        # a_add_message so the live-persist hook (and any other
-                        # on_message_added callback) observes the final state.
-                        # Doing it after the await would let the hook serialize
-                        # an incomplete row that omits the error marker.
-                        act_res = branch.msgs.create_action_response(
-                            action_request=orig_req,
-                            action_output=chunk.tool_output,
-                            sender=branch.user or "user",
-                            recipient=branch.id,
-                        )
-                        if chunk.is_error:
-                            act_res.metadata["is_error"] = True
-                        await branch.msgs.a_add_message(
-                            action_request=orig_req,
-                            action_output=chunk.tool_output,
-                            action_response=act_res,
-                            sender=branch.user or "user",
-                            recipient=branch.id,
-                        )
-                        await _emit_message_signal(branch, act_res)
-                        yield act_res
+                            # Build the ActionResponse and attach is_error BEFORE
+                            # a_add_message so the live-persist hook (and any other
+                            # on_message_added callback) observes the final state.
+                            # Doing it after the await would let the hook serialize
+                            # an incomplete row that omits the error marker.
+                            act_res = branch.msgs.create_action_response(
+                                action_request=orig_req,
+                                action_output=chunk.tool_output,
+                                sender=branch.user or "user",
+                                recipient=branch.id,
+                            )
+                            if chunk.is_error:
+                                act_res.metadata["is_error"] = True
+                            await branch.msgs.a_add_message(
+                                action_request=orig_req,
+                                action_output=chunk.tool_output,
+                                action_response=act_res,
+                                sender=branch.user or "user",
+                                recipient=branch.id,
+                            )
+                            await _emit_message_signal(branch, act_res)
+                            _check_control(branch)
+                            yield act_res
 
-                    case "result":
-                        pass
+                        case "result":
+                            pass
 
-                    case "error":
-                        raise RuntimeError(chunk.content or "Stream error from CLI endpoint")
+                        case "error":
+                            raise RuntimeError(chunk.content or "Stream error from CLI endpoint")
 
-            if res := await _flush_response():
-                if hasattr(api_call, "to_dict"):
-                    call_meta = Note.from_dict(api_call.to_dict())
-                    call_meta.pop(["execution", "response"], None)
-                    res.metadata["api_call_meta"] = call_meta.to_dict()
-                await _emit_message_signal(branch, res)
-                yield res
+                if res := await _flush_response():
+                    if hasattr(api_call, "to_dict"):
+                        call_meta = Note.from_dict(api_call.to_dict())
+                        call_meta.pop(["execution", "response"], None)
+                        res.metadata["api_call_meta"] = call_meta.to_dict()
+                    await _emit_message_signal(branch, res)
+                    _check_control(branch)
+                    yield res
+        except _StopStream:
+            pass
     finally:
         # Restore original streaming func
         model.streaming_process_func = prev_stream_func
