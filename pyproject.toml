@@ -248,8 +248,6 @@ build-backend = "hatchling.build"
 packages = ["lionagi"]
 artifacts = [
     "lionagi/py.typed",
-    "lionagi/casts/roles/modes/*.md",
-    "lionagi/casts/roles/*.md",
     "lionagi/casts/packs/*.yaml",
 ]
 

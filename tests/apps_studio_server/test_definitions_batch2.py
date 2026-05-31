@@ -45,8 +45,8 @@ class _FakeDB:
 @pytest.mark.integration
 class TestListDefinitionsNPlusOne:
     def _setup(self, tmp_path, monkeypatch, n_agents=3):
-        import apps.studio.server.services.definitions as defs_mod
         import lionagi.state.db as state_db_mod
+        import lionagi.studio.services.definitions as defs_mod
 
         fake_home = tmp_path / "lionagi_home"
         agents_dir = fake_home / "agents"
@@ -111,8 +111,8 @@ class TestListDefinitionsNPlusOne:
 
     def test_version_info_populated_from_batch_query(self, tmp_path, monkeypatch):
         """Batch query results must be mapped back to the correct entry."""
-        import apps.studio.server.services.definitions as defs_mod
         import lionagi.state.db as state_db_mod
+        import lionagi.studio.services.definitions as defs_mod
 
         fake_home = tmp_path / "lionagi_home"
         agents_dir = fake_home / "agents"
@@ -129,7 +129,6 @@ class TestListDefinitionsNPlusOne:
         monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
         monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
         monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-
 
         class _RowLike:
             def __init__(self, data):

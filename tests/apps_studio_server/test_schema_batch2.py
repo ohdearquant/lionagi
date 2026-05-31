@@ -81,9 +81,7 @@ class TestStatusSourceMigration:
                 cur = await db.db.execute("PRAGMA table_info(shows)")
                 cols = {row["name"] for row in await cur.fetchall()}
                 # Read back the legacy row — it should have status_source = 'unknown'
-                cur2 = await db.db.execute(
-                    "SELECT status_source FROM shows WHERE id = 'old-id'"
-                )
+                cur2 = await db.db.execute("SELECT status_source FROM shows WHERE id = 'old-id'")
                 row = await cur2.fetchone()
             return cols, row
 

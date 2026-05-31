@@ -35,17 +35,18 @@ class TestPublicPath:
     def test_repo_relative_path(self, tmp_path):
         """public_path() with a path under the repo root returns relative posix."""
         # Simulate a path under the repo root (parents[4] from _path_safety.py)
-        import apps.studio.server.services._path_safety as mod
-        from apps.studio.server.services._path_safety import public_path
-        repo_root = Path(mod.__file__).resolve().parents[4]
-        target = repo_root / "apps" / "studio" / "server" / "dummy.md"
+        import lionagi.studio.services._path_safety as mod
+        from lionagi.studio.services._path_safety import public_path
+
+        repo_root = Path(mod.__file__).resolve().parents[3]
+        target = repo_root / "lionagi" / "studio" / "dummy.md"
         result = public_path(target)
         assert not result.startswith("/"), f"Expected relative, got: {result!r}"
-        assert "apps/studio/server/dummy.md" in result
+        assert "lionagi/studio/dummy.md" in result
 
     def test_home_relative_path(self, tmp_path):
         """public_path() with a path under home returns home-relative posix."""
-        from apps.studio.server.services._path_safety import public_path
+        from lionagi.studio.services._path_safety import public_path
 
         target = Path.home() / ".lionagi" / "agents" / "test.md"
         result = public_path(target)
@@ -54,7 +55,7 @@ class TestPublicPath:
 
     def test_unknown_path_returns_filename(self, tmp_path):
         """public_path() with an unrelated path returns just the filename."""
-        from apps.studio.server.services._path_safety import public_path
+        from lionagi.studio.services._path_safety import public_path
 
         # Use a path that is definitely outside repo and home
         target = Path("/var/log/system.log")
@@ -72,9 +73,9 @@ class TestPublicPath:
 class TestDefinitionsDiskPath:
     def test_list_definitions_disk_path_not_absolute(self, tmp_path, monkeypatch):
         """list_definitions() must not expose absolute disk_path in response."""
-        import apps.studio.server.services.definitions as defs_mod
         import lionagi.cli._runs as cli_runs_mod
         import lionagi.state.db as state_db_mod
+        import lionagi.studio.services.definitions as defs_mod
 
         fake_home = _make_fake_home(tmp_path)
         agents_dir = fake_home / "agents"
@@ -89,7 +90,9 @@ class TestDefinitionsDiskPath:
         monkeypatch.setattr(defs_mod, "LIONAGI_HOME", fake_home)
         monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
         monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", fake_home / "playbooks")
-        monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": fake_home / "playbooks"})
+        monkeypatch.setattr(
+            defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": fake_home / "playbooks"}
+        )
 
         result = _run(defs_mod.list_definitions("agent"))
         assert len(result) == 1
@@ -107,7 +110,7 @@ class TestDefinitionsDiskPath:
 class TestPluginsPathSanitization:
     def test_plugin_summary_path_not_absolute(self, tmp_path, monkeypatch):
         """_plugin_summary() must return a relative path for the 'path' field."""
-        import apps.studio.server.services.plugins as plugins_mod
+        import lionagi.studio.services.plugins as plugins_mod
 
         # Build a minimal marketplace plugin under tmp_path
         repo_root = tmp_path / "repo"
@@ -128,13 +131,15 @@ class TestPluginsPathSanitization:
 
     def test_get_plugin_skill_uses_real_dir(self, tmp_path, monkeypatch):
         """get_plugin_skill() must not reconstruct path from sanitized response."""
-        import apps.studio.server.services.plugins as plugins_mod
+        import lionagi.studio.services.plugins as plugins_mod
 
         repo_root = tmp_path / "repo"
         plugin_dir = repo_root / "marketplace" / "myplugin"
         skills_dir = plugin_dir / "skills" / "myskill"
         skills_dir.mkdir(parents=True)
-        (skills_dir / "SKILL.md").write_text("---\nname: myskill\ndescription: test\n---\ncontent here")
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: myskill\ndescription: test\n---\ncontent here"
+        )
 
         plugin_json_dir = plugin_dir / ".claude-plugin"
         plugin_json_dir.mkdir()
@@ -146,7 +151,13 @@ class TestPluginsPathSanitization:
         manifest_dir.mkdir(parents=True)
         manifest = manifest_dir / "marketplace.json"
         manifest.write_text(
-            json.dumps({"plugins": [{"name": "myplugin", "source": "marketplace/myplugin", "description": ""}]})
+            json.dumps(
+                {
+                    "plugins": [
+                        {"name": "myplugin", "source": "marketplace/myplugin", "description": ""}
+                    ]
+                }
+            )
         )
 
         monkeypatch.setattr(plugins_mod, "_REPO_ROOT", repo_root)
@@ -156,7 +167,9 @@ class TestPluginsPathSanitization:
         result = plugins_mod.get_plugin_skill("myplugin", "myskill")
         assert result is not None
         assert result["content"] == "content here"
-        assert not result["path"].startswith("/"), f"skill path must not be absolute: {result['path']!r}"
+        assert not result["path"].startswith("/"), (
+            f"skill path must not be absolute: {result['path']!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +180,7 @@ class TestPluginsPathSanitization:
 class TestMarketplaceSourcePaths:
     def test_valid_relative_source_accepted(self, tmp_path, monkeypatch):
         """A source path like './marketplace/X' that stays under repo root is accepted."""
-        import apps.studio.server.services.plugins as plugins_mod
+        import lionagi.studio.services.plugins as plugins_mod
 
         repo_root = tmp_path / "repo"
         valid_dir = repo_root / "marketplace" / "valid"
@@ -181,7 +194,7 @@ class TestMarketplaceSourcePaths:
 
     def test_absolute_source_rejected(self, tmp_path, monkeypatch):
         """An absolute path in marketplace source must be rejected."""
-        import apps.studio.server.services.plugins as plugins_mod
+        import lionagi.studio.services.plugins as plugins_mod
 
         monkeypatch.setattr(plugins_mod, "_REPO_ROOT", tmp_path / "repo")
 
@@ -190,7 +203,7 @@ class TestMarketplaceSourcePaths:
 
     def test_parent_traversal_rejected(self, tmp_path, monkeypatch):
         """A '../escape' source must be rejected."""
-        import apps.studio.server.services.plugins as plugins_mod
+        import lionagi.studio.services.plugins as plugins_mod
 
         monkeypatch.setattr(plugins_mod, "_REPO_ROOT", tmp_path / "repo")
 
@@ -199,7 +212,7 @@ class TestMarketplaceSourcePaths:
 
     def test_symlink_escape_rejected(self, tmp_path, monkeypatch):
         """A source that resolves via symlink outside repo root must be rejected."""
-        import apps.studio.server.services.plugins as plugins_mod
+        import lionagi.studio.services.plugins as plugins_mod
 
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
@@ -215,7 +228,7 @@ class TestMarketplaceSourcePaths:
 
     def test_marketplace_manifest_with_escape_ignored(self, tmp_path, monkeypatch):
         """_iter_marketplace_plugins() drops entries with escape paths."""
-        import apps.studio.server.services.plugins as plugins_mod
+        import lionagi.studio.services.plugins as plugins_mod
 
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
@@ -229,13 +242,17 @@ class TestMarketplaceSourcePaths:
         manifest_dir = repo_root / ".claude-plugin"
         manifest_dir.mkdir()
         manifest = manifest_dir / "marketplace.json"
-        manifest.write_text(json.dumps({
-            "plugins": [
-                {"name": "good", "source": "marketplace/good", "description": ""},
-                {"name": "bad", "source": "../outside", "description": ""},
-                {"name": "abs", "source": "/etc/passwd", "description": ""},
-            ]
-        }))
+        manifest.write_text(
+            json.dumps(
+                {
+                    "plugins": [
+                        {"name": "good", "source": "marketplace/good", "description": ""},
+                        {"name": "bad", "source": "../outside", "description": ""},
+                        {"name": "abs", "source": "/etc/passwd", "description": ""},
+                    ]
+                }
+            )
+        )
 
         monkeypatch.setattr(plugins_mod, "_REPO_ROOT", repo_root)
         monkeypatch.setattr(plugins_mod, "MARKETPLACE_MANIFEST", manifest)
@@ -257,8 +274,8 @@ class TestBearerTokenAuth:
     def _get_client(self, monkeypatch, fake_db: Path | None = None) -> TestClient:
         from importlib import reload
 
-        import apps.studio.server.app as app_mod
-        import apps.studio.server.services.stats as stats_mod
+        import lionagi.studio.app as app_mod
+        import lionagi.studio.services.stats as stats_mod
 
         if fake_db is not None:
             monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", fake_db)

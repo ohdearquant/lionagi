@@ -7,6 +7,10 @@ from lionagi.ln.types import ModelConfig
 
 from .message import Message, MessageContent, MessageRole
 
+_INSTRUCTION_SERIALIZE_EXCLUDE: frozenset[str] = frozenset(
+    {"response_format", "structure", "_structure_instance"}
+)
+
 
 @dataclass(slots=True)
 class InstructionContent(MessageContent):
@@ -56,6 +60,20 @@ class InstructionContent(MessageContent):
         object.__setattr__(self, "_structure_instance", structure_inst)
         object.__setattr__(self, "images", images if images is not None else [])
         object.__setattr__(self, "image_detail", image_detail)
+
+    def to_dict(self, exclude: set[str] | frozenset[str] | None = None) -> dict[str, Any]:
+        # Conditionally include response_format when its value is a plain dict
+        # (JSON-serializable); keep excluding it for type/BaseModel references
+        # which cannot survive a round-trip through to_dict → from_dict.
+        base_exclude = set(_INSTRUCTION_SERIALIZE_EXCLUDE)
+        if isinstance(self.response_format, dict):
+            base_exclude.discard("response_format")
+        if exclude is not None:
+            base_exclude.update(exclude)
+        # Use explicit class reference for Python 3.10 slots-dataclass compat.
+        from lionagi.ln.types import DataClass
+
+        return DataClass.to_dict(self, exclude=frozenset(base_exclude))
 
     @property
     def role(self) -> MessageRole:

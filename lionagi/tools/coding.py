@@ -297,9 +297,7 @@ def _read_image_sync(path: str, workspace_root: Path) -> dict:
     }
 
 
-def _read_file_sync(
-    path: str, offset: int, max_lines: int, workspace_root: Path
-) -> dict:
+def _read_file_sync(path: str, offset: int, max_lines: int, workspace_root: Path) -> dict:
     # Finding 14: validate path under workspace root
     try:
         p = _resolve_workspace_path(path, workspace_root)
@@ -470,7 +468,7 @@ def _drain_stream(stream, buf: bytearray) -> bool:
 def _subprocess_sync(cmd, shell: bool, timeout_s: float, cwd: str | None) -> dict:
     # Finding 5: use Popen + threads for bounded memory capture and child-group kill
     try:
-        proc = subprocess.Popen(
+        proc = subprocess.Popen(  # noqa: S603
             cmd,
             shell=shell,
             stdout=subprocess.PIPE,
@@ -672,8 +670,6 @@ class CodingToolkit(LionTool):
         call_count = [0]
         msgs = branch.msgs
         notify = self.notify
-        threshold = self.notify_threshold
-        max_tokens = self.notify_max_tokens
         # Finding 14: capture workspace root for use in all sync file helpers
         workspace_root = self.workspace_root
 
@@ -756,9 +752,7 @@ class CodingToolkit(LionTool):
                 start = max(0, offset or 0)
                 max_lines = limit if (limit and limit > 0) else 2000
                 # Finding 14: pass workspace_root to enforce path containment
-                result = await run_sync(
-                    _read_file_sync, path, start, max_lines, workspace_root
-                )
+                result = await run_sync(_read_file_sync, path, start, max_lines, workspace_root)
                 _track(result)
                 return result
             elif action == "list_dir":
@@ -794,9 +788,7 @@ class CodingToolkit(LionTool):
                     if guard:
                         return {"success": False, "error": guard}
                 # Finding 14: pass workspace_root to enforce path containment
-                result = await run_sync(
-                    _write_file_sync, file_path, content, workspace_root
-                )
+                result = await run_sync(_write_file_sync, file_path, content, workspace_root)
                 _track(result)
                 return result
             elif action == "edit":
@@ -875,9 +867,7 @@ class CodingToolkit(LionTool):
             """
             if action == "grep":
                 try:
-                    search_path = str(
-                        _resolve_workspace_path(path or ".", workspace_root)
-                    )
+                    search_path = str(_resolve_workspace_path(path or ".", workspace_root))
                 except PermissionError as e:
                     return {"success": False, "error": str(e)}
                 limit = max_results or 50
@@ -887,9 +877,7 @@ class CodingToolkit(LionTool):
                 raw = await run_sync(_subprocess_sync, cmd, False, 30.0, None)
                 if raw.get("returncode") == 2:
                     return {"success": False, "error": raw["stderr"].strip()}
-                lines = (
-                    raw["stdout"].strip().split("\n") if raw["stdout"].strip() else []
-                )
+                lines = raw["stdout"].strip().split("\n") if raw["stdout"].strip() else []
                 total = len(lines)
                 return {
                     "success": True,
@@ -899,9 +887,7 @@ class CodingToolkit(LionTool):
                 }
             elif action == "find":
                 try:
-                    search_path = str(
-                        _resolve_workspace_path(path or ".", workspace_root)
-                    )
+                    search_path = str(_resolve_workspace_path(path or ".", workspace_root))
                 except PermissionError as e:
                     return {"success": False, "error": str(e)}
                 limit = max_results or 100
@@ -909,9 +895,7 @@ class CodingToolkit(LionTool):
                 raw = await run_sync(_subprocess_sync, cmd, False, 30.0, None)
                 if raw.get("returncode", 0) != 0 and raw.get("stderr", "").strip():
                     return {"success": False, "error": raw["stderr"].strip()}
-                lines = (
-                    raw["stdout"].strip().split("\n") if raw["stdout"].strip() else []
-                )
+                lines = raw["stdout"].strip().split("\n") if raw["stdout"].strip() else []
                 total = len(lines)
                 return {
                     "success": True,
@@ -1020,9 +1004,7 @@ class CodingToolkit(LionTool):
                 cp = _ensure_current_progression()
                 keep = keep_last if keep_last is not None else 5
                 ar_uids = [
-                    uid
-                    for uid in cp
-                    if uid in pile and isinstance(pile[uid], ActionResponse)
+                    uid for uid in cp if uid in pile and isinstance(pile[uid], ActionResponse)
                 ]
                 if len(ar_uids) <= keep:
                     return {
@@ -1145,18 +1127,10 @@ class CodingToolkit(LionTool):
             - safe: read + write + search, bash restricted (no rm/sudo)
             - allow_all: full access (use for trusted implementation tasks)
             """
-            from lionagi.agent.config import AgentConfig
-            from lionagi.agent.permissions import PermissionPolicy
+            from lionagi.agent.spec import AgentSpec
 
             max_turns = min(max(1, max_turns), 50)
             sub_cwd = cwd or (str(workspace_root) if workspace_root else None)
-
-            perm_map = {
-                "read_only": PermissionPolicy.read_only(),
-                "safe": PermissionPolicy.safe(),
-                "allow_all": PermissionPolicy.allow_all(),
-            }
-            sub_permissions = perm_map.get(permissions, PermissionPolicy.read_only())
 
             try:
                 model_spec = None
@@ -1171,22 +1145,23 @@ class CodingToolkit(LionTool):
                 except AttributeError:
                     pass
 
-                sub_config = AgentConfig(
-                    name="subagent",
+                sub_spec = AgentSpec.compose(
+                    "implementer",
                     model=model_spec,
                     tools=["coding"],
-                    permissions=sub_permissions,
-                    cwd=sub_cwd,
+                    permissions=permissions,
                     system_prompt=(
                         "You are a sub-agent. Complete the assigned task concisely. "
                         "Report your findings and any changes made. Be thorough but brief."
                     ),
-                    lion_system=False,
+                    cwd=sub_cwd,
+                    yolo=False,
                 )
+                sub_spec.lion_system = False
 
                 from lionagi.agent.factory import create_agent as _create
 
-                sub_branch = await _create(sub_config, load_settings=False)
+                sub_branch = await _create(sub_spec, load_settings=False)
 
                 result = await sub_branch.ReAct(
                     instruction=instruction,

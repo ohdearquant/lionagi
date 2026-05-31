@@ -164,7 +164,7 @@ def _start_backend_only(host: str, port: int) -> int:
         return 1
 
     print(f"Lion Studio API: http://{host}:{port}")
-    uvicorn.run("apps.studio.server.app:app", host=host, port=port)
+    uvicorn.run("lionagi.studio.app:app", host=host, port=port)
     return 0
 
 
@@ -291,7 +291,7 @@ def _start_local(
         return 1
 
     try:
-        uvicorn.run("apps.studio.server.app:app", host=host, port=port)
+        uvicorn.run("lionagi.studio.app:app", host=host, port=port)
     except KeyboardInterrupt:
         print("\nStopping Lion Studio...")
     finally:

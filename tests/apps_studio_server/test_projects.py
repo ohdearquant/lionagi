@@ -15,8 +15,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 def _make_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """Wire a TestClient with a real temp state.db and patched paths."""
-    import apps.studio.server.services.projects as projects_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.projects as projects_mod
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -34,7 +34,7 @@ def _make_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     asyncio.run(_init())
 
-    from apps.studio.server.app import app
+    from lionagi.studio.app import app
 
     return TestClient(app)
 
@@ -75,7 +75,9 @@ def test_get_project_not_found(tmp_path, monkeypatch):
 
 def test_get_project_found(tmp_path, monkeypatch):
     client = _make_client(tmp_path, monkeypatch)
-    client.post("/api/projects/", json={"name": "found-project", "github": "https://github.com/org/repo"})
+    client.post(
+        "/api/projects/", json={"name": "found-project", "github": "https://github.com/org/repo"}
+    )
     r = client.get("/api/projects/found-project")
     assert r.status_code == 200
     data = r.json()
@@ -163,6 +165,7 @@ def test_delete_non_studio_project_returns_403(tmp_path, monkeypatch):
     import asyncio
 
     from lionagi.state.db import StateDB
+
     fake_db = tmp_path / "state.db"
 
     # Use a name without slashes so it works cleanly as a URL path segment.
