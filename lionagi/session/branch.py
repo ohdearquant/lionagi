@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field, JsonValue, PrivateAttr, field_serializer
 
 from lionagi.config import settings
+from lionagi.governance.evidence import LogTier
 from lionagi.ln import AlcallParams
 from lionagi.ln.types import Unset
 from lionagi.models.field_model import FieldModel
@@ -42,6 +43,8 @@ from lionagi.tools.base import LionTool
 from .prompts import LION_SYSTEM_MESSAGE
 
 if TYPE_CHECKING:
+    from lionagi.governance.context import OperationContext
+    from lionagi.governance.evidence import EvidenceChain, EvidenceNode
     from lionagi.operations.operate.operative import Operative
     from lionagi.operations.types import Middle
     from lionagi.session.control import LoopControl, LoopDirective
@@ -119,6 +122,7 @@ class Branch(Element, Relational):
     _imodel_manager: iModelManager | None = PrivateAttr(None)
     _log_manager: DataLogger | None = PrivateAttr(None)
     _operation_manager: OperationManager | None = PrivateAttr(None)
+    _evidence_chain: Any = PrivateAttr(None)
     _observer: Any = PrivateAttr(None)
     _capabilities: Any = PrivateAttr(None)
     _loop_control: "LoopControl | None" = PrivateAttr(None)
@@ -141,6 +145,7 @@ class Branch(Element, Relational):
         system_template_context: dict = None,
         logs: Pile[Log] = None,
         use_lion_system_message: bool = False,
+        evidence_chain: Any = None,
         **kwargs,
     ):
         """
@@ -249,6 +254,12 @@ class Branch(Element, Relational):
 
         self._operation_manager = OperationManager()
 
+        # --- EvidenceChain (optional governance) ---
+        self._evidence_chain = evidence_chain
+        if self._evidence_chain is not None:
+            self._log_manager.evidence_chain = self._evidence_chain
+            self._log_manager.immutable_logs = self._evidence_chain.nodes
+
     # -------------------------------------------------------------------------
     # Properties to expose managers and core data
     # -------------------------------------------------------------------------
@@ -275,6 +286,35 @@ class Branch(Element, Relational):
     def mdls(self) -> iModelManager:
         """Returns the associated iModelManager."""
         return self._imodel_manager
+
+    @property
+    def evidence_chain(self) -> "EvidenceChain | None":
+        """The branch-scoped evidence chain, if any."""
+        return self._evidence_chain
+
+    def _ensure_evidence_chain(self) -> "EvidenceChain":
+        if self._evidence_chain is None:
+            from lionagi.governance.evidence import EvidenceChain
+
+            self._evidence_chain = EvidenceChain()
+            self.metadata["evidence_chain_id"] = str(self._evidence_chain.id)
+            self.metadata["evidence_chain_tip"] = self._evidence_chain.tip_hash
+            self._log_manager.evidence_chain = self._evidence_chain
+            self._log_manager.immutable_logs = self._evidence_chain.nodes
+        return self._evidence_chain
+
+    def emit_evidence(
+        self,
+        content: dict[str, Any],
+        tier: LogTier = LogTier.IMMUTABLE,
+        *,
+        sensitive_fields: list[str] | None = None,
+    ) -> "EvidenceNode":
+        """Append an evidence record to the branch-scoped evidence chain."""
+        chain = self._ensure_evidence_chain()
+        node = chain.append(content, tier=tier, sensitive_fields=sensitive_fields)
+        self.metadata["evidence_chain_tip"] = chain.tip_hash
+        return node
 
     @property
     def progression(self) -> Progression:
@@ -904,6 +944,7 @@ class Branch(Element, Relational):
         stream_persist: bool = False,
         persist_dir: str | None = None,
         middle: "Middle | None" = None,
+        ctx: "OperationContext | None" = None,
         **kwargs,
     ) -> list | BaseModel | None | dict | str:
         """
@@ -996,10 +1037,34 @@ class Branch(Element, Relational):
         _pms = {
             k: v
             for k, v in locals().items()
-            if k not in ("self", "_pms", "kwargs") and v is not None
+            if k not in ("self", "_pms", "kwargs", "ctx") and v is not None
         }
         if kwargs:
             _pms.update(kwargs)
+
+        _ctx_token = None
+        _operation_context_var = None
+        if ctx is None:
+            from lionagi.governance.context import get_operation_context
+
+            ctx = get_operation_context()
+
+        if ctx is None:
+            if getattr(self, "_charter", None) is not None:
+                from lionagi.governance.context import (
+                    GovernanceMissingContextError,
+                )
+
+                raise GovernanceMissingContextError("OperationContext required in governed mode")
+        else:
+            from lionagi.governance.context import (
+                _operation_context_var,
+                set_operation_context,
+            )
+
+            _ctx_token = set_operation_context(ctx)
+            _pms["ctx"] = ctx
+
         from lionagi.operations.operate.operate import operate, prepare_operate_kw
 
         # Run lifecycle on the bus: RunStart → RunEnd(result) | RunFailed(exc).
@@ -1021,6 +1086,9 @@ class Branch(Element, Relational):
 
                 await self.emit(RunFailed(data=exc))
             raise
+        finally:
+            if ctx is not None and _ctx_token is not None and _operation_context_var is not None:
+                _operation_context_var.reset(_ctx_token)
         if has_observer:
             from .signal import RunEnd
 

@@ -390,23 +390,71 @@ class Session(Node, Relational):
             alcall_params: Parameters for async parallel call execution
             on_progress: Callback(op_id, name, status, elapsed_s) for progress tracking
         """
+        charter = getattr(self, "_charter", None)
+        _ctx_token = None
+        _operation_context_var = None
+        if charter is not None:
+            from datetime import datetime, timezone
+            from uuid import uuid4
+
+            from lionagi.governance.context import (
+                OperationContext,
+                PolicyPin,
+                PolicyPinMismatchError,
+                _operation_context_var,
+                set_operation_context,
+            )
+
+            pin = getattr(charter, "policy_pin", None)
+            if pin is None:
+                pin = PolicyPin(
+                    charter_id=str(getattr(charter, "id", "unknown")),
+                    charter_version=str(getattr(charter, "version", "0.0.0")),
+                    charter_hash=str(
+                        getattr(charter, "charter_hash", getattr(charter, "hash", "unknown"))
+                    ),
+                    pinned_at=datetime.now(tz=timezone.utc),
+                )
+            else:
+                active_hash = getattr(charter, "charter_hash", None) or getattr(
+                    charter, "hash", None
+                )
+                if active_hash and pin.charter_hash != active_hash:
+                    raise PolicyPinMismatchError(
+                        f"PolicyPin hash {pin.charter_hash!r} does not match "
+                        f"active charter hash {active_hash!r}"
+                    )
+
+            op_ctx = OperationContext(
+                actor_id=str(self.id),
+                actor_role="session",
+                policy_pin=pin,
+                trace_id=uuid4().hex,
+                span_id=uuid4().hex[:16],
+            )
+            _ctx_token = set_operation_context(op_ctx)
+
         from lionagi.operations.flow import flow
 
         branch = default_branch or self.default_branch
         if isinstance(branch, str | UUID):
             branch = self.branches[branch]
 
-        return await flow(
-            session=self,
-            graph=graph,
-            branch=branch,
-            context=context,
-            parallel=parallel,
-            max_concurrent=max_concurrent,
-            verbose=verbose,
-            alcall_params=alcall_params,
-            on_progress=on_progress,
-        )
+        try:
+            return await flow(
+                session=self,
+                graph=graph,
+                branch=branch,
+                context=context,
+                parallel=parallel,
+                max_concurrent=max_concurrent,
+                verbose=verbose,
+                alcall_params=alcall_params,
+                on_progress=on_progress,
+            )
+        finally:
+            if _ctx_token is not None and _operation_context_var is not None:
+                _operation_context_var.reset(_ctx_token)
 
 
 __all__ = ("Session",)

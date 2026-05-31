@@ -24,6 +24,7 @@ from ..types import (
 )
 
 if TYPE_CHECKING:
+    from lionagi.governance.context import OperationContext
     from lionagi.service.imodel import iModel
     from lionagi.session.branch import Branch, ToolRef
 
@@ -66,6 +67,7 @@ def prepare_operate_kw(
     persist_dir: str | None = None,
     snapshot_dir: str | None = None,
     middle: Middle | None = None,
+    ctx: "OperationContext | None" = None,
     **kwargs,
 ) -> dict:
     # Handle deprecated parameters
@@ -221,6 +223,7 @@ def prepare_operate_kw(
         "clear_messages": clear_messages,
         "operative": operative,
         "middle": middle,
+        "ctx": ctx,
     }
 
 
@@ -238,6 +241,7 @@ async def operate(
     field_models: list[FieldModel | Spec] | None = None,
     operative: Union["Operative", None] = None,
     middle: Middle | None = None,
+    ctx: "OperationContext | None" = None,
 ) -> BaseModel | dict | str | None:
     """Execute operation with optional action handling.
 
@@ -258,141 +262,157 @@ async def operate(
     Returns:
         Result of operation
     """
-    _cctx = chat_param
-    _pctx = (
-        parse_param.with_updates(handle_validation="return_value")
-        if parse_param
-        else ParseParam(
-            response_format=chat_param.response_format,
-            imodel=branch.parse_model,
-            handle_validation="return_value",
+    _operate_ctx_token = None
+    if ctx is not None:
+        from lionagi.governance.context import (
+            _operation_context_var,
+            set_operation_context,
         )
-    )
 
-    # Update tool schemas
-    if tools := (action_param.tools or True) if action_param else None:
-        tool_schemas = branch.acts.get_tool_schema(tools=tools)
-        _cctx = _cctx.with_updates(tool_schemas=tool_schemas)
+        _operate_ctx_token = set_operation_context(ctx)
 
-    # Extract model class
-    model_class = None
-    if chat_param.response_format is not None:
-        if isinstance(chat_param.response_format, type) and issubclass(
-            chat_param.response_format, BaseModel
-        ):
-            model_class = chat_param.response_format
-        elif isinstance(chat_param.response_format, BaseModel):
-            model_class = type(chat_param.response_format)
+    try:
+        _cctx = chat_param
+        _pctx = (
+            parse_param.with_updates(handle_validation="return_value")
+            if parse_param
+            else ParseParam(
+                response_format=chat_param.response_format,
+                imodel=branch.parse_model,
+                handle_validation="return_value",
+            )
+        )
 
-    # Convert field_models to fields dict
-    fields_dict = None
-    if field_models:
-        fields_dict = {}
-        for fm in field_models:
-            if isinstance(fm, FieldModel):
-                spec = fm.to_spec()
-            elif isinstance(fm, Spec):
-                spec = fm
+        # Update tool schemas
+        if tools := (action_param.tools or True) if action_param else None:
+            tool_schemas = branch.acts.get_tool_schema(tools=tools)
+            _cctx = _cctx.with_updates(tool_schemas=tool_schemas)
+
+        # Extract model class
+        model_class = None
+        if chat_param.response_format is not None:
+            if isinstance(chat_param.response_format, type) and issubclass(
+                chat_param.response_format, BaseModel
+            ):
+                model_class = chat_param.response_format
+            elif isinstance(chat_param.response_format, BaseModel):
+                model_class = type(chat_param.response_format)
+
+        # Convert field_models to fields dict
+        fields_dict = None
+        if field_models:
+            fields_dict = {}
+            for fm in field_models:
+                if isinstance(fm, FieldModel):
+                    spec = fm.to_spec()
+                elif isinstance(fm, Spec):
+                    spec = fm
+                else:
+                    raise TypeError(f"Expected FieldModel or Spec, got {type(fm)}")
+
+                if spec.name:
+                    fields_dict[spec.name] = spec
+
+        # Create operative if needed
+        if not operative and (model_class or action_param or fields_dict):
+            from .step import Step
+
+            operative = Step.request_operative(
+                base_type=model_class,
+                reason=reason,
+                actions=bool(action_param),
+                fields=fields_dict,
+            )
+            operative = Step.respond_operative(operative)
+
+            # Update contexts
+            response_fmt = operative.response_type or model_class
+            if response_fmt:
+                _cctx = _cctx.with_updates(response_format=response_fmt)
+                _pctx = _pctx.with_updates(response_format=response_fmt)
+
+        if middle is None:
+            if isinstance(_cctx, RunParam) or getattr(branch.chat_model, "is_cli", False):
+                from ..run.run import run_and_collect
+
+                middle = run_and_collect
             else:
-                raise TypeError(f"Expected FieldModel or Spec, got {type(fm)}")
+                from ..communicate.communicate import communicate
 
-            if spec.name:
-                fields_dict[spec.name] = spec
+                middle = communicate
 
-    # Create operative if needed
-    if not operative and (model_class or action_param or fields_dict):
-        from .step import Step
-
-        operative = Step.request_operative(
-            base_type=model_class,
-            reason=reason,
-            actions=bool(action_param),
-            fields=fields_dict,
+        result = await middle(
+            branch,
+            instruction,
+            _cctx,
+            _pctx,
+            clear_messages,
+            skip_validation=skip_validation,
         )
-        operative = Step.respond_operative(operative)
 
-        # Update contexts
-        response_fmt = operative.response_type or model_class
-        if response_fmt:
-            _cctx = _cctx.with_updates(response_format=response_fmt)
-            _pctx = _pctx.with_updates(response_format=response_fmt)
+        if ctx is not None and ctx.operation_budget is not None:
+            ctx.operation_budget.record_usage(tokens=0, calls=1)
 
-    if middle is None:
-        if isinstance(_cctx, RunParam) or getattr(branch.chat_model, "is_cli", False):
-            from ..run.run import run_and_collect
+        if skip_validation:
+            return result
 
-            middle = run_and_collect
+        if model_class and not isinstance(result, model_class):
+            match handle_validation:
+                case "return_value":
+                    return result
+                case "return_none":
+                    return None
+                case "raise":
+                    expected_name = getattr(model_class, "__name__", repr(model_class))
+                    received_snippet = repr(result)[:200]
+                    raise ValueError(
+                        f"Failed to parse LLM response into '{expected_name}'. "
+                        f"Received (truncated): {received_snippet}. "
+                        f"Hint: verify the model supports structured JSON output "
+                        f"(e.g. response_format / function-calling) for this provider."
+                    )
+
+        if not invoke_actions:
+            return result
+
+        # Handle actions. Middle may return a BaseModel (structured), a dict
+        # (fuzzy-parsed), or a raw str (CLI text path with no response_format).
+        # Only dicts and BaseModels can carry action_requests — raw text can't.
+        if model_class:
+            requests = getattr(result, "action_requests", None)
+        elif isinstance(result, dict):
+            requests = result.get("action_requests")
         else:
-            from ..communicate.communicate import communicate
+            requests = None
 
-            middle = communicate
+        action_response_models = None
+        if action_param and requests is not None:
+            from ..act.act import act
 
-    result = await middle(
-        branch,
-        instruction,
-        _cctx,
-        _pctx,
-        clear_messages,
-        skip_validation=skip_validation,
-    )
+            action_response_models = await act(branch, requests, action_param)
 
-    if skip_validation:
-        return result
+        if not action_response_models:
+            return result
 
-    if model_class and not isinstance(result, model_class):
-        match handle_validation:
-            case "return_value":
-                return result
-            case "return_none":
-                return None
-            case "raise":
-                expected_name = getattr(model_class, "__name__", repr(model_class))
-                received_snippet = repr(result)[:200]
-                raise ValueError(
-                    f"Failed to parse LLM response into '{expected_name}'. "
-                    f"Received (truncated): {received_snippet}. "
-                    f"Hint: verify the model supports structured JSON output "
-                    f"(e.g. response_format / function-calling) for this provider."
-                )
+        # Filter None values
+        action_response_models = [r for r in action_response_models if r is not None]
 
-    if not invoke_actions:
-        return result
+        if not action_response_models:
+            return result
 
-    # Handle actions. Middle may return a BaseModel (structured), a dict
-    # (fuzzy-parsed), or a raw str (CLI text path with no response_format).
-    # Only dicts and BaseModels can carry action_requests — raw text can't.
-    if model_class:
-        requests = getattr(result, "action_requests", None)
-    elif isinstance(result, dict):
-        requests = result.get("action_requests")
-    else:
-        requests = None
+        if not model_class:
+            # Dict response: merge action_responses in. Raw-text results stay
+            # untouched (text has no structured slot for action_responses).
+            if isinstance(result, dict):
+                result["action_responses"] = action_response_models
+            return result
 
-    action_response_models = None
-    if action_param and requests is not None:
-        from ..act.act import act
-
-        action_response_models = await act(branch, requests, action_param)
-
-    if not action_response_models:
-        return result
-
-    # Filter None values
-    action_response_models = [r for r in action_response_models if r is not None]
-
-    if not action_response_models:
-        return result
-
-    if not model_class:
-        # Dict response: merge action_responses in. Raw-text results stay
-        # untouched (text has no structured slot for action_responses).
-        if isinstance(result, dict):
-            result["action_responses"] = action_response_models
-        return result
-
-    # If we have model_class, we must have operative (created at line 268)
-    # First set the response_model to the existing result
-    operative.response_model = result
-    # Then update it with action_responses
-    operative.update_response_model(data={"action_responses": action_response_models})
-    return operative.response_model
+        # If we have model_class, we must have operative (created above)
+        # First set the response_model to the existing result
+        operative.response_model = result
+        # Then update it with action_responses
+        operative.update_response_model(data={"action_responses": action_response_models})
+        return operative.response_model
+    finally:
+        if _operate_ctx_token is not None:
+            _operation_context_var.reset(_operate_ctx_token)
