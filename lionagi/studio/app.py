@@ -62,6 +62,7 @@ async def require_studio_bearer_token(request: Request, call_next):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
 
+
 app.include_router(runs.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
 app.include_router(definitions.router, prefix="/api")

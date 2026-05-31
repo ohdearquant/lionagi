@@ -20,9 +20,7 @@ async def list_invocations(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
-    rows = await inv_svc.list_invocations(
-        skill=skill, status=status, limit=limit, offset=offset
-    )
+    rows = await inv_svc.list_invocations(skill=skill, status=status, limit=limit, offset=offset)
     return {
         "invocations": rows,
         "limit": limit,
@@ -38,7 +36,5 @@ async def list_invocations(
 async def get_invocation(invocation_id: str) -> dict[str, Any]:
     data = await inv_svc.get_invocation(invocation_id)
     if data is None:
-        raise HTTPException(
-            status_code=404, detail=f"Invocation '{invocation_id}' not found"
-        )
+        raise HTTPException(status_code=404, detail=f"Invocation '{invocation_id}' not found")
     return data

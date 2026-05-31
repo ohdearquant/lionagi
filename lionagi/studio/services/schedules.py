@@ -81,9 +81,7 @@ async def list_schedules(
     if not DEFAULT_DB_PATH.exists():
         return []
     async with StateDB() as db:
-        rows = await db.list_schedules(
-            enabled=enabled, trigger_type=trigger_type, project=project
-        )
+        rows = await db.list_schedules(enabled=enabled, trigger_type=trigger_type, project=project)
     return rows
 
 
@@ -171,9 +169,7 @@ async def list_schedule_runs(
     if not DEFAULT_DB_PATH.exists():
         return []
     async with StateDB() as db:
-        return await db.list_schedule_runs(
-            schedule_id, status=status, limit=limit, offset=offset
-        )
+        return await db.list_schedule_runs(schedule_id, status=status, limit=limit, offset=offset)
 
 
 async def get_schedule_run(run_id: str) -> dict[str, Any] | None:

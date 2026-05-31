@@ -27,6 +27,7 @@ async def _lock_for(kind: str, name: str) -> asyncio.Lock:
     async with _DEFINITION_LOCKS_GUARD:
         return _DEFINITION_LOCKS.setdefault((kind, name), asyncio.Lock())
 
+
 _DB = str(DEFAULT_DB_PATH)
 
 AGENTS_DIR = LIONAGI_HOME / "agents"

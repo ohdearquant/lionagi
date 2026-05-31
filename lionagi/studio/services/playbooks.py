@@ -70,11 +70,13 @@ def _check_spec_fields(spec: dict[str, Any]) -> str | None:
         if not isinstance(effort, str):
             return f"spec field 'effort' must be a string, got {type(effort).__name__}"
         if effort not in _VALID_EFFORT_LEVELS:
-            return f"spec field 'effort' must be one of {sorted(_VALID_EFFORT_LEVELS)}, got {effort!r}"
+            return (
+                f"spec field 'effort' must be one of {sorted(_VALID_EFFORT_LEVELS)}, got {effort!r}"
+            )
 
     if "with_synthesis" in spec:
         val = spec["with_synthesis"]
-        if not isinstance(val, (bool, str)):
+        if not isinstance(val, bool | str):
             return (
                 f"spec field 'with_synthesis' must be bool or str (model spec), "
                 f"got {type(val).__name__}"

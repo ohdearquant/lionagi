@@ -34,6 +34,7 @@ async def stream_session(session_id: str):
     # The shows router already does this at shows.py:34-35; we mirror that pattern.
     if not await sessions_svc.session_exists(session_id):
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
     async def generate():
         after_ts: float = 0.0
         last_heartbeat = time.monotonic()

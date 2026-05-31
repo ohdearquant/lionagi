@@ -29,9 +29,7 @@ async def create_playbook(name: str) -> dict[str, Any]:
 
 
 @router.put("/{name}")
-async def update_playbook(
-    name: str, body: Annotated[dict[str, Any], Body(...)]
-) -> dict[str, Any]:
+async def update_playbook(name: str, body: Annotated[dict[str, Any], Body(...)]) -> dict[str, Any]:
     try:
         updated = playbooks_svc.update_playbook(name, body)
     except ValueError as exc:

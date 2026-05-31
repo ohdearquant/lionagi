@@ -187,7 +187,8 @@ async def update_project(name: str, fields: dict[str, Any]) -> bool:
         sets = ", ".join(f"{k} = ?" for k in clean)
         vals = list(clean.values()) + [name]
         cur = await db.execute(
-            f"UPDATE projects SET {sets} WHERE name = ?", vals  # noqa: S608
+            f"UPDATE projects SET {sets} WHERE name = ?",  # noqa: S608
+            vals,
         )
         await db.commit()
         return cur.rowcount > 0
@@ -211,8 +212,7 @@ async def assign_sessions_to_project(
             )
         elif all_unassigned:
             cur = await db.execute(
-                "UPDATE sessions SET project = ?, project_source = 'manual' "
-                "WHERE project IS NULL",
+                "UPDATE sessions SET project = ?, project_source = 'manual' WHERE project IS NULL",
                 (project_name,),
             )
         else:

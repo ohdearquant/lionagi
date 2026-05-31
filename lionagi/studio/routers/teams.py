@@ -16,7 +16,7 @@ async def list_teams(
 ) -> dict[str, Any]:
     all_teams = teams_svc.list_teams()
     total = len(all_teams)
-    page_teams = all_teams[offset: offset + limit]
+    page_teams = all_teams[offset : offset + limit]
     return {
         "teams": page_teams,
         "limit": limit,

@@ -19,7 +19,15 @@ _DB = str(DEFAULT_DB_PATH)
 
 async def _table_counts(db: Any) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for table in ("messages", "progressions", "sessions", "branches", "definitions", "shows", "plays"):
+    for table in (
+        "messages",
+        "progressions",
+        "sessions",
+        "branches",
+        "definitions",
+        "shows",
+        "plays",
+    ):
         try:
             cur = await db.execute(f"SELECT COUNT(*) AS n FROM {table}")  # noqa: S608
             row = await cur.fetchone()
@@ -42,7 +50,13 @@ async def _sessions_by_status(db: Any) -> dict[str, int]:
 
 async def _pragmas(db: Any) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    for pragma in ("journal_mode", "wal_autocheckpoint", "busy_timeout", "synchronous", "foreign_keys"):
+    for pragma in (
+        "journal_mode",
+        "wal_autocheckpoint",
+        "busy_timeout",
+        "synchronous",
+        "foreign_keys",
+    ):
         try:
             cur = await db.execute(f"PRAGMA {pragma}")
             row = await cur.fetchone()
@@ -67,7 +81,18 @@ async def get_db_stats() -> dict[str, Any]:
             "wal_bytes": 0,
             "connections_active": connections_active,
             "last_checkpoint_at": None,
-            "tables": {t: 0 for t in ("messages", "progressions", "sessions", "branches", "definitions", "shows", "plays")},
+            "tables": {
+                t: 0
+                for t in (
+                    "messages",
+                    "progressions",
+                    "sessions",
+                    "branches",
+                    "definitions",
+                    "shows",
+                    "plays",
+                )
+            },
             "sessions_by_status": {},
             "pragmas": {},
             "slow_queries": None,

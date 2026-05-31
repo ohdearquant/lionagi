@@ -36,12 +36,14 @@ def list_teams() -> list[dict[str, Any]]:
             last_modified = path.stat().st_mtime
         except OSError:
             last_modified = 0.0
-        result.append({
-            "id": str(data.get("id") or path.stem),
-            "name": str(data.get("name") or path.stem),
-            "member_count": member_count,
-            "last_modified": last_modified,
-        })
+        result.append(
+            {
+                "id": str(data.get("id") or path.stem),
+                "name": str(data.get("name") or path.stem),
+                "member_count": member_count,
+                "last_modified": last_modified,
+            }
+        )
     return result
 
 

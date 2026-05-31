@@ -23,9 +23,7 @@ router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 async def get_artifact(artifact_id: str) -> dict[str, Any]:
     data = await inv_svc.get_artifact(artifact_id)
     if data is None:
-        raise HTTPException(
-            status_code=404, detail=f"Artifact '{artifact_id}' not found"
-        )
+        raise HTTPException(status_code=404, detail=f"Artifact '{artifact_id}' not found")
     return data
 
 

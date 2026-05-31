@@ -27,12 +27,15 @@ def _get_client() -> httpx.AsyncClient:
 async def _get_gh_token() -> str | None:
     """Get GitHub token from gh CLI or environment."""
     import os
+
     token = os.environ.get("GITHUB_TOKEN")
     if token:
         return token
     try:
         proc = await asyncio.create_subprocess_exec(
-            "gh", "auth", "token",
+            "gh",
+            "auth",
+            "token",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -109,13 +112,15 @@ async def github_poll(schedule: dict) -> list[dict[str, Any]]:
     for pr in prs:
         updated = pr.get("updated_at", "")
         if not cursor or updated > cursor:
-            new_prs.append({
-                "pr_number": pr.get("number"),
-                "pr_title": pr.get("title"),
-                "pr_url": pr.get("html_url"),
-                "pr_author": (pr.get("user") or {}).get("login"),
-                "updated_at": updated,
-            })
+            new_prs.append(
+                {
+                    "pr_number": pr.get("number"),
+                    "pr_title": pr.get("title"),
+                    "pr_url": pr.get("html_url"),
+                    "pr_author": (pr.get("user") or {}).get("login"),
+                    "updated_at": updated,
+                }
+            )
             if not max_updated or updated > max_updated:
                 max_updated = updated
 

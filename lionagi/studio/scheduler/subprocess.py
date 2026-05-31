@@ -16,6 +16,7 @@ _TEMPLATE_RE = re.compile(r"\{\{(\w+)\}\}")
 
 def _render_template(template: str, context: dict) -> str:
     """Replace {{var}} placeholders with values from trigger context."""
+
     def _replace(m: re.Match) -> str:
         key = m.group(1)
         # Look in github events first
@@ -25,6 +26,7 @@ def _render_template(template: str, context: dict) -> str:
             if val is not None:
                 return str(val)
         return context.get(key, m.group(0))
+
     return _TEMPLATE_RE.sub(_replace, template)
 
 

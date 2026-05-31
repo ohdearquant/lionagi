@@ -53,9 +53,9 @@ async def _seed_stale_session(
 
 
 def _make_admin_client(tmp_path, monkeypatch, db_path):
-    import apps.studio.server.services.admin as admin_mod
-    import apps.studio.server.services.sessions as sessions_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.admin as admin_mod
+    import lionagi.studio.services.sessions as sessions_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
@@ -65,7 +65,7 @@ def _make_admin_client(tmp_path, monkeypatch, db_path):
 
     from fastapi.testclient import TestClient
 
-    from apps.studio.server.app import app
+    from lionagi.studio.app import app
 
     return TestClient(app)
 
@@ -101,9 +101,9 @@ def test_transition_refused_when_heartbeat_changes_health(tmp_path, monkeypatch)
     # transition_sessions() opens StateDB() which resolves lionagi.state.db.DEFAULT_DB_PATH
     # at call time — patching only admin_mod.DEFAULT_DB_PATH leaves StateDB() pointing at
     # the real default DB (a readonly path in CI).
-    import apps.studio.server.services.admin as adm
     import lionagi.state.db as state_db_mod
     import lionagi.state.health as health_mod
+    import lionagi.studio.services.admin as adm
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(adm, "DEFAULT_DB_PATH", db_path)
