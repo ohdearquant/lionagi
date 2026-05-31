@@ -232,7 +232,7 @@ class CodexCodeRequest(BaseModel):
         default=False,
         description=(
             "Route this request through OpenAI's *priority* service tier for "
-            "lower latency. Emitted as ``-c service_tier=priority``. "
+            "lower latency. Emitted as ``-c service_tier=flex``. "
             "Requires an OpenAI account with priority-tier eligibility. "
             "Does NOT cap or change ``reasoning_effort`` — "
             "``fast_mode=True`` with ``reasoning_effort='xhigh'`` is valid "
@@ -292,7 +292,7 @@ class CodexCodeRequest(BaseModel):
         for message in msg:
             if message["role"] != "system":
                 content = message["content"]
-                if isinstance(content, (dict, list)):
+                if isinstance(content, dict | list):
                     prompts.append(ln.json_dumps(content))
                 else:
                     prompts.append(content)
@@ -325,14 +325,10 @@ class CodexCodeRequest(BaseModel):
         ws_path = Path(self.ws)
 
         if ws_path.is_absolute():
-            raise ValueError(
-                f"Workspace path must be relative, got absolute: {self.ws}"
-            )
+            raise ValueError(f"Workspace path must be relative, got absolute: {self.ws}")
 
         if ".." in ws_path.parts:
-            raise ValueError(
-                f"Directory traversal detected in workspace path: {self.ws}"
-            )
+            raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
 
         repo_resolved = self.repo.resolve()
         result = (self.repo / ws_path).resolve()
@@ -402,9 +398,9 @@ class CodexCodeRequest(BaseModel):
                 ]
             )
 
-        # Fast mode → -c service_tier=priority (priority lane, lower latency)
+        # Fast mode → -c service_tier=flex (priority renamed to flex in codex CLI)
         if self.fast_mode:
-            args.extend(["-c", "service_tier=priority"])
+            args.extend(["-c", "service_tier=flex"])
 
         # Images (repeat -i per image)
         for image in self.images:
@@ -555,16 +551,12 @@ def _extract_summary(session: CodexSession) -> dict[str, Any]:
         else:
             key_actions.append(f"Used {tool_name}")
 
-    key_actions = (
-        list(dict.fromkeys(key_actions)) if key_actions else ["No specific actions"]
-    )
+    key_actions = list(dict.fromkeys(key_actions)) if key_actions else ["No specific actions"]
 
     for op_type in file_operations:
         file_operations[op_type] = list(dict.fromkeys(file_operations[op_type]))
 
-    result_summary = (
-        (session.result[:200] + "...") if len(session.result) > 200 else session.result
-    )
+    result_summary = (session.result[:200] + "...") if len(session.result) > 200 else session.result
 
     return {
         "tool_counts": tool_counts,
@@ -604,6 +596,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     proc = await asyncio.create_subprocess_exec(
         CODEX_CLI,
         *request.as_cmd_args(),
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,  # isolate from parent's SIGINT
@@ -615,9 +608,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     # Guard against mocked subprocesses in tests where proc.pid may not
     # be a real int: a MagicMock.pid coerces to 1 via __int__, and
     # os.killpg(1, SIGTERM) signals init/the CI runner.
-    _codex_pgid: int | None = (
-        proc.pid if isinstance(proc.pid, int) and proc.pid > 1 else None
-    )
+    _codex_pgid: int | None = proc.pid if isinstance(proc.pid, int) and proc.pid > 1 else None
 
     decoder = codecs.getincrementaldecoder("utf-8")()
     json_decoder = json.JSONDecoder()
@@ -731,10 +722,10 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
         stderr_task.cancel()
         try:
             await stderr_task
-        except (
+        except (  # noqa: S110, BLE001
             asyncio.CancelledError,
             Exception,
-        ):  # noqa: S110, BLE001 — intentional teardown reap
+        ):
             pass
 
 
@@ -876,9 +867,7 @@ async def stream_codex_cli(
                     output = item.get("aggregated_output", "")
                     exit_code = item.get("exit_code")
                     status = item.get("status", "")
-                    is_error = status == "failed" or (
-                        exit_code is not None and exit_code != 0
-                    )
+                    is_error = status == "failed" or (exit_code is not None and exit_code != 0)
 
                     tu = {"id": item_id, "name": "Bash", "input": {"command": command}}
                     chunk.tool_use = tu
@@ -1048,9 +1037,7 @@ async def stream_codex_cli(
     if session.num_turns is None and session.messages:
         session.num_turns = len(session.messages)
     if session.duration_ms is None:
-        session.duration_ms = int(
-            (asyncio.get_running_loop().time() - _start_monotonic) * 1000
-        )
+        session.duration_ms = int((asyncio.get_running_loop().time() - _start_monotonic) * 1000)
 
     await _maybe_await(on_final, session)
     if request.verbose_output:

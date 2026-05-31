@@ -1206,6 +1206,7 @@ async def _run_flow_inner(
                     "status": "running",
                     "started_at": now,
                     "ended_at": None,
+                    "last_heartbeat_at": None,
                 }
             )
         else:
@@ -1282,12 +1283,47 @@ async def _run_flow_inner(
     # Execute regular ops
     t_exec = time.monotonic()
     conc = max_concurrent if max_concurrent > 0 else max(len(regular_ops), 1)
-    dag_result = await session.flow(
-        builder.get_graph(),
-        max_concurrent=conc,
-        verbose=env.verbose,
-        on_progress=_progress,
-    )
+
+    # Per-op heartbeat + idle-child watchdog (#1150).
+    # Runs as a background asyncio task during DAG execution. Every
+    # heartbeat_interval seconds it emits a progress line for each
+    # running op so the flow.log never goes silent. After max_idle_seconds
+    # it emits an explicit IDLE STALL warning so operators can detect a
+    # hung child process without waiting hours.
+    heartbeat_interval = 60  # seconds between heartbeat lines
+    max_idle_seconds = 600  # warn after 10 min of no op completion
+
+    import asyncio as _asyncio
+
+    async def _heartbeat_loop() -> None:
+        while True:
+            await _asyncio.sleep(heartbeat_interval)
+            _now = time.time()
+            for _seg in _op_segments:
+                if _seg["status"] != "running":
+                    continue
+                _elapsed = _now - _seg.get("started_at", _now)
+                _name = _seg["branch_name"]
+                _seg["last_heartbeat_at"] = _now
+                progress(f"  · {_name} heartbeat {_elapsed / 60:.0f}m")
+                if _elapsed > max_idle_seconds:
+                    progress(
+                        f"  ⚠ IDLE STALL: {_name} running {_elapsed:.0f}s with no "
+                        "completion — possible hung child process"
+                    )
+
+    _hb_task = _asyncio.ensure_future(_heartbeat_loop())
+    try:
+        dag_result = await session.flow(
+            builder.get_graph(),
+            max_concurrent=conc,
+            verbose=env.verbose,
+            on_progress=_progress,
+        )
+    finally:
+        _hb_task.cancel()
+        with contextlib.suppress(_asyncio.CancelledError):
+            await _hb_task
     t_exec_elapsed = time.monotonic() - t_exec
 
     op_results = dag_result.get("operation_results", {})

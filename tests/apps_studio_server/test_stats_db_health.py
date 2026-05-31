@@ -1,4 +1,5 @@
 """Tests for #1016 expanded stats DB health endpoint."""
+
 from __future__ import annotations
 
 import asyncio
@@ -27,19 +28,21 @@ async def _seed_two_sessions(db_path: Path) -> None:
         for status in ("running", "completed"):
             pid = str(uuid.uuid4())
             await db.create_progression(pid)
-            await db.create_session({
-                "id": str(uuid.uuid4()),
-                "progression_id": pid,
-                "name": f"s-{status}",
-                "status": status,
-                "started_at": time.time(),
-            })
+            await db.create_session(
+                {
+                    "id": str(uuid.uuid4()),
+                    "progression_id": pid,
+                    "name": f"s-{status}",
+                    "status": status,
+                    "started_at": time.time(),
+                }
+            )
 
 
 def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
-    import apps.studio.server.services.sessions as sessions_mod
-    import apps.studio.server.services.stats as stats_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.sessions as sessions_mod
+    import lionagi.studio.services.stats as stats_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
@@ -47,7 +50,8 @@ def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
     monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(stats_mod, "_DB", str(db_path))
 
-    from apps.studio.server.app import app
+    from lionagi.studio.app import app
+
     return TestClient(app)
 
 

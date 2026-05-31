@@ -54,7 +54,7 @@ def test_build_system_message_accepts_objects():
 
 def test_unknown_role_raises():
     cfg = AgentConfig(role="no-such-role")
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(ValueError, match="Unknown role"):
         cfg.build_system_message()
 
 
