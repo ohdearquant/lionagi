@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Engine base machinery — event store, reactions, quiescence, team loop. No LLM."""
+"""Engine base machinery — stateless config + per-run EngineRun. No LLM."""
 
 from __future__ import annotations
 
@@ -18,26 +18,30 @@ class Finding(EngineEvent):
     novelty: float = 0.5
 
 
+def _run():
+    return Engine().new_run()
+
+
 @pytest.mark.asyncio
 async def test_emit_records_and_queries():
-    eng = Engine()
-    await eng.emit(Finding(claim="x", novelty=0.9))
-    await eng.emit(Finding(claim="y", novelty=0.2))
-    assert len(eng.by_type(Finding)) == 2
+    run = _run()
+    await run.emit(Finding(claim="x", novelty=0.9))
+    await run.emit(Finding(claim="y", novelty=0.2))
+    assert len(run.by_type(Finding)) == 2
     # the emission store is queryable via pile[type] (Phase A)
-    assert len(eng.events[Finding]) == 2
+    assert len(run.events[Finding]) == 2
 
 
 @pytest.mark.asyncio
 async def test_observe_reacts_to_type():
-    eng = Engine()
+    run = _run()
     seen: list[str] = []
 
-    @eng.observe(Finding)
+    @run.observe(Finding)
     def _on(f, _ctx):
         seen.append(f.claim)
 
-    await eng.emit(Finding(claim="hit"))
+    await run.emit(Finding(claim="hit"))
     assert seen == ["hit"]
 
 
@@ -45,57 +49,75 @@ async def test_observe_reacts_to_type():
 async def test_observe_with_field_filter():
     from lionagi.ln.types import Spec
 
-    eng = Engine()
+    run = _run()
     high: list[Finding] = []
 
-    @eng.observe(Spec(float, name="novelty").q > 0.7)
+    @run.observe(Spec(float, name="novelty").q > 0.7)
     def _on(f, _ctx):
         high.append(f)
 
-    await eng.emit(Finding(claim="lo", novelty=0.1))
-    await eng.emit(Finding(claim="hi", novelty=0.9))
+    await run.emit(Finding(claim="lo", novelty=0.1))
+    await run.emit(Finding(claim="hi", novelty=0.9))
     assert [f.claim for f in high] == ["hi"]
 
 
 @pytest.mark.asyncio
 async def test_spawn_and_quiescence():
-    eng = Engine()
+    run = _run()
     done: list[int] = []
 
     async def work(n: int) -> None:
         await asyncio.sleep(0.01)
         done.append(n)
 
-    eng.spawn(work(1))
-    eng.spawn(work(2))
-    await eng.wait_quiescence()
+    run.spawn(work(1))
+    run.spawn(work(2))
+    await run.wait_quiescence()
     assert sorted(done) == [1, 2]
 
 
 @pytest.mark.asyncio
 async def test_observer_spawns_depth_node():
     """The canonical engine loop: an emission triggers a spawned task."""
-    eng = Engine(max_depth=2)
+    run = Engine(max_depth=2).new_run()
     expanded: list[str] = []
 
     async def deeper(claim: str) -> None:
         await asyncio.sleep(0)
         expanded.append(claim)
 
-    @eng.observe(Finding)
+    @run.observe(Finding)
     def _on(f, _ctx):
         if f.novelty > 0.7:
-            eng.spawn(deeper(f.claim))
+            run.spawn(deeper(f.claim))
 
-    await eng.emit(Finding(claim="deep", novelty=0.9))
-    await eng.emit(Finding(claim="shallow", novelty=0.3))
-    await eng.wait_quiescence()
+    await run.emit(Finding(claim="deep", novelty=0.9))
+    await run.emit(Finding(claim="shallow", novelty=0.3))
+    await run.wait_quiescence()
     assert expanded == ["deep"]
 
 
 @pytest.mark.asyncio
-async def test_run_team_sequences_and_carries_output():
+async def test_seen_dedup():
+    run = _run()
+    assert run.seen("Quantum Error Correction") is False  # first time → marked
+    assert run.seen("quantum error correction") is True  # normalized dup
+
+
+@pytest.mark.asyncio
+async def test_two_runs_are_isolated():
+    """A stateless engine: two runs do not share dedup/session state."""
     eng = Engine()
+    a, b = eng.new_run(), eng.new_run()
+    assert a.seen("topic") is False
+    # b has its own _seen — the same key is still fresh
+    assert b.seen("topic") is False
+    assert a.session is not b.session
+
+
+@pytest.mark.asyncio
+async def test_run_team_sequences_and_carries_output():
+    run = _run()
     calls: list[tuple[str, str]] = []
 
     def fake(name: str, reply: str):
@@ -106,7 +128,7 @@ async def test_run_team_sequences_and_carries_output():
         return SimpleNamespace(name=name, operate=operate)
 
     team = [fake("a", "AOUT"), fake("b", "BOUT")]
-    last = await eng.run_team(team, "do the task")
+    last = await run.run_team(team, "do the task")
     assert last == "BOUT"
     assert calls[0] == ("a", "do the task")
     assert "AOUT" in calls[1][1]  # b builds on a's output
@@ -114,7 +136,7 @@ async def test_run_team_sequences_and_carries_output():
 
 @pytest.mark.asyncio
 async def test_run_team_survives_agent_failure():
-    eng = Engine()
+    run = _run()
 
     def boom(name: str):
         async def operate(*, instruction: str):
@@ -128,17 +150,51 @@ async def test_run_team_survives_agent_failure():
 
         return SimpleNamespace(name=name, operate=operate)
 
-    last = await eng.run_team([boom("x"), ok("y")], "go")
+    last = await run.run_team([boom("x"), ok("y")], "go")
     assert last == "recovered"  # team continued past the failure
 
 
 @pytest.mark.asyncio
 async def test_make_agent_builds_casts_branch_with_emissions():
-    eng = Engine()
-    b = await eng.make_agent("researcher", name="r1", emits=(Finding,))
+    run = _run()
+    b = await run.make_agent("researcher", name="r1", emits=(Finding,))
     assert b.name == "r1"
-    assert b in eng.session.branches
-    # emissions granted as capabilities
-    assert b.capabilities is not None
-    # casts role body composed into the system message
-    assert b.system is not None
+    assert b in run.session.branches
+    assert b.capabilities is not None  # emissions granted
+    assert b.system is not None  # casts role body composed
+
+
+@pytest.mark.asyncio
+async def test_run_dag_emits_node_lifecycle_signals():
+    """run_dag executes a prebuilt DAG and tees NodeStarted/NodeCompleted onto
+    the bus — the seam persistence/Studio observe instead of an on_progress
+    callback. Exercised with a registered coroutine op (no LLM)."""
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.session.branch import Branch
+    from lionagi.session.session import Session
+    from lionagi.session.signal import NodeCompleted, NodeStarted
+
+    async def work(**kw):
+        return "ok"
+
+    session = Session()
+    branch = Branch(name="root")
+    session.include_branches(branch)
+    session.default_branch = branch
+    session.register_operation("work", work)
+
+    started: list[str] = []
+    completed: list[str] = []
+    session.observe(NodeStarted, handler=lambda s, _c: started.append(s.name))
+    session.observe(NodeCompleted, handler=lambda s, _c: completed.append(s.op_id))
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("work")
+    graph = builder.get_graph()
+
+    run = Engine().new_run(session=session)
+    result = await run.run_dag(graph)
+
+    assert len(result["completed_operations"]) == 1
+    assert started == ["root"]  # NodeStarted reached the observer with the branch name
+    assert len(completed) == 1  # NodeCompleted carried the op id
