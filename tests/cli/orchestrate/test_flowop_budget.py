@@ -1,16 +1,17 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for per-FlowOp budget propagation (issue #1091).
+"""Tests for flow budget propagation (issue #1091).
 
 Verifies that:
-  - FlowOp.budget_weight field exists with default 1.0
   - _format_budget_preamble produces correct text
-  - Equal weights produce equal per-op share (total / N)
-  - Weighted split produces proportional shares
+  - A total timeout splits equally across initial assignments (total / N)
   - No BUDGET preamble when total_budget is None
   - OrchestrationEnv.total_budget is set by setup_orchestration when
     total_budget kwarg is provided
+
+(The clean break replaced per-op ``FlowOp.budget_weight`` with an equal split:
+TaskAssignment carries no weight field.)
 """
 
 from __future__ import annotations
@@ -19,25 +20,7 @@ import re
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from lionagi.cli.orchestrate.flow import (
-    FlowOp,
-    _format_budget_preamble,
-)
-
-# ── FlowOp schema ─────────────────────────────────────────────────────────
-
-
-def test_flowop_budget_weight_default():
-    op = FlowOp(id="o1", agent_id="a1", instruction="do the thing")
-    assert op.budget_weight == 1.0
-
-
-def test_flowop_budget_weight_custom():
-    op = FlowOp(id="o1", agent_id="a1", instruction="do the thing", budget_weight=0.5)
-    assert op.budget_weight == 0.5
-
+from lionagi.cli.orchestrate.flow import _format_budget_preamble
 
 # ── _format_budget_preamble ────────────────────────────────────────────────
 
@@ -82,74 +65,35 @@ def test_format_budget_preamble_index_and_count():
     assert "60 seconds" in text
 
 
-# ── Budget injection simulation ────────────────────────────────────────────
+# ── Budget split (equal share across assignments) ──────────────────────────
 #
-# We test the budget-splitting arithmetic directly rather than invoking
-# _run_flow_inner (which requires a live LLM backend). The helper mirrors
-# the logic in _run_flow_inner so any drift will be caught by the unit test.
+# The reactive flow splits a total timeout equally across initial assignments:
+# ``share = int(total_budget / N)``. We test the arithmetic + the None guard
+# directly rather than invoking _run_flow_inner (which needs a live backend).
 
 
-def _simulate_budget_split(
-    ops: list[FlowOp],
-    total_budget: int,
-) -> dict[str, int]:
-    """Replicate the budget-split logic from _run_flow_inner.
-
-    Returns {op.id: share_in_seconds} for each op.
-    """
-    sum_weights = sum(op.budget_weight for op in ops)
-    return {op.id: int((total_budget / sum_weights) * op.budget_weight) for op in ops}
+def _equal_split(n: int, total_budget: int) -> int:
+    """Replicate the per-assignment share from _run_flow_inner."""
+    return int(total_budget / n)
 
 
-def test_equal_weight_produces_equal_share_3_ops():
-    ops = [
-        FlowOp(id="o1", agent_id="a1", instruction="do x"),
-        FlowOp(id="o2", agent_id="a1", instruction="do y"),
-        FlowOp(id="o3", agent_id="a1", instruction="do z"),
-    ]
-    shares = _simulate_budget_split(ops, total_budget=600)
-    assert shares == {"o1": 200, "o2": 200, "o3": 200}
+def test_equal_split_3_assignments():
+    assert _equal_split(3, 600) == 200
 
 
-def test_proportional_weight_split_4_ops():
-    # weights [1.0, 1.0, 0.5, 1.0] — total weight = 3.5, budget = 700s
-    ops = [
-        FlowOp(id="o1", agent_id="a1", instruction="do x", budget_weight=1.0),
-        FlowOp(id="o2", agent_id="a1", instruction="do y", budget_weight=1.0),
-        FlowOp(id="o3", agent_id="a1", instruction="do z", budget_weight=0.5),
-        FlowOp(id="o4", agent_id="a1", instruction="do w", budget_weight=1.0),
-    ]
-    shares = _simulate_budget_split(ops, total_budget=700)
-    # sum_weights = 3.5; per unit = 200s
-    assert shares["o1"] == 200
-    assert shares["o2"] == 200
-    assert shares["o3"] == 100
-    assert shares["o4"] == 200
+def test_equal_split_rounds_down():
+    assert _equal_split(3, 700) == 233
 
 
-def test_no_budget_preamble_dict_when_total_budget_none():
-    """Simulate the guard: _op_budget_preambles stays empty when no timeout."""
-    ops = [
-        FlowOp(id="o1", agent_id="a1", instruction="do x"),
-        FlowOp(id="o2", agent_id="a1", instruction="do y"),
-    ]
-    # env.total_budget = None → the guard `if env.total_budget and regular_ops`
-    # should evaluate falsy, leaving _op_budget_preambles empty.
+def test_no_budget_preamble_when_total_budget_none():
+    """The `if env.total_budget and assignments` guard stays empty without a timeout."""
     total_budget = None
-    _op_budget_preambles: dict[str, str] = {}
-    if total_budget and ops:
-        sum_weights = sum(op.budget_weight for op in ops)
-        budget_start = time.time()
-        for idx, op in enumerate(ops, 1):
-            share = int((total_budget / sum_weights) * op.budget_weight)  # type: ignore[operator]
-            deadline = budget_start + total_budget
-            _op_budget_preambles[op.id] = _format_budget_preamble(
-                op_index=idx,
-                num_ops=len(ops),
-                op_budget_seconds=share,
-                deadline_epoch=deadline,
-            )
-    assert _op_budget_preambles == {}
+    n = 2
+    preambles: dict[int, str] = {}
+    if total_budget and n:
+        share = int(total_budget / n)
+        preambles[0] = _format_budget_preamble(1, n, share, time.time() + total_budget)
+    assert preambles == {}
 
 
 # ── OrchestrationEnv.total_budget ─────────────────────────────────────────

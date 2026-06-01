@@ -1,28 +1,23 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for CLI security hardening: spec validation, path containment, topo sort."""
+"""Tests for CLI security hardening: spec validation + save-path containment.
+
+DAG topology validation and plan-id path safety moved with the clean break:
+topology is covered in ``tests/orchestration/test_patterns.py``; artifact-dir
+containment in ``tests/operations/test_flow_id_containment.py``.
+"""
 
 import argparse
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
 
-import pytest
 import yaml
 
 from lionagi.cli.orchestrate import (
     _validate_spec_fields,
     add_orchestrate_subparser,
     run_orchestrate,
-)
-from lionagi.cli.orchestrate.flow import (
-    FlowAgent,
-    FlowOp,
-    FlowPlan,
-    _run_flow_inner,
-    _topo_sort_ops,
 )
 
 
@@ -31,10 +26,6 @@ def _parse_flow_args(argv: list[str]) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     add_orchestrate_subparser(subparsers)
     return parser.parse_args(["o", "flow", *argv])
-
-
-def _op(oid: str, deps: list[str] | None = None) -> FlowOp:
-    return FlowOp(id=oid, agent_id="a1", instruction="do the thing", depends_on=deps)
 
 
 # ── Spec field validation ─────────────────────────────────────────────────────
@@ -313,84 +304,6 @@ class TestSavePathContainment:
 
         assert code == 0
         run_flow.assert_called_once()
-
-
-# ── Topo sort: 1000-deep chain and >200 ops ───────────────────────────────────
-
-
-def test_topo_sort_1000_deep_chain_no_crash():
-    """Iterative Kahn's BFS handles a 1000-op linear chain without stack overflow."""
-    n = 1000
-    ops = [_op("op0")]
-    for i in range(1, n):
-        ops.append(_op(f"op{i}", [f"op{i - 1}"]))
-    result = _topo_sort_ops(ops)
-    assert len(result) == n
-    for i in range(n):
-        assert result[i].id == f"op{i}"
-
-
-def test_topo_sort_no_cap_on_op_count():
-    """_topo_sort_ops imposes no size cap; the 200-op limit lives in _run_flow_inner."""
-    ops = [_op(f"op{i}") for i in range(201)]
-    result = _topo_sort_ops(ops)
-    assert len(result) == 201
-
-
-# ── _run_flow_inner rejects >200 op plans ────────────────────────────────────
-
-
-class _FakeBuilder:
-    def __init__(self):
-        self.added = []
-
-    def add_operation(self, operation, **kwargs):
-        node_id = f"node-{len(self.added) + 1}"
-        self.added.append({"id": node_id, "operation": operation, "kwargs": kwargs})
-        return node_id
-
-    def get_graph(self):
-        return object()
-
-
-class _FakeSession:
-    def __init__(self, builder, plan):
-        self.builder = builder
-        self.plan = plan
-
-    async def flow(self, _graph, **_kwargs):
-        plan_root = self.builder.added[0]["id"]
-        return {"operation_results": {plan_root: SimpleNamespace(plan=self.plan)}}
-
-
-@pytest.mark.asyncio
-async def test_run_flow_inner_rejects_plan_over_200_ops(tmp_path):
-    agents = [FlowAgent(id="a1", role="researcher")]
-    operations = [_op(f"op{i}") for i in range(201)]
-    plan = FlowPlan(agents=agents, operations=operations)
-    builder = _FakeBuilder()
-    env = SimpleNamespace(
-        run=SimpleNamespace(
-            artifact_root=tmp_path,
-            dag_image_path=tmp_path / "dag.png",
-        ),
-        session=_FakeSession(builder, plan),
-        orc_branch=SimpleNamespace(id=uuid4()),
-        builder=builder,
-        bare=True,
-        effort=None,
-        verbose=False,
-        team_data=None,
-    )
-
-    output = await _run_flow_inner(
-        "codex/gpt-5.5",
-        "do the task",
-        env=env,
-        dry_run=True,
-    )
-
-    assert "200" in output or "Invalid plan" in output
 
 
 # ── ADR-0029: artifacts: field validation in _validate_spec_fields ────────────
