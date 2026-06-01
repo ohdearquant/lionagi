@@ -27,7 +27,14 @@ import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from pydantic import Field
+
+from lionagi.session.signal import Signal
+
+if TYPE_CHECKING:
+    from lionagi.session.observer import SessionObserver
 
 logger = logging.getLogger("lionagi.hooks")
 
@@ -72,6 +79,22 @@ class StopHook(Exception):  # noqa: N818 — control-flow signal, not an error
     """
 
 
+class HookSignal(Signal):
+    """A HookBus emission recorded on the observer transport (ADR-0076).
+
+    Carries the named :class:`HookPoint` and the loose ``kwargs`` the
+    handlers receive. When a :class:`HookBus` is bound to a session's
+    observer, every ``emit`` / ``blocking_emit`` records one of these onto
+    the observer's ``Flow`` — so hook activity lives on the single event
+    bus and reactive observers may subscribe with ``observe(HookSignal)``.
+    The ordered, short-circuiting handler chain is still dispatched by the
+    bus itself; this envelope is the *record*, not the dispatcher.
+    """
+
+    point: HookPoint | None = None
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+
+
 def _normalize_point(point: HookPoint | str) -> HookPoint:
     """Coerce ``point`` to a :class:`HookPoint`, raising ``ValueError`` for unknowns."""
     if isinstance(point, HookPoint):
@@ -93,8 +116,35 @@ class HookBus:
     ``PermissionError``) actually blocks the tool call.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, observer: SessionObserver | None = None) -> None:
         self._handlers: dict[HookPoint, list[HookHandler]] = {}
+        # The shared event transport (ADR-0076). When set, every emit records
+        # a HookSignal here so hook activity lives on the one bus. Optional:
+        # an unbound HookBus dispatches exactly as before, recording nothing.
+        self._observer = observer
+
+    def bind(self, observer: SessionObserver | None) -> HookBus:
+        """Bind (or unbind, with ``None``) this bus to a session's observer.
+
+        Returns ``self`` for chaining. The observer is the shared transport
+        onto which emissions are recorded; binding does not change dispatch.
+        """
+        self._observer = observer
+        return self
+
+    async def _record(self, point: HookPoint, kwargs: dict[str, Any]) -> None:
+        """Record this emission onto the bound observer transport, if any.
+
+        Best-effort and isolated: a transport failure must never turn a
+        successful hook dispatch into a failure. Runs *after* the ordered
+        chain so dispatch / blocking semantics are unchanged.
+        """
+        if self._observer is None:
+            return
+        try:
+            await self._observer.emit(HookSignal(point=point, kwargs=dict(kwargs)))
+        except Exception:  # noqa: BLE001 — transport recording is best-effort
+            logger.exception("HookSignal record failed: %s", point.value)
 
     def on(self, point: HookPoint | str, handler: HookHandler) -> None:
         """Register ``handler`` to fire on ``point``. Order preserved.
@@ -141,8 +191,11 @@ class HookBus:
                 if inspect.isawaitable(result):
                     await result
             except StopHook:
-                return
-            # All other exceptions propagate — no except clause here.
+                break  # stop remaining handlers, but still record below
+            # All other exceptions propagate — no except clause here. A
+            # propagated (blocking) exception skips the record; deny-audit
+            # arrives with the real pre-invoke gate (ADR-0076 Follow-up 1).
+        await self._record(point, kwargs)
 
     async def emit(self, point: HookPoint | str, /, **kwargs: Any) -> None:
         """Fire all handlers for ``point`` sequentially with ``kwargs``.
@@ -155,7 +208,7 @@ class HookBus:
         """
         point = _normalize_point(point)
         if point is HookPoint.TOOL_PRE:
-            await self.blocking_emit(point, **kwargs)
+            await self.blocking_emit(point, **kwargs)  # records inside
             return
         # Snapshot handlers before dispatch so a handler registered during
         # this emit cycle does not fire in the current cycle.
@@ -167,9 +220,10 @@ class HookBus:
                 if inspect.isawaitable(result):
                     await result
             except StopHook:
-                return
+                break  # stop remaining handlers, but still record below
             except Exception:  # noqa: BLE001 — hook isolation invariant
                 logger.exception("Hook failed: %s", point.value)
+        await self._record(point, kwargs)
 
 
 # ── Decorator for user-defined handlers ───────────────────────────────────────
