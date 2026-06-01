@@ -8,8 +8,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 
 @dataclass
 class AgentConfig:
@@ -129,6 +127,8 @@ class AgentConfig:
               bash.allow: ["git *", "cargo *", "uv *"]
               bash.deny: ["rm -rf *"]
         """
+        import yaml
+
         p = Path(path)
         with open(p) as f:
             data = yaml.safe_load(f) or {}
@@ -163,6 +163,8 @@ class AgentConfig:
 
     def to_yaml(self, path: str | Path) -> None:
         """Save config to YAML (without hook callables — those are code-only)."""
+        import yaml
+
         data = {
             "name": self.name,
             "model": self.model,
