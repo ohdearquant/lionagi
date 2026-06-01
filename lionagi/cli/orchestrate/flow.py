@@ -37,7 +37,10 @@ from ._orchestration import (
     available_roles,
     build_worker_branch,
     finalize_orchestration,
+    mode_roster,
+    resolve_modes,
     resolve_worker_spec,
+    role_config,
     role_roster,
     setup_orchestration,
     start_live_persist,
@@ -490,7 +493,10 @@ async def _run_flow_inner(
             f"BUDGET: at most {max_ops} ops total, INCLUDING any reactively "
             "spawned follow-ups — plan tightly. "
         )
-    guidance = f"{role_roster(env.default_model_spec)}\n\n{budget_note}{team_guidance(team_attach or team_name)}"
+    guidance = (
+        f"{role_roster(env.default_model_spec)}\n\n{mode_roster()}\n\n"
+        f"{budget_note}{team_guidance(team_attach or team_name)}"
+    )
 
     progress("Planning DAG...")
     assignments = await plan(
@@ -556,14 +562,25 @@ async def _run_flow_inner(
             if ta.exit_criteria:
                 lines.append(f"    exit: {ta.exit_criteria[:100]}")
         lines.append("")
-        lines.append("Model resolution:")
+        lines.append("Model + modes resolution:")
         for i, ta in enumerate(assignments):
             if env.bare:
                 lines.append(f"  {agent_ids[i]}: {model_spec} (bare)")
+                continue
+            rm, rp = resolve_worker_spec(ta.assignee)
+            cfg = role_config(ta.assignee)
+            if rp:
+                # A user profile supplies its own body — casts modes don't apply
+                # (profile shadows casts; ADR-0074 follow-up makes them compose).
+                model, src, modes = rm, "profile", []
+            elif cfg and cfg.model:
+                model, src = cfg.model, "pack"
+                modes = resolve_modes(ta.assignee, ta.modes or None)
             else:
-                rm, rp = resolve_worker_spec(ta.assignee)
-                src = "profile" if rp else "default"
-                lines.append(f"  {agent_ids[i]}: {rm if rp else model_spec} ({src})")
+                model, src = model_spec, "default"
+                modes = resolve_modes(ta.assignee, ta.modes or None)
+            mode_str = f"  modes={modes}" if modes else ""
+            lines.append(f"  {agent_ids[i]}: {model} ({src}){mode_str}")
         return "\n".join(lines)
 
     # ── Team setup ────────────────────────────────────────────────────
@@ -617,6 +634,7 @@ async def _run_flow_inner(
             role=ta.assignee,
             explicit_name=agent_ids[i],
             grant_spawn=_may_spawn(ta.assignee),
+            modes=ta.modes or None,
         )
         worker_models.append(w_model)
         role_base.setdefault(ta.assignee, w_branch)
