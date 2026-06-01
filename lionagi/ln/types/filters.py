@@ -31,7 +31,16 @@ import operator
 from collections.abc import Callable
 from typing import Any
 
-__all__ = ("Filter", "TypeFilter", "SpecFilter", "FieldRef", "RoleFilter", "as_filter")
+__all__ = (
+    "Filter",
+    "TypeFilter",
+    "SpecFilter",
+    "FieldRef",
+    "RoleFilter",
+    "as_filter",
+    "all_of",
+    "resolve_path",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +53,31 @@ def field_values(payload: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
         return payload
     return {}
+
+
+_MISSING = object()
+
+
+def resolve_path(payload: Any, dotted: str) -> Any:
+    """Resolve a (possibly dotted) field path on a payload; ``_MISSING`` if absent.
+
+    Reads via attribute access (so properties like ``Event.status`` and nested
+    paths like ``execution.duration`` resolve), falling back to item access for
+    dict payloads. Unlike :func:`field_values`, this is not limited to declared
+    model fields — it is what lets the filter DSL reach an event's execution
+    state, not just its Pydantic fields.
+    """
+    cur: Any = payload
+    for part in dotted.split("."):
+        if isinstance(cur, dict):
+            if part not in cur:
+                return _MISSING
+            cur = cur[part]
+        else:
+            cur = getattr(cur, part, _MISSING)
+            if cur is _MISSING:
+                return _MISSING
+    return cur
 
 
 class Filter:
@@ -120,14 +154,45 @@ class SpecFilter(Filter):
 
 
 def as_filter(x: Filter | type | Callable) -> Filter:
-    """Coerce a type, callable, or Filter into a Filter."""
+    """Coerce a type, ``__as_filter__`` provider, callable, or Filter into a Filter.
+
+    An object exposing ``__as_filter__()`` (e.g. an ``EventStatus`` member) builds
+    its own Filter — the hook that lets a value participate in the DSL without the
+    low-level filter module importing it. Checked before ``callable`` so a Filter
+    that happens to be callable is not mistaken for a bare predicate.
+    """
     if isinstance(x, Filter):
         return x
     if isinstance(x, type):
         return TypeFilter(x)
+    conv = getattr(x, "__as_filter__", None)
+    if conv is not None:
+        result = conv()
+        if not isinstance(result, Filter):
+            raise TypeError(
+                f"{type(x).__name__}.__as_filter__() must return a Filter, got {result!r}"
+            )
+        return result
     if callable(x):
         return SpecFilter(x, getattr(x, "__name__", "predicate"))
     raise TypeError(f"Cannot use {x!r} as a Filter")
+
+
+def all_of(*keys: Filter | type | Callable) -> Filter:
+    """AND-compose one or more keys (each coerced via :func:`as_filter`).
+
+    The compositional core of ``observe(APICalling, EventStatus.FAILED, …)`` —
+    every key must match the same payload. A single key returns its own filter
+    unchanged; zero keys is an error (an empty conjunction matches everything,
+    which is never what a subscription wants).
+    """
+    flts = [as_filter(k) for k in keys]
+    if not flts:
+        raise TypeError("all_of() requires at least one filter")
+    if len(flts) == 1:
+        return flts[0]
+    composed = "(" + " & ".join(repr(f) for f in flts) + ")"
+    return SpecFilter(lambda p: all(f(p) for f in flts), composed)
 
 
 class RoleFilter(Filter):
@@ -183,10 +248,10 @@ class FieldRef:
         name = self.name
 
         def check(payload: Any) -> bool:
-            values = field_values(payload)
-            if name not in values:
+            val = resolve_path(payload, name)
+            if val is _MISSING:
                 return False
-            return op(values[name], other)
+            return op(val, other)
 
         return SpecFilter(check, f"{name}{sym}{other!r}", safe=True)
 
@@ -213,6 +278,11 @@ class FieldRef:
 
     def present(self) -> SpecFilter:
         name = self.name
-        return SpecFilter(lambda p: field_values(p).get(name) is not None, f"{name}?", safe=True)
+
+        def check(p: Any) -> bool:
+            val = resolve_path(p, name)
+            return val is not None and val is not _MISSING
+
+        return SpecFilter(check, f"{name}?", safe=True)
 
     __hash__ = None  # type: ignore[assignment]  # __eq__ returns a Filter, not a bool
