@@ -155,8 +155,9 @@ async def test_start_create_session_failure_closes_db(
     await start_live_persist(env)
 
     assert env._live_persist is None
-    # The orchestrator branch should not have a hook registered.
-    assert env.orc_branch.on_message_added == []
+    # No PERSISTENCE hook should be registered after the DB failure — only the
+    # branch's baseline signal-emission hook (_schedule_emit) is present.
+    assert env.orc_branch.on_message_added == [env.orc_branch._schedule_emit]
 
     for _ in range(20):
         if _aiosqlite_thread_count() <= before:

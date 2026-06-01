@@ -11,7 +11,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from lionagi.ln.types import Operable, Spec
-from lionagi.operations.run.run import _emit_message_signal
+from lionagi.operations._observe import emit_message as _emit_message_signal
 from lionagi.protocols.messages import AssistantResponse
 from lionagi.protocols.messages.assistant_response import AssistantResponseContent
 from lionagi.session.capabilities import CAP_BEGIN, CAP_END, render_capabilities_prompt
