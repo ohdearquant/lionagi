@@ -16,7 +16,8 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from lionagi.ln.types import Operable, Spec
-from lionagi.operations.run.run import _attempt_extract, _emit_message_signal
+from lionagi.operations._observe import attempt_extract as _attempt_extract
+from lionagi.operations._observe import emit_message as _emit_message_signal
 from lionagi.protocols.messages import (
     ActionRequest,
     ActionResponse,
