@@ -47,6 +47,19 @@ class EventStatus(str, ln.types.Enum):
     CANCELLED = "cancelled"
     ABORTED = "aborted"
 
+    def __as_filter__(self) -> Any:
+        """Build a Filter matching any event whose ``status`` equals this member.
+
+        The :func:`~lionagi.ln.types.as_filter` hook that lets a status drive a
+        subscription directly — ``session.observe(EventStatus.FAILED)`` reacts to
+        every event that reached FAILED, the reactive-bus complement to logging.
+        Composes with a type and field predicates via
+        ``observe(APICalling, EventStatus.FAILED)``.
+        """
+        from lionagi.ln.types import FieldRef
+
+        return FieldRef("status") == self
+
 
 class Execution:
     """Represents the execution state of an event.
@@ -196,9 +209,7 @@ class Execution:
             exceptions = []
             for exc in eg.exceptions:
                 if isinstance(exc, ExceptionGroup):
-                    exceptions.append(
-                        self._serialize_exception_group(exc, depth + 1, _seen)
-                    )
+                    exceptions.append(self._serialize_exception_group(exc, depth + 1, _seen))
                 else:
                     exceptions.append(
                         {
@@ -253,6 +264,32 @@ class Execution:
             self.error = exc
 
 
+class _EventQuery:
+    """Field handles for an event's queryable state, including nested ``execution.*``.
+
+    Reached via ``Event.q`` (a stateless singleton). ``APICalling.q.duration > 3600``
+    builds a Filter over ``execution.duration``; ``APICalling.q.status`` over the
+    status. Well-known names map to their execution path; anything else is treated
+    as a top-level attribute. The complement to the ``EventStatus`` enum filter for
+    the non-enum (numeric, value) fields.
+    """
+
+    _PATHS: ClassVar[dict[str, str]] = {
+        "status": "execution.status",
+        "duration": "execution.duration",
+        "response": "execution.response",
+        "error": "execution.error",
+        "retryable": "execution.retryable",
+    }
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        from lionagi.ln.types import FieldRef
+
+        return FieldRef(self._PATHS.get(name, name))
+
+
 class Event(Element):
     """Extends Element with an execution state.
 
@@ -262,6 +299,10 @@ class Event(Element):
 
     execution: Execution = Field(default_factory=Execution)
     streaming: bool = Field(False, exclude=True)
+
+    # Class-level filter-DSL handle: ``APICalling.q.duration > 3600`` etc. A
+    # stateless singleton; ClassVar keeps Pydantic from treating it as a field.
+    q: ClassVar[_EventQuery] = _EventQuery()
 
     # TODO(#1043 Phase 2): migrate to anyio.Event (needs .clear() audit first)
     # Lazily-created asyncio.Event signalled on terminal status transitions.
@@ -333,9 +374,7 @@ class Event(Element):
             if val in self._TERMINAL_STATUSES and self._completion_event is not None:
                 self._completion_event.set()
         else:
-            raise ValueError(
-                f"Invalid status type: {type(val)}. Expected EventStatus or str."
-            )
+            raise ValueError(f"Invalid status type: {type(val)}. Expected EventStatus or str.")
 
     @property
     def request(self) -> dict:
@@ -343,19 +382,27 @@ class Event(Element):
         return {}
 
     async def invoke(self) -> None:
-        """Execute the event with lifecycle management.
+        """Execute the event, recording the outcome as internal state.
 
-        Idempotent: no-op if status is not PENDING. Handles status
-        transitions, timing, error capture. Override ``_invoke()`` for
-        business logic — do NOT override invoke() in subclasses.
+        Idempotent: no-op if status is not PENDING. Handles status transitions,
+        timing, and error capture. Override ``_invoke()`` for business logic — do
+        NOT override invoke() in subclasses.
 
-        Uses ``self.status`` (the property setter) for terminal
-        transitions so that ``completion_event`` is signalled.
+        Uses ``self.status`` (the property setter) for terminal transitions so
+        that ``completion_event`` is signalled.
 
-        Exception handling:
-            - ``Exception`` subclasses → FAILED status, re-raised.
-            - ``BaseException`` (CancelledError, KeyboardInterrupt) →
-              CANCELLED status, always re-raised.
+        The event IS the outcome channel — a business failure is captured, not
+        propagated:
+
+            - success → COMPLETED, ``response`` set.
+            - ``Exception`` (a failing tool, a bad response, …) → FAILED, the
+              error recorded on ``execution``; **not** re-raised. Callers inspect
+              ``status`` / ``execution.error`` (or call ``assert_completed()`` to
+              opt into fail-fast), and observers react via
+              ``session.observe(EventType, EventStatus.FAILED)``.
+            - ``BaseException`` (CancelledError, KeyboardInterrupt, SystemExit) →
+              CANCELLED, then **re-raised**: cancellation is a control-flow
+              signal that must propagate, never a result to inspect.
         """
         if self.execution.status != EventStatus.PENDING:
             return
@@ -368,11 +415,11 @@ class Event(Element):
             self.execution.response = result
             self.status = EventStatus.COMPLETED
         except Exception as e:
+            # A business failure is internal state, not a propagated exception.
             self.status = EventStatus.FAILED
             self.execution.add_error(e)
-            raise
         except BaseException as e:
-            # CancelledError, KeyboardInterrupt, SystemExit
+            # CancelledError, KeyboardInterrupt, SystemExit — must propagate.
             self.execution.add_error(e)
             self.status = EventStatus.CANCELLED
             raise
@@ -398,10 +445,11 @@ class Event(Element):
         Uses ``self.status`` (the property setter) for terminal transitions
         so that ``completion_event`` is signalled.
 
-        Exception handling:
-            - ``Exception`` subclasses → FAILED status, re-raised.
-            - ``BaseException`` (CancelledError, KeyboardInterrupt) →
-              CANCELLED status, always re-raised.
+        Same outcome contract as :meth:`invoke` (the event IS the outcome):
+            - all chunks yielded → COMPLETED.
+            - ``Exception`` → FAILED, error recorded on ``execution``; **not**
+              re-raised. Chunks emitted before the failure are still yielded.
+            - ``BaseException`` (cancellation) → CANCELLED, then **re-raised**.
         """
         if self.execution.status in self._TERMINAL_STATUSES:
             return
@@ -414,11 +462,11 @@ class Event(Element):
                 yield chunk
             self.status = EventStatus.COMPLETED
         except Exception as e:
+            # A business failure is internal state, not a propagated exception.
             self.status = EventStatus.FAILED
             self.execution.add_error(e)
-            raise
         except BaseException as e:
-            # CancelledError, KeyboardInterrupt, SystemExit
+            # CancelledError, KeyboardInterrupt, SystemExit — must propagate.
             self.execution.add_error(e)
             self.status = EventStatus.CANCELLED
             raise

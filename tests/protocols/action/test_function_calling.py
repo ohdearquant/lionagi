@@ -93,9 +93,7 @@ async def test_function_calling_with_async_function(async_tool):
 @pytest.mark.asyncio
 async def test_function_calling_with_parser(tool_with_processors):
     """Test FunctionCalling with result parser."""
-    func_call = FunctionCalling(
-        func_tool=tool_with_processors, arguments={"x": 1, "y": "test"}
-    )
+    func_call = FunctionCalling(func_tool=tool_with_processors, arguments={"x": 1, "y": "test"})
 
     result = await func_call.invoke()
     assert isinstance(func_call.response, str)
@@ -112,8 +110,7 @@ async def test_function_calling_error_handling():
     tool = Tool(func_callable=error_func)
     func_call = FunctionCalling(func_tool=tool, arguments={})
 
-    with pytest.raises(ValueError, match="Test error"):
-        await func_call.invoke()
+    await func_call.invoke()  # total: tool failure captured as FAILED, not raised
     assert func_call.status == EventStatus.FAILED
     assert "Test error" in str(func_call.execution.error)
     assert func_call.execution.duration is not None
@@ -158,8 +155,7 @@ async def test_function_calling_processor_error():
 
     func_call = FunctionCalling(func_tool=tool, arguments={"x": 1})
 
-    with pytest.raises(ValueError, match="Processor error"):
-        await func_call.invoke()
+    await func_call.invoke()  # total: processor failure captured as FAILED, not raised
     assert func_call.response is None
     assert func_call.status == EventStatus.FAILED
     assert "Processor error" in str(func_call.execution.error)

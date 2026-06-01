@@ -103,9 +103,7 @@ class ActionManager(Manager):
             )
         self.registry[tool.function] = tool
 
-    def register_tools(
-        self, tools: list[FuncTool] | FuncTool, update: bool = False
-    ) -> None:
+    def register_tools(self, tools: list[FuncTool] | FuncTool, update: bool = False) -> None:
         """
         Register multiple tools at once.
 
@@ -123,9 +121,7 @@ class ActionManager(Manager):
         for t in tools_list:
             self.register_tool(t, update=update)
 
-    def match_tool(
-        self, action_request: ActionRequest | BaseModel | dict
-    ) -> FunctionCalling:
+    def match_tool(self, action_request: ActionRequest | BaseModel | dict) -> FunctionCalling:
         """
         Convert an ActionRequest (or dict with "function"/"arguments")
         into a `FunctionCalling` instance by finding the matching tool.
@@ -173,10 +169,9 @@ class ActionManager(Manager):
             `FunctionCalling` event after it completes execution.
         """
         function_calling = self.match_tool(func_call)
-        try:
-            await function_calling.invoke()
-        except Exception:
-            pass  # Error captured in function_calling.execution
+        # invoke() is total: a tool failure is captured as FAILED status +
+        # execution.error, not raised. Cancellation still propagates.
+        await function_calling.invoke()
         return function_calling
 
     @property
@@ -217,9 +212,7 @@ class ActionManager(Manager):
                 return {"tools": self.schema_list}
             return []
         else:
-            schemas = self._get_tool_schema(
-                tools, auto_register=auto_register, update=update
-            )
+            schemas = self._get_tool_schema(tools, auto_register=auto_register, update=update)
             return {"tools": schemas}
 
     def _get_tool_schema(
@@ -355,18 +348,14 @@ class ActionManager(Manager):
                             "function": {
                                 "name": tool.name,
                                 "description": (
-                                    tool.description
-                                    if hasattr(tool, "description")
-                                    else None
+                                    tool.description if hasattr(tool, "description") else None
                                 ),
                                 "parameters": tool.inputSchema,
                             },
                         }
                 except Exception as schema_error:
                     # If schema extraction fails, let Tool auto-generate from function signature
-                    logging.warning(
-                        f"Could not extract schema for {tool.name}: {schema_error}"
-                    )
+                    logging.warning(f"Could not extract schema for {tool.name}: {schema_error}")
                     tool_schema = None
 
                 try:
@@ -427,13 +416,9 @@ class ActionManager(Manager):
         for server_name in server_names:
             try:
                 # Register using server reference
-                tools = await self.register_mcp_server(
-                    {"server": server_name}, update=update
-                )
+                tools = await self.register_mcp_server({"server": server_name}, update=update)
                 all_tools[server_name] = tools
-                logger.info(
-                    "Registered %d tools from server '%s'", len(tools), server_name
-                )
+                logger.info("Registered %d tools from server '%s'", len(tools), server_name)
             except Exception as e:
                 logger.warning("Failed to register server '%s': %s", server_name, e)
                 all_tools[server_name] = []
@@ -496,9 +481,7 @@ async def load_mcp_tools(
         server_names = list(MCPConnectionPool._configs.keys())
 
     if server_names is None:
-        raise ValueError(
-            "Either provide server_names or config_path to discover servers"
-        )
+        raise ValueError("Either provide server_names or config_path to discover servers")
 
     # Register all servers
     for server_name in server_names:

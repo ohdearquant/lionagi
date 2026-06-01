@@ -42,9 +42,7 @@ class TestAPICalling:
         )
         return Endpoint(config=config)
 
-    def test_api_calling_initialization(
-        self, sample_payload, sample_headers, mock_endpoint
-    ):
+    def test_api_calling_initialization(self, sample_payload, sample_headers, mock_endpoint):
         """Test APICalling initialization."""
         api_call = APICalling(
             payload=sample_payload,
@@ -72,9 +70,7 @@ class TestAPICalling:
 
         assert api_call.response is None
 
-    def test_response_property_after_execution(
-        self, sample_payload, sample_headers, mock_endpoint
-    ):
+    def test_response_property_after_execution(self, sample_payload, sample_headers, mock_endpoint):
         """Test response property returns execution response."""
         api_call = APICalling(
             payload=sample_payload,
@@ -100,9 +96,7 @@ class TestAPICalling:
             endpoint=mock_endpoint,
         )
 
-        with patch.object(
-            mock_endpoint, "call", return_value=mock_response.json.return_value
-        ):
+        with patch.object(mock_endpoint, "call", return_value=mock_response.json.return_value):
             await api_call.invoke()
 
         assert api_call.status == EventStatus.COMPLETED
@@ -110,30 +104,26 @@ class TestAPICalling:
         assert api_call.response is not None
 
     @pytest.mark.asyncio
-    async def test_execution_error_handling(
-        self, sample_payload, sample_headers, mock_endpoint
-    ):
-        """Test error handling during execution — exception is re-raised by Event.invoke()."""
+    async def test_execution_error_handling(self, sample_payload, sample_headers, mock_endpoint):
+        """Test error handling during execution — the error is captured as FAILED state."""
         api_call = APICalling(
             payload=sample_payload,
             headers=sample_headers,
             endpoint=mock_endpoint,
         )
 
-        # Event.invoke() re-raises exceptions after recording FAILED status.
+        # invoke() is total: the error is recorded on execution, not re-raised.
         with patch.object(mock_endpoint, "call", side_effect=Exception("API Error")):
-            with pytest.raises(Exception, match="API Error"):
-                await api_call.invoke()
+            await api_call.invoke()
 
         assert api_call.status == EventStatus.FAILED
         assert api_call.execution is not None
         assert "API Error" in str(api_call.execution.error)
 
     @pytest.mark.asyncio
-    async def test_timeout_handling(
-        self, sample_payload, sample_headers, mock_endpoint
-    ):
-        """Test timeout handling during execution — exception is re-raised by Event.invoke()."""
+    async def test_timeout_handling(self, sample_payload, sample_headers, mock_endpoint):
+        """Test timeout handling during execution — captured as FAILED state (a timeout
+        is a business failure, not cancellation)."""
         api_call = APICalling(
             payload=sample_payload,
             headers=sample_headers,
@@ -145,15 +135,12 @@ class TestAPICalling:
             "call",
             side_effect=asyncio.TimeoutError("Request timed out"),
         ):
-            with pytest.raises(asyncio.TimeoutError):
-                await api_call.invoke()
+            await api_call.invoke()
 
         assert api_call.status == EventStatus.FAILED
 
     @pytest.mark.asyncio
-    async def test_streaming_execution(
-        self, sample_payload, sample_headers, mock_endpoint
-    ):
+    async def test_streaming_execution(self, sample_payload, sample_headers, mock_endpoint):
         """Test streaming API call execution."""
         sample_payload["stream"] = True
         api_call = APICalling(
@@ -175,9 +162,7 @@ class TestAPICalling:
         assert len(chunks) >= 2
         assert api_call.status == EventStatus.COMPLETED
 
-    def test_cache_control_handling(
-        self, sample_payload, sample_headers, mock_endpoint
-    ):
+    def test_cache_control_handling(self, sample_payload, sample_headers, mock_endpoint):
         """Test cache control parameter handling."""
         api_call = APICalling(
             payload=sample_payload,
@@ -222,9 +207,7 @@ class TestAPICalling:
             assert api_call.response == responses[i]
 
     @pytest.mark.asyncio
-    async def test_error_propagation(
-        self, sample_payload, sample_headers, mock_endpoint
-    ):
+    async def test_error_propagation(self, sample_payload, sample_headers, mock_endpoint):
         """Test that errors are properly propagated and not swallowed."""
         api_call = APICalling(
             payload=sample_payload,
@@ -234,18 +217,16 @@ class TestAPICalling:
 
         original_error = ValueError("Custom API error")
 
-        # Event.invoke() re-raises after recording FAILED status.
+        # invoke() is total: the error is recorded on execution, not swallowed and
+        # not re-raised. The caller inspects status / execution.error.
         with patch.object(mock_endpoint, "call", side_effect=original_error):
-            with pytest.raises(ValueError, match="Custom API error"):
-                await api_call.invoke()
+            await api_call.invoke()
 
         assert api_call.status == EventStatus.FAILED
         assert api_call.execution.error is not None
         assert "Custom API error" in str(api_call.execution.error)
 
-    def test_include_token_usage_to_model(
-        self, sample_payload, sample_headers, mock_endpoint
-    ):
+    def test_include_token_usage_to_model(self, sample_payload, sample_headers, mock_endpoint):
         """Test include_token_usage_to_model parameter."""
         api_call = APICalling(
             payload=sample_payload,
@@ -273,8 +254,7 @@ class TestAPICalling:
             "call",
             side_effect=ConnectionError("Transient error"),
         ):
-            with pytest.raises(ConnectionError):
-                await api_call1.invoke()
+            await api_call1.invoke()  # total: captured as FAILED, not raised
 
         assert api_call1.status == EventStatus.FAILED
 
@@ -291,9 +271,7 @@ class TestAPICalling:
         assert api_call2.status == EventStatus.COMPLETED
 
     @pytest.mark.asyncio
-    async def test_payload_immutability(
-        self, sample_payload, sample_headers, mock_endpoint
-    ):
+    async def test_payload_immutability(self, sample_payload, sample_headers, mock_endpoint):
         """Test that payload is not mutated during execution."""
         original_payload = sample_payload.copy()
         api_call = APICalling(
@@ -360,9 +338,7 @@ class TestTokenUsageContentInjection:
 
     def test_dict_content_with_text_key_gets_appended(self, token_endpoint):
         """Dict content with 'text' key has token usage appended to that key (line 91-92)."""
-        api_call = self._make_api_call(
-            {"type": "text", "text": "Hello"}, token_endpoint
-        )
+        api_call = self._make_api_call({"type": "text", "text": "Hello"}, token_endpoint)
         result_content = api_call.payload["messages"][-1]["content"]
         assert isinstance(result_content, dict)
         assert "Estimated Current Token Usage" in result_content["text"]
@@ -452,9 +428,7 @@ class TestRequiredTokensProperty:
             payload={"input": "hello world", "model": "gpt-4"},
             endpoint=token_endpoint,
         )
-        with patch.object(
-            TokenCalculator, "calculate_message_tokens", return_value=7
-        ) as mock_calc:
+        with patch.object(TokenCalculator, "calculate_message_tokens", return_value=7) as mock_calc:
             count = api_call.required_tokens
         assert count == 7
         mock_calc.assert_called_once()
@@ -471,9 +445,7 @@ class TestRequiredTokensProperty:
             payload={"input": ["hello", "world"], "model": "gpt-4"},
             endpoint=token_endpoint,
         )
-        with patch.object(
-            TokenCalculator, "calculate_message_tokens", return_value=5
-        ) as mock_calc:
+        with patch.object(TokenCalculator, "calculate_message_tokens", return_value=5) as mock_calc:
             count = api_call.required_tokens
         assert count == 5
         call_args = mock_calc.call_args[0][0]
@@ -488,15 +460,11 @@ class TestRequiredTokensProperty:
             payload={"input": [msg], "model": "gpt-4"},
             endpoint=token_endpoint,
         )
-        with patch.object(
-            TokenCalculator, "calculate_message_tokens", return_value=4
-        ) as mock_calc:
+        with patch.object(TokenCalculator, "calculate_message_tokens", return_value=4) as mock_calc:
             count = api_call.required_tokens
         assert count == 4
 
-    def test_required_tokens_input_non_string_non_list_returns_none(
-        self, token_endpoint
-    ):
+    def test_required_tokens_input_non_string_non_list_returns_none(self, token_endpoint):
         """Input that is neither str nor list results in None (line 133)."""
         api_call = APICalling(
             payload={"input": 12345, "model": "gpt-4"},
@@ -517,9 +485,7 @@ class TestRequiredTokensProperty:
             payload={"texts": ["text1", "text2"], "model": "text-embedding-3-small"},
             endpoint=embed_endpoint,
         )
-        with patch.object(
-            TokenCalculator, "calculate_embed_token", return_value=8
-        ) as mock_calc:
+        with patch.object(TokenCalculator, "calculate_embed_token", return_value=8) as mock_calc:
             count = api_call.required_tokens
         assert count == 8
         mock_calc.assert_called_once()

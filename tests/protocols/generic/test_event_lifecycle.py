@@ -109,26 +109,25 @@ class TestInvokeLifecycle:
         """Status transitions PENDING -> PROCESSING -> FAILED on error."""
         event = FailingEvent()
         assert event.execution.status == EventStatus.PENDING
-        with pytest.raises(ValueError, match="boom"):
-            await event.invoke()
+        await event.invoke()  # total: a business failure is captured, not raised
         assert event.execution.status == EventStatus.FAILED
 
     @pytest.mark.asyncio
     async def test_error_captured_on_failure(self):
         """Error is captured in execution.error via add_error()."""
         event = FailingEvent()
-        with pytest.raises(ValueError):
-            await event.invoke()
+        await event.invoke()
         assert event.execution.error is not None
         assert isinstance(event.execution.error, ValueError)
         assert "boom" in str(event.execution.error)
 
     @pytest.mark.asyncio
-    async def test_error_is_reraised(self):
-        """The original exception is re-raised after being captured."""
+    async def test_error_not_reraised(self):
+        """A business failure is captured as state, NOT re-raised (total invoke)."""
         event = FailingEvent()
-        with pytest.raises(ValueError, match="boom"):
-            await event.invoke()
+        await event.invoke()  # must not raise
+        assert event.execution.status == EventStatus.FAILED
+        assert isinstance(event.execution.error, ValueError)
 
     @pytest.mark.asyncio
     async def test_idempotency_completed(self):
@@ -148,8 +147,7 @@ class TestInvokeLifecycle:
     async def test_idempotency_failed(self):
         """Calling invoke() on a FAILED event is a no-op."""
         event = FailingEvent()
-        with pytest.raises(ValueError):
-            await event.invoke()
+        await event.invoke()
         assert event.execution.status == EventStatus.FAILED
         first_duration = event.execution.duration
 
@@ -171,8 +169,8 @@ class TestInvokeLifecycle:
     async def test_duration_recorded_on_failure(self):
         """Duration is recorded even when _invoke() fails."""
         event = FailingEvent()
-        with pytest.raises(ValueError):
-            await event.invoke()
+        await event.invoke()
+        assert event.execution.status == EventStatus.FAILED
         assert event.execution.duration is not None
         assert event.execution.duration >= 0
 
@@ -187,12 +185,12 @@ class TestInvokeLifecycle:
         assert event.execution.duration is Unset
 
     @pytest.mark.asyncio
-    async def test_base_event_invoke_raises(self):
-        """Calling invoke() on bare Event raises NotImplementedError."""
+    async def test_base_event_invoke_captures(self):
+        """Calling invoke() on bare Event captures NotImplementedError as FAILED."""
         event = Event()
-        with pytest.raises(NotImplementedError):
-            await event.invoke()
+        await event.invoke()
         assert event.execution.status == EventStatus.FAILED
+        assert isinstance(event.execution.error, NotImplementedError)
 
     @pytest.mark.asyncio
     async def test_response_preserved_on_success(self):
@@ -233,9 +231,8 @@ class TestStreamLifecycle:
         """Status transitions to FAILED when _stream() raises."""
         event = StreamFailEvent()
         chunks = []
-        with pytest.raises(RuntimeError, match="stream failed"):
-            async for chunk in event.stream():
-                chunks.append(chunk)
+        async for chunk in event.stream():  # total: failure captured, not raised
+            chunks.append(chunk)
         assert event.execution.status == EventStatus.FAILED
         # First chunk was yielded before the error
         assert chunks == ["first"]
@@ -244,9 +241,8 @@ class TestStreamLifecycle:
     async def test_stream_error_captured(self):
         """Error is captured in execution.error during streaming."""
         event = StreamFailEvent()
-        with pytest.raises(RuntimeError):
-            async for _ in event.stream():
-                pass
+        async for _ in event.stream():
+            pass
         assert event.execution.error is not None
         assert isinstance(event.execution.error, RuntimeError)
 
@@ -263,9 +259,9 @@ class TestStreamLifecycle:
     async def test_stream_duration_recorded_on_failure(self):
         """Duration is recorded even when streaming fails."""
         event = StreamFailEvent()
-        with pytest.raises(RuntimeError):
-            async for _ in event.stream():
-                pass
+        async for _ in event.stream():
+            pass
+        assert event.execution.status == EventStatus.FAILED
         assert event.execution.duration is not None
         assert event.execution.duration >= 0
 
@@ -287,9 +283,8 @@ class TestStreamLifecycle:
     async def test_stream_idempotency_failed(self):
         """Calling stream() on a FAILED event yields nothing."""
         event = StreamFailEvent()
-        with pytest.raises(RuntimeError):
-            async for _ in event.stream():
-                pass
+        async for _ in event.stream():
+            pass
         assert event.execution.status == EventStatus.FAILED
 
         # Stream again -- should yield nothing (no exception)
@@ -310,13 +305,13 @@ class TestStreamLifecycle:
         assert event.execution.response == "direct-stream"
 
     @pytest.mark.asyncio
-    async def test_base_event_stream_raises(self):
-        """Calling stream() on bare Event raises NotImplementedError."""
+    async def test_base_event_stream_captures(self):
+        """Calling stream() on bare Event captures NotImplementedError as FAILED."""
         event = Event()
-        with pytest.raises(NotImplementedError):
-            async for _ in event.stream():
-                pass
+        async for _ in event.stream():
+            pass
         assert event.execution.status == EventStatus.FAILED
+        assert isinstance(event.execution.error, NotImplementedError)
 
     @pytest.mark.asyncio
     async def test_stream_cancelled_status(self):
