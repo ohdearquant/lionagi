@@ -140,20 +140,22 @@ class Session(Node, Relational):
 
     def observe(
         self,
-        event_type: type | None = None,
+        *keys: type | Callable | Any,
         handler: Callable | None = None,
-        *,
         role: str | None = None,
     ) -> Any:
-        """Subscribe a handler to an event type or emitter role. Usable as a decorator.
+        """Subscribe a handler to one or more AND-composed conditions. Usable as a decorator.
 
-        Handlers receive ``(event, session)`` and fire when a matching event
-        is emitted. Mirrors ``@session.operation()``.
+        Handlers receive ``(matched, session)`` and fire when every condition
+        matches an emitted payload. Each *key* is a type, a Filter, or an
+        ``__as_filter__`` provider (``EventStatus.FAILED``) —
+        ``session.observe(APICalling, EventStatus.FAILED)`` reacts to failed API
+        calls. Mirrors ``@session.operation()``.
 
         ``role`` subscribes by the emitting agent's role name — fires on anything
         emitted by an agent with that role regardless of capability type.
         """
-        return self.observer.observe(event_type, handler, role=role)
+        return self.observer.observe(*keys, handler=handler, role=role)
 
     def route(self, condition: Callable, *, into: str) -> "SessionObserver":
         """Auto-append emitted events matching ``condition`` to a named stream."""

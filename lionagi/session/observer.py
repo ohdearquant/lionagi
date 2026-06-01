@@ -40,7 +40,7 @@ import inspect
 from collections.abc import Callable
 from typing import Any
 
-from lionagi.ln.types import Filter, RoleFilter, TypeFilter, as_filter
+from lionagi.ln.types import Filter, RoleFilter, TypeFilter, all_of
 from lionagi.protocols._concepts import Observable, Observer
 
 from ..protocols.generic.flow import Flow
@@ -83,6 +83,18 @@ def _payload(obj: Any) -> Any:
     return obj.data if isinstance(obj, Signal) else obj
 
 
+def _is_condition(x: Any) -> bool:
+    """A value usable as a filter condition: a type, a Filter, or an
+    ``__as_filter__`` provider (e.g. an ``EventStatus`` member)."""
+    return isinstance(x, type | Filter) or hasattr(x, "__as_filter__")
+
+
+def _looks_like_handler(x: Any) -> bool:
+    """A plain callable handler — callable but not itself a condition. Used to
+    tell ``observe(key, handler)`` from ``observe(cond1, cond2)``."""
+    return callable(x) and not _is_condition(x)
+
+
 class SessionObserver(Observer):
     """Typed, reactive event dispatch over a session-scoped Flow."""
 
@@ -98,28 +110,37 @@ class SessionObserver(Observer):
 
     def observe(
         self,
-        key: type | Filter | Predicate | None = None,
+        *keys: type | Filter | Predicate | Any,
         handler: Handler | None = None,
-        *,
         role: str | None = None,
     ) -> Any:
-        """Subscribe a handler. Usable as a decorator.
+        """Subscribe a handler to one or more AND-composed conditions. Usable as a decorator.
 
-        ``key`` is a type (→ ``TypeFilter``), a ``Filter`` (e.g.
-        ``spec.q == value``), or a plain predicate. Handlers receive
-        ``(matched, ctx)`` — for a type, the matched instance (the payload or a
-        matching field); for a value/predicate filter, the payload.
+        Each positional *key* is a condition coerced via :func:`as_filter`: a type
+        (``TypeFilter``), a ``Filter`` (``spec.q == value``, ``APICalling.q.duration > 3``),
+        or an ``__as_filter__`` provider (``EventStatus.FAILED``). Multiple keys are
+        AND-composed — ``observe(APICalling, EventStatus.FAILED)`` fires only when every
+        condition matches the same payload. Handlers receive ``(matched, ctx)``.
 
-        ``role`` subscribes by the emitting agent's role name (a ``RoleFilter``).
-        When both ``key`` and ``role`` are provided the filter is their conjunction.
+        A handler may be passed positionally as the last argument (the back-compat
+        ``observe(key, handler)`` form, detected because a handler is callable but not
+        itself a condition), via ``handler=``, or by decoration.
+
+        ``role`` subscribes by the emitting agent's role name (a ``RoleFilter``),
+        conjoined with the key conditions when both are given.
         """
+        keys_list = list(keys)
+        if handler is None and len(keys_list) >= 2 and _looks_like_handler(keys_list[-1]):
+            handler = keys_list.pop()
+
+        key_flt: Filter | None = all_of(*keys_list) if keys_list else None
         if role is not None:
             role_flt = RoleFilter(role)
-            flt: Filter = role_flt if key is None else _KeyAndRoleFilter(as_filter(key), role_flt)
-        elif key is not None:
-            flt = as_filter(key)
+            flt: Filter = role_flt if key_flt is None else _KeyAndRoleFilter(key_flt, role_flt)
+        elif key_flt is not None:
+            flt = key_flt
         else:
-            raise TypeError("observe() requires at least one of 'key' or 'role'")
+            raise TypeError("observe() requires at least one condition or 'role'")
 
         def _register(fn: Handler) -> Handler:
             self._subs.append((flt, fn))
@@ -154,13 +175,19 @@ class SessionObserver(Observer):
 
     # -- Emission / dispatch --------------------------------------------------
 
-    async def emit(self, event: Observable) -> list[Any]:
+    async def emit(self, event: Any) -> list[Any]:
         """Run the chain: gate → store → route → dispatch. Returns handler results.
 
-        ``event`` is any Observable — a :class:`Signal` (whose ``data`` is the
-        payload) or a bare element. Gate, route-conditions, and handlers all
-        operate on the *payload*; the full envelope is stored in the Flow.
+        ``event`` is any payload. An :class:`Observable` (a :class:`Signal`,
+        whose ``data`` is the payload, or a bare element) is stored as-is; a
+        plain payload — e.g. a casts emission ``BaseModel`` — is enveloped in a
+        ``Signal`` so the Flow's Pile, which holds only Observables, accepts it.
+        The store is therefore uniformly ``Pile[Signal(data=…)]`` for plain
+        payloads. Gate, route-conditions, and handlers all operate on the
+        *payload*; the full envelope is stored in the Flow.
         """
+        if not isinstance(event, Observable):
+            event = Signal(data=event)
         payload = _payload(event)
 
         # The gate may deny by returning falsy OR by raising — both deny while

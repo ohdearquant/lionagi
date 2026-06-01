@@ -368,6 +368,19 @@ class Branch(Element, Relational):
             return []
         return await self._observer.emit(event)
 
+    async def emit_and_log(self, event: Any) -> list[Any]:
+        """Log an event to the DataLogger AND emit it onto the reactive bus.
+
+        The log is the durable record (persisted, outlives the session); the
+        emission is the in-memory reactive trace handlers can react to. Called
+        where an ``Event`` (an ``APICalling``, a tool call) completes, so
+        ``session.observe(APICalling, EventStatus.FAILED)`` reacts to a failed
+        call instead of only finding it after the fact in the logs. Emission is a
+        no-op for a standalone branch (no session); logging always happens.
+        """
+        self._log_manager.log(event)
+        return await self.emit(event)
+
     def control(self, directive: "LoopDirective", *, reason: str | None = None) -> None:
         """Queue a loop-control directive.
 
@@ -592,7 +605,7 @@ class Branch(Element, Relational):
         async def _connect(**kwargs):
             """connect to an api endpoint"""
             api_call = await imodel.invoke(**kwargs)
-            self._log_manager.log(api_call)
+            await self.emit_and_log(api_call)
             return api_call.response
 
         _connect.__name__ = name or imodel.endpoint.name

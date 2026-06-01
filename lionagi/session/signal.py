@@ -32,6 +32,9 @@ __all__ = (
     "RunStart",
     "RunEnd",
     "RunFailed",
+    "NodeStarted",
+    "NodeCompleted",
+    "NodeFailed",
 )
 
 
@@ -84,3 +87,37 @@ class RunEnd(Signal):
 
 class RunFailed(Signal):
     """A run raised. ``data`` is the exception that aborted it."""
+
+
+# -- Node lifecycle (DAG execution) -------------------------------------------
+# Emitted by ``EngineRun.run_dag`` as each operation node of a DAG starts and
+# finishes. They turn the executor's ``on_progress(op_id, name, status, elapsed)``
+# callback into bus events, so persistence, Studio segments, and progress
+# display subscribe with ``session.observe(NodeCompleted)`` instead of threading
+# a bespoke callback. Observed by their own envelope type. ``op_id`` is the
+# operation node id; ``name`` is the executing branch's name; ``elapsed`` is
+# wall-seconds at the event (0 at start).
+
+
+class NodeStarted(Signal):
+    """A DAG operation node began executing."""
+
+    op_id: str = ""
+    name: str = ""
+    elapsed: float = 0.0
+
+
+class NodeCompleted(Signal):
+    """A DAG operation node finished successfully."""
+
+    op_id: str = ""
+    name: str = ""
+    elapsed: float = 0.0
+
+
+class NodeFailed(Signal):
+    """A DAG operation node raised during execution."""
+
+    op_id: str = ""
+    name: str = ""
+    elapsed: float = 0.0
