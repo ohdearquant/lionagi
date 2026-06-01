@@ -267,6 +267,13 @@ class TaskAssignment(BaseModel):
     depends_on: list[str] = Field(
         default_factory=list, description="Other tasks that must complete first."
     )
+    modes: list[str] = Field(
+        default_factory=list,
+        description="Cognitive modes to overlay on the assignee for THIS task "
+        "(e.g. adversarial, premortem, evidential) — override the role's "
+        "defaults only when the subtask calls for a specific reasoning style. "
+        "Leave empty to use the role's defaults.",
+    )
 
 
 class DesignSpec(BaseModel):

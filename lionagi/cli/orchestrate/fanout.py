@@ -223,6 +223,7 @@ async def _run_fanout_inner(
             role=ta.assignee,
             model_override=model_override,
             explicit_name=wname,
+            modes=ta.modes or None,
         )
         node = env.builder.add_operation(
             "operate",

@@ -72,7 +72,10 @@ __all__ = (
     "team_worker_system",
     "available_roles",
     "role_roster",
+    "mode_roster",
     "casts_role_system",
+    "role_config",
+    "resolve_modes",
 )
 
 
@@ -113,11 +116,92 @@ def role_roster(default_model: str) -> str:
     return "Available roles (set each TaskAssignment.assignee to one):\n" + "\n".join(lines)
 
 
-def casts_role_system(role: str) -> str | None:
+def mode_roster() -> str:
+    """One-line roster of valid cognitive-mode names for the planner.
+
+    Without this the planner invents mode names (which are then dropped); the
+    roster lets it pick real ones when a subtask genuinely needs a reasoning
+    style. Names only — they are self-describing and keep the prompt tight.
+    """
+    from lionagi.casts.pattern import list_modes
+
+    return (
+        "Optional per-task cognitive modes (TaskAssignment.modes). Use ONLY these "
+        "names, and only when a subtask needs a specific reasoning style — else "
+        "leave empty and the role's defaults apply: " + ", ".join(list_modes()) + "."
+    )
+
+
+# ── pack-based per-role config (ADR-0074) ───────────────────────────────
+# The shipped default pack supplies per-role runtime config (model/effort/
+# default_modes/modes_allow). Loaded once; failures degrade to "no config".
+
+_DEFAULT_PACK_LOADED = False
+_DEFAULT_PACK = None
+
+
+def _default_pack():
+    """The shipped default casts pack (cached), or None if unavailable."""
+    global _DEFAULT_PACK_LOADED, _DEFAULT_PACK
+    if not _DEFAULT_PACK_LOADED:
+        _DEFAULT_PACK_LOADED = True
+        try:
+            from importlib.resources import as_file, files
+
+            from lionagi.casts.pack import Pack
+
+            packaged = files("lionagi.casts").joinpath("packs", "default.yaml")
+            with as_file(packaged) as p:
+                _DEFAULT_PACK = Pack.from_file(p)
+        except Exception:
+            _DEFAULT_PACK = None
+    return _DEFAULT_PACK
+
+
+def role_config(role: str):
+    """``RoleConfig`` for *role* from the default pack, or None."""
+    pack = _default_pack()
+    return pack.config(role) if pack else None
+
+
+def resolve_modes(role: str, override: list[str] | None = None) -> list[str]:
+    """Cognitive modes for *role*: validated per-task override, else pack defaults.
+
+    A per-task *override* is gated by the role's ``modes_allow`` (empty =
+    unrestricted); every mode is existence-checked against the casts roster.
+    Invalid/disallowed modes are dropped with a warning.
+    """
+    import logging
+
+    from lionagi.casts.pattern import Mode
+
+    cfg = role_config(role)
+    allow = set(cfg.modes_allow) if (cfg and cfg.modes_allow) else None
+    gated = bool(override)
+    requested = list(override) if override else (list(cfg.default_modes) if cfg else [])
+    log = logging.getLogger("lionagi.cli")
+    out: list[str] = []
+    for m in requested:
+        if gated and allow is not None and m not in allow:
+            log.warning(
+                "mode %r not permitted for role %r (allow=%s); dropping", m, role, sorted(allow)
+            )
+            continue
+        try:
+            Mode.load(m)
+        except ValueError:
+            log.warning("unknown mode %r for role %r; dropping", m, role)
+            continue
+        out.append(m)
+    return out
+
+
+def casts_role_system(role: str, modes: list[str] | None = None) -> str | None:
     """Composed system message for a casts *role* (LION-prepended), or None.
 
-    None when *role* is not a built-in casts role — the caller then falls back
-    to a user profile or the bare worker prompt.
+    *modes* (already resolved/validated) overlay their cognitive behaviors onto
+    the role body. None when *role* is not a built-in casts role — the caller
+    then falls back to a user profile or the bare worker prompt.
     """
     from lionagi.casts.pattern import Role
 
@@ -127,7 +211,7 @@ def casts_role_system(role: str) -> str | None:
         return None
     from lionagi.agent import AgentSpec
 
-    msg = AgentSpec.compose(r).build_system_message()
+    msg = AgentSpec.compose(r, modes=list(modes) if modes else None).build_system_message()
     if not msg:
         return None
     from lionagi.session.prompts import LION_SYSTEM_MESSAGE
@@ -405,6 +489,7 @@ def build_worker_branch(
     explicit_name: str | None = None,
     system_prompt_override: str | None = None,
     grant_spawn: bool = False,
+    modes: list[str] | None = None,
 ) -> tuple[Branch, str, AgentProfile | None]:
     """Phase C — resolve model/profile/effort/system and build a Branch.
 
@@ -446,21 +531,32 @@ def build_worker_branch(
     """
     from ._common import BARE_WORKER_SYSTEM  # avoid import cycle
 
+    # Pack per-role config (ADR-0074): model/effort/modes defaults for casts
+    # roles. Ignored in bare mode (workers are the raw CLI spec there).
+    w_cfg = None if env.bare else role_config(role)
+
     w_profile: AgentProfile | None = None
     if env.bare:
         w_model = model_override or env.default_model_spec
     else:
         resolved_model, w_profile = resolve_worker_spec(role)
+        # model precedence: explicit override > user profile > pack config > default
         if model_override:
             w_model = model_override
         elif w_profile:
             w_model = resolved_model
+        elif w_cfg and w_cfg.model:
+            w_model = w_cfg.model
         else:
             w_model = env.default_model_spec
 
+    # effort precedence (when not forced by env): user profile > pack config
     w_effort = env.effort
-    if not env.bare and w_profile and w_profile.effort and not env.effort:
-        w_effort = w_profile.effort
+    if not env.bare and not env.effort:
+        if w_profile and w_profile.effort:
+            w_effort = w_profile.effort
+        elif w_cfg and w_cfg.effort:
+            w_effort = w_cfg.effort
     w_yolo = env.yolo
     if not env.bare and w_profile and w_profile.yolo:
         w_yolo = True
@@ -496,14 +592,17 @@ def build_worker_branch(
     else:
         wname = env.assign_name(role)
 
-    # Base system prompt: explicit override > user profile > casts role > BARE.
-    # The casts-role layer is the key win — 40 built-in role bodies replace the
-    # single hardcoded BARE prompt when the assignee names a casts role.
+    # Base system prompt: explicit override > user profile > casts role+modes > BARE.
+    # The casts layer is the key win — a role body (+ resolved cognitive modes,
+    # ADR-0074) replaces the single hardcoded BARE prompt for a casts assignee.
     if system_prompt_override is not None:
         base_system = system_prompt_override
     elif not env.bare and w_profile and w_profile.system_prompt:
         base_system = w_profile.system_prompt
-    elif not env.bare and (role_system := casts_role_system(role)) is not None:
+    elif (
+        not env.bare
+        and (role_system := casts_role_system(role, modes=resolve_modes(role, modes))) is not None
+    ):
         base_system = role_system
     else:
         base_system = BARE_WORKER_SYSTEM
