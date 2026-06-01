@@ -28,7 +28,7 @@ async def chat(
         kw["include_token_usage_to_model"] = chat_param.include_token_usage_to_model
     api_call = await imodel.invoke(**kw)
 
-    branch._log_manager.log(api_call)
+    await branch.emit_and_log(api_call)
 
     # Surface API errors before trying to parse a null response
     if api_call.status == EventStatus.FAILED:
