@@ -376,6 +376,10 @@ class Session(Node, Relational):
         default_branch: Branch | ID.Ref | None = None,
         alcall_params: Any = None,
         on_progress: Any = None,
+        reactive: bool = False,
+        spawn_type: type | None = None,
+        node_builder: Any = None,
+        max_spawn: int = 50,
     ) -> dict[str, Any]:
         """
         Execute a graph-based workflow using multi-branch orchestration.
@@ -389,6 +393,14 @@ class Session(Node, Relational):
             default_branch: Branch to use as default (defaults to self.default_branch)
             alcall_params: Parameters for async parallel call execution
             on_progress: Callback(op_id, name, status, elapsed_s) for progress tracking
+            reactive: If True, run the self-expanding executor — operations may
+                emit a ``spawn_type`` payload that injects new operations into the
+                live graph without halting.
+            spawn_type: Emission type that triggers injection (default
+                ``casts.emission.SpawnRequest``). Only used when ``reactive``.
+            node_builder: ``(spawn_request, emitter_op) -> Operation | None`` that
+                turns a spawn payload into a graph node. Only used when ``reactive``.
+            max_spawn: Hard cap on dynamic injections. Only used when ``reactive``.
         """
         from lionagi.operations.flow import flow
 
@@ -406,7 +418,51 @@ class Session(Node, Relational):
             verbose=verbose,
             alcall_params=alcall_params,
             on_progress=on_progress,
+            reactive=reactive,
+            spawn_type=spawn_type,
+            node_builder=node_builder,
+            max_spawn=max_spawn,
         )
+
+    async def flow_stream(
+        self,
+        graph: Graph,
+        *,
+        context: dict[str, Any] | None = None,
+        max_concurrent: int = 5,
+        verbose: bool = False,
+        default_branch: Branch | ID.Ref | None = None,
+        alcall_params: Any = None,
+        spawn_type: type | None = None,
+        node_builder: Any = None,
+        max_spawn: int = 50,
+    ):
+        """Stream graph execution — yield a ``FlowEvent`` as each op completes.
+
+        Async generator over the reactive (self-expanding) engine: downstream
+        ops auto-run as deps satisfy, spawned ops grow the live DAG, and each
+        completion is surfaced immediately rather than batched. Consume with
+        ``async for event in session.flow_stream(graph): ...``.
+        """
+        from lionagi.operations.flow import flow_stream
+
+        branch = default_branch or self.default_branch
+        if isinstance(branch, str | UUID):
+            branch = self.branches[branch]
+
+        async for event in flow_stream(
+            session=self,
+            graph=graph,
+            branch=branch,
+            context=context,
+            max_concurrent=max_concurrent,
+            verbose=verbose,
+            alcall_params=alcall_params,
+            spawn_type=spawn_type,
+            node_builder=node_builder,
+            max_spawn=max_spawn,
+        ):
+            yield event
 
 
 __all__ = ("Session",)

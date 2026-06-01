@@ -45,6 +45,7 @@ __all__ = (
     "Postmortem",
     # universal
     "EscalationRequest",
+    "SpawnRequest",
     "build_emission_operable",
 )
 
@@ -391,6 +392,34 @@ class EscalationRequest(BaseModel):
         default=True, description="Whether work cannot continue until this is resolved."
     )
     from_role: str | None = Field(default=None, description="The role raising the escalation.")
+
+
+class SpawnRequest(BaseModel):
+    """Add a new operation to the RUNNING workflow — emit when work beyond the
+    current plan is discovered. Grows the live DAG without halting it (reactive
+    self-expansion). The emitting node becomes the new op's upstream by default."""
+
+    instruction: str = Field(
+        description="The new unit of work, stated as a concrete, self-contained objective."
+    )
+    assignee: str | None = Field(
+        default=None,
+        description="Role to execute it (researcher, implementer, critic, ...). "
+        "Omit to reuse the emitter's own role/branch.",
+    )
+    operation: str = Field(
+        default="operate",
+        description="lionagi operation to run: operate | chat | communicate | ReAct. Default operate.",
+    )
+    independent: bool = Field(
+        default=False,
+        description="If true the new op starts immediately with no dependency on you. "
+        "If false (default) it runs after you and inherits your output as context.",
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Why this work is needed now and why it fell outside the original plan.",
+    )
 
 
 # ---------------------------------------------------------------------------
