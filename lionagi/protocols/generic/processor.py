@@ -188,16 +188,15 @@ class Processor(Observer):
                     next_event = await self.dequeue()
 
                 if await self.request_permission(**next_event.request):
+                    # invoke()/stream() are total: a business failure is captured
+                    # as FAILED status, not raised, so one event's failure never
+                    # aborts the TaskGroup. Cancellation (BaseException) still
+                    # propagates — correctly aborting the group.
                     if next_event.streaming:
-                        # For streaming, we need to consume the async generator.
-                        # Catch exceptions so TaskGroup is not aborted — event
-                        # status is already FAILED/CANCELLED before the raise.
+
                         async def consume_stream(event):
-                            try:
-                                async for _ in event.stream():
-                                    pass
-                            except Exception:
-                                pass  # Status already recorded by Event.stream()
+                            async for _ in event.stream():
+                                pass
 
                         if self._concurrency_sem:
 
@@ -209,24 +208,15 @@ class Processor(Observer):
                         else:
                             tg.start_soon(consume_stream, next_event)
                     else:
-                        # For non-streaming, just invoke.
-                        # Catch exceptions so TaskGroup is not aborted — event
-                        # status is already FAILED/CANCELLED before the raise.
-                        async def _invoke_safe(event):
-                            try:
-                                await event.invoke()
-                            except Exception:
-                                pass  # Status already recorded by Event.invoke()
-
                         if self._concurrency_sem:
 
                             async def invoke_with_sem(event):
                                 async with self._concurrency_sem:
-                                    await _invoke_safe(event)
+                                    await event.invoke()
 
                             tg.start_soon(invoke_with_sem, next_event)
                         else:
-                            tg.start_soon(_invoke_safe, next_event)
+                            tg.start_soon(next_event.invoke)
                     events_processed += 1
 
                 prev_event = next_event
@@ -423,12 +413,8 @@ class Executor(Observer):
             "total_events": len(self.pile),
             "status_counts": self.status_counts(),
             "pending_queue": len(self.pending),
-            "processor_running": (
-                self.processor.execution_mode if self.processor else False
-            ),
-            "processor_stopped": (
-                self.processor.is_stopped() if self.processor else True
-            ),
+            "processor_running": (self.processor.execution_mode if self.processor else False),
+            "processor_stopped": (self.processor.is_stopped() if self.processor else True),
         }
 
     def __contains__(self, ref: ID[Event].Ref) -> bool:

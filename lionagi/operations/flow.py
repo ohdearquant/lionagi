@@ -330,7 +330,9 @@ class DependencyAwareExecutor:
             raise
 
         except Exception as e:
-            # Event.invoke() already set FAILED status and re-raised
+            # invoke() is total (failures are captured as FAILED status and
+            # handled above); this is a defensive net for an unexpected
+            # flow-level error around the operation, not the operation itself.
             if operation.id not in self.results:
                 self.results[operation.id] = {"error": str(e)}
 
