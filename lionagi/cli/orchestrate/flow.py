@@ -709,21 +709,26 @@ async def _run_flow_inner(
             )
 
     # ── Progress + segment + branch-status plumbing (Studio) ──────────
+    # The DAG runs through the planning engine's run_dag (below), which tees a
+    # NodeStarted / NodeCompleted / NodeFailed onto the session bus per node.
+    # These three handlers OBSERVE the bus — persistence and Studio segments are
+    # reactive subscriptions, not a threaded-through on_progress callback.
     _op_segments: list[dict] = []
 
-    def _progress(op_id, name, status, elapsed):
-        if status == "started":
-            progress(f"  ▶ {name} started")
-            _update_branch_status(name, "running")
-            _record_segment(op_id, name, "running")
-        elif status == "completed":
-            progress(f"  ✓ {name} done ({elapsed:.1f}s)")
-            _update_branch_status(name, "completed")
-            _record_segment(op_id, name, "completed")
-        elif status == "failed":
-            progress(f"  ✗ {name} FAILED ({elapsed:.1f}s)")
-            _update_branch_status(name, "failed")
-            _record_segment(op_id, name, "failed")
+    def _on_node_started(sig, _ctx):
+        progress(f"  ▶ {sig.name} started")
+        _update_branch_status(sig.name, "running")
+        _record_segment(sig.op_id, sig.name, "running")
+
+    def _on_node_completed(sig, _ctx):
+        progress(f"  ✓ {sig.name} done ({sig.elapsed:.1f}s)")
+        _update_branch_status(sig.name, "completed")
+        _record_segment(sig.op_id, sig.name, "completed")
+
+    def _on_node_failed(sig, _ctx):
+        progress(f"  ✗ {sig.name} FAILED ({sig.elapsed:.1f}s)")
+        _update_branch_status(sig.name, "failed")
+        _record_segment(sig.op_id, sig.name, "failed")
 
     def _record_segment(op_id: str, branch_name: str, new_status: str):
         branch = next((b for b in env.session.branches if b.name == branch_name), None)
@@ -816,10 +821,22 @@ async def _run_flow_inner(
                         "with no completion — possible hung child process"
                     )
 
+    # Subscribe the Studio/segment handlers to the node-lifecycle bus, then run
+    # the DAG through the planning engine (ADR-0075 §4). run_dag emits the node
+    # signals the handlers above consume; the engine shares this session, so the
+    # emission store and any other observers see the same events.
+    from lionagi.engines import PlanningEngine
+    from lionagi.session.signal import NodeCompleted, NodeFailed, NodeStarted
+
+    session.observe(NodeStarted, handler=_on_node_started)
+    session.observe(NodeCompleted, handler=_on_node_completed)
+    session.observe(NodeFailed, handler=_on_node_failed)
+    eng_run = PlanningEngine().new_run(session=session)
+
     t_exec = time.monotonic()
     _hb_task = _asyncio.ensure_future(_heartbeat_loop())
     try:
-        dag_result = await session.flow(
+        dag_result = await eng_run.run_dag(
             builder.get_graph(),
             reactive=reactive,
             spawn_type=SpawnRequest if reactive else None,
@@ -827,7 +844,6 @@ async def _run_flow_inner(
             max_spawn=max_spawn,
             max_concurrent=conc,
             verbose=env.verbose,
-            on_progress=_progress,
         )
     finally:
         _hb_task.cancel()

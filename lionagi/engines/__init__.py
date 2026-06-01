@@ -17,6 +17,38 @@ review, …) subclass it.
 
 from __future__ import annotations
 
-from .engine import Engine, EngineEvent
+from .engine import Engine, EngineEvent, EngineRun
+from .planning import PlanError, PlanningEngine
+from .research import (
+    ContradictionFound,
+    DepthRequested,
+    FindingEmitted,
+    ResearchEngine,
+)
+from .review import (
+    DEFAULT_DIMENSIONS,
+    IssueFound,
+    ReviewEngine,
+    ReviewVerdict,
+    VerifyResult,
+)
 
-__all__ = ("Engine", "EngineEvent")
+__all__ = (
+    "Engine",
+    "EngineRun",
+    "EngineEvent",
+    # planning (Planned-DAG shape — li o flow as an engine)
+    "PlanningEngine",
+    "PlanError",
+    # research (Tree shape)
+    "ResearchEngine",
+    "FindingEmitted",
+    "DepthRequested",
+    "ContradictionFound",
+    # review (Dimensional shape)
+    "ReviewEngine",
+    "IssueFound",
+    "VerifyResult",
+    "ReviewVerdict",
+    "DEFAULT_DIMENSIONS",
+)
