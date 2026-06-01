@@ -741,3 +741,42 @@ def test_instruction_model_fields_immutable_slots():
 
     # InstructionContent uses slots=True, so __dict__ should not exist
     assert not hasattr(content, "__dict__")
+
+
+def test_with_updates_preserves_response_schema():
+    """Regression: with_updates() must preserve the response schema.
+
+    response_format/structure/_structure_instance are excluded from to_dict
+    (types can't round-trip through JSON), so the generic with_updates — which
+    goes through to_dict → constructor — used to silently drop the response
+    schema. In chat prep the instruction is rebuilt via with_updates() to fold
+    the system message into its guidance; dropping the schema there meant roled
+    agents never saw the action_requests format and never called tools.
+    """
+    content = InstructionContent.from_dict(
+        {
+            "instruction": "do it",
+            "tool_schemas": [{"type": "function", "function": {"name": "reader"}}],
+            "response_format": SampleRequestModel,
+        }
+    )
+    assert content._structure_instance is not None
+    assert "name" in content.rendered  # schema field rendered
+
+    updated = content.with_updates(guidance="SYSTEM PREFIX")
+    assert updated._structure_instance is not None
+    assert updated.response_format is SampleRequestModel
+    assert "name" in updated.rendered  # schema survives the copy
+    assert "reader" in updated.rendered  # tools survive too
+    assert "SYSTEM PREFIX" in updated.rendered
+
+
+def test_with_updates_explicit_response_format_none_clears_schema():
+    """Passing response_format=None explicitly still clears it (chat prep relies
+    on this to strip prior turns' schemas)."""
+    content = InstructionContent.from_dict(
+        {"instruction": "do it", "response_format": SampleRequestModel}
+    )
+    assert content._structure_instance is not None
+    cleared = content.with_updates(response_format=None)
+    assert cleared._structure_instance is None
