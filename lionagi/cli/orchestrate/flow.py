@@ -798,7 +798,9 @@ async def _run_flow_inner(
         progress(f"Executing DAG (reactive off): {len(assignments)} assignments...")
     conc = max_concurrent if max_concurrent > 0 else max(len(assignments), 1)
     # Spawn budget: when --max-ops is set, the initial plan + spawns share it.
-    max_spawn = max(0, max_ops - len(assignments)) if max_ops > 0 else 50
+    # Otherwise fall back to a conservative default so an un-capped reactive run
+    # cannot quietly fan out to dozens of (costly) child agents.
+    max_spawn = max(0, max_ops - len(assignments)) if max_ops > 0 else 20
 
     import asyncio as _asyncio
 
