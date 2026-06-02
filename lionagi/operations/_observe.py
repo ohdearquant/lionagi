@@ -132,9 +132,16 @@ async def emit_message(branch: Branch, msg: RoledMessage) -> None:
     from lionagi.session.signal import (
         ActionRequestSignal,
         ActionResponseSignal,
+        MessageAdded,
         Signal,
         StructuredOutput,
     )
+
+    # Every message — system, instruction, assistant, action — lands on the bus
+    # as a MessageAdded so the Flow is a complete record and observers can watch
+    # the whole stream. The capability-typed signals below are additional, finer
+    # events for the subset that carries them.
+    await branch.emit(MessageAdded(data=msg))
 
     if isinstance(msg, AssistantResponse):
         capabilities = getattr(branch, "_capabilities", None)

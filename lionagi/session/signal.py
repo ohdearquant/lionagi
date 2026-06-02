@@ -36,6 +36,7 @@ __all__ = (
     "NodeCompleted",
     "NodeFailed",
     "GateDenied",
+    "MessageAdded",
 )
 
 
@@ -133,3 +134,17 @@ class NodeFailed(Signal):
 
 class GateDenied(Signal):
     """The governance gate denied a proposed action. ``data`` is the denied payload."""
+
+
+# -- Message lifecycle --------------------------------------------------------
+# Emitted for EVERY message added to a branch (system, instruction, assistant,
+# action — not just the capability-bearing subset). It puts the full message
+# stream on the one transport so ``session.observe(MessageAdded)`` sees every
+# turn and the Flow is a complete record. ``data`` is the ``RoledMessage``.
+# This is the foundation for routing persistence onto the bus (ADR-0023b):
+# a persistence handler can subscribe to MessageAdded instead of registering a
+# parallel ``on_message_added`` callback.
+
+
+class MessageAdded(Signal):
+    """A message was added to a branch. ``data`` is the ``RoledMessage``."""
