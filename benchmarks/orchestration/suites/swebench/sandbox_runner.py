@@ -58,17 +58,13 @@ _PROVIDER_KEY = {
 }
 
 _INSTRUCTION = """\
-Resolve this GitHub issue by editing the repository source.
+Resolve this GitHub issue by editing the repository source. Apply the method from
+your instructions: reproduce the failure, localize it, make the minimal fix, then
+verify against your reproduction and the nearest existing tests. End with a real,
+non-empty code edit in place.
 
+GitHub issue:
 {problem}
-
-Work method:
-- Locate the relevant module(s) with search/reader before editing.
-- Make the MINIMAL change that fixes the issue. Do not refactor unrelated code,
-  do not add features, do not edit tests.
-- If you can, reproduce the issue and run the repo's existing tests to check your
-  fix (e.g. `python -m pytest <path>` from the repo root). The grading tests are
-  held out — you will not see them; fix the described behavior itself.
 """
 
 
@@ -229,13 +225,20 @@ async def main() -> None:
     ap.add_argument("--model", default="deepseek/deepseek-chat")
     ap.add_argument("--max-extensions", type=int, default=30)
     ap.add_argument("--concurrency", type=int, default=1)
+    ap.add_argument(
+        "--holdout", type=int, default=0, help="run N held-out instances from full Verified-500"
+    )
     ap.add_argument("--no-install", action="store_true", help="skip pip install -e . in sandbox")
     ap.add_argument("--oracle", action="store_true", help="run the Docker swebench evaluation")
     ap.add_argument("--keep-sandbox", action="store_true")
     args = ap.parse_args()
 
     repos = None if args.repo == "all" else (args.repo,)
-    if args.instance:
+    if args.holdout:
+        from load import load_holdout  # noqa: E402
+
+        tasks = load_holdout(n=args.holdout, repos=repos)
+    elif args.instance:
         wanted = {s.strip() for s in args.instance.split(",")}
         tasks = [t for t in load_tasks(repos=None) if t.context["instance_id"] in wanted]
     else:
