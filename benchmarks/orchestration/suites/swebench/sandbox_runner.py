@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -82,6 +83,31 @@ def _provider_env(model: str) -> dict[str, str]:
     return {var: val}
 
 
+async def _create_sandbox(env: dict[str, str], *, delete_on_exit: bool, attempts: int = 10):
+    """Create a sandbox, retrying through the org's transient CPU-cap pressure.
+
+    The Daytona tier caps total CPU (e.g. 10). With N concurrent runs, a finishing
+    sandbox's CPU isn't released the instant its ``delete()`` is issued, so a peer's
+    ``create`` can momentarily exceed the cap and raise ``Total CPU limit``. That is
+    transient — it clears within seconds as the delete settles. Retry with backoff
+    instead of consuming the instance (the bug that ate the sphinx tail in v1).
+    """
+    delay = 5.0
+    last: Exception | None = None
+    for _ in range(attempts):
+        try:
+            return await DaytonaSandbox.create(
+                snapshot=SNAPSHOT, env=env, delete_on_exit=delete_on_exit
+            )
+        except Exception as e:  # noqa: BLE001 — only CPU-cap is retryable; re-raise others
+            if "CPU limit" not in str(e) and "Total CPU" not in str(e):
+                raise
+            last = e
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 30.0)
+    raise last if last else RuntimeError("sandbox create failed")
+
+
 async def run_instance(
     task,
     *,
@@ -114,9 +140,7 @@ async def run_instance(
 
         return _h
 
-    async with await DaytonaSandbox.create(
-        snapshot=SNAPSHOT, env=env, delete_on_exit=not keep_sandbox
-    ) as sb:
+    async with await _create_sandbox(env, delete_on_exit=not keep_sandbox) as sb:
         home = await sb.home_dir()
         repo = f"{home}/repo"
 
@@ -145,6 +169,7 @@ async def run_instance(
             "max_extensions": max_extensions,
             "result_path": f"{home}/result.json",
             "control_path": f"{home}/control",
+            "messages_path": f"{home}/messages.json",
             "env": env,
         }
         await sb.write_text(json.dumps(spec), f"{home}/spec.json")
@@ -157,6 +182,15 @@ async def run_instance(
             result = json.loads(await sb.read_text(f"{home}/result.json"))
         except Exception as e:
             return _err(task, model, f"no result.json (exit {code}): {e}", t0)
+
+        if keep_sandbox:  # diagnosis: pull the full conversation locally
+            with contextlib.suppress(Exception):
+                dbg = RESULTS / "debug"
+                dbg.mkdir(parents=True, exist_ok=True)
+                txt = await sb.read_text(f"{home}/messages.json")
+                out_path = dbg / f"{ctx['instance_id']}.messages.json"
+                out_path.write_text(txt)
+                print(f"    📝 messages → {out_path}", flush=True)
 
     patch = result.get("diff", "") or ""
     return {
@@ -191,6 +225,7 @@ async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=1)
     ap.add_argument("--repo", default="django/django", help="filter to one repo (or 'all')")
+    ap.add_argument("--instance", default=None, help="run only these instance_id(s), comma-sep")
     ap.add_argument("--model", default="deepseek/deepseek-chat")
     ap.add_argument("--max-extensions", type=int, default=30)
     ap.add_argument("--concurrency", type=int, default=1)
@@ -200,7 +235,11 @@ async def main() -> None:
     args = ap.parse_args()
 
     repos = None if args.repo == "all" else (args.repo,)
-    tasks = load_tasks(repos=repos, limit=args.limit)
+    if args.instance:
+        wanted = {s.strip() for s in args.instance.split(",")}
+        tasks = [t for t in load_tasks(repos=None) if t.context["instance_id"] in wanted]
+    else:
+        tasks = load_tasks(repos=repos, limit=args.limit)
     print(f"running {len(tasks)} instance(s), model={args.model}, concurrency={args.concurrency}")
 
     assert WHEEL.exists(), f"build the wheel first: uv build --wheel ({WHEEL})"
@@ -211,13 +250,19 @@ async def main() -> None:
     async def _guarded(t):
         async with sem:
             print(f"  ▶ {t.context['instance_id']} ({t.context['repo']}) …", flush=True)
-            p = await run_instance(
-                t,
-                model=args.model,
-                max_extensions=args.max_extensions,
-                install_repo=not args.no_install,
-                keep_sandbox=args.keep_sandbox,
-            )
+            t0 = time.monotonic()
+            try:
+                p = await run_instance(
+                    t,
+                    model=args.model,
+                    max_extensions=args.max_extensions,
+                    install_repo=not args.no_install,
+                    keep_sandbox=args.keep_sandbox,
+                )
+            except Exception as e:  # noqa: BLE001 — one bad instance must not abort the batch
+                p = _err(t, args.model, f"{type(e).__name__}: {e}", t0)
+                print(f"    ✗ {p['instance_id']}: {p['status'][:80]}", flush=True)
+                return p
             tc = p.get("tool_calls", {})
             print(
                 f"    ✓ {p['instance_id']}: patch={p['patch_bytes']}B "
