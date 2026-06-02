@@ -251,6 +251,17 @@ def add_orchestrate_subparser(
         ),
     )
     fl.add_argument(
+        "--workers",
+        metavar="M1,M2,...",
+        default=None,
+        help=(
+            "Comma-separated worker model specs (assignment i uses pool[i %% len]). "
+            "Overrides the per-role model while KEEPING each role's profile/system "
+            "prompt — unlike --bare, which also drops profiles. Enables mixed-model "
+            "flows (cheap roles + expensive roles)."
+        ),
+    )
+    fl.add_argument(
         "--max-ops",
         "--max-agents",
         dest="max_ops",
@@ -943,6 +954,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     timeout=args.timeout,
                     agent_name=args.agent,
                     bare=args.bare,
+                    workers_str=args.workers,
                     max_ops=args.max_ops,
                     dry_run=args.dry_run,
                     show_graph=getattr(args, "show_graph", False),

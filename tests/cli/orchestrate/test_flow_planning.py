@@ -145,3 +145,71 @@ def test_reactive_flag_parses_via_argparse():
     # default is None (resolved to "all" at dispatch)
     args2 = parser.parse_args(["o", "flow", "codex/gpt-5.5", "task"])
     assert args2.reactive is None
+
+
+def test_workers_flag_parses_via_argparse():
+    """`li o flow --workers a,b` reaches args.workers (mixed-model flows)."""
+    import argparse
+
+    from lionagi.cli.orchestrate import add_orchestrate_subparser
+
+    parser = argparse.ArgumentParser(prog="li")
+    sub = parser.add_subparsers(dest="command", required=True)
+    add_orchestrate_subparser(sub)
+    args = parser.parse_args(
+        ["o", "flow", "codex/orc", "task", "--workers", "codex/cheap,codex/expensive"]
+    )
+    assert args.workers == "codex/cheap,codex/expensive"
+
+
+@pytest.mark.asyncio
+async def test_workers_override_shown_in_dry_run(tmp_path):
+    """--workers overrides the per-assignment model and wraps the pool (i % len)."""
+    orc = _FakeOrcBranch(
+        [
+            SimpleNamespace(
+                assignments=[
+                    TaskAssignment(task="a", assignee="researcher"),
+                    TaskAssignment(task="b", assignee="architect"),
+                    TaskAssignment(task="c", assignee="implementer"),
+                ]
+            )
+        ]
+    )
+    out = await _run_flow_inner(
+        "codex/gpt-5.5",
+        "task",
+        env=_env(tmp_path, orc),
+        dry_run=True,
+        workers_str="codex/cheap,codex/expensive",
+    )
+    # pool wraps: researcher→cheap, architect→expensive, implementer→cheap.
+    assert "researcher: codex/cheap (workers)" in out
+    assert "architect: codex/expensive (workers)" in out
+    assert "implementer: codex/cheap (workers)" in out
+
+
+@pytest.mark.asyncio
+async def test_workers_override_keeps_role_modes(tmp_path):
+    """Unlike --bare, --workers keeps each role's cognitive modes (ADR-0074).
+
+    The model is swapped to the pool spec, but the per-task modes are still
+    resolved through ``resolve_modes`` — proving the override touches only the
+    model, not the role's behavioural config.
+    """
+    orc = _FakeOrcBranch(
+        [
+            SimpleNamespace(
+                assignments=[
+                    TaskAssignment(task="review it", assignee="reviewer", modes=["adversarial"])
+                ]
+            )
+        ]
+    )
+    env = _env(tmp_path, orc)
+    env.bare = False  # profiles/modes active; --workers only swaps the model
+    out = await _run_flow_inner(
+        "codex/gpt-5.5", "task", env=env, dry_run=True, workers_str="codex/expensive"
+    )
+    assert "reviewer: codex/expensive (workers)" in out
+    assert "adversarial" in out  # role behaviour preserved, not stripped like --bare

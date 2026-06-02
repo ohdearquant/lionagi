@@ -301,6 +301,7 @@ async def _run_flow(
     timeout: int | None = None,
     agent_name: str | None = None,
     bare: bool = False,
+    workers_str: str | None = None,
     max_ops: int = 0,
     dry_run: bool = False,
     show_graph: bool = False,
@@ -392,6 +393,7 @@ async def _run_flow(
         output_format=output_format,
         team_name=team_name,
         team_attach=team_attach,
+        workers_str=workers_str,
         max_ops=max_ops,
         dry_run=dry_run,
         show_graph=show_graph,
@@ -483,6 +485,7 @@ async def _run_flow_inner(
     output_format: str = "text",
     team_name: str | None = None,
     team_attach: str | None = None,
+    workers_str: str | None = None,
     max_ops: int = 0,
     dry_run: bool = False,
     show_graph: bool = False,
@@ -550,6 +553,11 @@ async def _run_flow_inner(
 
     dep_indices = [_earlier_dep_indices(ta.depends_on, i) for i, ta in enumerate(assignments)]
 
+    # Heterogeneous worker models via --workers M1,M2,... (assignment i uses
+    # pool[i % len]). Unlike --bare (which also drops profiles), an explicit
+    # pool overrides only the model and keeps each role's profile/system prompt.
+    pool = [s.strip() for s in workers_str.split(",")] if workers_str else []
+
     dag_lines = []
     for i, ta in enumerate(assignments):
         deps = f" ← {','.join(str(j + 1) for j in dep_indices[i])}" if dep_indices[i] else ""
@@ -573,6 +581,12 @@ async def _run_flow_inner(
         lines.append("")
         lines.append("Model + modes resolution:")
         for i, ta in enumerate(assignments):
+            override = pool[i % len(pool)] if pool else None
+            if override:
+                modes = [] if env.bare else resolve_modes(ta.assignee, ta.modes or None)
+                mode_str = f"  modes={modes}" if modes else ""
+                lines.append(f"  {agent_ids[i]}: {override} (workers){mode_str}")
+                continue
             if env.bare:
                 lines.append(f"  {agent_ids[i]}: {model_spec} (bare)")
                 continue
@@ -641,6 +655,7 @@ async def _run_flow_inner(
             env,
             agent_id=agent_ids[i],
             role=ta.assignee,
+            model_override=pool[i % len(pool)] if pool else None,
             explicit_name=agent_ids[i],
             grant_spawn=_may_spawn(ta.assignee),
             modes=ta.modes or None,
