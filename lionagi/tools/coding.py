@@ -11,7 +11,7 @@ import shlex
 import signal
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -541,6 +541,25 @@ def _subprocess_sync(cmd, shell: bool, timeout_s: float, cwd: str | None) -> dic
 # ---------------------------------------------------------------------------
 
 
+#: Every tool the coding toolkit can build.
+ALL_CODING_TOOLS: tuple[str, ...] = (
+    "reader",
+    "editor",
+    "bash",
+    "search",
+    "context",
+    "sandbox",
+    "subagent",
+)
+
+#: Tools registered by default — the proven, in-use core. ``context`` (manual
+#: context eviction), ``sandbox`` (git-worktree sessions), and ``subagent``
+#: (delegation) are opt-in: they add capability surface the agent rarely uses,
+#: and delegation in particular shouldn't be advertised before a single agent is
+#: solid. Enable extras explicitly via ``CodingToolkit(tools=[...])``.
+DEFAULT_CODING_TOOLS: tuple[str, ...] = ("reader", "editor", "bash", "search")
+
+
 class CodingToolkit(LionTool):
     """Coding tools bound to a Branch with shared file state and hooks.
 
@@ -652,6 +671,7 @@ class CodingToolkit(LionTool):
         notify_threshold: float = 0.7,
         notify_max_tokens: int = 200_000,
         workspace_root: str | Path | None = None,
+        tools: Sequence[str] | None = None,
     ):
         self._security_pre_hooks: dict[str, list[Callable]] = {}  # Finding 13
         self._pre_hooks: dict[str, list[Callable]] = {}
@@ -662,6 +682,13 @@ class CodingToolkit(LionTool):
         self.notify_max_tokens = notify_max_tokens
         # Finding 14: workspace root for path containment checks
         self.workspace_root = Path(workspace_root or Path.cwd()).expanduser().resolve()
+        # Which tools to register. None -> the lean default core; pass an explicit
+        # list to opt into context/sandbox/subagent.
+        selected = tuple(tools) if tools is not None else DEFAULT_CODING_TOOLS
+        unknown = [t for t in selected if t not in ALL_CODING_TOOLS]
+        if unknown:
+            raise ValueError(f"unknown coding tool(s): {unknown}. Valid: {list(ALL_CODING_TOOLS)}")
+        self.enabled_tools = selected
 
     def bind(self, branch: Branch) -> list[Tool]:
         from lionagi.protocols.messages import ActionResponse
@@ -1192,6 +1219,8 @@ class CodingToolkit(LionTool):
 
         tools = []
         for name, func, request_cls in tool_defs:
+            if name not in self.enabled_tools:
+                continue
             tools.append(
                 Tool(
                     func_callable=func,

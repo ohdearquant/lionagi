@@ -34,32 +34,42 @@ def _tool_fn(tools, name):
 # ---------------------------------------------------------------------------
 
 
-def test_bind_returns_7_tools(tmp_path):
+def test_bind_returns_lean_default(tmp_path):
     _, _, tools = _make_toolkit(tmp_path)
-    assert len(tools) == 7
+    assert len(tools) == 4  # reader/editor/bash/search; extras are opt-in
 
 
 def test_bind_all_tools_async(tmp_path):
     _, _, tools = _make_toolkit(tmp_path)
     non_async = [
-        t.func_callable.__name__
-        for t in tools
-        if not asyncio.iscoroutinefunction(t.func_callable)
+        t.func_callable.__name__ for t in tools if not asyncio.iscoroutinefunction(t.func_callable)
     ]
     assert non_async == [], f"Non-async tools: {non_async}"
 
 
 def test_bind_tool_names(tmp_path):
+    """Default registers the lean core only — context/sandbox/subagent are opt-in."""
     _, _, tools = _make_toolkit(tmp_path)
     assert {t.func_callable.__name__ for t in tools} == {
         "reader",
         "editor",
         "bash",
         "search",
-        "context",
-        "sandbox",
-        "subagent",
     }
+
+
+def test_bind_tool_names_opt_in_extras(tmp_path):
+    """Passing tools= opts into the extra capabilities (and validates names)."""
+    from lionagi.tools.coding import ALL_CODING_TOOLS
+
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
+    assert {t.func_callable.__name__ for t in tk.bind(Branch())} == set(ALL_CODING_TOOLS)
+
+    only = CodingToolkit(workspace_root=str(tmp_path), tools=["reader", "subagent"])
+    assert {t.func_callable.__name__ for t in only.bind(Branch())} == {"reader", "subagent"}
+
+    with pytest.raises(ValueError, match="unknown coding tool"):
+        CodingToolkit(workspace_root=str(tmp_path), tools=["reader", "nope"])
 
 
 # ---------------------------------------------------------------------------
@@ -88,9 +98,7 @@ async def test_reader_list_dir(tmp_path):
 async def test_reader_binary_file_rejected(tmp_path):
     (tmp_path / "data.bin").write_bytes(b"\x00\x01\x02\x03")
     _, _, tools = _make_toolkit(tmp_path)
-    result = await _tool_fn(tools, "reader")(
-        action="read", path=str(tmp_path / "data.bin")
-    )
+    result = await _tool_fn(tools, "reader")(action="read", path=str(tmp_path / "data.bin"))
     assert result["success"] is False
     assert "inary" in result["error"]
 
@@ -113,9 +121,7 @@ async def test_editor_write_new_file(tmp_path):
 async def test_editor_write_creates_parent_dirs(tmp_path):
     target = tmp_path / "sub" / "deep" / "file.py"
     _, _, tools = _make_toolkit(tmp_path)
-    result = await _tool_fn(tools, "editor")(
-        action="write", file_path=str(target), content="x=1\n"
-    )
+    result = await _tool_fn(tools, "editor")(action="write", file_path=str(target), content="x=1\n")
     assert result["success"] is True and target.exists()
 
 
@@ -256,9 +262,7 @@ async def test_search_rejects_path_outside_workspace(tmp_path, action, pattern):
     (outside / "secret.txt").write_text("SECRET\n")
     _, _, tools = _make_toolkit(tmp_path)
 
-    result = await _tool_fn(tools, "search")(
-        action=action, pattern=pattern, path=str(outside)
-    )
+    result = await _tool_fn(tools, "search")(action=action, pattern=pattern, path=str(outside))
 
     assert result["success"] is False
     assert "escapes workspace" in result["error"]
