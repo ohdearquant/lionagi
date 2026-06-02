@@ -37,9 +37,7 @@ async def test_react_returns_answer_string_not_analysis_object():
         # First call returns ReActAnalysis with planned actions
         first_analysis = ReActAnalysis(
             analysis="I need to multiply 5 by 3",
-            planned_actions=[
-                PlannedAction(action_type="multiply", description="multiply 5 by 3")
-            ],
+            planned_actions=[PlannedAction(action_type="multiply", description="multiply 5 by 3")],
             extension_needed=False,  # Will still do actions, then final answer
         )
 
@@ -50,9 +48,7 @@ async def test_react_returns_answer_string_not_analysis_object():
 
         # Mock act to return the multiply result
         mock_act.return_value = [
-            ActionResponseModel(
-                function="multiply", arguments={"a": 5, "b": 3}, output=15
-            )
+            ActionResponseModel(function="multiply", arguments={"a": 5, "b": 3}, output=15)
         ]
 
         # Execute ReAct
@@ -75,9 +71,7 @@ async def test_react_honors_custom_response_format():
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
         # First call returns ReActAnalysis (no more extensions)
-        analysis = ReActAnalysis(
-            analysis="Complete", planned_actions=[], extension_needed=False
-        )
+        analysis = ReActAnalysis(analysis="Complete", planned_actions=[], extension_needed=False)
 
         # Final call should use custom response format
         custom_result = CustomAnswer(result=15.0, explanation="5 times 3 equals 15")
@@ -92,9 +86,7 @@ async def test_react_honors_custom_response_format():
         )
 
         # Should return CustomAnswer instance, not string
-        assert isinstance(
-            result, CustomAnswer
-        ), f"Expected CustomAnswer but got {type(result)}"
+        assert isinstance(result, CustomAnswer), f"Expected CustomAnswer but got {type(result)}"
         assert result.result == 15.0
         assert result.explanation == "5 times 3 equals 15"
 
@@ -108,9 +100,7 @@ async def test_react_forwards_response_kwargs():
         from lionagi.operations.ReAct.utils import Analysis
 
         # First call
-        first = ReActAnalysis(
-            analysis="Done", planned_actions=[], extension_needed=False
-        )
+        first = ReActAnalysis(analysis="Done", planned_actions=[], extension_needed=False)
         # Final call returns Analysis
         final = Analysis(answer="Result")
         mock_operate.side_effect = [first, final]
@@ -183,9 +173,7 @@ async def test_error_feedback_when_tool_missing():
     # Try to call a missing tool
     from lionagi.protocols.types import ActionRequest
 
-    request = ActionRequest(
-        content={"function": "subtract", "arguments": {"a": 10, "b": 3}}
-    )
+    request = ActionRequest(content={"function": "subtract", "arguments": {"a": 10, "b": 3}})
 
     result = await branch.act(request, suppress_errors=True)
 
@@ -220,3 +208,19 @@ async def test_operate_filters_none_action_responses():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-xvs"])
+
+
+def test_react_analysis_optional_analysis_field():
+    """Regression: a round that omits the `analysis` narration field must still
+    validate, so its action_requests are not silently discarded (SWE-bench debug
+    2026-06-01: a model turn dropped a CORRECT edit because `analysis` was missing
+    -> ReActAnalysis validation failed -> operate dropped action_requests ->
+    ReAct finalized into a hallucinated success). `analysis` defaults to "".
+    """
+    # No `analysis` provided — must not raise.
+    a = ReActAnalysis.model_validate({"extension_needed": True, "action_strategy": "sequential"})
+    assert a.analysis == ""
+    assert a.extension_needed is True
+    # Explicit analysis still works.
+    b = ReActAnalysis.model_validate({"analysis": "reasoning here"})
+    assert b.analysis == "reasoning here"
