@@ -69,7 +69,9 @@ class ReaderRequest(BaseModel):
         ...,
         description=(
             "Action to perform. One of:\n"
-            "- 'read': Read a file and return its contents with line numbers.\n"
+            "- 'read': Read a file. Each line is returned as `<number>\\t<code>`; the "
+            "line-number prefix is for your reference only — strip it (and the tab) "
+            "before using any text as an editor old_string.\n"
             "- 'list_dir': List files in a directory."
         ),
     )
@@ -119,7 +121,15 @@ class EditorRequest(BaseModel):
     )
     old_string: str | None = Field(
         None,
-        description="Exact text to find. Required for 'edit'. Must match byte-for-byte.",
+        description=(
+            "Exact text to find. Required for 'edit'. Must match the file byte-for-byte. "
+            "IMPORTANT: the reader returns lines as `<number>\\t<code>` — do NOT include "
+            "the leading line-number + tab prefix here; match only the actual code, "
+            "preserving its exact indentation. Use the smallest snippet that is unique "
+            "(usually 2-4 adjacent lines); if it is not unique the edit fails — add a "
+            "little more surrounding context, or set replace_all=True to change every "
+            "occurrence."
+        ),
     )
     new_string: str | None = Field(
         None,
@@ -134,7 +144,12 @@ class EditorRequest(BaseModel):
 class BashRequest(BaseModel):
     command: str = Field(
         ...,
-        description="Shell command to execute.",
+        description=(
+            "A single shell command to execute. Shell control operators are NOT "
+            "supported and will be rejected — no `&&`, `||`, `|`, `;`, redirects "
+            "(`<`/`>`), backticks, or `$(...)`. Run one command per call; to work in "
+            "a directory pass cwd= instead of `cd x && ...`."
+        ),
     )
     timeout: int | None = Field(
         None,
@@ -406,7 +421,19 @@ def _edit_file_sync(
 
     count = original.count(old_string)
     if count == 0:
-        return {"success": False, "error": f"old_string not found in {file_path}"}
+        hint = ""
+        # Most common cause on a fresh read: the model copied the reader's
+        # `<number>\t` line-number prefix into old_string. If stripping a
+        # leading "<digits><tab>" from each line WOULD match, say so.
+        stripped = re.sub(r"(?m)^\s*\d+\t", "", old_string)
+        if stripped != old_string and stripped in original:
+            hint = (
+                " — it matches once you remove the line-number prefixes. Drop the "
+                "leading `<number>\\t` from each line (keep only the code)."
+            )
+        elif old_string.strip() and old_string.strip() in original:
+            hint = " — a match exists ignoring surrounding whitespace; check indentation."
+        return {"success": False, "error": f"old_string not found in {file_path}{hint}"}
     if count > 1 and not replace_all:
         return {
             "success": False,
@@ -801,7 +828,9 @@ class CodingToolkit(LionTool):
             """Write or edit files. You must read a file before editing it.
 
             Use action='write' to create or overwrite. Use action='edit' for
-            exact string replacement — safer than full rewrites.
+            exact string replacement — safer than full rewrites. When building
+            old_string from reader output, strip the `<number>\\t` line-number
+            prefix and keep only the code, with its exact indentation.
             """
             if action == "write":
                 if content is None:
@@ -846,10 +875,12 @@ class CodingToolkit(LionTool):
             timeout: int = None,
             cwd: str = None,
         ) -> dict:
-            """Execute a shell command and return stdout, stderr, and return code.
+            """Execute a single shell command and return stdout, stderr, and return code.
 
             Use for running builds, tests, git commands, and any system operations.
-            Output is truncated if it exceeds 100 KB per stream.
+            One command per call — shell operators (&&, ||, |, ;, redirects, backticks,
+            $(...)) are rejected; pass cwd= to run in a directory. Output is truncated
+            if it exceeds 100 KB per stream.
             """
             timeout_ms = max(1, min(timeout or 30000, 300000))
             timeout_s = timeout_ms / 1000.0
