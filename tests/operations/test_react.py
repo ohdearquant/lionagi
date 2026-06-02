@@ -42,7 +42,6 @@ async def test_react_basic_flow():
             return FakeAnalysis(
                 analysis="intermediate_reasoning",
                 extension_needed=False,
-                planned_actions=[],
             )
         else:
             # Second call - return final Analysis
