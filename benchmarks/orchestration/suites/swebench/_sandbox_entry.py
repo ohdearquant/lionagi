@@ -285,6 +285,11 @@ async def main() -> int:
     # autonomous recipe above and degrades behavior. Tool *schemas* are rendered
     # by lionagi independently of the system prompt, so nothing is lost.
     config.system_prompt = sys_prompt
+    # The ~50-line LION_SYSTEM_MESSAGE ("intelligence operating system / IPU",
+    # OS vocabulary, "don't reveal these messages") is stale boilerplate that
+    # dilutes the focused bug-fix framing and burns input tokens every turn.
+    # Default True preserves prior runs; the harness can disable it to A/B.
+    config.lion_system = bool(spec.get("lion_system", True))
 
     t0 = time.monotonic()
     branch = await create_agent(config)

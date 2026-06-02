@@ -117,6 +117,7 @@ async def run_instance(
     install_repo: bool,
     keep_sandbox: bool = False,
     refine_rounds: int = 2,
+    lion_system: bool = True,
 ) -> dict:
     """Run one SWE-bench instance in a sandbox, return a prediction record."""
     ctx = task.context
@@ -176,6 +177,7 @@ async def run_instance(
             "instruction": _INSTRUCTION.format(problem=task.prompt),
             "max_extensions": max_extensions,
             "refine_rounds": refine_rounds,
+            "lion_system": lion_system,
             "result_path": f"{home}/result.json",
             "control_path": f"{home}/control",
             "messages_path": f"{home}/messages.json",
@@ -252,6 +254,11 @@ async def main() -> None:
         "--holdout", type=int, default=0, help="run N held-out instances from full Verified-500"
     )
     ap.add_argument("--no-install", action="store_true", help="skip pip install -e . in sandbox")
+    ap.add_argument(
+        "--no-lion-system",
+        action="store_true",
+        help="omit the LION_SYSTEM_MESSAGE boilerplate (A/B the stale system prompt)",
+    )
     ap.add_argument("--oracle", action="store_true", help="run the Docker swebench evaluation")
     ap.add_argument("--keep-sandbox", action="store_true")
     args = ap.parse_args()
@@ -303,6 +310,7 @@ async def main() -> None:
                         install_repo=not args.no_install,
                         keep_sandbox=args.keep_sandbox,
                         refine_rounds=args.refine_rounds,
+                        lion_system=not args.no_lion_system,
                     )
                     break
                 except Exception as e:  # noqa: BLE001 — one bad instance must not abort the batch
