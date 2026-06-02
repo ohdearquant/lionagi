@@ -125,6 +125,8 @@ async def run_instance(
     tool_calls = {"reader": 0, "editor": 0, "bash": 0, "search": 0}
     last_run = {"status": "?"}
 
+    refine_log: list[str] = []  # v6: per-round gate verdicts (empty/no_repro/repro_red/...)
+
     def on_out(buf=[""]):  # noqa: B006 — closure-local line buffer
         def _h(chunk: str) -> None:
             buf[0] += chunk
@@ -139,6 +141,10 @@ async def run_instance(
                         tool_calls[o["fn"]] += 1
                     elif o.get("t") in ("RunEnd", "RunFailed", "Done"):
                         last_run["status"] = o.get("s", o.get("t"))
+                    elif o.get("t") == "RefineGate":
+                        refine_log.append(o.get("verdict", "?"))
+                    elif o.get("t") == "RefineVerified":
+                        refine_log.append("verified")
 
         return _h
 
@@ -173,6 +179,9 @@ async def run_instance(
             "result_path": f"{home}/result.json",
             "control_path": f"{home}/control",
             "messages_path": f"{home}/messages.json",
+            # INSIDE repo so the agent's workspace-confined editor can write it;
+            # excluded from model_patch by name in _compute_diff (see _sandbox_entry).
+            "repro_path": f"{repo}/_swebench_repro.py",
             "env": env,
         }
         await sb.write_text(json.dumps(spec), f"{home}/spec.json")
@@ -206,6 +215,7 @@ async def run_instance(
         "repo_installed": repo_installed,
         "tool_calls": dict(tool_calls),
         "patch_bytes": len(patch),
+        "refine": refine_log,  # v6: gate verdicts per round ([] = solved first try)
         "wall_seconds": round(time.monotonic() - t0, 1),
     }
 
@@ -281,9 +291,11 @@ async def main() -> None:
                 print(f"    ✗ {p['instance_id']}: {p['status'][:80]}", flush=True)
                 return p
             tc = p.get("tool_calls", {})
+            rf = p.get("refine", [])
+            rf_str = f" refine[{'>'.join(rf)}]" if rf else ""
             print(
                 f"    ✓ {p['instance_id']}: patch={p['patch_bytes']}B "
-                f"tools(r{tc.get('reader', 0)}/e{tc.get('editor', 0)}/b{tc.get('bash', 0)}) "
+                f"tools(r{tc.get('reader', 0)}/e{tc.get('editor', 0)}/b{tc.get('bash', 0)}){rf_str} "
                 f"installed={p.get('repo_installed')} {p['wall_seconds']}s — {p['status'][:60]}",
                 flush=True,
             )
