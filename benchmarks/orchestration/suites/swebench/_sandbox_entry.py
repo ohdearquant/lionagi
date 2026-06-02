@@ -212,6 +212,18 @@ async def main() -> int:
         "model": model,
     }
     result_path.write_text(json.dumps(out))
+
+    # Debug dump: the full conversation, so a --keep-sandbox repro can show what
+    # the model actually emitted on a zero-tool turn (did it produce a parseable
+    # action_requests field at all?). Cheap; only read during diagnosis.
+    try:
+        msgs = [m.to_dict() for m in branch.msgs.messages]
+        Path(spec.get("messages_path", f"{repo}/../messages.json")).write_text(
+            json.dumps(msgs, default=str)
+        )
+    except Exception as e:  # noqa: BLE001 — diagnostics must never fail the run
+        _emit_line({"t": "DumpError", "s": str(e)[:120]})
+
     _emit_line({"t": "Done", "s": status, "diff_bytes": len(diff)})
     return 0 if status == "ok" else 1
 
