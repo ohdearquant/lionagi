@@ -273,23 +273,51 @@ async def main() -> None:
 
     sem = asyncio.Semaphore(args.concurrency)
 
-    async def _guarded(t):
+    # Daytona faults that strike MID-RUN (not just at create): the org tier drops
+    # long-lived sessions under load, and v6's multi-round sandboxes live long
+    # enough to trip this — it ate 16 sphinx in the v6 full-50. These are transient;
+    # the whole instance is retryable on a FRESH sandbox (the agent is stateless
+    # across sandboxes — it re-clones + re-runs from scratch).
+    transient_run = (
+        "Failed to get session",
+        "Failed to execute",
+        "Failed to clone",
+        "Failed to upload",
+        "Total CPU",
+        "Total disk",
+        "timed out",
+        "Timeout",
+    )
+
+    async def _guarded(t, instance_retries: int = 2):
         async with sem:
             print(f"  ▶ {t.context['instance_id']} ({t.context['repo']}) …", flush=True)
             t0 = time.monotonic()
-            try:
-                p = await run_instance(
-                    t,
-                    model=args.model,
-                    max_extensions=args.max_extensions,
-                    install_repo=not args.no_install,
-                    keep_sandbox=args.keep_sandbox,
-                    refine_rounds=args.refine_rounds,
-                )
-            except Exception as e:  # noqa: BLE001 — one bad instance must not abort the batch
-                p = _err(t, args.model, f"{type(e).__name__}: {e}", t0)
-                print(f"    ✗ {p['instance_id']}: {p['status'][:80]}", flush=True)
-                return p
+            p = None
+            for attempt in range(instance_retries + 1):
+                try:
+                    p = await run_instance(
+                        t,
+                        model=args.model,
+                        max_extensions=args.max_extensions,
+                        install_repo=not args.no_install,
+                        keep_sandbox=args.keep_sandbox,
+                        refine_rounds=args.refine_rounds,
+                    )
+                    break
+                except Exception as e:  # noqa: BLE001 — one bad instance must not abort the batch
+                    msg = f"{type(e).__name__}: {e}"
+                    if attempt < instance_retries and any(s in msg for s in transient_run):
+                        print(
+                            f"    ↻ {t.context['instance_id']}: transient Daytona fault, "
+                            f"retry {attempt + 1}/{instance_retries} — {msg[:60]}",
+                            flush=True,
+                        )
+                        await asyncio.sleep(8.0 * (attempt + 1))
+                        continue
+                    p = _err(t, args.model, msg, t0)
+                    print(f"    ✗ {p['instance_id']}: {p['status'][:80]}", flush=True)
+                    return p
             tc = p.get("tool_calls", {})
             rf = p.get("refine", [])
             rf_str = f" refine[{'>'.join(rf)}]" if rf else ""
