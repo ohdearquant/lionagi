@@ -18,18 +18,33 @@ keeps PASS_TO_PASS passing.
 | v2  | gpt-5.4-mini | 30 | bare | fix(react)+create-retry | 35 | **17 (34%)** | analysis optional → engagement 39%→70%; all 50 ran |
 | v3  | gpt-5.4-mini | 80 | bare | budget sweep | 37 | **15 (30%)** | more budget HURT: +2 patches but −2 resolved vs v2. Extra rounds → over-broadening/second-guessing. Budget is NOT the lever; structured refine is. Use max_ext=30. |
 | v4  | gpt-5.4-mini | 30 | **recipe** | reproduce→localize→minimal→verify→refine; no-revert-to-nothing; must leave non-empty edit; replace built-in prompt; lean toolset (no context/sandbox/subagent) | 39 | **16 (32%)** | recipe prompt did NOT help: 32% ≈ v2's 34% (−1, within noise). +4 patches (35→39) but precision dropped. Lean toolset confirmed harmless. **Two levers, two nulls** (budget v3, prompt v4) → loop MECHANICS is the lever, not text/budget. |
+| v5  | gpt-5.4-mini | 30 | recipe | **harness refine loop**: empty-diff detected in-sandbox → force another ReAct round on same branch (≤2), zero oracle leakage | 47 | **17 (34%)** | django 12/25 (48%), sphinx 5/25 (20%). Engagement 70%→**94%** (most patches we've ever produced) but resolve FLAT at v2's 34%. **Precision dropped 49%→36%**: forced edits land on hard instances where they're wrong. Empty→non-empty conversion does NOT convert to resolved. **Third null.** |
 
-## Conclusion after 4 runs
-Bare-prompt v2 (34%, max_ext=30) is the standing baseline. Budget (v3) and
-prompt-recipe (v4) both failed to beat it. The model already *knows* the recipe —
-restating it in prose changes nothing. The residual gap is mechanical: turns where
-the model's own verify step fails and it has no structured way to recover (revert-
-and-quit, over-broaden-then-regress). Next lever is a **programmatic refine loop**
-the harness enforces, not a prompt:
-- detect "patch present but FAIL_TO_PASS still red" / "PASS_TO_PASS regressed" inside the sandbox
-- feed that signal back as a concrete observation and *require* another edit round
-- stop on green or on a hard round cap — never finalize on an empty/regressing diff
-This is the v5 hypothesis. It's harness code, not prompt text.
+## Conclusion after 5 runs
+Bare-prompt v2 (34%, max_ext=30) is the standing baseline. **Three levers, three
+nulls**: budget (v3, −4), prompt-recipe (v4, −1), harness refine loop (v5, ±0).
+None beat v2.
+
+The refine-loop result is the most informative null. It did exactly what it was
+designed to do — engagement jumped 70%→94% (47/50 patches, the most we've produced)
+— yet resolve held at 17/50 because **patch-precision fell 49%→36%**. The empty diffs
+it converted were empty *for a reason*: those are the hard instances where the model
+couldn't find a real fix, so forcing an edit just produces a wrong one. **Engagement
+is no longer the bottleneck; correctness-on-hard-instances is.**
+
+This relocates the lever. We've now saturated:
+- the **engagement** axis (v2 fix + v5 loop): 39%→94% patches. Done.
+- the **prose/budget** axis (v3/v4): null.
+
+What's left is **per-attempt correctness**, which needs a *signal*, not more forcing:
+- a real reproduction the harness can run (agent writes repro → harness executes →
+  refine fires on "repro still fails", not on "diff empty"). This catches the
+  wrong-edit class the empty check is blind to. **← v6.**
+- or multi-sample + selection (best-of-N by self-run repro/tests), trading compute
+  for precision on the hard tail.
+- or a critic/refiner second model reviewing the diff before finalize.
+The common thread: a *verification signal* gates the edit, replacing the
+content-free "is it non-empty" gate. v6 = agent-authored reproduction protocol.
 
 ## Reference points (published, NOT apples-to-apples — different scaffolds/sets)
 - GPT-5.4 (full) ~78% SWE-bench Verified (vals.ai); GPT-5.4-mini 54.4% SWE-bench **Pro**.
