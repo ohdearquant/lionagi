@@ -232,6 +232,11 @@ class SessionObserver(Observer):
 
         Also matches the envelope by exact type, so lifecycle signals
         (``by_type(RunEnd)``) are retrievable like dispatch-time subscriptions.
+
+        Distinct from ``pile[type]`` (which matches at the item level): this
+        UNWRAPS a Signal to its ``data`` payload first, so a capability *bundle*
+        whose ``data`` carries an ``event_type`` field still matches. Pile stays
+        Signal-ignorant by design; this Signal-aware query layers on top.
         """
         flt = TypeFilter(event_type)
         return [e for e in self.flow.items if self._match(flt, e, _payload(e))]

@@ -782,6 +782,14 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         if key is None:
             raise ValueError("getitem key not provided.")
 
+        # A bare type queries by it: ``pile[FindingEmitted]`` → items that *are*
+        # (or carry a field of) that type, via a TypeFilter. Returns a filtered
+        # Pile, like a slice. A Filter instance is callable and handled below.
+        if isinstance(key, type):
+            from lionagi.ln.types import TypeFilter
+
+            return self._filter_by_function(TypeFilter(key))
+
         if callable(key) and not isinstance(key, (UUID, Element, type)):  # noqa: UP038
             return self._filter_by_function(key)
 

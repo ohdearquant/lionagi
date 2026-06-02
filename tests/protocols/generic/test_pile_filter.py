@@ -268,3 +268,60 @@ class TestFilterMethod:
         result = p.filter(lambda x: x.value % 2 == 0)
         values = [item.value for item in result]
         assert values == [0, 2, 4]
+
+
+# ---------------------------------------------------------------------------
+# 15. pile[type] / pile[Filter] — getitem query via the Filter primitive
+# ---------------------------------------------------------------------------
+
+
+class TestGetitemFilter:
+    def test_bare_type_filters_by_type(self):
+        items = [Item(value=i) for i in range(3)]
+        others = [OtherItem(name="a"), OtherItem(name="b")]
+        p = Pile(collections=items + others)
+
+        only_items = p[Item]
+        assert isinstance(only_items, Pile)
+        assert len(only_items) == 3
+        assert all(isinstance(x, Item) for x in only_items)
+
+        only_others = p[OtherItem]
+        assert len(only_others) == 2
+        assert all(isinstance(x, OtherItem) for x in only_others)
+
+    def test_bare_type_no_match_returns_empty_pile(self, pile_3):
+        result = pile_3[OtherItem]
+        assert isinstance(result, Pile)
+        assert len(result) == 0
+
+    def test_typefilter_instance(self):
+        from lionagi.ln.types import TypeFilter
+
+        items = [Item(value=i) for i in range(3)]
+        p = Pile(collections=[*items, OtherItem(name="x")])
+        result = p[TypeFilter(Item)]
+        assert len(result) == 3
+
+    def test_specfilter_via_fieldref(self, five_items):
+        from lionagi.ln.types import Spec
+
+        p = Pile(collections=five_items)
+        result = p[Spec(int, name="value").q >= 3]
+        assert isinstance(result, Pile)
+        assert sorted(x.value for x in result) == [3, 4]
+
+    def test_composed_filter(self, five_items):
+        from lionagi.ln.types import Spec, TypeFilter
+
+        p = Pile(collections=[*five_items, OtherItem(name="z")])
+        result = p[TypeFilter(Item) & (Spec(int, name="value").q > 2)]
+        assert sorted(x.value for x in result) == [3, 4]
+
+    def test_preserves_order(self, five_items):
+        from lionagi.ln.types import Spec
+
+        p = Pile(collections=five_items)
+        result = p[Spec(int, name="value").q.is_in([4, 0, 2])]
+        # original progression order, not the choices order
+        assert [x.value for x in result] == [0, 2, 4]
