@@ -3,9 +3,8 @@
 
 """Tests for CodingToolkit: search, context management, and file_state tracking."""
 
-
 from lionagi.session.branch import Branch
-from lionagi.tools.coding import CodingToolkit
+from lionagi.tools.coding import ALL_CODING_TOOLS, CodingToolkit
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -14,7 +13,7 @@ from lionagi.tools.coding import CodingToolkit
 
 def _make_toolkit(tmp_path, notify=False):
     b = Branch()
-    tk = CodingToolkit(notify=notify, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=notify, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     return b, tk, tools
 
@@ -34,9 +33,7 @@ def _tool_fn(tools, name):
 async def test_search_grep_finds_pattern(tmp_path):
     (tmp_path / "source.py").write_text("def hello():\n    pass\n")
     _, _, tools = _make_toolkit(tmp_path)
-    result = await _tool_fn(tools, "search")(
-        action="grep", pattern="def hello", path=str(tmp_path)
-    )
+    result = await _tool_fn(tools, "search")(action="grep", pattern="def hello", path=str(tmp_path))
     assert result["success"] is True and "hello" in result["content"]
     assert result["total_matches"] >= 1
 
@@ -44,9 +41,7 @@ async def test_search_grep_finds_pattern(tmp_path):
 async def test_search_find_finds_files(tmp_path):
     (tmp_path / "alpha.py").write_text("")
     _, _, tools = _make_toolkit(tmp_path)
-    result = await _tool_fn(tools, "search")(
-        action="find", pattern="*.py", path=str(tmp_path)
-    )
+    result = await _tool_fn(tools, "search")(action="find", pattern="*.py", path=str(tmp_path))
     assert result["success"] is True and "alpha.py" in result["content"]
 
 
@@ -77,7 +72,7 @@ async def test_context_status_empty_branch(tmp_path):
 
 async def test_context_status_with_system_message(tmp_path):
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     context = _tool_fn(tools, "context")
 
@@ -93,7 +88,7 @@ async def test_context_status_tracks_files_after_read(tmp_path):
     f = tmp_path / "tracked.py"
     f.write_text("x = 1\n")
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     reader = _tool_fn(tools, "reader")
     context = _tool_fn(tools, "context")
@@ -110,7 +105,7 @@ async def test_context_status_tracks_files_after_read(tmp_path):
 
 async def test_context_evict_reduces_active_not_total(tmp_path):
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     context = _tool_fn(tools, "context")
 
@@ -147,7 +142,7 @@ async def test_file_state_mtime_tracked_after_read(tmp_path):
     f = tmp_path / "tracked.py"
     f.write_text("original\n")
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     reader = _tool_fn(tools, "reader")
     editor = _tool_fn(tools, "editor")
@@ -175,7 +170,7 @@ async def test_file_state_allows_edit_when_mtime_matches(tmp_path):
     f = tmp_path / "stable.py"
     f.write_text("hello world\n")
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     reader = _tool_fn(tools, "reader")
     editor = _tool_fn(tools, "editor")

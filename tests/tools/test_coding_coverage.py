@@ -3,11 +3,11 @@
 
 """Coverage-targeted tests for tools/coding.py — uncovered paths."""
 
-
 import pytest
 
 from lionagi.tools.coding import (
     _MAX_OUTPUT_BYTES,
+    ALL_CODING_TOOLS,
     CodingToolkit,
     _drain_stream,
     _edit_file_sync,
@@ -296,8 +296,10 @@ def test_subprocess_sync_timeout_mock_pid_calls_kill_not_killpg(monkeypatch):
     mock_proc.kill = MagicMock()
 
     killpg_calls = []
-    with patch("subprocess.Popen", return_value=mock_proc), \
-         patch("os.killpg", side_effect=lambda *a: killpg_calls.append(a)):
+    with (
+        patch("subprocess.Popen", return_value=mock_proc),
+        patch("os.killpg", side_effect=lambda *a: killpg_calls.append(a)),
+    ):
         _subprocess_sync(["sleep", "60"], False, 0.01, None)
 
     assert killpg_calls == [], "os.killpg must not be called when proc.pid is not int > 1"
@@ -321,8 +323,10 @@ def test_subprocess_sync_timeout_invalid_pid_calls_kill_not_killpg(invalid_pid):
     mock_proc.kill = MagicMock()
 
     killpg_calls = []
-    with patch("subprocess.Popen", return_value=mock_proc), \
-         patch("os.killpg", side_effect=lambda *a: killpg_calls.append(a)):
+    with (
+        patch("subprocess.Popen", return_value=mock_proc),
+        patch("os.killpg", side_effect=lambda *a: killpg_calls.append(a)),
+    ):
         _subprocess_sync(["sleep", "60"], False, 0.01, None)
 
     assert killpg_calls == [], f"os.killpg must not be called for pid={invalid_pid!r}"
@@ -359,7 +363,7 @@ async def test_security_pre_hook_runs_before_user_hooks(tmp_path):
         return None
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tk.security_pre("bash", security_hook)
     tk.pre("bash", user_hook)
     tools = tk.bind(b)
@@ -380,7 +384,7 @@ async def test_build_postprocessor_chains_post_hooks(tmp_path):
         return {**result, "tagged": True}
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tk.post("reader", post_hook)
     tools = tk.bind(b)
 
@@ -410,7 +414,7 @@ async def test_context_get_messages_returns_summaries(tmp_path):
     from lionagi.session.branch import Branch
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
 
     b.msgs.add_message(instruction="do something")
@@ -426,7 +430,7 @@ async def test_context_evict_action_results_all_kept_when_below_threshold(tmp_pa
     from lionagi.session.branch import Branch
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     context = next(t for t in tools if t.func_callable.__name__ == "context")
 
@@ -439,7 +443,7 @@ async def test_context_evict_action_results_removes_old(tmp_path):
     from lionagi.session.branch import Branch
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     context = next(t for t in tools if t.func_callable.__name__ == "context")
 
@@ -456,7 +460,7 @@ async def test_context_unknown_action_returns_error(tmp_path):
     from lionagi.session.branch import Branch
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     context = next(t for t in tools if t.func_callable.__name__ == "context")
 
@@ -476,7 +480,7 @@ async def test_reader_list_dir_with_file_types(tmp_path):
     from lionagi.session.branch import Branch
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     reader = next(t for t in tools if t.func_callable.__name__ == "reader")
 
@@ -491,7 +495,7 @@ async def test_reader_unknown_action_returns_error(tmp_path):
     from lionagi.session.branch import Branch
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     reader = next(t for t in tools if t.func_callable.__name__ == "reader")
 
@@ -509,7 +513,7 @@ async def test_editor_write_no_content_returns_error(tmp_path):
     from lionagi.session.branch import Branch
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     editor = next(t for t in tools if t.func_callable.__name__ == "editor")
 
@@ -524,13 +528,11 @@ async def test_editor_unknown_action_returns_error(tmp_path):
     from lionagi.session.branch import Branch
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     editor = next(t for t in tools if t.func_callable.__name__ == "editor")
 
-    result = await editor.func_callable(
-        action="blorp", file_path=str(tmp_path / "out.py")
-    )
+    result = await editor.func_callable(action="blorp", file_path=str(tmp_path / "out.py"))
     assert result["success"] is False
     assert "Unknown action" in result["error"]
 
@@ -546,7 +548,7 @@ async def test_search_grep_with_include_filter(tmp_path):
     from lionagi.session.branch import Branch
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     search = next(t for t in tools if t.func_callable.__name__ == "search")
 
@@ -561,7 +563,7 @@ async def test_search_unknown_action_returns_error(tmp_path):
     from lionagi.session.branch import Branch
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     search = next(t for t in tools if t.func_callable.__name__ == "search")
 
@@ -579,7 +581,7 @@ async def test_bash_shell_control_rejected_in_toolkit(tmp_path):
     from lionagi.session.branch import Branch
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     bash = next(t for t in tools if t.func_callable.__name__ == "bash")
 
@@ -592,7 +594,7 @@ async def test_bash_malformed_command_returns_error(tmp_path):
     from lionagi.session.branch import Branch
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     bash = next(t for t in tools if t.func_callable.__name__ == "bash")
 
@@ -610,7 +612,7 @@ async def test_sandbox_no_active_session_error(tmp_path):
     from lionagi.session.branch import Branch
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     sandbox = next(t for t in tools if t.func_callable.__name__ == "sandbox")
 
@@ -627,7 +629,7 @@ async def test_sandbox_unknown_action_returns_error(tmp_path, monkeypatch):
     from lionagi.session.branch import Branch
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     sandbox = next(t for t in tools if t.func_callable.__name__ == "sandbox")
 
@@ -651,7 +653,7 @@ async def test_sandbox_already_active_blocks_create(tmp_path, monkeypatch):
     from lionagi.session.branch import Branch
 
     b = Branch()
-    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path))
+    tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
     tools = tk.bind(b)
     sandbox = next(t for t in tools if t.func_callable.__name__ == "sandbox")
 
