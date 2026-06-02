@@ -70,15 +70,89 @@ class StdoutSink:
 
 
 def _compute_diff(repo: str) -> str:
-    """model_patch = staged git diff vs base_commit, source-only (no pycache)."""
+    """model_patch = staged git diff vs base_commit, source-only.
+
+    Excludes pycache and the agent's reproduction script (_swebench_repro.py),
+    which lives inside the repo so the workspace-confined editor can write it but
+    must NOT enter the submitted patch."""
     subprocess.run(["git", "add", "-A"], cwd=repo, check=False)  # noqa: S603,S607
     return subprocess.run(  # noqa: S603
-        ["git", "diff", "--cached", "--", ".", ":(exclude)**/__pycache__/**"],  # noqa: S607
+        [  # noqa: S607
+            "git",
+            "diff",
+            "--cached",
+            "--",
+            ".",
+            ":(exclude)**/__pycache__/**",
+            ":(exclude)_swebench_repro.py",  # root-anchored: we always write it to repo root
+            ":(exclude)**/_swebench_repro.py",  # belt-and-suspenders if ever nested
+        ],
         cwd=repo,
         capture_output=True,
         text=True,
         check=False,
     ).stdout
+
+
+def _run_repro(repo: str, repro_path: str, timeout: int = 120):
+    """Run the agent-authored reproduction script. Returns (returncode, tail) or None.
+
+    The agent writes a standalone script that exits NON-ZERO while the bug is
+    present and ZERO once fixed (see sys_prompt). This is the v6 verification
+    signal — the agent's OWN criterion, never the held-out FAIL_TO_PASS, so
+    there is zero oracle leakage."""
+    if not Path(repro_path).exists():
+        return None
+    try:
+        p = subprocess.run(  # noqa: S603
+            [sys.executable, repro_path],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return (124, f"reproduction script timed out after {timeout}s")
+    return (p.returncode, (p.stdout + p.stderr)[-1800:])
+
+
+def _repro_rc_at_base(repo: str, repro_path: str):
+    """Validity gate: stash the edit, run the repro on the ORIGINAL code, restore.
+
+    A faithful repro MUST fail (non-zero) on the unedited base — otherwise it
+    isn't testing the reported bug and a post-edit pass is meaningless. Returns
+    the base returncode (or None if missing/unrunnable). Restores the tree.
+
+    The repro lives INSIDE the repo, so ``git stash --include-untracked`` would
+    hide it from the base run. Copy it OUT first (to the repo's parent, which the
+    harness — not the path-confined agent — can write) and run that copy."""
+    src = Path(repro_path)
+    if not src.exists():
+        return None
+    tmp = Path(repo).parent / "_repro_base_validate.py"
+    tmp.write_text(src.read_text())
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=False)  # noqa: S603,S607
+    stashed = subprocess.run(  # noqa: S603
+        ["git", "stash", "push", "--include-untracked", "-m", "v6-repro-validity"],  # noqa: S607
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    did_stash = "No local changes" not in (stashed.stdout + stashed.stderr)
+    try:
+        rr = _run_repro(repo, str(tmp))
+        return rr[0] if rr is not None else None
+    finally:
+        if did_stash:
+            subprocess.run(  # noqa: S603
+                ["git", "stash", "pop"],  # noqa: S607
+                cwd=repo,
+                check=False,
+                capture_output=True,
+            )
+        tmp.unlink(missing_ok=True)
 
 
 def _collect_usage(branch) -> dict:
@@ -160,6 +234,7 @@ async def main() -> int:
     effort = spec.get("effort")
     result_path = Path(spec["result_path"])
     control_path = Path(spec.get("control_path", f"{repo}/../control"))
+    repro_path = spec.get("repro_path", f"{repo}/../repro.py")
 
     from lionagi.agent import AgentConfig
     from lionagi.agent.factory import create_agent
@@ -169,24 +244,29 @@ async def main() -> int:
         f"at {repo}. All file paths are absolute under {repo}; run bash with cwd={repo}.\n"
         "\n"
         "Follow this method every time — it is how strong SWE agents actually win:\n"
-        "1. REPRODUCE: write a tiny script (or find the existing test) that triggers the\n"
-        "   reported bug and run it. Confirm you see the failure BEFORE changing code.\n"
-        "   You cannot fix what you have not observed failing.\n"
+        f"1. REPRODUCE (as a saved script): write a standalone Python script to the EXACT\n"
+        f"   path {repro_path} that triggers the reported bug. It MUST `sys.exit(1)` (or\n"
+        "   raise) while the bug is present and `sys.exit(0)` once it is fixed — assert the\n"
+        "   specific corrected behavior, not an unrelated check. Run it now and CONFIRM it\n"
+        "   fails on the current (unfixed) code before you change anything. You cannot fix\n"
+        "   what you have not observed failing, and the harness will re-run THIS script to\n"
+        "   check your work — a script that passes on the buggy code is useless.\n"
         "2. LOCALIZE: trace the failure to the single smallest code site responsible.\n"
         "   Read the actual source around it. Do not guess from names.\n"
         "3. FIX MINIMALLY: make the smallest change that addresses the described symptom.\n"
         "   Prefer local over shared-path edits. Do NOT change behavior of unrelated code\n"
         "   paths, do NOT refactor, do NOT edit tests, do NOT add features.\n"
-        "4. VERIFY: re-run your reproduction AND the nearest existing tests for the file\n"
-        "   you touched. Your fix MUST resolve the bug and MUST NOT regress those tests.\n"
+        f"4. VERIFY: re-run {repro_path} (it must now exit 0) AND the nearest existing\n"
+        "   tests for the file you touched. Your fix MUST resolve the bug and MUST NOT\n"
+        "   regress those tests.\n"
         "5. IF YOUR FIX REGRESSES other tests: that means it is too BROAD, not that you\n"
         "   should give up. NARROW it — find the change that fixes the bug without the\n"
         "   regression. NEVER revert your edit back to the original and stop with no patch;\n"
         "   a smaller correct edit always exists. Keep iterating until tests are green.\n"
         "\n"
         "Hard rules:\n"
-        "- You MUST leave a concrete code edit in place at the end. An empty diff is a\n"
-        "  failure. If you are unsure, leave your best minimal fix rather than nothing.\n"
+        f"- Leave BOTH a concrete code edit in the repo AND the reproduction at {repro_path}.\n"
+        "  An empty diff is a failure; a repro that still fails after your edit is a failure.\n"
         "- Never claim the issue is resolved unless you actually ran a check that passed.\n"
         "- The grading tests are held out — you will not see them. Fix the real described\n"
         "  behavior, not a specific test."
@@ -213,21 +293,49 @@ async def main() -> int:
     stop = asyncio.Event()
     poller = asyncio.create_task(_control_poller(branch, control_path, stop))
 
-    # v5: harness-enforced refine loop. The model is told (prompt) to never
-    # finalize on an empty diff, but ~1/5 of runs still do (revert-and-quit on a
-    # regression, or non-engagement). Rather than TRUST the prompt, we DETECT the
-    # empty diff and force another ReAct round on the SAME branch (state carries:
-    # the model sees its own prior reasoning). This is the mechanical version of
-    # the prompt rule and the one variable v5 changes. ZERO test leakage — we
-    # only check "is the diff empty", never the held-out FAIL_TO_PASS oracle.
-    refine_rounds = int(spec.get("refine_rounds", 2))
+    # v6: reproduction-GATED refine loop. v5 forced another round whenever the
+    # diff was empty — but that lifted engagement (94% patches) WITHOUT lifting
+    # resolve, because empty diffs are empty for a reason (hard instances) and a
+    # forced edit is usually wrong (precision 49%→36%). The lever is per-attempt
+    # CORRECTNESS, which needs a verification SIGNAL, not more forcing.
+    #
+    # Here the signal is the agent's OWN reproduction script (sys_prompt step 1,
+    # persisted to repro_path). After each ReAct round we decide whether to refine
+    # from three checks — all in-sandbox, ZERO oracle leakage (we never touch the
+    # held-out FAIL_TO_PASS / test_patch):
+    #   (a) diff empty            → no fix at all          → refine (empty nudge)
+    #   (b) repro missing         → can't verify anything  → refine (write-repro nudge)
+    #   (c) repro still red post-edit → fix insufficient by the agent's own
+    #       criterion → refine, feeding the actual repro output back.
+    #   (d) repro green post-edit → VALIDATE it: stash the edit, run repro on base;
+    #       if it ALSO passes at base the repro is vacuous (doesn't test the bug) →
+    #       refine (real-repro nudge). If it fails at base → genuine fix → STOP.
+    refine_rounds = int(spec.get("refine_rounds", 3))
     empty_nudge = (
         "Your previous attempt left NO code change in the repository — `git diff` is "
-        "empty, which is an automatic failure. Do not explain; act. Re-localize the "
-        "single code site responsible for the reported bug, read it, and APPLY a "
-        "concrete minimal edit with the editor now. Do not finish this turn until the "
-        "working tree actually contains your edit."
+        "empty, an automatic failure. Do not explain; act. Re-localize the single code "
+        "site responsible, read it, and APPLY a concrete minimal edit now."
     )
+    no_repro_nudge = (
+        f"You did not leave a runnable reproduction at {repro_path}. Write one now: a "
+        "standalone Python script that exits non-zero on the bug and zero once fixed, "
+        "asserting the specific described behavior. Run it, confirm it fails on the "
+        "current code, then fix the code so it passes."
+    )
+    vacuous_nudge = (
+        f"Your reproduction at {repro_path} passes even on the ORIGINAL unedited code, "
+        "so it does not actually exercise the reported bug — it proves nothing. Rewrite "
+        "it to FAIL (non-zero) on the described failure, verify it fails before your fix, "
+        "then ensure your code change makes it pass."
+    )
+
+    def _red_nudge(out: str) -> str:
+        return (
+            f"Your reproduction at {repro_path} STILL FAILS after your edit — by your own "
+            f"criterion the bug is not fixed. Output:\n{out}\n"
+            "Re-localize and correct the fix; do not finish until the script exits 0 "
+            "AND existing tests for the file you touched stay green."
+        )
 
     status = "ok"
     final = ""
@@ -239,19 +347,33 @@ async def main() -> int:
             max_extensions=max_ext,
         )
         final = str(result)
-        diff = _compute_diff(repo)
         attempt = 0
-        while not diff.strip() and attempt < refine_rounds:
+        while attempt < refine_rounds:
+            diff = _compute_diff(repo)
+            if not diff.strip():
+                verdict, nudge = "empty", empty_nudge
+            else:
+                rr = _run_repro(repo, repro_path)
+                if rr is None:
+                    verdict, nudge = "no_repro", no_repro_nudge
+                elif rr[0] != 0:
+                    verdict, nudge = "repro_red", _red_nudge(rr[1])
+                else:
+                    base_rc = _repro_rc_at_base(repo, repro_path)
+                    if base_rc not in (0, None):  # fails at base, passes now → real
+                        _emit_line({"t": "RefineVerified", "round": attempt})
+                        break
+                    verdict, nudge = "repro_vacuous", vacuous_nudge
             attempt += 1
-            _emit_line({"t": "RefineEmpty", "round": attempt})
+            _emit_line({"t": "RefineGate", "round": attempt, "verdict": verdict})
             result = await branch.ReAct(
-                {"instruction": empty_nudge},
+                {"instruction": nudge},
                 tools=True,
                 max_extensions=max_ext,
             )
             final = str(result)
-            diff = _compute_diff(repo)
-            _emit_line({"t": "RefineDone", "round": attempt, "diff_bytes": len(diff)})
+            _emit_line({"t": "RefineDone", "round": attempt, "verdict": verdict})
+        diff = _compute_diff(repo)
     except Exception as e:  # noqa: BLE001 — a failed agent run is data
         status = f"error: {type(e).__name__}: {e}"
         _emit_line({"t": "EntryError", "s": status[:200]})
