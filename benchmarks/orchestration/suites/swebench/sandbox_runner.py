@@ -142,7 +142,10 @@ async def run_instance(
                     except Exception:  # noqa: S112 — skip malformed signal lines
                         continue
                     raw_signals.append(o)
-                    if o.get("t") == "ActionRequestSignal" and o.get("fn") in tool_calls:
+                    # A tool call is any signal carrying an ActionRequest payload
+                    # — the entry sink sets "fn" only for those (envelope-agnostic:
+                    # works whether the bus emits MessageAdded or a typed signal).
+                    if o.get("fn") in tool_calls:
                         tool_calls[o["fn"]] += 1
                     elif o.get("t") in ("RunEnd", "RunFailed", "Done"):
                         last_run["status"] = o.get("s", o.get("t"))
