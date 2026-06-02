@@ -107,6 +107,8 @@ roles:
     - Data quality is too poor to support any reliable conclusion
     - The hypothesis requires a sample size not available in the current data
     - Analysis reveals a question fundamentally different from the one posed
+    default_modes: [evidential]
+    modes_allow: [evidential, probabilistic, systematic]
   investigator:
     authority:
     - Determine which logs and traces to collect and in what order.
@@ -316,6 +318,10 @@ roles:
     escalations:
     - A CRITICAL finding needs a requirements change to resolve
     - The test environment is not representative enough to evaluate
+    # ADR-0074: per-role runtime config. default_modes overlay the role body;
+    # modes_allow (empty = unrestricted) bounds a per-task mode override.
+    default_modes: [adversarial]
+    modes_allow: [adversarial, premortem, evidential, metacognitive]
   auditor:
     authority:
     - Issue BLOCK or PASS verdicts on compliance checkpoints.

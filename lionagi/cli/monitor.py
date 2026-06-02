@@ -403,7 +403,11 @@ def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
         "type": sess.get("invocation_kind") or "session",
         "project": sess.get("project") or "-",
         "status": sess.get("status") or "?",
-        "phase": sess.get("agent_name") or sess.get("playbook_name") or "-",
+        # #1235: live flow phase (executing/synthesizing) wins over the
+        # static orchestrator/playbook name once a flow leaves planning.
+        "phase": (
+            sess.get("current_phase") or sess.get("agent_name") or sess.get("playbook_name") or "-"
+        ),
         "elapsed": _elapsed(sess.get("started_at"), sess.get("ended_at")),
         "agents": str(sess.get("branch_count") or 0),
     }

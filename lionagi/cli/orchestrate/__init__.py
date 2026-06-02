@@ -13,7 +13,7 @@ from lionagi.ln.concurrency import run_async
 from .._logging import hint, log_error
 from .._providers import add_common_cli_args
 from .fanout import _run_fanout
-from .flow import _run_flow
+from .flow import FlowPlanError, _run_flow
 
 
 def add_orchestrate_subparser(
@@ -260,6 +260,17 @@ def add_orchestrate_subparser(
         help=(
             "Cap total ops (nodes in the planned DAG). 0 = unlimited. "
             "`--max-agents` is a deprecated alias — prefer `--max-ops`."
+        ),
+    )
+    fl.add_argument(
+        "--reactive",
+        metavar="MODE",
+        default=None,
+        help=(
+            "Who may grow the live DAG by emitting a SpawnRequest: "
+            "'all' (default — every worker), 'off' (flat batch DAG, no spawning), "
+            "or a comma-separated list of roles (e.g. 'critic,evaluator') that "
+            "alone may spawn. Caps still apply via --max-ops."
         ),
     )
     add_common_cli_args(fl)
@@ -613,7 +624,7 @@ def _validate_spec_fields(spec: dict) -> str | None:
         if not isinstance(save, str):
             return f"spec field 'save' must be a string, got {type(save).__name__}"
 
-    for str_field in ("model", "agent", "team_mode", "team_attach"):
+    for str_field in ("model", "agent", "team_mode", "team_attach", "reactive"):
         if str_field in spec:
             val = spec[str_field]
             if not isinstance(val, str):
@@ -829,6 +840,8 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 args.dry_run = True
             if not getattr(args, "show_graph", False) and spec.get("show_graph"):
                 args.show_graph = True
+            if getattr(args, "reactive", None) is None and spec.get("reactive") is not None:
+                args.reactive = spec["reactive"]
             if args.save is None and spec.get("save"):
                 args.save = spec["save"]
             if spec.get("critic_model"):
@@ -933,6 +946,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     max_ops=args.max_ops,
                     dry_run=args.dry_run,
                     show_graph=getattr(args, "show_graph", False),
+                    reactive_spec=getattr(args, "reactive", None) or "all",
                     fast=getattr(args, "fast", False),
                     playbook_name=playbook_name,
                     playbook_artifacts=playbook_artifacts,
@@ -945,6 +959,11 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             return 124  # ADR-0025: timed_out exits with GNU `timeout` code
         except KeyboardInterrupt:
             return 130  # ADR-0025: aborted (SIGINT)
+        except FlowPlanError as e:
+            # #1236: planning produced no usable DAG. Fail loud with the
+            # actionable message + raw response instead of exiting 0.
+            log_error(str(e))
+            return 1
         except BaseException as exc:
             from lionagi.ln.concurrency import get_cancelled_exc_class
 

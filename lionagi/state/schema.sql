@@ -131,6 +131,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- Bumped on every message INSERT so staleness_check() can answer
   -- "is this running session still active?" without scanning messages.
   last_message_at REAL,
+  -- ── Live execution phase (#1235) ───────────────────────────────────
+  -- Coarse flow lifecycle marker (planning → executing → synthesizing)
+  -- surfaced as the PHASE column in `li monitor`. NULL for non-flow
+  -- sessions, which fall back to agent_name/playbook_name in the reader.
+  current_phase   TEXT,
   -- ── Skill invocation (ADR-0020) ────────────────────────────────────
   -- Optional FK to the higher-order skill orchestration (e.g. /show or
   -- /codex-pr-review) that spawned this session. NULL when the CLI

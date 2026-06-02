@@ -146,6 +146,16 @@ class SessionObserver(Observer):
 
         return _register if handler is None else _register(handler)
 
+    def unobserve(self, handler: Handler) -> int:
+        """Remove every subscription whose handler is *handler*.
+
+        Returns the number removed. Used to bound a subscription's lifetime
+        (e.g. a flow that subscribes for its duration then detaches).
+        """
+        before = len(self._subs)
+        self._subs = [(f, h) for (f, h) in self._subs if h is not handler]
+        return before - len(self._subs)
+
     def route(self, condition: Predicate, *, into: str) -> SessionObserver:
         """Auto-append events matching ``condition`` to a named stream."""
         self._routes.append((condition, into))

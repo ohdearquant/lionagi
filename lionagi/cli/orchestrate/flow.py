@@ -1,52 +1,91 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Auto-DAG flow: orchestrator plans DAG → engine executes with deps."""
+"""Reactive DAG flow: orchestrator plans TaskAssignments → self-expanding execution.
+
+Clean-break design (no bespoke plan models):
+
+- **Plan** = a ``list[TaskAssignment]`` (casts coordination emission) the
+  orchestrator emits — ``assignee`` names a role, ``depends_on`` (1-based step
+  indices) forms the DAG. No ``FlowPlan``/``FlowAgent``/``FlowOp``.
+- **Workers** are casts roles (``_orchestration.casts_role_system``) granted the
+  ``SpawnRequest`` capability.
+- **Execution** is ``session.flow(reactive=True)``: a worker that finds work
+  beyond its assignment emits a ``SpawnRequest`` and a new op is injected into
+  the *live* DAG — replacing the old halt → critic-verdict → re-plan → re-run
+  loop with continuous self-expansion.
+"""
 
 from __future__ import annotations
 
 import contextlib
 import json
-import re
+import logging
 import time
-from typing import ClassVar
 
-from pydantic import Field, field_validator
-
-from lionagi import Branch, FieldModel
+from lionagi._errors import LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
+from lionagi.casts.emission import SpawnRequest
 from lionagi.ln.concurrency import move_on_after
-from lionagi.models import HashableModel
-from lionagi.operations.fields import Instruct
+from lionagi.orchestration import plan, role_node_builder
 
-from .._agents import AgentProfile, list_agents, load_agent_profile
 from .._logging import progress
+from .._logging import warn as _warn
 from .._providers import parse_model_spec
 from ._common import _create_fanout_team, _format_result_json, _post_results_to_team
 from ._orchestration import (
-    EFFORT_GUIDANCE,
     EFFORT_MAP,
     OrchestrationEnv,
+    available_roles,
     build_worker_branch,
     finalize_orchestration,
+    mode_roster,
+    resolve_modes,
     resolve_worker_spec,
+    role_config,
+    role_roster,
     setup_orchestration,
     start_live_persist,
     stop_live_persist,
     team_guidance,
 )
 
+logger = logging.getLogger(__name__)
+
+
+class FlowPlanError(LionError):
+    """Orchestrator failed to produce a usable plan (a non-empty TaskAssignment list).
+
+    Surfaced as a non-zero CLI exit with the raw orchestrator response attached,
+    instead of a silent ``return`` that exited 0 with no work done (#1236).
+    """
+
+
+def _raw_response_snippet(res, limit: int = 800) -> str:
+    """Truncated repr of whatever the planner returned, for diagnostics."""
+    text = (str(res).strip() if res is not None else "") or "(empty response)"
+    if len(text) > limit:
+        text = f"{text[:limit]}… [+{len(text) - limit} chars truncated]"
+    return text
+
+
+async def _persist_session_phase(env, phase: str) -> None:
+    """Best-effort write of the live execution phase to the session row.
+
+    Surfaced as the PHASE column in ``li monitor`` (#1235). Failures here must
+    never interrupt flow execution — the phase marker is observability.
+    """
+    ctx = getattr(env, "_live_persist", None)
+    if ctx and ctx.get("db"):
+        with contextlib.suppress(Exception):
+            await ctx["db"].update_session(ctx["session_id"], current_phase=phase)
+
+
 # ── Budget preamble template ──────────────────────────────────────────────
 #
-# Injected at the START of each FlowOp's instruction when the orchestrator
-# runs with a total timeout (--timeout / playbook timeout:). Workers see
-# their proportional share of the budget so they can pace reasoning and
-# switch from research to writing before time runs out.
-#
-# The template variables are:
-#   op_index      — 1-based position of this op in the plan (display only)
-#   num_ops       — total number of non-control ops in the plan
-#   seconds       — this op's budget share in seconds (int)
-#   deadline_iso  — wall-clock deadline in ISO-8601 format (UTC)
+# Injected at the START of each op's instruction when the orchestrator runs with
+# a total timeout (--timeout / playbook timeout:). Workers see their share of
+# the budget so they can pace reasoning and switch from research to writing
+# before time runs out.
 
 _BUDGET_PREAMBLE_TEMPLATE = """\
 [BUDGET]
@@ -68,19 +107,7 @@ def _format_budget_preamble(
     op_budget_seconds: int,
     deadline_epoch: float,
 ) -> str:
-    """Format the BUDGET preamble for a single op.
-
-    Parameters
-    ----------
-    op_index
-        1-based display index for this op within the plan.
-    num_ops
-        Total number of ops being budgeted (display only).
-    op_budget_seconds
-        This op's share of the total budget in whole seconds.
-    deadline_epoch
-        UNIX timestamp for this op's wall-clock deadline.
-    """
+    """Format the BUDGET preamble for a single op."""
     import datetime
 
     deadline_dt = datetime.datetime.fromtimestamp(deadline_epoch, tz=datetime.timezone.utc)
@@ -109,8 +136,6 @@ async def _resolve_invocation_terminal_flow(
         metadata: dict = {"child_statuses": child_statuses}
 
         # Precedence: timed_out > failed > aborted > cancelled > completed.
-        # `failed` MUST beat `aborted`/`cancelled` so a real failure isn't
-        # masked by sibling cleanup-cancellation triggered by the failure.
         if child_statuses:
             if any(s == "timed_out" for s in child_statuses):
                 return (
@@ -188,348 +213,45 @@ async def _resolve_invocation_terminal_flow(
         return "failed", RunReasons.FAILED_EXCEPTION, "Flow failed.", evidence_refs, metadata
 
 
-# ── Security: restrict model-produced identifiers used as filesystem paths ──
+# ── depends_on parsing ────────────────────────────────────────────────────
 #
-# FlowAgent.id and FlowOp.id end up as directory names under `artifact_root/`
-# (see RunDir.agent_artifact_dir) and as worker repo/branch labels. An
-# unconstrained, model-controlled id (e.g. ``/etc/passwd`` or ``../../tmp``)
-# would escape the artifact root and let a compromised planner write outside
-# the intended sandbox. Enforce a narrow alphanumeric + underscore + dash
-# identifier policy at model-validation time; RunDir also re-validates on
-# path construction as defense-in-depth.
-_FLOW_ID_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# TaskAssignment.depends_on carries 1-based step numbers (the orchestrator
+# numbers assignments by list position). Only *earlier* steps can be wired as
+# graph predecessors at build time; forward/invalid refs are dropped.
 
 
-def _validate_flow_id(v: str, *, kind: str) -> str:
-    """Reject path-escape and non-identifier values. Raises ValueError on bad input."""
-    if not isinstance(v, str):
-        raise ValueError(f"{kind} must be a string, got {type(v).__name__}")
-    if not _FLOW_ID_RE.fullmatch(v):
-        raise ValueError(
-            f"{kind} must match {_FLOW_ID_RE.pattern!r} "
-            f"(alphanumeric + '_' '-' only, 1-64 chars); got {v!r}"
-        )
-    return v
+def _earlier_dep_indices(depends_on: list[str] | None, position: int) -> list[int]:
+    """0-based indices of earlier assignments referenced by ``depends_on``."""
+    out: list[int] = []
+    for ref in depends_on or []:
+        try:
+            j = int(str(ref).strip()) - 1
+        except (TypeError, ValueError):
+            continue
+        if 0 <= j < position:
+            out.append(j)
+        elif j >= position:
+            logger.warning("Dropped forward dep ref %s (index %d >= position %d)", ref, j, position)
+    return out
 
 
-# ── Flow models ───────────────────────────────────────────────────────────
+def _parse_reactive(spec: str | None) -> tuple[bool, set[str] | None]:
+    """Parse ``--reactive`` into ``(reactive, spawn_roles)``.
 
-
-class FlowAgent(HashableModel):
-    """An agent in a flow — a Branch identity with persistent memory.
-
-    Agents are defined once and can be invoked multiple times in the DAG.
-    Every invocation on the same agent reuses the same Branch, which
-    means the agent remembers everything it did before. Use this for
-    iterative refinement (r1 → impl1 → r1 again sees r1's first turn).
+    - ``off`` / ``none`` / ``false``     → ``(False, set())`` — flat batch DAG,
+      no worker may spawn (cheapest, fully deterministic).
+    - ``all`` / ``on`` / ``""`` / None   → ``(True, None)`` — every worker may
+      grow the live DAG (maximally reactive; the default).
+    - ``critic,evaluator`` (role list)   → ``(True, {roles})`` — only those
+      roles are granted the SpawnRequest capability.
     """
-
-    id: str = Field(
-        description=(
-            "Short unique identifier for this agent, e.g. 'r1', 'impl1'. "
-            "Reused across multiple FlowOp.agent_id references. "
-            "Must match ^[A-Za-z0-9_-]{1,64}$ (alphanumeric + _ -, 1-64 chars). "
-            "Path separators, dots, and escape sequences are rejected."
-        ),
-    )
-
-    @field_validator("id")
-    @classmethod
-    def _validate_agent_id(cls, v: str) -> str:
-        return _validate_flow_id(v, kind="FlowAgent.id")
-
-    role: str = Field(
-        description=(
-            "Role name from the available-agents roster (e.g. 'researcher', "
-            "'implementer', 'critic'). Determines the agent's profile "
-            "(system prompt, default model, effort). Do not invent roles."
-        ),
-    )
-    model: str | None = Field(
-        default=None,
-        description=(
-            "Explicit model spec override (e.g. 'codex/gpt-5.4-high'). "
-            "Leave null to use the role's profile default."
-        ),
-    )
-    guidance: str | None = Field(
-        default=None,
-        description=(
-            "Default behavioral guidance applied to every op on this agent. "
-            "Op-level guidance overrides this when set."
-        ),
-    )
-
-
-class FlowOp(HashableModel):
-    """One DAG node — a single invocation on some agent.
-
-    ``agent_id`` must reference a FlowAgent in the same FlowPlan. Multiple
-    ops can share an agent_id; the framework reuses the Branch so the
-    agent's conversation history carries across.
-    """
-
-    id: str = Field(
-        description=(
-            "Short unique op id, e.g. 'o1', 'review1'. Referenced by "
-            "other ops via depends_on. "
-            "Must match ^[A-Za-z0-9_-]{1,64}$."
-        ),
-    )
-
-    @field_validator("id", "agent_id")
-    @classmethod
-    def _validate_op_ids(cls, v: str) -> str:
-        return _validate_flow_id(v, kind="FlowOp.id / agent_id")
-
-    agent_id: str = Field(
-        description=(
-            "The id of the FlowAgent that executes this op. Multiple ops "
-            "can share an agent_id — the second invocation has memory of "
-            "the first. Reusing an existing agent is CHEAPER than spawning "
-            "a new one (no re-context, less tokens)."
-        ),
-    )
-    instruction: str = Field(
-        description="Concrete task instruction for this invocation.",
-    )
-    guidance: str | None = Field(
-        default=None,
-        description=(
-            "Per-op behavioral framing. Overrides the agent's default "
-            "guidance when set (e.g. 'skim quickly' vs 'deep analysis')."
-        ),
-    )
-    depends_on: list[str] | None = Field(
-        default=None,
-        description=(
-            "Other FlowOp ids this op waits on. Results from those ops "
-            "are available as upstream context. Same-agent deps are free "
-            "(branch already has memory); cross-agent deps require the "
-            "downstream agent to read the upstream's artifact dir."
-        ),
-    )
-    control: bool = Field(
-        default=False,
-        description=(
-            "Set True to make this a control/critic checkpoint. Control "
-            "ops produce a FlowControlVerdict and may trigger re-planning. "
-            "At most one control op per round."
-        ),
-    )
-    budget_weight: float = Field(
-        default=1.0,
-        description=(
-            "Relative weight for budget allocation among ops when a total "
-            "timeout is configured. The per-op share is computed as "
-            "``(total_budget / sum_of_all_weights) * budget_weight``. "
-            "Critic or lightweight ops can use a lower weight (e.g. 0.5) "
-            "to leave more time for heavy implementation ops."
-        ),
-    )
-
-
-class FlowPlan(HashableModel):
-    """Two-level DAG plan: agent identities + operation DAG.
-
-    Agents are the branches (who); operations are the DAG nodes (what
-    happens, in what order, to which branch). An operation with
-    ``control=True`` acts as a critic checkpoint — if its verdict says
-    should_continue, the orchestrator is re-invoked to plan more ops
-    (and may introduce new agents if needed).
-    """
-
-    agents: list[FlowAgent] = Field(
-        description=(
-            "Persistent agent identities (Branches). Keep count minimal — "
-            "reusing an agent across ops is cheaper than spawning a new "
-            "one. Spawn new only for fresh perspective or different role."
-        ),
-    )
-    operations: list[FlowOp] = Field(
-        description=(
-            "DAG of invocations. Each op picks its executing agent via "
-            "agent_id and declares upstream deps via depends_on. Ops form "
-            "an acyclic graph; independent ops run in parallel."
-        ),
-    )
-    synthesis: bool = Field(
-        default=False,
-        description=(
-            "Set True if the task benefits from a final consolidated "
-            "synthesis op after all others complete."
-        ),
-    )
-
-    # ── Prompt templates consumed by the orchestrator planner ──────────
-    PLANNING_INSTRUCTION: ClassVar[str] = (
-        "Produce a FlowPlan with TWO levels:\n"
-        "  1. agents: list of FlowAgent — each is a persistent Branch "
-        "     (identity + memory). Same agent can run multiple ops.\n"
-        "  2. operations: list of FlowOp — DAG of invocations. Each op "
-        "     picks which agent runs it via agent_id.\n\n"
-        "Example (research → implement → research re-reviews):\n"
-        "  agents: [\n"
-        "    FlowAgent(id='r1', role='researcher'),\n"
-        "    FlowAgent(id='i1', role='implementer'),\n"
-        "  ]\n"
-        "  operations: [\n"
-        "    FlowOp(id='o1', agent_id='r1', instruction='research X'),\n"
-        "    FlowOp(id='o2', agent_id='i1', instruction='implement based on o1', depends_on=['o1']),\n"
-        "    FlowOp(id='o3', agent_id='r1', instruction='review i1 work', depends_on=['o2']),\n"
-        "  ]\n"
-        "Because o3 reuses r1, r1 remembers its own research from o1 — "
-        "no need to re-inject context. Reusing agents is cheaper than "
-        "spawning new ones."
-    )
-
-    PLANNING_DISCIPLINE: ClassVar[str] = (
-        "CRITICAL: You MUST produce your output ONLY via the structured "
-        "output fields (the FlowPlan). Do NOT use any provider-native "
-        "subagent or tool-spawning features (no Agent tool, no subprocess "
-        "spawning, no delegation tools). The ONLY correct way to define "
-        "the pipeline is by filling in the FlowPlan structured output. "
-        "Use ONLY roles from the available list above — do not invent "
-        "custom role names. "
-        "AGENT VS OP COUNT: keep the agent count minimal — an agent is a "
-        "Branch with memory, so reusing an agent across ops is cheaper "
-        "than spawning a new one. Spawn a new agent only when you need a "
-        "fresh perspective or different role. Prefer 2-4 agents driving "
-        "several ops over 8 agents with one op each. "
-        "CONTROL OPS: Set op.control=true on an op to make it a flow "
-        "control checkpoint. Place at most one control op per round; it "
-        "should depend on the ops whose work it reviews. "
-        "Set synthesis=true if the task benefits from a final consolidated output. "
-        "AGENT & OP IDS: Use short alphanumeric identifiers matching "
-        "^[A-Za-z0-9_-]{1,64}$ (e.g. 'r1', 'impl_v2', 'ctx-fetch'). Ids are used "
-        "as filesystem path segments — do not include slashes, spaces, or dots."
-    )
-
-    REPLAN_INSTRUCTION: ClassVar[str] = (
-        "The control op requested continuation. Return a FlowPlan with:\n"
-        "  - agents: ONLY new agents you need (reuse existing when possible — "
-        "    list only the new ones here).\n"
-        "  - operations: the NEW ops to run. You may reference existing "
-        "    agents (by their original id) or your new agents.\n"
-        "Reusing an existing agent is cheaper — its branch already has "
-        "memory from its prior turns."
-    )
-
-    REPLAN_GUIDANCE: ClassVar[str] = (
-        "Add only ops needed to address the control feedback. "
-        "Do NOT re-run ops that already succeeded. "
-        "Use ONLY the structured output. Do NOT spawn subagents."
-    )
-
-
-FLOW_PLAN_FIELDS = FieldModel(FlowPlan, name="plan")
-
-
-class FlowControlVerdict(HashableModel):
-    """Structured output from a flow control op.
-
-    Control ops review prior work and decide whether the flow should
-    continue with additional rounds of planning/execution.
-    """
-
-    should_continue: bool = Field(
-        description=(
-            "If False, the flow ends here. If True, the orchestrator is "
-            "invoked to plan additional ops targeting the gaps named in "
-            "next_steps."
-        ),
-    )
-    reason: str = Field(
-        description=(
-            "Concise justification for the verdict — what criteria were "
-            "or were not met. Grounded in the specific op outputs, not vague."
-        ),
-    )
-    next_steps: str | None = Field(
-        default=None,
-        description=(
-            "If should_continue, specific gaps that need addressing "
-            "(name EXACT issues, not 'improve quality'). Read by the "
-            "orchestrator during re-planning."
-        ),
-    )
-
-    # Appended to each control op's instruction at execution time.
-    VERDICT_CONTRACT: ClassVar[str] = (
-        "Review all prior op outputs and produce a verdict: "
-        "should_continue (bool), reason (str), and optional next_steps "
-        "(str) guidance if continuing.\n\n"
-        "VERDICT CONSEQUENCES: If should_continue=False, the flow ends. "
-        "If should_continue=True, the orchestrator plans ADDITIONAL ops "
-        "(possibly reusing existing agents) to address your next_steps. "
-        "Be specific: name EXACT gaps, not 'improve quality'."
-    )
-
-
-FLOW_VERDICT_FIELDS = FieldModel(FlowControlVerdict, name="verdict")
-
-
-def _topo_sort_ops(
-    ops: list[FlowOp],
-    *,
-    existing_op_ids: set[str] | None = None,
-) -> list[FlowOp]:
-    """Topological sort of FlowOps so parents appear before children.
-
-    Uses iterative Kahn's BFS to avoid Python recursion limits on deep chains.
-    The 200-op hard cap is enforced upstream by the plan validation layer
-    in ``_run_flow_inner`` before this function is called.
-
-    Raises
-    ------
-    ValueError
-        If any ``depends_on`` references an id not in ``ops`` or
-        ``existing_op_ids`` (fail-closed on typos and hallucinated deps),
-        if an op id is duplicated in ``ops``, or if the
-        dependency graph has a cycle.
-    """
-    by_id: dict[str, FlowOp] = {}
-    for op in ops:
-        if op.id in by_id:
-            raise ValueError(f"Duplicate op id {op.id!r}")
-        by_id[op.id] = op
-
-    known_ids = set(by_id) | (existing_op_ids or set())
-
-    for op in ops:
-        for dep in op.depends_on or []:
-            if dep not in known_ids:
-                raise ValueError(f"Op {op.id!r} declares unknown dependency {dep!r}")
-
-    # Kahn's BFS — only local (within-batch) deps affect sort order.
-    # Deps on existing_op_ids are satisfied by definition (already executed).
-    from collections import deque
-
-    in_degree: dict[str, int] = {op_id: 0 for op_id in by_id}
-    children: dict[str, list[str]] = {op_id: [] for op_id in by_id}
-    for op in ops:
-        for dep in op.depends_on or []:
-            if dep in by_id:
-                in_degree[op.id] += 1
-                children[dep].append(op.id)
-
-    queue: deque[str] = deque(op_id for op_id in by_id if in_degree[op_id] == 0)
-    order: list[FlowOp] = []
-
-    while queue:
-        op_id = queue.popleft()
-        order.append(by_id[op_id])
-        for child_id in children[op_id]:
-            in_degree[child_id] -= 1
-            if in_degree[child_id] == 0:
-                queue.append(child_id)
-
-    if len(order) != len(ops):
-        remaining = {op_id for op_id in by_id if by_id[op_id] not in order}
-        cycle_node = next(iter(remaining))
-        raise ValueError(f"Dependency cycle detected involving {cycle_node!r}")
-
-    return order
+    s = (spec or "all").strip().lower()
+    if s in ("off", "none", "false", "no", "0"):
+        return False, set()
+    if s in ("all", "on", "true", "yes", "1", ""):
+        return True, None
+    roles = {r.strip() for r in spec.split(",") if r.strip()}
+    return (True, roles) if roles else (True, None)
 
 
 def _format_flow_result_text(
@@ -540,8 +262,9 @@ def _format_flow_result_text(
     for w in agent_results:
         deps = w.get("depends_on") or []
         dep_str = f"  deps: {', '.join(deps)}" if deps else ""
+        tag = "  [spawned]" if w.get("spawned") else ""
         lines.append(f"{'═' * 60}")
-        lines.append(f"  {w['id']} ({w['name']})  [{w['model']}]{dep_str}")
+        lines.append(f"  {w['id']} ({w['name']}){tag}  [{w['model']}]{dep_str}")
         lines.append(f"  {w['time_ms']:.0f}ms")
         lines.append(f"{'═' * 60}")
         lines.append(w.get("response", "(no response)"))
@@ -581,6 +304,7 @@ async def _run_flow(
     max_ops: int = 0,
     dry_run: bool = False,
     show_graph: bool = False,
+    reactive_spec: str = "all",
     fast: bool = False,
     playbook_name: str | None = None,
     playbook_artifacts: dict | None = None,
@@ -588,25 +312,22 @@ async def _run_flow(
     project: str | None = None,
     **legacy_kwargs,
 ) -> tuple[str, str]:
-    """Auto-DAG flow: orchestrator plans DAG → engine executes with deps.
+    """Reactive DAG flow: orchestrator plans TaskAssignments → self-expanding execution.
 
     Returns ``(output, terminal_status)`` — ADR-0029 §7 lets the artifact
-    contract verifier flip a clean ``completed`` into ``failed`` at
-    teardown, so callers MUST use the returned status to compute the
-    process exit code rather than assuming success when no exception
-    was raised.
+    contract verifier flip a clean ``completed`` into ``failed`` at teardown, so
+    callers MUST use the returned status for the process exit code.
 
-    ``max_ops`` caps the number of operations (DAG nodes) the planner may
-    emit. ``max_agents`` is accepted as a deprecated alias.
+    ``max_ops`` caps total ops: the initial plan plus reactive spawns share one
+    budget. ``max_agents`` is accepted as a deprecated alias.
     """
-    # Accept legacy max_agents kwarg for backward compat with direct callers.
     if "max_agents" in legacy_kwargs and max_ops == 0:
         max_ops = legacy_kwargs.pop("max_agents")
     elif "max_agents" in legacy_kwargs:
         legacy_kwargs.pop("max_agents")
     if legacy_kwargs:
-        # Surface unrecognized kwargs instead of swallowing.
         raise TypeError(f"_run_flow() got unexpected keyword arguments: {list(legacy_kwargs)}")
+
     env = setup_orchestration(
         pattern_name="Flow",
         model_spec=model_spec,
@@ -623,21 +344,14 @@ async def _run_flow(
         total_budget=timeout,
     )
 
-    # ADR-0012: `flow` and `play` are distinct invocation kinds. A playbook
-    # run (li play NAME, or li o flow -p NAME) is `play`; an ad-hoc DAG flow
-    # without a playbook is `flow`.
-    # ADR-0022: surface the orchestrator's default model + effort on the
-    # session row. Per-branch (per-agent) model is written by
-    # _register_branch_hook → create_branch when each worker spawns.
+    # ADR-0012/0022: playbook run → `play`, ad-hoc → `flow`. Surface the
+    # orchestrator's default model + effort on the session row.
     _orc_ms = parse_model_spec(env.default_model_spec) if env.default_model_spec else None
     _orc_provider = None
     if _orc_ms and "/" in _orc_ms.model:
         _orc_provider = _orc_ms.model.split("/", 1)[0]
-    # ADR-0029 §4-5: resolve the artifact contract (playbook overrides
-    # agent defaults by id; playbook wins). Snapshot onto the session
-    # via start_live_persist so verify_artifact_contract() at teardown
-    # has something to check against. None = no contract declared →
-    # verification skipped entirely.
+
+    # ADR-0029 §4-5: resolve the artifact contract (playbook overrides agent).
     artifact_contract = None
     if playbook_artifacts is not None or (
         agent_name is not None and getattr(env.orc_profile, "artifact_defaults", None) is not None
@@ -677,6 +391,7 @@ async def _run_flow(
         max_ops=max_ops,
         dry_run=dry_run,
         show_graph=show_graph,
+        reactive_spec=reactive_spec,
     )
     # ADR-0025: distinguish timed_out / aborted / cancelled / failed.
     _terminal_status = "completed"
@@ -694,8 +409,6 @@ async def _run_flow(
         _terminal_status = "aborted"
         raise
     except (TimeoutError, LionTimeoutError):
-        # Catches both the move_on_after re-raise above and any
-        # timeout from inside _run_flow_inner itself.
         _terminal_status = "timed_out"
         raise
     except BaseException as exc:
@@ -707,19 +420,14 @@ async def _run_flow(
             _terminal_status = "failed"
         raise
     finally:
-        # Shield teardown from outer cancellation so iModel executors are
-        # always closed; see lionagi/cli/agent.py for the full rationale.
+        # Shield teardown from outer cancellation so iModel executors are always
+        # closed; see lionagi/cli/agent.py for the full rationale.
         import anyio
 
         with anyio.CancelScope(shield=True):
-            # ADR-0029 §7: stop_live_persist may override the proposed
-            # status (clean exit + missing required → failed). Use the
-            # returned status for downstream exit-code propagation.
             effective_status = await stop_live_persist(env, status=_terminal_status)
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
-            # ADR-0028 Phase 2: finalize invocation with reason code,
-            # using the (possibly overridden) terminal status.
             if invocation_id:
                 import time as _time
 
@@ -774,225 +482,114 @@ async def _run_flow_inner(
     max_ops: int = 0,
     dry_run: bool = False,
     show_graph: bool = False,
+    reactive_spec: str = "all",
 ) -> str:
     """Inner flow logic (no timeout wrapper)."""
     t0 = time.monotonic()
-
-    # Working objects: four subjects this function mutates across phases.
-    # All config (bare/verbose/effort/yolo/theme/cwd) is read from `env`
-    # directly — no aliases, one source of truth.
     run = env.run
     session = env.session
-    orc_branch = env.orc_branch
     builder = env.builder
 
-    # ── Phase 0: Orchestrator plans the DAG ──────────────────────────
-    # Build role roster for orchestrator guidance
-    available_roles = list_agents()
-    if env.bare:
-        roles_guidance = (
-            f"Available roles: {', '.join(available_roles)}. "
-            f"All workers use model {model_spec}. "
-            f"Roles define behavioral focus only — model is fixed."
-        )
-    else:
-        role_details = []
-        for role in available_roles:
-            try:
-                rp = load_agent_profile(role)
-                rm = rp.model or model_spec
-                detail = f"{role} (model: {rm}"
-                if rp.effort:
-                    detail += f", effort: {rp.effort}"
-                detail += ")"
-                role_details.append(detail)
-            except FileNotFoundError:
-                role_details.append(f"{role} (model: {model_spec})")
-        roles_guidance = f"Available agents: {'; '.join(role_details)}."
-
+    # ── Phase 0: Orchestrator plans the DAG as a list[TaskAssignment] ──
+    roster = available_roles()
     budget_note = ""
     if max_ops > 0:
         budget_note = (
-            f"BUDGET: Your plan may contain at most {max_ops} ops (DAG nodes) "
-            "total, INCLUDING any synthesis/critic ops you intend to run at "
-            "the end. Plans exceeding this cap will be truncated — design "
-            "accordingly. "
+            f"BUDGET: at most {max_ops} ops total, INCLUDING any reactively "
+            "spawned follow-ups — plan tightly. "
         )
-
-    # Build guidance blocks for plan root
-    artifact_guidance = (
-        "ARTIFACT PROTOCOL: Each agent gets ONE directory at "
-        f"{run.artifact_root}/{{agent_id}}/ — all invocations of the same "
-        "agent share that directory. In EVERY op.instruction you MUST specify: "
-        "(1) whether the agent should write files or return text inline. "
-        "(2) if files are needed, the names required by the task. "
-        "(3) WHERE to read upstream: 'Read ../{dep_agent_id}/{filename}.md' for "
-        "each upstream dep that belongs to a different agent. If an upstream "
-        "dep is the SAME agent, the agent already remembers it — no re-read needed. "
-    )
-
-    plan_root = builder.add_operation(
-        "operate",
-        branch=orc_branch,
-        instruct=Instruct(
-            instruction=FlowPlan.PLANNING_INSTRUCTION,
-            context={"task": prompt},
-            guidance=(
-                f"{roles_guidance} "
-                f"{budget_note}"
-                f"{artifact_guidance}"
-                f"{EFFORT_GUIDANCE}"
-                f"{team_guidance(team_attach or team_name)}"
-                f"{FlowPlan.PLANNING_DISCIPLINE}"
-            ),
-        ),
-        field_models=[FLOW_PLAN_FIELDS],
-        reason=True,
+    guidance = (
+        f"{role_roster(env.default_model_spec)}\n\n{mode_roster()}\n\n"
+        f"{budget_note}{team_guidance(team_attach or team_name)}"
     )
 
     progress("Planning DAG...")
-
-    result0 = await session.flow(builder.get_graph())
-    t_plan = time.monotonic() - t0
-
-    plan_result = result0.get("operation_results", {}).get(plan_root)
-    plan: FlowPlan | None = getattr(plan_result, "plan", None)
-
-    if not plan or not plan.agents or not plan.operations:
-        return "Orchestrator produced no flow plan."
-
-    # Reject duplicate FlowAgent.id — agents_by_id would silently
-    # overwrite, losing whichever agent came first.
-    seen_agent_ids: set[str] = set()
-    for a in plan.agents:
-        if a.id in seen_agent_ids:
-            return (
-                f"Invalid plan: duplicate FlowAgent.id {a.id!r}. Each agent must have a unique id."
-            )
-        seen_agent_ids.add(a.id)
-
-    # Reject duplicate FlowOp.id as well — depends_on references would
-    # become ambiguous.
-    seen_op_ids: set[str] = set()
-    for op in plan.operations:
-        if op.id in seen_op_ids:
-            return f"Invalid plan: duplicate FlowOp.id {op.id!r}. Each op must have a unique id."
-        seen_op_ids.add(op.id)
-
-    # Validate op.agent_id references resolve to a defined agent
-    agent_ids = seen_agent_ids
-    for op in plan.operations:
-        if op.agent_id not in agent_ids:
-            return (
-                f"Invalid plan: op {op.id!r} references unknown agent "
-                f"{op.agent_id!r} (known: {sorted(agent_ids)})"
-            )
-
-    # Reject plans exceeding the hard op count cap before sorting.
-    if len(plan.operations) > 200:
-        return f"Invalid plan: Plan has {len(plan.operations)} operations; maximum allowed is 200"
-
-    # Validate topology and depends_on targets up front. Rejects plans
-    # with typo'd deps or dependency cycles before we spend any agent
-    # time executing them.
-    try:
-        plan.operations = _topo_sort_ops(plan.operations)
-    except ValueError as e:
-        return f"Invalid plan: {e}"
-
-    # max_ops caps the total operation count — that is the real work
-    # budget. Agent count is bounded implicitly by the op count since
-    # every agent runs at least one op.
-    if max_ops > 0 and len(plan.operations) > max_ops:
-        dropped = len(plan.operations) - max_ops
-        plan.operations = plan.operations[:max_ops]
-        from .._logging import warn as _warn
-
-        _warn(
-            f"Plan truncated: {dropped} op(s) dropped to fit --max-ops={max_ops}. "
-            "The truncated ops (often terminal synthesis/critic) will not run. "
-            "Raise --max-ops or design a tighter plan."
+    assignments = await plan(
+        env.orc_branch, prompt, roles=roster, dag=True, guidance=guidance, max_tasks=max_ops
+    )
+    if not assignments:
+        # #1236: fail loud rather than exiting 0 with no work. One reinforced
+        # retry, then raise with the raw response attached.
+        _warn("Orchestrator returned no assignments; retrying once with a sharper instruction.")
+        assignments = await plan(
+            env.orc_branch,
+            prompt,
+            roles=roster,
+            dag=True,
+            guidance=guidance + " Return ONLY the assignments list — do not perform the task.",
+            max_tasks=max_ops,
+        )
+    if not assignments:
+        raise FlowPlanError(
+            "Orchestrator produced no usable plan (an empty TaskAssignment list) after a "
+            "retry. This commonly happens when the task prompt embeds imperative "
+            "multi-section instructions that pull the model into executing the task "
+            "instead of decomposing it — prefer a declarative task statement, and run "
+            "with --verbose to inspect the raw response."
         )
 
+    # Defensive cap: a runaway orchestrator emitting hundreds of assignments
+    # would spawn hundreds of branches/iModels. Truncate (don't crash).
+    if len(assignments) > 200:
+        _warn(f"Plan has {len(assignments)} assignments; truncating to 200.")
+        assignments = assignments[:200]
+
+    t_plan = time.monotonic() - t0
+
+    # One deduplicated worker name per assignment (researcher, researcher-2, …).
+    name_counts: dict[str, int] = {}
+    agent_ids: list[str] = []
+    for ta in assignments:
+        name_counts[ta.assignee] = name_counts.get(ta.assignee, 0) + 1
+        n = name_counts[ta.assignee]
+        agent_ids.append(f"{ta.assignee}-{n}" if n > 1 else ta.assignee)
+
+    dep_indices = [_earlier_dep_indices(ta.depends_on, i) for i, ta in enumerate(assignments)]
+
     dag_lines = []
-    for op in plan.operations:
-        deps = f" ← {','.join(op.depends_on)}" if op.depends_on else ""
-        ctrl = "!" if op.control else ""
-        dag_lines.append(f"{op.id}{ctrl}:{op.agent_id}{deps}")
-    progress(
-        f"Plan done ({t_plan:.1f}s): {len(plan.agents)} agents, "
-        f"{len(plan.operations)} ops — {' | '.join(dag_lines)}"
-    )
+    for i, ta in enumerate(assignments):
+        deps = f" ← {','.join(str(j + 1) for j in dep_indices[i])}" if dep_indices[i] else ""
+        dag_lines.append(f"{i + 1}:{ta.assignee}{deps}")
+    progress(f"Plan done ({t_plan:.1f}s): {len(assignments)} assignments — {' | '.join(dag_lines)}")
 
-    if plan.synthesis and not with_synthesis:
-        with_synthesis = True
-
-    # ── Dry run: dump plan and exit ─────────────────────────────────
+    # ── Dry run: dump assignments and exit ────────────────────────────
     if dry_run:
-        lines = [
-            f"FlowPlan ({len(plan.agents)} agents, {len(plan.operations)} ops, "
-            f"synthesis={plan.synthesis})",
-            "",
-            "Agents:",
-        ]
-        for a in plan.agents:
-            lines.append(f"  {a.id}: {a.role}")
-            if a.model:
-                lines.append(f"    model: {a.model}")
-            if a.guidance:
-                lines.append(f"    guidance: {a.guidance[:80]}...")
-        lines.append("")
-        lines.append("Operations:")
-        for op in plan.operations:
-            ctrl = " [CONTROL]" if op.control else ""
-            deps = f"  depends_on: {', '.join(op.depends_on)}" if op.depends_on else ""
-            lines.append(f"  {op.id} → {op.agent_id}{ctrl}")
-            lines.append(f"    instruction: {op.instruction[:120]}...")
+        lines = [f"Plan ({len(assignments)} assignments):", ""]
+        for i, ta in enumerate(assignments):
+            deps = (
+                f"  depends_on: {', '.join(str(j + 1) for j in dep_indices[i])}"
+                if dep_indices[i]
+                else ""
+            )
+            lines.append(f"  {i + 1}. [{ta.assignee}] {ta.task[:120]}")
             if deps:
                 lines.append(deps)
-            if op.guidance:
-                lines.append(f"    guidance: {op.guidance[:80]}...")
-            lines.append("")
-
-        # Show resolved models per agent
-        lines.append("Model resolution:")
-        for a in plan.agents:
+            if ta.exit_criteria:
+                lines.append(f"    exit: {ta.exit_criteria[:100]}")
+        lines.append("")
+        lines.append("Model + modes resolution:")
+        for i, ta in enumerate(assignments):
             if env.bare:
-                rm = a.model or model_spec
-                lines.append(f"  {a.id}: {rm} (bare)")
+                lines.append(f"  {agent_ids[i]}: {model_spec} (bare)")
+                continue
+            rm, rp = resolve_worker_spec(ta.assignee)
+            cfg = role_config(ta.assignee)
+            if rp:
+                # A user profile supplies its own body — casts modes don't apply
+                # (profile shadows casts; ADR-0074 follow-up makes them compose).
+                model, src, modes = rm, "profile", []
+            elif cfg and cfg.model:
+                model, src = cfg.model, "pack"
+                modes = resolve_modes(ta.assignee, ta.modes or None)
             else:
-                rm, rp = resolve_worker_spec(a.role)
-                if a.model:
-                    rm = a.model
-                src = "plan" if a.model else ("profile" if rp else "default")
-                lines.append(f"  {a.id}: {rm} ({src})")
-
-        if show_graph:
-            # Pre-execution preview — draw from plan directly, NOT from the
-            # builder (which has only the orchestrator's seed op at this point).
-            from lionagi.operations._visualize_graph import visualize_plan
-
-            visualize_plan(
-                plan,
-                title=(f"Flow DAG plan — {len(plan.agents)} agents / {len(plan.operations)} ops"),
-                save_path=str(run.dag_image_path),
-            )
-
+                model, src = model_spec, "default"
+                modes = resolve_modes(ta.assignee, ta.modes or None)
+            mode_str = f"  modes={modes}" if modes else ""
+            lines.append(f"  {agent_ids[i]}: {model} ({src}){mode_str}")
         return "\n".join(lines)
 
-    # ── Name allocation: one name per agent, deduped by role ────────
-    name_counts: dict[str, int] = {}
-    agent_id_to_name: dict[str, str] = {}
-    all_agent_names: list[str] = []
-    for a in plan.agents:
-        base = a.role
-        name_counts[base] = name_counts.get(base, 0) + 1
-        wname = f"{base}-{name_counts[base]}" if name_counts[base] > 1 else base
-        agent_id_to_name[a.id] = wname
-        all_agent_names.append(wname)
-
+    # ── Team setup ────────────────────────────────────────────────────
     if team_attach:
-        # Upsert: load existing team by name, else create a fresh one.
         from ..team import _load_team
 
         try:
@@ -1002,183 +599,123 @@ async def _run_flow_inner(
                 f"{len(env.team_data.get('messages', []))} prior msgs)"
             )
         except FileNotFoundError:
-            env.team_data = _create_fanout_team(team_attach, all_agent_names)
+            env.team_data = _create_fanout_team(team_attach, agent_ids)
             progress(f"Team '{team_attach}' created ({env.team_data['id']})")
     elif team_name:
-        env.team_data = _create_fanout_team(team_name, all_agent_names)
+        env.team_data = _create_fanout_team(team_name, agent_ids)
         progress(f"Team '{team_name}' created ({env.team_data['id']})")
     team_data = env.team_data
 
-    # ── Helper: build branch for a single agent spec ───────────────
-    def _build_agent_branch(
-        a: FlowAgent,
-    ) -> tuple[Branch, str, AgentProfile | None]:
-        return build_worker_branch(
-            env,
-            agent_id=a.id,
-            role=a.role,
-            model_override=a.model,
-            explicit_name=agent_id_to_name[a.id],
-        )
+    # ── Budget preambles (proportional split of a total timeout) ──────
+    budget_preambles: dict[int, str] = {}
+    if env.total_budget and assignments:
+        share = int(env.total_budget / len(assignments))
+        deadline = time.time() + env.total_budget
+        for i in range(len(assignments)):
+            budget_preambles[i] = _format_budget_preamble(
+                op_index=i + 1,
+                num_ops=len(assignments),
+                op_budget_seconds=share,
+                deadline_epoch=deadline,
+            )
 
-    # ── Helper: build context + add a node for a single op ──────────
-    # Agent-scoped artifact dirs: every op of the same agent shares
-    # one dir. Upstream reads resolve by mapping dep op → dep agent.
-    def _add_op_node(
-        op: FlowOp,
-        agent: FlowAgent,
-        profile: AgentProfile | None,
-        branch: Branch,
-        dep_nodes: list[str],
-        op_id_to_agent: dict[str, str],
-        field_models=None,
-        budget_preamble: str | None = None,
-    ) -> str:
+    # ── Reactive mode (--reactive): who, if anyone, may grow the DAG ──
+    reactive, spawn_roles = _parse_reactive(reactive_spec)
+
+    def _may_spawn(role: str) -> bool:
+        return reactive and (spawn_roles is None or role in spawn_roles)
+
+    # ── Build one worker branch + op node per assignment ──────────────
+    # A worker granted SpawnRequest may grow the live DAG. role_base maps a role
+    # → a branch the reactive node_builder clones for spawned follow-ups.
+    worker_models: list[str] = []
+    node_ids: list[str] = []
+    role_base: dict[str, object] = {}
+
+    for i, ta in enumerate(assignments):
+        w_branch, w_model, w_profile = build_worker_branch(
+            env,
+            agent_id=agent_ids[i],
+            role=ta.assignee,
+            explicit_name=agent_ids[i],
+            grant_spawn=_may_spawn(ta.assignee),
+            modes=ta.modes or None,
+        )
+        worker_models.append(w_model)
+        role_base.setdefault(ta.assignee, w_branch)
+
+        # Context: original task + artifact dir + upstream dirs + effort + team.
         ctx: list = [{"original_task": prompt}]
         artifact_note = (
-            f"Your artifact directory (shared across all ops on {agent.id}): "
-            f"{run.agent_artifact_dir(agent.id)}/ — write output files here."
+            f"Your artifact directory: {run.agent_artifact_dir(agent_ids[i])}/ — "
+            "write output files here."
         )
-        if op.depends_on:
-            dep_notes = []
-            for d in op.depends_on:
-                dep_agent = op_id_to_agent.get(d)
-                if dep_agent is None:
-                    continue
-                if dep_agent == agent.id:
-                    # Same-agent dep: the branch already remembers the upstream
-                    # turn — no need to re-gather context or re-read files.
-                    dep_notes.append(f"{d}: already in your memory (same agent)")
-                else:
-                    dep_notes.append(f"{d} ({dep_agent}): {run.agent_artifact_dir(dep_agent)}/")
-            if dep_notes:
-                artifact_note += f" Upstream: {'; '.join(dep_notes)}."
+        if dep_indices[i]:
+            ups = "; ".join(
+                f"step {j + 1} ({agent_ids[j]}): {run.agent_artifact_dir(agent_ids[j])}/"
+                for j in dep_indices[i]
+            )
+            artifact_note += f" Upstream deps: {ups}."
         ctx.append({"artifact_instructions": artifact_note})
-
         if team_data:
             ctx.append(
                 {
                     "team": {
                         "id": team_data["id"],
                         "name": team_data["name"],
-                        "your_name": agent_id_to_name[agent.id],
+                        "your_name": agent_ids[i],
                     }
                 }
             )
-
         w_effort = env.effort
-        if not env.bare and profile and profile.effort:
-            w_effort = profile.effort
+        if not env.bare and w_profile and w_profile.effort:
+            w_effort = w_profile.effort
         if w_effort:
             ctx.append({"effort_guidance": EFFORT_MAP.get(w_effort, "")})
 
-        # Prepend BUDGET preamble when a time budget was configured. The
-        # preamble is injected at the start of the instruction text so the
-        # worker sees it before any domain-specific framing.
-        instruction = op.instruction
-        if budget_preamble:
-            instruction = budget_preamble + instruction
-
-        add_kw = dict(
-            branch=branch,
-            depends_on=dep_nodes,
+        instruction = budget_preambles.get(i, "") + ta.task
+        dep_nodes = [node_ids[j] for j in dep_indices[i]]
+        node = builder.add_operation(
+            "operate",
+            branch=w_branch,
+            depends_on=dep_nodes or None,
             instruction=instruction,
-            guidance=op.guidance or agent.guidance,
             context=ctx,
         )
-        if field_models is not None:
-            add_kw["field_models"] = field_models
-            add_kw["reason"] = True
-        return builder.add_operation("operate", **add_kw)
+        node_ids.append(node)
 
-    # ── Pass 1: build all agent branches ───────────────────────────
-    agents_by_id: dict[str, Branch] = {}
-    agent_model_by_id: dict[str, str] = {}
-    agent_profile_by_id: dict[str, AgentProfile | None] = {}
-    for a in plan.agents:
-        b, m, p = _build_agent_branch(a)
-        agents_by_id[a.id] = b
-        agent_model_by_id[a.id] = m
-        agent_profile_by_id[a.id] = p
+    known_nodes = set(node_ids)
+    deps_by_node = {
+        node_ids[i]: [str(j + 1) for j in dep_indices[i]] for i in range(len(assignments))
+    }
 
-    # agent_spec lookup used by op construction + re-plan
-    agent_spec_by_id: dict[str, FlowAgent] = {a.id: a for a in plan.agents}
-
-    # ── Pass 2: build regular op nodes ─────────────────────────────
-    op_to_node: dict[str, str] = {}
-    op_meta: dict[str, dict] = {}
-    op_id_to_agent: dict[str, str] = {op.id: op.agent_id for op in plan.operations}
-    agent_results: list[dict] = []
-
-    def _record_result(result: dict) -> None:
-        """Append result and persist immediately to artifact dir."""
-        agent_results.append(result)
-        try:
-            agent_dir = run.agent_artifact_dir(result["agent_id"])
-            agent_dir.mkdir(parents=True, exist_ok=True)
-            (agent_dir / f"{result['id']}.md").write_text(result["response"])
-        except OSError as exc:
-            from .._logging import warn as _warn
-
-            _warn(f"Failed to save artifact for {result['id']}: {exc}")
-
-    regular_ops = [op for op in plan.operations if not op.control]
-    control_ops = [op for op in plan.operations if op.control]
-
-    ctrl_note = f" ({len(control_ops)} control)" if control_ops else ""
-    progress(f"Executing DAG: {len(plan.agents)} agents / {len(regular_ops)} ops{ctrl_note}...")
-
-    # ── Budget preamble computation ──────────────────────────────────
-    # When a total timeout was configured, split it proportionally across
-    # regular ops by their budget_weight (default 1.0 = equal share).
-    # Control ops are excluded — they are bookkeeping, not deliverables.
-    _op_budget_preambles: dict[str, str] = {}
-    if env.total_budget and regular_ops:
-        _sum_weights = sum(op.budget_weight for op in regular_ops)
-        _budget_start = time.time()
-        for _idx, _op in enumerate(regular_ops, 1):
-            _share = int((env.total_budget / _sum_weights) * _op.budget_weight)
-            # Deadline = wall-clock start + this op's cumulative offset.
-            # We use a simple "start + total" deadline: every op sees the
-            # same wall-clock deadline (the flow's global deadline). Each
-            # op's *share* tells it how much of that window is "its turn".
-            _deadline = _budget_start + env.total_budget
-            _op_budget_preambles[_op.id] = _format_budget_preamble(
-                op_index=_idx,
-                num_ops=len(regular_ops),
-                op_budget_seconds=_share,
-                deadline_epoch=_deadline,
+    # ── Early DAG snapshot for Studio ─────────────────────────────────
+    early_graph = {
+        "agents": [
+            {"id": agent_ids[i], "name": agent_ids[i], "model": worker_models[i]}
+            for i in range(len(assignments))
+        ],
+        "operations": [
+            {
+                "id": agent_ids[i],
+                "agent_id": agent_ids[i],
+                "control": False,
+                "depends_on": [str(j + 1) for j in dep_indices[i]],
+            }
+            for i in range(len(assignments))
+        ],
+    }
+    env._finalize_extras = early_graph
+    ctx_lp = getattr(env, "_live_persist", None)
+    if ctx_lp and ctx_lp.get("db"):
+        with contextlib.suppress(Exception):
+            await ctx_lp["db"].update_session(
+                ctx_lp["session_id"], node_metadata=json.dumps(early_graph)
             )
 
-    for op in regular_ops:
-        a = agent_spec_by_id[op.agent_id]
-        b = agents_by_id[op.agent_id]
-        p = agent_profile_by_id[op.agent_id]
-        dep_nodes = [op_to_node[d] for d in (op.depends_on or []) if d in op_to_node]
-        if not dep_nodes:
-            dep_nodes = [plan_root]
-        node_id = _add_op_node(
-            op,
-            a,
-            p,
-            b,
-            dep_nodes,
-            op_id_to_agent,
-            budget_preamble=_op_budget_preambles.get(op.id),
-        )
-        op_to_node[op.id] = node_id
-        op_meta[op.id] = {
-            "agent_id": op.agent_id,
-            "agent_name": agent_id_to_name[op.agent_id],
-            "model": agent_model_by_id[op.agent_id],
-            "depends_on": op.depends_on or [],
-        }
-
-    # Track operation execution segments for Studio rendering.
-    # Each entry: {op_id, branch_id, branch_name, status, started_at, ended_at}
+    # ── Progress + segment + branch-status plumbing (Studio) ──────────
     _op_segments: list[dict] = []
 
-    # Progress callback for real-time status + branch lifecycle
     def _progress(op_id, name, status, elapsed):
         if status == "started":
             progress(f"  ▶ {name} started")
@@ -1227,8 +764,6 @@ async def _run_flow_inner(
         import asyncio as _aio
 
         async def _do():
-            # Best-effort live metadata update — failures here mustn't block
-            # the surrounding flow execution.
             with contextlib.suppress(Exception):
                 await ctx["db"].update_session(ctx["session_id"], node_metadata=json.dumps(extras))
 
@@ -1244,7 +779,6 @@ async def _run_flow_inner(
         import asyncio as _aio
 
         async def _do():
-            # Best-effort branch status sync — failures must not block the flow.
             with contextlib.suppress(Exception):
                 kw = {"status": new_status}
                 if new_status == "running":
@@ -1255,45 +789,21 @@ async def _run_flow_inner(
 
         _aio.ensure_future(_do())
 
-    # Persist DAG graph to SQLite early so Studio shows it during execution
-    _early_graph = {
-        "agents": [
-            {"id": aid, "name": agent_id_to_name[aid], "model": agent_model_by_id[aid]}
-            for aid in agents_by_id
-        ],
-        "operations": [
-            {
-                "id": op.id,
-                "agent_id": op.agent_id,
-                "control": op.control,
-                "depends_on": op.depends_on or [],
-            }
-            for op in plan.operations
-        ],
-    }
-    env._finalize_extras = _early_graph
-    ctx = getattr(env, "_live_persist", None)
-    if ctx and ctx.get("db"):
-        # Best-effort early DAG snapshot — flow continues even if persist fails.
-        with contextlib.suppress(Exception):
-            await ctx["db"].update_session(
-                ctx["session_id"], node_metadata=json.dumps(_early_graph)
-            )
-
-    # Execute regular ops
-    t_exec = time.monotonic()
-    conc = max_concurrent if max_concurrent > 0 else max(len(regular_ops), 1)
-
-    # Per-op heartbeat + idle-child watchdog (#1150).
-    # Runs as a background asyncio task during DAG execution. Every
-    # heartbeat_interval seconds it emits a progress line for each
-    # running op so the flow.log never goes silent. After max_idle_seconds
-    # it emits an explicit IDLE STALL warning so operators can detect a
-    # hung child process without waiting hours.
-    heartbeat_interval = 60  # seconds between heartbeat lines
-    max_idle_seconds = 600  # warn after 10 min of no op completion
+    # ── Execution (reactive self-expansion, or flat batch when off) ───
+    await _persist_session_phase(env, "executing")
+    if reactive:
+        scope = "all workers" if spawn_roles is None else f"roles {sorted(spawn_roles)}"
+        progress(f"Executing reactive DAG: {len(assignments)} assignments (spawn: {scope})...")
+    else:
+        progress(f"Executing DAG (reactive off): {len(assignments)} assignments...")
+    conc = max_concurrent if max_concurrent > 0 else max(len(assignments), 1)
+    # Spawn budget: when --max-ops is set, the initial plan + spawns share it.
+    max_spawn = max(0, max_ops - len(assignments)) if max_ops > 0 else 50
 
     import asyncio as _asyncio
+
+    heartbeat_interval = 60
+    max_idle_seconds = 600
 
     async def _heartbeat_loop() -> None:
         while True:
@@ -1303,19 +813,23 @@ async def _run_flow_inner(
                 if _seg["status"] != "running":
                     continue
                 _elapsed = _now - _seg.get("started_at", _now)
-                _name = _seg["branch_name"]
                 _seg["last_heartbeat_at"] = _now
-                progress(f"  · {_name} heartbeat {_elapsed / 60:.0f}m")
+                progress(f"  · {_seg['branch_name']} heartbeat {_elapsed / 60:.0f}m")
                 if _elapsed > max_idle_seconds:
                     progress(
-                        f"  ⚠ IDLE STALL: {_name} running {_elapsed:.0f}s with no "
-                        "completion — possible hung child process"
+                        f"  ⚠ IDLE STALL: {_seg['branch_name']} running {_elapsed:.0f}s "
+                        "with no completion — possible hung child process"
                     )
 
+    t_exec = time.monotonic()
     _hb_task = _asyncio.ensure_future(_heartbeat_loop())
     try:
         dag_result = await session.flow(
             builder.get_graph(),
+            reactive=reactive,
+            spawn_type=SpawnRequest if reactive else None,
+            node_builder=role_node_builder(role_base) if reactive else None,
+            max_spawn=max_spawn,
             max_concurrent=conc,
             verbose=env.verbose,
             on_progress=_progress,
@@ -1327,270 +841,74 @@ async def _run_flow_inner(
     t_exec_elapsed = time.monotonic() - t_exec
 
     op_results = dag_result.get("operation_results", {})
-    for op in regular_ops:
-        nid = op_to_node[op.id]
-        meta = op_meta[op.id]
+    n_spawned = dag_result.get("spawned_operations", 0)
+
+    # ── Collect results (initial assignments + reactively spawned) ────
+    agent_results: list[dict] = []
+
+    def _record_result(result: dict) -> None:
+        agent_results.append(result)
+        with contextlib.suppress(OSError):
+            agent_dir = run.agent_artifact_dir(result["agent_id"])
+            agent_dir.mkdir(parents=True, exist_ok=True)
+            (agent_dir / f"{result['id']}.md").write_text(result["response"])
+
+    for i in range(len(assignments)):
+        nid = node_ids[i]
         res = op_results.get(nid)
         _record_result(
             {
-                "id": op.id,
-                "agent_id": op.agent_id,
-                "name": meta["agent_name"],
-                "model": meta["model"],
-                "depends_on": meta["depends_on"],
-                "control": False,
+                "id": agent_ids[i],
+                "agent_id": agent_ids[i],
+                "name": agent_ids[i],
+                "model": worker_models[i],
+                "depends_on": deps_by_node[nid],
+                "spawned": False,
                 "response": str(res) if res is not None else "(no response)",
                 "time_ms": t_exec_elapsed * 1000,
             }
         )
 
-    progress(f"DAG done ({t_exec_elapsed:.1f}s).")
-
-    # ── Execute control ops sequentially: each may trigger a re-plan ─
-    max_rounds = 3
-    round_num = 0
-    for cop in control_ops:
-        if cop.agent_id not in agents_by_id:
-            progress(f"Control op {cop.id!r} references unknown agent, skipping.")
+    # Reactively spawned nodes are in the result map but not in our plan.
+    spawn_idx = 0
+    for nid, res in op_results.items():
+        if nid in known_nodes:
             continue
-        c_branch = agents_by_id[cop.agent_id]
-        c_model = agent_model_by_id[cop.agent_id]
-
-        artifacts = [f"[op {r['id']} via {r['name']}]: {r['response']}" for r in agent_results]
-        dep_nodes = [op_to_node[d] for d in (cop.depends_on or []) if d in op_to_node]
-        if not dep_nodes:
-            dep_nodes = list(op_to_node.values())[-1:] or [plan_root]
-
-        progress(f"Control [{cop.id} via {cop.agent_id}]: evaluating...")
-
-        # The orchestrator's `cop.instruction` provides domain context;
-        # we append the verdict contract from the schema's ClassVar.
-        instr = f"{cop.instruction}\n\n{FlowControlVerdict.VERDICT_CONTRACT}"
-        ctrl_op = FlowOp(
-            id=cop.id,
-            agent_id=cop.agent_id,
-            instruction=instr,
-            guidance=cop.guidance,
-            control=True,
-        )
-        ctrl_node = _add_op_node(
-            ctrl_op,
-            agent_spec_by_id[cop.agent_id],
-            agent_profile_by_id[cop.agent_id],
-            c_branch,
-            dep_nodes,
-            op_id_to_agent,
-            field_models=[FLOW_VERDICT_FIELDS],
-        )
-        op_to_node[cop.id] = ctrl_node
-
-        t_ctrl = time.monotonic()
-        ctrl_result = await session.flow(builder.get_graph(), verbose=env.verbose)
-        t_ctrl_elapsed = time.monotonic() - t_ctrl
-
-        ctrl_res = ctrl_result.get("operation_results", {}).get(ctrl_node)
-        verdict: FlowControlVerdict | None = getattr(ctrl_res, "verdict", None)
-        verdict_text = str(ctrl_res) if ctrl_res is not None else "(no response)"
-
+        spawn_idx += 1
+        sid = f"spawn-{spawn_idx}"
         _record_result(
             {
-                "id": cop.id,
-                "agent_id": cop.agent_id,
-                "name": agent_id_to_name[cop.agent_id],
-                "model": c_model,
-                "depends_on": cop.depends_on or [],
-                "control": True,
-                "response": verdict_text,
-                "time_ms": t_ctrl_elapsed * 1000,
+                "id": sid,
+                "agent_id": sid,
+                "name": "spawned",
+                "model": "",
+                "depends_on": [],
+                "spawned": True,
+                "response": str(res) if res is not None else "(no response)",
+                "time_ms": t_exec_elapsed * 1000,
             }
         )
 
-        cont = verdict.should_continue if verdict else False
-        progress(f"Control [{cop.id}] done ({t_ctrl_elapsed:.1f}s): continue={cont}")
+    spawn_note = f" (+{n_spawned} spawned)" if n_spawned else ""
+    progress(f"DAG done ({t_exec_elapsed:.1f}s){spawn_note}.")
 
-        # ── If verdict says continue: orchestrator re-plans ────────
-        if verdict and verdict.should_continue:
-            round_num += 1
-            if round_num >= max_rounds:
-                progress(f"Max rounds ({max_rounds}) reached, stopping.")
-                break
-
-            progress(f"Round {round_num + 1}: orchestrator re-planning...")
-
-            existing_roster = ", ".join(f"{a.id} ({a.role})" for a in plan.agents)
-            replan_node = builder.add_operation(
-                "operate",
-                branch=orc_branch,
-                depends_on=[ctrl_node],
-                instruct=Instruct(
-                    instruction=(
-                        f"{FlowPlan.REPLAN_INSTRUCTION}\n\n"
-                        f"Existing agents you can reuse: {existing_roster}."
-                    ),
-                    context={
-                        "original_task": prompt,
-                        "prior_results": artifacts,
-                        "control_verdict": verdict_text,
-                        "next_steps_guidance": verdict.next_steps or "",
-                    },
-                    guidance=(
-                        f"{roles_guidance} "
-                        f"This is round {round_num + 1}. "
-                        f"{FlowPlan.REPLAN_GUIDANCE}"
-                    ),
-                ),
-                field_models=[FLOW_PLAN_FIELDS],
-                reason=True,
-            )
-
-            replan_result = await session.flow(builder.get_graph(), verbose=env.verbose)
-            replan_res = replan_result.get("operation_results", {}).get(replan_node)
-            next_plan: FlowPlan | None = getattr(replan_res, "plan", None)
-
-            if not next_plan or not next_plan.operations:
-                progress("Re-plan produced no new operations; ending.")
-                continue
-
-            # Validate new agents have unique ids, new ops reference some agent
-            combined_agent_ids = set(agents_by_id)
-            for na in next_plan.agents:
-                if na.id in combined_agent_ids:
-                    progress(f"Re-plan: skipping duplicate agent id {na.id!r}")
-                    continue
-                combined_agent_ids.add(na.id)
-
-                base = na.role
-                name_counts[base] = name_counts.get(base, 0) + 1
-                wname = f"{base}-{name_counts[base]}" if name_counts[base] > 1 else base
-                agent_id_to_name[na.id] = wname
-                all_agent_names.append(wname)
-                nb, nm, np = _build_agent_branch(na)
-                agents_by_id[na.id] = nb
-                agent_model_by_id[na.id] = nm
-                agent_profile_by_id[na.id] = np
-                agent_spec_by_id[na.id] = na
-
-            # Register new ops (and update op_id_to_agent for downstream
-            # artifact-path resolution).
-            new_ops: list[FlowOp] = []
-            for nop in next_plan.operations:
-                if nop.agent_id not in agents_by_id:
-                    progress(f"Re-plan: skipping op {nop.id!r} — unknown agent {nop.agent_id!r}")
-                    continue
-                if nop.id in op_to_node:
-                    progress(f"Re-plan: skipping duplicate op id {nop.id!r}")
-                    continue
-                new_ops.append(nop)
-
-            if not new_ops:
-                progress("Re-plan: no executable new ops; ending.")
-                continue
-
-            # Enforce --max-ops cumulatively. Initial plan and every
-            # re-plan round share one op budget; without this check a
-            # control op that repeatedly returns should_continue could
-            # bypass the cap by stretching over multiple rounds.
-            if max_ops > 0:
-                current_total = len(op_to_node)
-                budget_left = max_ops - current_total
-                if budget_left <= 0:
-                    from .._logging import warn as _warn
-
-                    _warn(
-                        f"Re-plan rejected: --max-ops={max_ops} already "
-                        f"reached (current total {current_total}). "
-                        f"Dropping {len(new_ops)} proposed op(s)."
-                    )
-                    continue
-                if len(new_ops) > budget_left:
-                    from .._logging import warn as _warn
-
-                    dropped = len(new_ops) - budget_left
-                    _warn(
-                        f"Re-plan truncated: {dropped} of {len(new_ops)} "
-                        f"proposed op(s) dropped to fit --max-ops={max_ops} "
-                        f"(current total {current_total}, budget left "
-                        f"{budget_left})."
-                    )
-                    new_ops = new_ops[:budget_left]
-
-            try:
-                new_ops = _topo_sort_ops(new_ops, existing_op_ids=set(op_to_node))
-            except ValueError as e:
-                progress(f"Re-plan rejected: {e}")
-                continue
-
-            for nop in new_ops:
-                op_id_to_agent[nop.id] = nop.agent_id
-
-            ids = ", ".join(o.id for o in new_ops)
-            progress(f"Re-plan: +{len(next_plan.agents)} agents, +{len(new_ops)} ops: {ids}")
-
-            for nop in new_ops:
-                na = agent_spec_by_id[nop.agent_id]
-                nb = agents_by_id[nop.agent_id]
-                np = agent_profile_by_id[nop.agent_id]
-                nd = [op_to_node[d] for d in (nop.depends_on or []) if d in op_to_node]
-                if not nd:
-                    nd = [ctrl_node]
-                nid = _add_op_node(nop, na, np, nb, nd, op_id_to_agent)
-                op_to_node[nop.id] = nid
-                op_meta[nop.id] = {
-                    "agent_id": nop.agent_id,
-                    "agent_name": agent_id_to_name[nop.agent_id],
-                    "model": agent_model_by_id[nop.agent_id],
-                    "depends_on": nop.depends_on or [],
-                }
-
-            t_new = time.monotonic()
-            new_result = await session.flow(
-                builder.get_graph(),
-                max_concurrent=conc,
-                verbose=env.verbose,
-            )
-            t_new_elapsed = time.monotonic() - t_new
-            new_res_map = new_result.get("operation_results", {})
-            for nop in new_ops:
-                nid = op_to_node[nop.id]
-                meta = op_meta[nop.id]
-                res = new_res_map.get(nid)
-                _record_result(
-                    {
-                        "id": nop.id,
-                        "agent_id": nop.agent_id,
-                        "name": meta["agent_name"],
-                        "model": meta["model"],
-                        "depends_on": meta["depends_on"],
-                        "control": False,
-                        "response": str(res) if res is not None else "(no response)",
-                        "time_ms": t_new_elapsed * 1000,
-                    }
-                )
-            progress(f"Round {round_num + 1} done ({t_new_elapsed:.1f}s).")
-
-    # ── Synthesis ────────────────────────────────────────────────────
+    # ── Synthesis ─────────────────────────────────────────────────────
     synthesis_result = None
-    if with_synthesis and agent_results:
+    if (with_synthesis or n_spawned) and agent_results:
         synth_spec = synthesis_model or model_spec
         synth_label = str(parse_model_spec(synth_spec))
+        await _persist_session_phase(env, "synthesizing")
         progress(f"Synthesis [{synth_label}]...")
 
-        # Leaf ops = those not depended on by any other op. Walk op_meta
-        # since it covers both initial plan and any re-planned ops.
-        depended_on_nodes: set[str] = set()
-        for _oid, meta in op_meta.items():
-            for d in meta.get("depends_on", []):
-                if d in op_to_node:
-                    depended_on_nodes.add(op_to_node[d])
-        all_op_node_ids = set(op_to_node.values())
-        leaf_nodes = list(all_op_node_ids - depended_on_nodes) or list(all_op_node_ids)
+        # Leaf nodes = those nothing else depends on.
+        depended: set[str] = set()
+        for i in range(len(assignments)):
+            for j in dep_indices[i]:
+                depended.add(node_ids[j])
+        leaf_nodes = [n for n in node_ids if n not in depended] or list(node_ids)
 
-        artifacts = [f"[op {r['id']} via {r['name']}]: {r['response']}" for r in agent_results]
-        adirs = [str(run.agent_artifact_dir(aid)) for aid in agents_by_id]
-        artifact_chain_note = (
-            f"\n\nARTIFACT CHAIN: Read ALL files in: {', '.join(adirs)}. "
-            "Trace how work flowed through the DAG."
-        )
+        artifacts = [f"[{r['id']} via {r['name']}]: {r['response']}" for r in agent_results]
+        adirs = [str(run.agent_artifact_dir(a)) for a in agent_ids]
         team_synth_note = ""
         if team_data:
             team_synth_note = (
@@ -1600,7 +918,7 @@ async def _run_flow_inner(
 
         synth_node = builder.add_operation(
             "operate",
-            branch=orc_branch,
+            branch=env.orc_branch,
             depends_on=leaf_nodes,
             instruction=(
                 f"Synthesize all op outputs into a final cohesive deliverable.\n\n"
@@ -1608,11 +926,10 @@ async def _run_flow_inner(
                 "Your synthesis must:\n"
                 "1. RECONCILE: When ops disagree, present both views with evidence.\n"
                 "2. FILL GAPS: Name what no op covered.\n"
-                "3. TRACE: Show how work flowed through the DAG "
-                "(who did what, when, and what changed across op iterations).\n"
-                "4. HONOR CRITIC: If a control op was in the pipeline, its verdict is authoritative.\n"
-                "5. RESUME: End with branch IDs so the user can follow up with any agent."
-                f"{artifact_chain_note}"
+                "3. TRACE: Show how work flowed through the DAG, including any "
+                "reactively spawned follow-ups.\n"
+                "4. RESUME: End with branch IDs so the user can follow up with any agent."
+                f"\n\nARTIFACT CHAIN: Read ALL files in: {', '.join(adirs)}."
                 f"{team_synth_note}"
             ),
             context=artifacts,
@@ -1628,7 +945,7 @@ async def _run_flow_inner(
         }
         progress(f"Synthesis done ({t_synth_elapsed:.1f}s).")
 
-    # ── Output ───────────────────────────────────────────────────────
+    # ── Output ────────────────────────────────────────────────────────
     if output_format == "json":
         output = _format_result_json(agent_results, synthesis_result)
     else:
@@ -1638,9 +955,9 @@ async def _run_flow_inner(
         run.synthesis_path.write_text(synthesis_result["response"])
 
     if team_data:
-        _post_results_to_team(team_data, agent_results, all_agent_names, synthesis_result)
+        _post_results_to_team(team_data, agent_results, agent_ids, synthesis_result)
 
-    # ── Persist branches + run manifest + hints ──────────────────────
+    # ── Persist branches + run manifest + hints ───────────────────────
     finalize_orchestration(
         env,
         kind="flow",
@@ -1648,18 +965,19 @@ async def _run_flow_inner(
         extras={
             "agents": [
                 {
-                    "id": agent_id,
-                    "name": agent_id_to_name[agent_id],
-                    "model": agent_model_by_id[agent_id],
-                    "artifact_dir": str(run.agent_artifact_dir(agent_id)),
+                    "id": agent_ids[i],
+                    "name": agent_ids[i],
+                    "model": worker_models[i],
+                    "artifact_dir": str(run.agent_artifact_dir(agent_ids[i])),
                 }
-                for agent_id in agents_by_id
+                for i in range(len(assignments))
             ],
             "operations": [
                 {
                     "id": r["id"],
                     "agent_id": r["agent_id"],
-                    "control": r.get("control", False),
+                    "control": False,
+                    "spawned": r.get("spawned", False),
                     "depends_on": r.get("depends_on") or [],
                 }
                 for r in agent_results
@@ -1670,11 +988,12 @@ async def _run_flow_inner(
     if show_graph:
         from lionagi.operations._visualize_graph import visualize_graph
 
-        visualize_graph(
-            builder,
-            title=f"Flow DAG — {len(plan.agents)} agents (completed)",
-            save_path=str(run.dag_image_path),
-        )
+        with contextlib.suppress(Exception):
+            visualize_graph(
+                builder,
+                title=f"Flow DAG — {len(assignments)} assignments (+{n_spawned} spawned)",
+                save_path=str(run.dag_image_path),
+            )
 
     t_total = time.monotonic() - t0
     progress(f"\nTotal: {t_total:.1f}s")

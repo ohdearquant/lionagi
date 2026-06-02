@@ -6,8 +6,8 @@ Every CLI orchestration pattern (fanout, flow, and any future ones) walks
 the same phases — only a few of them carry pattern-specific logic:
 
     A. Setup        (shared)   — load profile, build orchestrator, allocate run
-    B. Plan         (pattern)  — emit structured plan (AgentRequest[] | FlowPlan | ...)
-    C. Build worker (shared)   — resolve model/profile/system → Branch with cwd
+    B. Plan         (pattern)  — orchestrator emits a casts ``list[TaskAssignment]``
+    C. Build worker (shared)   — resolve model/role/system → Branch with cwd
     D. Execute DAG  (shared)   — session.flow(builder)
     E. Iterate      (pattern)  — optional critic/re-plan loop (flow only today)
     F. Synthesize   (shared)   — optional final synthesis agent
@@ -43,7 +43,7 @@ from lionagi.state.artifact_verifier import (
     verify_artifact_contract,
 )
 
-from .._agents import AgentProfile, load_agent_profile
+from .._agents import AgentProfile, list_agents, load_agent_profile
 from .._logging import hint
 from .._providers import build_imodel_from_spec, resolve_persisted_effort
 from .._runs import RunDir, allocate_run, save_last_branch_pointer
@@ -70,7 +70,153 @@ __all__ = (
     "EFFORT_MAP",
     "team_guidance",
     "team_worker_system",
+    "available_roles",
+    "role_roster",
+    "mode_roster",
+    "casts_role_system",
+    "role_config",
+    "resolve_modes",
 )
+
+
+# ── casts role bridge ───────────────────────────────────────────────────
+# The orchestrator plans against, and workers run as, casts roles (40 built-in,
+# each with a description + body + emission contract). User `.lionagi/agents/*`
+# profiles still override a role by name — additive, profile wins on conflict.
+
+
+def available_roles() -> list[str]:
+    """Roster the orchestrator may assign to: casts roles ∪ user profiles."""
+    from lionagi.casts.pattern import list_roles
+
+    return sorted(set(list_roles()) | set(list_agents()))
+
+
+def _role_blurb(role: str, default_model: str) -> str:
+    """One-line roster description for *role* — user profile wins over casts."""
+    try:
+        p = load_agent_profile(role)
+        return f"user profile (model: {p.model or default_model})"
+    except FileNotFoundError:
+        pass
+    from lionagi.casts.pattern import Role
+
+    try:
+        desc = Role.load(role).description
+    except ValueError:
+        return ""
+    # Keep the roster tight — first sentence (descriptions can run long).
+    first = desc.split(". ", 1)[0].strip()
+    return (first[:160] + "…") if len(first) > 161 else first
+
+
+def role_roster(default_model: str) -> str:
+    """Render the available-roles roster for the orchestrator's planning prompt."""
+    lines = [f"- {r}: {_role_blurb(r, default_model)}" for r in available_roles()]
+    return "Available roles (set each TaskAssignment.assignee to one):\n" + "\n".join(lines)
+
+
+def mode_roster() -> str:
+    """One-line roster of valid cognitive-mode names for the planner.
+
+    Without this the planner invents mode names (which are then dropped); the
+    roster lets it pick real ones when a subtask genuinely needs a reasoning
+    style. Names only — they are self-describing and keep the prompt tight.
+    """
+    from lionagi.casts.pattern import list_modes
+
+    return (
+        "Optional per-task cognitive modes (TaskAssignment.modes). Use ONLY these "
+        "names, and only when a subtask needs a specific reasoning style — else "
+        "leave empty and the role's defaults apply: " + ", ".join(list_modes()) + "."
+    )
+
+
+# ── pack-based per-role config (ADR-0074) ───────────────────────────────
+# The shipped default pack supplies per-role runtime config (model/effort/
+# default_modes/modes_allow). Loaded once; failures degrade to "no config".
+
+_DEFAULT_PACK_LOADED = False
+_DEFAULT_PACK = None
+
+
+def _default_pack():
+    """The shipped default casts pack (cached), or None if unavailable."""
+    global _DEFAULT_PACK_LOADED, _DEFAULT_PACK
+    if not _DEFAULT_PACK_LOADED:
+        _DEFAULT_PACK_LOADED = True
+        try:
+            from importlib.resources import as_file, files
+
+            from lionagi.casts.pack import Pack
+
+            packaged = files("lionagi.casts").joinpath("packs", "default.yaml")
+            with as_file(packaged) as p:
+                _DEFAULT_PACK = Pack.from_file(p)
+        except Exception:
+            _DEFAULT_PACK = None
+    return _DEFAULT_PACK
+
+
+def role_config(role: str):
+    """``RoleConfig`` for *role* from the default pack, or None."""
+    pack = _default_pack()
+    return pack.config(role) if pack else None
+
+
+def resolve_modes(role: str, override: list[str] | None = None) -> list[str]:
+    """Cognitive modes for *role*: validated per-task override, else pack defaults.
+
+    A per-task *override* is gated by the role's ``modes_allow`` (empty =
+    unrestricted); every mode is existence-checked against the casts roster.
+    Invalid/disallowed modes are dropped with a warning.
+    """
+    import logging
+
+    from lionagi.casts.pattern import Mode
+
+    cfg = role_config(role)
+    allow = set(cfg.modes_allow) if (cfg and cfg.modes_allow) else None
+    gated = bool(override)
+    requested = list(override) if override else (list(cfg.default_modes) if cfg else [])
+    log = logging.getLogger("lionagi.cli")
+    out: list[str] = []
+    for m in requested:
+        if gated and allow is not None and m not in allow:
+            log.warning(
+                "mode %r not permitted for role %r (allow=%s); dropping", m, role, sorted(allow)
+            )
+            continue
+        try:
+            Mode.load(m)
+        except ValueError:
+            log.warning("unknown mode %r for role %r; dropping", m, role)
+            continue
+        out.append(m)
+    return out
+
+
+def casts_role_system(role: str, modes: list[str] | None = None) -> str | None:
+    """Composed system message for a casts *role* (LION-prepended), or None.
+
+    *modes* (already resolved/validated) overlay their cognitive behaviors onto
+    the role body. None when *role* is not a built-in casts role — the caller
+    then falls back to a user profile or the bare worker prompt.
+    """
+    from lionagi.casts.pattern import Role
+
+    try:
+        r = Role.load(role)
+    except ValueError:
+        return None
+    from lionagi.agent import AgentSpec
+
+    msg = AgentSpec.compose(r, modes=list(modes) if modes else None).build_system_message()
+    if not msg:
+        return None
+    from lionagi.session.prompts import LION_SYSTEM_MESSAGE
+
+    return LION_SYSTEM_MESSAGE.strip() + "\n\n" + msg
 
 
 # ── Generic orchestrator-prompt building blocks ─────────────────────────
@@ -293,7 +439,9 @@ def setup_orchestration(
     run = allocate_run(save_dir=save_dir)
     run.ensure_artifact_root()
 
-    orc_system = orc_profile.system_prompt if orc_profile else None
+    # Orchestrator identity: user profile if given, else the casts `orchestrator`
+    # role (decompose by dependency boundary, verify before downstream, ...).
+    orc_system = orc_profile.system_prompt if orc_profile else casts_role_system("orchestrator")
     orc_branch = Branch(
         chat_model=orc_imodel,
         system=orc_system,
@@ -340,6 +488,8 @@ def build_worker_branch(
     model_override: str | None = None,
     explicit_name: str | None = None,
     system_prompt_override: str | None = None,
+    grant_spawn: bool = False,
+    modes: list[str] | None = None,
 ) -> tuple[Branch, str, AgentProfile | None]:
     """Phase C — resolve model/profile/effort/system and build a Branch.
 
@@ -353,15 +503,14 @@ def build_worker_branch(
     ----------
     agent_id
         The stable id used for this worker's artifact directory
-        (``run.agent_artifact_dir(agent_id)``). In fanout this is the
-        pre-assigned worker name; in flow it is the plan-assigned
-        ``FlowAgent.id``.
+        (``run.agent_artifact_dir(agent_id)``) — the per-assignment worker
+        name (e.g. ``researcher-2``).
     role
-        Role name used for profile lookup and name dedup (``explorer``,
-        ``analyst``, ...). Ignored if ``env.bare``.
+        Role name (a casts role or a user profile) used for system-prompt
+        resolution and name dedup (``researcher``, ``architect``, ...).
+        Ignored if ``env.bare``.
     model_override
-        If set, overrides the profile/default model. The orchestrator
-        may emit a specific model per worker (``FlowAgent.model``).
+        If set, overrides the profile/default model.
     explicit_name
         If the caller has its own naming scheme (fanout pre-computes),
         pass the name here; we still register it so ``env.all_names``
@@ -371,6 +520,10 @@ def build_worker_branch(
         The team coordination section is still appended on top when team
         mode is active — pass None to let the normal profile/BARE
         selection happen.
+    grant_spawn
+        When True, grant the worker the ``SpawnRequest`` capability so it may
+        grow the running DAG (reactive self-expansion). Flow grants this to
+        every worker; fanout leaves it off.
 
     Returns
     -------
@@ -378,21 +531,32 @@ def build_worker_branch(
     """
     from ._common import BARE_WORKER_SYSTEM  # avoid import cycle
 
+    # Pack per-role config (ADR-0074): model/effort/modes defaults for casts
+    # roles. Ignored in bare mode (workers are the raw CLI spec there).
+    w_cfg = None if env.bare else role_config(role)
+
     w_profile: AgentProfile | None = None
     if env.bare:
         w_model = model_override or env.default_model_spec
     else:
         resolved_model, w_profile = resolve_worker_spec(role)
+        # model precedence: explicit override > user profile > pack config > default
         if model_override:
             w_model = model_override
         elif w_profile:
             w_model = resolved_model
+        elif w_cfg and w_cfg.model:
+            w_model = w_cfg.model
         else:
             w_model = env.default_model_spec
 
+    # effort precedence (when not forced by env): user profile > pack config
     w_effort = env.effort
-    if not env.bare and w_profile and w_profile.effort and not env.effort:
-        w_effort = w_profile.effort
+    if not env.bare and not env.effort:
+        if w_profile and w_profile.effort:
+            w_effort = w_profile.effort
+        elif w_cfg and w_cfg.effort:
+            w_effort = w_cfg.effort
     w_yolo = env.yolo
     if not env.bare and w_profile and w_profile.yolo:
         w_yolo = True
@@ -428,11 +592,18 @@ def build_worker_branch(
     else:
         wname = env.assign_name(role)
 
-    # Base system prompt: explicit override > profile > BARE.
+    # Base system prompt: explicit override > user profile > casts role+modes > BARE.
+    # The casts layer is the key win — a role body (+ resolved cognitive modes,
+    # ADR-0074) replaces the single hardcoded BARE prompt for a casts assignee.
     if system_prompt_override is not None:
         base_system = system_prompt_override
     elif not env.bare and w_profile and w_profile.system_prompt:
         base_system = w_profile.system_prompt
+    elif (
+        not env.bare
+        and (role_system := casts_role_system(role, modes=resolve_modes(role, modes))) is not None
+    ):
+        base_system = role_system
     else:
         base_system = BARE_WORKER_SYSTEM
 
@@ -447,6 +618,14 @@ def build_worker_branch(
         name=wname,
     )
     env.session.include_branches(wb)
+
+    # Grant the SpawnRequest capability so this worker can grow the running DAG
+    # (reactive self-expansion). Fresh branch → capability sticks; cloned
+    # children (spawned nodes) do not inherit it, bounding spawn depth.
+    if grant_spawn:
+        from lionagi.orchestration import grant_spawn as _grant_spawn
+
+        _grant_spawn(wb)
 
     # Register live persist hook on this new branch
     if env._live_persist:
