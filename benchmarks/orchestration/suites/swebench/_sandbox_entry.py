@@ -69,6 +69,18 @@ class StdoutSink:
         return []
 
 
+def _compute_diff(repo: str) -> str:
+    """model_patch = staged git diff vs base_commit, source-only (no pycache)."""
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=False)  # noqa: S603,S607
+    return subprocess.run(  # noqa: S603
+        ["git", "diff", "--cached", "--", ".", ":(exclude)**/__pycache__/**"],  # noqa: S607
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+
+
 def _collect_usage(branch) -> dict:
     """Sum provider-reported tokens across the branch's AssistantResponses.
 
@@ -201,8 +213,25 @@ async def main() -> int:
     stop = asyncio.Event()
     poller = asyncio.create_task(_control_poller(branch, control_path, stop))
 
+    # v5: harness-enforced refine loop. The model is told (prompt) to never
+    # finalize on an empty diff, but ~1/5 of runs still do (revert-and-quit on a
+    # regression, or non-engagement). Rather than TRUST the prompt, we DETECT the
+    # empty diff and force another ReAct round on the SAME branch (state carries:
+    # the model sees its own prior reasoning). This is the mechanical version of
+    # the prompt rule and the one variable v5 changes. ZERO test leakage — we
+    # only check "is the diff empty", never the held-out FAIL_TO_PASS oracle.
+    refine_rounds = int(spec.get("refine_rounds", 2))
+    empty_nudge = (
+        "Your previous attempt left NO code change in the repository — `git diff` is "
+        "empty, which is an automatic failure. Do not explain; act. Re-localize the "
+        "single code site responsible for the reported bug, read it, and APPLY a "
+        "concrete minimal edit with the editor now. Do not finish this turn until the "
+        "working tree actually contains your edit."
+    )
+
     status = "ok"
     final = ""
+    diff = ""
     try:
         result = await branch.ReAct(
             {"instruction": instruction},
@@ -210,6 +239,19 @@ async def main() -> int:
             max_extensions=max_ext,
         )
         final = str(result)
+        diff = _compute_diff(repo)
+        attempt = 0
+        while not diff.strip() and attempt < refine_rounds:
+            attempt += 1
+            _emit_line({"t": "RefineEmpty", "round": attempt})
+            result = await branch.ReAct(
+                {"instruction": empty_nudge},
+                tools=True,
+                max_extensions=max_ext,
+            )
+            final = str(result)
+            diff = _compute_diff(repo)
+            _emit_line({"t": "RefineDone", "round": attempt, "diff_bytes": len(diff)})
     except Exception as e:  # noqa: BLE001 — a failed agent run is data
         status = f"error: {type(e).__name__}: {e}"
         _emit_line({"t": "EntryError", "s": status[:200]})
@@ -217,16 +259,10 @@ async def main() -> int:
         stop.set()
         await asyncio.gather(poller, return_exceptions=True)
 
-    # model_patch = git diff of the working tree vs the base_commit. Exclude
-    # build noise (__pycache__/*.pyc) so the patch is source-only.
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=False)  # noqa: S603,S607
-    diff = subprocess.run(  # noqa: S603
-        ["git", "diff", "--cached", "--", ".", ":(exclude)**/__pycache__/**"],  # noqa: S607
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=False,
-    ).stdout
+    # final patch snapshot (the refine loop already computed it on the happy path;
+    # recompute to cover the exception path where the loop never ran).
+    if not diff:
+        diff = _compute_diff(repo)
 
     out = {
         "status": status,

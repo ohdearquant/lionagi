@@ -80,14 +80,18 @@ def _provider_env(model: str) -> dict[str, str]:
 
 
 async def _create_sandbox(env: dict[str, str], *, delete_on_exit: bool, attempts: int = 10):
-    """Create a sandbox, retrying through the org's transient CPU-cap pressure.
+    """Create a sandbox, retrying through the org's transient resource-cap pressure.
 
-    The Daytona tier caps total CPU (e.g. 10). With N concurrent runs, a finishing
-    sandbox's CPU isn't released the instant its ``delete()`` is issued, so a peer's
-    ``create`` can momentarily exceed the cap and raise ``Total CPU limit``. That is
-    transient — it clears within seconds as the delete settles. Retry with backoff
-    instead of consuming the instance (the bug that ate the sphinx tail in v1).
+    The Daytona tier caps total CPU AND total disk (e.g. 10 CPU). With N concurrent
+    runs, a finishing sandbox's resources aren't released the instant its ``delete()``
+    is issued, so a peer's ``create`` can momentarily exceed a cap and raise
+    ``Total CPU limit`` / ``Total disk limit``, or simply time out under create load.
+    All three are transient — they clear within seconds as deletes settle. Retry with
+    backoff instead of consuming the instance (the bug that ate the sphinx tail in v1,
+    and again in v5 once the refine loop made sandboxes longer-lived → higher disk
+    peak). delete_on_exit frees the resource as peers finish, so waiting is correct.
     """
+    retryable = ("CPU limit", "Total CPU", "disk limit", "Total disk", "timed out", "Timeout")
     delay = 5.0
     last: Exception | None = None
     for _ in range(attempts):
@@ -95,8 +99,9 @@ async def _create_sandbox(env: dict[str, str], *, delete_on_exit: bool, attempts
             return await DaytonaSandbox.create(
                 snapshot=SNAPSHOT, env=env, delete_on_exit=delete_on_exit
             )
-        except Exception as e:  # noqa: BLE001 — only CPU-cap is retryable; re-raise others
-            if "CPU limit" not in str(e) and "Total CPU" not in str(e):
+        except Exception as e:  # noqa: BLE001 — only transient cap/timeout is retryable
+            msg = str(e)
+            if not any(s in msg for s in retryable):
                 raise
             last = e
             await asyncio.sleep(delay)
@@ -111,6 +116,7 @@ async def run_instance(
     max_extensions: int,
     install_repo: bool,
     keep_sandbox: bool = False,
+    refine_rounds: int = 2,
 ) -> dict:
     """Run one SWE-bench instance in a sandbox, return a prediction record."""
     ctx = task.context
@@ -163,6 +169,7 @@ async def run_instance(
             "model": model,
             "instruction": _INSTRUCTION.format(problem=task.prompt),
             "max_extensions": max_extensions,
+            "refine_rounds": refine_rounds,
             "result_path": f"{home}/result.json",
             "control_path": f"{home}/control",
             "messages_path": f"{home}/messages.json",
@@ -224,6 +231,12 @@ async def main() -> None:
     ap.add_argument("--instance", default=None, help="run only these instance_id(s), comma-sep")
     ap.add_argument("--model", default="deepseek/deepseek-chat")
     ap.add_argument("--max-extensions", type=int, default=30)
+    ap.add_argument(
+        "--refine-rounds",
+        type=int,
+        default=2,
+        help="harness re-invokes ReAct up to N times while the diff stays empty (v5)",
+    )
     ap.add_argument("--concurrency", type=int, default=1)
     ap.add_argument(
         "--holdout", type=int, default=0, help="run N held-out instances from full Verified-500"
@@ -261,6 +274,7 @@ async def main() -> None:
                     max_extensions=args.max_extensions,
                     install_repo=not args.no_install,
                     keep_sandbox=args.keep_sandbox,
+                    refine_rounds=args.refine_rounds,
                 )
             except Exception as e:  # noqa: BLE001 — one bad instance must not abort the batch
                 p = _err(t, args.model, f"{type(e).__name__}: {e}", t0)
