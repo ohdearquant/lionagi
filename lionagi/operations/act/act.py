@@ -45,6 +45,29 @@ async def _act(
             " and 'arguments', or dict with 'function' and 'arguments'."
         )
 
+    # ADR-0076 Follow-up 1: pre-invoke governance gate. When the session sets
+    # ``session.gate(check)``, a denied tool call is blocked BEFORE execution and
+    # surfaced to the model as a tool result (so a ReAct loop can adapt), never
+    # raised. No gate / standalone branch → always allowed (additive).
+    from lionagi.session.control import ToolInvocation
+
+    _args = _request["arguments"] if isinstance(_request["arguments"], dict) else {}
+    if not await branch.authorize(
+        ToolInvocation(function=_request["function"], arguments=_args, branch_id=str(branch.id))
+    ):
+        denial = {"error": "denied by governance gate", "function": _request["function"]}
+        if not isinstance(action_request, ActionRequest):
+            action_request = ActionRequest(content=_request, sender=branch.id, recipient=branch.id)
+        if action_request not in branch.messages:
+            await branch.msgs.a_add_message(action_request=action_request)
+        await branch.msgs.a_add_message(
+            action_request=action_request,
+            action_output=denial,
+            sender=branch.id,
+            recipient=branch.id,
+        )
+        return ActionResponseModel(function=_request["function"], arguments=_args, output=denial)
+
     try:
         if verbose_action:
             args_ = str(_request["arguments"])

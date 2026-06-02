@@ -35,6 +35,7 @@ __all__ = (
     "NodeStarted",
     "NodeCompleted",
     "NodeFailed",
+    "GateDenied",
 )
 
 
@@ -121,3 +122,14 @@ class NodeFailed(Signal):
     op_id: str = ""
     name: str = ""
     elapsed: float = 0.0
+
+
+# -- Governance ---------------------------------------------------------------
+# Emitted when the session's pre-invoke gate denies a proposed action (ADR-0076
+# Follow-up 1). The gate gates the *operation* (e.g. a tool call), unlike the
+# post-record gate inside ``emit`` which gates observer dispatch. Recorded onto
+# the Flow so denials are audit-visible; ``session.observe(GateDenied)`` reacts.
+
+
+class GateDenied(Signal):
+    """The governance gate denied a proposed action. ``data`` is the denied payload."""

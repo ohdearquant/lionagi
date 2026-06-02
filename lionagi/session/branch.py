@@ -375,6 +375,17 @@ class Branch(Element, Relational):
             return []
         return await self._observer.emit(event)
 
+    async def authorize(self, action: Any) -> bool:
+        """Consult the session's pre-invoke governance gate for ``action``.
+
+        Delegates to ``observer.authorize`` (ADR-0076 Follow-up 1). A standalone
+        branch (no observer) always allows, so ungoverned branches are unaffected.
+        Used by tool execution to block a denied call before it runs.
+        """
+        if self._observer is None:
+            return True
+        return await self._observer.authorize(action)
+
     def _schedule_emit(self, msg: Any) -> None:
         """``on_message_added`` hook: schedule this message's bus emission.
 

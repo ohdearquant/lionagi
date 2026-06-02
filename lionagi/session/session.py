@@ -190,6 +190,15 @@ class Session(Node, Relational):
         """Emit an event: gate → record → route → dispatch. Returns handler results."""
         return await self.observer.emit(event)
 
+    async def authorize(self, action: Any) -> bool:
+        """Consult the pre-invoke governance gate: may ``action`` proceed?
+
+        The blocking counterpart to ``emit``'s post-record gate — consulted
+        before an operation runs (ADR-0076 Follow-up 1). Allows when no gate is
+        set. Denials are recorded onto the observer Flow as ``GateDenied``.
+        """
+        return await self.observer.authorize(action)
+
     @model_validator(mode="after")
     def _initialize_branches(self) -> Self:
         if self.default_branch is None:
