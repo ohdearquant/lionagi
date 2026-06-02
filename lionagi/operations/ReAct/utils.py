@@ -8,28 +8,6 @@ from pydantic import Field, field_validator
 from lionagi.models import HashableModel
 
 
-class PlannedAction(HashableModel):
-    """
-    Short descriptor for an upcoming action/tool invocation the LLM wants to
-    perform. The model can hold multiple actions in a single round if needed.
-    """
-
-    action_type: str | None = Field(
-        default=None,
-        description=(
-            "The name or type of tool/action to invoke. (e.g., 'search_exa', 'reader_tool')"
-        ),
-    )
-    description: str | None = Field(
-        default=None,
-        description=(
-            "A short description of the action to perform. "
-            "This should be a concise summary of what the action entails."
-            "Also include your rationale for this action, if applicable."
-        ),
-    )
-
-
 class ReActAnalysis(HashableModel):
     """
     Captures the ReAct chain-of-thought output each round:
