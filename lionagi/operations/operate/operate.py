@@ -269,9 +269,14 @@ async def operate(
         )
     )
 
-    # Update tool schemas
+    # Update tool schemas. get_tool_schema returns {"tools": [schema, ...]};
+    # the Instruction renders tool_schemas as a flat list ("Tools:" section), so
+    # unwrap here — feeding the dict through nests it as `- tools:` under each
+    # entry, which the model reads as having no usable tools.
     if tools := (action_param.tools or True) if action_param else None:
         tool_schemas = branch.acts.get_tool_schema(tools=tools)
+        if isinstance(tool_schemas, dict):
+            tool_schemas = tool_schemas.get("tools", [])
         _cctx = _cctx.with_updates(tool_schemas=tool_schemas)
 
     # Extract model class
