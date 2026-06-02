@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from dataclasses import fields
@@ -25,141 +24,17 @@ from ..chat._prepare import _prepare_run_kwargs
 from ..types import ChatParam, ParseParam, RunParam
 
 if TYPE_CHECKING:
-    from lionagi.ln.types import Operable
     from lionagi.protocols.messages.message import RoledMessage
     from lionagi.session.branch import Branch
 
-from lionagi.session.control import LoopBreak, LoopDirective
+from lionagi.operations._observe import (
+    StopStream as _StopStream,
+)
+from lionagi.operations._observe import (
+    check_control as _check_control,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def _attempt_extract(text: str, capabilities: Operable) -> tuple[list[Any], list[Any]]:
-    """Parse capability emissions out of an assistant message.
-
-    A capability is a named typed field (a ``Spec``); ``capabilities`` is the
-    ``Operable`` of names the agent is allowed to produce. We pull every fenced
-    ````json`` block out of ``text`` (fuzzy-tolerant; the injected prompt asks
-    the model to fence its emissions) — a single message may carry several
-    blocks; un-fenced JSON embedded in prose is *not* extracted — and per block,
-    per Ocean's rule, require ``set(keys) ⊆ capabilities.allowed()``:
-
-    - no capability keys → ordinary prose/JSON, skipped;
-    - keys ⊆ grant → validated via ``create_model`` into a bundle (a dynamic
-      model with one field per present capability);
-    - any key outside the grant → an *illegal* emission (the agent reaching
-      past its capabilities): not honored, recorded as a ``CapabilityViolation``.
-
-    Returns ``(bundles, violations)`` — both lists, since one response may
-    carry several blocks.
-    """
-    if not text or not isinstance(text, str):
-        return [], []
-    from lionagi.ln.fuzzy._extract_json import extract_json
-    from lionagi.session.capabilities import CapabilityViolation
-
-    try:
-        data = extract_json(text, fuzzy_parse=True, return_one_if_single=False)
-    except Exception:
-        return [], []
-    blocks = data if isinstance(data, list) else [data]
-
-    allowed = capabilities.allowed()
-    bundles: list[Any] = []
-    violations: list[Any] = []
-    for block in blocks:
-        if not isinstance(block, dict) or not block:
-            continue
-        keys = set(block.keys())
-        if keys.isdisjoint(allowed):
-            continue  # not a capability emission
-        if not keys <= allowed:
-            logger.warning(
-                "Illegal capability emission: keys %s outside grant %s",
-                keys - allowed,
-                allowed,
-            )
-            violations.append(
-                CapabilityViolation(
-                    offending=sorted(keys - allowed),
-                    allowed=sorted(allowed),
-                    block=block,
-                )
-            )
-            continue
-        model = capabilities.create_model(include=keys)
-        try:
-            bundles.append(model.model_validate(block))
-        except Exception as e:
-            logger.debug("Capability block failed validation, skipped: %s", e)
-            continue
-    return bundles, violations
-
-
-async def _emit_message_signal(branch: Branch, msg: RoledMessage) -> None:
-    """Raise the stream message onto the session bus as a typed Signal.
-
-    AssistantResponse → extract the capability bundle (when a grant is set) and
-    emit it as one StructuredOutput; filters fan out by named field, so one
-    response can satisfy several observers. ActionRequest/ActionResponse →
-    tool-use / tool-result signals. No-op when the branch has no observer.
-    """
-    if getattr(branch, "_observer", None) is None:
-        return
-    from lionagi.protocols.messages import (
-        ActionRequest,
-        ActionResponse,
-        AssistantResponse,
-    )
-    from lionagi.session.signal import (
-        ActionRequestSignal,
-        ActionResponseSignal,
-        Signal,
-        StructuredOutput,
-    )
-
-    if isinstance(msg, AssistantResponse):
-        capabilities = getattr(branch, "_capabilities", None)
-        if capabilities is not None:
-            bundles, violations = _attempt_extract(msg.response, capabilities)
-            role_name: str | None = getattr(capabilities, "name", None)
-            if bundles:
-                # Emit all bundles concurrently — a slow handler on one bundle
-                # must not serialize the others.
-                from lionagi.ln.concurrency import gather as _gather
-
-                await _gather(
-                    *(
-                        branch.emit(StructuredOutput(data=b, emitter_role=role_name))
-                        for b in bundles
-                    )
-                )
-            # Over-grant attempts become observable governance events, not
-            # silent drops — session.observe(CapabilityViolation) can react.
-            for violation in violations:
-                await branch.emit(Signal(data=violation))
-    elif isinstance(msg, ActionRequest):
-        await branch.emit(ActionRequestSignal(data=msg))
-    elif isinstance(msg, ActionResponse):
-        await branch.emit(ActionResponseSignal(data=msg))
-
-
-class _StopStream(Exception):  # noqa: N818
-    """Internal sentinel used for observer-requested clean cancellation."""
-
-    def __init__(self, reason: str | None = None) -> None:
-        super().__init__(reason or "stream cancelled by observer")
-        self.reason = reason
-
-
-def _check_control(branch: Branch) -> None:
-    ctrl = branch.poll_control()
-    if ctrl is None or ctrl.directive is LoopDirective.CONTINUE:
-        return
-    if ctrl.directive is LoopDirective.BREAK:
-        raise LoopBreak(ctrl.reason)
-    if ctrl.directive is LoopDirective.CANCEL:
-        raise _StopStream(ctrl.reason)
 
 
 async def run(
@@ -222,17 +97,21 @@ async def run(
 
         model.streaming_process_func = _persist_chunk
 
-    # Background signal tasks — scheduled non-blocking, awaited in finally.
-    # Keeps the stream loop from stalling on slow observer handlers.
-    _signal_tasks: list[asyncio.Task] = []
-
-    def _schedule_signal(msg: Any) -> None:
-        if getattr(branch, "_observer", None) is not None:
-            _signal_tasks.append(asyncio.ensure_future(_emit_message_signal(branch, msg)))
+    # Signal emission is now universal: every a_add_message below fires the
+    # branch's on_message_added hook, which schedules the bus emission in the
+    # background (branch._signal_tasks) and is drained in `finally`. The stream
+    # loop only polls control between chunks (_check_control).
 
     # Accumulation buffers
     thinking_parts: list[str] = []
     text_parts: list[str] = []
+    # Provider-reported usage/cost from the terminal ``result`` chunk
+    # (codex: input/output tokens; claude_code: usage, total_cost_usd,
+    # num_turns, duration_ms). Captured once at stream end and stamped onto
+    # the final AssistantResponse so callers (Studio cost tracking, the
+    # orchestration benchmark) can read real CLI usage — re-tokenizing the
+    # message history undercounts the agent's internal tool turns.
+    result_meta: dict = {}
 
     async def _flush_response() -> AssistantResponse | None:
         if not text_parts:
@@ -241,6 +120,8 @@ async def run(
         metadata: dict = {}
         if thinking_parts:
             metadata["thinking"] = "\n".join(thinking_parts)
+        if result_meta:
+            metadata["model_response"] = dict(result_meta)
         res = AssistantResponse(
             content=AssistantResponseContent(assistant_response=text),
             sender=branch.id,
@@ -293,7 +174,6 @@ async def run(
 
                         case "tool_use":
                             if res := await _flush_response():
-                                _schedule_signal(res)
                                 _check_control(branch)
                                 yield res
 
@@ -306,7 +186,6 @@ async def run(
                             if chunk.tool_id:
                                 pending_requests[chunk.tool_id] = act_req
                             await branch.msgs.a_add_message(action_request=act_req)
-                            _schedule_signal(act_req)
                             _check_control(branch)
                             yield act_req
 
@@ -332,12 +211,12 @@ async def run(
                                 sender=branch.user or "user",
                                 recipient=branch.id,
                             )
-                            _schedule_signal(act_res)
                             _check_control(branch)
                             yield act_res
 
                         case "result":
-                            pass
+                            if chunk.metadata:
+                                result_meta.update(chunk.metadata)
 
                         case "error":
                             raise RuntimeError(chunk.content or "Stream error from CLI endpoint")
@@ -347,18 +226,14 @@ async def run(
                         call_meta = Note.from_dict(api_call.to_dict())
                         call_meta.pop(["execution", "response"], None)
                         res.metadata["api_call_meta"] = call_meta.to_dict()
-                    _schedule_signal(res)
                     _check_control(branch)
                     yield res
         except _StopStream:
             pass
     finally:
-        # Drain all background signal tasks before returning so handler
+        # Drain background signal emissions before returning so handler
         # results and exceptions are not silently lost.
-        if _signal_tasks:
-            from lionagi.ln.concurrency import gather as _gather
-
-            await _gather(*_signal_tasks, return_exceptions=True)
+        await branch.drain_signals()
 
         # Restore original streaming func
         model.streaming_process_func = prev_stream_func

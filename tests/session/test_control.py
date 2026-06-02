@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lionagi.operations.run.run import _check_control, _StopStream
+from lionagi.operations._observe import StopStream as _StopStream
+from lionagi.operations._observe import check_control as _check_control
 from lionagi.protocols.messages import AssistantResponse
 from lionagi.service.imodel import iModel
 from lionagi.service.types.stream_chunk import StreamChunk

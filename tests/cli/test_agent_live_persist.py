@@ -143,8 +143,9 @@ async def test_setup_db_open_failure_disables_persist_no_thread_leak(
     ctx = await _setup_live_persist(branch)
 
     assert ctx is None
-    # The hook was NEVER registered when setup failed.
-    assert branch.on_message_added == []
+    # The PERSISTENCE hook was NEVER registered when setup failed — only the
+    # branch's baseline signal-emission hook (_schedule_emit) remains.
+    assert branch.on_message_added == [branch._schedule_emit]
     # No leaked aiosqlite worker — the count is stable.
     assert _aiosqlite_thread_count() == before
 
@@ -176,7 +177,8 @@ async def test_setup_create_session_failure_closes_db(
     ctx = await _setup_live_persist(branch)
 
     assert ctx is None
-    assert branch.on_message_added == []
+    # Only the baseline signal-emission hook remains; no persistence hook.
+    assert branch.on_message_added == [branch._schedule_emit]
     # Give aiosqlite a moment to join its thread after close().
     for _ in range(20):
         if _aiosqlite_thread_count() == before:
