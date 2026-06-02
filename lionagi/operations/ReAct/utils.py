@@ -60,7 +60,7 @@ class ReActAnalysis(HashableModel):
         "the task is complete and verified is the only failure."
     )
     CONTINUE_EXT_PROMPT: ClassVar[str] = (
-        "Keep going — about {extensions} rounds of headroom remain, plenty to finish "
+        "Keep going — about {extensions} rounds of headroom remain, finish "
         "properly. Batch independent tool calls in this round to stay efficient, take "
         "the next actions the task needs, and observe the results. Set "
         "extension_needed=False only once the work is genuinely done and verified."
