@@ -1,6 +1,6 @@
 # ADR-0075: Domain-Specific Agent Engines
 
-**Status**: Proposed
+**Status**: Proposed — infrastructure landed, engines pending
 **Date**: 2026-06-01
 
 ## Context

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import time
 
 from lionagi._errors import LionError
@@ -47,6 +48,8 @@ from ._orchestration import (
     stop_live_persist,
     team_guidance,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class FlowPlanError(LionError):
@@ -227,6 +230,8 @@ def _earlier_dep_indices(depends_on: list[str] | None, position: int) -> list[in
             continue
         if 0 <= j < position:
             out.append(j)
+        elif j >= position:
+            logger.warning("Dropped forward dep ref %s (index %d >= position %d)", ref, j, position)
     return out
 
 

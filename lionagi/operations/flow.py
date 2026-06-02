@@ -734,6 +734,10 @@ class ReactiveExecutor(DependencyAwareExecutor):
             finally:
                 await send.aclose()
 
+        # asyncio-only: flow_stream needs a detached task for the driver
+        # coroutine so the generator can yield events as they arrive.
+        # anyio's create_task_group cannot be used here because the generator
+        # must outlive any single task group scope.
         driver = asyncio.ensure_future(_driver())
         try:
             async with recv:
