@@ -70,26 +70,9 @@ class ReActAnalysis(HashableModel):
         ),
     )
 
-    planned_actions: list[PlannedAction] = Field(
-        default_factory=list,
-        description=(
-            "One or more short descriptors of the tool calls or operations "
-            "the LLM wants to perform this round. For example, read the doc, "
-            "then run a search."
-        ),
-    )
-
     extension_needed: bool = Field(
         False,
         description="Set True if more expansions are needed. If False, final answer is next.",
-    )
-
-    milestone: str | None = Field(
-        None,
-        description=(
-            "A sub-goal or mini-checkpoint to reach before finalizing. "
-            "E.g. 'Validate results from search_exa, then summarize outcomes.'"
-        ),
     )
 
     action_strategy: Literal["sequential", "concurrent"] = Field(
