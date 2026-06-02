@@ -401,14 +401,13 @@ async def main() -> int:
     }
     result_path.write_text(json.dumps(out))
 
-    # Debug dump: the full conversation, so a --keep-sandbox repro can show what
-    # the model actually emitted on a zero-tool turn (did it produce a parseable
-    # action_requests field at all?). Cheap; only read during diagnosis.
+    # Full branch serialization — the complete record (every message, ReAct round
+    # with its analysis + extension_needed, tool calls/results, usage, metadata).
+    # We already paid for this compute; persist it ALWAYS so any failure can be
+    # analyzed post-hoc without re-running. The host pulls this down per instance.
     try:
-        msgs = [m.to_dict() for m in branch.msgs.messages]
-        Path(spec.get("messages_path", f"{repo}/../messages.json")).write_text(
-            json.dumps(msgs, default=str)
-        )
+        branch_path = spec.get("branch_path", spec.get("messages_path", f"{repo}/../branch.json"))
+        Path(branch_path).write_text(json.dumps(branch.to_dict(), default=str))
     except Exception as e:  # noqa: BLE001 — diagnostics must never fail the run
         _emit_line({"t": "DumpError", "s": str(e)[:120]})
 
