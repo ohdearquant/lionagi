@@ -1,191 +1,161 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi.tools.context.ContextTool — public tool callable."""
+"""Tests for lionagi.tools.context.ContextTool.
 
+Contract: context engineering is NON-DESTRUCTIVE. evict/compact only curate the
+ACTIVE progression (``branch.progression``); the full message Pile
+(``branch.msgs.messages`` / ``branch.msgs.progression``) is never pruned, so
+hidden messages can be browsed (scope='all') and restored.
+"""
 
 from lionagi.session.branch import Branch
 from lionagi.tools.context.context import ContextTool
 
 
 def _make_branch_with_messages():
-    """Branch with system + user instruction + assistant response."""
     branch = Branch(system="You are helpful.")
-    branch.msgs.add_message(
-        instruction=branch.msgs.create_instruction(instruction="user question")
-    )
+    branch.msgs.add_message(instruction="user question")
     return branch
 
 
-async def test_context_tool_unknown_action_returns_structured_error():
-    """Unrecognised action returns success=False with descriptive error."""
-    branch = _make_branch_with_messages()
-    tool = ContextTool().bind(branch)
-    result = await tool.func_callable(action="bogus")
-    assert result["success"] is False
-    assert "bogus" in result["error"]
+def _build_branch() -> Branch:
+    """System message + several reasoning/tool-result turns."""
+    from lionagi.protocols.messages import ActionRequest, ActionResponse
 
-
-async def test_context_tool_status_returns_counts_and_estimated_tokens():
-    """status action returns total count, by_type, and non-negative token estimate."""
-    branch = _make_branch_with_messages()
-    tool = ContextTool().bind(branch)
-    result = await tool.func_callable(action="status")
-    assert result["success"] is True
-    assert result["total_messages"] >= 1
-    assert isinstance(result["by_type"], dict)
-    assert result["estimated_tokens"] >= 0
-
-
-async def test_context_tool_get_messages_empty_range_returns_empty_list():
-    """get_messages with start==end returns an empty messages list."""
-    branch = Branch()
-    branch.msgs.add_message(
-        instruction=branch.msgs.create_instruction(instruction="msg1")
-    )
-    tool = ContextTool().bind(branch)
-    # start=1, end=1 is an empty range — no summaries iterated
-    result = await tool.func_callable(action="get_messages", start=1, end=1)
-    assert result["success"] is True
-    assert result["messages"] == []
-
-
-async def test_context_tool_evict_does_not_remove_first_message():
-    """evict clamps start to 1, preserving the system message at index 0."""
-    branch = Branch(system="sys msg")
-    # Add two non-system messages
-    branch.msgs.add_message(
-        instruction=branch.msgs.create_instruction(instruction="q1")
-    )
-    branch.msgs.add_message(
-        instruction=branch.msgs.create_instruction(instruction="q2")
-    )
-    count_before = len(branch.msgs.progression)
-    assert count_before >= 3  # system + 2 instructions
-
-    tool = ContextTool().bind(branch)
-    # start=1, end=2 targets the first non-system message
-    result = await tool.func_callable(action="evict", start=1, end=2)
-    assert result["success"] is True
-    assert result["removed"] == 1
-
-    # System message (index 0) must still be present
-    first_uid = branch.msgs.progression[0]
-    first_msg = branch.msgs.messages[first_uid]
-    assert hasattr(first_msg, "role")
-
-
-async def test_context_tool_evict_invalid_range_returns_error():
-    """Evicting an empty range returns success=False."""
-    branch = _make_branch_with_messages()
-    tool = ContextTool().bind(branch)
-    # start > end is an invalid range
-    result = await tool.func_callable(action="evict", start=10, end=5)
-    assert result["success"] is False
-
-
-async def test_context_tool_status_counts_roles_and_estimated_tokens():
-    """status returns per-role counts and non-negative estimated_tokens."""
-    from lionagi.protocols.messages import ActionResponse
-
-    branch = Branch(system="sys msg")
-    branch.msgs.add_message(
-        instruction=branch.msgs.create_instruction(instruction="user q")
-    )
-    ar_resp = ActionResponse(
-        content={
-            "function": "test",
-            "arguments": {},
-            "output": {"result": "ok"},
-        },
-    )
-    branch.msgs.messages.include(ar_resp)
-    branch.msgs.progression.include(ar_resp.id)
-
-    tool = ContextTool().bind(branch)
-    result = await tool.func_callable(action="status")
-    assert result["success"] is True
-    assert result["total_messages"] >= 3
-    by_type = result["by_type"]
-    assert isinstance(by_type, dict)
-    assert sum(by_type.values()) == result["total_messages"]
-    assert result["estimated_tokens"] >= 0
-
-
-async def test_context_tool_get_messages_clamps_requested_range():
-    """get_messages clamps out-of-range start/end to valid bounds."""
-    branch = Branch(system="sys")
-    for i in range(3):
-        branch.msgs.add_message(
-            instruction=branch.msgs.create_instruction(instruction=f"msg {i}")
+    b = Branch(system="You are a coding agent.")
+    for i in range(6):
+        b.msgs.add_message(instruction=f"do step {i}")
+        b.msgs.add_message(assistant_response=f"reasoning about step {i}")
+        req = ActionRequest(content={"function": "read_file", "arguments": {"path": f"f{i}.py"}})
+        b.msgs.messages.include(req)
+        b.msgs.progression.include(req.id)
+        resp = ActionResponse(
+            content={"function": "read_file", "arguments": {}, "output": "X" * 400}
         )
-    n = len(branch.msgs.progression)
-
-    tool = ContextTool().bind(branch)
-    result = await tool.func_callable(action="get_messages", start=-5, end=999)
-    assert result["success"] is True
-    assert result["range"].startswith("[0:")
-    assert f"of {n}" in result["range"]
-    for summary in result["messages"]:
-        assert summary.startswith("[")
+        b.msgs.messages.include(resp)
+        b.msgs.progression.include(resp.id)
+    return b
 
 
-# ---------------------------------------------------------------------------
-# C4: keep_last=0 evicts all action results
-# ---------------------------------------------------------------------------
+async def _call(branch, **kw) -> dict:
+    return await ContextTool().bind(branch).func_callable(**kw)
 
 
-async def test_context_tool_keep_last_zero_evicts_all_context():
-    """keep_last=0 removes all ActionResponse messages; non-action messages remain."""
-    from lionagi.protocols.messages import ActionResponse
+# -- structural ------------------------------------------------------------
 
-    branch = Branch(system="sys")
-    branch.msgs.add_message(
-        instruction=branch.msgs.create_instruction(instruction="user q")
-    )
+
+async def test_unknown_action_returns_structured_error():
+    res = await _call(_make_branch_with_messages(), action="bogus")
+    assert res["success"] is False and "bogus" in res["error"]
+
+
+async def test_status_returns_counts_and_active_tokens():
+    res = await _call(_build_branch(), action="status")
+    assert res["success"]
+    assert res["active_messages"] == res["total_messages"]  # nothing evicted yet
+    assert res["evicted"] == 0
+    assert res["estimated_active_tokens"] > 0
+    assert sum(res["by_type"].values()) == res["active_messages"]
+
+
+async def test_get_messages_clamps_range():
+    b = Branch(system="sys")
     for i in range(3):
-        ar = ActionResponse(
-            content={
-                "function": f"fn_{i}",
-                "arguments": {},
-                "output": {"i": i},
-            }
-        )
-        branch.msgs.messages.include(ar)
-        branch.msgs.progression.include(ar.id)
-
-    non_action_count = len(branch.msgs.progression) - 3  # system + instruction
-
-    tool = ContextTool().bind(branch)
-    result = await tool.func_callable(action="evict_action_results", keep_last=0)
-
-    assert result["success"] is True
-    assert result["removed"] == 3
-    assert len(branch.msgs.progression) == non_action_count
+        b.msgs.add_message(instruction=f"msg {i}")
+    res = await _call(b, action="get_messages", start=-5, end=999)
+    assert res["success"] and res["range"].startswith("[0:")
 
 
-async def test_context_tool_evict_action_results_respects_keep_last_zero():
-    """evict_action_results with keep_last=0 removes all action responses."""
-    from lionagi.protocols.messages import ActionResponse
+async def test_evict_invalid_range_returns_error():
+    res = await _call(_make_branch_with_messages(), action="evict", start=10, end=5)
+    assert res["success"] is False
 
-    branch = Branch(system="sys")
-    branch.msgs.add_message(
-        instruction=branch.msgs.create_instruction(instruction="user q")
+
+# -- non-destructive eviction ---------------------------------------------
+
+
+async def test_evict_is_non_destructive():
+    b = _build_branch()
+    total = len(b.msgs.messages)
+    res = await _call(b, action="evict", start=1, end=4)
+    assert res["success"] and res["removed"] == 3
+    assert len(b.progression) == total - 3  # active view shrank
+    assert len(b.msgs.messages) == total  # durable Pile untouched
+    assert len(b.msgs.progression) == total  # full record untouched
+
+
+async def test_evict_cannot_remove_system():
+    b = _build_branch()
+    await _call(b, action="evict", start=0, end=1)  # start clamped to 1
+    assert b.progression[0] == b.msgs.progression[0]
+
+
+async def test_evict_action_results_keeps_last_n_non_destructively():
+    b = _build_branch()  # 6 action results
+    res = await _call(b, action="evict_action_results", keep_last=2)
+    assert res["success"] and res["removed"] == 4
+    assert len(b.msgs.messages) == len(b.msgs.progression)  # pile intact
+    assert len(b.progression) < len(b.msgs.progression)  # view shrank
+
+
+async def test_evict_action_results_keep_last_zero():
+    b = _build_branch()
+    res = await _call(b, action="evict_action_results", keep_last=0)
+    assert res["success"] and res["removed"] == 6
+
+
+# -- browse + restore ------------------------------------------------------
+
+
+async def test_get_messages_all_shows_evicted():
+    b = _build_branch()
+    await _call(b, action="evict", start=2, end=5)
+    res = await _call(b, action="get_messages", scope="all")
+    joined = " ".join(res["messages"])
+    assert "[evicted]" in joined and "[active]" in joined
+
+
+async def test_restore_pulls_back_in_chronological_order():
+    b = _build_branch()
+    await _call(b, action="evict", start=2, end=5)
+    active_after = len(b.progression)
+    res = await _call(b, action="restore", start=2, end=4)
+    assert res["success"] and res["restored"] == 2
+    assert len(b.progression) == active_after + 2
+    order = [b.msgs.progression.index(u) for u in b.progression]
+    assert order == sorted(order)  # view stays chronological
+
+
+# -- compact ---------------------------------------------------------------
+
+
+async def test_compact_collapses_tool_io_and_injects_summary():
+    b = _build_branch()
+    total = len(b.msgs.messages)
+    res = await _call(
+        b,
+        action="compact",
+        start=1,
+        summary="Root cause: off-by-one in f3.py:10. Fix applied. Repro green.",
     )
-    for i in range(3):
-        ar_resp = ActionResponse(
-            content={
-                "function": f"tool_{i}",
-                "arguments": {},
-                "output": {"idx": i},
-            },
-        )
-        branch.msgs.messages.include(ar_resp)
-        branch.msgs.progression.include(ar_resp.id)
+    assert res["success"] and res["compacted"] > 0 and res["tokens_freed_est"] > 0
+    assert len(b.msgs.messages) == total + 1  # summary added to the record
+    previews = await _call(b, action="get_messages", scope="active")
+    assert any("CONTEXT COMPACTION" in m for m in previews["messages"])
+    assert len(b.progression) < len(b.msgs.progression)  # originals hidden, not deleted
 
-    count_before = len(branch.msgs.progression)
-    tool = ContextTool().bind(branch)
-    result = await tool.func_callable(action="evict_action_results", keep_last=0)
-    assert result["success"] is True
-    assert result["removed"] == 3
-    assert len(branch.msgs.progression) == count_before - 3
+
+async def test_compact_requires_summary():
+    res = await _call(_build_branch(), action="compact", start=1, summary="  ")
+    assert res["success"] is False
+
+
+async def test_compact_all_mode_collapses_more_than_tool_io():
+    res_io = await _call(
+        _build_branch(), action="compact", start=1, end=7, summary="s", mode="tool_io"
+    )
+    res_all = await _call(
+        _build_branch(), action="compact", start=1, end=7, summary="s", mode="all"
+    )
+    assert res_all["compacted"] > res_io["compacted"]
