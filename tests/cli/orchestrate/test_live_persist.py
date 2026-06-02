@@ -155,8 +155,10 @@ async def test_start_create_session_failure_closes_db(
     await start_live_persist(env)
 
     assert env._live_persist is None
-    # No PERSISTENCE hook should be registered after the DB failure — only the
-    # branch's baseline signal-emission hook (_schedule_emit) is present.
+    # No persistence is wired after the DB failure. Persistence rides the hook
+    # bus (ADR-0023b) and its emit hook (_persist_via_bus) is registered only by
+    # route_message_persistence — never reached here — so on_message_added holds
+    # just the branch's baseline signal-emission hook (_schedule_emit).
     assert env.orc_branch.on_message_added == [env.orc_branch._schedule_emit]
 
     for _ in range(20):
@@ -432,26 +434,27 @@ async def test_stop_updates_session_bookmarks_and_status(
     assert env._live_persist is None
 
 
-async def test_stop_removes_all_duplicate_hook_registrations(
+async def test_stop_removes_persistence_handler_from_bus(
     temp_db_path: Path,
 ):
-    """Duplicate registrations of the same hook (test/dev) must ALL be
-    removed by stop_live_persist — otherwise a stale closed-DB hook
-    would survive teardown.
+    """stop_live_persist detaches each branch's persistence handler from the
+    session hook bus (ADR-0023b) — otherwise a stale closed-DB handler would
+    survive teardown and fire on later MESSAGE_ADD emissions.
     """
+    from lionagi.hooks.bus import HookPoint
+
     env = _minimal_env()
     await start_live_persist(env)
     worker = Branch(name="worker-1")
     env.session.include_branches(worker)
     _register_branch_hook(env._live_persist, worker)
-    hook = env._live_persist["hooks"][-1][1]
-    # Append the same hook a second time on purpose.
-    worker.on_message_added.append(hook)
-    assert sum(1 for h in worker.on_message_added if h is hook) == 2
+    handler = env._live_persist["hooks"][-1][1]
+    bus = env.session.hooks
+    assert handler in bus.handlers_for(HookPoint.MESSAGE_ADD)
 
     await stop_live_persist(env, status="completed")
 
-    assert sum(1 for h in worker.on_message_added if h is hook) == 0
+    assert handler not in bus.handlers_for(HookPoint.MESSAGE_ADD)
 
 
 async def test_stop_closes_db_even_if_bookmark_update_fails(

@@ -794,6 +794,7 @@ async def start_live_persist(
 
         ctx: dict[str, Any] = {
             "db": db,
+            "session": session,
             "session_id": session_id,
             "session_prog_id": session_prog_id,
             "branch_prog_ids": {},
@@ -931,8 +932,12 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
                 exc_info=True,
             )
 
-    branch.on_message_added.append(_on_message)
-    ctx["hooks"].append((branch, _on_message))
+    # ADR-0023b: persistence rides the session hook bus (MESSAGE_ADD) instead of
+    # a parallel on_message_added callback. The _on_message body is unchanged.
+    from lionagi.hooks import route_message_persistence
+
+    handler = route_message_persistence(ctx["session"], branch, _on_message)
+    ctx["hooks"].append((branch, handler))
 
 
 async def stop_live_persist(
@@ -1027,11 +1032,12 @@ async def stop_live_persist(
             metadata=metadata,
         )
 
-        # Remove ALL matching registrations of each hook (list.remove
-        # would only drop the first; a duplicate registration would
-        # leave a closed-DB hook live).
+        # Detach each persistence handler from the session hook bus so a
+        # closed-DB handler can't fire on later messages (ADR-0023b).
+        from lionagi.hooks import unroute_message_persistence
+
         for branch, hook in ctx["hooks"]:
-            branch.on_message_added[:] = [h for h in branch.on_message_added if h is not hook]
+            unroute_message_persistence(branch, hook)
     except Exception as exc:
         log.warning("live persist teardown failed: %s", exc, exc_info=True)
         return status
