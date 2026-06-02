@@ -427,7 +427,7 @@ class Branch(Element, Relational):
             await self.emit(RunStart())
         try:
             result = await coro
-        except Exception as exc:
+        except BaseException as exc:
             await self.drain_signals()
             if has_observer:
                 from .signal import RunFailed
