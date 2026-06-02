@@ -187,7 +187,12 @@ async def main() -> int:
         yolo=True,
         max_extensions=max_ext,
     )
-    config.system_prompt = sys_prompt + "\n\n" + config.system_prompt
+    # REPLACE (not prepend) the built-in coding prompt: its interactive-mode
+    # guidance ("ask clarifying questions", "stop as soon as done, don't use all
+    # rounds", "say so and the user can continue") directly contradicts the
+    # autonomous recipe above and degrades behavior. Tool *schemas* are rendered
+    # by lionagi independently of the system prompt, so nothing is lost.
+    config.system_prompt = sys_prompt
 
     t0 = time.monotonic()
     branch = await create_agent(config)
