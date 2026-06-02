@@ -232,7 +232,9 @@ class DaytonaSandbox:
         from daytona import SessionExecuteRequest
 
         sid = session_id or f"run-{os.urandom(4).hex()}"
-        full_cmd = f"cd {cwd} && {command}" if cwd else command
+        import shlex
+
+        full_cmd = f"cd {shlex.quote(cwd)} && {command}" if cwd else command
         await self._sb.process.create_session(sid)
         try:
             req = SessionExecuteRequest(command=full_cmd, run_async=True)
