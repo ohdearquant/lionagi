@@ -34,27 +34,36 @@ class ReActAnalysis(HashableModel):
     """
     Captures the ReAct chain-of-thought output each round:
     1) The LLM's 'analysis' (reasoning),
-    2) A list of planned actions to perform before finalizing,
-    3) Indication whether more expansions/rounds are needed,
-    4) Additional tuning knobs: how to handle validation, how to execute actions, etc.
+    2) Indication whether more rounds are needed to finish the task,
+    3) Additional tuning knobs: how to handle validation, how to execute actions, etc.
 
     Note:
-    - Retain from repeating yourself
-    - use the most efficient way to achieve the goal to user's satisfaction
+    - Make real progress toward completing the task each round.
+    - Avoid needless repetition, but do not cut the work short — finish and verify
+      the task before you finalize.
     """
 
-    # Standard ReAct strings for controlling expansions:
+    # Standard ReAct strings. The round budget is given as HEADROOM for planning, not
+    # as a countdown: "you have N steps left, be efficient" reads as scarcity and makes
+    # a model wrap up early and declare done before the task is finished. We instead (a)
+    # frame the remaining rounds as room it need not fill or race, (b) redirect
+    # "efficiency" to throughput-per-round (batch independent tool calls) rather than
+    # fewer rounds, and (c) make the only failure stopping while the task is incomplete.
     FIRST_EXT_PROMPT: ClassVar[str] = (
-        "You can perform multiple reason-action steps for accuracy. "
-        "If you are not ready to finalize, set extension_needed to True. "
-        "hint: you should set extension_needed to True if the overall goal"
-        "is not yet achieved. Do not set it to False, if you are just providing"
-        "an interim answer. You have up to {extensions} expansions. Please "
-        "strategize accordingly and continue."
+        "This is a multi-step task. You have room for up to {extensions} reason-act "
+        "rounds — that is headroom to do the job well, not a target to fill or a clock "
+        "to race. Plan across rounds, and within each round batch every independent "
+        "tool call together (concurrent actions) so you move fast without wasting "
+        "rounds. Set extension_needed=True while the task is unfinished — the normal "
+        "state as you work. Set it to False ONLY once you have done the work and "
+        "verified it succeeded; never for a plan or an interim summary. Stopping before "
+        "the task is complete and verified is the only failure."
     )
     CONTINUE_EXT_PROMPT: ClassVar[str] = (
-        "Another round is available. You may do multiple actions if needed. "
-        "You have up to {extensions} expansions. Please strategize accordingly and continue."
+        "Keep going — about {extensions} rounds of headroom remain, plenty to finish "
+        "properly. Batch independent tool calls in this round to stay efficient, take "
+        "the next actions the task needs, and observe the results. Set "
+        "extension_needed=False only once the work is genuinely done and verified."
     )
     ANSWER_PROMPT: ClassVar[str] = (
         "Given your reasoning and actions, please now provide the final answer "
@@ -72,7 +81,11 @@ class ReActAnalysis(HashableModel):
 
     extension_needed: bool = Field(
         False,
-        description="Set True if more expansions are needed. If False, final answer is next.",
+        description=(
+            "True while the task is still in progress — the normal state mid-task. Set "
+            "False ONLY when the work is genuinely complete and verified, never for an "
+            "interim or planned answer."
+        ),
     )
 
     action_strategy: Literal["sequential", "concurrent"] = Field(
