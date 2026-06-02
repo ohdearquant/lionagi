@@ -35,7 +35,6 @@ filter is applied to ``signal.data``; the full envelope is stored in the Flow.
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 from collections.abc import Callable
 from typing import Any
@@ -104,7 +103,6 @@ class SessionObserver(Observer):
         self._subs: list[tuple[Filter, Handler]] = []
         self._routes: list[tuple[Predicate, str]] = []
         self._gate: Gate | None = None
-        self._pending_tasks: list[asyncio.Task] = []
 
     # -- Registration ---------------------------------------------------------
 
