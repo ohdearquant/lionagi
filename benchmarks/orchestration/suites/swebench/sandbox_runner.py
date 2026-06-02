@@ -32,6 +32,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -118,6 +119,7 @@ async def run_instance(
     keep_sandbox: bool = False,
     refine_rounds: int = 2,
     lion_system: bool = True,
+    run_id: str = "adhoc",
 ) -> dict:
     """Run one SWE-bench instance in a sandbox, return a prediction record."""
     ctx = task.context
@@ -127,6 +129,7 @@ async def run_instance(
     last_run = {"status": "?"}
 
     refine_log: list[str] = []  # v6: per-round gate verdicts (empty/no_repro/repro_red/...)
+    raw_signals: list[dict] = []  # every @@SIG@@ event, kept for post-hoc analysis
 
     def on_out(buf=[""]):  # noqa: B006 — closure-local line buffer
         def _h(chunk: str) -> None:
@@ -138,6 +141,7 @@ async def run_instance(
                         o = json.loads(line[8:])
                     except Exception:  # noqa: S112 — skip malformed signal lines
                         continue
+                    raw_signals.append(o)
                     if o.get("t") == "ActionRequestSignal" and o.get("fn") in tool_calls:
                         tool_calls[o["fn"]] += 1
                     elif o.get("t") in ("RunEnd", "RunFailed", "Done"):
@@ -180,10 +184,10 @@ async def run_instance(
             "lion_system": lion_system,
             "result_path": f"{home}/result.json",
             "control_path": f"{home}/control",
-            "messages_path": f"{home}/messages.json",
             # INSIDE repo so the agent's workspace-confined editor can write it;
             # excluded from model_patch by name in _compute_diff (see _sandbox_entry).
             "repro_path": f"{repo}/_swebench_repro.py",
+            "branch_path": f"{home}/branch.json",
             "env": env,
         }
         await sb.write_text(json.dumps(spec), f"{home}/spec.json")
@@ -197,14 +201,26 @@ async def run_instance(
         except Exception as e:
             return _err(task, model, f"no result.json (exit {code}): {e}", t0)
 
-        if keep_sandbox:  # diagnosis: pull the full conversation locally
-            with contextlib.suppress(Exception):
-                dbg = RESULTS / "debug"
-                dbg.mkdir(parents=True, exist_ok=True)
-                txt = await sb.read_text(f"{home}/messages.json")
-                out_path = dbg / f"{ctx['instance_id']}.messages.json"
-                out_path.write_text(txt)
-                print(f"    📝 messages → {out_path}", flush=True)
+        # ALWAYS persist the full record locally — we already paid for this compute,
+        # so every instance's complete branch (messages, ReAct rounds with their
+        # extension_needed decisions, tool calls/results, usage) + raw signal stream +
+        # the agent's repro are kept for post-hoc analysis without re-running.
+        inst_dir = RESULTS / "artifacts" / run_id / ctx["instance_id"]
+        inst_dir.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(Exception):
+            inst_dir.joinpath("branch.json").write_text(await sb.read_text(f"{home}/branch.json"))
+        with contextlib.suppress(Exception):
+            inst_dir.joinpath("repro.py").write_text(
+                await sb.read_text(f"{repo}/_swebench_repro.py")
+            )
+        with contextlib.suppress(Exception):
+            inst_dir.joinpath("signals.jsonl").write_text(
+                "\n".join(json.dumps(s, default=str) for s in raw_signals)
+            )
+        with contextlib.suppress(Exception):
+            inst_dir.joinpath("result.json").write_text(json.dumps(result, default=str))
+        with contextlib.suppress(Exception):
+            inst_dir.joinpath("patch.diff").write_text(result.get("diff", "") or "")
 
     patch = result.get("diff", "") or ""
     return {
@@ -275,6 +291,22 @@ async def main() -> None:
         tasks = load_tasks(repos=repos, limit=args.limit)
     print(f"running {len(tasks)} instance(s), model={args.model}, concurrency={args.concurrency}")
 
+    # Stable per-run id (timestamp + model) — names the preds file AND the
+    # per-instance artifact tree (results/swebench/artifacts/{run_id}/...).
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = f"{args.model.replace('/', '__')}-{stamp}"
+    run_config = {
+        "run_id": run_id,
+        "model": args.model,
+        "max_extensions": args.max_extensions,
+        "refine_rounds": args.refine_rounds,
+        "lion_system": not args.no_lion_system,
+        "install_repo": not args.no_install,
+        "concurrency": args.concurrency,
+        "n_instances": len(tasks),
+        "started_utc": stamp,
+    }
+
     assert WHEEL.exists(), f"build the wheel first: uv build --wheel ({WHEEL})"
     await ensure_snapshot(SNAPSHOT)
 
@@ -311,6 +343,7 @@ async def main() -> None:
                         keep_sandbox=args.keep_sandbox,
                         refine_rounds=args.refine_rounds,
                         lion_system=not args.no_lion_system,
+                        run_id=run_id,
                     )
                     break
                 except Exception as e:  # noqa: BLE001 — one bad instance must not abort the batch
@@ -340,10 +373,31 @@ async def main() -> None:
     preds = await asyncio.gather(*(_guarded(t) for t in tasks))
 
     RESULTS.mkdir(parents=True, exist_ok=True)
-    run_id = f"swebench-{args.model.replace('/', '__')}-n{len(preds)}"
     (RESULTS / f"{run_id}.preds.json").write_text(json.dumps(preds, indent=2))
     n_patched = sum(1 for p in preds if p["patch_bytes"] > 0)
+    # Run manifest alongside the per-instance artifact tree: config + aggregate
+    # stats, so a run is fully self-describing without re-deriving anything.
+    art_dir = RESULTS / "artifacts" / run_id
+    art_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        **run_config,
+        "n_patched": n_patched,
+        "preds": [
+            {
+                "instance_id": p["instance_id"],
+                "patch_bytes": p["patch_bytes"],
+                "tool_calls": p.get("tool_calls", {}),
+                "refine": p.get("refine", []),
+                "status": p["status"],
+                "usage": p.get("usage", {}),
+                "wall_seconds": p.get("wall_seconds"),
+            }
+            for p in preds
+        ],
+    }
+    (art_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
     print(f"\n{n_patched}/{len(preds)} produced a non-empty patch")
+    print(f"artifacts: {art_dir}/  (branch.json, signals.jsonl, patch.diff, repro.py per instance)")
 
     if not args.oracle:
         print("skipping oracle (pass --oracle to run the Docker evaluation).")
