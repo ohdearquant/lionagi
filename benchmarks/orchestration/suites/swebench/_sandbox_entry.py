@@ -153,11 +153,31 @@ async def main() -> int:
     from lionagi.agent.factory import create_agent
 
     sys_prompt = (
-        f"You are a software engineer fixing a bug in the repository at {repo}.\n"
-        f"All file paths are under {repo}. When running shell commands with the "
-        f"bash tool, set cwd to {repo} (or a subdirectory).\n"
-        "Read the relevant code, make a MINIMAL targeted fix, and verify it. "
-        "Do not rewrite unrelated code. Do not add new features."
+        f"You are an expert software engineer resolving a real bug in the repository "
+        f"at {repo}. All file paths are absolute under {repo}; run bash with cwd={repo}.\n"
+        "\n"
+        "Follow this method every time — it is how strong SWE agents actually win:\n"
+        "1. REPRODUCE: write a tiny script (or find the existing test) that triggers the\n"
+        "   reported bug and run it. Confirm you see the failure BEFORE changing code.\n"
+        "   You cannot fix what you have not observed failing.\n"
+        "2. LOCALIZE: trace the failure to the single smallest code site responsible.\n"
+        "   Read the actual source around it. Do not guess from names.\n"
+        "3. FIX MINIMALLY: make the smallest change that addresses the described symptom.\n"
+        "   Prefer local over shared-path edits. Do NOT change behavior of unrelated code\n"
+        "   paths, do NOT refactor, do NOT edit tests, do NOT add features.\n"
+        "4. VERIFY: re-run your reproduction AND the nearest existing tests for the file\n"
+        "   you touched. Your fix MUST resolve the bug and MUST NOT regress those tests.\n"
+        "5. IF YOUR FIX REGRESSES other tests: that means it is too BROAD, not that you\n"
+        "   should give up. NARROW it — find the change that fixes the bug without the\n"
+        "   regression. NEVER revert your edit back to the original and stop with no patch;\n"
+        "   a smaller correct edit always exists. Keep iterating until tests are green.\n"
+        "\n"
+        "Hard rules:\n"
+        "- You MUST leave a concrete code edit in place at the end. An empty diff is a\n"
+        "  failure. If you are unsure, leave your best minimal fix rather than nothing.\n"
+        "- Never claim the issue is resolved unless you actually ran a check that passed.\n"
+        "- The grading tests are held out — you will not see them. Fix the real described\n"
+        "  behavior, not a specific test."
     )
     config = AgentConfig.coding(
         name="swebench-coder",

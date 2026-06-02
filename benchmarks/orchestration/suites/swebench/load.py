@@ -97,6 +97,56 @@ def load_tasks(repos: tuple[str, ...] | None = None, limit: int | None = None) -
     return tasks
 
 
+_FULL_DATASET = "princeton-nlp/SWE-bench_Verified"
+_HOLDOUT_CACHE = Path(__file__).resolve().parent / "data" / "holdout.json"
+
+
+def load_holdout(
+    n: int = 20, repos: tuple[str, ...] | None = None, seed_offset: int = 0
+) -> list[Task]:
+    """A held-out slice from the full Verified-500, EXCLUDING the Mini-50.
+
+    Overfit guard for the optimization loop: tune the harness on the Mini-50, then
+    confirm the gain holds here on instances never seen during tuning. Same Task
+    shape and oracle as load_tasks. Deterministic (no RNG): takes the first ``n``
+    full-Verified instances whose id is not in the Mini-50, after ``seed_offset``.
+    """
+    mini_ids = {r["instance_id"] for r in fetch_and_cache()}
+    if _HOLDOUT_CACHE.exists():
+        rows = json.loads(_HOLDOUT_CACHE.read_text())
+    else:
+        from datasets import load_dataset  # benchmark-only dep
+
+        rows = [dict(r) for r in load_dataset(_FULL_DATASET, split="test")]
+        _HOLDOUT_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        _HOLDOUT_CACHE.write_text(json.dumps(rows))
+    pool = [r for r in rows if r["instance_id"] not in mini_ids]
+    if repos:
+        pool = [r for r in pool if r["repo"] in repos]
+    pool = pool[seed_offset : seed_offset + n]
+    return [
+        Task(
+            id=r["instance_id"],
+            prompt=r["problem_statement"],
+            labels=(),
+            context={
+                "suite": "swebench",
+                "instance_id": r["instance_id"],
+                "repo": r["repo"],
+                "base_commit": r["base_commit"],
+                "environment_setup_commit": r.get("environment_setup_commit"),
+                "version": r.get("version"),
+                "test_patch": r["test_patch"],
+                "gold_patch": r["patch"],
+                "fail_to_pass": _parse_list(r.get("FAIL_TO_PASS")),
+                "pass_to_pass": _parse_list(r.get("PASS_TO_PASS")),
+                "hints_text": r.get("hints_text", ""),
+            },
+        )
+        for r in pool
+    ]
+
+
 if __name__ == "__main__":
     tasks = load_tasks()
     print(f"loaded {len(tasks)} SWE-bench Verified Mini tasks")
