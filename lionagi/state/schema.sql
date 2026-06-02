@@ -212,7 +212,10 @@ CREATE TABLE IF NOT EXISTS branches (
   -- or "critic"), not the agent_profile name on sessions.
   model           TEXT,
   provider        TEXT,
-  agent_name      TEXT
+  agent_name      TEXT,
+  status          TEXT,
+  started_at      REAL,
+  ended_at        REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_branches_session

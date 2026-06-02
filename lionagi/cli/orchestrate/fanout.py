@@ -58,6 +58,10 @@ async def _run_fanout(
     project: str | None = None,
 ) -> str:
     """Three-phase fan-out: decompose → fan out → synthesize."""
+    from lionagi.ln.concurrency.errors import cache_cancelled_exc_class
+
+    cache_cancelled_exc_class()
+
     env = setup_orchestration(
         pattern_name="Fanout",
         model_spec=model_spec,
@@ -133,9 +137,9 @@ async def _run_fanout(
         _terminal_status = "timed_out"
         raise
     except BaseException as exc:
-        from lionagi.ln.concurrency import get_cancelled_exc_class
+        from lionagi.ln.concurrency.errors import cancelled_exc_classes
 
-        if isinstance(exc, get_cancelled_exc_class()):
+        if isinstance(exc, cancelled_exc_classes()):
             _terminal_status = "cancelled"
         else:
             _terminal_status = "failed"

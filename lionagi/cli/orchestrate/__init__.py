@@ -740,9 +740,9 @@ def run_orchestrate(args: argparse.Namespace) -> int:
         except KeyboardInterrupt:
             return 130  # ADR-0025: aborted (SIGINT)
         except BaseException as exc:
-            from lionagi.ln.concurrency import get_cancelled_exc_class
+            from lionagi.ln.concurrency.errors import cancelled_exc_classes
 
-            if isinstance(exc, get_cancelled_exc_class()):
+            if isinstance(exc, cancelled_exc_classes()):
                 return 143  # ADR-0025: cancelled (SIGTERM)
             raise
         if not args.verbose:
@@ -965,9 +965,9 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             log_error(str(e))
             return 1
         except BaseException as exc:
-            from lionagi.ln.concurrency import get_cancelled_exc_class
+            from lionagi.ln.concurrency.errors import cancelled_exc_classes
 
-            if isinstance(exc, get_cancelled_exc_class()):
+            if isinstance(exc, cancelled_exc_classes()):
                 return 143  # ADR-0025: cancelled (SIGTERM)
             raise
         if not args.verbose:

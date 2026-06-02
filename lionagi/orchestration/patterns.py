@@ -234,14 +234,12 @@ def build_fanout_graph(
         session.include_branches(synth_branch)
         synth = create_operation(
             "operate",
-            parameters={
-                "instruction": SYNTHESIS_INSTRUCTION,
-                "aggregation_sources": [str(w.id) for w in workers],
-                "aggregation_count": len(workers),
-            },
+            parameters={"instruction": SYNTHESIS_INSTRUCTION},
         )
         synth.branch_id = synth_branch.id
         synth.metadata["aggregation"] = True
+        synth.metadata["aggregation_sources"] = [str(w.id) for w in workers]
+        synth.metadata["aggregation_count"] = len(workers)
         graph.add_node(synth)
         for w in workers:
             graph.add_edge(Edge(head=w.id, tail=synth.id, label=["aggregate"]))

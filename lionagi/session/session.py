@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 if TYPE_CHECKING:
+    from lionagi.hooks.bus import HookBus
+
     from .observer import SessionObserver
 
 from pydantic import Field, JsonValue, PrivateAttr, field_serializer, model_validator
@@ -52,6 +54,7 @@ class Session(Node, Relational):
     user: SenderRecipient | None = None
     _operation_manager: OperationManager = PrivateAttr(default_factory=OperationManager)
     _observer: Any = PrivateAttr(default=None)
+    _hooks: Any = PrivateAttr(default=None)
 
     @field_serializer("user")
     def _serialize_user(self, value: SenderRecipient | None) -> JsonValue:
@@ -71,6 +74,8 @@ class Session(Node, Relational):
             branch.user = self.id
             branch._operation_manager = self._operation_manager
             branch._observer = self.observer
+            if self._hooks is not None:
+                branch._hooks = self._hooks
             if not self.exchange.has(branch.id):
                 self.exchange.register(branch.id)
             if self.default_branch is None:
@@ -126,6 +131,17 @@ class Session(Node, Relational):
         if meth is None:
             raise ValueError(f"Unknown operation: {operation!r}")
         return await meth(**kwargs)
+
+    # ==================== Hook bus ====================
+
+    @property
+    def hooks(self) -> "HookBus":
+        """Per-session hook bus (ADR-0023), lazily created and bound to the observer."""
+        if self._hooks is None:
+            from lionagi.hooks import build_session_bus
+
+            self._hooks = build_session_bus(observer=self.observer)
+        return self._hooks
 
     # ==================== Reactive event observation ====================
 

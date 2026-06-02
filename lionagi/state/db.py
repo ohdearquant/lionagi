@@ -2298,6 +2298,7 @@ class StateDB:
             "action_args",
             "artifact_contract_json",
             "artifact_verification_json",
+            "status_evidence_refs",
         ):
             if key in d and isinstance(d[key], str):
                 try:

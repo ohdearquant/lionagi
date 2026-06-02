@@ -392,7 +392,7 @@ class DependencyAwareExecutor:
         """Wait for all dependencies to complete."""
         # Special handling for aggregations
         if operation.metadata.get("aggregation"):
-            sources = operation.parameters.get("aggregation_sources", [])
+            sources = operation.metadata.get("aggregation_sources", [])
             if self.verbose and sources:
                 logger.debug(
                     "Aggregation %s waiting for %d sources",
@@ -668,7 +668,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
         initial = [n for n in self.graph.internal_nodes.values() if isinstance(n, Operation)]
         self._running = True
-        observer = getattr(self.session, "observer", None)
+        observer = getattr(self.session, "_observer", None)
         if observer is not None:
             self.session.observe(self.spawn_type, self._on_bus_spawn)
         try:
@@ -791,7 +791,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
             spawned=node.id in self._spawned_ids,
         )
 
-    def _on_bus_spawn(self, req: Any, _ctx: Any) -> None:
+    async def _on_bus_spawn(self, req: Any, _ctx: Any) -> None:
         """Bus handler: a running agent emitted a SpawnRequest. Inject it."""
         if not self._running:
             return
@@ -908,7 +908,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         child.branch_id = clone.id
 
 
-def _default_node_builder(req: Any, emitter: Operation) -> Operation:
+def _default_node_builder(req: Any, emitter: Operation | None) -> Operation:
     """Build an operate node from a SpawnRequest (role-agnostic fallback).
 
     The orchestration layer supplies a richer builder that maps ``assignee`` to
@@ -928,7 +928,7 @@ async def flow(
     branch: "Branch" = None,
     context: dict[str, Any] | None = None,
     parallel: bool = True,
-    max_concurrent: int = None,
+    max_concurrent: int | None = None,
     verbose: bool = False,
     alcall_params: AlcallParams | None = None,
     on_progress: Any = None,
@@ -1005,7 +1005,7 @@ async def flow_stream(
     *,
     branch: "Branch" = None,
     context: dict[str, Any] | None = None,
-    max_concurrent: int = None,
+    max_concurrent: int | None = None,
     verbose: bool = False,
     alcall_params: AlcallParams | None = None,
     spawn_type: type | None = None,
@@ -1111,10 +1111,6 @@ async def flow_with_cleanup(
         branch=branch,
         alcall_params=alcall_params,
     )
-
-    # Clean up session memory
-    if hasattr(session, "cleanup_memory"):
-        session.cleanup_memory()
 
     # Clean up results if requested
     if cleanup_results:
