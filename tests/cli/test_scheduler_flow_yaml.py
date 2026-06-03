@@ -98,7 +98,7 @@ def test_build_argv_flow_yaml_cleanup_on_spawn():
                 tmp_path=tmp_path,
             )
 
-    exit_code, _ = asyncio.get_event_loop().run_until_complete(_run())
+    exit_code, _ = asyncio.run(_run())
     assert exit_code == 0
     # Temp file must be gone
     assert not os.path.exists(tmp_path)
@@ -166,7 +166,7 @@ def test_create_schedule_rejects_empty_flow_yaml():
         await create_schedule(data)
 
     try:
-        asyncio.get_event_loop().run_until_complete(_run())
+        asyncio.run(_run())
         raise AssertionError("Should have raised ValueError")
     except ValueError as exc:
         assert "action_flow_yaml" in str(exc)
@@ -189,7 +189,7 @@ def test_create_schedule_rejects_malformed_flow_yaml():
         await create_schedule(data)
 
     try:
-        asyncio.get_event_loop().run_until_complete(_run())
+        asyncio.run(_run())
         raise AssertionError("Should have raised ValueError")
     except ValueError as exc:
         assert "flow_yaml" in str(exc).lower() or "YAML" in str(exc)
@@ -317,4 +317,4 @@ def test_flow_yaml_db_roundtrip():
 
             os.unlink(db_path)
 
-    asyncio.get_event_loop().run_until_complete(_run())
+    asyncio.run(_run())
