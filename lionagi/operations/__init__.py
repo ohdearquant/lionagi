@@ -2,6 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .builder import ExpansionStrategy, OperationGraphBuilder
+from .confidence_gate import (
+    ConfidenceGateEscalated,
+    ConfidenceGatePassed,
+    ConfidenceRating,
+    confidence_gated_completion,
+)
 from .flow import (
     DependencyAwareExecutor,
     FlowEvent,
@@ -24,4 +30,8 @@ __all__ = (
     "BranchOperations",
     "Operation",
     "Builder",
+    "ConfidenceGatePassed",
+    "ConfidenceGateEscalated",
+    "ConfidenceRating",
+    "confidence_gated_completion",
 )

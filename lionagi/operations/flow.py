@@ -633,6 +633,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         spawn_type: type | None = None,
         node_builder: Any = None,
         max_spawn: int = 50,
+        escalation_tier: str | None = None,
         **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
@@ -655,6 +656,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
         # When streaming, completed nodes are pushed here for the generator to
         # yield. None in batch mode.
         self._result_sink: Any = None
+        # Model name (e.g. "claude-opus-4-8") to use for escalated re-dispatch.
+        # None means no higher tier is configured and escalations surface as give_up.
+        self._escalation_tier: str | None = escalation_tier
 
     async def execute(self) -> dict[str, Any]:
         """Execute the graph, growing it as nodes emit SpawnRequests."""
@@ -670,7 +674,10 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self._running = True
         observer = getattr(self.session, "_observer", None)
         if observer is not None:
+            from lionagi.casts.emission import EscalationRequest  # noqa: PLC0415
+
             self.session.observe(self.spawn_type, self._on_bus_spawn)
+            self.session.observe(EscalationRequest, self._on_bus_escalation)
         try:
             async with create_task_group() as tg:
                 self._tg = tg
@@ -680,7 +687,10 @@ class ReactiveExecutor(DependencyAwareExecutor):
             self._running = False
             self._tg = None
             if observer is not None:
+                from lionagi.casts.emission import EscalationRequest  # noqa: PLC0415
+
                 observer.unobserve(self._on_bus_spawn)
+                observer.unobserve(self._on_bus_escalation)
 
         completed_ops = [
             op_id for op_id in self.results.keys() if op_id not in self.skipped_operations
@@ -797,6 +807,73 @@ class ReactiveExecutor(DependencyAwareExecutor):
             return
         self._inject_request(req, emitter=_CURRENT_OP.get())
 
+    async def _on_bus_escalation(self, req: Any, _ctx: Any) -> None:
+        """Bus handler: a running agent emitted an EscalationRequest.
+
+        Routes to either a higher-tier re-dispatch (when ``escalation_tier``
+        is configured and ``human_required`` is not set) or a graceful give-up
+        signal.  Emits :class:`~lionagi.session.signal.NodeEscalated` in both
+        cases so the lifecycle projection stays accurate (ADR-0077).
+        """
+        if not self._running:
+            return
+        from lionagi.casts.emission import EscalationRequest as _EscReq  # noqa: PLC0415
+        from lionagi.session.signal import NodeEscalated  # noqa: PLC0415
+
+        emitter = _CURRENT_OP.get()
+        op_id = str(emitter.id) if emitter is not None else ""
+        name = (
+            emitter.metadata.get("reference_id", str(emitter.id)[:8]) if emitter is not None else ""
+        )
+        reason = req.reason if isinstance(req, _EscReq) else str(req)
+        human_required = isinstance(req, _EscReq) and req.context.get("human_required", False)
+
+        if self._escalation_tier is not None and not human_required:
+            scheduled = self._schedule_escalation(req, emitter)
+            route = "higher_tier" if scheduled else "give_up"
+        else:
+            route = "give_up"
+
+        await self.session.emit(NodeEscalated(op_id=op_id, name=name, reason=reason, route=route))
+
+    def _schedule_escalation(self, req: Any, emitter: Operation | None) -> bool:
+        """Build and schedule an escalated re-run of the emitter's operation.
+
+        Returns True if the child was accepted and scheduled, False otherwise.
+        On success the child node's branch is updated with the escalation model
+        tier (best-effort, fails silently when provider config is unavailable).
+        """
+        if emitter is not None:
+            op_type = getattr(emitter, "operation", "operate")
+            params = dict(emitter.parameters) if isinstance(emitter.parameters, dict) else {}
+        else:
+            op_type = "operate"
+            reason = getattr(req, "reason", str(req))
+            params = {"instruction": f"[escalated] {reason}"}
+
+        try:
+            child = create_operation(op_type, parameters=params)
+            if self._escalation_tier:
+                child.metadata["escalation_tier"] = self._escalation_tier
+        except Exception as e:
+            logger.warning("escalation op build failed: %s", e)
+            return False
+
+        emitter_id = emitter.id if emitter is not None else None
+        # Run as independent when the emitter is absent from the graph (already
+        # completed and pruned) — adding a dependency edge to a missing head
+        # would raise RelationError in _accept_node.
+        independent = emitter is None or emitter_id not in self.graph.internal_nodes
+        if not self._accept_node(child, emitter_id=emitter_id, independent=independent):
+            return False
+
+        if child.id in self.operation_branches and self._escalation_tier:
+            _set_branch_escalation_tier(self.operation_branches[child.id], self._escalation_tier)
+
+        if self._tg is not None:
+            self._tg.start_soon(self._run_tracked, child)
+        return True
+
     def _inject_request(self, req: Any, *, emitter: Operation | None) -> bool:
         """Build + schedule a node for one SpawnRequest (deduped, role-aware)."""
         if id(req) in self._seen_reqs:
@@ -906,6 +983,23 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self.session.include_branches(clone)
         self.operation_branches[child.id] = clone
         child.branch_id = clone.id
+
+
+def _set_branch_escalation_tier(branch: Any, tier: str) -> None:
+    """Best-effort: override a branch's chat model with the escalation tier.
+
+    Falls back to recording the tier in branch metadata when the iModel
+    constructor fails (e.g. no provider config in test contexts), so the
+    intent is still inspectable without raising.
+    """
+    try:
+        from lionagi.service.imodel import iModel  # noqa: PLC0415
+
+        branch.chat_model = iModel(model=tier)
+    except Exception:
+        meta = getattr(branch, "metadata", None)
+        if isinstance(meta, dict):
+            meta["escalation_tier"] = tier
 
 
 def _default_node_builder(req: Any, emitter: Operation | None) -> Operation:
