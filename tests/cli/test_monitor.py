@@ -282,6 +282,23 @@ def test_session_to_row_no_optional():
     assert row["phase"] == "-"
 
 
+def test_session_to_row_current_phase_wins():
+    """#1235: a live flow phase overrides the static orchestrator/playbook name."""
+    sess = {
+        "id": "abc123def456",
+        "invocation_kind": "play",
+        "status": "running",
+        "agent_name": "orchestrator",
+        "playbook_name": "feature",
+        "current_phase": "executing",
+    }
+    assert _session_to_row(sess)["phase"] == "executing"
+
+    # Before a flow leaves planning, current_phase is NULL → fall back.
+    sess["current_phase"] = None
+    assert _session_to_row(sess)["phase"] == "orchestrator"
+
+
 def test_invocation_to_row():
     inv = {
         "id": "inv001abc",

@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lionagi.operations.ReAct.utils import Analysis, PlannedAction, ReActAnalysis
+from lionagi.operations.ReAct.utils import Analysis, ReActAnalysis
 from lionagi.session.branch import Branch
 from lionagi.testing import LionAGIMockFactory
 
@@ -75,7 +75,6 @@ async def test_single_tool_invocation():
         # First: ReActAnalysis with tool call
         first_analysis = ReActAnalysis(
             analysis="Need to calculate 6 * 7",
-            planned_actions=[PlannedAction(action_type="multiply", description="Calculate 6 * 7")],
             extension_needed=False,
         )
 
@@ -104,7 +103,6 @@ async def test_multiple_tool_calls_sequential_strategy():
         # Round 1: First tool call with sequential strategy
         round1 = ReActAnalysis(
             analysis="Calculate 100 * 5",
-            planned_actions=[PlannedAction(action_type="multiply", description="100 * 5")],
             extension_needed=True,
             action_strategy="sequential",
         )
@@ -112,7 +110,6 @@ async def test_multiple_tool_calls_sequential_strategy():
         # Round 2: Second tool call
         round2 = ReActAnalysis(
             analysis="Now divide by 10",
-            planned_actions=[PlannedAction(action_type="divide", description="500 / 10")],
             extension_needed=False,
             action_strategy="sequential",
         )
@@ -145,16 +142,6 @@ async def test_concurrent_action_strategy():
         # Analysis requesting concurrent execution
         analysis = ReActAnalysis(
             analysis="Check weather in multiple cities",
-            planned_actions=[
-                PlannedAction(
-                    action_type="get_weather",
-                    description="Check NYC weather",
-                ),
-                PlannedAction(
-                    action_type="get_weather",
-                    description="Check SF weather",
-                ),
-            ],
             extension_needed=False,
             action_strategy="concurrent",  # Concurrent strategy
         )
@@ -181,16 +168,6 @@ async def test_planned_actions_structure():
         # Analysis with detailed planned actions
         analysis = ReActAnalysis(
             analysis="Need to perform multiple actions",
-            planned_actions=[
-                PlannedAction(
-                    action_type="search",
-                    description="Search for information",
-                ),
-                PlannedAction(
-                    action_type="analyze",
-                    description="Analyze search results",
-                ),
-            ],
             extension_needed=False,
         )
 
@@ -204,7 +181,7 @@ async def test_planned_actions_structure():
         )
 
         assert result == "Actions completed"
-        # Verify the analysis object had correct planned_actions
+        # Verify operate was called with the analysis
         initial_call = mock_operate.call_args_list[0]
         assert initial_call is not None
 
@@ -218,7 +195,6 @@ async def test_tools_parameter_variations():
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
         analysis = ReActAnalysis(
             analysis="Complete",
-            planned_actions=[],
             extension_needed=False,
         )
         final = Analysis(answer="Done")

@@ -120,8 +120,10 @@ class Branch(Element, Relational):
     _log_manager: DataLogger | None = PrivateAttr(None)
     _operation_manager: OperationManager | None = PrivateAttr(None)
     _observer: Any = PrivateAttr(None)
+    _hooks: Any = PrivateAttr(None)
     _capabilities: Any = PrivateAttr(None)
     _loop_control: "LoopControl | None" = PrivateAttr(None)
+    _signal_tasks: list = PrivateAttr(default_factory=list)
 
     def __init__(
         self,
@@ -189,6 +191,16 @@ class Branch(Element, Relational):
         from lionagi.protocols.messages.manager import MessageManager
 
         self._message_manager = MessageManager(messages=messages)
+        # Universal signal emission: every message any path adds (CLI stream,
+        # API turn, tool act) raises its bus signal through this one hook, so
+        # observer-powered orchestration is transport-agnostic. Scheduled in the
+        # background (see _schedule_emit) and drained at operation boundaries.
+        self._message_manager._on_message_added.append(self._schedule_emit)
+        # NOTE: the ordered-persistence hook (_persist_via_bus, ADR-0023b) is NOT
+        # registered here. It is async, and the *sync* add_message path (used for
+        # the construction-time system message) rejects async callbacks. The CLI
+        # live-persist wiring registers it via hooks.route_message_persistence in
+        # an async context, after which only a_add_message is used.
 
         if any(
             bool(x)
@@ -367,6 +379,113 @@ class Branch(Element, Relational):
         if self._observer is None:
             return []
         return await self._observer.emit(event)
+
+    async def authorize(self, action: Any) -> bool:
+        """Consult the session's pre-invoke governance gate for ``action``.
+
+        Delegates to ``observer.authorize`` (ADR-0076 Follow-up 1). A standalone
+        branch (no observer) always allows, so ungoverned branches are unaffected.
+        Used by tool execution to block a denied call before it runs.
+        """
+        if self._observer is None:
+            return True
+        return await self._observer.authorize(action)
+
+    async def _persist_via_bus(self, msg: Any) -> None:
+        """``on_message_added`` hook: drive ordered persistence on the hook bus.
+
+        When a hook bus is attached (``_hooks`` — set by CLI live-persist wiring),
+        emit ``MESSAGE_ADD`` so the registered persistence handler writes this
+        message through the one transport (ADR-0023b). Unlike ``_schedule_emit``
+        this is awaited inside the message-add, so per-branch message order is
+        preserved (progression appends must not race). No-op without a bus, so
+        library and API usage are unaffected.
+        """
+        if self._hooks is None:
+            return
+        from lionagi.hooks.bus import HookPoint
+
+        await self._hooks.emit(HookPoint.MESSAGE_ADD, branch_id=str(self.id), message=msg)
+
+    def _schedule_emit(self, msg: Any) -> None:
+        """``on_message_added`` hook: schedule this message's bus emission.
+
+        Fire-and-forget (tracked in ``_signal_tasks``, drained by
+        ``drain_signals``) so a slow observer handler never stalls the message
+        pipeline — the same non-blocking contract the CLI stream loop relied on,
+        now applied to EVERY transport. No-op without an observer.
+        """
+        if self._observer is None:
+            return
+        import asyncio
+
+        from lionagi.operations._observe import emit_message
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Sync add outside an event loop — emission is async-only; skip.
+            # (Not a real orchestration path; observers run under async ops.)
+            return
+        self._signal_tasks.append(loop.create_task(emit_message(self, msg)))
+
+    async def drain_signals(self) -> None:
+        """Await all pending background emissions and clear the queue.
+
+        Called at operation boundaries (run finally, operate/ReAct turn) so a
+        signal emitted on turn N — e.g. a ``SpawnRequest`` — is observed before
+        the orchestration decides quiescence. Handler exceptions are collected,
+        not raised, mirroring the prior CLI-stream drain semantics.
+        """
+        if not self._signal_tasks:
+            return
+        from lionagi.ln.concurrency import gather as _gather
+
+        tasks, self._signal_tasks = self._signal_tasks, []
+        await _gather(*tasks, return_exceptions=True)
+
+    async def _observed_run(self, coro: Any) -> Any:
+        """Wrap a public branch operation with bus lifecycle + signal drain.
+
+        One boundary for every transport/loop (operate, ReAct, communicate):
+        emit RunStart → run → drain this run's emissions (so a SpawnRequest the
+        turn produced is observed before the orchestration settles) → emit
+        RunEnd / RunFailed. ``coro`` is the already-constructed operation
+        coroutine. No-op lifecycle when standalone; the drain is always safe.
+        """
+        has_observer = self._observer is not None
+        if has_observer:
+            from .signal import RunStart
+
+            await self.emit(RunStart())
+        try:
+            result = await coro
+        except BaseException as exc:
+            await self.drain_signals()
+            if has_observer:
+                from .signal import RunFailed
+
+                await self.emit(RunFailed(data=exc))
+            raise
+        await self.drain_signals()
+        if has_observer:
+            from .signal import RunEnd
+
+            await self.emit(RunEnd(data=result))
+        return result
+
+    async def emit_and_log(self, event: Any) -> list[Any]:
+        """Log an event to the DataLogger AND emit it onto the reactive bus.
+
+        The log is the durable record (persisted, outlives the session); the
+        emission is the in-memory reactive trace handlers can react to. Called
+        where an ``Event`` (an ``APICalling``, a tool call) completes, so
+        ``session.observe(APICalling, EventStatus.FAILED)`` reacts to a failed
+        call instead of only finding it after the fact in the logs. Emission is a
+        no-op for a standalone branch (no session); logging always happens.
+        """
+        self._log_manager.log(event)
+        return await self.emit(event)
 
     def control(self, directive: "LoopDirective", *, reason: str | None = None) -> None:
         """Queue a loop-control directive.
@@ -592,7 +711,7 @@ class Branch(Element, Relational):
         async def _connect(**kwargs):
             """connect to an api endpoint"""
             api_call = await imodel.invoke(**kwargs)
-            self._log_manager.log(api_call)
+            await self.emit_and_log(api_call)
             return api_call.response
 
         _connect.__name__ = name or imodel.endpoint.name
@@ -1002,30 +1121,13 @@ class Branch(Element, Relational):
             _pms.update(kwargs)
         from lionagi.operations.operate.operate import operate, prepare_operate_kw
 
-        # Run lifecycle on the bus: RunStart → RunEnd(result) | RunFailed(exc).
-        # This is orthogonal to capabilities (no grant required) — it reports
-        # the run, not an exercised capability. ``RunEnd.data`` unwraps so
-        # ``session.observe(ResultType)`` still fires on the final result; the
-        # per-message capability bundles (run loop) are distinct payloads, so
-        # there is no double-emit. No-op when the branch is standalone.
-        has_observer = self._observer is not None
-        if has_observer:
-            from .signal import RunStart
-
-            await self.emit(RunStart())
-        try:
-            result = await operate(self, **prepare_operate_kw(self, **_pms))
-        except Exception as exc:
-            if has_observer:
-                from .signal import RunFailed
-
-                await self.emit(RunFailed(data=exc))
-            raise
-        if has_observer:
-            from .signal import RunEnd
-
-            await self.emit(RunEnd(data=result))
-        return result
+        # Run lifecycle (RunStart → RunEnd|RunFailed) + signal drain via the
+        # shared boundary. Orthogonal to capabilities (no grant required) — it
+        # reports the run, not an exercised capability. ``RunEnd.data`` unwraps
+        # so ``session.observe(ResultType)`` still fires on the final result;
+        # the per-message capability bundles are distinct payloads (no
+        # double-emit). No-op when the branch is standalone.
+        return await self._observed_run(operate(self, **prepare_operate_kw(self, **_pms)))
 
     async def communicate(
         self,
@@ -1112,7 +1214,7 @@ class Branch(Element, Relational):
             prepare_communicate_kw,
         )
 
-        return await communicate(self, **prepare_communicate_kw(self, **_pms))
+        return await self._observed_run(communicate(self, **prepare_communicate_kw(self, **_pms)))
 
     async def act(
         self,
@@ -1294,32 +1396,34 @@ class Branch(Element, Relational):
             k: v for k, v in kwargs.items() if k not in {"verbose_analysis", "verbose_action"}
         }
 
-        return await ReAct(
-            self,
-            instruct,
-            interpret=interpret,
-            interpret_domain=interpret_domain,
-            interpret_style=interpret_style,
-            interpret_sample=interpret_sample,
-            interpret_kwargs=interpret_kwargs,
-            tools=tools,
-            tool_schemas=tool_schemas,
-            response_format=response_format,
-            extension_allowed=extension_allowed,
-            max_extensions=max_extensions,
-            response_kwargs=response_kwargs,
-            return_analysis=return_analysis,
-            analysis_model=analysis_model,
-            verbose_action=verbose,
-            verbose_analysis=verbose,
-            verbose_length=verbose_length,
-            interpret_model=interpret_model,
-            intermediate_response_options=intermediate_response_options,
-            intermediate_listable=intermediate_listable,
-            reasoning_effort=reasoning_effort,
-            display_as=display_as,
-            include_token_usage_to_model=include_token_usage_to_model,
-            **kwargs_filtered,
+        return await self._observed_run(
+            ReAct(
+                self,
+                instruct,
+                interpret=interpret,
+                interpret_domain=interpret_domain,
+                interpret_style=interpret_style,
+                interpret_sample=interpret_sample,
+                interpret_kwargs=interpret_kwargs,
+                tools=tools,
+                tool_schemas=tool_schemas,
+                response_format=response_format,
+                extension_allowed=extension_allowed,
+                max_extensions=max_extensions,
+                response_kwargs=response_kwargs,
+                return_analysis=return_analysis,
+                analysis_model=analysis_model,
+                verbose_action=verbose,
+                verbose_analysis=verbose,
+                verbose_length=verbose_length,
+                interpret_model=interpret_model,
+                intermediate_response_options=intermediate_response_options,
+                intermediate_listable=intermediate_listable,
+                reasoning_effort=reasoning_effort,
+                display_as=display_as,
+                include_token_usage_to_model=include_token_usage_to_model,
+                **kwargs_filtered,
+            )
         )
 
     async def ReActStream(  # noqa: N802

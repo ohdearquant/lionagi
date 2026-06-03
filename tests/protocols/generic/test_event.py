@@ -63,8 +63,9 @@ def test_event_serialization():
 @pytest.mark.asyncio
 async def test_event_invoke_not_implemented():
     event = Event()
-    with pytest.raises(NotImplementedError):
-        await event.invoke()
+    await event.invoke()  # total: NotImplementedError captured, not raised
+    assert event.status == EventStatus.FAILED
+    assert isinstance(event.execution.error, NotImplementedError)
 
 
 def test_event_from_dict_not_implemented():

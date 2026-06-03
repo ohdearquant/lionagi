@@ -38,9 +38,7 @@ class TestHookedEventPreHookIntegration:
     """Test pre-invocation hook integration."""
 
     @pytest.mark.anyio
-    async def test_pre_hook_normal_allows_invoke(
-        self, patch_cancellation, patch_logger
-    ):
+    async def test_pre_hook_normal_allows_invoke(self, patch_cancellation, patch_logger):
         """Test that normal pre-hook execution allows _core_invoke() to proceed."""
 
         async def pre_hook(ev, **kw):
@@ -65,7 +63,8 @@ class TestHookedEventPreHookIntegration:
     async def test_pre_hook_exit_aborts_invoke_and_propagates(
         self, patch_cancellation, patch_logger
     ):
-        """Cancellation from pre-hook propagates out of event.invoke() and sets FAILED."""
+        """A pre-hook raising Exception (here MyCancelled) is captured as FAILED; the
+        action is still blocked (core never runs). Raise BaseException to hard-abort."""
 
         async def pre_hook(ev, **kw):
             raise MyCancelled("pre-hook denied")
@@ -74,18 +73,19 @@ class TestHookedEventPreHookIntegration:
         event = MockHookedEvent(invoke_result="SHOULD_NOT_HAPPEN")
         event.create_pre_invoke_hook(hook_registry=registry, exit_hook=True)
 
-        with pytest.raises(MyCancelled, match="pre-hook denied"):
-            await event.invoke()
+        await event.invoke()  # total: hook Exception captured as FAILED, not raised
 
         # Main _core_invoke() should NOT have been called
         assert event.invoke_called is False
         assert event.execution.status == EventStatus.FAILED
+        assert isinstance(event.execution.error, MyCancelled)
 
     @pytest.mark.anyio
     async def test_pre_hook_error_aborts_invoke_regardless_of_exit_flag(
         self, patch_cancellation, patch_logger
     ):
-        """A failing pre-hook (RuntimeError, exit=False) aborts _core_invoke and re-raises."""
+        """A failing pre-hook (RuntimeError, exit=False) aborts _core_invoke; the error is
+        captured as FAILED, not re-raised."""
 
         async def pre_hook(ev, **kw):
             raise RuntimeError("pre-hook error")
@@ -94,18 +94,15 @@ class TestHookedEventPreHookIntegration:
         event = MockHookedEvent(invoke_result="main_result")
         event.create_pre_invoke_hook(hook_registry=registry, exit_hook=False)
 
-        with pytest.raises(RuntimeError):
-            await event.invoke()
+        await event.invoke()  # total: hook error captured as FAILED, not raised
 
-        # _core_invoke is not reached because the hook marked the event CANCELLED
+        # _core_invoke is not reached because the pre-hook failed
         assert event.invoke_called is False
         assert event.execution.status == EventStatus.FAILED
 
     @pytest.mark.anyio
-    async def test_pre_hook_error_with_exit_true_aborts(
-        self, patch_cancellation, patch_logger
-    ):
-        """A failing pre-hook (RuntimeError, exit=True) aborts execution and re-raises."""
+    async def test_pre_hook_error_with_exit_true_aborts(self, patch_cancellation, patch_logger):
+        """A failing pre-hook (RuntimeError, exit=True) aborts execution; captured as FAILED."""
 
         async def pre_hook(ev, **kw):
             raise RuntimeError("pre-hook critical error")
@@ -114,8 +111,7 @@ class TestHookedEventPreHookIntegration:
         event = MockHookedEvent(invoke_result="SHOULD_NOT_HAPPEN")
         event.create_pre_invoke_hook(hook_registry=registry, exit_hook=True)
 
-        with pytest.raises(RuntimeError):
-            await event.invoke()
+        await event.invoke()  # total: hook error captured as FAILED, not raised
 
         assert event.invoke_called is False
         assert event.execution.status == EventStatus.FAILED
@@ -149,7 +145,7 @@ class TestHookedEventPostHookIntegration:
     async def test_post_hook_cancellation_propagates_after_main(
         self, patch_cancellation, patch_logger
     ):
-        """Cancellation from post-hook propagates out of event.invoke() after main ran."""
+        """A post-hook raising Exception (exit=True) after main ran is captured as FAILED."""
 
         async def post_hook(ev, **kw):
             raise MyCancelled("post-hook failed")
@@ -158,10 +154,9 @@ class TestHookedEventPostHookIntegration:
         event = MockHookedEvent(invoke_result="main_result")
         event.create_post_invoke_hook(hook_registry=registry, exit_hook=True)
 
-        with pytest.raises(MyCancelled, match="post-hook failed"):
-            await event.invoke()
+        await event.invoke()  # total: post-hook Exception captured as FAILED, not raised
 
-        # Main invoke DID run, but the cancellation from post-hook propagated
+        # Main invoke DID run; the post-hook failure is recorded as FAILED
         assert event.invoke_called is True
         assert event.execution.status == EventStatus.FAILED
 
@@ -193,9 +188,7 @@ class TestHookedEventBothHooks:
     """Test HookedEvent with both pre and post hooks."""
 
     @pytest.mark.anyio
-    async def test_both_hooks_normal_execution_order(
-        self, patch_cancellation, patch_logger
-    ):
+    async def test_both_hooks_normal_execution_order(self, patch_cancellation, patch_logger):
         """Test that both hooks run in correct order: pre -> _core_invoke -> post."""
         execution_order = []
 
@@ -233,10 +226,8 @@ class TestHookedEventBothHooks:
         assert len(patch_logger) == 2
 
     @pytest.mark.anyio
-    async def test_pre_hook_exit_prevents_post_hook(
-        self, patch_cancellation, patch_logger
-    ):
-        """Pre-hook cancellation propagates immediately; neither core nor post hook runs."""
+    async def test_pre_hook_exit_prevents_post_hook(self, patch_cancellation, patch_logger):
+        """A pre-hook exit (Exception) is captured as FAILED; neither core nor post hook runs."""
         hooks_called = []
 
         async def pre_hook(ev, **kw):
@@ -257,8 +248,7 @@ class TestHookedEventBothHooks:
         event.create_pre_invoke_hook(hook_registry=registry, exit_hook=True)
         event.create_post_invoke_hook(hook_registry=registry, exit_hook=False)
 
-        with pytest.raises(MyCancelled):
-            await event.invoke()
+        await event.invoke()  # total: pre-hook Exception captured as FAILED, not raised
 
         # Only pre-hook ran; post-hook and core never reached
         assert hooks_called == ["pre"]
@@ -266,9 +256,7 @@ class TestHookedEventBothHooks:
         assert event.execution.status == EventStatus.FAILED
 
     @pytest.mark.anyio
-    async def test_main_invoke_error_still_runs_post_hook(
-        self, patch_cancellation, patch_logger
-    ):
+    async def test_main_invoke_error_still_runs_post_hook(self, patch_cancellation, patch_logger):
         """Test that _core_invoke errors still allow post-hook to run."""
         hooks_called = []
 
@@ -290,9 +278,8 @@ class TestHookedEventBothHooks:
         event.create_pre_invoke_hook(hook_registry=registry, exit_hook=False)
         event.create_post_invoke_hook(hook_registry=registry, exit_hook=False)
 
-        # core error propagates after post-hook runs
-        with pytest.raises(RuntimeError, match="main invoke failed"):
-            await event.invoke()
+        # core error is captured as FAILED after the post-hook runs (post runs even on core error)
+        await event.invoke()  # total: core error captured as FAILED, not raised
 
         # Both hooks ran despite the core error
         assert hooks_called == ["pre", "post"]
@@ -307,9 +294,7 @@ class TestHookedEventParameterForwarding:
     """Test parameter forwarding in HookedEvent hook creation."""
 
     @pytest.mark.anyio
-    async def test_hook_params_forwarded_to_hook(
-        self, patch_cancellation, patch_logger
-    ):
+    async def test_hook_params_forwarded_to_hook(self, patch_cancellation, patch_logger):
         """Test that hook_params are forwarded to the hook function."""
         captured_params = {}
 
@@ -336,13 +321,9 @@ class TestHookedEventParameterForwarding:
     @pytest.mark.anyio
     async def test_hook_timeout_configuration(self, patch_cancellation):
         """Test that hook timeout is properly configured."""
-        registry = HookRegistry(
-            hooks={HookEventTypes.PreInvocation: lambda ev, **kw: "ok"}
-        )
+        registry = HookRegistry(hooks={HookEventTypes.PreInvocation: lambda ev, **kw: "ok"})
         event = MockHookedEvent()
-        event.create_pre_invoke_hook(
-            hook_registry=registry, exit_hook=True, hook_timeout=120.0
-        )
+        event.create_pre_invoke_hook(hook_registry=registry, exit_hook=True, hook_timeout=120.0)
 
         # Check that the hook event was configured with correct timeout
         assert event._pre_invoke_hook_event.timeout == 120.0
@@ -351,9 +332,7 @@ class TestHookedEventParameterForwarding:
     @pytest.mark.anyio
     async def test_hook_creation_defaults(self, patch_cancellation):
         """Test default values for hook creation parameters."""
-        registry = HookRegistry(
-            hooks={HookEventTypes.PostInvocation: lambda ev, **kw: "ok"}
-        )
+        registry = HookRegistry(hooks={HookEventTypes.PostInvocation: lambda ev, **kw: "ok"})
         event = MockHookedEvent()
         event.create_post_invoke_hook(hook_registry=registry)
 
@@ -368,18 +347,14 @@ class TestHookedEventCancellationPropagation:
     """Test cancellation propagation in HookedEvent."""
 
     @pytest.mark.anyio
-    async def test_main_invoke_error_propagates(self, patch_cancellation, patch_logger):
-        """Test that exceptions in _core_invoke() propagate and set FAILED status."""
-        registry = HookRegistry(
-            hooks={HookEventTypes.PostInvocation: lambda ev, **kw: "post"}
-        )
-        # MyCancelled extends Exception; Event.invoke() catches it as Exception → FAILED + re-raise
+    async def test_main_invoke_error_captured(self, patch_cancellation, patch_logger):
+        """Exceptions in _core_invoke() are captured as FAILED state, not propagated."""
+        registry = HookRegistry(hooks={HookEventTypes.PostInvocation: lambda ev, **kw: "post"})
+        # MyCancelled extends Exception; Event.invoke() catches it → FAILED (no re-raise)
         event = MockHookedEvent(invoke_error=MyCancelled("main cancelled"))
         event.create_post_invoke_hook(hook_registry=registry, exit_hook=False)
 
-        # Exception propagates out of Event.invoke() (re-raised after recording FAILED)
-        with pytest.raises(MyCancelled, match="main cancelled"):
-            await event.invoke()
+        await event.invoke()  # total: Exception captured as FAILED, not raised
 
         # Event.invoke() catches Exception subclasses → FAILED (not CANCELLED)
         assert event.execution.status == EventStatus.FAILED

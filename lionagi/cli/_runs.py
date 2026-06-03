@@ -104,9 +104,10 @@ class RunDir:
     def agent_artifact_dir(self, agent_id: str) -> Path:
         """Return the artifact directory for an agent.
 
-        Defense-in-depth: even though FlowAgent.id is validated at model
-        creation time (see cli/orchestrate/flow.py _FLOW_ID_RE), repeat the
-        containment check here. Any caller that constructs a RunDir path
+        Authoritative path-containment guard: agent ids become filesystem path
+        segments, so reject any with separators, leading dots, or that resolve
+        outside the artifact root. Orchestrate ids are CLI-generated from
+        roster-validated role names, but any caller constructing a RunDir path
         from an untrusted identifier picks up the same safety guarantee.
         """
         if (
@@ -263,9 +264,7 @@ def load_last_branch() -> tuple[str | None, str]:
 
 def save_last_branch_pointer(run_id: str, branch_id: str) -> None:
     LIONAGI_HOME.mkdir(parents=True, exist_ok=True)
-    _LAST_BRANCH_POINTER.write_text(
-        json.dumps({"run_id": run_id, "branch_id": branch_id})
-    )
+    _LAST_BRANCH_POINTER.write_text(json.dumps({"run_id": run_id, "branch_id": branch_id}))
 
 
 # ── Introspection ───────────────────────────────────────────────────────

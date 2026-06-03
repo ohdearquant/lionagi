@@ -9,15 +9,11 @@ from .exchange import Exchange
 from .observer import SessionObserver
 from .session import Session
 from .signal import (
-    ActionRequestSignal,
-    ActionResponseSignal,
     Signal,
     StructuredOutput,
 )
 
 __all__ = [
-    "ActionRequestSignal",
-    "ActionResponseSignal",
     "Branch",
     "CapabilityViolation",
     "Exchange",

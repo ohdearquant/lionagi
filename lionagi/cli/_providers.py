@@ -52,6 +52,13 @@ def _clamp_claude_effort(effort: str, model: str) -> str:
     return "high"
 
 
+# CLI providers authenticate via a local subprocess (ChatGPT/Claude
+# subscription), so their api_key is an irrelevant placeholder. API providers
+# (openai, deepseek, anthropic, …) resolve a real key from settings — passing a
+# placeholder there OVERRIDES that resolution and breaks auth.
+CLI_PROVIDERS: frozenset[str] = frozenset({"claude_code", "claude-code", "claude", "codex"})
+
+
 # provider name → kwarg name for effort
 PROVIDER_EFFORT_KWARG: dict[str, str] = {
     "claude-code": "effort",

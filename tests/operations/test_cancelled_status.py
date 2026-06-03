@@ -103,8 +103,7 @@ async def test_cancelled_vs_failed_status():
 
     op_failed = Operation(operation="chat")
     op_failed._branch = branch
-    with pytest.raises(ValueError, match="This is a failure"):
-        await op_failed.invoke()
+    await op_failed.invoke()  # total: a business failure is captured, not raised
 
     # Failed operation should have FAILED status
     assert op_failed.execution.status == EventStatus.FAILED

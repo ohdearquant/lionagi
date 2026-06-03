@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Per-message stream emission: the run loop raises each streamed message onto
-the session bus as a typed Signal — tool-use/tool-result signals always, and a
-StructuredOutput bundle when an assistant message carries capability emissions.
+the session bus as a ``MessageAdded`` signal — every message, observable by
+payload type (``observe(ActionRequest)``) — plus a StructuredOutput bundle when
+an assistant message carries capability emissions.
 
 A capability is a named typed ``Spec``; the agent's grant is an ``Operable``.
 The bundle preserves field names, so observers can react by type (``Finding``)
@@ -16,7 +17,8 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from lionagi.ln.types import Operable, Spec
-from lionagi.operations.run.run import _attempt_extract, _emit_message_signal
+from lionagi.operations._observe import attempt_extract as _attempt_extract
+from lionagi.operations._observe import emit_message as _emit_message_signal
 from lionagi.protocols.messages import (
     ActionRequest,
     ActionResponse,
@@ -24,11 +26,7 @@ from lionagi.protocols.messages import (
 )
 from lionagi.protocols.messages.assistant_response import AssistantResponseContent
 from lionagi.session.session import Session
-from lionagi.session.signal import (
-    ActionRequestSignal,
-    ActionResponseSignal,
-    StructuredOutput,
-)
+from lionagi.session.signal import StructuredOutput
 
 
 class Finding(BaseModel):
@@ -200,9 +198,12 @@ async def test_action_request_signal():
     )
     await _emit_message_signal(s.default_branch, req)
 
+    # observe(ActionRequest) fires exactly once — off the MessageAdded envelope's
+    # unwrapped payload. There is no separate ActionRequestSignal carrying the
+    # same message, which would double-fire this data-type observer.
     assert calls == ["search"]
-    sigs = [e for e in s.observer.flow.items if isinstance(e, ActionRequestSignal)]
-    assert len(sigs) == 1 and sigs[0].data.arguments == {"q": "lion"}
+    matched = s.observer.by_type(ActionRequest)
+    assert len(matched) == 1 and matched[0].data.arguments == {"q": "lion"}
 
 
 async def test_action_response_signal():
@@ -219,9 +220,10 @@ async def test_action_response_signal():
     )
     await _emit_message_signal(branch, res)
 
+    # Fires once via the MessageAdded envelope (no separate ActionResponseSignal).
     assert outputs == [{"hits": 3}]
-    sigs = [e for e in s.observer.flow.items if isinstance(e, ActionResponseSignal)]
-    assert len(sigs) == 1
+    matched = s.observer.by_type(ActionResponse)
+    assert len(matched) == 1 and matched[0].data.output == {"hits": 3}
 
 
 async def test_tool_stats_aggregation():
@@ -234,10 +236,10 @@ async def test_tool_stats_aggregation():
         )
         await _emit_message_signal(branch, req)
 
-    sigs = [e for e in s.observer.flow.items if isinstance(e, ActionRequestSignal)]
+    reqs = s.observer.by_type(ActionRequest)
     counts: dict[str, int] = {}
-    for sig in sigs:
-        counts[sig.data.function] = counts.get(sig.data.function, 0) + 1
+    for ev in reqs:
+        counts[ev.data.function] = counts.get(ev.data.function, 0) + 1
     assert counts == {"search": 2, "read": 1}
 
 

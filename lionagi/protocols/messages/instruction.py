@@ -75,6 +75,23 @@ class InstructionContent(MessageContent):
 
         return DataClass.to_dict(self, exclude=frozenset(base_exclude))
 
+    def with_updates(self, **kwargs: Any) -> "InstructionContent":
+        # to_dict excludes response_format/structure for type/BaseModel refs
+        # (they can't survive a JSON round-trip), so the generic with_updates —
+        # which goes through to_dict → constructor — silently drops the response
+        # schema (and its rendered "ResponseFormat" / action_requests section).
+        # Carry them over for in-memory copies (e.g. _prepare folding the system
+        # message into the instruction's guidance), UNLESS the caller overrides
+        # them explicitly (a None passed for response_format intentionally
+        # clears it — that path strips prior turns' schemas in chat prep).
+        if "response_format" not in kwargs and self.response_format is not None:
+            kwargs["response_format"] = self.response_format
+            if "structure" not in kwargs and self.structure is not None:
+                kwargs["structure"] = self.structure
+        dict_ = self.to_dict()
+        dict_.update(kwargs)
+        return type(self)(**dict_)
+
     @property
     def role(self) -> MessageRole:
         return MessageRole.USER
@@ -113,6 +130,11 @@ class InstructionContent(MessageContent):
                 inst.prompt_context.extend(ctx_list)
 
         if ts := data.get("tool_schemas"):
+            # Accept either a flat list of schemas or the {"tools": [...]} wrapper
+            # that ActionManager.get_tool_schema returns; store flat so the
+            # rendered "Tools:" section isn't nested under a spurious `- tools:`.
+            if isinstance(ts, dict):
+                ts = ts.get("tools", [ts])
             inst.tool_schemas.extend(ts if isinstance(ts, list) else [ts])
 
         if "images" in data:
