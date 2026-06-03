@@ -1,8 +1,8 @@
-# ADR-0078: Remote Sandbox Substrate Execution
+# ADR-0080: Remote Sandbox Substrate Execution
 
 **Status**: Proposed
 **Date**: 2026-06-03
-**Related**: #1195, [ADR-0077](ADR-0077-substrate-executor-provider-interface.md), [ADR-0057](ADR-0057-remote-sandbox-execution.md)
+**Related**: #1195, [ADR-0079](ADR-0079-substrate-executor-provider-interface.md), [ADR-0057](ADR-0057-remote-sandbox-execution.md)
 
 ## Context
 
@@ -49,7 +49,7 @@ and artifact consumers.
 ## Decision
 
 Extend the current local sandbox and Daytona wrapper behind the common
-`ExecutionTarget` from ADR-0077. The default path remains local and unchanged.
+`ExecutionTarget` from ADR-0079. The default path remains local and unchanged.
 Remote sandbox execution is an opt-in substrate target that can run either an
 agentic provider process or a whole flow/play worker operation in Daytona, while
 streaming typed events back to the host.
@@ -333,7 +333,7 @@ CLI endpoints.
 - Flow/play remote execution has a real insertion point in `_run_flow()`,
   `setup_orchestration()`, `build_worker_branch()`, and
   `DependencyAwareExecutor._execute_operation()`.
-- The execution target is shared with ADR-0077, so executor providers and remote
+- The execution target is shared with ADR-0079, so executor providers and remote
   sandbox routing use the same substrate vocabulary.
 
 **Negative**
@@ -366,7 +366,7 @@ behind a fake `DaytonaSandbox` that records calls to `clone()`, `exec_stream()`,
 
 ## Migration and Compatibility
 
-1. Add `ExecutionTarget` and `SubstrateStreamEvent` from ADR-0077 with no runtime
+1. Add `ExecutionTarget` and `SubstrateStreamEvent` from ADR-0079 with no runtime
    behavior change.
 2. Extend `SandboxSession` with backend metadata while keeping constructor
    compatibility through defaults.

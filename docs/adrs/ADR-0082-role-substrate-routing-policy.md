@@ -1,8 +1,8 @@
-# ADR-0080: Role to Substrate Routing Policy
+# ADR-0082: Role to Substrate Routing Policy
 
 **Status**: Proposed
 **Date**: 2026-06-03
-**Related**: #1210, [ADR-0074](ADR-0074-role-composition-and-pack-config.md), [ADR-0077](ADR-0077-substrate-executor-provider-interface.md), [ADR-0078](ADR-0078-remote-sandbox-substrate-execution.md)
+**Related**: #1210, [ADR-0074](ADR-0074-role-composition-and-pack-config.md), [ADR-0079](ADR-0079-substrate-executor-provider-interface.md), [ADR-0080](ADR-0080-remote-sandbox-substrate-execution.md)
 
 ## Context
 
@@ -33,7 +33,7 @@ and creates the worker iModel with `build_imodel_from_spec(...)` at
 `lionagi/cli/orchestrate/_orchestration.py:567` through `:575`.
 `build_imodel_from_spec(...)` maps the model string onto the provider/endpoint
 registry path at `lionagi/cli/_providers.py:238` through `:281`, which is the
-same executor-provider path formalized by ADR-0077.
+same executor-provider path formalized by ADR-0079.
 
 Flow calls `build_worker_branch(...)` at `lionagi/cli/orchestrate/flow.py:653`
 through `:662`. Fanout calls it at `lionagi/cli/orchestrate/fanout.py:221`
@@ -64,7 +64,7 @@ Use the pack `RoleConfig` as the role routing policy. A role carries an optional
 routing target through `RoleConfig.model` and `RoleConfig.effort`, not through
 the behavioral `Role` class. `RoleConfig.model` is the current executor-provider
 target: it is parsed as a model spec and mapped through `build_imodel_from_spec(...)`
-onto the ADR-0077 `EndpointProvider`/`ExecutorProvider` path. When ADR-0077's
+onto the ADR-0079 `EndpointProvider`/`ExecutorProvider` path. When ADR-0079's
 `ExecutionTarget` type lands, extend `RoleConfig` with an optional
 `execution_target` field for remote/local substrate details; until then, #1210
 should ship a thin reference implementation for model-spec routing and pack
@@ -85,8 +85,8 @@ flowchart LR
     ENV["lionagi/cli/orchestrate/_orchestration.py\nOrchestrationEnv"]
     BUILD["build_worker_branch()"]
     IM["build_imodel_from_spec()"]
-    EP["ADR-0077\nExecutorProvider"]
-    TARGET["ADR-0077\nExecutionTarget (future)"]
+    EP["ADR-0079\nExecutorProvider"]
+    TARGET["ADR-0079\nExecutionTarget (future)"]
     FLOW["flow.py"]
     FAN["fanout.py"]
 
@@ -135,7 +135,7 @@ class RoleConfig:
     active: bool = True
 ```
 
-Map it to the ADR-0077 executor-provider interface like this:
+Map it to the ADR-0079 executor-provider interface like this:
 
 ```text
 RoleConfig.model
@@ -145,11 +145,11 @@ RoleConfig.model
   -> EndpointRegistry / AgenticEndpoint / ExecutorProvider
 ```
 
-After ADR-0077 lands, extend the same config rather than adding a competing
+After ADR-0079 lands, extend the same config rather than adding a competing
 route object:
 
 ```python
-# future after ADR-0077 types exist
+# future after ADR-0079 types exist
 from lionagi.substrate.types import ExecutionTarget
 
 
@@ -163,8 +163,8 @@ class RoleConfig:
     active: bool = True
 ```
 
-`execution_target` maps to ADR-0077's `ExecutionTarget`, and should be attached
-to the worker endpoint kwargs only where ADR-0078 attaches remote substrate
+`execution_target` maps to ADR-0079's `ExecutionTarget`, and should be attached
+to the worker endpoint kwargs only where ADR-0080 attaches remote substrate
 targets. Do not invent a second provider registry or a Daytona-specific role
 field.
 
@@ -283,7 +283,7 @@ The slice must not:
 - Add runtime routing fields to casts `Profile`.
 - Hardcode the #1210 proposed provider table into
   `lionagi/casts/packs/default.yaml`.
-- Define a provider or execution-target interface separate from ADR-0077.
+- Define a provider or execution-target interface separate from ADR-0079.
 
 Precise implementation targets:
 
@@ -302,7 +302,7 @@ Precise implementation targets:
   `researcher.model` appears as `(pack)` in dry-run and is overridden by
   `--workers`.
 - `tests/casts/test_pack.py`: keep existing parser/default-pack tests; add
-  `execution_target` tests only after ADR-0077 types land.
+  `execution_target` tests only after ADR-0079 types land.
 
 ## Coupling and Testability
 
@@ -324,7 +324,7 @@ packs and dry-run stubs without starting external providers.
 - Makes role routing usable with the least new surface.
 - Reuses ADR-0074's pack config instead of creating `casts/routing.yaml`.
 - Preserves existing worker precedence and `--workers` behavior.
-- Maps model routing onto the ADR-0077 executor-provider path through existing
+- Maps model routing onto the ADR-0079 executor-provider path through existing
   `build_imodel_from_spec(...)`.
 - Keeps default provider/cost policy opt-in until Ocean accepts concrete
   defaults.
@@ -333,7 +333,7 @@ packs and dry-run stubs without starting external providers.
 
 - Users must supply a pack path for routing until named pack discovery exists.
 - The first slice routes by model spec only; remote/local execution target
-  routing waits on ADR-0077/ADR-0078 implementation.
+  routing waits on ADR-0079/ADR-0080 implementation.
 - Selected pack threading must be applied consistently to modes and model
   resolution to avoid dry-run/runtime drift.
 
@@ -345,7 +345,7 @@ packs and dry-run stubs without starting external providers.
 | Use user profile frontmatter only | Already works for custom profiles, but profiles shadow casts role bodies and require a full prompt file just to set a route. That is the gap ADR-0074 avoided with packs. |
 | Create standalone `casts/routing.yaml` | Clear name, but it duplicates `Pack`, which already owns per-role runtime config, modes, active roster, and policy. |
 | Hardcode the #1210 provider table in `default.yaml` now | Gives immediate defaults, but violates existing tests and the compatibility rule that shipped packs do not pin provider/cost policy. Ocean must accept concrete defaults first. |
-| Wait for ADR-0077 before any #1210 implementation | Avoids future migration, but unnecessarily blocks the existing model-spec route, which already maps to provider endpoints through `build_imodel_from_spec(...)`. |
+| Wait for ADR-0079 before any #1210 implementation | Avoids future migration, but unnecessarily blocks the existing model-spec route, which already maps to provider endpoints through `build_imodel_from_spec(...)`. |
 
 ## Migration and Compatibility
 
@@ -354,7 +354,7 @@ packs and dry-run stubs without starting external providers.
 3. Thread the selected pack through `OrchestrationEnv`, dry-run resolution, and
    `build_worker_branch(...)`.
 4. Preserve existing precedence exactly.
-5. After ADR-0077 lands, add optional `execution_target` parsing to `RoleConfig`
+5. After ADR-0079 lands, add optional `execution_target` parsing to `RoleConfig`
    and map it to endpoint kwargs in the same branch builder path.
 6. If Ocean later accepts default role-provider policy, populate a separate
    named routing pack first. Promote to default only with a follow-up ADR or ADR
@@ -374,8 +374,8 @@ to win over pack routing.
   `digester` and `polisher`, which are named in #1210 but are not built-in roles
   in the current roster inventory?
 - Should `execution_target` be serialized as a nested pack object, a named
-  substrate profile, or only a reference to a substrate profile once ADR-0077 and
-  ADR-0078 are implemented?
+  substrate profile, or only a reference to a substrate profile once ADR-0079 and
+  ADR-0080 are implemented?
 - Should selected packs affect the planner roster's displayed model labels, or
   should the planner continue seeing only role descriptions and the default
   worker model?

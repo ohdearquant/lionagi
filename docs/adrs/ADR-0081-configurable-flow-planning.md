@@ -1,8 +1,8 @@
-# ADR-0079: Configurable Flow Planning
+# ADR-0081: Configurable Flow Planning
 
 **Status**: Proposed
 **Date**: 2026-06-03
-**Related**: #1197, [ADR-0077](ADR-0077-substrate-executor-provider-interface.md), [ADR-0078](ADR-0078-remote-sandbox-substrate-execution.md)
+**Related**: #1197, [ADR-0079](ADR-0079-substrate-executor-provider-interface.md), [ADR-0080](ADR-0080-remote-sandbox-substrate-execution.md)
 
 ## Context
 
