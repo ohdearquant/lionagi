@@ -68,26 +68,30 @@ class EditorRequest(BaseModel):
         description=(
             "Action to perform. One of:\n"
             "- 'write': Write (or overwrite) a file with the given content. "
-            "Creates parent directories if they do not exist.\n"
-            "- 'edit': Replace an exact string in a file. Fails if the old_string "
-            "is not found, or if it appears multiple times and replace_all=False."
+            "Creates parent directories if they do not exist. "
+            "You must read an existing file before overwriting it.\n"
+            "- 'edit': Replace an exact string in a file. "
+            "You must read the file first (action='read') to obtain the current content. "
+            "Fails if old_string is not found, or appears multiple times and replace_all=False."
         ),
     )
     file_path: str = Field(
         ...,
-        description="Absolute or relative path to the target file.",
+        description="Absolute or workspace-relative path to the target file.",
     )
     content: str | None = Field(
         None,
-        description=(
-            "Full content to write to the file. Required when action='write'."
-        ),
+        description=("Full content to write to the file. Required when action='write'."),
     )
     old_string: str | None = Field(
         None,
         description=(
             "Exact string to find and replace. Required when action='edit'. "
-            "Must match the file contents byte-for-byte, including whitespace and indentation."
+            "Must match the file contents byte-for-byte, including whitespace and indentation. "
+            "IMPORTANT: the reader returns lines as `<number>\\t<code>` — do NOT include "
+            "the leading line-number + tab in old_string; copy only the actual code. "
+            "Use 2-4 adjacent lines for a unique match; if the edit fails with 'not found', "
+            "re-read the file and copy the exact text including all whitespace."
         ),
     )
     new_string: str | None = Field(
@@ -101,7 +105,9 @@ class EditorRequest(BaseModel):
         default=False,
         description=(
             "When True, replace every occurrence of old_string. "
-            "When False (default), the edit fails if old_string appears more than once."
+            "When False (default), the edit fails if old_string appears more than once — "
+            "either set replace_all=True or expand old_string with more surrounding context "
+            "to make it unique."
         ),
     )
 
@@ -151,7 +157,10 @@ def _edit_sync(
     except PermissionError as e:
         return EditorResponse(success=False, error=str(e))
     except FileNotFoundError:
-        return EditorResponse(success=False, error=f"File not found: {file_path}")
+        return EditorResponse(
+            success=False,
+            error=f"File not found: {file_path}. Check the path spelling; use action='write' to create a new file.",
+        )
 
     try:
         original = p.read_text(encoding="utf-8")
@@ -160,16 +169,32 @@ def _edit_sync(
 
     count = original.count(old_string)
     if count == 0:
+        hint = ""
+        # Check whether the reader's `<number>\t` prefix was accidentally included
+        import re as _re
+
+        stripped = _re.sub(r"(?m)^\s*\d+\t", "", old_string)
+        if stripped != old_string and stripped in original:
+            hint = (
+                " — it matches after removing the line-number prefixes. "
+                "Drop the leading `<number>\\t` from each line (keep only the code)."
+            )
+        elif old_string.strip() and old_string.strip() in original:
+            hint = " — a match exists ignoring surrounding whitespace; check indentation."
         return EditorResponse(
             success=False,
-            error=f"old_string not found in {file_path}",
+            error=(
+                f"old_string not found in {file_path}{hint}. "
+                "Re-read the file and copy the exact text including all whitespace."
+            ),
         )
     if count > 1 and not replace_all:
         return EditorResponse(
             success=False,
             error=(
                 f"old_string appears {count} times in {file_path}. "
-                "Set replace_all=True to replace all occurrences."
+                "Either set replace_all=True to replace all occurrences, "
+                "or expand old_string with more surrounding context to make it unique."
             ),
         )
 
@@ -210,7 +235,8 @@ class EditorTool(LionTool):
         if request.action == EditorAction.write:
             if request.content is None:
                 return EditorResponse(
-                    success=False, error="'content' is required for action='write'"
+                    success=False,
+                    error="'content' is required for action='write'. Provide the full file text.",
                 )
             return await run_sync(
                 _write_sync, request.file_path, request.content, self.workspace_root
@@ -218,11 +244,13 @@ class EditorTool(LionTool):
         if request.action == EditorAction.edit:
             if request.old_string is None:
                 return EditorResponse(
-                    success=False, error="'old_string' is required for action='edit'"
+                    success=False,
+                    error="'old_string' is required for action='edit'. Read the file first, then copy the exact text to replace.",
                 )
             if request.new_string is None:
                 return EditorResponse(
-                    success=False, error="'new_string' is required for action='edit'"
+                    success=False,
+                    error="'new_string' is required for action='edit'. Provide the replacement text (use '' to delete).",
                 )
             return await run_sync(
                 _edit_sync,
@@ -232,7 +260,10 @@ class EditorTool(LionTool):
                 request.replace_all,
                 self.workspace_root,
             )
-        return EditorResponse(success=False, error="Unknown action")
+        return EditorResponse(
+            success=False,
+            error="Unknown action. Valid actions are: 'write' (create/overwrite file), 'edit' (exact string replacement).",
+        )
 
     def to_tool(self) -> Tool:
         if self._tool is None:
@@ -241,12 +272,19 @@ class EditorTool(LionTool):
                 """
                 Write or edit files on disk within the configured workspace root.
 
+                IMPORTANT: Always read the file first (reader action='read') before editing.
+                The reader returns lines as `<number>\\t<code>` — do NOT copy the leading
+                `<number>\\t` prefix into old_string; use only the actual code text.
+
                 Use action='write' to create or fully replace a file. Use action='edit'
-                to perform an exact-string replacement — safer than full rewrites for
-                targeted changes. Parent directories are created automatically on write.
-                Edits fail fast if the old_string is ambiguous (multiple matches) unless
-                replace_all=True is set. Paths outside the workspace root and symlinks
-                are rejected.
+                for targeted exact-string replacement — safer than full rewrites.
+                Parent directories are created automatically on write.
+
+                If an edit fails with 'not found': re-read the file, copy the exact text
+                including all whitespace, and retry.
+                If an edit fails with 'appears N times': expand old_string with more
+                surrounding context to make it unique, or set replace_all=True.
+                Paths outside the workspace root and symlinks are rejected.
                 """
                 return (await self.handle_request(EditorRequest(**kwargs))).model_dump()
 

@@ -36,12 +36,16 @@ def _resolve_workspace_path(path: str, workspace_root: Path) -> Path:
     candidate = raw if raw.is_absolute() else workspace_root / raw
     # GAP B: check symlink on candidate BEFORE resolve() follows it
     if candidate.is_symlink():
-        raise PermissionError(f"Refusing to access symlink: {path!r}")
+        raise PermissionError(
+            f"Refusing to access symlink: {path!r}. Use the real file path within the workspace."
+        )
     resolved = candidate.resolve(strict=False)
     try:
         resolved.relative_to(workspace_root)
     except ValueError as e:
-        raise PermissionError(f"Path escapes workspace root: {path!r}") from e
+        raise PermissionError(
+            f"Path escapes workspace root: {path!r}. Use a path within the configured workspace root."
+        ) from e
     if resolved.name in _DENIED_NAMES:
         raise PermissionError(f"Refusing to access protected path: {resolved.name!r}")
     return resolved
@@ -58,7 +62,10 @@ class ReaderRequest(BaseModel):
         ...,
         description=(
             "Action to perform. One of:\n"
-            "- 'read': Read a text file with line numbers (lightweight, no conversion).\n"
+            "- 'read': Read a text file. Each line is returned as `<number>\\t<code>`; "
+            "the line-number prefix is for navigation only — strip it (and the tab) "
+            "before using any line as editor old_string. For large files use "
+            "offset+limit to read in windows rather than loading everything at once.\n"
             "- 'open': Convert a document (PDF, PPTX, DOCX, HTML) to text via docling. "
             "Result is cached by path — chain with read in one turn: "
             "[open(path='x.pdf'), read(path='x.pdf', offset=0, limit=100)].\n"
@@ -67,19 +74,24 @@ class ReaderRequest(BaseModel):
     )
     path: str | None = Field(
         None,
-        description=("File path, directory path, or URL. Required for all actions."),
+        description=(
+            "Absolute or workspace-relative file path, directory path, or URL. "
+            "Required for all actions. Paths must stay within the configured workspace root."
+        ),
     )
     offset: int | None = Field(
         None,
         description=(
             "Zero-indexed line number to start reading from. "
-            "Used for 'read' and for reading cached 'open' results. Defaults to 0."
+            "Used for 'read' and for reading cached 'open' results. Defaults to 0. "
+            "To read lines 200-400 of a large file: offset=200, limit=200."
         ),
     )
     limit: int | None = Field(
         None,
         description=(
-            "Maximum number of lines to return. Used for 'read' and cached reads. Defaults to 2000."
+            "Maximum number of lines to return. Used for 'read' and cached reads. "
+            "Defaults to 2000. Increase for larger files or decrease for quick scans."
         ),
     )
     recursive: bool | None = Field(
@@ -126,19 +138,33 @@ def _read_sync(
         return ReaderResponse(success=False, error=str(e))
 
     if p.is_symlink():
-        return ReaderResponse(success=False, error=f"Refusing to read symlink: {path!r}")
+        return ReaderResponse(
+            success=False,
+            error=f"Refusing to read symlink: {path!r}. Use the real file path within the workspace.",
+        )
     if not p.exists():
-        return ReaderResponse(success=False, error=f"File not found: {path}")
+        return ReaderResponse(
+            success=False,
+            error=f"File not found: {path}. Check the path spelling and that it is within the workspace root.",
+        )
     if not p.is_file():
-        return ReaderResponse(success=False, error=f"Path is not a file: {path}")
+        return ReaderResponse(
+            success=False,
+            error=f"Path is not a file: {path}. Use action='list_dir' to list directory contents.",
+        )
 
     try:
         with open(p, "rb") as fbin:
             chunk = fbin.read(8192)
         if b"\x00" in chunk:
-            return ReaderResponse(success=False, error=f"Binary file not supported: {path}")
+            return ReaderResponse(
+                success=False,
+                error=f"Binary file not supported: {path}. Use bash to inspect binary files (e.g. `file {path}` or `xxd`).",
+            )
     except OSError as e:
-        return ReaderResponse(success=False, error=f"Cannot open file: {e}")
+        return ReaderResponse(
+            success=False, error=f"Cannot open file: {e}. Check file permissions."
+        )
 
     start = max(0, offset or 0)
     max_lines = limit if (limit is not None and limit > 0) else 2000
@@ -147,7 +173,9 @@ def _read_sync(
         with open(p, encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError as e:
-        return ReaderResponse(success=False, error=f"Read error: {e}")
+        return ReaderResponse(
+            success=False, error=f"Read error: {e}. Check file permissions and encoding."
+        )
 
     selected = lines[start : start + max_lines]
     numbered = "".join(f"{start + i + 1}\t{line}" for i, line in enumerate(selected))
@@ -167,7 +195,10 @@ def _list_dir_sync(
         return ReaderResponse(success=False, error=str(e))
 
     if not base.is_dir():
-        return ReaderResponse(success=False, error=f"Path is not a directory: {path}")
+        return ReaderResponse(
+            success=False,
+            error=f"Path is not a directory: {path}. Use action='read' to read a file's contents.",
+        )
 
     from lionagi.libs.file.process import dir_to_files
 
@@ -180,7 +211,10 @@ def _list_dir_sync(
         )[:_MAX_LIST_FILES]
         content = "\n".join(str(f) for f in files)
     except Exception as e:
-        return ReaderResponse(success=False, error=f"List error: {e}")
+        return ReaderResponse(
+            success=False,
+            error=f"List error: {e}. Check the directory path and permissions.",
+        )
 
     return ReaderResponse(success=True, content=content)
 
@@ -234,7 +268,7 @@ def _open_sync(
     except ImportError:
         return ReaderResponse(
             success=False,
-            error="docling not installed. Run: pip install lionagi[reader]",
+            error="docling not installed. Run: uv add lionagi[reader]",
         )
 
     try:
@@ -299,7 +333,10 @@ class ReaderTool(LionTool):
         if isinstance(request, dict):
             request = ReaderRequest(**request)
         if not request.path:
-            return ReaderResponse(success=False, error="'path' is required")
+            return ReaderResponse(
+                success=False,
+                error="'path' is required. Provide a file path for 'read'/'open' or a directory path for 'list_dir'.",
+            )
 
         _evict_expired(self._cache)
 
@@ -343,14 +380,16 @@ class ReaderTool(LionTool):
             async def reader_tool(**kwargs):
                 """Read files, convert documents (PDF/PPTX/DOCX/HTML via docling), or list directories.
 
-                Use action='read' for text files (lightweight, line numbers).
+                Use action='read' for text files. Output format is `<number>\\t<code>` per line;
+                the number prefix is for reference only — strip the leading `<digits>\\t` before
+                using any line as an editor old_string. Use offset+limit to read large files in
+                windows (e.g. offset=200, limit=200 to get lines 200-400).
+
                 Use action='open' for documents needing conversion (PDF, PPTX, HTML) —
                 result is cached by path, then use 'read' with offset/limit on the same path.
-                Use action='list_dir' for directory listings.
+                Chain them in one turn: [open(path="report.pdf"), read(path="report.pdf", offset=0, limit=100)]
 
-                Tip: you can chain open + read in one turn as sequential actions:
-                [open(path="report.pdf"), read(path="report.pdf", offset=0, limit=100)]
-                The open caches the converted text, the read slices it — one round trip.
+                Use action='list_dir' for directory listings.
 
                 All paths are restricted to the configured workspace root. URL conversion
                 requires explicit host allowlisting.

@@ -320,9 +320,15 @@ def _read_file_sync(path: str, offset: int, max_lines: int, workspace_root: Path
         return {"success": False, "error": str(e)}
 
     if not p.exists():
-        return {"success": False, "error": f"File not found: {path}"}
+        return {
+            "success": False,
+            "error": f"File not found: {path}. Check the path spelling and that it is within the workspace root.",
+        }
     if not p.is_file():
-        return {"success": False, "error": f"Not a file: {path}"}
+        return {
+            "success": False,
+            "error": f"Not a file: {path}. Use action='list_dir' to list directory contents.",
+        }
 
     if p.suffix.lower() in _IMAGE_EXTENSIONS:
         return _read_image_sync(path, workspace_root)
@@ -331,7 +337,10 @@ def _read_file_sync(path: str, offset: int, max_lines: int, workspace_root: Path
         with open(p, "rb") as f:
             chunk = f.read(8192)
         if b"\x00" in chunk:
-            return {"success": False, "error": f"Binary file: {path}"}
+            return {
+                "success": False,
+                "error": f"Binary file: {path}. Use bash to inspect binary files (e.g. `file {path}`).",
+            }
     except OSError as e:
         return {"success": False, "error": str(e)}
 
@@ -437,7 +446,11 @@ def _edit_file_sync(
     if count > 1 and not replace_all:
         return {
             "success": False,
-            "error": f"old_string appears {count} times. Set replace_all=True.",
+            "error": (
+                f"old_string appears {count} times. "
+                "Either set replace_all=True to replace all occurrences, "
+                "or expand old_string with more surrounding context to make it unique."
+            ),
         }
 
     updated = original.replace(old_string, new_string, -1 if replace_all else 1)
@@ -504,9 +517,17 @@ def _subprocess_sync(cmd, shell: bool, timeout_s: float, cwd: str | None) -> dic
             start_new_session=True,
         )
     except FileNotFoundError as e:
-        return {"stdout": "", "stderr": str(e), "returncode": -1}
+        return {
+            "stdout": "",
+            "stderr": f"Command not found: {e}. Check that the executable is installed and available in PATH.",
+            "returncode": -1,
+        }
     except Exception as e:
-        return {"stdout": "", "stderr": str(e), "returncode": -1}
+        return {
+            "stdout": "",
+            "stderr": f"Execution error: {e}. Check the command spelling, cwd path, and that required tools are installed.",
+            "returncode": -1,
+        }
 
     stdout_buf = bytearray()
     stderr_buf = bytearray()
@@ -545,13 +566,19 @@ def _subprocess_sync(cmd, shell: bool, timeout_s: float, cwd: str | None) -> dic
     def _decode(buf: bytearray, truncated: bool) -> str:
         text = bytes(buf).decode("utf-8", errors="replace")
         if truncated:
-            text += f"\n\n[... truncated at {_MAX_OUTPUT_BYTES} bytes ...]\n"
+            text += (
+                f"\n\n[... truncated at {_MAX_OUTPUT_BYTES} bytes ...]"
+                "\n[Redirect output to a file (e.g. add `> /tmp/out.txt`) and read it with the reader tool.]\n"
+            )
         return text
 
     if timed_out:
         return {
             "stdout": _decode(stdout_buf, True),
-            "stderr": f"Timed out after {timeout_s}s",
+            "stderr": (
+                f"Timed out after {timeout_s}s. "
+                "Increase timeout= (max 300000 ms) or break the work into smaller steps."
+            ),
             "returncode": -1,
             "timed_out": True,
         }
@@ -772,13 +799,19 @@ class CodingToolkit(LionTool):
                 return str(e)
             resolved = str(resolved_path.resolve())
             if resolved not in file_state:
-                return f"Must read file before editing: {path}"
+                return (
+                    f"Must read file before editing: {path}. "
+                    "Call reader(action='read', path=...) first to load the current content."
+                )
             try:
                 current_mtime = resolved_path.stat().st_mtime
             except OSError:
                 return None
             if current_mtime != file_state[resolved]:
-                return f"File changed since last read: {path}. Read it again."
+                return (
+                    f"File changed since last read: {path}. "
+                    "Re-read the file to get the current content before editing."
+                )
             return None
 
         def _track(result: dict):
@@ -813,7 +846,10 @@ class CodingToolkit(LionTool):
                 return await run_sync(
                     _list_dir_sync, path, bool(recursive), file_types, workspace_root
                 )
-            return {"success": False, "error": f"Unknown action: {action}"}
+            return {
+                "success": False,
+                "error": f"Unknown action: {action!r}. Valid reader actions: 'read', 'list_dir'.",
+            }
 
         # -- Editor ----------------------------------------------------------
 
@@ -834,7 +870,10 @@ class CodingToolkit(LionTool):
             """
             if action == "write":
                 if content is None:
-                    return {"success": False, "error": "'content' required for write"}
+                    return {
+                        "success": False,
+                        "error": "'content' required for write. Provide the full file text.",
+                    }
                 try:
                     target_path = _resolve_workspace_path(file_path, workspace_root)
                 except PermissionError as e:
@@ -849,9 +888,15 @@ class CodingToolkit(LionTool):
                 return result
             elif action == "edit":
                 if old_string is None:
-                    return {"success": False, "error": "'old_string' required for edit"}
+                    return {
+                        "success": False,
+                        "error": "'old_string' required for edit. Read the file first, then copy the exact text to replace.",
+                    }
                 if new_string is None:
-                    return {"success": False, "error": "'new_string' required for edit"}
+                    return {
+                        "success": False,
+                        "error": "'new_string' required for edit. Provide the replacement text (use '' to delete).",
+                    }
                 guard = _check_read_guard(file_path)
                 if guard:
                     return {"success": False, "error": guard}
@@ -866,7 +911,10 @@ class CodingToolkit(LionTool):
                 )
                 _track(result)
                 return result
-            return {"success": False, "error": f"Unknown action: {action}"}
+            return {
+                "success": False,
+                "error": f"Unknown action: {action!r}. Valid editor actions: 'write', 'edit'.",
+            }
 
         # -- Bash ------------------------------------------------------------
 
@@ -889,7 +937,10 @@ class CodingToolkit(LionTool):
             if _SHELL_CONTROL.search(command):
                 return {
                     "stdout": "",
-                    "stderr": f"Shell control operators rejected: {command!r}",
+                    "stderr": (
+                        f"Shell control operators are not supported: {command!r}. "
+                        "Run one command per call; use cwd= to set the working directory instead of `cd x && cmd`."
+                    ),
                     "return_code": -1,
                     "timed_out": False,
                 }
@@ -898,7 +949,10 @@ class CodingToolkit(LionTool):
             except ValueError as exc:
                 return {
                     "stdout": "",
-                    "stderr": f"Malformed command: {exc}",
+                    "stderr": (
+                        f"Malformed command: {exc}. "
+                        "Check quoting — use single quotes for arguments with spaces."
+                    ),
                     "return_code": -1,
                     "timed_out": False,
                 }
