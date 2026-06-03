@@ -80,6 +80,15 @@ def add_orchestrate_subparser(
         help="Comma-separated worker model specs (each can include effort).",
     )
     fo.add_argument(
+        "--pack",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Path to a YAML routing pack. Provides per-role model/effort when "
+            "--workers is absent. --workers overrides pack routing."
+        ),
+    )
+    fo.add_argument(
         "--max-concurrent",
         type=int,
         default=0,
@@ -259,6 +268,15 @@ def add_orchestrate_subparser(
             "Overrides the per-role model while KEEPING each role's profile/system "
             "prompt — unlike --bare, which also drops profiles. Enables mixed-model "
             "flows (cheap roles + expensive roles)."
+        ),
+    )
+    fl.add_argument(
+        "--pack",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Path to a YAML routing pack. Provides per-role model/effort when "
+            "--workers is absent. --workers overrides pack routing."
         ),
     )
     fl.add_argument(
@@ -635,7 +653,7 @@ def _validate_spec_fields(spec: dict) -> str | None:
         if not isinstance(save, str):
             return f"spec field 'save' must be a string, got {type(save).__name__}"
 
-    for str_field in ("model", "agent", "team_mode", "team_attach", "reactive"):
+    for str_field in ("model", "agent", "team_mode", "team_attach", "reactive", "pack"):
         if str_field in spec:
             val = spec[str_field]
             if not isinstance(val, str):
@@ -743,6 +761,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     playbook_name=getattr(args, "playbook", None),
                     invocation_id=getattr(args, "invocation", None),
                     project=getattr(args, "project", None),
+                    pack=getattr(args, "pack", None),
                 )
             )
         except (TimeoutError, LionTimeoutError) as e:
@@ -853,6 +872,8 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 args.show_graph = True
             if getattr(args, "reactive", None) is None and spec.get("reactive") is not None:
                 args.reactive = spec["reactive"]
+            if getattr(args, "pack", None) is None and spec.get("pack"):
+                args.pack = spec["pack"]
             if args.save is None and spec.get("save"):
                 args.save = spec["save"]
             if spec.get("critic_model"):
@@ -964,6 +985,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     playbook_artifacts=playbook_artifacts,
                     invocation_id=getattr(args, "invocation", None),
                     project=getattr(args, "project", None),
+                    pack=getattr(args, "pack", None),
                 )
             )
         except (TimeoutError, LionTimeoutError) as e:

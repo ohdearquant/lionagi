@@ -1,8 +1,8 @@
-# ADR-0079: Substrate Executor Provider Interface
+# ADR-0077: Substrate Executor Provider Interface
 
 **Status**: Proposed
 **Date**: 2026-06-03
-**Related**: #1196, [ADR-0080](ADR-0080-remote-sandbox-substrate-execution.md), [ADR-0072](ADR-0072-reactive-capability-bus.md)
+**Related**: #1196, [ADR-0078](ADR-0078-remote-sandbox-substrate-execution.md), [ADR-0072](ADR-0072-reactive-capability-bus.md)
 
 ## Context
 

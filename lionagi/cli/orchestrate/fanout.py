@@ -56,6 +56,7 @@ async def _run_fanout(
     playbook_name: str | None = None,
     invocation_id: str | None = None,
     project: str | None = None,
+    pack: str | None = None,
 ) -> str:
     """Three-phase fan-out: decompose → fan out → synthesize."""
     from lionagi.ln.concurrency.errors import cache_cancelled_exc_class
@@ -75,6 +76,7 @@ async def _run_fanout(
         theme=theme,
         bare=False,
         fast=fast,
+        pack=pack,
     )
     _shared: dict = {}
 

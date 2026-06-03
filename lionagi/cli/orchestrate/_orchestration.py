@@ -30,7 +30,10 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from lionagi.casts.pack import Pack
 
 from lionagi import Branch, Session
 from lionagi.ln.concurrency import Lock
@@ -158,13 +161,15 @@ def _default_pack():
     return _DEFAULT_PACK
 
 
-def role_config(role: str):
-    """``RoleConfig`` for *role* from the default pack, or None."""
-    pack = _default_pack()
-    return pack.config(role) if pack else None
+def role_config(role: str, pack: Pack | None = None) -> Any:
+    """``RoleConfig`` for *role* from *pack* (or the default pack), or None."""
+    p = pack if pack is not None else _default_pack()
+    return p.config(role) if p else None
 
 
-def resolve_modes(role: str, override: list[str] | None = None) -> list[str]:
+def resolve_modes(
+    role: str, override: list[str] | None = None, pack: Pack | None = None
+) -> list[str]:
     """Cognitive modes for *role*: validated per-task override, else pack defaults.
 
     A per-task *override* is gated by the role's ``modes_allow`` (empty =
@@ -175,7 +180,7 @@ def resolve_modes(role: str, override: list[str] | None = None) -> list[str]:
 
     from lionagi.casts.pattern import Mode
 
-    cfg = role_config(role)
+    cfg = role_config(role, pack)
     allow = set(cfg.modes_allow) if (cfg and cfg.modes_allow) else None
     gated = bool(override)
     requested = list(override) if override else (list(cfg.default_modes) if cfg else [])
@@ -351,6 +356,10 @@ class OrchestrationEnv:
     # Optional shared features
     team_data: dict | None = None
 
+    # Selected routing pack (--pack PATH). None means fall through to the
+    # default pack for role_config / resolve_modes lookups.
+    pack: Pack | None = None
+
     # Time budget: total seconds for the entire flow (from --timeout or
     # playbook timeout:). None means no budget was configured — workers
     # will not receive a BUDGET preamble.
@@ -398,6 +407,7 @@ def setup_orchestration(
     bare: bool = False,
     fast: bool = False,
     total_budget: int | None = None,
+    pack: str | None = None,
 ) -> OrchestrationEnv:
     """Phase A — resolve orchestrator config, allocate run, build branch+session.
 
@@ -458,6 +468,12 @@ def setup_orchestration(
     )
     builder = OperationGraphBuilder(pattern_name)
 
+    loaded_pack: Pack | None = None
+    if pack:
+        from lionagi.casts.pack import Pack as _Pack
+
+        loaded_pack = _Pack.from_file(pack)
+
     return OrchestrationEnv(
         run=run,
         session=session,
@@ -474,6 +490,7 @@ def setup_orchestration(
         fast=fast,
         cwd=cwd,
         total_budget=total_budget,
+        pack=loaded_pack,
     )
 
 
@@ -533,7 +550,7 @@ def build_worker_branch(
 
     # Pack per-role config (ADR-0074): model/effort/modes defaults for casts
     # roles. Ignored in bare mode (workers are the raw CLI spec there).
-    w_cfg = None if env.bare else role_config(role)
+    w_cfg = None if env.bare else role_config(role, env.pack)
 
     w_profile: AgentProfile | None = None
     if env.bare:
@@ -601,7 +618,8 @@ def build_worker_branch(
         base_system = w_profile.system_prompt
     elif (
         not env.bare
-        and (role_system := casts_role_system(role, modes=resolve_modes(role, modes))) is not None
+        and (role_system := casts_role_system(role, modes=resolve_modes(role, modes, env.pack)))
+        is not None
     ):
         base_system = role_system
     else:
