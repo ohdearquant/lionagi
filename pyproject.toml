@@ -9,7 +9,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "aiocache>=0.12.0",
-    "aiohttp>=3.13.0",
+    "aiohttp>=3.14.0",
     "anyio>=4.10.0",
     "backoff>=2.1.0",
     "croniter>=1.4",
@@ -79,7 +79,7 @@ li = "lionagi.cli.main:main"
 [project.optional-dependencies]
 
 reader = [
-    "docling>=2.91.0",
+    "docling>=2.94.0",
 ]
 
 ollama = [
@@ -261,7 +261,8 @@ exclude = [
 [tool.uv]
 # Force minimum versions for transitive deps with known vulnerabilities
 constraint-dependencies = [
-    "authlib>=1.6.11",      # CVE: CSRF when using cache
+    "authlib>=1.7.1",       # CVE: OIDC implicit/hybrid open redirect (GHSA-r95x-qfjj-fjj2); prior CSRF-cache CVE
+    "urllib3>=2.7.0",       # CVE: decompression-bomb bypass (GHSA-mf9v-mfxr-j63j) + cross-origin header leak on proxied redirect (GHSA-qccp-gfcp-xxvc)
     "python-multipart>=0.0.27",  # CVE: DoS via unbounded multipart part headers
     "pytest>=9.0.3",        # CVE: vulnerable tmpdir handling
     "pillow>=12.2.0",       # CVE: FITS GZIP decompression bomb
