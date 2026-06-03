@@ -383,8 +383,8 @@ class SchedulerEngine:
                 }
             )
 
-        # Build argv
-        argv = build_argv(schedule, trigger_context)
+        # Build argv (and optional temp file for flow_yaml kind)
+        argv, _tmp_path = build_argv(schedule, trigger_context)
 
         # Create schedule_run
         async with StateDB() as db:
@@ -432,7 +432,7 @@ class SchedulerEngine:
 
         # Spawn and wait
         try:
-            exit_code, stderr_tail = await spawn_and_wait(argv, inv_id)
+            exit_code, stderr_tail = await spawn_and_wait(argv, inv_id, tmp_path=_tmp_path)
             end_time = time.time()
             status = "completed" if exit_code == 0 else "failed"
             reason_code = (

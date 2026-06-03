@@ -28,6 +28,7 @@ class CreateScheduleRequest(BaseModel):
     action_prompt: str | None = None
     action_agent: str | None = None
     action_playbook: str | None = None
+    action_flow_yaml: str | None = None
     action_project: str | None = None
     action_extra_args: list[str] | None = None
     on_success: dict | None = None
@@ -51,6 +52,7 @@ class UpdateScheduleRequest(BaseModel):
     action_prompt: str | None = None
     action_agent: str | None = None
     action_playbook: str | None = None
+    action_flow_yaml: str | None = None
     action_project: str | None = None
     action_extra_args: list[str] | None = None
     on_success: dict | None = None

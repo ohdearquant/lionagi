@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import re
+import tempfile
 
 _log = logging.getLogger(__name__)
 
@@ -30,7 +31,12 @@ def _render_template(template: str, context: dict) -> str:
     return _TEMPLATE_RE.sub(_replace, template)
 
 
-def build_argv(schedule: dict, trigger_context: dict) -> list[str]:
+def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | None]:
+    """Build the subprocess argv for a scheduled action.
+
+    Returns ``(argv, tmp_path)`` where ``tmp_path`` is a temporary file that
+    must be deleted after the subprocess exits (only set for ``flow_yaml``).
+    """
     kind = schedule["action_kind"]
     model = schedule.get("action_model") or ""
     prompt = schedule.get("action_prompt") or ""
@@ -44,6 +50,7 @@ def build_argv(schedule: dict, trigger_context: dict) -> list[str]:
         prompt = _render_template(prompt, trigger_context)
 
     argv = ["uv", "run", "li"]
+    tmp_path: str | None = None
 
     if kind == "agent":
         argv += ["agent", model, prompt]
@@ -57,6 +64,19 @@ def build_argv(schedule: dict, trigger_context: dict) -> list[str]:
         argv += ["play"]
         if playbook:
             argv.append(playbook)
+    elif kind == "flow_yaml":
+        # Write the inline YAML spec to a temp file so `li o flow -f <path>`
+        # can read it.  The caller is responsible for deleting tmp_path after
+        # the subprocess exits.
+        yaml_text = schedule.get("action_flow_yaml") or ""
+        fd, tmp_path = tempfile.mkstemp(suffix=".yaml", prefix="lionagi-sched-")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(yaml_text)
+        except Exception:
+            os.unlink(tmp_path)
+            raise
+        argv += ["o", "flow", model, prompt, "-f", tmp_path]
 
     if project:
         argv += ["--project", project]
@@ -64,11 +84,20 @@ def build_argv(schedule: dict, trigger_context: dict) -> list[str]:
     if isinstance(extra, list):
         argv.extend(str(a) for a in extra)
 
-    return argv
+    return argv, tmp_path
 
 
-async def spawn_and_wait(argv: list[str], invocation_id: str) -> tuple[int, str]:
-    """Spawn subprocess and wait for completion. Returns (exit_code, stderr_tail)."""
+async def spawn_and_wait(
+    argv: list[str],
+    invocation_id: str,
+    *,
+    tmp_path: str | None = None,
+) -> tuple[int, str]:
+    """Spawn subprocess and wait for completion. Returns (exit_code, stderr_tail).
+
+    If *tmp_path* is given it is deleted after the subprocess exits — used by
+    the ``flow_yaml`` action kind which writes a temp spec file before spawning.
+    """
     env = {**os.environ, "LIONAGI_INVOCATION_ID": invocation_id}
 
     _log.info("Spawning: %s", " ".join(argv))
@@ -79,7 +108,15 @@ async def spawn_and_wait(argv: list[str], invocation_id: str) -> tuple[int, str]
         env=env,
     )
 
-    _, stderr = await proc.communicate()
+    try:
+        _, stderr = await proc.communicate()
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
     exit_code = proc.returncode or 0
     stderr_tail = (stderr[-2048:] if stderr else b"").decode(errors="replace")
 

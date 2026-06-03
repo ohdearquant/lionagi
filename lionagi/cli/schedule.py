@@ -89,6 +89,14 @@ def _cmd_create(args: argparse.Namespace) -> int:
         body["action_agent"] = args.agent
     if args.playbook:
         body["action_playbook"] = args.playbook
+    if getattr(args, "flow_yaml", None):
+        from pathlib import Path
+
+        p = Path(args.flow_yaml).expanduser()
+        if not p.is_file():
+            print(f"Error: flow-yaml file not found: {p}", file=sys.stderr)
+            return 1
+        body["action_flow_yaml"] = p.read_text()
     if args.project:
         body["action_project"] = args.project
     if args.description:
@@ -184,13 +192,19 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--action-kind",
         dest="action_kind",
         default="agent",
-        choices=("agent", "playbook"),
+        choices=("agent", "playbook", "flow_yaml"),
         help="Action kind (default: agent).",
     )
     create_p.add_argument("--prompt", help="Prompt for agent action.")
     create_p.add_argument("--model", help="Model spec for agent action.")
     create_p.add_argument("--agent", help="Agent profile name.")
     create_p.add_argument("--playbook", help="Playbook name (for action-kind=playbook).")
+    create_p.add_argument(
+        "--flow-yaml",
+        dest="flow_yaml",
+        metavar="FILE",
+        help="Path to a YAML flow spec file (for action-kind=flow_yaml).",
+    )
     create_p.add_argument("--project", help="Project name.")
     create_p.add_argument("--description", help="Human-readable description.")
 

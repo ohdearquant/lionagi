@@ -386,6 +386,9 @@ class StateDB:
         # CHECK on sessions.status. Drop the constraint via table rebuild
         # before the new vocabulary (timed_out / cancelled) is written.
         await self._drop_legacy_session_status_check()
+        # #1174: existing DBs created before flow_yaml was added carry a
+        # 4-value CHECK on schedules.action_kind that omits 'flow_yaml'.
+        await self._drop_legacy_action_kind_check()
         schema = _SCHEMA_PATH.read_text()
         lines = [ln for ln in schema.splitlines() if not ln.strip().upper().startswith("PRAGMA")]
         await self.db.executescript("\n".join(lines))
@@ -471,7 +474,9 @@ class StateDB:
             # column defaults there; insert_artifact() always sets this.
             ("updated_at", "REAL"),
         ],
-        "schedules": [],
+        "schedules": [
+            ("action_flow_yaml", "TEXT"),
+        ],
         "schedule_runs": [
             # ADR-0028: schedule_runs originally had no updated_at.
             # update_status() writes it, so it must exist.
@@ -611,6 +616,89 @@ class StateDB:
             await self.db.execute(insert_sql)
             await self.db.execute("DROP TABLE sessions")
             await self.db.execute("ALTER TABLE sessions_new RENAME TO sessions")
+            for idx_sql in index_sqls:
+                await self.db.execute(idx_sql)
+            await self.db.commit()
+        finally:
+            await self.db.execute("PRAGMA foreign_keys = ON")
+
+    # Substring present only in the post-#1174 schedules CREATE SQL;
+    # its absence indicates a legacy DB whose action_kind CHECK needs rebuilding.
+    _LEGACY_SCHEDULES_FLOW_YAML_MARKER = "'flow_yaml'"
+
+    async def _drop_legacy_action_kind_check(self) -> None:
+        """Rebuild ``schedules`` if it still carries the pre-#1174 action_kind CHECK.
+
+        The old CHECK omits ``'flow_yaml'``; SQLite cannot drop a constraint via
+        ALTER TABLE, so we use the rename → CREATE new → INSERT SELECT → DROP
+        old pattern (same as ``_drop_legacy_session_status_check``).
+        """
+        cur = await self.db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='schedules'"
+        )
+        row = await cur.fetchone()
+        if row is None or row["sql"] is None:
+            return
+        create_sql: str = row["sql"]
+        if self._LEGACY_SCHEDULES_FLOW_YAML_MARKER in create_sql:
+            # Table was already created / rebuilt with flow_yaml in the CHECK.
+            return
+
+        idx_cur = await self.db.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='index' AND tbl_name='schedules' AND sql IS NOT NULL"
+        )
+        index_sqls = [r["sql"] for r in await idx_cur.fetchall()]
+
+        info_cur = await self.db.execute("PRAGMA table_info(schedules)")
+        cols = [r["name"] for r in await info_cur.fetchall()]
+        col_list = ", ".join(cols)
+
+        await self.db.execute("PRAGMA foreign_keys = OFF")
+        try:
+            await self.db.execute(
+                """
+                CREATE TABLE schedules_new (
+                  id                  TEXT    PRIMARY KEY,
+                  name                TEXT    NOT NULL UNIQUE,
+                  description         TEXT,
+                  enabled             INTEGER NOT NULL DEFAULT 1
+                                      CHECK(enabled IN (0, 1)),
+                  trigger_type        TEXT    NOT NULL
+                                      CHECK(trigger_type IN ('cron', 'interval', 'github_poll')),
+                  cron_expr           TEXT,
+                  interval_sec        INTEGER,
+                  github_repo         TEXT,
+                  github_filter       JSON,
+                  github_cursor       TEXT,
+                  poll_interval_sec   INTEGER,
+                  action_kind         TEXT    NOT NULL
+                                      CHECK(action_kind IN ('agent', 'flow', 'fanout', 'play', 'flow_yaml')),
+                  action_model        TEXT,
+                  action_prompt       TEXT,
+                  action_agent        TEXT,
+                  action_playbook     TEXT,
+                  action_flow_yaml    TEXT,
+                  action_project      TEXT,
+                  action_extra_args   JSON    DEFAULT '[]',
+                  on_success          JSON,
+                  on_fail             JSON,
+                  last_fired_at       REAL,
+                  next_fire_at        REAL,
+                  missed_fire_policy  TEXT    NOT NULL DEFAULT 'skip'
+                                      CHECK(missed_fire_policy IN ('skip', 'run_once')),
+                  overlap_policy      TEXT    NOT NULL DEFAULT 'skip'
+                                      CHECK(overlap_policy IN ('skip', 'allow')),
+                  project             TEXT,
+                  created_at          REAL    NOT NULL,
+                  updated_at          REAL    NOT NULL
+                )
+                """
+            )
+            insert_sql = f"INSERT INTO schedules_new ({col_list}) SELECT {col_list} FROM schedules"  # noqa: S608
+            await self.db.execute(insert_sql)
+            await self.db.execute("DROP TABLE schedules")
+            await self.db.execute("ALTER TABLE schedules_new RENAME TO schedules")
             for idx_sql in index_sqls:
                 await self.db.execute(idx_sql)
             await self.db.commit()
@@ -1198,11 +1286,11 @@ class StateDB:
                 cron_expr, interval_sec, github_repo, github_filter,
                 github_cursor, poll_interval_sec,
                 action_kind, action_model, action_prompt, action_agent,
-                action_playbook, action_project, action_extra_args,
+                action_playbook, action_flow_yaml, action_project, action_extra_args,
                 on_success, on_fail, last_fired_at, next_fire_at,
                 missed_fire_policy, overlap_policy, project,
                 created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 schedule["id"],
                 schedule["name"],
@@ -1220,6 +1308,7 @@ class StateDB:
                 schedule.get("action_prompt"),
                 schedule.get("action_agent"),
                 schedule.get("action_playbook"),
+                schedule.get("action_flow_yaml"),
                 schedule.get("action_project"),
                 _to_json_column(schedule.get("action_extra_args", [])),
                 _to_json_column(schedule.get("on_success")),
@@ -1291,6 +1380,7 @@ class StateDB:
             "action_prompt",
             "action_agent",
             "action_playbook",
+            "action_flow_yaml",
             "action_project",
             "action_extra_args",
             "on_success",
