@@ -1,446 +1,232 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
+"""`li schedule` — manage lionagi Studio schedules from the CLI.
 
-"""`li schedule` — manage scheduled flow definitions.
-
-The schedule command provides sub-commands to add, list, remove, pause, and
-resume scheduled items backed by the in-process :class:`SchedulerEngine`.
-
-Examples
---------
-::
-
-    # Add a cron schedule — every night at 02:00
-    li schedule add nightly-review --cron "0 2 * * *" --flow-type play --playbook nightly-review
-
-    # Add an interval schedule — every 30 minutes
-    li schedule add heartbeat --interval 1800 --flow-type agent --prompt "check health"
-
-    # One-shot item (fires once immediately, max-runs defaults to 1)
-    li schedule add deploy-once --flow-type shell --argv "uv,run,li,state,prune" --max-runs 1
-
-    # List all schedules
-    li schedule list
-
-    # List only active schedules
-    li schedule list --status active
-
-    # Pause a schedule
-    li schedule pause <item-id>
-
-    # Resume a paused schedule
-    li schedule resume <item-id>
-
-    # Remove a schedule
-    li schedule remove <item-id>
-
-Notes
------
-The ``li schedule`` command operates on the *current process's*
-:class:`SchedulerEngine` instance.  For durable, cross-process scheduling
-(including Studio integration) the engine should be backed by a
-:class:`~lionagi.state.store.StateStore` and embedded in the Studio lifespan
-or a long-running daemon.  The CLI surface here is intentionally thin — it
-validates inputs and delegates all state mutations to the engine.
+Talks to the Studio REST API (default http://127.0.0.1:8765).
+Set LIONAGI_STUDIO_URL to override.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import time
+import os
+import sys
 from typing import Any
 
-from ._logging import log_error
-
-# ---------------------------------------------------------------------------
-# Module-level default engine (used by the CLI)
-# ---------------------------------------------------------------------------
-
-# A single shared SchedulerEngine instance for the CLI process.
-# Tests and external callers may replace this reference or instantiate their
-# own engine independently.
-_DEFAULT_ENGINE: Any = None
+_DEFAULT_BASE = "http://127.0.0.1:8765"
 
 
-def _get_engine() -> Any:
-    """Return the default :class:`SchedulerEngine`, creating it on first use."""
-    global _DEFAULT_ENGINE  # noqa: PLW0603
-    if _DEFAULT_ENGINE is None:
-        from lionagi.runtime.scheduler import SchedulerEngine
-
-        _DEFAULT_ENGINE = SchedulerEngine()
-    return _DEFAULT_ENGINE
+def _base_url() -> str:
+    return os.environ.get("LIONAGI_STUDIO_URL", _DEFAULT_BASE).rstrip("/")
 
 
-def set_engine(engine: Any) -> None:
-    """Replace the default engine (e.g. in tests or daemon setup)."""
-    global _DEFAULT_ENGINE  # noqa: PLW0603
-    _DEFAULT_ENGINE = engine
+def _api(path: str, method: str = "GET", body: dict | None = None) -> Any:
+    """Minimal HTTP helper — no extra deps beyond stdlib urllib."""
+    import urllib.error
+    import urllib.request
 
-
-# ---------------------------------------------------------------------------
-# Output helpers
-# ---------------------------------------------------------------------------
-
-_STATUS_MARKER = {
-    "active": "[active]",
-    "running": "[running]",
-    "paused": "[paused]",
-    "completed": "[done]",
-    "failed": "[FAILED]",
-    "cancelled": "[cancelled]",
-    "pending": "[pending]",
-}
-
-
-def _fmt_ts(ts: float | None) -> str:
-    if ts is None:
-        return "-"
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
-
-
-def _print_item(item: Any) -> None:
-    """Print a single :class:`ScheduleItem` in human-readable form."""
-    marker = _STATUS_MARKER.get(item.status, f"[{item.status}]")
-    trigger = (
-        f"cron:{item.cron_expr}"
-        if item.cron_expr
-        else f"interval:{item.interval_seconds}s"
-        if item.interval_seconds
-        else "one-shot"
+    url = f"{_base_url()}/schedules{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(  # noqa: S310
+        url,
+        data=data,
+        method=method,
+        headers={"Content-Type": "application/json"} if data else {},
     )
-    runs = f"{item.run_count}/{item.max_runs}" if item.max_runs is not None else str(item.run_count)
-    print(
-        f"{marker:<12} {item.item_id[:16]}  {item.name:<24}  "
-        f"{trigger:<30}  runs:{runs:<6}  "
-        f"next:{_fmt_ts(item.next_run_at)}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Sub-command implementations
-# ---------------------------------------------------------------------------
-
-
-def _cmd_add(args: argparse.Namespace) -> int:
-    """Add a new scheduled item."""
-    from lionagi.runtime.scheduler import parse_cron
-
-    engine = _get_engine()
-
-    if args.cron and args.interval:
-        log_error("specify at most one of --cron and --interval")
-        return 1
-
-    if args.cron:
-        # Validate before handing to engine
-        try:
-            parse_cron(args.cron)
-        except ValueError as exc:
-            log_error(f"invalid cron expression: {exc}")
-            return 1
-
-    interval: float | None = None
-    if args.interval is not None:
-        if args.interval <= 0:
-            log_error("--interval must be a positive number of seconds")
-            return 1
-        interval = float(args.interval)
-
-    # Build flow_spec from remaining flags
-    flow_spec: dict[str, Any] = {}
-    if args.flow_type:
-        flow_spec["flow_type"] = args.flow_type
-    if args.playbook:
-        flow_spec["playbook"] = args.playbook
-    if args.prompt:
-        flow_spec["prompt"] = args.prompt
-    if args.argv:
-        # Accept comma-separated argv or repeated --argv flags
-        flow_spec["argv"] = args.argv
-
-    # Allow raw JSON spec override
-    if args.spec:
-        try:
-            extra = json.loads(args.spec)
-        except json.JSONDecodeError as exc:
-            log_error(f"--spec is not valid JSON: {exc}")
-            return 1
-        if not isinstance(extra, dict):
-            log_error("--spec must be a JSON object (dict)")
-            return 1
-        flow_spec.update(extra)
-
-    max_runs: int | None = args.max_runs
-    if max_runs is not None and max_runs < 1:
-        log_error("--max-runs must be >= 1")
-        return 1
-
     try:
-        item = engine.add(
-            name=args.name,
-            flow_spec=flow_spec,
-            cron_expr=args.cron or None,
-            interval_seconds=interval,
-            max_runs=max_runs,
+        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        msg = exc.read().decode(errors="replace")
+        print(f"Error {exc.code}: {msg}", file=sys.stderr)
+        return None
+    except OSError as exc:
+        print(
+            f"Cannot reach Studio at {_base_url()} — is `li studio` running? ({exc})",
+            file=sys.stderr,
         )
-    except ValueError as exc:
-        log_error(str(exc))
-        return 1
-
-    print(f"scheduled: {item.item_id}")
-    _print_item(item)
-    return 0
+        return None
 
 
 def _cmd_list(args: argparse.Namespace) -> int:
-    """List scheduled items, optionally filtered by status."""
-    engine = _get_engine()
-    status_filter: str | None = args.status
-    items = engine.list_items(status=status_filter)
-
-    if not items:
-        msg = "(no scheduled items)"
-        if status_filter:
-            msg = f"(no scheduled items with status={status_filter!r})"
-        print(msg)
+    result = _api("/")
+    if result is None:
+        return 1
+    schedules = result.get("schedules", [])
+    if not schedules:
+        print("(no schedules)")
         return 0
-
-    for item in sorted(items, key=lambda it: it.next_run_at):
-        _print_item(item)
+    for s in schedules:
+        status = "enabled" if s.get("enabled") else "disabled"
+        print(f"  {s['id']}  {s['name']:<30} [{status}]  {s.get('trigger_type', '?')}")
     return 0
 
 
-def _cmd_remove(args: argparse.Namespace) -> int:
-    """Remove a scheduled item by id (prefix allowed)."""
-    engine = _get_engine()
-    item_id = _resolve_id(engine, args.item_id)
-    if item_id is None:
-        log_error(f"no scheduled item found for id: {args.item_id!r}")
+def _cmd_get(args: argparse.Namespace) -> int:
+    result = _api(f"/{args.id}")
+    if result is None:
         return 1
-
-    removed = engine.remove(item_id)
-    if removed:
-        print(f"removed: {item_id[:16]}")
-        return 0
-    log_error(f"item {item_id[:16]!r} not found")
-    return 1
+    print(json.dumps(result, indent=2))
+    return 0
 
 
-def _cmd_pause(args: argparse.Namespace) -> int:
-    """Pause an active scheduled item."""
-    engine = _get_engine()
-    item_id = _resolve_id(engine, args.item_id)
-    if item_id is None:
-        log_error(f"no scheduled item found for id: {args.item_id!r}")
+def _cmd_create(args: argparse.Namespace) -> int:
+    body: dict[str, Any] = {
+        "name": args.name,
+        "trigger_type": args.trigger_type,
+        "action_kind": args.action_kind,
+    }
+    if args.cron:
+        body["cron_expr"] = args.cron
+    if args.interval:
+        body["interval_sec"] = args.interval
+    if args.prompt:
+        body["action_prompt"] = args.prompt
+    if args.model:
+        body["action_model"] = args.model
+    if args.agent:
+        body["action_agent"] = args.agent
+    if args.playbook:
+        body["action_playbook"] = args.playbook
+    if args.project:
+        body["action_project"] = args.project
+    if args.description:
+        body["description"] = args.description
+    result = _api("/", method="POST", body=body)
+    if result is None:
         return 1
-
-    ok = engine.pause(item_id)
-    if ok:
-        print(f"paused: {item_id[:16]}")
-        return 0
-    # Give a more specific error if possible
-    item = engine.get_item(item_id)
-    if item is None:
-        log_error(f"item {item_id[:16]!r} not found")
-    else:
-        log_error(
-            f"cannot pause item {item_id[:16]!r} with status={item.status!r} "
-            "(only active items can be paused)"
-        )
-    return 1
+    print(f"Created: {result.get('id')}  {result.get('name')}")
+    return 0
 
 
-def _cmd_resume(args: argparse.Namespace) -> int:
-    """Resume a paused scheduled item."""
-    engine = _get_engine()
-    item_id = _resolve_id(engine, args.item_id)
-    if item_id is None:
-        log_error(f"no scheduled item found for id: {args.item_id!r}")
+def _cmd_enable(args: argparse.Namespace) -> int:
+    result = _api(f"/{args.id}/enable", method="POST")
+    if result is None:
         return 1
+    print(f"Enabled: {args.id}")
+    return 0
 
-    ok = engine.resume(item_id)
-    if ok:
-        print(f"resumed: {item_id[:16]}")
+
+def _cmd_disable(args: argparse.Namespace) -> int:
+    result = _api(f"/{args.id}/disable", method="POST")
+    if result is None:
+        return 1
+    print(f"Disabled: {args.id}")
+    return 0
+
+
+def _cmd_trigger(args: argparse.Namespace) -> int:
+    result = _api(f"/{args.id}/trigger", method="POST")
+    if result is None:
+        return 1
+    print(f"Triggered: {args.id}")
+    if isinstance(result, dict) and result.get("run_id"):
+        print(f"Run: {result['run_id']}")
+    return 0
+
+
+def _cmd_delete(args: argparse.Namespace) -> int:
+    result = _api(f"/{args.id}", method="DELETE")
+    if result is None:
+        return 1
+    print(f"Deleted: {args.id}")
+    return 0
+
+
+def _cmd_runs(args: argparse.Namespace) -> int:
+    result = _api(f"/{args.id}/runs")
+    if result is None:
+        return 1
+    runs = result.get("runs", [])
+    if not runs:
+        print("(no runs)")
         return 0
-    item = engine.get_item(item_id)
-    if item is None:
-        log_error(f"item {item_id[:16]!r} not found")
-    else:
-        log_error(
-            f"cannot resume item {item_id[:16]!r} with status={item.status!r} "
-            "(only paused items can be resumed)"
-        )
-    return 1
+    for r in runs:
+        print(f"  {r['id']}  [{r.get('status', '?')}]  {r.get('started_at', '?')}")
+    return 0
 
 
-# ---------------------------------------------------------------------------
-# ID resolution helper (support short id prefixes)
-# ---------------------------------------------------------------------------
-
-
-def _resolve_id(engine: Any, id_or_prefix: str) -> str | None:
-    """Resolve a full UUID or a unique prefix to a canonical item_id.
-
-    Uses the public :meth:`~lionagi.work.engine.WorkEngine.get_item` and
-    :meth:`~lionagi.work.engine.WorkEngine.find_by_prefix` methods instead
-    of accessing private engine internals.
-    """
-    # Exact match first via the public get_item accessor.
-    if engine.get_item(id_or_prefix) is not None:
-        return id_or_prefix
-
-    # Prefix match (at least 4 characters for safety) via find_by_prefix.
-    if len(id_or_prefix) >= 4:
-        matches = engine.find_by_prefix(id_or_prefix)
-        if len(matches) == 1:
-            return matches[0]
-        if len(matches) > 1:
-            log_error(
-                f"ambiguous prefix {id_or_prefix!r} matches {len(matches)} items; "
-                "use a longer prefix or the full id"
-            )
-            return None
-
-    return None
-
-
-# ---------------------------------------------------------------------------
-# argparse registration
-# ---------------------------------------------------------------------------
-
-
-def add_schedule_subcommand(subparsers: argparse._SubParsersAction) -> None:
-    """Register ``li schedule`` and its sub-commands with argparse."""
+def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> None:
+    """Register `li schedule` sub-command."""
     sched = subparsers.add_parser(
         "schedule",
-        help="Manage scheduled flow definitions.",
+        help="Manage lionagi Studio schedules.",
         description=(
-            "Add, list, pause, resume, and remove scheduled flows.\n\n"
-            "Examples:\n"
-            "  li schedule add nightly --cron '0 2 * * *' --flow-type play "
-            "--playbook nightly-review\n"
-            "  li schedule add pulse --interval 1800 --flow-type agent "
-            "--prompt 'health check'\n"
-            "  li schedule list\n"
-            "  li schedule list --status active\n"
-            "  li schedule pause <id>\n"
-            "  li schedule resume <id>\n"
-            "  li schedule remove <id>\n"
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-
-    sched_sub = sched.add_subparsers(dest="schedule_cmd", required=True)
-
-    # -- add ----------------------------------------------------------------
-    add_p = sched_sub.add_parser(
-        "add",
-        help="Add a new scheduled item.",
-        description="Create and register a new scheduled flow.",
-    )
-    add_p.add_argument("name", help="Human-readable name for this schedule.")
-    add_p.add_argument(
-        "--cron",
-        default=None,
-        metavar="EXPR",
-        help=(
-            "Five-field cron expression (e.g. '0 2 * * *' for 02:00 daily). "
-            "Mutually exclusive with --interval."
+            "Create, list, enable, disable, trigger, and delete "
+            "schedules via the Studio API (default http://127.0.0.1:8765). "
+            "Set LIONAGI_STUDIO_URL to use a different base URL."
         ),
     )
-    add_p.add_argument(
-        "--interval",
-        type=float,
-        default=None,
-        metavar="SECONDS",
-        help=(
-            "Repeat interval in seconds (e.g. 1800 for every 30 minutes). "
-            "Mutually exclusive with --cron."
-        ),
-    )
-    add_p.add_argument(
-        "--flow-type",
-        default=None,
-        dest="flow_type",
-        choices=["agent", "fanout", "flow", "play", "team", "shell", "webhook", "chain"],
-        help="Type of flow to execute.",
-    )
-    add_p.add_argument(
-        "--playbook",
-        default=None,
-        help="Playbook name (for --flow-type play).",
-    )
-    add_p.add_argument(
-        "--prompt",
-        default=None,
-        help="Prompt text (for --flow-type agent).",
-    )
-    add_p.add_argument(
-        "--argv",
-        nargs="+",
-        default=None,
-        metavar="ARG",
-        help="Command argv list (for --flow-type shell or custom execution).",
-    )
-    add_p.add_argument(
-        "--spec",
-        default=None,
-        metavar="JSON",
-        help="Raw JSON object merged into flow_spec (overrides individual flags).",
-    )
-    add_p.add_argument(
-        "--max-runs",
-        type=int,
-        default=None,
-        dest="max_runs",
-        metavar="N",
-        help="Auto-complete after N successful runs. Omit for unlimited.",
-    )
+    sched_sub = sched.add_subparsers(dest="schedule_action")
+    sched_sub.required = True
 
-    # -- list ---------------------------------------------------------------
-    list_p = sched_sub.add_parser("list", help="List scheduled items.")
-    list_p.add_argument(
-        "--status",
-        default=None,
-        choices=["pending", "active", "running", "paused", "completed", "failed", "cancelled"],
-        help="Filter by status (default: all).",
+    # list
+    sched_sub.add_parser("list", help="List all schedules.")
+
+    # get
+    get_p = sched_sub.add_parser("get", help="Show schedule details.")
+    get_p.add_argument("id", help="Schedule ID.")
+
+    # create
+    create_p = sched_sub.add_parser("create", help="Create a new schedule.")
+    create_p.add_argument("name", help="Schedule name.")
+    create_p.add_argument(
+        "--trigger-type",
+        dest="trigger_type",
+        default="cron",
+        choices=("cron", "interval", "github"),
+        help="Trigger type (default: cron).",
     )
+    create_p.add_argument("--cron", metavar="EXPR", help='Cron expression, e.g. "0 * * * *".')
+    create_p.add_argument("--interval", type=int, metavar="SECONDS", help="Interval in seconds.")
+    create_p.add_argument(
+        "--action-kind",
+        dest="action_kind",
+        default="agent",
+        choices=("agent", "playbook"),
+        help="Action kind (default: agent).",
+    )
+    create_p.add_argument("--prompt", help="Prompt for agent action.")
+    create_p.add_argument("--model", help="Model spec for agent action.")
+    create_p.add_argument("--agent", help="Agent profile name.")
+    create_p.add_argument("--playbook", help="Playbook name (for action-kind=playbook).")
+    create_p.add_argument("--project", help="Project name.")
+    create_p.add_argument("--description", help="Human-readable description.")
 
-    # -- remove -------------------------------------------------------------
-    rm_p = sched_sub.add_parser("remove", help="Remove a scheduled item.")
-    rm_p.add_argument("item_id", help="Item id or unique prefix.")
+    # enable / disable / trigger / delete
+    for sub_name, sub_help in (
+        ("enable", "Enable a schedule."),
+        ("disable", "Disable a schedule."),
+        ("trigger", "Fire a schedule immediately."),
+        ("delete", "Delete a schedule."),
+    ):
+        p = sched_sub.add_parser(sub_name, help=sub_help)
+        p.add_argument("id", help="Schedule ID.")
 
-    # -- pause --------------------------------------------------------------
-    pause_p = sched_sub.add_parser("pause", help="Pause an active scheduled item.")
-    pause_p.add_argument("item_id", help="Item id or unique prefix.")
+    # runs
+    runs_p = sched_sub.add_parser("runs", help="List runs for a schedule.")
+    runs_p.add_argument("id", help="Schedule ID.")
 
-    # -- resume -------------------------------------------------------------
-    resume_p = sched_sub.add_parser("resume", help="Resume a paused scheduled item.")
-    resume_p.add_argument("item_id", help="Item id or unique prefix.")
+
+_ACTION_MAP = {
+    "list": _cmd_list,
+    "get": _cmd_get,
+    "create": _cmd_create,
+    "enable": _cmd_enable,
+    "disable": _cmd_disable,
+    "trigger": _cmd_trigger,
+    "delete": _cmd_delete,
+    "runs": _cmd_runs,
+}
 
 
 def run_schedule(args: argparse.Namespace) -> int:
-    """Dispatch ``li schedule`` sub-command."""
-    cmd = args.schedule_cmd
-    if cmd == "add":
-        return _cmd_add(args)
-    if cmd == "list":
-        return _cmd_list(args)
-    if cmd == "remove":
-        return _cmd_remove(args)
-    if cmd == "pause":
-        return _cmd_pause(args)
-    if cmd == "resume":
-        return _cmd_resume(args)
-
-    log_error(f"unknown schedule sub-command: {cmd!r}")
-    return 1
-
-
-__all__ = [
-    "add_schedule_subcommand",
-    "run_schedule",
-    "set_engine",
-]
+    action = getattr(args, "schedule_action", None)
+    fn = _ACTION_MAP.get(action)
+    if fn is None:
+        print(
+            "Usage: li schedule <subcommand>  (list|get|create|enable|disable|trigger|delete|runs)"
+        )
+        return 1
+    return fn(args)
