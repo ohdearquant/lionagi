@@ -379,3 +379,252 @@ async def test_confidence_sync_rater_works():
         branch, work_result="data", rater=_sync_rater, target=0.95
     )
     assert rating.overall >= 0.95
+
+
+# ---------------------------------------------------------------------------
+# MAJ-1 / MAJ-4 — PUBLIC entrypoint integration: session.flow + escalation_tier
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_public_flow_higher_tier_routes_escalation(monkeypatch):
+    """session.flow(reactive=True, escalation_tier=...) routes EscalationRequest to higher_tier.
+
+    Verifies the public API path is wired end-to-end.  ``_schedule_escalation``
+    is mocked to return True (no LLM call) so the test stays synchronous and
+    deterministic while still proving the parameter forwarding and signal routing.
+    """
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.operations.flow import ReactiveExecutor
+    from lionagi.session.branch import Branch
+
+    schedule_calls: list[tuple] = []
+
+    def mock_schedule(self, req, emitter):
+        schedule_calls.append((req, self._escalation_tier))
+        return True  # pretend child accepted — no real LLM call
+
+    monkeypatch.setattr(ReactiveExecutor, "_schedule_escalation", mock_schedule)
+
+    session = Session()
+    branch = Branch(name="root")
+    session.include_branches(branch)
+    session.default_branch = branch
+
+    async def escalator(**kw):
+        # Emit EscalationRequest onto the session bus; the reactive executor's
+        # registered handler picks it up without needing a running LLM.
+        await session.emit(EscalationRequest(reason="out of depth"))
+        return "done"
+
+    session.register_operation("escalator", escalator)
+
+    captured: list[NodeEscalated] = []
+    session.observe(NodeEscalated, handler=lambda sig, _: captured.append(sig))
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("escalator")
+    graph = builder.get_graph()
+
+    await session.flow(graph, reactive=True, escalation_tier="test-tier", max_spawn=1)
+
+    # MAJ-1: escalation_tier was forwarded — _schedule_escalation called with correct tier.
+    assert len(schedule_calls) >= 1
+    assert schedule_calls[0][1] == "test-tier"
+    # MAJ-1 + handler: route is higher_tier when _schedule_escalation returns True.
+    assert len(captured) >= 1
+    assert captured[0].route == "higher_tier"
+    # MAJ-4: escalation_request carries the original EscalationRequest for audit.
+    assert isinstance(captured[0].escalation_request, EscalationRequest)
+    assert captured[0].escalation_request.reason == "out of depth"
+
+
+@pytest.mark.asyncio
+async def test_public_flow_no_tier_gives_up():
+    """session.flow without escalation_tier → give_up even when EscalationRequest emitted."""
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.session.branch import Branch
+
+    session = Session()
+    branch = Branch(name="root")
+    session.include_branches(branch)
+    session.default_branch = branch
+
+    async def escalator(**kw):
+        await session.emit(EscalationRequest(reason="low confidence"))
+        return "done"
+
+    session.register_operation("escalator", escalator)
+
+    captured: list[NodeEscalated] = []
+    session.observe(NodeEscalated, handler=lambda sig, _: captured.append(sig))
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("escalator")
+    graph = builder.get_graph()
+
+    # No escalation_tier → give_up path, no child injected.
+    result = await session.flow(graph, reactive=True)
+
+    assert len(captured) >= 1
+    assert captured[0].route == "give_up"
+    assert result["spawned_operations"] == 0
+
+
+@pytest.mark.asyncio
+async def test_public_flow_env_var_escalation_tier(monkeypatch):
+    """ReactiveExecutor picks up LIONAGI_ESCALATION_TIER from environment."""
+    import os
+
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.operations.flow import ReactiveExecutor
+    from lionagi.session.branch import Branch
+
+    schedule_calls: list[str] = []
+
+    def mock_schedule(self, req, emitter):
+        schedule_calls.append(self._escalation_tier or "")
+        return True
+
+    monkeypatch.setattr(ReactiveExecutor, "_schedule_escalation", mock_schedule)
+
+    session = Session()
+    branch = Branch(name="root")
+    session.include_branches(branch)
+    session.default_branch = branch
+
+    async def escalator(**kw):
+        await session.emit(EscalationRequest(reason="env tier test"))
+        return "done"
+
+    session.register_operation("escalator", escalator)
+
+    captured: list[NodeEscalated] = []
+    session.observe(NodeEscalated, handler=lambda sig, _: captured.append(sig))
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("escalator")
+    graph = builder.get_graph()
+
+    os.environ["LIONAGI_ESCALATION_TIER"] = "env-test-tier"
+    try:
+        # No explicit escalation_tier kwarg — must come from the env var.
+        await session.flow(graph, reactive=True)
+    finally:
+        del os.environ["LIONAGI_ESCALATION_TIER"]
+
+    assert len(schedule_calls) >= 1
+    assert schedule_calls[0] == "env-test-tier"
+    assert len(captured) >= 1
+    assert captured[0].route == "higher_tier"
+
+
+@pytest.mark.asyncio
+async def test_public_flow_human_required_always_give_up():
+    """human_required=True → give_up regardless of escalation_tier (public path)."""
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.session.branch import Branch
+
+    session = Session()
+    branch = Branch(name="root")
+    session.include_branches(branch)
+    session.default_branch = branch
+
+    async def escalator(**kw):
+        await session.emit(EscalationRequest(reason="need human", context={"human_required": True}))
+        return "done"
+
+    session.register_operation("escalator", escalator)
+
+    captured: list[NodeEscalated] = []
+    session.observe(NodeEscalated, handler=lambda sig, _: captured.append(sig))
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("escalator")
+    graph = builder.get_graph()
+
+    result = await session.flow(graph, reactive=True, escalation_tier="test-tier", max_spawn=1)
+
+    assert len(captured) >= 1
+    assert captured[0].route == "give_up"
+    assert result["spawned_operations"] == 0
+
+
+# ---------------------------------------------------------------------------
+# MIN-2 — Branch.confidence_gated_completion method resolution
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_branch_confidence_gated_completion_method_resolves():
+    """Branch.confidence_gated_completion delegates to the standalone function."""
+    s = Session()
+    branch = s.default_branch
+
+    async def _rater(_result):
+        return ConfidenceRating(correctness=0.98, completeness=0.98, evidence=0.98, risk=0.98)
+
+    rating, result = await branch.confidence_gated_completion(
+        work_result="done", rater=_rater, target=0.95
+    )
+    assert rating.overall >= 0.95
+    assert result == "done"
+
+
+@pytest.mark.asyncio
+async def test_branch_confidence_gated_completion_via_get_operation():
+    """get_operation('confidence_gated_completion') resolves the Branch method."""
+    s = Session()
+    branch = s.default_branch
+
+    method = branch.get_operation("confidence_gated_completion")
+    assert method is not None, "get_operation must resolve confidence_gated_completion"
+    assert callable(method)
+
+
+# ---------------------------------------------------------------------------
+# MAJ-4 / MAJ-1 deeper: verify child.metadata["escalation_tier"] is actually set
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_escalated_child_has_tier_in_metadata():
+    """_schedule_escalation sets child.metadata['escalation_tier'] to the configured tier.
+
+    Uses the existing _call_handler helper (mock TG that captures start_soon calls)
+    so _schedule_escalation actually runs — unlike test_public_flow_higher_tier_routes_escalation
+    which mocks _schedule_escalation itself and cannot inspect the child's metadata.
+
+    This test fails against old code because _make_executor(escalation_tier=...) worked but
+    _schedule_escalation was never wired at all in that code path; this verifies the wiring
+    actually sets the metadata on the child before scheduling it.
+    """
+    s = Session()
+    captured: list[NodeEscalated] = []
+    s.observe(NodeEscalated, handler=lambda sig, _: captured.append(sig))
+
+    executor = _make_executor(s, escalation_tier="claude-opus-4-8")
+    emitter_op = create_operation("operate", parameters={"instruction": "original task"})
+
+    token = _CURRENT_OP.set(emitter_op)
+    try:
+        await _call_handler(executor, _make_req("need higher tier"))
+    finally:
+        _CURRENT_OP.reset(token)
+
+    # Signal emitted with higher_tier route
+    assert len(captured) == 1
+    assert captured[0].route == "higher_tier"
+
+    # start_soon was called with the child op as first positional arg
+    assert len(executor._spawn_calls) >= 1, "Expected start_soon call for child op"
+    # spawn_calls[0] = (fn, args) where fn=_run_tracked, args=(child,)
+    child = executor._spawn_calls[0][1][0]
+    assert child.metadata.get("escalation_tier") == "claude-opus-4-8", (
+        f"Child op must have escalation_tier='claude-opus-4-8' in metadata, "
+        f"got {child.metadata.get('escalation_tier')!r}"
+    )
+
+    # MAJ-4: escalation_request field carries the original request for audit
+    assert captured[0].escalation_request is not None
+    assert captured[0].escalation_request.reason == "need higher tier"

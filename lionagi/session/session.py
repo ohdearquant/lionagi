@@ -407,6 +407,7 @@ class Session(Node, Relational):
         spawn_type: type | None = None,
         node_builder: Any = None,
         max_spawn: int = 50,
+        escalation_tier: str | None = None,
     ) -> dict[str, Any]:
         """
         Execute a graph-based workflow using multi-branch orchestration.
@@ -428,6 +429,9 @@ class Session(Node, Relational):
             node_builder: ``(spawn_request, emitter_op) -> Operation | None`` that
                 turns a spawn payload into a graph node. Only used when ``reactive``.
             max_spawn: Hard cap on dynamic injections. Only used when ``reactive``.
+            escalation_tier: Model name to use for escalated op re-dispatch. When
+                ``None`` an emitted EscalationRequest surfaces as a give_up signal.
+                Only used when ``reactive``.
         """
         from lionagi.operations.flow import flow
 
@@ -449,6 +453,7 @@ class Session(Node, Relational):
             spawn_type=spawn_type,
             node_builder=node_builder,
             max_spawn=max_spawn,
+            escalation_tier=escalation_tier,
         )
 
     async def flow_stream(
@@ -463,6 +468,7 @@ class Session(Node, Relational):
         spawn_type: type | None = None,
         node_builder: Any = None,
         max_spawn: int = 50,
+        escalation_tier: str | None = None,
     ):
         """Stream graph execution — yield a ``FlowEvent`` as each op completes.
 
@@ -488,6 +494,7 @@ class Session(Node, Relational):
             spawn_type=spawn_type,
             node_builder=node_builder,
             max_spawn=max_spawn,
+            escalation_tier=escalation_tier,
         ):
             yield event
 

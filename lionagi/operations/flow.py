@@ -133,6 +133,10 @@ class DependencyAwareExecutor:
         limiter = CapacityLimiter(capacity)
 
         nodes = [n for n in self.graph.internal_nodes.values() if isinstance(n, Operation)]
+        if self.on_progress:
+            for node in nodes:
+                _name = node.metadata.get("reference_id", str(node.id)[:8])
+                self.on_progress(str(node.id), _name, "queued", 0.0)
         await self._alcall(nodes, self._execute_operation, limiter=limiter)
 
         # Return results - only include actually completed operations
@@ -658,7 +662,10 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self._result_sink: Any = None
         # Model name (e.g. "claude-opus-4-8") to use for escalated re-dispatch.
         # None means no higher tier is configured and escalations surface as give_up.
-        self._escalation_tier: str | None = escalation_tier
+        # Fall back to the env var so callers without a public API knob can still configure.
+        import os  # noqa: PLC0415
+
+        self._escalation_tier: str | None = escalation_tier or os.getenv("LIONAGI_ESCALATION_TIER")
 
     async def execute(self) -> dict[str, Any]:
         """Execute the graph, growing it as nodes emit SpawnRequests."""
@@ -682,6 +689,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
             async with create_task_group() as tg:
                 self._tg = tg
                 for node in initial:
+                    if self.on_progress:
+                        _name = node.metadata.get("reference_id", str(node.id)[:8])
+                        self.on_progress(str(node.id), _name, "queued", 0.0)
                     tg.start_soon(self._run_tracked, node)
         finally:
             self._running = False
@@ -726,9 +736,13 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self._result_sink = send
 
         initial = [n for n in self.graph.internal_nodes.values() if isinstance(n, Operation)]
-        observer = getattr(self.session, "observer", None)
+        # Use same private attribute as batch execute() — avoids asymmetry.
+        observer = getattr(self.session, "_observer", None)
         if observer is not None:
+            from lionagi.casts.emission import EscalationRequest  # noqa: PLC0415
+
             self.session.observe(self.spawn_type, self._on_bus_spawn)
+            self.session.observe(EscalationRequest, self._on_bus_escalation)
         self._running = True
 
         async def _driver():
@@ -740,6 +754,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
                 async with create_task_group() as tg:
                     self._tg = tg
                     for node in initial:
+                        if self.on_progress:
+                            _name = node.metadata.get("reference_id", str(node.id)[:8])
+                            self.on_progress(str(node.id), _name, "queued", 0.0)
                         tg.start_soon(self._run_tracked, node)
             finally:
                 await send.aclose()
@@ -759,7 +776,10 @@ class ReactiveExecutor(DependencyAwareExecutor):
             self._tg = None
             self._result_sink = None
             if observer is not None:
+                from lionagi.casts.emission import EscalationRequest  # noqa: PLC0415
+
                 observer.unobserve(self._on_bus_spawn)
+                observer.unobserve(self._on_bus_escalation)
             if not driver.done():  # early break / consumer close: tear down
                 driver.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -834,7 +854,11 @@ class ReactiveExecutor(DependencyAwareExecutor):
         else:
             route = "give_up"
 
-        await self.session.emit(NodeEscalated(op_id=op_id, name=name, reason=reason, route=route))
+        await self.session.emit(
+            NodeEscalated(
+                op_id=op_id, name=name, reason=reason, route=route, escalation_request=req
+            )
+        )
 
     def _schedule_escalation(self, req: Any, emitter: Operation | None) -> bool:
         """Build and schedule an escalated re-run of the emitter's operation.
@@ -958,6 +982,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
         if newly_added:
             self._assign_injected_branch(child, emitter_id, independent)
+            if self.on_progress:
+                _name = child.metadata.get("reference_id", str(child.id)[:8])
+                self.on_progress(str(child.id), _name, "queued", 0.0)
         return True
 
     def _assign_injected_branch(self, child: Operation, emitter_id: Any, independent: bool) -> None:
@@ -1030,6 +1057,7 @@ async def flow(
     spawn_type: type | None = None,
     node_builder: Any = None,
     max_spawn: int = 50,
+    escalation_tier: str | None = None,
 ) -> dict[str, Any]:
     """Execute a graph using structured concurrency primitives.
 
@@ -1054,6 +1082,10 @@ async def flow(
             turns a spawn payload into a graph node. Defaults to a role-agnostic
             ``operate`` node. Only used when ``reactive``.
         max_spawn: Hard cap on dynamic injections. Only used when ``reactive``.
+        escalation_tier: Model name (e.g. ``"claude-opus-4-8"``) to use when
+            re-dispatching an escalated op. When ``None`` (the default) an
+            emitted :class:`~lionagi.casts.emission.EscalationRequest` surfaces
+            as a graceful ``give_up`` signal. Only used when ``reactive``.
 
     Returns:
         Execution results with completed operations and final context. When
@@ -1076,6 +1108,7 @@ async def flow(
             spawn_type=spawn_type,
             node_builder=node_builder,
             max_spawn=max_spawn,
+            escalation_tier=escalation_tier,
         )
     else:
         executor = DependencyAwareExecutor(
@@ -1105,6 +1138,7 @@ async def flow_stream(
     spawn_type: type | None = None,
     node_builder: Any = None,
     max_spawn: int = 50,
+    escalation_tier: str | None = None,
 ):
     """Stream a graph: yield a :class:`FlowEvent` as each operation completes.
 
@@ -1127,6 +1161,7 @@ async def flow_stream(
         spawn_type=spawn_type,
         node_builder=node_builder,
         max_spawn=max_spawn,
+        escalation_tier=escalation_tier,
     )
     async for event in executor.execute_stream():
         yield event

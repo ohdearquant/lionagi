@@ -198,3 +198,91 @@ async def test_run_dag_emits_node_lifecycle_signals():
     assert len(result["completed_operations"]) == 1
     assert started == ["root"]  # NodeStarted reached the observer with the branch name
     assert len(completed) == 1  # NodeCompleted carried the op id
+
+
+@pytest.mark.asyncio
+async def test_run_dag_emits_node_queued_before_started():
+    """run_dag emits NodeQueued before NodeStarted for each op (MAJ-3 live emission)."""
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.session.branch import Branch
+    from lionagi.session.session import Session
+    from lionagi.session.signal import NodeQueued, NodeStarted
+
+    async def work(**kw):
+        return "ok"
+
+    session = Session()
+    branch = Branch(name="root")
+    session.include_branches(branch)
+    session.default_branch = branch
+    session.register_operation("work", work)
+
+    signal_log: list[str] = []  # record "queued:<op_id>" and "started:<op_id>"
+    session.observe(NodeQueued, handler=lambda s, _: signal_log.append(f"queued:{s.op_id}"))
+    session.observe(NodeStarted, handler=lambda s, _: signal_log.append(f"started:{s.op_id}"))
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("work")
+    graph = builder.get_graph()
+
+    run = Engine().new_run(session=session)
+    result = await run.run_dag(graph)
+
+    assert len(result["completed_operations"]) == 1
+    # Must have at least one queued and one started for the same op.
+    queued_ops = [e.split(":")[1] for e in signal_log if e.startswith("queued:")]
+    started_ops = [e.split(":")[1] for e in signal_log if e.startswith("started:")]
+    assert len(queued_ops) >= 1
+    assert len(started_ops) >= 1
+    assert queued_ops[0] == started_ops[0], "NodeQueued and NodeStarted must share same op_id"
+    # queued must arrive before started in the log.
+    qi = next(i for i, e in enumerate(signal_log) if e.startswith("queued:"))
+    si = next(i for i, e in enumerate(signal_log) if e.startswith("started:"))
+    assert qi < si, "NodeQueued must precede NodeStarted in the signal log"
+
+
+@pytest.mark.asyncio
+async def test_run_dag_queued_for_reactive_injected_child():
+    """Reactively injected child nodes also receive NodeQueued before NodeStarted."""
+    from lionagi.casts.emission import SpawnRequest
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.operations.node import create_operation
+    from lionagi.session.branch import Branch
+    from lionagi.session.session import Session
+    from lionagi.session.signal import NodeQueued, NodeStarted
+
+    async def spawner(**kw):
+        return SpawnRequest(instruction="follow-up", independent=True)
+
+    async def follow_up(**kw):
+        return "child done"
+
+    session = Session()
+    branch = Branch(name="root")
+    session.include_branches(branch)
+    session.default_branch = branch
+    session.register_operation("spawner", spawner)
+    session.register_operation("follow_up", follow_up)
+
+    queued_ids: list[str] = []
+    started_ids: list[str] = []
+    session.observe(NodeQueued, handler=lambda s, _: queued_ids.append(s.op_id))
+    session.observe(NodeStarted, handler=lambda s, _: started_ids.append(s.op_id))
+
+    def node_builder(req, emitter):
+        return create_operation("follow_up", parameters={})
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("spawner")
+    graph = builder.get_graph()
+
+    run = Engine().new_run(session=session)
+    result = await run.run_dag(graph, reactive=True, node_builder=node_builder, max_spawn=1)
+
+    assert result["spawned_operations"] == 1
+    assert len(result["completed_operations"]) == 2
+    # Both parent and child must have queued signals.
+    assert len(queued_ids) == 2
+    # Every started op must have been queued first.
+    for op_id in started_ids:
+        assert op_id in queued_ids, f"op {op_id} started without NodeQueued"

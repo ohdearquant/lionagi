@@ -32,7 +32,7 @@ from pydantic import BaseModel
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.casts.emission import build_emission_operable
 from lionagi.session.session import Session
-from lionagi.session.signal import NodeCompleted, NodeFailed, NodeStarted
+from lionagi.session.signal import NodeCompleted, NodeFailed, NodeQueued, NodeStarted
 
 if TYPE_CHECKING:
     from lionagi.protocols.generic.pile import Pile
@@ -237,24 +237,27 @@ class EngineRun:
         max_spawn: int = 50,
         max_concurrent: int = 5,
         verbose: bool = False,
+        escalation_tier: str | None = None,
     ) -> dict[str, Any]:
         """Execute a prebuilt operation DAG on the run's session.
 
         The complement to :meth:`run_team`: where ``run_team`` sequences a
         roster, ``run_dag`` runs a dependency graph through the reactive
         executor — the second of the two execution shapes (ADR-0075 §4). As each
-        node starts/finishes it emits a ``NodeStarted`` / ``NodeCompleted`` /
-        ``NodeFailed`` onto the bus, so persistence, Studio segments, and
-        progress display subscribe via ``observe`` instead of a bespoke
-        ``on_progress`` callback. With ``reactive`` a worker may emit a
+        node starts/finishes it emits a ``NodeQueued`` / ``NodeStarted`` /
+        ``NodeCompleted`` / ``NodeFailed`` onto the bus, so persistence, Studio
+        segments, and progress display subscribe via ``observe`` instead of a
+        bespoke ``on_progress`` callback. With ``reactive`` a worker may emit a
         ``spawn_type`` payload to grow the live DAG (``node_builder`` turns it
         into a node). Returns the ``session.flow`` result dict.
         """
         emits: list[asyncio.Future] = []
 
         def _on_progress(op_id: str, name: str, status: str, elapsed: float) -> None:
-            if status == "started":
-                sig: Any = NodeStarted(op_id=op_id, name=name)
+            if status == "queued":
+                sig: Any = NodeQueued(op_id=op_id, name=name)
+            elif status == "started":
+                sig = NodeStarted(op_id=op_id, name=name)
             elif status == "completed":
                 sig = NodeCompleted(op_id=op_id, name=name, elapsed=elapsed)
             elif status == "failed":
@@ -277,6 +280,7 @@ class EngineRun:
             max_concurrent=max_concurrent,
             verbose=verbose,
             on_progress=_on_progress,
+            escalation_tier=escalation_tier,
         )
         if emits:
             await asyncio.gather(*emits, return_exceptions=True)

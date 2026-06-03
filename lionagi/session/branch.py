@@ -368,6 +368,19 @@ class Branch(Element, Relational):
             return getattr(self, operation)
         return self._operation_manager.registry.get(operation)
 
+    async def confidence_gated_completion(self, **kwargs):
+        """Run ``confidence_gated_completion`` bound to this branch.
+
+        Delegates to :func:`lionagi.operations.confidence_gate.confidence_gated_completion`
+        so callers can use ``create_operation("confidence_gated_completion", ...)``
+        and have it resolved via :meth:`get_operation` without manual registration.
+        """
+        from lionagi.operations.confidence_gate import (  # noqa: PLC0415
+            confidence_gated_completion,
+        )
+
+        return await confidence_gated_completion(self, **kwargs)
+
     async def emit(self, event: Any) -> list[Any]:
         """Emit an event to the owning session's observer, if attached.
 

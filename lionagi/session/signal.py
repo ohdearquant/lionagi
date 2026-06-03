@@ -180,13 +180,18 @@ class NodeEscalated(Signal):
 
     ``route`` is ``"higher_tier"`` when a re-dispatch is scheduled or
     ``"give_up"`` when no escalation path is configured / ``human_required``.
-    ``data`` carries the original ``EscalationRequest`` payload when available.
+    ``escalation_request`` carries the original ``EscalationRequest`` payload when
+    available.  It is stored in a named field rather than ``Signal.data`` to
+    prevent the observer's payload-matching from re-firing the escalation handler
+    when this signal is emitted (``Signal.data`` is payload-matched; a named
+    field is not).
     """
 
     op_id: str = ""
     name: str = ""
     reason: str = ""
     route: str = ""  # "higher_tier" | "give_up"
+    escalation_request: Any = None  # original EscalationRequest for audit trail
 
 
 # -- Lifecycle projection (ADR-0077) ------------------------------------------

@@ -266,3 +266,104 @@ def test_signals_are_elements():
     # Each instance has a unique id
     a, b = NodeQueued(), NodeQueued()
     assert a.id != b.id
+
+
+# ---------------------------------------------------------------------------
+# MAJ-3 — lane_for on REAL captured signals (not hand-built sequences)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_lane_for_on_real_run_signals_succeeds():
+    """lane_for derives 'succeeded' from signals captured during a real Engine.run_dag().
+
+    Closes the MAJ-3 checklist item: 'lane_for(captured_signals_for_op) returns
+    succeeded, failed, or escalated for the real captured stream without hand-built
+    signals.'  All prior lane_for tests use manually constructed signal lists; this
+    test captures signals emitted by the live pipeline and feeds them to lane_for.
+    """
+    import pytest
+
+    pytest.importorskip("lionagi.engines.engine")  # skip if engine not present
+
+    from lionagi.engines.engine import Engine
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.session.branch import Branch
+    from lionagi.session.session import Session
+
+    async def work(**kw):
+        return "ok"
+
+    session = Session()
+    branch = Branch(name="root")
+    session.include_branches(branch)
+    session.default_branch = branch
+    session.register_operation("work", work)
+
+    captured: list = []
+    session.observe(NodeQueued, handler=lambda s, _: captured.append(s))
+    session.observe(NodeStarted, handler=lambda s, _: captured.append(s))
+    session.observe(NodeCompleted, handler=lambda s, _: captured.append(s))
+    session.observe(NodeFailed, handler=lambda s, _: captured.append(s))
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("work")
+    graph = builder.get_graph()
+
+    run = Engine().new_run(session=session)
+    await run.run_dag(graph)
+
+    assert len(captured) >= 3, (
+        f"Expected ≥3 lifecycle signals (queued/started/completed), got {len(captured)}: "
+        f"{[type(s).__name__ for s in captured]}"
+    )
+    state = lane_for(captured)
+    assert state == "succeeded", (
+        f"lane_for on real signals must return 'succeeded', got {state!r}. "
+        f"Signals: {[type(s).__name__ for s in captured]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_real_run_full_sequence_queued_started_completed():
+    """A successful run emits NodeQueued → NodeStarted → NodeCompleted in strict order.
+
+    This closes the MAJ-3 checklist item: 'verifies per-op order: NodeQueued →
+    NodeStarted → NodeCompleted'.  Previous tests check queued<started OR
+    started+completed separately — this test requires all three and their ordering.
+    """
+    from lionagi.engines.engine import Engine
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.session.branch import Branch
+    from lionagi.session.session import Session
+
+    async def work(**kw):
+        return "ok"
+
+    session = Session()
+    branch = Branch(name="root")
+    session.include_branches(branch)
+    session.default_branch = branch
+    session.register_operation("work", work)
+
+    log: list[str] = []
+    session.observe(NodeQueued, handler=lambda s, _: log.append("queued"))
+    session.observe(NodeStarted, handler=lambda s, _: log.append("started"))
+    session.observe(NodeCompleted, handler=lambda s, _: log.append("completed"))
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("work")
+    graph = builder.get_graph()
+
+    run = Engine().new_run(session=session)
+    await run.run_dag(graph)
+
+    assert "queued" in log, f"NodeQueued never emitted. log={log}"
+    assert "started" in log, f"NodeStarted never emitted. log={log}"
+    assert "completed" in log, f"NodeCompleted never emitted. log={log}"
+
+    qi = log.index("queued")
+    si = log.index("started")
+    ci = log.index("completed")
+    assert qi < si, f"NodeQueued ({qi}) must precede NodeStarted ({si}). log={log}"
+    assert si < ci, f"NodeStarted ({si}) must precede NodeCompleted ({ci}). log={log}"
