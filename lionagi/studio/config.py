@@ -14,3 +14,30 @@ CORS_ORIGINS: list[str] = (
     if _raw_origins
     else ["http://localhost:5173", "http://localhost:3000", "http://localhost:3765"]
 )
+
+# ── Lifecycle reaper config (#1170 / #1171 / #1172) ──────────────────────────
+# Default invocation deadline in seconds (2 hours). Override per action kind
+# via LIONAGI_STUDIO_INVOCATION_DEADLINE_<KIND>_SECONDS (e.g. _AGENT_SECONDS).
+INVOCATION_DEADLINE_SECONDS: int = int(
+    os.environ.get("LIONAGI_STUDIO_INVOCATION_DEADLINE_SECONDS", "7200")
+)
+# Grace period before a running invocation with zero child sessions is reaped.
+ZERO_SESSION_GRACE_SECONDS: int = int(
+    os.environ.get("LIONAGI_STUDIO_ZERO_SESSION_GRACE_SECONDS", "300")
+)
+# Staleness threshold for phantom session classification.
+PHANTOM_STALE_HOURS: float = float(os.environ.get("LIONAGI_STUDIO_PHANTOM_STALE_HOURS", "1.0"))
+# Minimum seconds between consecutive periodic reaper runs (throttle).
+REAPER_INTERVAL_SECONDS: int = int(os.environ.get("LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS", "300"))
+
+# ── DB maintenance config (#1173) ─────────────────────────────────────────────
+# Size threshold in bytes above which /api/stats raises a size_alert (500 MB).
+DB_SIZE_ALERT_BYTES: int = int(
+    os.environ.get("LIONAGI_STUDIO_DB_SIZE_ALERT_BYTES", str(500 * 1024 * 1024))
+)
+# Minimum seconds between automatic WAL checkpoints from the scheduler tick.
+CHECKPOINT_INTERVAL_SECONDS: int = int(
+    os.environ.get("LIONAGI_STUDIO_CHECKPOINT_INTERVAL_SECONDS", "3600")
+)
+# Sessions/runs older than this many days (with terminal status) will be pruned.
+PRUNE_KEEP_DAYS: int = int(os.environ.get("LIONAGI_STUDIO_PRUNE_KEEP_DAYS", "30"))

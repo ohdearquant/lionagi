@@ -593,74 +593,12 @@ async def prune_sessions(session_ids: list[str]) -> int:
 
 
 async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
-    """Prune phantom sessions with a TOCTOU-safe guarded DELETE.
+    """Transition phantom sessions to 'failed' via the sanctioned status path.
 
-    Re-checks the phantom condition atomically in the WHERE clause so sessions
-    that transitioned to a terminal state between classification and deletion are
-    never removed.
-
-    Guard strategy is per-reason:
-    - ``process_dead`` / ``stale_lock``: require ``status = 'running' AND
-      updated_at <= stale_cutoff`` (staleness confirms the process is gone).
-    - ``missing_artifacts``: require ``status = 'running' AND updated_at <=
-      stale_cutoff`` — same guard as stale reasons to prevent deleting a session
-      that recovered (created its artifacts + heartbeated) between classification
-      and deletion.
+    Replaces the previous delete-based approach (#1172): session rows are
+    preserved so reason history and artifacts remain inspectable.
+    Delegates to :func:`reap_phantom_sessions` from the lifecycle service.
     """
-    phantoms = await list_phantom_sessions(stale_hours=stale_hours)
-    if not phantoms or not DEFAULT_DB_PATH.exists():
-        return 0
+    from lionagi.studio.services.lifecycle import reap_phantom_sessions
 
-    now = time.time()
-    stale_cutoff = now - stale_hours * 3600
-
-    # Split by reason so each group gets the appropriate WHERE guard.
-    stale_ids = [
-        p["session_id"] for p in phantoms if p.get("reason") in ("process_dead", "stale_lock")
-    ]
-    artifact_entries = [
-        {
-            "id": p["session_id"],
-            "classified_updated_at": p.get("updated_at", 0),
-            "artifacts_path": p.get("artifacts_path"),
-        }
-        for p in phantoms
-        if p.get("reason") == "missing_artifacts"
-    ]
-
-    pruned = 0
-    async with _open_db(_DB) as db:
-        if stale_ids:
-            placeholders = ",".join("?" * len(stale_ids))
-            cur = await db.execute(
-                f"DELETE FROM sessions WHERE id IN ({placeholders})"  # noqa: S608
-                " AND status = 'running' AND (updated_at IS NULL OR updated_at <= ?)",
-                (*stale_ids, stale_cutoff),
-            )
-            await db.commit()
-            pruned += cur.rowcount or 0
-
-        for entry in artifact_entries:
-            ap = Path(entry["artifacts_path"]) if entry["artifacts_path"] else None
-            if ap and ap.exists():
-                continue
-            cur = await db.execute(
-                "DELETE FROM sessions WHERE id = ?"
-                " AND status = 'running'"
-                " AND (updated_at IS NULL OR updated_at <= ?)",
-                (entry["id"], entry["classified_updated_at"]),
-            )
-            await db.commit()
-            pruned += cur.rowcount or 0
-
-        if pruned:
-            await db.execute(
-                """
-                DELETE FROM messages
-                WHERE id NOT IN (
-                  SELECT value FROM progressions, json_each(progressions.collection)
-                )
-                """
-            )
-            await db.commit()
-    return pruned
+    return await reap_phantom_sessions(stale_hours=stale_hours, actor="admin_prune")

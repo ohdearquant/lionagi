@@ -67,12 +67,15 @@ async def _pragmas(db: Any) -> dict[str, Any]:
 
 
 async def get_db_stats() -> dict[str, Any]:
+    from .db_maintenance import get_db_size_alert, get_last_checkpoint_at
+
     db_path = DEFAULT_DB_PATH
     size_bytes = db_path.stat().st_size if db_path.exists() else 0
     wal_path = db_path.parent / (db_path.name + "-wal")
     wal_bytes = wal_path.stat().st_size if wal_path.exists() else 0
     connections_active = get_active_connection_count()
     path_str = public_path(db_path)
+    size_alert, size_threshold_bytes = get_db_size_alert(size_bytes)
 
     if not db_path.exists():
         return {
@@ -81,6 +84,8 @@ async def get_db_stats() -> dict[str, Any]:
             "wal_bytes": 0,
             "connections_active": connections_active,
             "last_checkpoint_at": None,
+            "size_alert": False,
+            "size_threshold_bytes": size_threshold_bytes,
             "tables": {
                 t: 0
                 for t in (
@@ -98,6 +103,8 @@ async def get_db_stats() -> dict[str, Any]:
             "slow_queries": None,
         }
 
+    last_checkpoint_at = await get_last_checkpoint_at()
+
     async with _open_db(_DB) as db:
         tables = await _table_counts(db)
         by_status = await _sessions_by_status(db)
@@ -108,7 +115,9 @@ async def get_db_stats() -> dict[str, Any]:
         "size_bytes": size_bytes,
         "wal_bytes": wal_bytes,
         "connections_active": connections_active,
-        "last_checkpoint_at": None,
+        "last_checkpoint_at": last_checkpoint_at,
+        "size_alert": size_alert,
+        "size_threshold_bytes": size_threshold_bytes,
         "tables": tables,
         "sessions_by_status": by_status,
         "pragmas": pragmas,
@@ -117,6 +126,8 @@ async def get_db_stats() -> dict[str, Any]:
 
 
 async def get_stats() -> dict[str, Any]:
+    from lionagi.studio.services.lifecycle import get_phantom_count
+
     return {
         "playbooks": len(playbooks_svc.list_playbooks()),
         "agents": len(agents_svc.list_agents()),
@@ -125,4 +136,5 @@ async def get_stats() -> dict[str, Any]:
         "skills": len(skills_svc.list_skills()),
         "plugins": len(plugins_svc.list_plugins()),
         "db": await get_db_stats(),
+        "phantom_count": await get_phantom_count(),
     }
