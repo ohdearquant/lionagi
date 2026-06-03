@@ -305,6 +305,7 @@ class Event(Element):
     q: ClassVar[_EventQuery] = _EventQuery()
 
     # TODO(#1043 Phase 2): migrate to anyio.Event (needs .clear() audit first)
+    # TODO(#1259): Phase-2 follow-up tracking issue (see docs/followups-2026-06.md).
     # Lazily-created asyncio.Event signalled on terminal status transitions.
     _completion_event: asyncio.Event | None = PrivateAttr(default=None)
 

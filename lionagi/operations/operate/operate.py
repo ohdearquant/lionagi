@@ -1,7 +1,6 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-import warnings
 from typing import TYPE_CHECKING, Literal, Union
 
 from pydantic import BaseModel, JsonValue
@@ -40,7 +39,6 @@ def prepare_operate_kw(
     sender: SenderRecipient = None,
     recipient: SenderRecipient = None,
     progression: Progression = None,
-    imodel: "iModel" = None,  # deprecated
     chat_model: "iModel" = None,
     invoke_actions: bool = True,
     tool_schemas: list[dict] = None,
@@ -58,8 +56,6 @@ def prepare_operate_kw(
     action_strategy: Literal["sequential", "concurrent"] = "concurrent",
     verbose_action: bool = False,
     field_models: list[FieldModel | Spec] = None,
-    operative_model: type[BaseModel] = None,  # deprecated
-    request_model: type[BaseModel] = None,  # deprecated
     include_token_usage_to_model: bool = False,
     clear_messages: bool = False,
     stream_persist: bool = False,
@@ -68,39 +64,7 @@ def prepare_operate_kw(
     middle: Middle | None = None,
     **kwargs,
 ) -> dict:
-    # Handle deprecated parameters
-    if operative_model:
-        warnings.warn(
-            "Parameter 'operative_model' is deprecated and will be removed in v0.21.0. "
-            "Use 'response_format'.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    if request_model:
-        warnings.warn(
-            "Parameter 'request_model' is deprecated and will be removed in v0.21.0. "
-            "Use 'response_format'.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    if imodel:
-        warnings.warn(
-            "Parameter 'imodel' is deprecated and will be removed in v0.21.0. Use 'chat_model'.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-    if (
-        (operative_model and response_format)
-        or (operative_model and request_model)
-        or (response_format and request_model)
-    ):
-        raise ValueError(
-            "Cannot specify multiple of: operative_model, response_format, request_model"
-        )
-
-    response_format = response_format or operative_model or request_model
-    chat_model = chat_model or imodel or branch.chat_model
+    chat_model = chat_model or branch.chat_model
     parse_model = parse_model or chat_model
 
     # Convert dict-based instructions

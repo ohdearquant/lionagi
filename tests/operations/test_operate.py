@@ -116,20 +116,6 @@ async def test_operate_with_actions_preserves_response_data():
 from lionagi.operations.operate.operate import prepare_operate_kw
 
 
-def test_prepare_operate_kw_rejects_multiple_response_format_aliases():
-    """Cannot specify both response_format and request_model simultaneously."""
-
-    class ModelA(BaseModel):
-        x: str
-
-    class ModelB(BaseModel):
-        y: str
-
-    branch = Branch()
-    with pytest.raises(ValueError, match="Cannot specify multiple of"):
-        prepare_operate_kw(branch, response_format=ModelA, request_model=ModelB)
-
-
 def test_prepare_operate_kw_rejects_invalid_field_model_entry():
     """field_models list containing a non-FieldModel/Spec raises TypeError."""
     branch = Branch()
@@ -163,40 +149,13 @@ async def test_operate_handle_validation_raise_reports_expected_model(monkeypatc
 
 
 # ---------------------------------------------------------------------------
-# Additional prepare_operate_kw coverage — deprecated params & field_models
+# Additional prepare_operate_kw coverage — field_models
 # ---------------------------------------------------------------------------
 
 import warnings
 
 from lionagi.ln.types import Spec
 from lionagi.models import FieldModel
-
-
-def test_prepare_operate_kw_deprecated_operative_model_warning():
-    """operative_model triggers DeprecationWarning (line 72)."""
-
-    class M(BaseModel):
-        x: str
-
-    branch = Branch()
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        prepare_operate_kw(branch, operative_model=M)
-    assert any(issubclass(x.category, DeprecationWarning) for x in w)
-    assert any("operative_model" in str(x.message) for x in w)
-
-
-def test_prepare_operate_kw_deprecated_imodel_warning():
-    """imodel= triggers DeprecationWarning (line 86)."""
-    branch = Branch()
-    from lionagi.service.imodel import iModel
-
-    fake = iModel(provider="openai", model="gpt-4.1-mini", api_key="k")
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        prepare_operate_kw(branch, imodel=fake)
-    assert any(issubclass(x.category, DeprecationWarning) for x in w)
-    assert any("imodel" in str(x.message) for x in w)
 
 
 def test_prepare_operate_kw_instruct_as_dict():

@@ -39,10 +39,8 @@ class Step:
         parse_kwargs: dict | None = None,
         exclude_fields: list | None = None,
         field_descriptions: dict | None = None,
-        inherit_base: bool = True,
         config_dict: dict | None = None,
         doc: str | None = None,
-        frozen: bool = False,
         new_model_name: str | None = None,
         parameter_fields: dict | None = None,
         request_params: dict | None = None,
@@ -64,10 +62,8 @@ class Step:
             parse_kwargs: (Deprecated) Ignored - parse config handled internally
             exclude_fields: (Deprecated) Ignored
             field_descriptions: (Deprecated) Ignored
-            inherit_base: (Deprecated) Ignored
             config_dict: (Deprecated) Ignored
             doc: (Deprecated) Ignored
-            frozen: (Deprecated) Ignored
             new_model_name: (Deprecated) Ignored
             parameter_fields: (Deprecated) Ignored
             request_params: (Deprecated) Ignored
@@ -93,19 +89,6 @@ class Step:
                     DeprecationWarning,
                     stacklevel=2,
                 )
-        if not inherit_base:
-            warnings.warn(
-                "inherit_base is deprecated and will be removed in v0.21.0",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        if frozen:
-            warnings.warn(
-                "frozen is deprecated and will be removed in v0.21.0",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
         # Handle backward compatibility
         name = name or operative_name
 
@@ -136,15 +119,9 @@ class Step:
             fields_dict["reason"] = reason_spec
 
         if actions:
-            fields_dict["action_required"] = get_default_field(
-                "action_required"
-            ).to_spec()
-            fields_dict["action_requests"] = get_default_field(
-                "action_requests"
-            ).to_spec()
-            fields_dict["action_responses"] = get_default_field(
-                "action_responses"
-            ).to_spec()
+            fields_dict["action_required"] = get_default_field("action_required").to_spec()
+            fields_dict["action_requests"] = get_default_field("action_requests").to_spec()
+            fields_dict["action_responses"] = get_default_field("action_responses").to_spec()
 
         # Add custom fields (will override defaults if same name)
         if fields:

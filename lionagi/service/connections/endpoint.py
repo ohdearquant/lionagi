@@ -138,8 +138,6 @@ class Endpoint:
                 "parse_model",
                 "actions",
                 "return_operative",
-                "operative_model",
-                "request_model",
             }
             payload = {k: v for k, v in payload.items() if k not in non_api_params}
 

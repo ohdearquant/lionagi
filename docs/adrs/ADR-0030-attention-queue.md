@@ -1,6 +1,8 @@
 # ADR-0030: Attention Queue
 
 **Status**: Proposed — depends on [ADR-0033](ADR-0033-unified-entity-state-model.md), extended to include knowledge events per [ADR-0039](ADR-0039-knowledge-substrate-minimal-interface.md)
+<!-- No Attention Queue implementation on main as of 2026-06-03: only shared reason-code
+     scaffolding (ADR-0028) and references exist; the queue itself is unbuilt. -->
 **Date**: 2026-05-23
 **Depends on**: ADR-0028 (status reason model) — without persisted reason codes, the queue's grouping and dismissal logic become frontend heuristics
 **Related**: ADR-0029 (artifact contract), ADR-0024 (session health), ADR-0031 (entity actions reuse)

@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import contextlib
-import warnings
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
@@ -42,21 +41,12 @@ def prepare_parse_kws(
     fill_value: Any = None,
     fill_mapping: dict[str, Any] | None = None,
     strict: bool = False,
-    suppress_conversion_errors: bool = False,
     response_format=None,
     request_fields=None,
     structure=None,
     return_res_message: bool = False,
     **kw,
 ):
-    if suppress_conversion_errors:
-        warnings.warn(
-            "Parameter 'suppress_conversion_errors' is deprecated and no longer used. "
-            "It will be removed in v0.21.0.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
     response_format = operative.request_type if operative else response_format or request_type
     _alcall_params = get_default_call()
     max_retries = operative.max_retries if operative else max_retries or 3
