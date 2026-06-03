@@ -510,6 +510,8 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
   const bottomRef = useRef<HTMLDivElement>(null);
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   const [activeSection, setActiveSection] = useState("overview");
+  // F044: announced to screen readers on SSE state transitions
+  const [liveAnnouncement, setLiveAnnouncement] = useState("");
 
   useEffect(() => {
     if (!id) return;
@@ -549,7 +551,13 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
       if (event.type === "done") {
         setDone(true);
         setLive(false);
+        setLiveAnnouncement("Run completed");
         return;
+      }
+
+      // F044: announce inbound SSE updates so screen readers track live state
+      if (event.type && event.type !== "heartbeat") {
+        setLiveAnnouncement(`Run updated: ${event.type}`);
       }
 
       setLive(true);
@@ -721,8 +729,9 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
   if (!session) {
     return (
       <main className="flex items-center justify-center py-20">
-        <div className="flex flex-col items-center gap-3">
-          <div className="flex gap-1">
+        {/* F038: role=status announces loading state to screen readers */}
+        <div role="status" aria-live="polite" className="flex flex-col items-center gap-3">
+          <div className="flex gap-1" aria-hidden="true">
             <span
               className="block h-2 w-2 rounded-full bg-content-muted opacity-60 animate-bounce"
               style={{ animationDelay: "0ms" }}
@@ -791,6 +800,10 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
 
   return (
     <div className="flex min-h-screen w-full flex-col bg-surface-base text-content-primary animate-page-enter">
+      {/* F044: hidden live region — announces SSE state transitions to screen readers */}
+      <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+        {liveAnnouncement}
+      </div>
       {/* Header */}
       <header className="sticky top-11 z-30 flex items-center gap-3 border-b border-edge bg-surface-base px-3 py-1.5 xl:px-4">
         <Link

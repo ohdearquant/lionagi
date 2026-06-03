@@ -415,16 +415,32 @@ function PluginDetailPane({ pluginName }: PluginDetailPaneProps) {
           aria-label="Plugin details"
           className="flex shrink-0 items-center gap-0 border-b border-edge px-4"
         >
-          {tabs.map((tab) => (
+          {tabs.map((tab, idx) => (
             <button
               key={tab.id}
               type="button"
+              id={`plugin-${detail.name}-tab-${tab.id}`}
               role="tab"
               aria-selected={visibleTab === tab.id}
               aria-controls={`plugin-${detail.name}-panel-${tab.id}`}
+              tabIndex={visibleTab === tab.id ? 0 : -1}
               onClick={() => setActiveTab(tab.id)}
+              onKeyDown={(e) => {
+                let next = idx;
+                if (e.key === "ArrowRight") next = (idx + 1) % tabs.length;
+                else if (e.key === "ArrowLeft") next = (idx - 1 + tabs.length) % tabs.length;
+                else if (e.key === "Home") next = 0;
+                else if (e.key === "End") next = tabs.length - 1;
+                else return;
+                e.preventDefault();
+                setActiveTab(tabs[next].id);
+                e.currentTarget
+                  .closest("[role=tablist]")
+                  ?.querySelectorAll<HTMLButtonElement>("[role=tab]")
+                  [next]?.focus();
+              }}
               className={[
-                "relative px-3 py-2 text-body transition-colors",
+                "relative px-3 py-2 text-body transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-interactive-primary focus-visible:ring-inset",
                 visibleTab === tab.id
                   ? "text-content-primary after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:rounded-t after:bg-interactive-primary"
                   : "text-content-muted hover:text-content-secondary",
@@ -442,6 +458,7 @@ function PluginDetailPane({ pluginName }: PluginDetailPaneProps) {
           <div
             role="tabpanel"
             id={`plugin-${detail.name}-panel-skills`}
+            aria-labelledby={`plugin-${detail.name}-tab-skills`}
             className="flex flex-1 overflow-hidden"
           >
             <SkillSubPane key={detail.name} pluginName={detail.name} skillNames={detail.skills} />
@@ -451,6 +468,7 @@ function PluginDetailPane({ pluginName }: PluginDetailPaneProps) {
           <div
             role="tabpanel"
             id={`plugin-${detail.name}-panel-agents`}
+            aria-labelledby={`plugin-${detail.name}-tab-agents`}
             className="flex flex-1 overflow-hidden"
           >
             <AgentSubPane key={detail.name} agentRefs={detail.agents} />
@@ -460,6 +478,7 @@ function PluginDetailPane({ pluginName }: PluginDetailPaneProps) {
           <div
             role="tabpanel"
             id={`plugin-${detail.name}-panel-hooks`}
+            aria-labelledby={`plugin-${detail.name}-tab-hooks`}
             className="flex-1 overflow-y-auto px-4 py-3"
           >
             <pre className="whitespace-pre-wrap break-words rounded border border-edge bg-surface-base p-4 font-mono text-body text-content-secondary leading-relaxed">
@@ -471,6 +490,7 @@ function PluginDetailPane({ pluginName }: PluginDetailPaneProps) {
           <div
             role="tabpanel"
             id={`plugin-${detail.name}-panel-mcp`}
+            aria-labelledby={`plugin-${detail.name}-tab-mcp`}
             className="flex-1 overflow-y-auto px-4 py-3"
           >
             <pre className="whitespace-pre-wrap break-words rounded border border-edge bg-surface-base p-4 font-mono text-body text-content-secondary leading-relaxed">
@@ -482,6 +502,7 @@ function PluginDetailPane({ pluginName }: PluginDetailPaneProps) {
           <div
             role="tabpanel"
             id={`plugin-${detail.name}-panel-readme`}
+            aria-labelledby={`plugin-${detail.name}-tab-readme`}
             className="flex-1 overflow-y-auto px-4 py-4"
           >
             <Markdown>{detail.readme}</Markdown>

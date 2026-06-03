@@ -53,7 +53,6 @@ function Toast({ item, onRemove }: { item: ToastItem; onRemove: (id: number) => 
   return (
     <div
       role="alert"
-      aria-live="polite"
       className={[
         "flex items-start gap-2.5 rounded border border-edge bg-surface-raised px-3 py-2.5",
         "text-body text-content-primary",

@@ -1,7 +1,3 @@
-// TODO(#1020 follow-up): SidePanel form labels need htmlFor/id wiring.
-// Tracked as a Track 1 a11y follow-up — substantial refactor of label+input
-// pairs across this file.
-/* eslint-disable jsx-a11y/label-has-associated-control */
 "use client";
 
 import { useCallback } from "react";

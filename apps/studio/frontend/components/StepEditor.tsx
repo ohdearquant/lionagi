@@ -94,7 +94,7 @@ function StepCard({
           aria-label={expanded ? "Collapse step" : "Expand step"}
           aria-expanded={expanded}
           onClick={() => setExpanded((v) => !v)}
-          className="shrink-0 text-neutral-600 hover:text-neutral-300 focus:outline-none"
+          className="shrink-0 text-neutral-600 hover:text-neutral-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 rounded"
         >
           <span aria-hidden="true" className="font-mono text-sm">
             {expanded ? "▾" : "▸"}
@@ -117,7 +117,7 @@ function StepCard({
           type="button"
           onClick={() => onDelete(stepKey)}
           aria-label={`Delete step ${stepKey}`}
-          className="shrink-0 rounded px-2 py-0.5 text-xs text-neutral-600 hover:bg-neutral-800 hover:text-red-400 focus:outline-none"
+          className="shrink-0 rounded px-2 py-0.5 text-xs text-neutral-600 hover:bg-neutral-800 hover:text-red-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500"
         >
           delete
         </button>
@@ -128,7 +128,9 @@ function StepCard({
         <div className="mt-4 flex flex-col gap-3">
           {/* Role */}
           <div className="flex flex-col gap-1">
-            <label htmlFor={`${stepKey}-role`} className={LABEL_CLS}>Role</label>
+            <label htmlFor={`${stepKey}-role`} className={LABEL_CLS}>
+              Role
+            </label>
             {roles.length > 0 ? (
               <select
                 id={`${stepKey}-role`}
@@ -191,7 +193,9 @@ function StepCard({
 
           {/* Assignment */}
           <div className="flex flex-col gap-1">
-            <label htmlFor={`${stepKey}-assignment`} className={LABEL_CLS}>Assignment</label>
+            <label htmlFor={`${stepKey}-assignment`} className={LABEL_CLS}>
+              Assignment
+            </label>
             <input
               id={`${stepKey}-assignment`}
               type="text"
@@ -204,7 +208,9 @@ function StepCard({
 
           {/* Prompt template */}
           <div className="flex flex-col gap-1">
-            <label htmlFor={`${stepKey}-prompt`} className={LABEL_CLS}>Prompt Template</label>
+            <label htmlFor={`${stepKey}-prompt`} className={LABEL_CLS}>
+              Prompt Template
+            </label>
             <textarea
               id={`${stepKey}-prompt`}
               value={data.prompt}
@@ -220,7 +226,9 @@ function StepCard({
           {/* Capacity + Timeout row */}
           <div className="flex gap-3">
             <div className="flex flex-1 flex-col gap-1">
-              <label htmlFor={`${stepKey}-capacity`} className={LABEL_CLS}>Capacity</label>
+              <label htmlFor={`${stepKey}-capacity`} className={LABEL_CLS}>
+                Capacity
+              </label>
               <input
                 id={`${stepKey}-capacity`}
                 type="number"
@@ -235,7 +243,9 @@ function StepCard({
             </div>
 
             <div className="flex flex-1 flex-col gap-1">
-              <label htmlFor={`${stepKey}-timeout`} className={LABEL_CLS}>Timeout (s)</label>
+              <label htmlFor={`${stepKey}-timeout`} className={LABEL_CLS}>
+                Timeout (s)
+              </label>
               <input
                 id={`${stepKey}-timeout`}
                 type="number"
@@ -342,7 +352,7 @@ export default function StepEditor({
       <button
         type="button"
         onClick={handleAddStep}
-        className="self-start rounded border border-neutral-700 bg-neutral-900 px-4 py-1.5 text-sm text-neutral-300 hover:border-neutral-500 hover:bg-neutral-800 focus:outline-none"
+        className="self-start rounded border border-neutral-700 bg-neutral-900 px-4 py-1.5 text-sm text-neutral-300 hover:border-neutral-500 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500"
       >
         + Add Step
       </button>
