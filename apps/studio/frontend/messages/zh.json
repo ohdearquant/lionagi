@@ -1,0 +1,208 @@
+{
+  "nav": {
+    "theme": {
+      "toggle": "切换主题"
+    },
+    "brand": {
+      "name": "Lion Studio",
+      "subtitle": "协调引擎"
+    },
+    "dashboard": {
+      "title": "控制台"
+    },
+    "primary": {
+      "ariaLabel": "主导航"
+    },
+    "mobile": {
+      "open": "打开导航菜单"
+    },
+    "breadcrumb": {
+      "ariaLabel": "导航路径"
+    },
+    "groups": {
+      "dashboard": "控制台",
+      "work": "工作",
+      "library": "资源库",
+      "admin": "管理"
+    },
+    "items": {
+      "dashboard": "控制台",
+      "shows": "展示",
+      "runs": "运行",
+      "projects": "项目",
+      "teams": "团队",
+      "invocations": "调用",
+      "schedules": "调度",
+      "playbooks": "剧本",
+      "agents": "智能体",
+      "plugins": "插件",
+      "skills": "技能",
+      "health": "健康状态",
+      "maintenance": "维护"
+    },
+    "projectChip": {
+      "selected": "[项目：{name} ▾]",
+      "allShort": "[所有项目 ▾]",
+      "ariaLabel": "按项目筛选",
+      "all": "所有项目",
+      "viewAll": "查看所有项目"
+    },
+    "localeSwitcher": {
+      "switchToZh": "切换到中文",
+      "switchToEn": "切换到英文",
+      "labelZh": "中文",
+      "labelEn": "EN"
+    }
+  },
+  "common": {
+    "skipToMain": "跳转到主要内容",
+    "copy": {
+      "copy": "复制",
+      "copied": "已复制"
+    },
+    "time": {
+      "ago": "前",
+      "fromNow": "后",
+      "justNow": "刚刚"
+    },
+    "duration": {
+      "unavailable": "持续时间不可用",
+      "invalidOrder": "时间戳缺失或顺序错误"
+    }
+  },
+  "metadata": {
+    "title": "Lion Studio",
+    "description": "Lion Studio 协调可观测性平台"
+  },
+  "runs": {
+    "title": "运行",
+    "subtitle": "实时和已完成的智能体会话",
+    "count": "{total} 条运行",
+    "view": {
+      "sessions": "会话",
+      "invocations": "调用"
+    },
+    "filters": {
+      "status": {
+        "pending": "等待中",
+        "running": "运行中",
+        "done": "已完成",
+        "failed": "已失败",
+        "timedOut": "已超时",
+        "aborted": "已中止",
+        "cancelled": "已取消"
+      },
+      "project": {
+        "all": "全部"
+      },
+      "playbook": {
+        "placeholder": "按剧本筛选...",
+        "search": "搜索",
+        "clear": "清除"
+      }
+    },
+    "row": {
+      "projectTitle": "项目：{project}（{source}）",
+      "sourceTitle": "来源：{source}"
+    },
+    "table": {
+      "invocation": "调用",
+      "run": "运行",
+      "status": "状态",
+      "sessions": "会话",
+      "activity": "活动",
+      "updated": "更新时间"
+    },
+    "empty": {
+      "none": "未找到运行记录。",
+      "adjustFilters": "请尝试调整筛选条件。"
+    },
+    "invocation": {
+      "ariaLabel": "调用 {id}，{count} 个会话",
+      "label": "调用",
+      "sessionCount": "{count} 个会话"
+    },
+    "pagination": {
+      "summary": "第 {page} 页，共 {totalPages} 页 — 共 {total} 条运行",
+      "previous": "上一页",
+      "next": "下一页"
+    },
+    "errors": {
+      "load": "加载运行记录失败。"
+    }
+  },
+  "showDetail": {
+    "errors": {
+      "load": "加载展示失败"
+    },
+    "breadcrumb": {
+      "shows": "展示"
+    },
+    "refreshed": "已刷新",
+    "live": {
+      "on": "实时已开启",
+      "off": "实时已关闭"
+    },
+    "loading": "加载中…",
+    "plan": {
+      "toggle": "计划与决策",
+      "missing": "未找到 _show.md 文件。",
+      "collapsedHint": "上方为运营摘要，展开「计划与决策」查看完整 Markdown 计划。"
+    },
+    "plays": {
+      "heading": "剧本（{count}）",
+      "noneRecorded": "暂无剧本记录",
+      "table": {
+        "play": "剧本",
+        "status": "状态",
+        "branch": "分支",
+        "exit": "退出",
+        "verdict": "评审",
+        "durationShort": "时长",
+        "updated": "更新时间"
+      },
+      "flags": {
+        "exitMismatch": "退出状态不匹配",
+        "missingExit": "缺少退出状态"
+      },
+      "collapse": "折叠",
+      "expand": "展开",
+      "intent": "意图",
+      "session": "会话",
+      "duration": "持续时间",
+      "exit": "退出",
+      "attempt": "尝试次数"
+    },
+    "verdict": {
+      "passed": "通过",
+      "rejected": "拒绝",
+      "gate": "门控",
+      "feedback": "反馈",
+      "notes": "备注"
+    },
+    "raw": {
+      "toggle": "原始数据",
+      "meta": "元数据",
+      "verdict": "评审"
+    },
+    "graph": {
+      "heading": "剧本图"
+    },
+    "summary": {
+      "rollup": "汇总",
+      "plays": "剧本",
+      "running": "运行中",
+      "failed": "已失败",
+      "merged": "已合并",
+      "noPlays": "暂无剧本。",
+      "plan": "计划",
+      "goal": "目标",
+      "status": "状态",
+      "addGoalStatusHint": "在 _show.md 顶部附近添加 Goal: / Status: 行以在此处显示。",
+      "action": "行动",
+      "blockers": "阻塞项",
+      "next": "下一步",
+      "noAction": "计划中未声明阻塞项或下一步行动。"
+    }
+  }
+}

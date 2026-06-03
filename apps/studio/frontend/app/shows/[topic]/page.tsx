@@ -3,6 +3,7 @@
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import React, { use, useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import Button from "@/components/Button";
 import Duration from "@/components/Duration";
 import PageHeader from "@/components/PageHeader";
@@ -10,7 +11,6 @@ import StatusPill from "@/components/StatusPill";
 import Timestamp from "@/components/Timestamp";
 import { getShow, streamShow } from "@/lib/api";
 import type { PlayMeta, ShowDetail, ShowEvent } from "@/lib/types";
-import { empty } from "@/lib/copy";
 
 const Markdown = dynamic(() => import("@/components/Markdown"), { ssr: false });
 const PlayDag = dynamic(() => import("./components/PlayDag"), { ssr: false });
@@ -59,6 +59,7 @@ function extractSummary(showMd: string | null): Record<string, string> {
 }
 
 export default function ShowDetailPage({ params }: { params: Promise<{ topic: string }> }) {
+  const t = useTranslations("showDetail");
   const { topic: rawTopic } = use(params);
   const topic = decodeURIComponent(rawTopic);
   const [show, setShow] = useState<ShowDetail | null>(null);
@@ -77,9 +78,9 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
       setError(null);
       setLastRefreshed(Date.now());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load show");
+      setError(err instanceof Error ? err.message : t("errors.load"));
     }
-  }, [topic]);
+  }, [topic, t]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- load is async; setState only fires after await, never synchronously
@@ -135,7 +136,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
         density="tight"
         breadcrumb={[
           <Link key="shows" href="/shows" className="hover:text-content-primary">
-            shows
+            {t("breadcrumb.shows")}
           </Link>,
           <span key="topic" className="text-content-secondary truncate">
             {topic}
@@ -148,7 +149,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
             <span className="text-meta text-content-muted tabular-nums">
               {lastRefreshed ? (
                 <>
-                  refreshed <Timestamp value={lastRefreshed} />
+                  {t("refreshed")} <Timestamp value={lastRefreshed} />
                 </>
               ) : null}
             </span>
@@ -159,7 +160,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
               leading={live ? "●" : "○"}
               onClick={() => setLive((v) => !v)}
             >
-              {live ? "Live on" : "Live off"}
+              {live ? t("live.on") : t("live.off")}
             </Button>
           </div>
         }
@@ -172,7 +173,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
       )}
 
       {!show && !error && (
-        <div className="py-10 text-center text-body text-content-muted">Loading...</div>
+        <div className="py-10 text-center text-body text-content-muted">{t("loading")}</div>
       )}
 
       {show && (
@@ -189,7 +190,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                 onClick={() => setShowPlan((v) => !v)}
                 className="flex items-center justify-between text-left text-label font-semibold text-content-primary hover:text-content-secondary transition-colors"
               >
-                <span>Plan &amp; decisions</span>
+                <span>{t("plan.toggle")}</span>
                 <span className="text-content-muted text-body ml-2">{showPlan ? "▴" : "▾"}</span>
               </button>
               {showPlan ? (
@@ -197,15 +198,12 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                   {show.show_md ? (
                     <Markdown>{show.show_md}</Markdown>
                   ) : (
-                    <p className="text-body text-content-muted">No _show.md found.</p>
+                    <p className="text-body text-content-muted">{t("plan.missing")}</p>
                   )}
                 </div>
               ) : (
                 <div className="rounded border border-edge bg-surface-overlay px-3 py-3 text-body text-content-secondary">
-                  <p>
-                    Operational summary above. Expand <em>Plan &amp; decisions</em> for the full
-                    markdown plan.
-                  </p>
+                  <p>{t("plan.collapsedHint")}</p>
                 </div>
               )}
             </section>
@@ -213,24 +211,28 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
             {/* Right: plays table — sticky on large screens */}
             <section className="flex min-w-0 flex-col gap-2 lg:sticky lg:top-16 lg:self-start lg:max-h-[calc(100vh-7rem)]">
               <h2 className="text-label font-semibold text-content-primary">
-                Plays <span className="tabular-nums text-content-muted">({show.plays.length})</span>
+                {t("plays.heading", { count: show.plays.length })}
               </h2>
               {show.plays.length === 0 ? (
                 <div className="rounded border border-edge bg-surface-raised px-3 py-10 text-center text-body text-content-muted">
-                  No plays recorded
+                  {t("plays.noneRecorded")}
                 </div>
               ) : (
                 <div className="overflow-auto rounded border border-edge bg-surface-raised lg:max-h-[calc(100vh-9rem)]">
                   <table className="w-full text-left text-body">
                     <thead className="sticky top-0 z-10 border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
                       <tr>
-                        <th className="px-3 py-2 font-medium">Play</th>
-                        <th className="px-3 py-2 font-medium">Status</th>
-                        <th className="px-3 py-2 font-medium">Branch</th>
-                        <th className="px-3 py-2 font-medium tabular-nums">Exit</th>
-                        <th className="px-3 py-2 font-medium">Verdict</th>
-                        <th className="px-3 py-2 font-medium tabular-nums text-right">Dur</th>
-                        <th className="px-3 py-2 font-medium">Updated</th>
+                        <th className="px-3 py-2 font-medium">{t("plays.table.play")}</th>
+                        <th className="px-3 py-2 font-medium">{t("plays.table.status")}</th>
+                        <th className="px-3 py-2 font-medium">{t("plays.table.branch")}</th>
+                        <th className="px-3 py-2 font-medium tabular-nums">
+                          {t("plays.table.exit")}
+                        </th>
+                        <th className="px-3 py-2 font-medium">{t("plays.table.verdict")}</th>
+                        <th className="px-3 py-2 font-medium tabular-nums text-right">
+                          {t("plays.table.durationShort")}
+                        </th>
+                        <th className="px-3 py-2 font-medium">{t("plays.table.updated")}</th>
                         <th className="w-8 px-3 py-2"></th>
                       </tr>
                     </thead>
@@ -262,14 +264,14 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                   <span className="text-body">{play.meta.exit_code ?? "—"}</span>
                                   {flag === "exit_mismatch" && (
                                     <StatusPill
-                                      value="exit mismatch"
+                                      value={t("plays.flags.exitMismatch")}
                                       tone="failed"
                                       kind="verdict"
                                     />
                                   )}
                                   {flag === "missing_exit" && (
                                     <StatusPill
-                                      value="missing exit"
+                                      value={t("plays.flags.missingExit")}
                                       tone="pending"
                                       kind="verdict"
                                     />
@@ -280,7 +282,11 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                 {play.verdict ? (
                                   <StatusPill
                                     kind="verdict"
-                                    value={play.verdict.gate_passed ? "passed" : "rejected"}
+                                    value={
+                                      play.verdict.gate_passed
+                                        ? t("verdict.passed")
+                                        : t("verdict.rejected")
+                                    }
                                   />
                                 ) : (
                                   <span className="text-meta text-content-muted">—</span>
@@ -302,7 +308,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                               <td className="px-3 py-2">
                                 <span
                                   className="text-body text-content-muted"
-                                  aria-label={isExpanded ? "Collapse" : "Expand"}
+                                  aria-label={isExpanded ? t("plays.collapse") : t("plays.expand")}
                                 >
                                   {isExpanded ? "▴" : "▾"}
                                 </span>
@@ -317,7 +323,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                     {play.intent && (
                                       <div>
                                         <div className="text-meta uppercase tracking-[0.06em] text-content-muted">
-                                          Intent
+                                          {t("plays.intent")}
                                         </div>
                                         <div className="mt-1">
                                           <Markdown className="text-body">{play.intent}</Markdown>
@@ -329,7 +335,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                     {play.session_id && (
                                       <div>
                                         <div className="text-meta uppercase tracking-[0.06em] text-content-muted">
-                                          Session
+                                          {t("plays.session")}
                                         </div>
                                         <div className="mt-1">
                                           <Link
@@ -347,13 +353,13 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-body text-content-secondary">
                                       <span>
                                         <span className="text-meta uppercase tracking-[0.06em] text-content-muted mr-1">
-                                          Duration
+                                          {t("plays.duration")}
                                         </span>
                                         <Duration value={dur} />
                                       </span>
                                       <span>
                                         <span className="text-meta uppercase tracking-[0.06em] text-content-muted mr-1">
-                                          Exit
+                                          {t("plays.exit")}
                                         </span>
                                         <span className="tabular-nums">
                                           {play.meta.exit_code ?? "—"}
@@ -361,7 +367,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                       </span>
                                       <span>
                                         <span className="text-meta uppercase tracking-[0.06em] text-content-muted mr-1">
-                                          Attempt
+                                          {t("plays.attempt")}
                                         </span>
                                         <span className="tabular-nums">{play.meta.attempt}</span>
                                       </span>
@@ -372,17 +378,21 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                       <div className="flex flex-col gap-1.5">
                                         <div className="flex items-center gap-2">
                                           <span className="text-meta uppercase tracking-[0.06em] text-content-muted">
-                                            Gate
+                                            {t("verdict.gate")}
                                           </span>
                                           <StatusPill
                                             kind="verdict"
-                                            value={play.verdict.gate_passed ? "passed" : "rejected"}
+                                            value={
+                                              play.verdict.gate_passed
+                                                ? t("verdict.passed")
+                                                : t("verdict.rejected")
+                                            }
                                           />
                                         </div>
                                         {play.verdict.feedback && (
                                           <div>
                                             <div className="text-meta uppercase tracking-[0.06em] text-content-muted">
-                                              Feedback
+                                              {t("verdict.feedback")}
                                             </div>
                                             <div className="mt-1">
                                               <Markdown className="text-body">
@@ -394,7 +404,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                         {play.verdict.notes && (
                                           <div>
                                             <div className="text-meta uppercase tracking-[0.06em] text-content-muted">
-                                              Notes
+                                              {t("verdict.notes")}
                                             </div>
                                             <div className="mt-1">
                                               <Markdown className="text-body">
@@ -420,13 +430,13 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                         className="flex items-center gap-1 text-meta uppercase tracking-[0.06em] text-content-muted hover:text-content-primary transition-colors"
                                       >
                                         <span>{rawExpanded[play.name] ? "▾" : "▸"}</span>
-                                        <span>Raw data</span>
+                                        <span>{t("raw.toggle")}</span>
                                       </button>
                                       {rawExpanded[play.name] && (
                                         <div className="mt-2 flex flex-col gap-2">
                                           <div>
                                             <div className="flex items-center justify-between text-meta uppercase tracking-[0.06em] text-content-muted">
-                                              <span>Meta</span>
+                                              <span>{t("raw.meta")}</span>
                                               <CopyButton
                                                 text={JSON.stringify(play.meta, null, 2)}
                                               />
@@ -438,7 +448,7 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                                           {play.verdict && (
                                             <div>
                                               <div className="flex items-center justify-between text-meta uppercase tracking-[0.06em] text-content-muted">
-                                                <span>Verdict</span>
+                                                <span>{t("raw.verdict")}</span>
                                                 <CopyButton
                                                   text={JSON.stringify(play.verdict, null, 2)}
                                                 />
@@ -467,7 +477,9 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
 
           {show.plays.length > 0 && (
             <section className="flex flex-col gap-2">
-              <h2 className="text-label font-semibold text-content-primary">Play graph</h2>
+              <h2 className="text-label font-semibold text-content-primary">
+                {t("graph.heading")}
+              </h2>
               <PlayDag plays={show.plays} showMd={show.show_md} />
             </section>
           )}
@@ -484,6 +496,7 @@ function ShowSummaryPanel({
   summary: Record<string, string>;
   rollup: { total: number; failed: Play[]; running: Play[]; merged: Play[] } | null;
 }) {
+  const t = useTranslations("showDetail");
   const hasGoal = Boolean(summary.goal);
   const hasStatus = Boolean(summary.status);
   const hasBlockers = Boolean(summary.blocker);
@@ -496,15 +509,17 @@ function ShowSummaryPanel({
     <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
       {/* Roll-up — always rendered */}
       <section className="rounded border border-edge bg-surface-raised p-3 shadow-card">
-        <h3 className="text-meta uppercase tracking-[0.06em] text-content-muted">Roll-up</h3>
+        <h3 className="text-meta uppercase tracking-[0.06em] text-content-muted">
+          {t("summary.rollup")}
+        </h3>
         {rollup ? (
           <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-body">
             <SummaryRow
-              label="Plays"
+              label={t("summary.plays")}
               value={<span className="tabular-nums">{rollup.total}</span>}
             />
             <SummaryRow
-              label="Running"
+              label={t("summary.running")}
               value={
                 <span
                   className={
@@ -518,7 +533,7 @@ function ShowSummaryPanel({
               }
             />
             <SummaryRow
-              label="Failed"
+              label={t("summary.failed")}
               value={
                 <span
                   className={
@@ -532,48 +547,46 @@ function ShowSummaryPanel({
               }
             />
             <SummaryRow
-              label="Merged"
+              label={t("summary.merged")}
               value={
                 <span className="tabular-nums text-content-secondary">{rollup.merged.length}</span>
               }
             />
           </dl>
         ) : (
-          <p className="mt-2 text-body text-content-muted">{empty.plays}</p>
+          <p className="mt-2 text-body text-content-muted">{t("summary.noPlays")}</p>
         )}
       </section>
 
       {/* Goal / Status */}
       <section className="rounded border border-edge bg-surface-raised p-3 shadow-card">
-        <h3 className="text-meta uppercase tracking-[0.06em] text-content-muted">Plan</h3>
+        <h3 className="text-meta uppercase tracking-[0.06em] text-content-muted">
+          {t("summary.plan")}
+        </h3>
         {showSummary ? (
           <dl className="mt-2 flex flex-col gap-1.5 text-body">
-            {hasGoal && <SummaryBlock label="Goal" value={summary.goal} />}
-            {hasStatus && <SummaryBlock label="Status" value={summary.status} />}
+            {hasGoal && <SummaryBlock label={t("summary.goal")} value={summary.goal} />}
+            {hasStatus && <SummaryBlock label={t("summary.status")} value={summary.status} />}
           </dl>
         ) : (
-          <p className="mt-2 text-body text-content-muted">
-            Add{" "}
-            <code className="rounded bg-surface-overlay px-1 text-content-secondary">Goal:</code> /{" "}
-            <code className="rounded bg-surface-overlay px-1 text-content-secondary">Status:</code>{" "}
-            lines near the top of <code className="text-content-secondary">_show.md</code> to
-            surface them here.
-          </p>
+          <p className="mt-2 text-body text-content-muted">{t("summary.addGoalStatusHint")}</p>
         )}
       </section>
 
       {/* Blockers / Next action */}
       <section className="rounded border border-edge bg-surface-raised p-3 shadow-card">
-        <h3 className="text-meta uppercase tracking-[0.06em] text-content-muted">Action</h3>
+        <h3 className="text-meta uppercase tracking-[0.06em] text-content-muted">
+          {t("summary.action")}
+        </h3>
         {hasBlockers || hasNext ? (
           <dl className="mt-2 flex flex-col gap-1.5 text-body">
-            {hasBlockers && <SummaryBlock label="Blockers" value={summary.blocker} tone="failed" />}
-            {hasNext && nextValue && <SummaryBlock label="Next" value={nextValue} />}
+            {hasBlockers && (
+              <SummaryBlock label={t("summary.blockers")} value={summary.blocker} tone="failed" />
+            )}
+            {hasNext && nextValue && <SummaryBlock label={t("summary.next")} value={nextValue} />}
           </dl>
         ) : (
-          <p className="mt-2 text-body text-content-muted">
-            No blockers or next action declared in plan.
-          </p>
+          <p className="mt-2 text-body text-content-muted">{t("summary.noAction")}</p>
         )}
       </section>
     </div>
@@ -603,6 +616,7 @@ function SummaryBlock({ label, value, tone }: { label: string; value: string; to
 }
 
 function CopyButton({ text }: { text: string }) {
+  const t = useTranslations("common");
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {
@@ -622,7 +636,7 @@ function CopyButton({ text }: { text: string }) {
       onClick={handleCopy}
       className="rounded border border-edge bg-surface-raised px-2 py-0.5 font-mono text-meta text-content-muted hover:border-edge-strong hover:text-content-primary"
     >
-      {copied ? "copied" : "copy"}
+      {copied ? t("copy.copied") : t("copy.copy")}
     </button>
   );
 }

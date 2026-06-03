@@ -1,0 +1,208 @@
+{
+  "nav": {
+    "theme": {
+      "toggle": "Toggle theme"
+    },
+    "brand": {
+      "name": "Lion Studio",
+      "subtitle": "Orchestration"
+    },
+    "dashboard": {
+      "title": "Dashboard"
+    },
+    "primary": {
+      "ariaLabel": "Primary"
+    },
+    "mobile": {
+      "open": "Open navigation menu"
+    },
+    "breadcrumb": {
+      "ariaLabel": "Breadcrumb"
+    },
+    "groups": {
+      "dashboard": "Dashboard",
+      "work": "Work",
+      "library": "Library",
+      "admin": "Admin"
+    },
+    "items": {
+      "dashboard": "Dashboard",
+      "shows": "Shows",
+      "runs": "Runs",
+      "projects": "Projects",
+      "teams": "Teams",
+      "invocations": "Invocations",
+      "schedules": "Schedules",
+      "playbooks": "Playbooks",
+      "agents": "Agents",
+      "plugins": "Plugins",
+      "skills": "Skills",
+      "health": "Health",
+      "maintenance": "Maintenance"
+    },
+    "projectChip": {
+      "selected": "[project: {name} ▾]",
+      "allShort": "[All projects ▾]",
+      "ariaLabel": "Filter by project",
+      "all": "All projects",
+      "viewAll": "View all projects"
+    },
+    "localeSwitcher": {
+      "switchToZh": "切換到中文",
+      "switchToEn": "Switch to English",
+      "labelZh": "中文",
+      "labelEn": "EN"
+    }
+  },
+  "common": {
+    "skipToMain": "Skip to main content",
+    "copy": {
+      "copy": "copy",
+      "copied": "copied"
+    },
+    "time": {
+      "ago": "ago",
+      "fromNow": "from now",
+      "justNow": "just now"
+    },
+    "duration": {
+      "unavailable": "duration unavailable",
+      "invalidOrder": "timestamp missing or out of order"
+    }
+  },
+  "metadata": {
+    "title": "Lion Studio",
+    "description": "Lion Studio orchestration observability"
+  },
+  "runs": {
+    "title": "Runs",
+    "subtitle": "Live and completed agent sessions",
+    "count": "{total} run(s)",
+    "view": {
+      "sessions": "Sessions",
+      "invocations": "Invocations"
+    },
+    "filters": {
+      "status": {
+        "pending": "pending",
+        "running": "running",
+        "done": "done",
+        "failed": "failed",
+        "timedOut": "timed_out",
+        "aborted": "aborted",
+        "cancelled": "cancelled"
+      },
+      "project": {
+        "all": "All"
+      },
+      "playbook": {
+        "placeholder": "Filter by playbook...",
+        "search": "Search",
+        "clear": "Clear"
+      }
+    },
+    "row": {
+      "projectTitle": "Project: {project} ({source})",
+      "sourceTitle": "Source: {source}"
+    },
+    "table": {
+      "invocation": "Invocation",
+      "run": "Run",
+      "status": "Status",
+      "sessions": "Sessions",
+      "activity": "Activity",
+      "updated": "Updated"
+    },
+    "empty": {
+      "none": "No runs found.",
+      "adjustFilters": "Try adjusting your filters."
+    },
+    "invocation": {
+      "ariaLabel": "Invocation {id}, {count} session(s)",
+      "label": "Invocation",
+      "sessionCount": "{count} session(s)"
+    },
+    "pagination": {
+      "summary": "Page {page} of {totalPages} - {total} run(s)",
+      "previous": "Previous",
+      "next": "Next"
+    },
+    "errors": {
+      "load": "Failed to load runs."
+    }
+  },
+  "showDetail": {
+    "errors": {
+      "load": "Failed to load show"
+    },
+    "breadcrumb": {
+      "shows": "shows"
+    },
+    "refreshed": "refreshed",
+    "live": {
+      "on": "Live on",
+      "off": "Live off"
+    },
+    "loading": "Loading...",
+    "plan": {
+      "toggle": "Plan & decisions",
+      "missing": "No _show.md found.",
+      "collapsedHint": "Operational summary above. Expand Plan & decisions for the full markdown plan."
+    },
+    "plays": {
+      "heading": "Plays ({count})",
+      "noneRecorded": "No plays recorded",
+      "table": {
+        "play": "Play",
+        "status": "Status",
+        "branch": "Branch",
+        "exit": "Exit",
+        "verdict": "Verdict",
+        "durationShort": "Dur",
+        "updated": "Updated"
+      },
+      "flags": {
+        "exitMismatch": "exit mismatch",
+        "missingExit": "missing exit"
+      },
+      "collapse": "Collapse",
+      "expand": "Expand",
+      "intent": "Intent",
+      "session": "Session",
+      "duration": "Duration",
+      "exit": "Exit",
+      "attempt": "Attempt"
+    },
+    "verdict": {
+      "passed": "passed",
+      "rejected": "rejected",
+      "gate": "Gate",
+      "feedback": "Feedback",
+      "notes": "Notes"
+    },
+    "raw": {
+      "toggle": "Raw data",
+      "meta": "Meta",
+      "verdict": "Verdict"
+    },
+    "graph": {
+      "heading": "Play graph"
+    },
+    "summary": {
+      "rollup": "Roll-up",
+      "plays": "Plays",
+      "running": "Running",
+      "failed": "Failed",
+      "merged": "Merged",
+      "noPlays": "No plays yet.",
+      "plan": "Plan",
+      "goal": "Goal",
+      "status": "Status",
+      "addGoalStatusHint": "Add Goal: / Status: lines near the top of _show.md to surface them here.",
+      "action": "Action",
+      "blockers": "Blockers",
+      "next": "Next",
+      "noAction": "No blockers or next action declared in plan."
+    }
+  }
+}

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Fragment, Suspense, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useTranslations } from "next-intl";
 import Button from "@/components/Button";
 import Duration from "@/components/Duration";
 import PageHeader from "@/components/PageHeader";
@@ -11,7 +12,6 @@ import Timestamp from "@/components/Timestamp";
 import { listRuns } from "@/lib/api";
 import type { RunListResponse } from "@/lib/api";
 import type { RunSummary } from "@/lib/types";
-import { empty, errors } from "@/lib/copy";
 
 // ADR-0025: six-value session vocabulary (running/completed/failed/
 // timed_out/aborted/cancelled). "done" stays as an alias for completed
@@ -25,6 +25,17 @@ const STATUS_FILTERS = [
   "aborted",
   "cancelled",
 ] as const;
+
+// Maps raw status code to the catalog key under runs.filters.status.*
+const STATUS_KEY_MAP: Record<string, string> = {
+  pending: "filters.status.pending",
+  running: "filters.status.running",
+  done: "filters.status.done",
+  failed: "filters.status.failed",
+  timed_out: "filters.status.timedOut",
+  aborted: "filters.status.aborted",
+  cancelled: "filters.status.cancelled",
+};
 
 type ViewMode = "sessions" | "invocations";
 
@@ -112,16 +123,18 @@ function provenanceLabel(run: RunSummary): "fs" | "db" {
 
 function StatusFilterChip({
   value,
+  label,
   active,
   onClick,
 }: {
   value: string;
+  label: string;
   active: boolean;
   onClick: () => void;
 }) {
   return (
     <Button variant="toggle" size="sm" active={active} onClick={onClick}>
-      {value}
+      {label}
     </Button>
   );
 }
@@ -150,6 +163,7 @@ function SessionRow({
   now: number;
   indent?: boolean;
 }) {
+  const t = useTranslations("runs");
   const prov = provenanceLabel(run);
   const durSec = durationSeconds(run, now);
   return (
@@ -166,7 +180,10 @@ function SessionRow({
           {run.project && (
             <span
               className="rounded px-1 py-0.5 font-mono text-[10px] border border-edge text-content-muted"
-              title={`Project: ${run.project} (${run.project_source ?? "unknown"})`}
+              title={t("row.projectTitle", {
+                project: run.project,
+                source: run.project_source ?? "unknown",
+              })}
             >
               {run.project}
             </span>
@@ -191,7 +208,7 @@ function SessionRow({
           <Duration value={durSec} />
           <span
             className="rounded px-1 py-0.5 font-mono text-[10px] border border-edge text-content-muted"
-            title={`Source: ${run.source_kind ?? "live"}`}
+            title={t("row.sourceTitle", { source: run.source_kind ?? "live" })}
           >
             {prov}
           </span>
@@ -205,6 +222,7 @@ function SessionRow({
 }
 
 function RunsPageInner() {
+  const t = useTranslations("runs");
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -280,7 +298,7 @@ function RunsPageInner() {
           }
         }
       } catch {
-        if (active) setError(errors.loadRuns);
+        if (active) setError(t("errors.load"));
       } finally {
         if (active) setLoading(false);
       }
@@ -330,13 +348,13 @@ function RunsPageInner() {
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 animate-page-enter">
       <PageHeader
-        title="Runs"
-        subtitle="Live and completed agent sessions"
+        title={t("title")}
+        subtitle={t("subtitle")}
         density="tight"
         badges={
           !loading ? (
             <span className="text-meta text-content-muted tabular-nums">
-              {total} run{total !== 1 ? "s" : ""}
+              {t("count", { total })}
             </span>
           ) : null
         }
@@ -352,7 +370,7 @@ function RunsPageInner() {
               active={viewMode === "sessions"}
               onClick={() => setViewMode("sessions")}
             >
-              Sessions
+              {t("view.sessions")}
             </Button>
             <Button
               size="sm"
@@ -360,7 +378,7 @@ function RunsPageInner() {
               active={viewMode === "invocations"}
               onClick={() => setViewMode("invocations")}
             >
-              Invocations
+              {t("view.invocations")}
             </Button>
           </div>
           {/* ADR-0026: project filter chips */}
@@ -372,7 +390,7 @@ function RunsPageInner() {
                 active={!project}
                 onClick={() => setQuery({ project: "", page: 1 })}
               >
-                All
+                {t("filters.project.all")}
               </Button>
               {knownProjects.map((p) => (
                 <Button
@@ -392,14 +410,14 @@ function RunsPageInner() {
           <div className="flex items-center gap-1.5">
             <input
               type="text"
-              placeholder="Filter by playbook..."
+              placeholder={t("filters.playbook.placeholder")}
               value={playbookInput}
               onChange={(e) => setPlaybookInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && applyPlaybookFilter()}
               className="h-7 rounded border border-edge bg-surface-raised px-2.5 text-meta text-content-primary placeholder:text-content-muted focus:border-interactive-primary focus:outline-none"
             />
             <Button size="sm" variant="secondary" onClick={applyPlaybookFilter}>
-              Search
+              {t("filters.playbook.search")}
             </Button>
             {playbook && (
               <Button
@@ -410,7 +428,7 @@ function RunsPageInner() {
                   setQuery({ playbook: "", page: 1 });
                 }}
               >
-                Clear
+                {t("filters.playbook.clear")}
               </Button>
             )}
           </div>
@@ -419,6 +437,7 @@ function RunsPageInner() {
               <StatusFilterChip
                 key={s}
                 value={s}
+                label={t(STATUS_KEY_MAP[s] as Parameters<typeof t>[0])}
                 active={statuses.includes(s)}
                 onClick={() => toggleStatus(s)}
               />
@@ -438,13 +457,13 @@ function RunsPageInner() {
           <thead>
             <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
               <th className="px-3 py-2.5 font-medium">
-                {viewMode === "invocations" ? "Invocation" : "Run"}
+                {viewMode === "invocations" ? t("table.invocation") : t("table.run")}
               </th>
-              <th className="px-3 py-2.5 font-medium">Status</th>
+              <th className="px-3 py-2.5 font-medium">{t("table.status")}</th>
               <th className="px-3 py-2.5 font-medium">
-                {viewMode === "invocations" ? "Sessions" : "Activity"}
+                {viewMode === "invocations" ? t("table.sessions") : t("table.activity")}
               </th>
-              <th className="px-3 py-2.5 font-medium">Updated</th>
+              <th className="px-3 py-2.5 font-medium">{t("table.updated")}</th>
             </tr>
           </thead>
           <tbody>
@@ -458,9 +477,9 @@ function RunsPageInner() {
               invocationGroups.length === 0 && ungroupedRuns.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-3 py-14 text-center text-body text-content-muted">
-                    <span className="block mb-1 text-[11px]">{empty.runs}</span>
+                    <span className="block mb-1 text-[11px]">{t("empty.none")}</span>
                     {(statuses.length > 0 || playbook) && (
-                      <span className="text-meta">Try adjusting your filters.</span>
+                      <span className="text-meta">{t("empty.adjustFilters")}</span>
                     )}
                   </td>
                 </tr>
@@ -481,7 +500,10 @@ function RunsPageInner() {
                           role="button"
                           tabIndex={0}
                           aria-expanded={isExpanded}
-                          aria-label={`Invocation ${group.invocation_id.slice(-8)}, ${group.sessions.length} session${group.sessions.length !== 1 ? "s" : ""}`}
+                          aria-label={t("invocation.ariaLabel", {
+                            id: group.invocation_id.slice(-8),
+                            count: group.sessions.length,
+                          })}
                           className="border-b border-edge-subtle bg-surface-overlay/50 text-content-primary cursor-pointer transition-colors duration-100 hover:bg-surface-overlay"
                           onClick={() => toggleExpand(group.invocation_id)}
                           onKeyDown={(e) => {
@@ -500,7 +522,7 @@ function RunsPageInner() {
                                 {isExpanded ? "▼" : "▶"}
                               </span>
                               <span className="font-medium">
-                                Invocation{" "}
+                                {t("invocation.label")}{" "}
                                 <span className="font-mono text-meta text-content-muted">
                                   {group.invocation_id.slice(-8)}
                                 </span>
@@ -519,8 +541,7 @@ function RunsPageInner() {
                             )}
                           </td>
                           <td className="px-3 py-2 text-content-secondary">
-                            {group.sessions.length} session
-                            {group.sessions.length !== 1 ? "s" : ""}
+                            {t("invocation.sessionCount", { count: group.sessions.length })}
                           </td>
                           <td className="px-3 py-2 text-meta text-content-muted">
                             <Timestamp value={latestUpdated} />
@@ -541,9 +562,9 @@ function RunsPageInner() {
             ) : runs.length === 0 ? (
               <tr>
                 <td colSpan={4} className="px-3 py-14 text-center text-body text-content-muted">
-                  <span className="block mb-1 text-[11px]">{empty.runs}</span>
+                  <span className="block mb-1 text-[11px]">{t("empty.none")}</span>
                   {(statuses.length > 0 || playbook) && (
-                    <span className="text-meta">Try adjusting your filters.</span>
+                    <span className="text-meta">{t("empty.adjustFilters")}</span>
                   )}
                 </td>
               </tr>
@@ -557,10 +578,7 @@ function RunsPageInner() {
       {/* Pagination — hidden in invocations mode (full dataset loaded client-side) */}
       {viewMode === "sessions" && (
         <div className="flex items-center justify-between text-meta text-content-muted">
-          <span>
-            Page {page} of {totalPages || 1} &mdash; {total} run
-            {total !== 1 ? "s" : ""}
-          </span>
+          <span>{t("pagination.summary", { page, totalPages: totalPages || 1, total })}</span>
           <div className="flex gap-2">
             <Button
               size="sm"
@@ -568,7 +586,7 @@ function RunsPageInner() {
               disabled={!data?.has_prev}
               onClick={() => setQuery({ page: page - 1 })}
             >
-              Previous
+              {t("pagination.previous")}
             </Button>
             <Button
               size="sm"
@@ -576,7 +594,7 @@ function RunsPageInner() {
               disabled={!data?.has_next}
               onClick={() => setQuery({ page: page + 1 })}
             >
-              Next
+              {t("pagination.next")}
             </Button>
           </div>
         </div>

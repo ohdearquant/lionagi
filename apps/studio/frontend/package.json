@@ -16,6 +16,7 @@
     "@types/dagre": "^0.7.54",
     "dagre": "^0.8.5",
     "next": "^16.2.6",
+    "next-intl": "^3.26.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-markdown": "^10.1.0",
