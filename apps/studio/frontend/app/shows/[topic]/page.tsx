@@ -468,7 +468,11 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
           {show.plays.length > 0 && (
             <section className="flex flex-col gap-2">
               <h2 className="text-label font-semibold text-content-primary">Play graph</h2>
-              <PlayDag plays={show.plays} showMd={show.show_md} />
+              <PlayDag
+                plays={show.plays}
+                showMd={show.show_md}
+                onNodeClick={(playName) => setExpanded(playName)}
+              />
             </section>
           )}
         </>
@@ -570,6 +574,26 @@ function ShowSummaryPanel({
             {hasBlockers && <SummaryBlock label="Blockers" value={summary.blocker} tone="failed" />}
             {hasNext && nextValue && <SummaryBlock label="Next" value={nextValue} />}
           </dl>
+        ) : rollup && rollup.failed.length > 0 ? (
+          // Synthesized from failed plays when no explicit blocker/next is declared
+          <div className="mt-2 flex flex-col gap-2 text-body">
+            <p className="text-meta uppercase tracking-[0.06em] text-content-muted">
+              Failed plays — suggested actions
+            </p>
+            <ul className="flex flex-col gap-1.5">
+              {rollup.failed.map((play) => (
+                <li key={play.name} className="flex flex-col gap-0.5">
+                  <span className="font-mono text-body text-status-error">{play.name}</span>
+                  <span className="text-meta text-content-secondary">
+                    exit {play.meta.exit_code ?? "—"} —{" "}
+                    {play.meta.exit_code === 124
+                      ? "rerun with timeout override"
+                      : "inspect logs for details"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
         ) : (
           <p className="mt-2 text-body text-content-muted">
             No blockers or next action declared in plan.
