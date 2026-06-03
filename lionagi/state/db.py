@@ -111,6 +111,9 @@ _SESSION_COLUMNS = frozenset(
         # every message INSERT so a session that hasn't produced output
         # in N hours is detectably stale without scanning ``messages``.
         "last_message_at",
+        # #1235: coarse live flow phase (planning/executing/synthesizing)
+        # for the `li monitor` PHASE column.
+        "current_phase",
         # ADR-0020: optional FK to the skill orchestration that spawned
         # this session (e.g. a /show invocation grouping its plays).
         "invocation_id",
@@ -408,6 +411,8 @@ class StateDB:
             ("ended_at", "REAL"),
             # ADR-0019: activity marker for staleness detection.
             ("last_message_at", "REAL"),
+            # #1235: live flow phase for the `li monitor` PHASE column.
+            ("current_phase", "TEXT"),
             # ADR-0020: optional FK to invocations table.
             ("invocation_id", "TEXT"),
             # ADR-0022: provenance disclosure columns.
@@ -570,6 +575,9 @@ class StateDB:
                   started_at      REAL,
                   ended_at        REAL,
                   last_message_at REAL,
+                  -- #1235: live flow phase column; keep parity with
+                  -- schema.sql so the rebuild preserves it.
+                  current_phase   TEXT,
                   invocation_id   TEXT,
                   model           TEXT,
                   provider        TEXT,
@@ -2290,6 +2298,7 @@ class StateDB:
             "action_args",
             "artifact_contract_json",
             "artifact_verification_json",
+            "status_evidence_refs",
         ):
             if key in d and isinstance(d[key], str):
                 try:

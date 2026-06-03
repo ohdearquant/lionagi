@@ -305,6 +305,63 @@ def _start_local(
     return 0
 
 
+def _is_build_stale(frontend_dir: Path) -> bool:
+    """Return True when the production build is absent or older than source files.
+
+    The check compares the mtime of ``.next/BUILD_ID`` — written by Next.js on
+    every successful ``next build`` — against the newest mtime found under the
+    source trees that affect the compiled bundle: ``app/``, ``lib/``,
+    ``components/``, ``package.json``, and ``next.config.mjs``.  Any source file
+    newer than the build marker means the cached bundle is stale.
+
+    Returns True (rebuild required) in three situations:
+    - ``.next/BUILD_ID`` is absent (no prior build).
+    - A source file is newer than ``.next/BUILD_ID``.
+    - ``os.stat`` raises for any path (safe default: rebuild).
+    """
+    build_marker = frontend_dir / ".next" / "BUILD_ID"
+    if not build_marker.exists():
+        return True
+
+    try:
+        marker_mtime = build_marker.stat().st_mtime
+    except OSError:
+        return True  # cannot stat marker — rebuild to be safe
+
+    # Source subtrees that, when changed, invalidate the compiled bundle.
+    source_roots = [
+        frontend_dir / "app",
+        frontend_dir / "lib",
+        frontend_dir / "components",
+    ]
+    # Top-level config files that affect the build.
+    source_files = [
+        frontend_dir / "package.json",
+        frontend_dir / "next.config.mjs",
+    ]
+
+    for f in source_files:
+        try:
+            if f.exists() and f.stat().st_mtime > marker_mtime:
+                return True
+        except OSError:
+            return True
+
+    for root in source_roots:
+        if not root.is_dir():
+            continue
+        for p in root.rglob("*"):
+            if not p.is_file():
+                continue
+            try:
+                if p.stat().st_mtime > marker_mtime:
+                    return True
+            except OSError:
+                return True  # unreadable source file — rebuild to be safe
+
+    return False
+
+
 def _launch_frontend(
     frontend_dir: Path,
     frontend_port: int,
@@ -333,8 +390,12 @@ def _launch_frontend(
     if dev_mode:
         cmd = ["npx", "next", "dev", "--port", str(frontend_port)]  # noqa: S607
     else:
-        if not (frontend_dir / ".next").exists():
-            print("Building frontend (first run)...")
+        # Rebuild whenever the source is newer than the last successful build.
+        # NEXT_PUBLIC_STUDIO_API_BASE is inlined at build time, so a stale
+        # .next/ bundle may point at the wrong API origin — always rebuild on
+        # source changes to prevent "API unreachable" from stale bundles.
+        if _is_build_stale(frontend_dir):
+            print("Building frontend...")
             try:
                 subprocess.run(  # noqa: S603
                     ["npx", "next", "build"],  # noqa: S607

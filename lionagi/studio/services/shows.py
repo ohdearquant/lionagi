@@ -160,11 +160,14 @@ def _list_shows_fs() -> list[dict[str, Any]]:
 
 
 async def get_show(topic: str) -> dict[str, Any] | None:
+    # safe_path_join validates the topic component (no traversal, no NUL, etc.)
+    # but does NOT require the path to exist — we resolve existence after the DB
+    # lookup so that Docker deployments (state.db mounted, show dirs absent) can
+    # still serve show detail from the DB.
     show_dir = safe_path_join(SHOWS_ROOT, topic)
-    if not show_dir.is_dir():
-        return None
+    dir_exists = show_dir.is_dir()
 
-    show_md = _read_text(show_dir / "_show.md")
+    show_md: str | None = _read_text(show_dir / "_show.md") if dir_exists else None
 
     db_plays: list[dict[str, Any]] = []
     show_row: dict[str, Any] | None = None
@@ -190,6 +193,12 @@ async def get_show(topic: str) -> dict[str, Any] | None:
                     db_plays = [dict(r) for r in play_rows]
         except Exception:
             _log.warning("get_show DB query failed for topic %r", topic, exc_info=True)
+
+    # Return None only when BOTH the filesystem dir is absent AND the DB has no
+    # row for this topic.  In Docker, show dirs are not mounted but the DB is —
+    # returning None in that case caused every topic from list_shows() to 404.
+    if not dir_exists and show_row is None:
+        return None
 
     if db_plays:
         plays = []
@@ -219,14 +228,14 @@ async def get_show(topic: str) -> dict[str, Any] | None:
                     else _read_json(play_dir / "_verdict.json"),
                     "session_id": p["session_id"],
                     "session_name": p.get("session_name"),
-                    "intent": _read_text(play_dir / "_intent.md"),
+                    "intent": _read_text(play_dir / "_intent.md") if dir_exists else None,
                     "updated_at": p["updated_at"],
                     "depends_on": json.loads(p["depends_on"])
                     if isinstance(p["depends_on"], str)
                     else (p["depends_on"] or []),
                 }
             )
-    else:
+    elif dir_exists:
         plays = []
         for play_dir in _play_dirs(show_dir):
             meta = _read_json(play_dir / "_meta.json") or {}
@@ -243,12 +252,17 @@ async def get_show(topic: str) -> dict[str, Any] | None:
                     "updated_at": updated_at,
                 }
             )
+    else:
+        # DB row exists but no plays recorded yet (or show dir absent in Docker).
+        plays = []
 
     # F-A1-5 (ADR-0011 §"Show status provenance"): status_source mirrors the
     # derivation in list_shows() — "sqlite" when the row came from the DB,
     # "filesystem" for filesystem fallback (show_row is None).
     status_source = "sqlite" if show_row else "filesystem"
 
+    # show_dir may not exist on disk (Docker); public_path handles non-existent
+    # paths gracefully (it uses resolve() + relative_to(), not stat()).
     return {
         "topic": topic,
         "path": public_path(show_dir),
@@ -555,8 +569,15 @@ async def watch_show(topic: str) -> AsyncGenerator[str, None]:
     F-A2-3 (ADR-0006 reconnect semantics): emits ``{"type":"done"}`` when the
     show status is terminal (completed or aborted) AND no file has changed for
     60 seconds, then closes.  This matches the session stream's done semantics.
+
+    When the show directory does not exist on disk (e.g. Docker deployments
+    where show dirs are not mounted), immediately emits ``{"type":"done"}`` and
+    returns rather than running an infinite loop with no events.
     """
     topic_dir = safe_path_join(SHOWS_ROOT, topic)
+    if not topic_dir.is_dir():
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        return
     seen_files: dict[str, tuple[float, int]] = {}
     last_change: float = time.time()
 

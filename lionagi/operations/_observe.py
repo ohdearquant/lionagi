@@ -124,17 +124,22 @@ async def emit_message(branch: Branch, msg: RoledMessage) -> None:
     """
     if getattr(branch, "_observer", None) is None:
         return
-    from lionagi.protocols.messages import (
-        ActionRequest,
-        ActionResponse,
-        AssistantResponse,
-    )
+    from lionagi.protocols.messages import AssistantResponse
     from lionagi.session.signal import (
-        ActionRequestSignal,
-        ActionResponseSignal,
+        MessageAdded,
         Signal,
         StructuredOutput,
     )
+
+    # Every message — system, instruction, assistant, action — lands on the bus
+    # as a MessageAdded so the Flow is a complete record and observers can watch
+    # the whole stream by payload type: ``observe(ActionRequest)`` /
+    # ``observe(System)`` fire off the MessageAdded envelope's unwrapped ``data``
+    # (signal.py: a TypeFilter matches any Signal whose ``data`` is that type).
+    # The StructuredOutput below is an additional, finer event for the capability
+    # subset — there is no separate per-message-type signal, which would
+    # double-fire data-type observers that already match MessageAdded.
+    await branch.emit(MessageAdded(data=msg))
 
     if isinstance(msg, AssistantResponse):
         capabilities = getattr(branch, "_capabilities", None)
@@ -156,10 +161,6 @@ async def emit_message(branch: Branch, msg: RoledMessage) -> None:
             # silent drops — session.observe(CapabilityViolation) can react.
             for violation in violations:
                 await branch.emit(Signal(data=violation))
-    elif isinstance(msg, ActionRequest):
-        await branch.emit(ActionRequestSignal(data=msg))
-    elif isinstance(msg, ActionResponse):
-        await branch.emit(ActionResponseSignal(data=msg))
 
 
 def check_control(branch: Branch) -> None:

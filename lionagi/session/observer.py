@@ -146,6 +146,16 @@ class SessionObserver(Observer):
 
         return _register if handler is None else _register(handler)
 
+    def unobserve(self, handler: Handler) -> int:
+        """Remove every subscription whose handler is *handler*.
+
+        Returns the number removed. Used to bound a subscription's lifetime
+        (e.g. a flow that subscribes for its duration then detaches).
+        """
+        before = len(self._subs)
+        self._subs = [(f, h) for (f, h) in self._subs if h is not handler]
+        return before - len(self._subs)
+
     def route(self, condition: Predicate, *, into: str) -> SessionObserver:
         """Auto-append events matching ``condition`` to a named stream."""
         self._routes.append((condition, into))
@@ -157,9 +167,38 @@ class SessionObserver(Observer):
         This is the governance seam — charter/gate mediation lives here.
         Return falsy (or raise) to deny; the event is recorded but no
         observers fire.
+
+        The same gate is consulted by :meth:`authorize` *before* an operation
+        runs (pre-invoke), and inside :meth:`emit` *after* an event is recorded
+        (gating observer dispatch). One governance check, two enforcement seams.
         """
         self._gate = check
         return self
+
+    async def authorize(self, action: Any) -> bool:
+        """Pre-invoke gate consult: may ``action`` proceed? (ADR-0076 Follow-up 1)
+
+        Unlike :meth:`emit`'s gate — which runs *after* an event is recorded and
+        only suppresses observer dispatch — this is consulted *before* an
+        operation invokes, and a falsy verdict is meant to BLOCK it. With no gate
+        set it returns ``True`` (additive: default behaviour is unchanged). A
+        denial is recorded onto the Flow as a :class:`GateDenied` audit signal so
+        blocked actions are visible alongside honored ones.
+        """
+        if self._gate is None:
+            return True
+        try:
+            verdict = self._gate(action)
+            if inspect.isawaitable(verdict):
+                verdict = await verdict
+            allowed = bool(verdict)
+        except Exception:
+            allowed = False
+        if not allowed:
+            from .signal import GateDenied
+
+            self.flow.add_item(GateDenied(data=action))
+        return allowed
 
     # -- Emission / dispatch --------------------------------------------------
 

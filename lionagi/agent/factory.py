@@ -63,6 +63,7 @@ async def create_agent(
 
     if spec.model:
         from lionagi.cli._providers import (
+            CLI_PROVIDERS,
             PROVIDER_EFFORT_KWARG,
             parse_model_spec,
         )
@@ -84,10 +85,16 @@ async def create_agent(
 
             extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
 
+        # CLI providers (codex/claude_code) auth via subprocess — a placeholder
+        # api_key is fine. API providers must resolve their real key from
+        # settings; forcing "dummy" there silently breaks auth (the model can
+        # never call out). So only pin the placeholder for CLI providers.
+        if provider in CLI_PROVIDERS:
+            extra["api_key"] = "dummy"
+
         chat_model = iModel(
             provider=provider,
             model=model_name,
-            api_key="dummy",
             **extra,
         )
         branch_kwargs["chat_model"] = chat_model

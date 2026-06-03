@@ -22,19 +22,18 @@ from typing import Any
 from pydantic import BaseModel
 
 from ..protocols.generic.element import Element
-from ..protocols.messages import ActionRequest, ActionResponse
 
 __all__ = (
     "Signal",
     "StructuredOutput",
-    "ActionRequestSignal",
-    "ActionResponseSignal",
     "RunStart",
     "RunEnd",
     "RunFailed",
     "NodeStarted",
     "NodeCompleted",
     "NodeFailed",
+    "GateDenied",
+    "MessageAdded",
 )
 
 
@@ -52,20 +51,11 @@ class StructuredOutput(Signal):
     data: BaseModel
 
 
-class ActionRequestSignal(Signal):
-    """A tool-use emission. ``data`` is the originating ``ActionRequest``.
-
-    Lets observers react to tool calls and track per-tool usage:
-    ``session.observe(ActionRequest)`` fires for every tool invocation.
-    """
-
-    data: ActionRequest
-
-
-class ActionResponseSignal(Signal):
-    """A tool-result emission. ``data`` is the resolved ``ActionResponse``."""
-
-    data: ActionResponse
+# Tool-use / tool-result are observed off the universal ``MessageAdded`` stream
+# (below): ``session.observe(ActionRequest)`` fires for every tool invocation by
+# matching the unwrapped ``ActionRequest`` payload of its ``MessageAdded``
+# envelope. No dedicated ActionRequestSignal/ActionResponseSignal — a second
+# signal carrying the same message would double-fire those data-type observers.
 
 
 # -- Run lifecycle ------------------------------------------------------------
@@ -121,3 +111,28 @@ class NodeFailed(Signal):
     op_id: str = ""
     name: str = ""
     elapsed: float = 0.0
+
+
+# -- Governance ---------------------------------------------------------------
+# Emitted when the session's pre-invoke gate denies a proposed action (ADR-0076
+# Follow-up 1). The gate gates the *operation* (e.g. a tool call), unlike the
+# post-record gate inside ``emit`` which gates observer dispatch. Recorded onto
+# the Flow so denials are audit-visible; ``session.observe(GateDenied)`` reacts.
+
+
+class GateDenied(Signal):
+    """The governance gate denied a proposed action. ``data`` is the denied payload."""
+
+
+# -- Message lifecycle --------------------------------------------------------
+# Emitted for EVERY message added to a branch (system, instruction, assistant,
+# action — not just the capability-bearing subset). It puts the full message
+# stream on the one transport so ``session.observe(MessageAdded)`` sees every
+# turn and the Flow is a complete record. ``data`` is the ``RoledMessage``.
+# This is the foundation for routing persistence onto the bus (ADR-0023b):
+# a persistence handler can subscribe to MessageAdded instead of registering a
+# parallel ``on_message_added`` callback.
+
+
+class MessageAdded(Signal):
+    """A message was added to a branch. ``data`` is the ``RoledMessage``."""

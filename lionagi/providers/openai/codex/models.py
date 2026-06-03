@@ -185,8 +185,12 @@ class CodexCodeRequest(BaseModel):
 
     # ── features (order 60–69) ────────────────────────────────────
     skip_git_repo_check: bool = Field(
-        default=False,
-        description="Allow running outside a git repository",
+        default=True,
+        description=(
+            "Allow running outside a git repository. Default True: agents routinely "
+            "run in per-task artifact dirs that are not git repos, where codex would "
+            "otherwise refuse with 'Not inside a trusted directory'."
+        ),
         json_schema_extra=_cli("--skip-git-repo-check", 60, "bool"),
     )
     ephemeral: bool = Field(

@@ -2,7 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .builder import ExpansionStrategy, OperationGraphBuilder
-from .flow import flow
+from .flow import (
+    DependencyAwareExecutor,
+    FlowEvent,
+    ReactiveExecutor,
+    flow,
+    flow_stream,
+)
 from .node import BranchOperations, Operation
 
 Builder = OperationGraphBuilder
@@ -11,6 +17,10 @@ __all__ = (
     "ExpansionStrategy",
     "OperationGraphBuilder",
     "flow",
+    "flow_stream",
+    "FlowEvent",
+    "DependencyAwareExecutor",
+    "ReactiveExecutor",
     "BranchOperations",
     "Operation",
     "Builder",

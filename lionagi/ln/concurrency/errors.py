@@ -90,7 +90,7 @@ def is_cancelled(exc: BaseException) -> bool:
     Returns:
         True if exc is the backend's cancellation exception type.
     """
-    return isinstance(exc, anyio.get_cancelled_exc_class())
+    return isinstance(exc, cancelled_exc_classes())
 
 
 async def shield(func: Callable[P, Awaitable[T]], *args: P.args, **kwargs: P.kwargs) -> T:

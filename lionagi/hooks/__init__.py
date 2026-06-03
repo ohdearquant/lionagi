@@ -32,6 +32,7 @@ from .loader import (
     register_handler,
     resolve_handler,
 )
+from .persist import route_message_persistence, unroute_message_persistence
 
 __all__ = [
     "HookBus",
@@ -44,4 +45,6 @@ __all__ = [
     "load_hooks_for_agent",
     "register_handler",
     "resolve_handler",
+    "route_message_persistence",
+    "unroute_message_persistence",
 ]

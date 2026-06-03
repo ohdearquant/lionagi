@@ -120,6 +120,7 @@ class Branch(Element, Relational):
     _log_manager: DataLogger | None = PrivateAttr(None)
     _operation_manager: OperationManager | None = PrivateAttr(None)
     _observer: Any = PrivateAttr(None)
+    _hooks: Any = PrivateAttr(None)
     _capabilities: Any = PrivateAttr(None)
     _loop_control: "LoopControl | None" = PrivateAttr(None)
     _signal_tasks: list = PrivateAttr(default_factory=list)
@@ -195,6 +196,11 @@ class Branch(Element, Relational):
         # observer-powered orchestration is transport-agnostic. Scheduled in the
         # background (see _schedule_emit) and drained at operation boundaries.
         self._message_manager._on_message_added.append(self._schedule_emit)
+        # NOTE: the ordered-persistence hook (_persist_via_bus, ADR-0023b) is NOT
+        # registered here. It is async, and the *sync* add_message path (used for
+        # the construction-time system message) rejects async callbacks. The CLI
+        # live-persist wiring registers it via hooks.route_message_persistence in
+        # an async context, after which only a_add_message is used.
 
         if any(
             bool(x)
@@ -373,6 +379,33 @@ class Branch(Element, Relational):
         if self._observer is None:
             return []
         return await self._observer.emit(event)
+
+    async def authorize(self, action: Any) -> bool:
+        """Consult the session's pre-invoke governance gate for ``action``.
+
+        Delegates to ``observer.authorize`` (ADR-0076 Follow-up 1). A standalone
+        branch (no observer) always allows, so ungoverned branches are unaffected.
+        Used by tool execution to block a denied call before it runs.
+        """
+        if self._observer is None:
+            return True
+        return await self._observer.authorize(action)
+
+    async def _persist_via_bus(self, msg: Any) -> None:
+        """``on_message_added`` hook: drive ordered persistence on the hook bus.
+
+        When a hook bus is attached (``_hooks`` — set by CLI live-persist wiring),
+        emit ``MESSAGE_ADD`` so the registered persistence handler writes this
+        message through the one transport (ADR-0023b). Unlike ``_schedule_emit``
+        this is awaited inside the message-add, so per-branch message order is
+        preserved (progression appends must not race). No-op without a bus, so
+        library and API usage are unaffected.
+        """
+        if self._hooks is None:
+            return
+        from lionagi.hooks.bus import HookPoint
+
+        await self._hooks.emit(HookPoint.MESSAGE_ADD, branch_id=str(self.id), message=msg)
 
     def _schedule_emit(self, msg: Any) -> None:
         """``on_message_added`` hook: schedule this message's bus emission.
