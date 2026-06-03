@@ -83,15 +83,53 @@ def _read_pid_from_entity(entity: dict[str, Any]) -> int | None:
 # ── Signal / terminate ─────────────────────────────────────────────────────────
 
 
-def _terminate_pid(pid: int, grace_seconds: float = 5.0) -> str:
-    """SIGTERM → wait → SIGKILL.  Returns "sigterm", "sigkill", or "already_dead".
+def _check_pid_identity(pid: int, expected_cmd: str) -> bool:
+    """Return True iff the live process at *pid* looks like a lionagi agent.
+
+    Uses psutil when available.  If psutil is not installed, logs a warning
+    and returns False so the caller skips the kill rather than risk signalling
+    a recycled PID (CWE-362).
+    """
+    try:
+        import psutil  # optional dependency
+    except ImportError:
+        import logging
+
+        logging.getLogger("lionagi.cli").warning(
+            "psutil unavailable — skipping kill of pid %d to avoid PID-reuse race; "
+            "install psutil (pip install psutil) to enable identity checks",
+            pid,
+        )
+        return False
+
+    try:
+        cmdline = psutil.Process(pid).cmdline()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+
+    return any(expected_cmd in part for part in cmdline)
+
+
+def _terminate_pid(
+    pid: int,
+    grace_seconds: float = 5.0,
+    expected_cmd: str | None = None,
+) -> str:
+    """SIGTERM → wait → SIGKILL.  Returns "sigterm", "sigkill", "already_dead", or "identity_mismatch".
 
     If the process doesn't exist at all, returns "already_dead".
+    If *expected_cmd* is given, verifies the process cmdline contains that
+    substring before signalling; returns "identity_mismatch" (and skips the
+    kill) if the check fails or psutil is unavailable — prevents PID-reuse
+    races (CWE-362).
     If SIGTERM is enough, returns "sigterm".  If the grace period expires
     and the process is still alive, escalates to SIGKILL and returns "sigkill".
     """
     if not _pid_alive(pid):
         return "already_dead"
+
+    if expected_cmd is not None and not _check_pid_identity(pid, expected_cmd):
+        return "identity_mismatch"
 
     # Phase 1: SIGTERM
     try:
@@ -335,7 +373,13 @@ async def _kill_one(
 
     if pid is not None:
         try:
-            signal_used = _terminate_pid(pid, grace_seconds=grace_seconds)
+            signal_used = _terminate_pid(
+                pid,
+                grace_seconds=grace_seconds,
+                # Verify the process is a lionagi agent before signalling to
+                # prevent PID-reuse races (CWE-362, issue #1126).
+                expected_cmd="lionagi",
+            )
         except RuntimeError as exc:
             warn(str(exc))
             signal_used = "permission_denied"
@@ -347,6 +391,19 @@ async def _kill_one(
     if signal_used == "sigkill":
         reason_code = RunReasons.CANCELLED_FORCE_KILL
         reason_summary = f"Force-killed (SIGKILL after grace period). {user_reason}".strip()
+    elif signal_used == "identity_mismatch":
+        # PID belongs to a different process — log and skip state update to
+        # avoid recording a false cancellation (CWE-362, issue #1126).
+        warn(
+            f"  {entity_type} {entity_id[:12]}: pid {pid} did not match "
+            "expected lionagi process — kill skipped"
+        )
+        return {
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "signal": signal_used,
+            "pid": pid,
+        }
     else:
         reason_code = RunReasons.CANCELLED_MANUAL_KILL
         reason_summary = f"Manually cancelled via `li kill`. {user_reason}".strip()

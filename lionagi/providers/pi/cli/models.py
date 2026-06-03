@@ -239,7 +239,7 @@ class PiCodeRequest(BaseModel):
         for message in msg:
             if message["role"] != "system":
                 content = message["content"]
-                if isinstance(content, (dict, list)):
+                if isinstance(content, dict | list):
                     prompts.append(ln.json_dumps(content))
                 else:
                     prompts.append(content)
@@ -400,9 +400,7 @@ def _extract_summary(session: PiSession) -> dict[str, Any]:
     for op_type in file_operations:
         file_operations[op_type] = list(dict.fromkeys(file_operations[op_type]))
 
-    result_summary = (
-        (session.result[:200] + "...") if len(session.result) > 200 else session.result
-    )
+    result_summary = (session.result[:200] + "...") if len(session.result) > 200 else session.result
 
     return {
         "tool_counts": tool_counts,
@@ -425,9 +423,7 @@ def _extract_summary(session: PiSession) -> dict[str, Any]:
 async def _ndjson_from_cli(request: PiCodeRequest):
     """Yields each JSON object emitted by Pi CLI (JSONL mode)."""
     if PI_CLI is None:
-        raise RuntimeError(
-            "Pi CLI not found. Install with: npm i -g @mariozechner/pi-coding-agent"
-        )
+        raise RuntimeError("Pi CLI not found. Install with: npm i -g @mariozechner/pi-coding-agent")
 
     import os
 
@@ -664,6 +660,8 @@ async def stream_pi_cli(
                             _pp_text(text, theme)
 
                 elif etype == "text_end":
+                    # Field name verified against pi_cli_events.jsonl fixture:
+                    # assistantMessageEvent.content holds the accumulated text.
                     if text := event.get("content", ""):
                         session.result = text
 
@@ -692,6 +690,8 @@ async def stream_pi_cli(
 
                 elif etype in ("toolcall_start", "toolcall_delta", "toolcall_end"):
                     if etype == "toolcall_end":
+                        # Payload structure verified against pi_cli_events.jsonl fixture:
+                        # event.toolCall.{id, name, arguments} (nested under "toolCall" key).
                         tu = _tool_call_from_event(event)
                         chunk.tool_use = tu
                         session.tool_uses.append(tu)
@@ -738,7 +738,17 @@ async def stream_pi_cli(
             elif typ == "tool_execution_update":
                 yield chunk
 
+            elif typ == "start":
+                # Top-level AssistantMessageEvent start: carries partial assistant
+                # message with initial model/usage info.
+                _remember_assistant_message(session, obj.get("partial"))
+                yield chunk
+
             elif typ == "done":
+                # Top-level done: may carry final message with model/usage.
+                # Both AgentEvent.done (end-of-stream) and a top-level
+                # AssistantMessageEvent.done use this type.
+                _remember_assistant_message(session, obj.get("message"))
                 break
 
             elif typ == "error":

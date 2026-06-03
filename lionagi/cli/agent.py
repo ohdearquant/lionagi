@@ -599,7 +599,8 @@ def _resolve_run_reason(
             None,
         )
     if status == "aborted":
-        return RunReasons.ABORTED_USER, "User pressed Ctrl-C.", None
+        # "aborted" is set exclusively by the KeyboardInterrupt (SIGINT) handler.
+        return RunReasons.CANCELLED_SIGINT, "User pressed Ctrl-C (SIGINT).", None
     if status == "cancelled":
         return (
             RunReasons.CANCELLED_SYSTEM,

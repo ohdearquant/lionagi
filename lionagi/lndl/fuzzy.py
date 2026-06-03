@@ -18,7 +18,7 @@ from typing import Any
 
 from .errors import MissingOutBlockError  # noqa: F401 — re-exported for Phase 2 callers
 
-__all__ = ("normalize_lndl_text", "parse_lndl_fuzzy")
+__all__ = ("normalize_lndl_text",)  # parse_lndl_fuzzy removed until Phase 2 (#966)
 
 _XML_ATTR_RE = re.compile(r'\b\w+=["\'][^"\']*["\']')
 

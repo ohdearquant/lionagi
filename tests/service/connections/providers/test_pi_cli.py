@@ -166,6 +166,139 @@ async def test_stream_pi_cli_handles_nested_and_top_level_errors(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_top_level_start_event_updates_session_model(monkeypatch):
+    """Top-level start AssistantMessageEvent populates model from partial."""
+    events = [
+        {
+            "type": "start",
+            "partial": {
+                "role": "assistant",
+                "content": [],
+                "model": "gemini-2.5-flash",
+                "usage": {"input": 0, "output": 0},
+            },
+        },
+    ]
+
+    async def fake_events(_request):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(pi_models, "stream_pi_cli_events", fake_events)
+
+    session = None
+    async for item in pi_models.stream_pi_cli(PiCodeRequest(prompt="hello")):
+        if isinstance(item, PiSession):
+            session = item
+
+    assert session is not None
+    assert session.model == "gemini-2.5-flash"
+
+
+@pytest.mark.asyncio
+async def test_top_level_done_event_updates_session_and_stops(monkeypatch):
+    """Top-level done AssistantMessageEvent populates session result/model/usage."""
+    events = [
+        {
+            "type": "done",
+            "reason": "endTurn",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "finished"}],
+                "model": "gemini-2.5-flash",
+                "usage": {"input": 5, "output": 3, "totalTokens": 8},
+            },
+        },
+        # This event must NOT be processed — done should stop the loop.
+        {"type": "error", "errorMessage": "should not reach here"},
+    ]
+
+    async def fake_events(_request):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(pi_models, "stream_pi_cli_events", fake_events)
+
+    session = None
+    async for item in pi_models.stream_pi_cli(PiCodeRequest(prompt="hello")):
+        if isinstance(item, PiSession):
+            session = item
+
+    assert session is not None
+    assert session.model == "gemini-2.5-flash"
+    assert session.result == "finished"
+    assert session.usage == {"input": 5, "output": 3, "totalTokens": 8}
+    assert session.is_error is False
+
+
+@pytest.mark.asyncio
+async def test_text_end_sets_session_result_from_content_field(monkeypatch):
+    """text_end event uses the 'content' field (not 'text' or 'delta')."""
+    events = [
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "text_end",
+                "contentIndex": 0,
+                "content": "accumulated text",
+            },
+        },
+    ]
+
+    async def fake_events(_request):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(pi_models, "stream_pi_cli_events", fake_events)
+
+    session = None
+    async for item in pi_models.stream_pi_cli(PiCodeRequest(prompt="hello")):
+        if isinstance(item, PiSession):
+            session = item
+
+    assert session is not None
+    assert session.result == "accumulated text"
+
+
+@pytest.mark.asyncio
+async def test_toolcall_end_reads_nested_tool_call_payload(monkeypatch):
+    """toolcall_end uses nested toolCall.{id,name,arguments} structure."""
+    events = [
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "contentIndex": 0,
+                "toolCall": {
+                    "type": "toolCall",
+                    "id": "tc_42",
+                    "name": "write_file",
+                    "arguments": {"path": "out.py", "content": "pass"},
+                },
+            },
+        },
+    ]
+
+    async def fake_events(_request):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(pi_models, "stream_pi_cli_events", fake_events)
+
+    session = None
+    async for item in pi_models.stream_pi_cli(PiCodeRequest(prompt="hello")):
+        if isinstance(item, PiSession):
+            session = item
+
+    assert session is not None
+    assert len(session.tool_uses) == 1
+    tu = session.tool_uses[0]
+    assert tu["id"] == "tc_42"
+    assert tu["name"] == "write_file"
+    assert tu["input"] == {"path": "out.py", "content": "pass"}
+
+
+@pytest.mark.asyncio
 async def test_pi_cli_endpoint_stream_maps_pi_chunks_to_stream_chunks(monkeypatch):
     async def fake_stream(_request_obj, _session=None):
         yield PiChunk(raw={}, type="message_update", text="hello")

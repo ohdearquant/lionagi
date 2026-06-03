@@ -196,6 +196,71 @@ def test_terminate_pid_escalates_to_sigkill(monkeypatch: pytest.MonkeyPatch):
     assert _signal.SIGKILL in sigs_sent
 
 
+# ── _terminate_pid identity checks (issue #1126) ──────────────────────────────
+
+
+def test_terminate_pid_identity_mismatch_no_signal_sent(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """If cmdline doesn't match expected_cmd, no signal is sent."""
+    import signal as _signal
+
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    # Mock psutil with a process whose cmdline does NOT contain "lionagi".
+    fake_psutil = MagicMock()
+    fake_proc = MagicMock()
+    fake_proc.cmdline.return_value = ["/usr/bin/python3", "unrelated_script.py"]
+    fake_psutil.Process.return_value = fake_proc
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+
+    result = _terminate_pid(42, grace_seconds=0.1, expected_cmd="lionagi")
+    assert result == "identity_mismatch"
+    assert kill_calls == [], "no signal must be sent on cmdline mismatch"
+
+
+def test_terminate_pid_identity_match_sends_signal(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """If cmdline contains expected_cmd, kill proceeds normally."""
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    fake_psutil = MagicMock()
+    fake_proc = MagicMock()
+    fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionagi.cli.main"]
+    fake_psutil.Process.return_value = fake_proc
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+
+    result = _terminate_pid(42, grace_seconds=0.01, expected_cmd="lionagi")
+    # SIGTERM must have been sent
+    assert any(sig == __import__("signal").SIGTERM for _, sig in kill_calls)
+    assert result in ("sigterm", "sigkill")
+
+
+def test_terminate_pid_no_psutil_skips_kill(monkeypatch: pytest.MonkeyPatch):
+    """If psutil is not installed, kill is skipped to avoid PID-reuse race."""
+    import sys
+
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    # Simulate psutil absent by making the import raise ImportError.
+    monkeypatch.setitem(sys.modules, "psutil", None)  # type: ignore[arg-type]
+
+    result = _terminate_pid(42, grace_seconds=0.1, expected_cmd="lionagi")
+    assert result == "identity_mismatch"
+    assert kill_calls == []
+
+
 # ── _resolve_entity ────────────────────────────────────────────────────────────
 
 

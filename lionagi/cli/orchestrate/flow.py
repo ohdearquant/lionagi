@@ -156,8 +156,8 @@ async def _resolve_invocation_terminal_flow(
             if any(s == "aborted" for s in child_statuses):
                 return (
                     "aborted",
-                    RunReasons.ABORTED_USER,
-                    "Flow was aborted because at least one child session was aborted.",
+                    RunReasons.CANCELLED_SIGINT,
+                    "Flow was aborted because at least one child session was aborted (SIGINT).",
                     evidence_refs,
                     metadata,
                 )
@@ -197,8 +197,8 @@ async def _resolve_invocation_terminal_flow(
         if fallback_status == "aborted":
             return (
                 "aborted",
-                RunReasons.ABORTED_USER,
-                "Flow was aborted by the user.",
+                RunReasons.CANCELLED_SIGINT,
+                "Flow was aborted by the user (SIGINT).",
                 evidence_refs,
                 metadata,
             )
