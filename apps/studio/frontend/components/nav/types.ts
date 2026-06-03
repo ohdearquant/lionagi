@@ -34,6 +34,7 @@ export const NAV_GROUPS: NavGroupDef[] = [
     label: "Work",
     items: [
       { label: "Shows", href: "/shows" },
+      { label: "Playfield", href: "/playfield" },
       { label: "Runs", href: "/runs" },
       { label: "Projects", href: "/projects" },
       { label: "Teams", href: "/teams" },
