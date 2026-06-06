@@ -119,3 +119,23 @@ class TestAcreatePathTraversalContainment:
         with pytest.raises(ValueError, match="escapes base directory"):
             await acreate_path(directory=base, filename="link/escape.txt")
         assert not (outside / "escape.txt").exists()
+
+    @pytest.mark.anyio
+    async def test_symlinked_final_component_escape_rejected(self, tmp_path):
+        """A symlinked final filename pointing outside the base must be rejected.
+
+        Regression: validating `dir_resolved / filename` WITHOUT resolving the
+        final component let `base/link.txt -> /outside/target.txt` pass, since
+        the unresolved path is lexically under base. The candidate must be fully
+        resolve()-d so the final symlink is followed.
+        """
+        base = tmp_path / "base"
+        base.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        target = outside / "target.txt"
+        target.write_text("secret")
+        (base / "link.txt").symlink_to(target)
+
+        with pytest.raises(ValueError, match="escapes base directory"):
+            await acreate_path(directory=base, filename="link.txt", file_exist_ok=True)

@@ -183,3 +183,28 @@ class TestProcessorJoinCompletion:
         # If join() respected only queue.empty() this would still be PROCESSING.
         assert event.status == EventStatus.COMPLETED
         await proc_task
+
+    async def test_join_waits_across_overlapping_process_cycles(self):
+        """RACE regression: a single bool can't track overlapping process()
+        cycles — the faster cycle clears it while another still has work.
+
+        Two process() cycles drain the same queue concurrently. With a boolean
+        flag, the first cycle to finish would clear it and let join() return
+        while the other cycle's event is still PROCESSING. A counter keeps
+        join() blocked until every cycle has drained.
+        """
+        p = _proc(queue_capacity=10, concurrency_limit=10, capacity_refresh_time=0.005)
+        events = [_SlowEvent() for _ in range(4)]
+        for e in events:
+            await p.enqueue(e)
+
+        t1 = asyncio.create_task(p.process())
+        t2 = asyncio.create_task(p.process())
+        # Let both cycles dequeue (queue likely empty, work still in flight).
+        await asyncio.sleep(0.005)
+
+        await asyncio.wait_for(p.join(), timeout=3.0)
+        # When join() returns, no event may still be running.
+        assert all(e.status != EventStatus.PROCESSING for e in events)
+        assert all(e.status != EventStatus.PENDING for e in events)
+        await asyncio.gather(t1, t2)

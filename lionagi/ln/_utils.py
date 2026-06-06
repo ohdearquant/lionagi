@@ -104,11 +104,13 @@ async def acreate_path(
             raise ValueError(f"Filename must not be '.' or '..'; got {filename!r}.")
 
         # Verify the (possibly redirected) directory AND the final candidate
-        # both resolve to a location within the original base root. resolve()
-        # follows symlinks, so a symlinked subdir escaping the root is rejected
-        # before any filesystem side effect.
+        # both resolve to a location within the original base root. Both are
+        # fully resolve()-d so symlinks are followed — a symlinked subdir OR a
+        # symlinked final component (e.g. base/link.txt -> /outside) escaping
+        # the root is rejected before any filesystem side effect. resolve() on a
+        # not-yet-existing final component simply normalizes it under the dir.
         dir_resolved = StdPath(str(directory)).resolve()
-        candidate_resolved = dir_resolved / filename
+        candidate_resolved = (dir_resolved / filename).resolve()
         for escapee in (dir_resolved, candidate_resolved):
             try:
                 escapee.relative_to(base_root)

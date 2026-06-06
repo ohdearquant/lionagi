@@ -69,10 +69,11 @@ class Processor(Observer):
         self._available_capacity = queue_capacity
         self._execution_mode = False
         self._stop_event = ConcurrencyEvent()
-        # True while process() is mid-cycle: events may be dequeued (queue
-        # empty) yet still in flight inside the task group. join() must not
-        # return during this window.
-        self._processing = False
+        # Count of in-flight process() cycles. Events may be dequeued (queue
+        # empty) yet still running inside a task group; join() must not return
+        # while any cycle is active. A counter (not a bool) so overlapping
+        # process() calls can't clear the flag while another still has work.
+        self._processing_count = 0
         if concurrency_limit:
             self._concurrency_sem = Semaphore(concurrency_limit)
         else:
@@ -144,15 +145,16 @@ class Processor(Observer):
         ``dequeue()`` but never calls ``task_done()``, so plain
         ``asyncio.Queue.join()`` would hang indefinitely.
 
-        Instead, wait until BOTH the queue is empty AND ``process()`` is not
-        mid-cycle. Polling ``queue.empty()`` alone is racy: ``process()`` can
+        Instead, wait until BOTH the queue is empty AND no ``process()`` cycle
+        is active. Polling ``queue.empty()`` alone is racy: ``process()`` can
         dequeue an event (emptying the queue) and leave it ``PROCESSING`` inside
         its task group, during which the queue is empty but work is in flight.
-        ``self._processing`` stays True across that whole span — the task group
-        only exits once every dispatched invocation has completed — so this
-        cannot return while dequeued work is still running.
+        ``self._processing_count`` is >0 for the whole span of every active
+        cycle — each task group only exits once its dispatched invocations have
+        completed — so this cannot return while any dequeued work is running,
+        even when multiple ``process()`` calls overlap.
         """
-        while not self.queue.empty() or self._processing:
+        while not self.queue.empty() or self._processing_count > 0:
             await anyio.sleep(self.capacity_refresh_time)
 
     async def stop(self) -> None:
@@ -196,7 +198,7 @@ class Processor(Observer):
         prev_event: Event | None = None
         events_processed = 0
 
-        self._processing = True
+        self._processing_count += 1
         try:
             async with create_task_group() as tg:
                 while self.available_capacity > 0 and not self.queue.empty():
@@ -242,7 +244,7 @@ class Processor(Observer):
                     prev_event = next_event
                     self._available_capacity -= 1
         finally:
-            self._processing = False
+            self._processing_count -= 1
 
         if events_processed > 0:
             self.available_capacity = self.queue_capacity
