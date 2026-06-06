@@ -69,6 +69,10 @@ class Processor(Observer):
         self._available_capacity = queue_capacity
         self._execution_mode = False
         self._stop_event = ConcurrencyEvent()
+        # True while process() is mid-cycle: events may be dequeued (queue
+        # empty) yet still in flight inside the task group. join() must not
+        # return during this window.
+        self._processing = False
         if concurrency_limit:
             self._concurrency_sem = Semaphore(concurrency_limit)
         else:
@@ -137,16 +141,18 @@ class Processor(Observer):
 
         ``asyncio.Queue.join()`` requires a matching ``task_done()`` for every
         ``queue.get()`` call.  ``Processor.process()`` calls ``get()`` via
-        ``dequeue()`` but never calls ``task_done()``, so
-        ``asyncio.Queue.join()`` hangs indefinitely.
+        ``dequeue()`` but never calls ``task_done()``, so plain
+        ``asyncio.Queue.join()`` would hang indefinitely.
 
-        This implementation polls ``queue.empty()`` at
-        ``capacity_refresh_time`` intervals instead, which is accurate because
-        ``process()`` uses a task group that awaits all dispatched invocations
-        before returning — by the time the queue is empty, every item that was
-        ever dequeued has fully completed.
+        Instead, wait until BOTH the queue is empty AND ``process()`` is not
+        mid-cycle. Polling ``queue.empty()`` alone is racy: ``process()`` can
+        dequeue an event (emptying the queue) and leave it ``PROCESSING`` inside
+        its task group, during which the queue is empty but work is in flight.
+        ``self._processing`` stays True across that whole span — the task group
+        only exits once every dispatched invocation has completed — so this
+        cannot return while dequeued work is still running.
         """
-        while not self.queue.empty():
+        while not self.queue.empty() or self._processing:
             await anyio.sleep(self.capacity_refresh_time)
 
     async def stop(self) -> None:
@@ -190,49 +196,53 @@ class Processor(Observer):
         prev_event: Event | None = None
         events_processed = 0
 
-        async with create_task_group() as tg:
-            while self.available_capacity > 0 and not self.queue.empty():
-                if prev_event and prev_event.status == EventStatus.PENDING:
-                    # Wait if previous event is still pending
-                    await anyio.sleep(self.capacity_refresh_time)
-                    next_event = prev_event
-                else:
-                    next_event = await self.dequeue()
-
-                if await self.request_permission(**next_event.request):
-                    # invoke()/stream() are total: a business failure is captured
-                    # as FAILED status, not raised, so one event's failure never
-                    # aborts the TaskGroup. Cancellation (BaseException) still
-                    # propagates — correctly aborting the group.
-                    if next_event.streaming:
-
-                        async def consume_stream(event):
-                            async for _ in event.stream():
-                                pass
-
-                        if self._concurrency_sem:
-
-                            async def stream_with_sem(event):
-                                async with self._concurrency_sem:
-                                    await consume_stream(event)
-
-                            tg.start_soon(stream_with_sem, next_event)
-                        else:
-                            tg.start_soon(consume_stream, next_event)
+        self._processing = True
+        try:
+            async with create_task_group() as tg:
+                while self.available_capacity > 0 and not self.queue.empty():
+                    if prev_event and prev_event.status == EventStatus.PENDING:
+                        # Wait if previous event is still pending
+                        await anyio.sleep(self.capacity_refresh_time)
+                        next_event = prev_event
                     else:
-                        if self._concurrency_sem:
+                        next_event = await self.dequeue()
 
-                            async def invoke_with_sem(event):
-                                async with self._concurrency_sem:
-                                    await event.invoke()
+                    if await self.request_permission(**next_event.request):
+                        # invoke()/stream() are total: a business failure is captured
+                        # as FAILED status, not raised, so one event's failure never
+                        # aborts the TaskGroup. Cancellation (BaseException) still
+                        # propagates — correctly aborting the group.
+                        if next_event.streaming:
 
-                            tg.start_soon(invoke_with_sem, next_event)
+                            async def consume_stream(event):
+                                async for _ in event.stream():
+                                    pass
+
+                            if self._concurrency_sem:
+
+                                async def stream_with_sem(event):
+                                    async with self._concurrency_sem:
+                                        await consume_stream(event)
+
+                                tg.start_soon(stream_with_sem, next_event)
+                            else:
+                                tg.start_soon(consume_stream, next_event)
                         else:
-                            tg.start_soon(next_event.invoke)
-                    events_processed += 1
+                            if self._concurrency_sem:
 
-                prev_event = next_event
-                self._available_capacity -= 1
+                                async def invoke_with_sem(event):
+                                    async with self._concurrency_sem:
+                                        await event.invoke()
+
+                                tg.start_soon(invoke_with_sem, next_event)
+                            else:
+                                tg.start_soon(next_event.invoke)
+                        events_processed += 1
+
+                    prev_event = next_event
+                    self._available_capacity -= 1
+        finally:
+            self._processing = False
 
         if events_processed > 0:
             self.available_capacity = self.queue_capacity

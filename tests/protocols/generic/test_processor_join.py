@@ -160,3 +160,26 @@ class TestProcessorJoinCompletion:
         await asyncio.wait_for(p.join(), timeout=1.0)
         assert ok.status == EventStatus.COMPLETED
         assert fail.status == EventStatus.FAILED
+
+    async def test_join_waits_for_inflight_dequeued_event(self):
+        """RACE regression: join() must not return while process() holds a
+        dequeued event in flight.
+
+        process() dequeues the slow event (queue becomes empty) and runs its
+        _invoke inside the task group. Polling queue.empty() alone would let a
+        concurrent join() return early with the event still PROCESSING. The
+        _processing flag keeps join() blocked until process() exits.
+        """
+        p = _proc(queue_capacity=3, concurrency_limit=3, capacity_refresh_time=0.005)
+        event = _SlowEvent()
+        await p.enqueue(event)
+
+        proc_task = asyncio.create_task(p.process())
+        # Let process() dequeue the event (queue now empty) while _invoke sleeps.
+        await asyncio.sleep(0.005)
+        assert p.queue.empty()  # queue drained, but work is still in flight
+
+        await asyncio.wait_for(p.join(), timeout=2.0)
+        # If join() respected only queue.empty() this would still be PROCESSING.
+        assert event.status == EventStatus.COMPLETED
+        await proc_task

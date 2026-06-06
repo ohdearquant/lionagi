@@ -102,9 +102,13 @@ def _validate_search_path(path: str, workspace_root: str | None) -> tuple[str, s
     Raises:
         PermissionError: If the resolved path escapes workspace_root.
     """
-    resolved = Path(path).resolve()
     if workspace_root is not None:
         root = Path(workspace_root).resolve()
+        # Resolve relative paths against the workspace root (NOT the process
+        # cwd) so e.g. path="." targets the agent's workspace, then verify
+        # containment. resolve() follows symlinks, blocking symlinked escapes.
+        requested = Path(path)
+        resolved = (requested if requested.is_absolute() else root / requested).resolve()
         try:
             resolved.relative_to(root)
         except ValueError as exc:
@@ -112,6 +116,8 @@ def _validate_search_path(path: str, workspace_root: str | None) -> tuple[str, s
                 f"Search path {path!r} resolves to {resolved} which is outside "
                 f"workspace root {root}. Refusing to search."
             ) from exc
+    else:
+        resolved = Path(path).resolve()
     return str(resolved), None
 
 
@@ -122,11 +128,10 @@ def _grep_sync(
     max_results: int,
     workspace_root: str | None,
 ) -> SearchResponse:
-    _, err = _validate_search_path(path, workspace_root)
+    resolved_path, err = _validate_search_path(path, workspace_root)
     if err:
         return SearchResponse(success=False, error=err, count=0)
 
-    resolved_path = str(Path(path).resolve())
     cmd = ["grep", "-rn", "-E", pattern, resolved_path]
     if include:
         cmd += ["--include", include]
@@ -163,11 +168,10 @@ def _find_sync(
     max_results: int,
     workspace_root: str | None,
 ) -> SearchResponse:
-    _, err = _validate_search_path(path, workspace_root)
+    resolved_path, err = _validate_search_path(path, workspace_root)
     if err:
         return SearchResponse(success=False, error=err, count=0)
 
-    resolved_path = str(Path(path).resolve())
     cmd = ["find", resolved_path, "-name", pattern]
 
     try:

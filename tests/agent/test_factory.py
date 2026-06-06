@@ -561,3 +561,31 @@ async def test_load_mcp_breaks_at_lionagi_dir(tmp_path, monkeypatch):
     )
 
     assert calls and calls[0] == str(mcp_file)
+
+
+# ---------------------------------------------------------------------------
+# Search tool workspace containment wiring (regression)
+# ---------------------------------------------------------------------------
+
+
+async def test_search_tool_gets_workspace_root_from_cwd(tmp_path):
+    """tools=["search"] must wire spec.cwd into SearchTool.workspace_root.
+
+    Regression: the standalone search branch registered SearchTool() with no
+    workspace_root, so normal agents got no containment. Here a search outside
+    the configured cwd must be rejected fail-closed.
+    """
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    config = AgentConfig(tools=["search"], cwd=str(ws))
+    branch = await _make(config)
+
+    key = next(k for k in branch.acts.registry.keys() if "search" in k)
+    tool = branch.acts.registry[key]
+
+    result = await tool.func_callable(action="grep", pattern="x", path=str(outside))
+    assert result["success"] is False
+    assert "workspace root" in (result.get("error") or "")

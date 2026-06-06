@@ -101,3 +101,21 @@ class TestAcreatePathTraversalContainment:
         base.mkdir()
         with pytest.raises(ValueError, match="directory separators"):
             await acreate_path(directory=base, filename="win\\path.txt")
+
+    @pytest.mark.anyio
+    async def test_symlinked_subdir_escape_rejected(self, tmp_path):
+        """A symlinked subdirectory pointing outside the base must be rejected.
+
+        Regression: the base root must be captured BEFORE the filename redirects
+        `directory` into a subdir, otherwise resolve() through the symlink makes
+        the escaped location look like the base.
+        """
+        base = tmp_path / "base"
+        base.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (base / "link").symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(ValueError, match="escapes base directory"):
+            await acreate_path(directory=base, filename="link/escape.txt")
+        assert not (outside / "escape.txt").exists()

@@ -238,6 +238,30 @@ class PiCodeRequest(BaseModel):
             safe.append(raw)
         return safe
 
+    @model_validator(mode="after")
+    def _contain_file_args_in_repo(self) -> PiCodeRequest:
+        """Fail-closed: every file_args entry must resolve inside ``repo``.
+
+        The lexical field validator rejects absolute paths and ``..``, but a
+        repo-local symlink (``repo/link -> /outside``) is lexically clean yet
+        lets Pi read outside the repo. ``resolve()`` follows symlinks, so this
+        rejects any entry whose real location escapes ``repo`` before the
+        subprocess is constructed.
+        """
+        repo_root = self.repo.resolve()
+        for raw in self.file_args:
+            entry = raw.lstrip("@")
+            resolved = (repo_root / entry).resolve()
+            try:
+                resolved.relative_to(repo_root)
+            except ValueError as exc:
+                raise ValueError(
+                    f"file_args entry {raw!r} resolves to {resolved} which is "
+                    f"outside the repository root {repo_root} (symlink escape). "
+                    "Only paths that remain inside the repository are allowed."
+                ) from exc
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def _infer_provider_from_model(cls, data):

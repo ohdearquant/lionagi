@@ -178,3 +178,29 @@ class TestSearchToolHandleRequestContainment:
     def test_search_tool_default_no_workspace_root(self):
         tool = SearchTool()
         assert tool._workspace_root is None
+
+
+class TestRelativePathResolvedAgainstRoot:
+    """Relative search paths must resolve against workspace_root, not cwd."""
+
+    def test_dot_path_resolves_to_workspace_root(self, tmp_path):
+        """path='.' must resolve to workspace_root, not the process cwd."""
+        root = tmp_path / "ws"
+        root.mkdir()
+        resolved, err = _validate_search_path(".", str(root))
+        assert err is None
+        assert resolved == str(root.resolve())
+
+    def test_relative_subpath_resolves_under_root(self, tmp_path):
+        root = tmp_path / "ws"
+        (root / "src").mkdir(parents=True)
+        resolved, err = _validate_search_path("src", str(root))
+        assert err is None
+        assert resolved == str((root / "src").resolve())
+
+    def test_relative_escape_rejected(self, tmp_path):
+        """A relative path that climbs out of root is rejected."""
+        root = tmp_path / "ws"
+        root.mkdir()
+        with pytest.raises(PermissionError, match="outside workspace root"):
+            _validate_search_path("../escape", str(root))

@@ -11,10 +11,11 @@ from lionagi.ln.types import ModelConfig
 from .message import Message, MessageContent, MessageRole
 from .validators import validate_image_url
 
-# Pattern for a well-formed inline image data URI.  Only image/* MIME types
-# are accepted; the payload must be non-empty base64.  This is intentionally
-# restrictive — other data: schemes (HTML, SVG, JS) are rejected.
-_DATA_IMAGE_RE = re.compile(r"^data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/]+=*$")
+# Pattern for a well-formed inline image data URI.  Only a bitmap MIME
+# allowlist is accepted and the payload must be non-empty base64.  This is
+# intentionally restrictive — active-content types (HTML, JS, and SVG, which
+# can carry scripts) are rejected, as are other data: schemes.
+_DATA_IMAGE_RE = re.compile(r"^data:image/(?:png|jpe?g|gif|webp);base64,[A-Za-z0-9+/]+=*$")
 
 _INSTRUCTION_SERIALIZE_EXCLUDE: frozenset[str] = frozenset(
     {"response_format", "structure", "_structure_instance"}

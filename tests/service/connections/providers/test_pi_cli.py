@@ -271,3 +271,28 @@ class TestPiFileArgsValidation:
                 prompt="hello",
                 file_args=["safe.txt", "/absolute/path.txt"],
             )
+
+    def test_symlink_escape_rejected(self, tmp_path):
+        """A repo-local symlink to outside the repo must be rejected.
+
+        ``repo/link -> /outside`` with file_args=["link/secret.txt"] is
+        lexically clean (no abs path, no ``..``) but resolves outside the repo.
+        The model-level validator resolves against repo.resolve() and rejects it.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("secret")
+        (repo / "link").symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(ValueError, match="outside the repository"):
+            PiCodeRequest(prompt="hi", repo=repo, file_args=["link/secret.txt"])
+
+    def test_real_relative_path_inside_repo_allowed(self, tmp_path):
+        """A genuine relative path inside the repo passes the symlink check."""
+        repo = tmp_path / "repo"
+        (repo / "src").mkdir(parents=True)
+        (repo / "src" / "main.py").write_text("x = 1")
+        req = PiCodeRequest(prompt="hi", repo=repo, file_args=["src/main.py"])
+        assert "@src/main.py" in req.as_cmd_args()

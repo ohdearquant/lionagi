@@ -66,6 +66,15 @@ class TestImageUrlAttackRejection:
         with pytest.raises(ValueError, match="data:image"):
             _render("data:image/svg+xml,<svg><script>alert(1)</script></svg>")
 
+    def test_data_svg_base64_rejected(self):
+        """base64 SVG must also be rejected — SVG can carry active content, so
+        only a bitmap MIME allowlist (png/jpeg/gif/webp) is accepted."""
+        import base64
+
+        payload = base64.b64encode(b"<svg><script>alert(1)</script></svg>").decode()
+        with pytest.raises(ValueError, match="data:image"):
+            _render(f"data:image/svg+xml;base64,{payload}")
+
     def test_internal_ip_allowed_via_http(self):
         """Private-range HTTP URLs are NOT blocked at this layer.
 

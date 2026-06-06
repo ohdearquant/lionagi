@@ -75,6 +75,12 @@ async def acreate_path(
     async def _impl() -> AsyncPath:
         nonlocal directory, filename
 
+        # Capture the ORIGINAL base root (symlinks resolved) BEFORE `filename`
+        # can redirect `directory` into a subdirectory. All containment checks
+        # validate against this fixed root, so a symlinked subdirectory pointing
+        # outside the base cannot be used to escape.
+        base_root = StdPath(str(directory)).resolve()
+
         if "/" in filename:
             parts = filename.split("/")
             # Fail-closed: reject any path component that is '.' or '..' to
@@ -97,17 +103,20 @@ async def acreate_path(
         if filename in (".", ".."):
             raise ValueError(f"Filename must not be '.' or '..'; got {filename!r}.")
 
-        # Resolve and verify the resolved path stays within the base directory.
-        base_resolved = StdPath(str(directory)).resolve()
-        candidate_raw = StdPath(str(directory)) / filename
-        candidate_resolved = candidate_raw.resolve()
-        try:
-            candidate_resolved.relative_to(base_resolved)
-        except ValueError as exc:
-            raise ValueError(
-                f"Resolved path {candidate_resolved} escapes base directory "
-                f"{base_resolved}. Refusing to create path."
-            ) from exc
+        # Verify the (possibly redirected) directory AND the final candidate
+        # both resolve to a location within the original base root. resolve()
+        # follows symlinks, so a symlinked subdir escaping the root is rejected
+        # before any filesystem side effect.
+        dir_resolved = StdPath(str(directory)).resolve()
+        candidate_resolved = dir_resolved / filename
+        for escapee in (dir_resolved, candidate_resolved):
+            try:
+                escapee.relative_to(base_root)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Resolved path {escapee} escapes base directory "
+                    f"{base_root}. Refusing to create path."
+                ) from exc
 
         directory = AsyncPath(directory)
         if "." in filename:
