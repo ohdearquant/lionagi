@@ -34,7 +34,7 @@ def _strip_sentinels(obj: Any, none_as_sentinel=False, empty_as_sentinel=False) 
 
 def _to_indices(key: IndicesType) -> list[str | int]:
     """Normalize a single key or tuple of keys to a list of indices."""
-    if isinstance(key, (str, int)):
+    if isinstance(key, str | int):
         return [key]
     return list(key)
 
@@ -79,7 +79,7 @@ class Note(BaseModel):
         """Update nested structure at path (list: extend/append; dict: merge)."""
         existing = self.get(indices, None)
         if existing is None:
-            if not isinstance(value, (list, dict)):
+            if not isinstance(value, list | dict):
                 value = [value]
             self.set(indices, value)
         elif isinstance(existing, list):

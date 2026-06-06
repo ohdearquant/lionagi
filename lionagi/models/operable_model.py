@@ -441,10 +441,11 @@ class OperableModel(HashableModel):
         if hasattr(field_obj, attr):
             return True
         elif isinstance(field_obj.json_schema_extra, dict):
-            if field_name in field_obj.json_schema_extra:
+            # json_schema_extra stores custom attributes set via field_setattr;
+            # check for the requested *attr* name, not the field name.
+            if attr in field_obj.json_schema_extra:
                 return True
-        else:
-            return False
+        return False
 
     def field_getattr(
         self,
@@ -574,11 +575,18 @@ class OperableModel(HashableModel):
         )
         model_cls = model_params.create_new_model()
 
-        # Update forward references if requested
+        # Update forward references if requested. model_rebuild() can raise
+        # PydanticUserError when referenced types are not yet defined (e.g.
+        # mutually-recursive models built incrementally). Log and continue so
+        # that the partially-built model is still returned to the caller.
         if update_forward_refs:
             try:
                 model_cls.model_rebuild()
             except Exception:
-                pass  # Ignore rebuild errors for forward refs that can't be resolved yet
+                logger.debug(
+                    "model_rebuild() failed for %s — forward references may not be resolved yet",
+                    model_cls.__name__,
+                    exc_info=True,
+                )
 
         return model_cls

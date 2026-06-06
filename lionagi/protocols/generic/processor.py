@@ -133,8 +133,21 @@ class Processor(Observer):
         return await self.queue.get()
 
     async def join(self) -> None:
-        """Blocks until the queue is empty and all tasks are done."""
-        await self.queue.join()
+        """Blocks until the queue is empty and all dispatched tasks are done.
+
+        ``asyncio.Queue.join()`` requires a matching ``task_done()`` for every
+        ``queue.get()`` call.  ``Processor.process()`` calls ``get()`` via
+        ``dequeue()`` but never calls ``task_done()``, so
+        ``asyncio.Queue.join()`` hangs indefinitely.
+
+        This implementation polls ``queue.empty()`` at
+        ``capacity_refresh_time`` intervals instead, which is accurate because
+        ``process()`` uses a task group that awaits all dispatched invocations
+        before returning — by the time the queue is empty, every item that was
+        ever dequeued has fully completed.
+        """
+        while not self.queue.empty():
+            await anyio.sleep(self.capacity_refresh_time)
 
     async def stop(self) -> None:
         """Signals the processor to stop processing events."""
@@ -179,7 +192,6 @@ class Processor(Observer):
 
         async with create_task_group() as tg:
             while self.available_capacity > 0 and not self.queue.empty():
-                next_event = None
                 if prev_event and prev_event.status == EventStatus.PENDING:
                     # Wait if previous event is still pending
                     await anyio.sleep(self.capacity_refresh_time)

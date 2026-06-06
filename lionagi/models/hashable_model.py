@@ -54,7 +54,7 @@ class HashableModel(BaseModel):
             case "python":
                 return cls.model_validate(data, **kw)
             case "json":
-                if isinstance(data, str):
+                if isinstance(data, str | bytes):
                     data = orjson.loads(data)
                 return cls.model_validate(data, **kw)
             case "db":

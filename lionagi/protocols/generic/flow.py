@@ -246,7 +246,7 @@ class Flow(Element, Generic[E, P]):
         with self._lock:
             resolved: list[P] = []
             if progressions is not None:
-                if isinstance(progressions, (str, UUID, Progression)):
+                if isinstance(progressions, str | UUID | Progression):
                     progs_list = [progressions]
                 else:
                     progs_list = list(progressions)

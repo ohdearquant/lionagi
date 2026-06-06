@@ -285,7 +285,7 @@ def validate_order(order: Any) -> list[UUID]:
             out.append(cur)
         elif isinstance(cur, str):
             out.append(UUID(cur))
-        elif isinstance(cur, (list, tuple, set)):
+        elif isinstance(cur, list | tuple | set):
             stack.extend(reversed(cur))
         else:
             raise ValueError("Invalid item in order.")

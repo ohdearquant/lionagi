@@ -1,5 +1,6 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: N999  -- module intentionally named ReAct (acronym); rename breaks public API
 
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
 B = TypeVar("B", bound=type[BaseModel])
 
 
-async def ReAct(
+async def ReAct(  # noqa: N802  # public name is the ReAct acronym
     branch: "Branch",
     instruct: Instruct | dict[str, Any],
     interpret: bool = False,
@@ -147,7 +148,7 @@ async def ReAct(
     )
 
 
-async def ReAct_v1(
+async def ReAct_v1(  # noqa: N802  # public name preserves the ReAct acronym
     branch: "Branch",
     instruction: str,
     chat_param: ChatParam,
@@ -301,7 +302,7 @@ def handle_field_models(
     return fms
 
 
-async def ReActStream(
+async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
     branch: "Branch",
     instruction: str,
     chat_param: ChatParam,

@@ -11,6 +11,10 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+# Keep legacy nominal ABC for places that need issubclass checks (e.g., Pile)
+# Do NOT remove – Pile and others rely on issubclass(..., Observable) nominal checks.
+from ._concepts import Observable as LegacyObservable
+
 __all__ = (
     "ObservableProto",
     "Observable",
@@ -39,7 +43,3 @@ class ObservableProto(Protocol):
 
 # Convenience alias for V1 consumers (keeps import names short)
 Observable = ObservableProto
-
-# Keep legacy nominal ABC for places that need issubclass checks (e.g., Pile)
-# Do NOT remove – Pile and others rely on issubclass(..., Observable) nominal checks.
-from ._concepts import Observable as LegacyObservable  # noqa: E402  (intentional late import)

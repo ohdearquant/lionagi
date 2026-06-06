@@ -292,19 +292,13 @@ def test_action_response_content_validator_with_nested_dict():
 
 def test_action_response_content_validator_invalid_type():
     """Test ActionResponse content validator rejects invalid types."""
-    with pytest.raises(
-        TypeError, match="content must be dict or ActionResponseContent"
-    ):
+    with pytest.raises(TypeError, match="content must be dict or ActionResponseContent"):
         ActionResponse(content="invalid_string")
 
-    with pytest.raises(
-        TypeError, match="content must be dict or ActionResponseContent"
-    ):
+    with pytest.raises(TypeError, match="content must be dict or ActionResponseContent"):
         ActionResponse(content=12345)
 
-    with pytest.raises(
-        TypeError, match="content must be dict or ActionResponseContent"
-    ):
+    with pytest.raises(TypeError, match="content must be dict or ActionResponseContent"):
         ActionResponse(content=["list", "of", "items"])
 
 
@@ -474,13 +468,9 @@ def test_action_response_dataclass_equality():
 
 def test_action_response_multiple_instances_independence():
     """Test that multiple ActionResponse instances are independent."""
-    response1 = ActionResponse(
-        content={"function": "func1", "arguments": {"x": 1}, "output": 1}
-    )
+    response1 = ActionResponse(content={"function": "func1", "arguments": {"x": 1}, "output": 1})
 
-    response2 = ActionResponse(
-        content={"function": "func2", "arguments": {"x": 2}, "output": 2}
-    )
+    response2 = ActionResponse(content={"function": "func2", "arguments": {"x": 2}, "output": 2})
 
     # Modify one instance
     response1.content.arguments["x"] = 999
