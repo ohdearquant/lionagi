@@ -76,7 +76,6 @@ def load_settings(
             global_settings = yaml.safe_load(f) or {}
         _deep_merge(merged, global_settings)
 
-    # Finding 1: skip project-local settings unless explicitly trusted
     if not include_project:
         return merged
 
@@ -172,14 +171,10 @@ def _import_hook(
     *,
     trusted_hook_modules: set[str] | frozenset[str],
 ) -> Callable | None:
-    """Import a hook function from 'module.path:function_name'.
-
-    Finding 1: only imports from the trusted_hook_modules allowlist.
-    """
+    """Import a hook function from 'module.path:function_name'."""
     if ":" not in import_path:
         return None
     module_path, _, func_name = import_path.rpartition(":")
-    # Finding 1: reject untrusted module imports
     if module_path not in trusted_hook_modules:
         raise PermissionError(
             f"Untrusted hook module {module_path!r}. Add it to trusted_hook_modules to allow."
@@ -213,13 +208,9 @@ async def _wait_proc(proc: asyncio.subprocess.Process, grace: float = 2.0) -> No
 def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) -> Callable:
     """Create an async hook that runs a shell command via argv list (shell=False).
 
-    Finding 11: command_template must be a list of strings (no shell string).
-    Finding 12: uses asyncio.create_subprocess_exec to avoid blocking the event loop.
-
     Pre-hooks: args passed as JSON on stdin. Non-zero exit = PermissionError.
     Post-hooks: result passed as JSON on stdin. Stdout captured but ignored.
     """
-    # Finding 11: reject shell strings, require argv list
     if not isinstance(command_template, list) or not all(
         isinstance(x, str) for x in command_template
     ):
@@ -242,7 +233,6 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
             argv = _render_argv(args)
             proc = None
             try:
-                # Finding 12: async subprocess instead of blocking subprocess.run()
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
                     stdin=asyncio.subprocess.PIPE,
@@ -277,7 +267,6 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
             argv = _render_argv({**args, **result})
             proc = None
             try:
-                # Finding 12: async subprocess instead of blocking subprocess.run()
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
                     stdin=asyncio.subprocess.PIPE,

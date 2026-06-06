@@ -14,14 +14,12 @@ from lionagi.protocols.action.tool import Tool
 
 from ..base import LionTool
 
-# Finding 6/7: deny access to common secret/credential filenames
 _DENIED_NAMES: frozenset[str] = frozenset(
     {".env", ".netrc", "id_rsa", "id_ed25519", "id_ecdsa", ".htpasswd"}
 )
 
 
 def _resolve_workspace_path(path: str, workspace_root: Path) -> Path:
-    """Finding 6: resolve path under workspace_root; raise PermissionError if it escapes."""
     raw = Path(path).expanduser()
     candidate = raw if raw.is_absolute() else workspace_root / raw
     # GAP B: check symlink on candidate BEFORE resolve() follows it
@@ -38,7 +36,6 @@ def _resolve_workspace_path(path: str, workspace_root: Path) -> Path:
 
 
 def _resolve_existing_workspace_file(path: str, workspace_root: Path) -> Path:
-    """Finding 7: resolve an existing file; reject symlinks."""
     p = _resolve_workspace_path(path, workspace_root)
     if p.is_symlink():
         raise PermissionError(f"Refusing to edit symlink: {path!r}")
@@ -48,7 +45,6 @@ def _resolve_existing_workspace_file(path: str, workspace_root: Path) -> Path:
 
 
 def _write_text_no_follow(path: Path, content: str) -> None:
-    """Finding 7: write to an existing file without following symlinks (O_NOFOLLOW)."""
     flags = os.O_WRONLY | os.O_TRUNC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -123,7 +119,6 @@ class EditorResponse(BaseModel):
 
 
 def _write_sync(file_path: str, content: str, workspace_root: Path) -> EditorResponse:
-    # Finding 6: validate path is within workspace root before writing
     try:
         p = _resolve_workspace_path(file_path, workspace_root)
     except PermissionError as e:
@@ -143,7 +138,6 @@ def _edit_sync(
     replace_all: bool,
     workspace_root: Path,
 ) -> EditorResponse:
-    # Finding 6/7: validate path and reject symlinks before reading or writing
     try:
         p = _resolve_existing_workspace_file(file_path, workspace_root)
     except PermissionError as e:
@@ -174,7 +168,6 @@ def _edit_sync(
     updated = original.replace(old_string, new_string, -1 if replace_all else 1)
 
     try:
-        # Finding 7: write without following symlinks
         _write_text_no_follow(p, updated)
     except OSError as e:
         return EditorResponse(success=False, error=f"Write error: {e}")
@@ -199,7 +192,6 @@ class EditorTool(LionTool):
 
     def __init__(self, workspace_root: str | Path | None = None):
         self._tool = None
-        # Finding 6: default to CWD when no workspace root is specified
         self.workspace_root = Path(workspace_root or Path.cwd()).expanduser().resolve()
 
     async def handle_request(self, request: EditorRequest) -> EditorResponse:

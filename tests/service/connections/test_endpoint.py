@@ -244,8 +244,6 @@ class TestEndpoint:
         ensures the finally block calls release() without await so that real
         aiohttp responses are cleaned up correctly on success, error, and
         cancellation paths.
-
-        See audit finding LIONAGI-AUDIT-006.
         """
         # Disable OpenAI compatibility for pure HTTP test
         openai_config.openai_compatible = False

@@ -1,19 +1,12 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for studio audit findings (2026-06-06).
-
-LIONAGI-AUDIT-001: Artifact GET routes bypass configured bearer authentication.
-LIONAGI-AUDIT-002: Scheduled fire tasks launched without lifecycle ownership.
-LIONAGI-AUDIT-003: Schedule action kinds not validated.
-"""
-
 from __future__ import annotations
 
 import asyncio
 from importlib import reload
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 

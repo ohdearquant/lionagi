@@ -4,8 +4,6 @@ Fail-closed transport security: both command and URL transports require
 explicit opt-in via allow_commands=True / allow_urls=True before the
 transport object is constructed. These tests verify the boundary is
 enforced before side effects (process spawn, outbound TCP) occur.
-
-See audit finding LIONAGI-AUDIT-007.
 """
 
 import pytest
@@ -103,7 +101,6 @@ class TestFilterEnv:
 class TestValidateCommand:
     """Test command validation — fail-closed transport security.
 
-    Attack regression for audit finding LIONAGI-AUDIT-007:
     A loaded .mcp.json config previously caused command execution before any
     policy was checked (fail-open). Commands are now denied by default.
     """
@@ -175,7 +172,6 @@ class TestValidateCommand:
 class TestValidateUrl:
     """Test URL transport validation — fail-closed security.
 
-    Attack regression for audit finding LIONAGI-AUDIT-007:
     URL configs were previously passed directly to FastMCPClient without
     any validation. URLs are now denied by default.
     """
@@ -226,8 +222,6 @@ class TestMCPConnectionPoolFailClosed:
     The test asserts that PermissionError is raised BEFORE FastMCPClient or
     StdioTransport is constructed (verified by checking fastmcp was not imported
     and no network/process side effect occurred).
-
-    See audit finding LIONAGI-AUDIT-007.
     """
 
     @pytest.mark.asyncio

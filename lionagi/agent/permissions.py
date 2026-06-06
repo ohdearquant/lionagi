@@ -57,10 +57,8 @@ __all__ = (
 
 logger = logging.getLogger(__name__)
 
-# Finding 2: shell control operators bypass fnmatch allow-rules via suffix injection
 _SHELL_CONTROL = re.compile(r"(;|&&|\|\||\||`|\$\(|[<>]|\n)")
 
-# Finding 10: tool alias → canonical name mapping
 _TOOL_ALIASES = {
     "bash_tool": "bash",
     "reader_tool": "reader",
@@ -97,7 +95,6 @@ class PermissionPolicy:
     on_escalate: Callable | None = None
 
     def __post_init__(self) -> None:
-        # Finding 10: normalize all rule keys to canonical tool names at init time
         self.allow = _normalize_rules(self.allow)
         self.deny = _normalize_rules(self.deny)
         self.escalate = _normalize_rules(self.escalate)
@@ -147,9 +144,7 @@ class PermissionPolicy:
         if self.mode == "deny_all":
             return PermissionDecision("deny", tool_name, action, "mode=deny_all")
 
-        # Finding 10: normalize tool name before rule lookup
         tool_name = _canonical_tool_name(tool_name)
-        # Finding 2: reject shell control operators before pattern matching
         try:
             match_str = _build_match_string(tool_name, action, args)
         except PermissionError as e:
@@ -185,7 +180,6 @@ class PermissionPolicy:
                     pattern,
                 )
 
-        # Finding 10: default deny instead of default allow in rules mode
         return PermissionDecision("deny", tool_name, action, "no matching rule, default deny")
 
     def to_pre_hook(self) -> Callable:
@@ -218,7 +212,6 @@ class PermissionPolicy:
 def _build_match_string(tool_name: str, action: str, args: dict) -> str:
     if tool_name == "bash":
         command = str(args.get("command", ""))
-        # Finding 2: reject shell control operators before fnmatch
         if _SHELL_CONTROL.search(command):
             raise PermissionError(f"Shell control operator requires explicit approval: {command!r}")
         return command

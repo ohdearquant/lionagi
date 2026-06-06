@@ -1,18 +1,9 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for lionagi/testing audit findings (2026-06-06).
-
-LIONAGI-AUDIT-001: asyncio.timeout (Python 3.11+) used in helpers — must use
-    lionagi.ln.fail_after / move_on_after for py310 compat.
-LIONAGI-AUDIT-002: TestDataLoader.load_json path traversal.
-"""
-
 from __future__ import annotations
 
 import asyncio
-import json
-from pathlib import Path
 
 import pytest
 

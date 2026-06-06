@@ -39,9 +39,6 @@ def test_skill_outcome_dump_round_trips():
     assert again == o
 
 
-# ── ReviewVerdict ─────────────────────────────────────────────────────────────
-
-
 def test_review_verdict_default_outcome_kind_pinned():
     """ADR-0021 promises kind='review_verdict' — frontend dispatch depends on it."""
     v = ReviewVerdict(
@@ -186,11 +183,7 @@ def test_outcome_kinds_are_distinct():
     assert len(kinds) == 3
 
 
-# ── LIONAGI-AUDIT-002: Finding path/line validation ───────────────────────────
-
-
 def test_finding_rejects_absolute_unix_path():
-    """LIONAGI-AUDIT-002: Finding.file must be repo-relative, not absolute."""
     with pytest.raises(ValidationError, match="repo-relative"):
         Finding(severity="high", category="security", description="x", file="/etc/passwd")
 
@@ -244,9 +237,6 @@ def test_finding_accepts_none_file():
 def test_finding_accepts_positive_line():
     f = Finding(severity="info", category="docs", description="x", line=42)
     assert f.line == 42
-
-
-# ── LIONAGI-AUDIT-003: GateVerdict consistency ────────────────────────────────
 
 
 def test_gate_verdict_defaults_passed_to_gate_passed_true():
