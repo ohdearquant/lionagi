@@ -200,9 +200,7 @@ def _preprocess_recursive(
     # Custom objects
     if recursive_custom_types:
         with contextlib.suppress(Exception):
-            mapped = _object_to_mapping_like(
-                obj, prioritize_model_dump=prioritize_model_dump
-            )
+            mapped = _object_to_mapping_like(obj, prioritize_model_dump=prioritize_model_dump)
             return _preprocess_recursive(
                 mapped,
                 depth=depth + 1,

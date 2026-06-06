@@ -400,9 +400,7 @@ def _extract_summary(session: PiSession) -> dict[str, Any]:
     for op_type in file_operations:
         file_operations[op_type] = list(dict.fromkeys(file_operations[op_type]))
 
-    result_summary = (
-        (session.result[:200] + "...") if len(session.result) > 200 else session.result
-    )
+    result_summary = (session.result[:200] + "...") if len(session.result) > 200 else session.result
 
     return {
         "tool_counts": tool_counts,
@@ -425,9 +423,7 @@ def _extract_summary(session: PiSession) -> dict[str, Any]:
 async def _ndjson_from_cli(request: PiCodeRequest):
     """Yields each JSON object emitted by Pi CLI (JSONL mode)."""
     if PI_CLI is None:
-        raise RuntimeError(
-            "Pi CLI not found. Install with: npm i -g @mariozechner/pi-coding-agent"
-        )
+        raise RuntimeError("Pi CLI not found. Install with: npm i -g @mariozechner/pi-coding-agent")
 
     import os
 

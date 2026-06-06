@@ -77,9 +77,7 @@ def _read_project_from_toml(path: Path) -> str | None:
     return None
 
 
-def _from_global_overrides(
-    cwd: Path, remote_slug: str | None
-) -> tuple[str | None, str | None]:
+def _from_global_overrides(cwd: Path, remote_slug: str | None) -> tuple[str | None, str | None]:
     """Check ~/.lionagi/settings.yaml project_overrides."""
     global_path = Path.home() / ".lionagi" / "settings.yaml"
     if not global_path.is_file():

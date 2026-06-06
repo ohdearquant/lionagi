@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """JSON serialization utilities built on orjson.
 
 Provides flexible serialization with:
@@ -8,6 +6,8 @@ Provides flexible serialization with:
 - NDJSON streaming for iterables
 - Caching of default handlers for performance
 """
+
+from __future__ import annotations
 
 import contextlib
 import datetime as dt

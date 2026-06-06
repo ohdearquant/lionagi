@@ -3,7 +3,7 @@
 import functools
 from typing import TYPE_CHECKING
 
-from lionagi.ln.types import Unset, is_sentinel
+from lionagi.ln.types import is_sentinel
 
 from ._protocol import SpecAdapter
 
@@ -154,9 +154,7 @@ class PydanticSpecAdapter(SpecAdapter):
 
         handle_mode = "raise" if strict else "force"
 
-        matched = fuzzy_match_keys(
-            data, model_cls.model_fields, handle_unmatched=handle_mode
-        )
+        matched = fuzzy_match_keys(data, model_cls.model_fields, handle_unmatched=handle_mode)
 
         # Filter out undefined values
         return {k: v for k, v in matched.items() if v != Undefined}

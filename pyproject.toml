@@ -198,6 +198,13 @@ ignore = [
 ]
 "cookbooks/**" = ["S101", "B904", "N"]
 "scripts/**" = ["S", "E731"]
+# ReAct/ReActStream/ReAct_v1 are public API names; module is imported as `ReAct`.
+"lionagi/operations/ReAct/ReAct.py" = ["N802", "N999"]
+# LOG_CONFIG property mirrors the legacy Settings.Config.LOG attribute name.
+"lionagi/config.py" = ["N802"]
+# `T` is a type loop variable; `ExceptionGroup` mirrors the stdlib name (3.10 shim).
+"lionagi/ln/_json_dump.py" = ["N806"]
+"lionagi/ln/concurrency/_compat.py" = ["N818"]
 "apps/studio/**" = [
     "S108",   # /tmp in dev server
     "B007",   # unused loop vars

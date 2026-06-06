@@ -42,8 +42,7 @@ def _assert_nlip_url_safe(url: str) -> None:
     _parsed = urlparse(url)
     if _parsed.scheme not in ("http", "https"):
         raise ValueError(
-            f"NLIP URL has unsupported scheme {_parsed.scheme!r}. "
-            "Only http and https are allowed."
+            f"NLIP URL has unsupported scheme {_parsed.scheme!r}. Only http and https are allowed."
         )
     if not is_ssrf_safe(_parsed.hostname or ""):
         raise PermissionError(

@@ -82,9 +82,7 @@ def to_num(
     target_type = validate_num_type(num_type)
 
     number_matches = (
-        number_matches[:num_count]
-        if num_count < len(number_matches)
-        else number_matches
+        number_matches[:num_count] if num_count < len(number_matches) else number_matches
     )
 
     for type_and_value in number_matches:

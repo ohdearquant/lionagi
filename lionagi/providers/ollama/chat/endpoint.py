@@ -13,7 +13,6 @@ import logging
 from pydantic import BaseModel
 
 from lionagi.service.connections.endpoint import Endpoint
-from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.utils import is_import_installed
 
 from .._config import OllamaConfigs
@@ -64,9 +63,7 @@ class OllamaChatEndpoint(Endpoint):
 
         return (payload, headers)
 
-    async def call(
-        self, request: dict | BaseModel, cache_control: bool = False, **kwargs
-    ):
+    async def call(self, request: dict | BaseModel, cache_control: bool = False, **kwargs):
         payload, headers = self.create_payload(request, **kwargs)
 
         # Check if model exists and pull if needed

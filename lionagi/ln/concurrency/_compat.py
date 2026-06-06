@@ -25,9 +25,7 @@ else:
         class BaseExceptionGroup(BaseException):  # type: ignore
             """Minimal BaseExceptionGroup implementation for Python 3.10 without exceptiongroup."""
 
-            def __init__(
-                self, message: str, exceptions: Sequence[BaseException]
-            ) -> None:
+            def __init__(self, message: str, exceptions: Sequence[BaseException]) -> None:
                 super().__init__(message)
                 self.message = message
                 self.exceptions = tuple(exceptions)

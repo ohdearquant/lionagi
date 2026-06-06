@@ -37,16 +37,12 @@ def chunk_by_chars(
         elif n_chunks == 2:
             return _chunk_two_parts(text, chunk_size, overlap_size, threshold)
         else:
-            return _chunk_multiple_parts(
-                text, chunk_size, overlap_size, n_chunks, threshold
-            )
+            return _chunk_multiple_parts(text, chunk_size, overlap_size, n_chunks, threshold)
     except Exception as e:
         raise ValueError(f"An error occurred while chunking the text: {e}") from e
 
 
-def _chunk_two_parts(
-    text: str, chunk_size: int, overlap_size: int, threshold: int
-) -> list[str]:
+def _chunk_two_parts(text: str, chunk_size: int, overlap_size: int, threshold: int) -> list[str]:
     """Handle chunking for two parts."""
     first_chunk = text[: chunk_size + overlap_size]
     if len(text) - chunk_size > threshold:
@@ -136,9 +132,7 @@ def chunk_by_tokens(
         raise ValueError(f"An error occurred while chunking the tokens: {e}") from e
 
 
-def _process_single_chunk(
-    tokens: list[str], return_tokens: bool
-) -> list[str | list[str]]:
+def _process_single_chunk(tokens: list[str], return_tokens: bool) -> list[str | list[str]]:
     """Handle processing for a single chunk."""
     return [tokens] if return_tokens else [" ".join(tokens).strip()]
 
@@ -187,9 +181,7 @@ def _chunk_token_multiple_parts(
     return _format_chunks(chunks, return_tokens)
 
 
-def _format_chunks(
-    chunks: list[list[str]], return_tokens: bool
-) -> list[str | list[str]]:
+def _format_chunks(chunks: list[list[str]], return_tokens: bool) -> list[str | list[str]]:
     """Format chunks based on the return_tokens flag."""
     return chunks if return_tokens else [" ".join(chunk).strip() for chunk in chunks]
 

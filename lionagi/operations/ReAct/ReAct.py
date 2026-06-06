@@ -7,8 +7,6 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from pydantic import BaseModel
 
-logger = logging.getLogger(__name__)
-
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.libs.validate.common_field_validators import validate_model_to_type
 from lionagi.ln.fuzzy import FuzzyMatchKeysParams
@@ -18,6 +16,8 @@ from lionagi.service.imodel import iModel
 from ..fields import Instruct
 from ..types import ActionParam, ChatParam, HandleValidation, InterpretParam, ParseParam
 from .utils import Analysis, ReActAnalysis
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from lionagi.session.branch import Branch
@@ -59,9 +59,7 @@ async def ReAct(
         verbose_analysis = kwargs.pop("verbose")
 
     # Convert Instruct to dict if needed
-    instruct_dict = (
-        instruct.to_dict() if isinstance(instruct, Instruct) else dict(instruct)
-    )
+    instruct_dict = instruct.to_dict() if isinstance(instruct, Instruct) else dict(instruct)
 
     # Build InterpretParam if interpretation requested
     intp_param = None
@@ -443,9 +441,7 @@ async def ReActStream(
         from ..act.act import _get_default_call_params
 
         _actx = (
-            action_param.with_updates(
-                strategy=getattr(analysis, "action_strategy", "concurrent")
-            )
+            action_param.with_updates(strategy=getattr(analysis, "action_strategy", "concurrent"))
             if action_param
             else ActionParam(
                 action_call_params=_get_default_call_params(),
@@ -489,9 +485,7 @@ async def ReActStream(
                     field_models=fms,
                 )
                 round_count += 1
-                out = verbose_yield(
-                    f"\n### ReAct Round No.{round_count} (injected):\n", analysis
-                )
+                out = verbose_yield(f"\n### ReAct Round No.{round_count} (injected):\n", analysis)
                 yield out
                 if extensions:
                     extensions -= 1
@@ -501,9 +495,7 @@ async def ReActStream(
 
         # Build parse context for extension
         ext_parse_param = (
-            parse_param.with_updates(
-                response_format=kwargs["chat_param"].response_format
-            )
+            parse_param.with_updates(response_format=kwargs["chat_param"].response_format)
             if parse_param
             else None
         )
@@ -555,9 +547,7 @@ async def ReActStream(
     final_chat_param = chat_param.with_updates(**resp_ctx_updates)
 
     final_parse_param = (
-        parse_param.with_updates(response_format=final_response_format)
-        if parse_param
-        else None
+        parse_param.with_updates(response_format=final_response_format) if parse_param else None
     )
 
     # Build operate kwargs, honoring response_kwargs

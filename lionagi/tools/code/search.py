@@ -101,9 +101,7 @@ def _grep_sync(
     except subprocess.TimeoutExpired:
         return SearchResponse(success=False, error="grep timed out", count=0)
     except FileNotFoundError:
-        return SearchResponse(
-            success=False, error="grep not found on this system", count=0
-        )
+        return SearchResponse(success=False, error="grep not found on this system", count=0)
     except Exception as e:
         return SearchResponse(success=False, error=f"grep error: {e}", count=0)
 
@@ -111,7 +109,7 @@ def _grep_sync(
     if result.returncode == 2:
         return SearchResponse(success=False, error=result.stderr.strip(), count=0)
 
-    lines = [l for l in result.stdout.splitlines() if l][:max_results]
+    lines = [line for line in result.stdout.splitlines() if line][:max_results]
     return SearchResponse(
         success=True,
         content="\n".join(lines),
@@ -132,16 +130,14 @@ def _find_sync(path: str, pattern: str, max_results: int) -> SearchResponse:
     except subprocess.TimeoutExpired:
         return SearchResponse(success=False, error="find timed out", count=0)
     except FileNotFoundError:
-        return SearchResponse(
-            success=False, error="find not found on this system", count=0
-        )
+        return SearchResponse(success=False, error="find not found on this system", count=0)
     except Exception as e:
         return SearchResponse(success=False, error=f"find error: {e}", count=0)
 
     if result.returncode != 0 and result.stderr.strip():
         return SearchResponse(success=False, error=result.stderr.strip(), count=0)
 
-    lines = [l for l in result.stdout.splitlines() if l][:max_results]
+    lines = [line for line in result.stdout.splitlines() if line][:max_results]
     return SearchResponse(
         success=True,
         content="\n".join(lines),
@@ -168,9 +164,7 @@ class SearchTool(LionTool):
                 request.max_results,
             )
         if request.action == SearchAction.find:
-            return await run_sync(
-                _find_sync, request.path, request.pattern, request.max_results
-            )
+            return await run_sync(_find_sync, request.path, request.pattern, request.max_results)
         return SearchResponse(success=False, error="Unknown action", count=0)
 
     def to_tool(self) -> Tool:

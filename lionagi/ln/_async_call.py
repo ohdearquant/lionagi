@@ -70,9 +70,7 @@ def _validate_func(func: Any) -> Callable:
     try:
         func_list = list(func)
     except TypeError:
-        raise ValueError(
-            "func must be callable or an iterable containing one callable."
-        ) from None
+        raise ValueError("func must be callable or an iterable containing one callable.") from None
 
     if len(func_list) != 1 or not callable(func_list[0]):
         raise ValueError("Only one callable function is allowed.")
@@ -370,9 +368,7 @@ class AlcallParams(Params):
 
     kw: dict[str, Any] = Unset
 
-    async def __call__(
-        self, input_: list[Any], func: Callable[..., T], **kw
-    ) -> list[T]:
+    async def __call__(self, input_: list[Any], func: Callable[..., T], **kw) -> list[T]:
         kwargs = {**self.default_kw(), **kw}
         return await alcall(input_, func, **kwargs)
 
@@ -383,8 +379,6 @@ class BcallParams(AlcallParams):
 
     batch_size: int
 
-    async def __call__(
-        self, input_: list[Any], func: Callable[..., T], **kw
-    ) -> list[T]:
+    async def __call__(self, input_: list[Any], func: Callable[..., T], **kw) -> list[T]:
         kwargs = {**self.default_kw(), **kw}
         return await bcall(input_, func, self.batch_size, **kwargs)

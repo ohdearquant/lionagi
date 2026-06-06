@@ -135,14 +135,10 @@ class GeminiCodeRequest(BaseModel):
         ws_path = Path(self.ws)
 
         if ws_path.is_absolute():
-            raise ValueError(
-                f"Workspace path must be relative, got absolute: {self.ws}"
-            )
+            raise ValueError(f"Workspace path must be relative, got absolute: {self.ws}")
 
         if ".." in ws_path.parts:
-            raise ValueError(
-                f"Directory traversal detected in workspace path: {self.ws}"
-            )
+            raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
 
         repo_resolved = self.repo.resolve()
         result = (self.repo / ws_path).resolve()
@@ -269,16 +265,12 @@ def _extract_summary(session: GeminiSession) -> dict[str, Any]:
         else:
             key_actions.append(f"Used {tool_name}")
 
-    key_actions = (
-        list(dict.fromkeys(key_actions)) if key_actions else ["No specific actions"]
-    )
+    key_actions = list(dict.fromkeys(key_actions)) if key_actions else ["No specific actions"]
 
     for op_type in file_operations:
         file_operations[op_type] = list(dict.fromkeys(file_operations[op_type]))
 
-    result_summary = (
-        (session.result[:200] + "...") if len(session.result) > 200 else session.result
-    )
+    result_summary = (session.result[:200] + "...") if len(session.result) > 200 else session.result
 
     return {
         "tool_counts": tool_counts,
@@ -562,9 +554,7 @@ async def stream_gemini_cli(
     if session.num_turns is None and session.messages:
         session.num_turns = len(session.messages)
     if session.duration_ms is None:
-        session.duration_ms = int(
-            (asyncio.get_running_loop().time() - _start_monotonic) * 1000
-        )
+        session.duration_ms = int((asyncio.get_running_loop().time() - _start_monotonic) * 1000)
 
     await _maybe_await(on_final, session)
     if request.verbose_output:

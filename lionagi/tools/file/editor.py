@@ -79,9 +79,7 @@ class EditorRequest(BaseModel):
     )
     content: str | None = Field(
         None,
-        description=(
-            "Full content to write to the file. Required when action='write'."
-        ),
+        description=("Full content to write to the file. Required when action='write'."),
     )
     old_string: str | None = Field(
         None,

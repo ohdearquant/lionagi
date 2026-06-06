@@ -13,9 +13,9 @@ from lionagi.utils import UNDEFINED, is_same_dtype
 
 from .field_model import FieldModel
 from .hashable_model import HashableModel
+from .model_params import ModelParams
 
 logger = logging.getLogger(__name__)
-from .model_params import ModelParams
 
 FieldName = TypeVar("FieldName", bound=str)
 
@@ -333,9 +333,7 @@ class OperableModel(HashableModel):
         # Handle field_obj
         if field_obj:
             if not isinstance(field_obj, FieldInfo):
-                raise ValueError(
-                    "Invalid field_obj, should be a pydantic FieldInfo object"
-                )
+                raise ValueError("Invalid field_obj, should be a pydantic FieldInfo object")
             self.extra_fields[field_name] = field_obj
 
         if field_model:

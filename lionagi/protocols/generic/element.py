@@ -119,7 +119,7 @@ class Element(BaseModel, Observable):
             raise ValueError(f"Invalid created_at: {val}") from None
 
     @field_validator("id", mode="before")
-    def _ensure_UUID(cls, val: UUID | str) -> UUID:
+    def _ensure_uuid(cls, val: UUID | str) -> UUID:
         """Ensures `id` is validated as an UUID."""
         if isinstance(val, UUID):
             return val
