@@ -251,3 +251,57 @@ class TestMCPConnectionPoolFailClosed:
 
         with pytest.raises(PermissionError, match="allow_commands=False"):
             await MCPConnectionPool._create_client({"command": "/bin/sh", "args": ["-c", "id"]})
+
+
+class TestLoadMcpConfigTrustedLoad:
+    """load_mcp_config must restore normal .mcp.json usage (Finding 1).
+
+    The fail-closed transport default is correct for untrusted paths, but an
+    explicit load_mcp_config() call is a trust action — it must default to an
+    allow policy so a normal config registers its tools instead of silently
+    registering zero, and it must surface a security denial loudly.
+    """
+
+    async def test_default_load_sets_allow_policy_and_registers(self, tmp_path, monkeypatch):
+        import json
+
+        from lionagi.protocols.action.manager import ActionManager
+
+        cfg = tmp_path / ".mcp.json"
+        cfg.write_text(json.dumps({"mcpServers": {"local": {"command": "echo", "args": ["hi"]}}}))
+
+        mgr = ActionManager()
+        seen = {}
+
+        async def fake_register(server_config, update=False):
+            # Capture the security policy active at registration time.
+            seen["allow_commands"] = MCPConnectionPool._security.allow_commands
+            seen["allow_urls"] = MCPConnectionPool._security.allow_urls
+            return ["local_echo"]
+
+        monkeypatch.setattr(mgr, "register_mcp_server", fake_register)
+
+        result = await mgr.load_mcp_config(str(cfg))
+        # Normal usage must register tools, not silently return [].
+        assert result == {"local": ["local_echo"]}
+        assert seen["allow_commands"] is True
+        assert seen["allow_urls"] is True
+
+    async def test_security_denial_is_raised_not_swallowed(self, tmp_path, monkeypatch):
+        import json
+
+        from lionagi.protocols.action.manager import ActionManager
+
+        cfg = tmp_path / ".mcp.json"
+        cfg.write_text(json.dumps({"mcpServers": {"local": {"command": "echo", "args": ["hi"]}}}))
+
+        mgr = ActionManager()
+
+        async def deny_register(server_config, update=False):
+            raise PermissionError("MCP command transport is disabled")
+
+        monkeypatch.setattr(mgr, "register_mcp_server", deny_register)
+
+        # A restrictive policy must surface the denial loudly, not swallow to [].
+        with pytest.raises(PermissionError):
+            await mgr.load_mcp_config(str(cfg), mcp_security=MCPSecurityConfig())

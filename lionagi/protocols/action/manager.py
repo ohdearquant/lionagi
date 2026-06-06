@@ -2,9 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from lionagi.service.connections.mcp_wrapper import MCPSecurityConfig
 
 from lionagi.protocols._concepts import Manager
 from lionagi.protocols.messages.action_request import ActionRequest
@@ -377,18 +380,37 @@ class ActionManager(Manager):
         config_path: str,
         server_names: list[str] | None = None,
         update: bool = False,
+        mcp_security: "MCPSecurityConfig | None" = None,
     ) -> dict[str, list[str]]:
         """
         Load MCP configurations from a .mcp.json file with auto-discovery.
+
+        Loading a config file is an explicit trust action: by pointing lionagi at
+        a ``.mcp.json`` you are authorizing its command/URL transports. Therefore
+        this method defaults to a permissive ``MCPSecurityConfig`` (commands and
+        URLs allowed). To restrict what a config may register — e.g. when the
+        config path itself comes from a less-trusted source — pass an explicit
+        ``mcp_security`` with allowlists or the relevant ``allow_*`` flags off.
+
+        The low-level connection pool remains fail-closed by default, so any
+        transport built WITHOUT going through a trusted loader like this one is
+        still denied unless a security config explicitly permits it.
 
         Args:
             config_path: Path to .mcp.json configuration file
             server_names: Optional list of server names to load.
                          If None, loads all servers.
             update: If True, allow updating existing tools.
+            mcp_security: Security policy for the transports declared in the
+                config. Defaults to allow-commands + allow-urls (trusted load).
 
         Returns:
             Dict mapping server names to lists of registered tool names
+
+        Raises:
+            PermissionError: If a server's transport is rejected by the effective
+                ``mcp_security`` policy — surfaced loudly (not swallowed) so a
+                misconfiguration does not silently register zero tools.
 
         Example:
             # Load all servers and auto-discover their tools
@@ -400,7 +422,18 @@ class ActionManager(Manager):
                 server_names=["search", "memory"]
             )
         """
-        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+        from lionagi.service.connections.mcp_wrapper import (
+            MCPConnectionPool,
+            MCPSecurityConfig,
+        )
+
+        # Explicit config load = trust the declared transports unless the caller
+        # narrows it. Set the policy on the pool so registration is not silently
+        # denied by the fail-closed default. Persisting is safe: MCP registration
+        # is not model-facing (only setup code calls this).
+        if mcp_security is None:
+            mcp_security = MCPSecurityConfig(allow_commands=True, allow_urls=True)
+        MCPConnectionPool.set_security_config(mcp_security)
 
         # Load the config file into the connection pool
         MCPConnectionPool.load_config(config_path)
@@ -419,6 +452,18 @@ class ActionManager(Manager):
                 tools = await self.register_mcp_server({"server": server_name}, update=update)
                 all_tools[server_name] = tools
                 logger.info("Registered %d tools from server '%s'", len(tools), server_name)
+            except PermissionError:
+                # A security denial affects how the config is authorized, not a
+                # single flaky server — surface it loudly with migration guidance
+                # rather than silently registering zero tools.
+                logger.error(
+                    "MCP server '%s' was denied by the active MCPSecurityConfig. "
+                    "Pass mcp_security=MCPSecurityConfig(allow_commands=True, "
+                    "allow_urls=True) (or an allowlist) to load_mcp_config to "
+                    "authorize it.",
+                    server_name,
+                )
+                raise
             except Exception as e:
                 logger.warning("Failed to register server '%s': %s", server_name, e)
                 all_tools[server_name] = []

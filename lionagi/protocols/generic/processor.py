@@ -240,6 +240,14 @@ class Processor(Observer):
                             else:
                                 tg.start_soon(next_event.invoke)
                         events_processed += 1
+                    else:
+                        # Permission denied. The event was already dequeued, so
+                        # it must reach a terminal status — otherwise it is lost
+                        # from the queue yet left PENDING forever, and join()
+                        # would report completion on stuck work. Subclasses that
+                        # DEFER (e.g. rate limiting) override handle_denied to
+                        # keep it PENDING for retry via the prev_event reuse path.
+                        await self.handle_denied(next_event)
 
                     prev_event = next_event
                     self._available_capacity -= 1
@@ -262,6 +270,20 @@ class Processor(Observer):
             bool: True if the event is allowed, False otherwise.
         """
         return True
+
+    async def handle_denied(self, event: Event) -> None:
+        """Handle an event whose ``request_permission`` returned False.
+
+        Called once per denied event, after it has already been dequeued. The
+        base implementation marks it ``SKIPPED`` (a terminal status) so it is
+        not left stuck ``PENDING`` outside the queue — which would make
+        ``join()`` report completion while the event never finished.
+
+        Subclasses whose denial means "try again shortly" rather than "reject"
+        (e.g. rate limiting) should override this to leave the event ``PENDING``
+        so the ``process()`` reuse path retries it.
+        """
+        event.status = EventStatus.SKIPPED
 
     async def execute(self) -> None:
         """Continuously processes events until `stop()` is called.

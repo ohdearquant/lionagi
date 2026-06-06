@@ -112,13 +112,20 @@ class TestProcessorJoinCompletion:
         assert event.status == EventStatus.FAILED
 
     async def test_join_after_denied_event(self):
-        """join() completes when all events are denied (permission refused)."""
+        """A permission-denied event must reach a TERMINAL status, not be left
+        stuck PENDING outside the queue.
+
+        Regression: process() dequeues the event then (permission denied) never
+        gave it a terminal status, so join() returned with the event still
+        PENDING — silently dropped work. The base handle_denied marks it SKIPPED.
+        """
         p = _deny_proc()
         event = _OkEvent()
         await p.enqueue(event)
         await p.process()
-        # Denied event must still signal task_done so join() doesn't hang.
         await asyncio.wait_for(p.join(), timeout=1.0)
+        assert p.queue.empty()
+        assert event.status == EventStatus.SKIPPED  # terminal, not stuck PENDING
 
     async def test_join_after_slow_event(self):
         """join() completes after slow events, once queue is drained.

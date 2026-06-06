@@ -138,6 +138,17 @@ class RateLimitedAPIProcessor(Processor):
 
         return True
 
+    @override
+    async def handle_denied(self, event: Any) -> None:
+        """Rate-limit denial is a DEFERRAL, not a rejection.
+
+        Leave the event PENDING (do not terminalize it) so the base
+        ``process()`` reuse path retries it once capacity replenishes. Marking
+        it SKIPPED here — as the base does for permission denials — would silently
+        drop rate-limited work.
+        """
+        return None
+
 
 class RateLimitedAPIExecutor(Executor):
     processor_type = RateLimitedAPIProcessor

@@ -75,24 +75,32 @@ class TestImageUrlAttackRejection:
         with pytest.raises(ValueError, match="data:image"):
             _render(f"data:image/svg+xml;base64,{payload}")
 
-    def test_internal_ip_allowed_via_http(self):
-        """Private-range HTTP URLs are NOT blocked at this layer.
+    def test_cloud_metadata_endpoint_rejected(self):
+        """The cloud metadata endpoint (169.254.169.254) must be blocked (SSRF)."""
+        with pytest.raises(ValueError, match="SSRF|not allowed|private"):
+            _render("http://169.254.169.254/latest/meta-data/")
 
-        SSRF-range IP filtering (10.x, 172.16.x, 192.168.x) is a
-        network-level concern handled by the provider/HTTP client, not by
-        the message layer validator. Only scheme/null-byte/domain checks
-        are enforced here.
-        """
-        # Must not raise — the validator only checks scheme, null bytes, netloc.
-        result = _render("http://192.168.1.1/image.png")
-        assert result is None  # render returns None (rendered property is list)
+    def test_loopback_rejected(self):
+        """Loopback hosts must be blocked (SSRF)."""
+        with pytest.raises(ValueError, match="SSRF|not allowed|private"):
+            _render("http://127.0.0.1:8080/image.png")
+
+    def test_private_range_rejected(self):
+        """Private-range IPs must be blocked (SSRF)."""
+        with pytest.raises(ValueError, match="SSRF|not allowed|private"):
+            _render("http://192.168.1.1/image.png")
 
 
 class TestImageUrlSafeInputs:
     """Well-formed image URLs must pass through unchanged."""
 
-    def test_https_url_accepted(self):
-        """Standard HTTPS image URL must be accepted."""
+    def test_https_url_accepted(self, monkeypatch):
+        """Standard HTTPS image URL with a public host must be accepted.
+
+        is_ssrf_safe is stubbed True so the test asserts the accept-path without
+        a real DNS lookup (the SSRF resolver is unit-tested separately).
+        """
+        monkeypatch.setattr("lionagi.protocols.messages.validators.is_ssrf_safe", lambda host: True)
         content = InstructionContent(
             instruction="test",
             images=["https://example.com/photo.jpg"],
@@ -103,8 +111,9 @@ class TestImageUrlSafeInputs:
         item = rendered[1]
         assert item["image_url"]["url"] == "https://example.com/photo.jpg"
 
-    def test_http_url_accepted(self):
-        """Standard HTTP image URL must be accepted."""
+    def test_http_url_accepted(self, monkeypatch):
+        """Standard HTTP image URL with a public host must be accepted."""
+        monkeypatch.setattr("lionagi.protocols.messages.validators.is_ssrf_safe", lambda host: True)
         content = InstructionContent(
             instruction="test",
             images=["http://example.com/photo.png"],
