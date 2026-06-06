@@ -158,7 +158,7 @@ def _preprocess_recursive(
         }
 
     # Sequence/Set-like (but not str)
-    if isinstance(obj, (list, tuple, set, frozenset)):
+    if isinstance(obj, list | tuple | set | frozenset):
         items = [
             _preprocess_recursive(
                 v,
@@ -279,18 +279,18 @@ def _convert_top_level_to_dict(
                 return dict(converted)
             # If it's a list/tuple/etc., enumerate (your original did that after the fact)
             if isinstance(converted, Iterable) and not isinstance(
-                converted, (str, bytes, bytearray)
+                converted, str | bytes | bytearray
             ):
                 return _enumerate_iterable(converted)
             # Best effort final cast
             return dict(converted)
 
-    except Exception:
+    except Exception:  # noqa: S110  # intentional parser fallback: exhausts every conversion strategy before giving up
         # Fall through to other strategies
         pass
 
     # Iterable (list/tuple/namedtuple/frozenset/…): enumerate
-    if isinstance(obj, Iterable) and not isinstance(obj, (str, bytes, bytearray)):
+    if isinstance(obj, Iterable) and not isinstance(obj, str | bytes | bytearray):
         return _enumerate_iterable(obj)
 
     # Dataclass fallback (reachable only if it wasn't caught above)

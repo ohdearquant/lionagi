@@ -127,7 +127,7 @@ def _subprocess_sync(
 ) -> BashResponse:
     try:
         # Finding 4: start_new_session=True so we can kill the entire process group
-        proc = subprocess.Popen(
+        proc = subprocess.Popen(  # noqa: S603  # cmd validated by _command_for_subprocess: shlex-split argv or trusted shell mode
             cmd,
             shell=shell,
             stdout=subprocess.PIPE,

@@ -126,7 +126,7 @@ def chunk(
 
             converter = DocumentConverter()
 
-            def reader_tool(x):
+            def reader_tool(x):  # type: ignore[no-redef]
                 return converter.convert(x).document.export_to_markdown()
 
         texts = ln.lcall(files, reader_tool)

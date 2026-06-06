@@ -41,9 +41,7 @@ def test_editor_request_write_construction():
 
 
 def test_editor_request_edit_construction():
-    req = EditorRequest(
-        action="edit", file_path="f.py", old_string="old", new_string="new"
-    )
+    req = EditorRequest(action="edit", file_path="f.py", old_string="old", new_string="new")
     assert req.action == EditorAction.edit
     assert req.old_string == "old"
     assert req.new_string == "new"
@@ -430,9 +428,7 @@ async def test_editor_tool_requires_old_and_new_strings_for_edit(tmp_path):
     tool = EditorTool(workspace_root=str(tmp_path))
     target = tmp_path / "f.txt"
 
-    resp = await tool.handle_request(
-        EditorRequest(action=EditorAction.edit, file_path=str(target))
-    )
+    resp = await tool.handle_request(EditorRequest(action=EditorAction.edit, file_path=str(target)))
     assert resp.success is False
     assert "old_string" in resp.error
 

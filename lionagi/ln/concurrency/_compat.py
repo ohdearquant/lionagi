@@ -46,7 +46,7 @@ else:
                     type(self)(self.message, rest) if rest else None,
                 )
 
-        class ExceptionGroup(BaseExceptionGroup, Exception):  # type: ignore
+        class ExceptionGroup(BaseExceptionGroup, Exception):  # type: ignore  # noqa: N818  # compat shim must match stdlib ExceptionGroup name
             """Minimal ExceptionGroup implementation for Python 3.10 without exceptiongroup."""
 
             pass

@@ -81,7 +81,7 @@ def extract_json(
                 results.append(fuzzy_json(m))
             else:
                 results.append(orjson.loads(m))
-        except Exception:
+        except Exception:  # noqa: S112  # intentional parser fallback: skip unparseable JSON blocks, not an error
             # Skip invalid JSON blocks
             continue
     return results

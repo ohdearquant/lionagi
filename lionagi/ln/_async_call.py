@@ -381,4 +381,11 @@ class BcallParams(AlcallParams):
 
     async def __call__(self, input_: list[Any], func: Callable[..., T], **kw) -> list[T]:
         kwargs = {**self.default_kw(), **kw}
-        return await bcall(input_, func, self.batch_size, **kwargs)
+        # batch_size is a positional arg to bcall; remove it from kwargs to
+        # avoid "multiple values for argument 'batch_size'" TypeError.
+        kwargs.pop("batch_size", None)
+        # bcall is an async generator — collect all batches into one flat list.
+        results: list[T] = []
+        async for batch in bcall(input_, func, self.batch_size, **kwargs):
+            results.extend(batch)
+        return results

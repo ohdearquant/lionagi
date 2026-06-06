@@ -76,14 +76,38 @@ async def acreate_path(
         nonlocal directory, filename
 
         if "/" in filename:
+            parts = filename.split("/")
+            # Fail-closed: reject any path component that is '.' or '..' to
+            # prevent directory traversal before any filesystem side effect.
+            for component in parts:
+                if component in (".", ".."):
+                    raise ValueError(
+                        f"Filename components must not be '.' or '..'; "
+                        f"got component {component!r} in {filename!r}."
+                    )
             sub_dir, filename = (
-                filename.split("/")[:-1],
-                filename.split("/")[-1],
+                parts[:-1],
+                parts[-1],
             )
             directory = AsyncPath(directory) / "/".join(sub_dir)
 
         if "\\" in filename:
             raise ValueError("Filename cannot contain directory separators.")
+
+        if filename in (".", ".."):
+            raise ValueError(f"Filename must not be '.' or '..'; got {filename!r}.")
+
+        # Resolve and verify the resolved path stays within the base directory.
+        base_resolved = StdPath(str(directory)).resolve()
+        candidate_raw = StdPath(str(directory)) / filename
+        candidate_resolved = candidate_raw.resolve()
+        try:
+            candidate_resolved.relative_to(base_resolved)
+        except ValueError as exc:
+            raise ValueError(
+                f"Resolved path {candidate_resolved} escapes base directory "
+                f"{base_resolved}. Refusing to create path."
+            ) from exc
 
         directory = AsyncPath(directory)
         if "." in filename:
@@ -360,7 +384,7 @@ def coerce_created_at(v: Any) -> datetime:
     if isinstance(v, datetime):
         return v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v
 
-    if isinstance(v, (int, float)):
+    if isinstance(v, int | float):
         return datetime.fromtimestamp(v, tz=timezone.utc)
 
     if isinstance(v, str):

@@ -33,7 +33,7 @@ class SandboxSession:
 
 
 def _run_git(args: list[str], cwd: str | None = None) -> tuple[str, str, int]:
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603  # argv is always ["git"] + validated git sub-commands; no shell interpolation
         ["git"] + args,
         capture_output=True,
         text=True,

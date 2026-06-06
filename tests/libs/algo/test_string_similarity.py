@@ -95,10 +95,7 @@ def test_jaro_winkler_similarity_with_scaling(
     s1: str, s2: str, expected: float, scaling: float
 ) -> None:
     """Test Jaro-Winkler similarity function with various inputs and scaling."""
-    assert (
-        pytest.approx(jaro_winkler_similarity(s1, s2, scaling=scaling), abs=1e-4)
-        == expected
-    )
+    assert pytest.approx(jaro_winkler_similarity(s1, s2, scaling=scaling), abs=1e-4) == expected
 
 
 def test_jaro_winkler_invalid_scaling() -> None:
@@ -235,9 +232,7 @@ def custom_similarity(s1: str, s2: str) -> float:
 )
 def test_string_similarity_basic(word, words, algorithm, expected):
     """Test basic functionality with different algorithms."""
-    result = string_similarity(
-        word, words, algorithm=algorithm, return_most_similar=True
-    )
+    result = string_similarity(word, words, algorithm=algorithm, return_most_similar=True)
     assert result == expected
 
 
@@ -336,15 +331,11 @@ def test_string_similarity_with_threshold():
     """Test threshold behavior with different algorithms."""
     for algo in ["levenshtein", "jaro_winkler", "cosine"]:
         # Exact match should always be included
-        result = string_similarity(
-            "hello", ["hello", "help"], algorithm=algo, threshold=0.5
-        )
+        result = string_similarity("hello", ["hello", "help"], algorithm=algo, threshold=0.5)
         assert result and "hello" in result
 
         # High threshold should filter most matches
-        result = string_similarity(
-            "hello", ["help", "world"], algorithm=algo, threshold=0.9
-        )
+        result = string_similarity("hello", ["help", "world"], algorithm=algo, threshold=0.9)
         assert result is None
 
 
