@@ -42,22 +42,38 @@ guidelines and instructions for contributing to this project.
 
 ## Testing
 
-1. **Writing Tests**: Include unit and integration tests for your code. Ensure
-   your tests cover new features as well as any changes to existing
-   functionality.
+1. **Writing Tests**: Include unit and integration tests for your code. Tests
+   mirror the package layout (`lionagi/<area>/x.py` → `tests/<area>/test_x.py`)
+   and are tagged with markers (`unit`, `integration`, `slow`, `performance`,
+   `property`, `migration`, `network`). Every behavioral change needs a test in
+   the same patch; changes to a trust boundary (auth, paths, URLs, untrusted
+   input) need a fail-closed regression test.
 
-2. **Running Tests Locally**: Before submitting your pull request, run all tests
-   locally to ensure they pass.
+2. **Running Tests Locally**: Run `uv run pytest` (parallel, `-n auto`) before
+   submitting. Use `uv run pytest tests/<file>.py -v` for a focused run and
+   `uv run pytest -n0 -s ...` to debug. Performance-sensitive changes should be
+   checked against the benchmarks in `benchmarks/` (`ci_compare.py` gates
+   regressions).
 
 ## Coding Standards
 
-1. **PEP 8**: Follow [PEP 8](https://www.python.org/dev/peps/pep-0008/) style
-   guidelines for writing Python code.
+1. **Formatting & linting are automated by [ruff](https://docs.astral.sh/ruff/).**
+   Run `uv run ruff format . && uv run ruff check --fix .`, or
+   `pre-commit run -a` for the full pipeline (ruff-format, ruff, pyupgrade,
+   markdownlint). `[tool.ruff]` in `pyproject.toml` is the source of truth —
+   line length **100**, target `py310` (CI runs 3.10–3.13).
 
-2. **PEP 257**: Adhere to [PEP 257](https://www.python.org/dev/peps/pep-0257/)
-   for docstring conventions.
+2. **PEP 8 / PEP 257**: follow standard style and docstring conventions; ruff's
+   `E F W B I UP N S A` rule set enforces most of this (incl. import sorting,
+   pyupgrade, naming, and bandit security checks).
 
-3. **Linting**: Use linters to check your code against these standards.
+3. **Conventions**: start every module with `from __future__ import annotations`
+   and the Apache-2.0 SPDX header; declare the public surface with `__all__`.
+   This is an async-first SDK — no blocking I/O in async paths.
+
+4. **Reuse before you create**: prefer existing abstractions
+   (`lionagi.ln` utilities, `Pile`/`Progression`/`Element`, `iModel`) over
+   introducing parallel ones. Keep changes surgical.
 
 ## Dependencies
 

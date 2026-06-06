@@ -19,8 +19,8 @@ uv run pytest tests/path.py::test_func -v   # Run specific test function
 uv run pytest -m unit                       # By marker: unit, integration, slow, asyncio, performance
 uv run pytest -n0 -s tests/path.py          # Debug: no parallelism, show stdout
 uv run pytest --cov=lionagi                 # With coverage
-uv run black . && uv run isort .            # Format
-pre-commit run -a                           # All pre-commit hooks (black, isort, pyupgrade)
+uv run ruff format . && uv run ruff check --fix .  # Format + autofix lint
+pre-commit run -a                           # All hooks (ruff-format, ruff, pyupgrade, markdownlint)
 uv build                                    # Build wheel
 ```
 
@@ -59,7 +59,10 @@ CLI has no dedicated unit test suite.
 
 ## Coding Standards
 
-- Line length: 79 chars (black, isort, ruff all enforce this)
+- Line length: 100 chars (`ruff format` + `ruff check`; `[tool.ruff]` in `pyproject.toml` is the source of truth). Target `py310`; CI runs 3.10–3.13.
+- Ruff lint selects `E F W B I UP N S A` (incl. bugbear, isort, pyupgrade, naming, bandit). `from __future__ import annotations` is required at the top of every module.
+- Every `.py` under `lionagi/` carries the Apache-2.0 SPDX header; declare public surface with `__all__`.
+- Reuse existing abstractions before creating new ones — `lionagi.ln` (`alcall`, `bcall`, `race`, `retry`, `fuzzy_json`, sentinels), `Pile`/`Progression`/`Element`, `iModel`. Don't fork near-duplicates.
 - Keep code async-safe; avoid blocking calls in async execution paths.
 - Follow existing typing patterns; add type hints on new/changed public APIs.
 - Keep changes surgical: do not refactor unrelated modules in the same patch.
@@ -163,6 +166,7 @@ github = "ohdearquant/lionagi"
 ```
 
 This is separate from `settings.yaml` (which is gitignored/local). The detection cascade at session creation (`lionagi/cli/_project.py`):
+
 1. Walk up from cwd → read `.lionagi/config.toml` → `[project].name`
 2. Check `project_overrides` in `~/.lionagi/settings.yaml` (key = `org/repo` remote or absolute path prefix)
 3. Parse git remote URL → derive `org/repo` as fallback
