@@ -69,6 +69,8 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
   const [lastRefreshed, setLastRefreshed] = useState<number | null>(null);
   // per-play raw-data section toggle (keyed by play name)
   const [rawExpanded, setRawExpanded] = useState<Record<string, boolean>>({});
+  // F043: announced to screen readers on SSE state transitions
+  const [liveAnnouncement, setLiveAnnouncement] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -103,8 +105,11 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
       // the EventSource, but we also flip the toggle so the UI reflects it.
       if (event.type === "done") {
         setLive(false);
+        setLiveAnnouncement("Show completed");
         return;
       }
+      // F043: announce inbound SSE updates so screen readers track live state
+      if (event.type) setLiveAnnouncement(`Show updated: ${event.type}`);
       void load();
     });
   }, [live, load, topic]);
@@ -131,6 +136,10 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
 
   return (
     <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-6 text-content-primary animate-page-enter">
+      {/* F043: hidden live region — announces SSE state transitions to screen readers */}
+      <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+        {liveAnnouncement}
+      </div>
       <PageHeader
         density="tight"
         breadcrumb={[
@@ -242,8 +251,17 @@ export default function ShowDetailPage({ params }: { params: Promise<{ topic: st
                         return (
                           <React.Fragment key={play.name}>
                             <tr
-                              className="border-b border-edge-subtle text-content-secondary hover:bg-surface-overlay cursor-pointer"
+                              className="border-b border-edge-subtle text-content-secondary hover:bg-surface-overlay cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-interactive-primary"
+                              role="button"
+                              tabIndex={0}
+                              aria-expanded={isExpanded}
                               onClick={() => setExpanded(isExpanded ? null : play.name)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  setExpanded(isExpanded ? null : play.name);
+                                }
+                              }}
                             >
                               <td className="max-w-[12rem] truncate px-3 py-2 font-mono text-body text-content-primary">
                                 {play.name}

@@ -60,7 +60,7 @@
     /* ─── DAG SVG palette ─── */
     --dag-pending-bg: #f5f5f4;
     --dag-pending-border: #d4d4d4;
-    --dag-pending-label: #737373;
+    --dag-pending-label: #707070; /* was #737373; darkened to meet 4.5:1 on dag-pending-bg (#f5f5f4) */
     --dag-pending-dot: #d4d4d4;
     --dag-running-bg: #eff6ff;
     --dag-running-border: #2563eb;
@@ -137,7 +137,7 @@
     /* ─── DAG SVG palette ─── */
     --dag-pending-bg: #1c1c1e;
     --dag-pending-border: #38383f;
-    --dag-pending-label: #62626e;
+    --dag-pending-label: #848484; /* was #62626e; lightened to meet 4.5:1 on dag-pending-bg (#1c1c1e) */
     --dag-pending-dot: #38383f;
     --dag-running-bg: #0d1a2d;
     --dag-running-border: #60a5fa;

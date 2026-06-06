@@ -110,8 +110,14 @@ export default function AgentProfileForm({
 
   const isValid = form.name.trim().length > 0 && form.provider.length > 0 && form.model.length > 0;
 
+  const hasErrors = errors.length > 0;
+
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-6">
+    <form
+      onSubmit={handleSubmit}
+      className="flex flex-col gap-6"
+      aria-describedby={hasErrors ? "agent-form-errors" : undefined}
+    >
       {/* Section 1: Basics */}
       <section className="flex flex-col gap-3">
         <div>
@@ -287,7 +293,10 @@ export default function AgentProfileForm({
 
       {/* Errors */}
       {errors.length > 0 ? (
-        <div className="rounded border border-status-error/40 bg-status-error-bg px-4 py-3">
+        <div
+          id="agent-form-errors"
+          className="rounded border border-status-error/40 bg-status-error-bg px-4 py-3"
+        >
           <p className="text-meta font-semibold uppercase tracking-[0.06em] text-status-error">
             Validation errors
           </p>
