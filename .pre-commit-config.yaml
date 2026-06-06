@@ -30,7 +30,7 @@ repos:
     hooks:
       - id: markdownlint-cli2
         args: ["--config", ".markdownlint.json"]
-        files: ^(docs/|README\.md|AGENT\.md|CLAUDE\.md|CHANGELOG\.md)
+        files: ^(docs/|README\.md|AGENT\.md|CLAUDE\.md|CONTRIBUTING\.md|CHANGELOG\.md)
 
   # Studio frontend: ESLint (Next.js + TS) + Prettier on staged files.
   # Skipped if node_modules/ is absent (e.g. fresh checkout); enable with:

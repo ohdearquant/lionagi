@@ -45,9 +45,9 @@ guidelines and instructions for contributing to this project.
 1. **Writing Tests**: Include unit and integration tests for your code. Tests
    mirror the package layout (`lionagi/<area>/x.py` → `tests/<area>/test_x.py`)
    and are tagged with markers (`unit`, `integration`, `slow`, `performance`,
-   `property`, `migration`, `network`). Every behavioral change needs a test in
-   the same patch; changes to a trust boundary (auth, paths, URLs, untrusted
-   input) need a fail-closed regression test.
+   `asyncio`, `property`, `migration`, `network`). Every behavioral change needs
+   a test in the same patch; changes to a trust boundary (auth, paths, URLs,
+   untrusted input) need a fail-closed regression test.
 
 2. **Running Tests Locally**: Run `uv run pytest` (parallel, `-n auto`) before
    submitting. Use `uv run pytest tests/<file>.py -v` for a focused run and
@@ -59,21 +59,28 @@ guidelines and instructions for contributing to this project.
 
 1. **Formatting & linting are automated by [ruff](https://docs.astral.sh/ruff/).**
    Run `uv run ruff format . && uv run ruff check --fix .`, or
-   `pre-commit run -a` for the full pipeline (ruff-format, ruff, pyupgrade,
-   markdownlint). `[tool.ruff]` in `pyproject.toml` is the source of truth —
-   line length **100**, target `py310` (CI runs 3.10–3.13).
+   `pre-commit run -a` for the full pipeline (file sanity hooks, ruff-format,
+   ruff, pyupgrade, markdownlint, and frontend/marketplace hooks when relevant).
+   `[tool.ruff]` in `pyproject.toml` is the source of truth — line length
+   **100**, target `py310`. CI tests Python 3.10 and 3.14 on PRs, and 3.10-3.14
+   on `main`/`develop` pushes.
 
 2. **PEP 8 / PEP 257**: follow standard style and docstring conventions; ruff's
    `E F W B I UP N S A` rule set enforces most of this (incl. import sorting,
    pyupgrade, naming, and bandit security checks).
 
-3. **Conventions**: start every module with `from __future__ import annotations`
-   and the Apache-2.0 SPDX header; declare the public surface with `__all__`.
-   This is an async-first SDK — no blocking I/O in async paths.
+3. **Conventions**: new or materially changed Python files under `lionagi/`
+   should keep/add the Apache-2.0 SPDX header,
+   `from __future__ import annotations`, and an `__all__` tuple for public
+   surface. This is an async-first SDK — no blocking I/O in async paths.
 
 4. **Reuse before you create**: prefer existing abstractions
    (`lionagi.ln` utilities, `Pile`/`Progression`/`Element`, `iModel`) over
-   introducing parallel ones. Keep changes surgical.
+   introducing parallel ones. Prefer LionAGI-native primitives over naked
+   stdlib/third-party calls when a local helper exists (`alcall`/`bcall` over
+   raw gather loops, `json_dumps`/`fuzzy_json` over direct `json` on
+   model/provider payloads, `now_utc`/`to_uuid` over ad hoc time/UUID handling).
+   Keep changes surgical.
 
 ## Dependencies
 
