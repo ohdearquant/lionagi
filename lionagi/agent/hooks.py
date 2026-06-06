@@ -18,6 +18,13 @@ import logging
 import re
 from pathlib import Path
 
+__all__ = (
+    "auto_format_python",
+    "guard_destructive",
+    "guard_paths",
+    "log_tool_use",
+)
+
 logger = logging.getLogger(__name__)
 
 _DESTRUCTIVE_PATTERNS = [
@@ -76,10 +83,31 @@ def guard_paths(
                 denied_path = Path(denied).expanduser()
                 if denied_path.is_absolute():
                     denied_resolved = denied_path.resolve(strict=False)
+                    # Match exact path or any path under the denied directory.
                     if resolved == denied_resolved or denied_resolved in resolved.parents:
                         raise PermissionError(f"Path matches deny rule: {raw_path}")
-                elif denied in raw_path or denied in resolved.name:
-                    raise PermissionError(f"Path matches deny rule: {raw_path}")
+                else:
+                    # Relative deny pattern — two matching strategies:
+                    #
+                    # 1. Glob patterns (contain *, ?, or [): apply fnmatch to each
+                    #    resolved path component.  This fixes LIONAGI-AUDIT-001 where
+                    #    "*.key" was treated as a literal string and never matched
+                    #    "/tmp/api.key".
+                    #
+                    # 2. Plain-text patterns (no glob chars): retain the original
+                    #    substring check against raw_path and resolved.name so that
+                    #    documented examples like ".env" still block ".env.local".
+                    import fnmatch
+
+                    _glob_chars = frozenset("*?[")
+                    if any(c in denied for c in _glob_chars):
+                        # Glob mode: match against each resolved path component.
+                        parts = resolved.parts
+                        if any(fnmatch.fnmatch(part, denied) for part in parts):
+                            raise PermissionError(f"Path matches deny rule: {raw_path}")
+                    elif denied in raw_path or denied in resolved.name:
+                        # Plain-text mode: substring containment (original behaviour).
+                        raise PermissionError(f"Path matches deny rule: {raw_path}")
         return None
 
     return _guard

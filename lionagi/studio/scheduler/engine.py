@@ -147,6 +147,9 @@ class SchedulerEngine:
         self._task: asyncio.Task | None = None
         self._running: dict[str, str] = {}  # schedule_id -> run_id
         self._stopping = False
+        # Tracks outstanding _fire tasks so stop() can cancel and await them,
+        # preventing fire-and-forget orphans after shutdown (LIONAGI-AUDIT-002).
+        self._fire_tasks: set[asyncio.Task] = set()
 
     async def start(self) -> None:
         _log.info("Scheduler engine starting")
@@ -163,6 +166,24 @@ class SchedulerEngine:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        # Cancel and await all outstanding fire tasks so subprocess spawns
+        # do not outlive the scheduler (LIONAGI-AUDIT-002 fix).
+        if self._fire_tasks:
+            for ft in list(self._fire_tasks):
+                ft.cancel()
+            await asyncio.gather(*self._fire_tasks, return_exceptions=True)
+            self._fire_tasks.clear()
+
+    def _tracked_fire(self, *args: Any, **kwargs: Any) -> asyncio.Task:
+        """Create a _fire task and keep a reference until it completes.
+
+        Prevents fire-and-forget orphan tasks from surviving scheduler shutdown.
+        The done callback removes the handle from the tracking set automatically.
+        """
+        task = asyncio.create_task(self._fire(*args, **kwargs))
+        self._fire_tasks.add(task)
+        task.add_done_callback(self._fire_tasks.discard)
+        return task
 
     async def fire_now(self, schedule_id: str) -> str | None:
         """Manual trigger — fire a schedule immediately. Returns run_id."""
@@ -171,8 +192,8 @@ class SchedulerEngine:
         if not schedule:
             return None
         run_id = uuid.uuid4().hex[:12]
-        asyncio.create_task(
-            self._fire(schedule, run_id, trigger_context={"manual": True, "fired_at": time.time()})
+        self._tracked_fire(
+            schedule, run_id, trigger_context={"manual": True, "fired_at": time.time()}
         )
         return run_id
 
@@ -205,12 +226,10 @@ class SchedulerEngine:
                         s["name"],
                         s["id"],
                     )
-                    asyncio.create_task(
-                        self._fire(
-                            s,
-                            run_id,
-                            trigger_context={"missed_recovery": True, "fired_at": now},
-                        )
+                    self._tracked_fire(
+                        s,
+                        run_id,
+                        trigger_context={"missed_recovery": True, "fired_at": now},
                     )
                 else:
                     # policy in {"skip", default}: drop the missed fire,
@@ -353,7 +372,7 @@ class SchedulerEngine:
 
         run_id = uuid.uuid4().hex[:12]
         ctx = {"scheduled": True, "fired_at": now, "next_fire_at": schedule.get("next_fire_at")}
-        asyncio.create_task(self._fire(schedule, run_id, trigger_context=ctx))
+        self._tracked_fire(schedule, run_id, trigger_context=ctx)
 
     async def _fire(
         self,

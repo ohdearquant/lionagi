@@ -35,9 +35,16 @@ import asyncio
 import importlib
 import json
 import logging
+import os
+import signal
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+__all__ = (
+    "apply_hooks_from_settings",
+    "load_settings",
+)
 
 import yaml
 
@@ -184,6 +191,25 @@ def _import_hook(
         return None
 
 
+def _kill_proc_group(proc: asyncio.subprocess.Process) -> None:  # type: ignore[name-defined]
+    """Send SIGKILL to the process group created with start_new_session=True.
+
+    Suppresses all errors so a best-effort kill never masks the real exception.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to kill process group for pid %s", proc.pid, exc_info=True)
+
+
+async def _wait_proc(proc: asyncio.subprocess.Process, grace: float = 2.0) -> None:  # type: ignore[name-defined]
+    """Await process exit with a bounded grace period; suppress errors."""
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace)
+    except Exception:  # noqa: BLE001
+        logger.debug("Timed out waiting for process %s to exit", proc.pid, exc_info=True)
+
+
 def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) -> Callable:
     """Create an async hook that runs a shell command via argv list (shell=False).
 
@@ -214,6 +240,7 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
 
         async def shell_pre_hook(tn: str, action: str, args: dict) -> dict | None:
             argv = _render_argv(args)
+            proc = None
             try:
                 # Finding 12: async subprocess instead of blocking subprocess.run()
                 proc = await asyncio.create_subprocess_exec(
@@ -228,6 +255,12 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
                     timeout=10,
                 )
             except asyncio.TimeoutError as err:
+                # Kill the whole process group (start_new_session=True guarantees a
+                # new PGID) so lingering child processes cannot continue side effects
+                # after the hook is considered timed-out.
+                if proc is not None:
+                    _kill_proc_group(proc)
+                    await _wait_proc(proc)
                 raise PermissionError(f"Hook timed out: {argv[0]!r}") from err
             except Exception as e:
                 raise PermissionError(f"Hook execution error: {e}") from e
@@ -242,6 +275,7 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
 
         async def shell_post_hook(tn: str, action: str, args: dict, result: dict) -> dict | None:
             argv = _render_argv({**args, **result})
+            proc = None
             try:
                 # Finding 12: async subprocess instead of blocking subprocess.run()
                 proc = await asyncio.create_subprocess_exec(
@@ -255,7 +289,14 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
                     proc.communicate(json.dumps(result).encode()),
                     timeout=10,
                 )
-            except (asyncio.TimeoutError, Exception) as exc:
+            except asyncio.TimeoutError as exc:
+                # Kill process group on post-hook timeout so no delayed side effects
+                # occur after the hook is silently dropped.
+                if proc is not None:
+                    _kill_proc_group(proc)
+                    await _wait_proc(proc)
+                logger.warning("hook subprocess timed out (swallowed)", exc_info=exc)
+            except Exception as exc:
                 logger.warning("hook subprocess error (swallowed)", exc_info=exc)
             return None
 

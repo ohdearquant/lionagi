@@ -379,3 +379,41 @@ class TestAgentSpecYaml:
         loaded = AgentSpec.from_yaml(p)
         assert loaded.profile.role.name == "analyst"
         assert loaded.model == "openai/gpt-4.1"
+
+    def test_lion_system_false_round_trips(self, tmp_path):
+        """lion_system=False must survive a to_yaml/from_yaml round-trip.
+
+        Regression for LIONAGI-AUDIT-005 (agent-standards 2026-06-06): the
+        original from_yaml() never read lion_system, so a saved False was
+        silently reloaded as True (the compose() default).
+        """
+        import yaml
+
+        spec = AgentSpec.compose("analyst")
+        spec.lion_system = False
+        p = tmp_path / "no_lion.yaml"
+        spec.to_yaml(p)
+
+        loaded = AgentSpec.from_yaml(p)
+        assert loaded.lion_system is False, (
+            "lion_system=False was not preserved across the YAML round-trip"
+        )
+
+    def test_lion_system_true_preserved(self, tmp_path):
+        """lion_system=True (the default) still round-trips correctly."""
+        spec = AgentSpec.compose("analyst")
+        assert spec.lion_system is True
+        p = tmp_path / "lion.yaml"
+        spec.to_yaml(p)
+
+        loaded = AgentSpec.from_yaml(p)
+        assert loaded.lion_system is True
+
+    def test_from_yaml_without_lion_system_key_defaults_true(self, tmp_path):
+        """YAML files without lion_system key keep the default (True)."""
+        import yaml
+
+        p = tmp_path / "minimal.yaml"
+        p.write_text(yaml.dump({"role": "analyst"}))
+        loaded = AgentSpec.from_yaml(p)
+        assert loaded.lion_system is True

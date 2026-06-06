@@ -26,9 +26,34 @@ class TestDataLoader:
         self.data_dir = Path(data_dir) if data_dir is not None else _DATA_DIR
 
     def load_json(self, filename: str) -> dict[str, Any]:
+        """Load a JSON fixture from within ``self.data_dir``.
+
+        *filename* must be a plain name (no path separators, no ``..``).
+        Absolute paths and traversal sequences are rejected fail-closed before
+        any filesystem access (LIONAGI-AUDIT-002 path-boundary fix).
+        """
+        import os
+
+        # Reject absolute paths and names containing any path separator.
+        if os.path.isabs(filename) or os.sep in filename or (os.altsep and os.altsep in filename):
+            raise ValueError(f"Filename must be a plain name, not a path: {filename!r}")
+        # Reject forward slashes explicitly (covers posix and windows altsep gaps).
+        if "/" in filename or "\\" in filename:
+            raise ValueError(f"Filename must be a plain name, not a path: {filename!r}")
+
         if not filename.endswith(".json"):
             filename += ".json"
-        file_path = self.data_dir / filename
+
+        data_dir_resolved = self.data_dir.resolve()
+        file_path = (data_dir_resolved / filename).resolve()
+
+        # Containment check — resolved path must stay inside data_dir.
+        if (
+            not str(file_path).startswith(str(data_dir_resolved) + os.sep)
+            and file_path != data_dir_resolved
+        ):
+            raise PermissionError(f"Fixture path escapes data directory: {filename!r}")
+
         if not file_path.exists():
             raise FileNotFoundError(f"Test data file not found: {file_path}")
         with open(file_path, encoding="utf-8") as f:
