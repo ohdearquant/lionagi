@@ -83,9 +83,7 @@ def test_load_settings_deep_merges_global_and_project_settings(tmp_path, monkeyp
 # ---------------------------------------------------------------------------
 
 
-def test_load_settings_discovers_parent_project_settings_from_cwd(
-    tmp_path, monkeypatch
-):
+def test_load_settings_discovers_parent_project_settings_from_cwd(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".lionagi").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
@@ -133,9 +131,7 @@ async def test_shell_pre_hook_raises_permission_error_on_nonzero_exit(monkeypatc
     mock_proc.returncode = 7
     mock_proc.communicate = AsyncMock(return_value=(b"", b"blocked"))
 
-    monkeypatch.setattr(
-        asyncio, "create_subprocess_exec", AsyncMock(return_value=mock_proc)
-    )
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=mock_proc))
 
     hook = _make_shell_hook(["guard", "{file_path}"], "pre", "bash")
 

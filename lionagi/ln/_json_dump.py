@@ -9,19 +9,19 @@ Provides flexible serialization with:
 - Caching of default handlers for performance
 """
 
-import contextlib
-import datetime as dt
-import decimal
-import re
-from collections.abc import Callable, Iterable, Mapping
-from enum import Enum
-from functools import lru_cache
-from pathlib import Path
-from textwrap import shorten
-from typing import Any
-from uuid import UUID
+import contextlib  # noqa: E402
+import datetime as dt  # noqa: E402
+import decimal  # noqa: E402
+import re  # noqa: E402
+from collections.abc import Callable, Iterable, Mapping  # noqa: E402
+from enum import Enum  # noqa: E402
+from functools import lru_cache  # noqa: E402
+from pathlib import Path  # noqa: E402
+from textwrap import shorten  # noqa: E402
+from typing import Any  # noqa: E402
+from uuid import UUID  # noqa: E402
 
-import orjson
+import orjson  # noqa: E402
 
 __all__ = [
     "get_orjson_default",
@@ -146,7 +146,7 @@ def get_orjson_default(
         typ = obj.__class__
         func = cache.get(typ)
         if func is None:
-            for T in order_tuple:
+            for T in order_tuple:  # noqa: N806
                 if issubclass(typ, T):
                     f = ser.get(T)
                     if f:

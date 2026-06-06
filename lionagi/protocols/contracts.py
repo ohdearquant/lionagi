@@ -42,4 +42,4 @@ Observable = ObservableProto
 
 # Keep legacy nominal ABC for places that need issubclass checks (e.g., Pile)
 # Do NOT remove – Pile and others rely on issubclass(..., Observable) nominal checks.
-from ._concepts import Observable as LegacyObservable
+from ._concepts import Observable as LegacyObservable  # noqa: E402

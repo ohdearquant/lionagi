@@ -135,7 +135,7 @@ class Progression(Element, Ordering[T], Generic[T]):
             ItemNotFoundError: If the index or slice is invalid.
             TypeError: If `key` is neither an int nor a slice.
         """
-        if not isinstance(key, (int, slice)):
+        if not isinstance(key, int | slice):
             key_cls = key.__class__.__name__
             raise TypeError(f"indices must be integers or slices, not {key_cls}")
         try:

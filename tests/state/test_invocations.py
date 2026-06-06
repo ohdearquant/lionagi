@@ -45,9 +45,7 @@ async def _make_invocation(db: StateDB, **fields) -> dict:
     return inv
 
 
-async def _make_session(
-    db: StateDB, *, invocation_id: str | None = None, **fields
-) -> dict:
+async def _make_session(db: StateDB, *, invocation_id: str | None = None, **fields) -> dict:
     prog_id = _uid()
     await db.create_progression(prog_id)
     session = {
@@ -128,10 +126,14 @@ async def test_create_session_with_invocation_bumps_count(db: StateDB):
 async def test_list_sessions_for_invocation_orders_by_created(db: StateDB):
     inv = await _make_invocation(db)
     s1 = await _make_session(
-        db, invocation_id=inv["id"], status="running",
+        db,
+        invocation_id=inv["id"],
+        status="running",
     )
     s2 = await _make_session(
-        db, invocation_id=inv["id"], status="completed",
+        db,
+        invocation_id=inv["id"],
+        status="completed",
     )
     rows = await db.list_sessions_for_invocation(inv["id"])
     assert [r["id"] for r in rows] == [s1["id"], s2["id"]]

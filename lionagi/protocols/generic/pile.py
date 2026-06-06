@@ -790,7 +790,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
             return self._filter_by_function(TypeFilter(key))
 
-        if callable(key) and not isinstance(key, (UUID, Element, type)):  # noqa: UP038
+        if callable(key) and not isinstance(key, UUID | Element | type):  # noqa: UP038
             return self._filter_by_function(key)
 
         if isinstance(key, int | slice):

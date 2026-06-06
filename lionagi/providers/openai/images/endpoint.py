@@ -34,9 +34,7 @@ class OpenaiImageGenerationEndpoint(Endpoint):
         if config is None:
             from lionagi.config import settings
 
-            kwargs.setdefault(
-                "api_key", settings.OPENAI_API_KEY or "dummy-key-for-testing"
-            )
+            kwargs.setdefault("api_key", settings.OPENAI_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("timeout", 120)
             kwargs.setdefault("max_retries", 3)
         super().__init__(config=config, **kwargs)
@@ -66,9 +64,7 @@ class OpenaiImageEditEndpoint(Endpoint):
         if config is None:
             from lionagi.config import settings
 
-            kwargs.setdefault(
-                "api_key", settings.OPENAI_API_KEY or "dummy-key-for-testing"
-            )
+            kwargs.setdefault("api_key", settings.OPENAI_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("timeout", 120)
             kwargs.setdefault("max_retries", 3)
         super().__init__(config=config, **kwargs)
@@ -94,7 +90,7 @@ class OpenaiImageEditEndpoint(Endpoint):
                 "image",
                 (
                     io.BytesIO(image_data)
-                    if isinstance(image_data, (bytes, bytearray))
+                    if isinstance(image_data, bytes | bytearray)
                     else image_data
                 ),
                 filename=image_filename,
@@ -104,18 +100,12 @@ class OpenaiImageEditEndpoint(Endpoint):
         if mask_data is not None:
             form.add_field(
                 "mask",
-                (
-                    io.BytesIO(mask_data)
-                    if isinstance(mask_data, (bytes, bytearray))
-                    else mask_data
-                ),
+                (io.BytesIO(mask_data) if isinstance(mask_data, bytes | bytearray) else mask_data),
                 filename=mask_filename,
                 content_type="image/png",
             )
 
-        multipart_headers = {
-            k: v for k, v in headers.items() if k.lower() != "content-type"
-        }
+        multipart_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
 
         async with self._create_http_session() as session:
             async with session.post(

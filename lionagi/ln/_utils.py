@@ -106,9 +106,7 @@ async def acreate_path(
         await full_path.parent.mkdir(parents=True, exist_ok=dir_exist_ok)
 
         if await full_path.exists() and not file_exist_ok:
-            raise FileExistsError(
-                f"File {full_path} already exists and file_exist_ok is False."
-            )
+            raise FileExistsError(f"File {full_path} already exists and file_exist_ok is False.")
 
         return full_path
 
@@ -166,14 +164,10 @@ def import_module(
         ImportError: If the module cannot be imported.
     """
     try:
-        full_import_path = (
-            f"{package_name}.{module_name}" if module_name else package_name
-        )
+        full_import_path = f"{package_name}.{module_name}" if module_name else package_name
 
         if import_name:
-            import_name = (
-                [import_name] if not isinstance(import_name, list) else import_name
-            )
+            import_name = [import_name] if not isinstance(import_name, list) else import_name
             a = __import__(
                 full_import_path,
                 fromlist=import_name,
@@ -366,7 +360,7 @@ def coerce_created_at(v: Any) -> datetime:
     if isinstance(v, datetime):
         return v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v
 
-    if isinstance(v, (int, float)):
+    if isinstance(v, int | float):
         return datetime.fromtimestamp(v, tz=timezone.utc)
 
     if isinstance(v, str):

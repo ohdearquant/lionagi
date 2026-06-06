@@ -239,9 +239,7 @@ class TestPayloadCreation:
             "messages": [{"role": "user", "content": "Hello"}],
         }
 
-        payload, headers = endpoint.create_payload(
-            request, max_turns=5, auto_finish=True
-        )
+        payload, headers = endpoint.create_payload(request, max_turns=5, auto_finish=True)
 
         assert "request" in payload
         # ClaudeCodeRequest should have merged these

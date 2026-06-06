@@ -175,18 +175,14 @@ def flatten(
         if isinstance(obj, Mapping):
             for k, v in obj.items():
                 new_key = parent_key + (str(k),)
-                if isinstance(v, (Mapping, Sequence)) and not isinstance(
-                    v, (str, bytes, bytearray)
-                ):
+                if isinstance(v, Mapping | Sequence) and not isinstance(v, str | bytes | bytearray):
                     stack.appendleft((v, new_key, depth + 1))
                 else:
                     result[sep.join(new_key)] = v
-        elif isinstance(obj, Sequence) and not isinstance(obj, (str, bytes, bytearray)):
+        elif isinstance(obj, Sequence) and not isinstance(obj, str | bytes | bytearray):
             for i, v in enumerate(obj):
                 new_key = parent_key + (str(i),)
-                if isinstance(v, (Mapping, Sequence)) and not isinstance(
-                    v, (str, bytes, bytearray)
-                ):
+                if isinstance(v, Mapping | Sequence) and not isinstance(v, str | bytes | bytearray):
                     stack.appendleft((v, new_key, depth + 1))
                 else:
                     result[sep.join(new_key)] = v

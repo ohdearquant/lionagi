@@ -196,8 +196,11 @@ ignore = [
     "UP045",  # X | None annotation (3.10 compat)
     "N",      # naming relaxed in tests
 ]
-"cookbooks/**" = ["S101", "B904", "N"]
+"cookbooks/**" = ["S101", "B904", "N", "E402", "F"]
 "scripts/**" = ["S", "E731"]
+"notebooks/**" = ["S", "B", "E", "F", "N", "A"]
+"benchmarks/**" = ["S", "B", "E402", "F", "N"]
+"examples/**" = ["S", "B904", "N", "E402"]
 "apps/studio/**" = [
     "S108",   # /tmp in dev server
     "B007",   # unused loop vars

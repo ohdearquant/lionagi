@@ -119,7 +119,7 @@ class Element(BaseModel, Observable):
             raise ValueError(f"Invalid created_at: {val}") from None
 
     @field_validator("id", mode="before")
-    def _ensure_UUID(cls, val: UUID | str) -> UUID:
+    def _ensure_UUID(cls, val: UUID | str) -> UUID:  # noqa: N802
         """Ensures `id` is validated as an UUID."""
         if isinstance(val, UUID):
             return val
@@ -285,7 +285,7 @@ def validate_order(order: Any) -> list[UUID]:
             out.append(cur)
         elif isinstance(cur, str):
             out.append(UUID(cur))
-        elif isinstance(cur, (list, tuple, set)):
+        elif isinstance(cur, list | tuple | set):
             stack.extend(reversed(cur))
         else:
             raise ValueError("Invalid item in order.")

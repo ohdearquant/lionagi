@@ -36,9 +36,7 @@ class TestSubprocessSessionIsolation:
 
         from lionagi.providers.anthropic.claude_code.models import _ndjson_from_cli
 
-        with patch(
-            "asyncio.create_subprocess_exec", new_callable=AsyncMock
-        ) as mock_exec:
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
             mock_proc = MagicMock()
             mock_proc.stdout = MagicMock()
             mock_proc.stdout.read = AsyncMock(return_value=b"")
@@ -57,9 +55,9 @@ class TestSubprocessSessionIsolation:
             # Verify start_new_session=True was passed
             mock_exec.assert_called_once()
             _, kwargs = mock_exec.call_args
-            assert (
-                kwargs.get("start_new_session") is True
-            ), "CLI subprocess must use start_new_session=True to isolate from SIGINT"
+            assert kwargs.get("start_new_session") is True, (
+                "CLI subprocess must use start_new_session=True to isolate from SIGINT"
+            )
 
     @pytest.mark.asyncio
     async def test_codex_cli_uses_start_new_session(self):
@@ -72,9 +70,7 @@ class TestSubprocessSessionIsolation:
 
         with (
             patch("lionagi.providers.openai.codex.models.CODEX_CLI", "codex"),
-            patch(
-                "asyncio.create_subprocess_exec", new_callable=AsyncMock
-            ) as mock_exec,
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
         ):
             mock_proc = MagicMock()
             mock_proc.stdout = MagicMock()
@@ -105,9 +101,7 @@ class TestSubprocessSessionIsolation:
 
         with (
             patch("lionagi.providers.google.gemini_code.models.GEMINI_CLI", "gemini"),
-            patch(
-                "asyncio.create_subprocess_exec", new_callable=AsyncMock
-            ) as mock_exec,
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
         ):
             mock_proc = MagicMock()
             mock_proc.stdout = MagicMock()
@@ -167,9 +161,9 @@ class TestCancellationSkipsAutoFinish:
 
             # stream_claude_code_cli must only be called ONCE —
             # the second (auto_finish) call must never happen
-            assert (
-                stream_call_count == 1
-            ), f"auto_finish spawned {stream_call_count - 1} extra session(s) after cancellation"
+            assert stream_call_count == 1, (
+                f"auto_finish spawned {stream_call_count - 1} extra session(s) after cancellation"
+            )
 
     @pytest.mark.asyncio
     async def test_keyboard_interrupt_skips_auto_finish(self):
@@ -282,9 +276,7 @@ class TestCancellationSkipsAutoFinish:
             result = await endpoint._call({"request": mock_request}, {})
 
             # auto_finish SHOULD trigger normally
-            assert (
-                stream_call_count == 2
-            ), "auto_finish should fire on normal completion"
+            assert stream_call_count == 2, "auto_finish should fire on normal completion"
 
 
 # ---------------------------------------------------------------------------
@@ -306,9 +298,7 @@ class TestNdjsonCleanupPropagation:
 
         request = ClaudeCodeRequest(prompt="test")
 
-        with patch(
-            "asyncio.create_subprocess_exec", new_callable=AsyncMock
-        ) as mock_exec:
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
             mock_proc = MagicMock()
 
             read_call = 0
@@ -404,9 +394,7 @@ class TestToolAllowlistArgs:
 
         idx = args.index("--mcp-config")
         config_val = args[idx + 1]
-        assert (
-            '"' not in config_val
-        ), f"mcp_config value {config_val!r} has embedded quotes"
+        assert '"' not in config_val, f"mcp_config value {config_val!r} has embedded quotes"
 
 
 # ---------------------------------------------------------------------------

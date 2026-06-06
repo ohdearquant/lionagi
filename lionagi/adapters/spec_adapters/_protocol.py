@@ -139,16 +139,14 @@ class SpecAdapter(ABC):
         data = extract_json(text, fuzzy_parse=fuzzy)
 
         # Unwrap single-item lists/tuples
-        if isinstance(data, (list, tuple)) and len(data) == 1:
+        if isinstance(data, list | tuple) and len(data) == 1:
             data = data[0]
 
         return data
 
     @classmethod
     @abstractmethod
-    def fuzzy_match_fields(
-        cls, data: dict, model_cls: type, strict: bool = False
-    ) -> dict:
+    def fuzzy_match_fields(cls, data: dict, model_cls: type, strict: bool = False) -> dict:
         """Match data keys to model fields with fuzzy matching.
 
         Framework-specific method - each adapter must implement based on how

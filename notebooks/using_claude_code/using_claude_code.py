@@ -29,7 +29,7 @@ async def main():
         )
 
         print(f"User:\n{prompt}\n")
-        response = await investigator.communicate(prompt)
+        await investigator.communicate(prompt)
 
     except Exception as e:
         print(f"Error: {e}")

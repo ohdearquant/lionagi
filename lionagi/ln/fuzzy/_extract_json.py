@@ -48,9 +48,7 @@ def extract_json(
         input_str = input_data
 
     if len(input_str) > max_size:
-        raise ValueError(
-            f"Input size ({len(input_str)} bytes) exceeds maximum ({max_size} bytes)"
-        )
+        raise ValueError(f"Input size ({len(input_str)} bytes) exceeds maximum ({max_size} bytes)")
 
     # 1. Try direct parsing
     try:
@@ -58,9 +56,7 @@ def extract_json(
             return fuzzy_json(input_str)
         return orjson.loads(input_str)
     except Exception:
-        logger.debug(
-            "Direct JSON parse failed; falling back to markdown block extraction."
-        )
+        logger.debug("Direct JSON parse failed; falling back to markdown block extraction.")
 
     # 2. Attempt extracting JSON blocks from markdown
     matches = _JSON_BLOCK_PATTERN.findall(input_str)
@@ -85,7 +81,7 @@ def extract_json(
                 results.append(fuzzy_json(m))
             else:
                 results.append(orjson.loads(m))
-        except Exception:
+        except Exception:  # noqa: S112
             # Skip invalid JSON blocks
             continue
     return results

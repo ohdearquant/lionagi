@@ -94,7 +94,7 @@ def validate_boolean(x: Any, /) -> bool:
         return x
 
     # Handle all numeric types (including complex) using Python's bool
-    if isinstance(x, (int, float, Complex)):
+    if isinstance(x, int | float | Complex):
         return bool(x)
 
     # Convert to string if not already a string

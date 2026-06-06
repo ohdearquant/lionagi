@@ -61,16 +61,14 @@ class TestOperative:
         text = "invalid json"
         result = operative.update_response_model(text=text)
         # Should return raw text for invalid JSON
-        assert isinstance(result, (str, dict, list, type(None)))
+        assert isinstance(result, str | dict | list | type(None))
 
     def test_response_model_update_with_data(self):
         """Test updating response model with dict data."""
         operative = Operative(base_type=SampleModel)
 
         # First set initial model with valid JSON
-        response_model = operative.update_response_model(
-            text='{"name": "test", "value": 42}'
-        )
+        response_model = operative.update_response_model(text='{"name": "test", "value": 42}')
 
         # Update with new data
         data = {"name": "updated"}
@@ -92,9 +90,7 @@ class TestOperative:
 
     def test_retry_behavior(self):
         """Test auto retry behavior for validation."""
-        operative = Operative(
-            base_type=SampleModel, auto_retry_parse=True, max_retries=3
-        )
+        operative = Operative(base_type=SampleModel, auto_retry_parse=True, max_retries=3)
 
         # Valid input should clear retry flag
         valid_text = '{"name": "test", "value": 42}'
@@ -142,9 +138,7 @@ class TestOperative:
         assert "username" in operative.request_type.model_fields
         assert "age" in operative.request_type.model_fields
 
-    def test_operative_validate_response_strict_false_records_retry_state(
-        self, monkeypatch
-    ):
+    def test_operative_validate_response_strict_false_records_retry_state(self, monkeypatch):
         """When the adapter raises during validation with strict=False,
         response_str_dict is set to the input text and _should_retry is False."""
         from unittest.mock import patch

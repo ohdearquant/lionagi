@@ -15,7 +15,7 @@ from .field_model import FieldModel
 from .hashable_model import HashableModel
 
 logger = logging.getLogger(__name__)
-from .model_params import ModelParams
+from .model_params import ModelParams  # noqa: E402
 
 FieldName = TypeVar("FieldName", bound=str)
 
@@ -333,9 +333,7 @@ class OperableModel(HashableModel):
         # Handle field_obj
         if field_obj:
             if not isinstance(field_obj, FieldInfo):
-                raise ValueError(
-                    "Invalid field_obj, should be a pydantic FieldInfo object"
-                )
+                raise ValueError("Invalid field_obj, should be a pydantic FieldInfo object")
             self.extra_fields[field_name] = field_obj
 
         if field_model:
@@ -580,7 +578,7 @@ class OperableModel(HashableModel):
         if update_forward_refs:
             try:
                 model_cls.model_rebuild()
-            except Exception:
+            except Exception:  # noqa: S110
                 pass  # Ignore rebuild errors for forward refs that can't be resolved yet
 
         return model_cls

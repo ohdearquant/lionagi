@@ -18,7 +18,9 @@ from lionagi.cli._project import (
 
 class TestParseRemoteUrl:
     def test_https_github(self):
-        assert _parse_remote_url("https://github.com/ohdearquant/lionagi.git") == "ohdearquant/lionagi"
+        assert (
+            _parse_remote_url("https://github.com/ohdearquant/lionagi.git") == "ohdearquant/lionagi"
+        )
 
     def test_https_no_dot_git(self):
         assert _parse_remote_url("https://github.com/ohdearquant/lionagi") == "ohdearquant/lionagi"
@@ -27,13 +29,18 @@ class TestParseRemoteUrl:
         assert _parse_remote_url("git@github.com:ohdearquant/lionagi.git") == "ohdearquant/lionagi"
 
     def test_ssh_url_style(self):
-        assert _parse_remote_url("ssh://git@github.com/ohdearquant/lionagi.git") == "ohdearquant/lionagi"
+        assert (
+            _parse_remote_url("ssh://git@github.com/ohdearquant/lionagi.git")
+            == "ohdearquant/lionagi"
+        )
 
     def test_trailing_slash(self):
         assert _parse_remote_url("https://github.com/ohdearquant/lionagi/") == "ohdearquant/lionagi"
 
     def test_single_segment(self):
-        assert _parse_remote_url("https://example.com/repo.git") is None or _parse_remote_url("https://example.com/repo.git")
+        assert _parse_remote_url("https://example.com/repo.git") is None or _parse_remote_url(
+            "https://example.com/repo.git"
+        )
 
 
 class TestReadProjectFromToml:

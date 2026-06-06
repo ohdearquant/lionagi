@@ -45,8 +45,7 @@ class Finding(HashableModel):
     suggestion: str | None = Field(
         default=None,
         description=(
-            "Concrete fix the reviewer recommends. None when the finding "
-            "is informational only."
+            "Concrete fix the reviewer recommends. None when the finding is informational only."
         ),
     )
 
@@ -78,6 +77,7 @@ class ReviewVerdict(SkillOutcome):
         if isinstance(v, str):
             return v.replace("-", "_").replace(" ", "_")
         return v
+
     findings: list[Finding] = Field(
         default_factory=list,
         description="Findings list — blocking-first ordering is the writer's responsibility.",

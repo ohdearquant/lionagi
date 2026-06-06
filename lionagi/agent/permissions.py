@@ -46,7 +46,6 @@ from __future__ import annotations
 import fnmatch
 import logging
 import re
-import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -182,17 +181,13 @@ class PermissionPolicy:
                 )
 
         # Finding 10: default deny instead of default allow in rules mode
-        return PermissionDecision(
-            "deny", tool_name, action, "no matching rule, default deny"
-        )
+        return PermissionDecision("deny", tool_name, action, "no matching rule, default deny")
 
     def to_pre_hook(self) -> Callable:
         """Convert this policy into a Tool preprocessor hook."""
         policy = self
 
-        async def permission_check(
-            tool_name: str, action: str, args: dict
-        ) -> dict | None:
+        async def permission_check(tool_name: str, action: str, args: dict) -> dict | None:
             decision = policy.check(tool_name, action, args)
 
             if decision.behavior == "allow":
@@ -210,9 +205,7 @@ class PermissionPolicy:
                     f"{decision.reason}. No escalation handler configured."
                 )
 
-            raise PermissionError(
-                f"Permission denied for {tool_name}.{action}: {decision.reason}"
-            )
+            raise PermissionError(f"Permission denied for {tool_name}.{action}: {decision.reason}")
 
         return permission_check
 
@@ -222,9 +215,7 @@ def _build_match_string(tool_name: str, action: str, args: dict) -> str:
         command = str(args.get("command", ""))
         # Finding 2: reject shell control operators before fnmatch
         if _SHELL_CONTROL.search(command):
-            raise PermissionError(
-                f"Shell control operator requires explicit approval: {command!r}"
-            )
+            raise PermissionError(f"Shell control operator requires explicit approval: {command!r}")
         return command
     if tool_name == "editor":
         return args.get("file_path", "")
@@ -238,6 +229,4 @@ def _build_match_string(tool_name: str, action: str, args: dict) -> str:
 def _matches(text: str, pattern: str) -> bool:
     if pattern == "*":
         return True
-    return fnmatch.fnmatch(text, pattern) or fnmatch.fnmatch(
-        text.lower(), pattern.lower()
-    )
+    return fnmatch.fnmatch(text, pattern) or fnmatch.fnmatch(text.lower(), pattern.lower())

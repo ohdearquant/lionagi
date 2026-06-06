@@ -163,7 +163,7 @@ class HookedEvent(Event):
         if h_ev := self._post_invoke_hook_event:
             try:
                 await h_ev.invoke()
-            except BaseException:
+            except BaseException:  # noqa: S110
                 pass  # Don't fail after data already sent
             await global_hook_logger.alog(h_ev)
 

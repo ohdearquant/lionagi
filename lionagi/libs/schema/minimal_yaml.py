@@ -38,7 +38,7 @@ def _is_empty(x: Any) -> bool:
         return x.strip() == ""
     if isinstance(x, dict):
         return len(x) == 0
-    if isinstance(x, (list, tuple, set)):
+    if isinstance(x, list | tuple | set):
         return len(x) == 0
     # Keep numbers (including 0) and booleans (including False)
     return False

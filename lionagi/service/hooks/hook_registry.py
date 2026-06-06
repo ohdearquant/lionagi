@@ -135,7 +135,11 @@ class HookRegistry:
         return await handler(ev_, ct_, ch_, **kw)
 
     async def pre_event_create(
-        self, event_type: type[E], /, exit: bool = False, **kw
+        self,
+        event_type: type[E],
+        /,
+        exit: bool = False,  # noqa: A002
+        **kw,
     ) -> tuple[E | Exception | None, bool, EventStatus]:
         """Hook to be called before an event is created.
 
@@ -165,7 +169,11 @@ class HookRegistry:
             return (e, exit, EventStatus.CANCELLED)
 
     async def pre_invocation(
-        self, event: E, /, exit: bool = False, **kw
+        self,
+        event: E,
+        /,
+        exit: bool = False,  # noqa: A002
+        **kw,
     ) -> tuple[Any, bool, EventStatus]:
         """Hook to be called when an event is dequeued and right before it is invoked.
 
@@ -191,7 +199,11 @@ class HookRegistry:
             return (e, exit, EventStatus.CANCELLED)
 
     async def post_invocation(
-        self, event: E, /, exit: bool = False, **kw
+        self,
+        event: E,
+        /,
+        exit: bool = False,  # noqa: A002
+        **kw,
     ) -> tuple[None | Exception, bool, EventStatus]:
         """Hook to be called right after event finished its execution.
         It can either raise an exception to abort the event invocation or pass to continue (status: aborted).
@@ -213,7 +225,12 @@ class HookRegistry:
             return (e, exit, EventStatus.ABORTED)
 
     async def handle_streaming_chunk(
-        self, chunk_type: str | type, chunk: Any, /, exit: bool = False, **kw
+        self,
+        chunk_type: str | type,
+        chunk: Any,
+        /,
+        exit: bool = False,  # noqa: A002
+        **kw,
     ) -> tuple[Any, bool, EventStatus | None]:
         """Hook to be called to consume streaming chunks.
 
@@ -244,7 +261,7 @@ class HookRegistry:
         hook_type: HookEventTypes = None,
         chunk_type=None,
         chunk=None,
-        exit=False,
+        exit=False,  # noqa: A002
         **kw,
     ):
         """Call a hook or stream handler.

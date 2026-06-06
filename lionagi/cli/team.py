@@ -137,9 +137,7 @@ def cmd_create(args: argparse.Namespace) -> int:
 
 def cmd_list(args: argparse.Namespace) -> int:
     teams_dir = _teams_dir()
-    files = sorted(
-        teams_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
-    )
+    files = sorted(teams_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not files:
         print("No teams.")
         return 0

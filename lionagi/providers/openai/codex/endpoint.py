@@ -12,9 +12,9 @@ from lionagi.providers.openai.codex.models import (
     CodexChunk,
     CodexCodeRequest,
     CodexSession,
+    stream_codex_cli,
 )
 from lionagi.providers.openai.codex.models import log as codex_log
-from lionagi.providers.openai.codex.models import stream_codex_cli
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.stream_chunk import StreamChunk
@@ -84,9 +84,7 @@ class CodexCLIEndpoint(AgenticEndpoint):
 
     def _runtime_handlers(self, kwargs: dict) -> dict:
         handlers = self.codex_handlers.copy()
-        call_handlers = {
-            k: kwargs.pop(k) for k in list(kwargs) if k in _CODEX_HANDLER_PARAMS
-        }
+        call_handlers = {k: kwargs.pop(k) for k in list(kwargs) if k in _CODEX_HANDLER_PARAMS}
         if call_handlers:
             _validate_handlers(call_handlers)
             handlers.update(call_handlers)
@@ -95,24 +93,18 @@ class CodexCLIEndpoint(AgenticEndpoint):
     def create_payload(self, request: dict | BaseModel, **kwargs):
         req_dict = {**self.config.kwargs, **to_dict(request), **kwargs}
         messages = req_dict.pop("messages", [])
-        req_dict = {
-            k: v for k, v in req_dict.items() if k in CodexCodeRequest.model_fields
-        }
+        req_dict = {k: v for k, v in req_dict.items() if k in CodexCodeRequest.model_fields}
         req_obj = CodexCodeRequest(messages=messages, **req_dict)
         return {"request": req_obj}, {}
 
-    async def stream(
-        self, request: dict | BaseModel, **kwargs
-    ) -> AsyncIterator[StreamChunk]:
+    async def stream(self, request: dict | BaseModel, **kwargs) -> AsyncIterator[StreamChunk]:
         handlers = self._runtime_handlers(kwargs)
         if isinstance(request, dict) and "request" in request:
             request_obj = request["request"]
         else:
             payload, _ = self.create_payload(request, **kwargs)
             request_obj = payload["request"]
-        async with contextlib.aclosing(
-            stream_codex_cli(request_obj, **handlers)
-        ) as gen:
+        async with contextlib.aclosing(stream_codex_cli(request_obj, **handlers)) as gen:
             async for item in gen:
                 if isinstance(item, CodexSession):
                     continue
@@ -167,18 +159,14 @@ class CodexCLIEndpoint(AgenticEndpoint):
         session: CodexSession = CodexSession()
         handlers = self._runtime_handlers(kwargs)
 
-        async with contextlib.aclosing(
-            stream_codex_cli(request, session, **handlers)
-        ) as gen:
+        async with contextlib.aclosing(stream_codex_cli(request, session, **handlers)) as gen:
             async for chunk in gen:
                 if isinstance(chunk, dict):
                     if chunk.get("type") == "done":
                         break
                 responses.append(chunk)
 
-        codex_log.info(
-            f"Session {session.session_id} finished with {len(responses)} chunks"
-        )
+        codex_log.info(f"Session {session.session_id} finished with {len(responses)} chunks")
         if not session.result:
             texts = [c.text for c in session.chunks if c.text is not None]
             session.result = "\n".join(texts)

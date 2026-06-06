@@ -39,9 +39,7 @@ def _add_progression_to_flow(flow: Flow, progression: Progression) -> None:
     mirroring what Flow.add_progression() does after include() succeeds.
     """
     if progression.name and progression.name in flow._progression_names:
-        raise ItemExistsError(
-            f"Progression with name '{progression.name}' already exists."
-        )
+        raise ItemExistsError(f"Progression with name '{progression.name}' already exists.")
     flow.progressions.collections[progression.id] = progression
     flow.progressions.progression.append(progression.id)
     if progression.name:
@@ -149,17 +147,11 @@ class Exchange(Element):
                             except Exception:
                                 message_copy = message.model_copy()
                             deliveries.append((other_id, message_copy))
-                elif (
-                    message.recipient is not None
-                    and message.recipient in self._owner_index
-                ):
+                elif message.recipient is not None and message.recipient in self._owner_index:
                     deliveries.append((message.recipient, message))
         if deliveries:
             await gather(
-                *[
-                    self._deliver_to(recipient_id, message)
-                    for recipient_id, message in deliveries
-                ],
+                *[self._deliver_to(recipient_id, message) for recipient_id, message in deliveries],
                 return_exceptions=True,
             )
 
@@ -217,9 +209,7 @@ class Exchange(Element):
         if flow is None:
             raise ValueError(f"Sender {sender} not registered")
 
-        message = Message(
-            sender=sender, recipient=recipient, content=content, channel=channel
-        )
+        message = Message(sender=sender, recipient=recipient, content=content, channel=channel)
         flow.add_item(message, progressions=OUTBOX)
         return message
 

@@ -12,9 +12,9 @@ from lionagi.providers.anthropic.claude_code.models import (
     ClaudeChunk,
     ClaudeCodeRequest,
     ClaudeSession,
+    stream_claude_code_cli,
 )
 from lionagi.providers.anthropic.claude_code.models import log as cc_log
-from lionagi.providers.anthropic.claude_code.models import stream_claude_code_cli
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.stream_chunk import StreamChunk
@@ -90,9 +90,7 @@ class ClaudeCodeCLIEndpoint(AgenticEndpoint):
 
     def _runtime_handlers(self, kwargs: dict) -> dict:
         handlers = self.claude_handlers.copy()
-        call_handlers = {
-            k: kwargs.pop(k) for k in list(kwargs) if k in _CLAUDE_HANDLER_PARAMS
-        }
+        call_handlers = {k: kwargs.pop(k) for k in list(kwargs) if k in _CLAUDE_HANDLER_PARAMS}
         if call_handlers:
             _validate_handlers(call_handlers)
             handlers.update(call_handlers)
@@ -101,24 +99,18 @@ class ClaudeCodeCLIEndpoint(AgenticEndpoint):
     def create_payload(self, request: dict | BaseModel, **kwargs):
         req_dict = {**self.config.kwargs, **to_dict(request), **kwargs}
         messages = req_dict.pop("messages", [])
-        req_dict = {
-            k: v for k, v in req_dict.items() if k in ClaudeCodeRequest.model_fields
-        }
+        req_dict = {k: v for k, v in req_dict.items() if k in ClaudeCodeRequest.model_fields}
         req_obj = ClaudeCodeRequest(messages=messages, **req_dict)
         return {"request": req_obj}, {}
 
-    async def stream(
-        self, request: dict | BaseModel, **kwargs
-    ) -> AsyncIterator[StreamChunk]:
+    async def stream(self, request: dict | BaseModel, **kwargs) -> AsyncIterator[StreamChunk]:
         handlers = self._runtime_handlers(kwargs)
         if isinstance(request, dict) and "request" in request:
             request_obj = request["request"]
         else:
             payload, _ = self.create_payload(request, **kwargs)
             request_obj = payload["request"]
-        async with contextlib.aclosing(
-            stream_claude_code_cli(request_obj, **handlers)
-        ) as gen:
+        async with contextlib.aclosing(stream_claude_code_cli(request_obj, **handlers)) as gen:
             async for item in gen:
                 if isinstance(item, ClaudeSession):
                     continue
@@ -224,16 +216,12 @@ class ClaudeCodeCLIEndpoint(AgenticEndpoint):
             if system:
                 req2.resume = system.get("session_id") if system else None
 
-            async with contextlib.aclosing(
-                stream_claude_code_cli(req2, session)
-            ) as gen2:
+            async with contextlib.aclosing(stream_claude_code_cli(req2, session)) as gen2:
                 async for chunk in gen2:
                     responses.append(chunk)
                     if isinstance(chunk, ClaudeSession):
                         break
-        cc_log.info(
-            f"Session {session.session_id} finished with {len(responses)} chunks"
-        )
+        cc_log.info(f"Session {session.session_id} finished with {len(responses)} chunks")
         texts = []
         for i in session.chunks:
             if i.text is not None:
@@ -241,9 +229,7 @@ class ClaudeCodeCLIEndpoint(AgenticEndpoint):
 
         # Guard against IndexError when no text chunks arrived (early cancel,
         # tool-only sessions, empty responses under auto_finish).
-        if session.result and (
-            not texts or session.result.strip() != texts[-1].strip()
-        ):
+        if session.result and (not texts or session.result.strip() != texts[-1].strip()):
             texts.append(session.result)
 
         session.result = "\n".join(texts)

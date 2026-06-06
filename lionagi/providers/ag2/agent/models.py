@@ -147,9 +147,7 @@ async def run_beta_agent(
 
     if agent is not None:
         if config is not None:
-            logger.info(
-                "run_beta_agent: pre-built agent provided; agent_config is ignored."
-            )
+            logger.info("run_beta_agent: pre-built agent provided; agent_config is ignored.")
         # Use the caller-supplied agent as-is.
         # AG2 stream imports still needed for the subscription machinery below.
     else:
@@ -164,9 +162,7 @@ async def run_beta_agent(
 
         agent_kwargs: dict[str, Any] = {
             "name": config.name,
-            "prompt": (
-                config.prompt if isinstance(config.prompt, list) else [config.prompt]
-            ),
+            "prompt": (config.prompt if isinstance(config.prompt, list) else [config.prompt]),
             "config": llm_config,
         }
 
@@ -226,9 +222,7 @@ async def run_beta_agent(
     async def _on_tool_result(event: ToolResultEvent) -> None:
         content = ""
         if event.result and event.result.parts:
-            content = " ".join(
-                getattr(p, "content", str(p)) for p in event.result.parts
-            )
+            content = " ".join(getattr(p, "content", str(p)) for p in event.result.parts)
         await event_queue.put(
             {
                 "type": "tool_result",
@@ -240,12 +234,8 @@ async def run_beta_agent(
 
     from autogen.beta.events.conditions import TypeCondition
 
-    sub_tools = stream.subscribe(
-        _on_tool_calls, condition=TypeCondition(ToolCallsEvent)
-    )
-    sub_results = stream.subscribe(
-        _on_tool_result, condition=TypeCondition(ToolResultEvent)
-    )
+    sub_tools = stream.subscribe(_on_tool_calls, condition=TypeCondition(ToolCallsEvent))
+    sub_results = stream.subscribe(_on_tool_result, condition=TypeCondition(ToolResultEvent))
 
     async def _run_agent():
         return await agent.ask(message, stream=stream)
@@ -275,9 +265,7 @@ async def run_beta_agent(
 
         content = ""
         if reply.response and reply.response.message:
-            content = getattr(
-                reply.response.message, "content", str(reply.response.message)
-            )
+            content = getattr(reply.response.message, "content", str(reply.response.message))
 
         yield {
             "type": "response",
@@ -300,7 +288,7 @@ async def run_beta_agent(
             # that the consumer no longer wants to see.
             try:
                 await task
-            except (
+            except (  # noqa: S110
                 asyncio.CancelledError,
                 Exception,
             ):  # noqa: S110, BLE001 — intentional teardown reap

@@ -150,9 +150,9 @@ async def test_handle_request_shell_control_operators_rejected(cmd, operator):
     tool = BashTool()
     resp = await tool.handle_request(BashRequest(command=cmd))
     assert resp.return_code == -1, f"Operator {operator!r} was not rejected"
-    assert (
-        "Shell control" in resp.stderr or "trusted shell mode" in resp.stderr
-    ), f"Operator {operator!r} rejection message missing: {resp.stderr}"
+    assert "Shell control" in resp.stderr or "trusted shell mode" in resp.stderr, (
+        f"Operator {operator!r} rejection message missing: {resp.stderr}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -162,10 +162,7 @@ async def test_handle_request_shell_control_operators_rejected(cmd, operator):
 
 async def test_handle_request_output_truncation(tmp_path):
     # Generate a python one-liner that emits well over 100 KB of output
-    script = (
-        'python3 -c "import sys; '
-        "sys.stdout.write('A' * 200000); sys.stdout.flush()\""
-    )
+    script = "python3 -c \"import sys; sys.stdout.write('A' * 200000); sys.stdout.flush()\""
     tool = BashTool()
     req = BashRequest(command=script, allow_shell=True)
     resp = await tool.handle_request(req)
@@ -235,7 +232,6 @@ async def test_bash_tool_malformed_command_returns_permission_error_response():
 
 
 async def test_bash_tool_popen_failure_returns_execution_error(monkeypatch):
-
     import lionagi.tools.code.bash as bash_mod
 
     def fake_popen(*args, **kwargs):

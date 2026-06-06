@@ -262,7 +262,7 @@ class TestServiceErrorHandling:
             assert imodel is not None
         except Exception as e:
             # If it fails, verify it's an appropriate error
-            assert isinstance(e, (ValueError, KeyError, AttributeError))
+            assert isinstance(e, ValueError | KeyError | AttributeError)
 
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
     def test_imodel_invalid_provider(self):
@@ -275,7 +275,7 @@ class TestServiceErrorHandling:
             assert imodel.endpoint.config.provider == "invalid_provider"
         except Exception as e:
             # If it fails, verify it's an appropriate error
-            assert isinstance(e, (ValueError, KeyError))
+            assert isinstance(e, ValueError | KeyError)
 
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
     def test_imodel_empty_model_name(self):
@@ -287,7 +287,7 @@ class TestServiceErrorHandling:
             assert imodel.model_name == ""
         except Exception as e:
             # If it fails, verify it's a validation error
-            assert isinstance(e, (ValueError, TypeError))
+            assert isinstance(e, ValueError | TypeError)
 
     def test_endpoint_payload_creation_with_invalid_data(self, openai_endpoint_config):
         """Test endpoint payload creation with invalid request data."""
@@ -392,4 +392,4 @@ class TestServiceEdgeCases:
             assert endpoint is not None
         except Exception as e:
             # If it requires model, should raise appropriate error
-            assert isinstance(e, (ValueError, KeyError, TypeError))
+            assert isinstance(e, ValueError | KeyError | TypeError)

@@ -132,7 +132,7 @@ class AppSettings(BaseSettings, frozen=True):
         return str(secret)
 
     @property
-    def LOG_CONFIG(self) -> dict[str, Any]:
+    def LOG_CONFIG(self) -> dict[str, Any]:  # noqa: N802
         """Get LOG configuration dict compatible with old Settings.Config.LOG format."""
         return {
             "persist_dir": self.LOG_PERSIST_DIR,

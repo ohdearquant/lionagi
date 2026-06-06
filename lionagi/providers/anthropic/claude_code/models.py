@@ -318,7 +318,7 @@ class ClaudeCodeRequest(BaseModel):
         if resume or continue_conversation:
             continue_conversation = True
             prompt = msg[-1]["content"]
-            if isinstance(prompt, (dict, list)):
+            if isinstance(prompt, dict | list):
                 prompt = ln.json_dumps(prompt)
 
         # 2. else, use entire messages except system message
@@ -329,9 +329,7 @@ class ClaudeCodeRequest(BaseModel):
                 if message["role"] != "system":
                     content = message["content"]
                     prompts.append(
-                        ln.json_dumps(content)
-                        if isinstance(content, (dict, list))
-                        else content
+                        ln.json_dumps(content) if isinstance(content, dict | list) else content
                     )
 
             prompt = "\n".join(prompts)
@@ -367,10 +365,7 @@ class ClaudeCodeRequest(BaseModel):
             raise ValueError("--fork-session requires --resume or --continue")
 
         # Permission flag mutual exclusivity
-        if (
-            self.allow_dangerously_skip_permissions
-            and self.permission_mode == "bypassPermissions"
-        ):
+        if self.allow_dangerously_skip_permissions and self.permission_mode == "bypassPermissions":
             raise ValueError(
                 "allow_dangerously_skip_permissions and "
                 "permission_mode='bypassPermissions' are mutually exclusive"
@@ -378,9 +373,7 @@ class ClaudeCodeRequest(BaseModel):
 
         # System prompt mutual exclusivity
         if self.system_prompt and self.system_prompt_file:
-            raise ValueError(
-                "--system-prompt and --system-prompt-file are mutually exclusive"
-            )
+            raise ValueError("--system-prompt and --system-prompt-file are mutually exclusive")
 
         # Workspace bounds check for bypassPermissions
         if self.permission_mode == "bypassPermissions":
@@ -406,14 +399,10 @@ class ClaudeCodeRequest(BaseModel):
         ws_path = Path(self.ws)
 
         if ws_path.is_absolute():
-            raise ValueError(
-                f"Workspace path must be relative, got absolute: {self.ws}"
-            )
+            raise ValueError(f"Workspace path must be relative, got absolute: {self.ws}")
 
         if ".." in ws_path.parts:
-            raise ValueError(
-                f"Directory traversal detected in workspace path: {self.ws}"
-            )
+            raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
 
         repo_resolved = self.repo.resolve()
         result = (self.repo / ws_path).resolve()
@@ -536,9 +525,7 @@ class ClaudeCodeRequest(BaseModel):
                 args.extend(str(v) for v in val)
 
             elif kind == "json_value":
-                serialized = (
-                    json.dumps(val) if isinstance(val, (dict, list)) else str(val)
-                )
+                serialized = json.dumps(val) if isinstance(val, dict | list) else str(val)
                 args.extend([flag, serialized])
 
             elif kind == "repeat":
@@ -661,9 +648,7 @@ def _extract_summary(session: ClaudeSession) -> dict[str, Any]:
 
     # Deduplicate key actions
     key_actions = (
-        list(dict.fromkeys(key_actions))
-        if key_actions
-        else ["No specific actions detected"]
+        list(dict.fromkeys(key_actions)) if key_actions else ["No specific actions detected"]
     )
 
     # Deduplicate file paths
@@ -671,9 +656,7 @@ def _extract_summary(session: ClaudeSession) -> dict[str, Any]:
         file_operations[op_type] = list(dict.fromkeys(file_operations[op_type]))
 
     # Extract result summary (first 200 chars)
-    result_summary = (
-        (session.result[:200] + "...") if len(session.result) > 200 else session.result
-    )
+    result_summary = (session.result[:200] + "...") if len(session.result) > 200 else session.result
 
     return {
         "tool_counts": tool_counts,
@@ -723,9 +706,7 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
     # Guard against mocked subprocesses in tests where proc.pid may not
     # be a real int: a MagicMock.pid coerces to 1 via __int__, and
     # os.killpg(1, SIGTERM) signals init/the CI runner.
-    _claude_pgid: int | None = (
-        proc.pid if isinstance(proc.pid, int) and proc.pid > 1 else None
-    )
+    _claude_pgid: int | None = proc.pid if isinstance(proc.pid, int) and proc.pid > 1 else None
 
     decoder = codecs.getincrementaldecoder("utf-8")()
     json_decoder = json.JSONDecoder()
@@ -836,7 +817,7 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
         stderr_task.cancel()
         try:
             await stderr_task
-        except (
+        except (  # noqa: S110
             asyncio.CancelledError,
             Exception,
         ):  # noqa: S110, BLE001 — intentional teardown reap
@@ -846,9 +827,7 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
 # --------------------------------------------------------------------------- SSE route
 async def stream_cc_cli_events(request: ClaudeCodeRequest):
     if not CLAUDE_CLI:
-        raise RuntimeError(
-            "Claude CLI binary not found (npm i -g @anthropic-ai/claude-code)"
-        )
+        raise RuntimeError("Claude CLI binary not found (npm i -g @anthropic-ai/claude-code)")
     async with contextlib.aclosing(_ndjson_from_cli(request)) as stream:
         async for obj in stream:
             yield obj
@@ -894,17 +873,13 @@ def _pp_tool_use(tu: dict[str, Any], theme) -> None:
 def _pp_tool_result(tr: dict[str, Any], theme) -> None:
     body_preview = shorten(str(tr["content"]).replace("\n", " "), 130)
     status = "ERR" if tr.get("is_error") else "OK"
-    body = (
-        f"- 📄 Tool Result({tr['tool_use_id']}) - {status}\n\n\tcontent: {body_preview}"
-    )
+    body = f"- 📄 Tool Result({tr['tool_use_id']}) - {status}\n\n\tcontent: {body_preview}"
     print_readable(body, border=False, panel=False, theme=theme)
 
 
 def _pp_final(sess: ClaudeSession, theme) -> None:
     usage = sess.usage or {}
-    cost_str = (
-        f"${sess.total_cost_usd:.4f}" if sess.total_cost_usd is not None else "N/A"
-    )
+    cost_str = f"${sess.total_cost_usd:.4f}" if sess.total_cost_usd is not None else "N/A"
     txt = (
         f"### ✅ Session complete - {datetime.now(timezone.utc).isoformat(timespec='seconds')} UTC\n"
         f"**Result:**\n\n{sess.result or ''}\n\n"

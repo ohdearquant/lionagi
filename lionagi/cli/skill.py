@@ -60,7 +60,7 @@ def resolve_skill_path(name: str) -> tuple[Path | None, str | None]:
     except (OSError, ValueError):
         return (
             None,
-            f"skill {name!r} resolves outside skills root " "(symlink escape blocked)",
+            f"skill {name!r} resolves outside skills root (symlink escape blocked)",
         )
     return candidate, None
 

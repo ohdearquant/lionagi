@@ -90,9 +90,7 @@ async def select_v1(
     """
     # Parse choices into keys and representations
     selections, contents = parse_to_representation(choices)
-    prompt = SelectionModel.PROMPT.format(
-        max_num_selections=max_num_selections, choices=selections
-    )
+    prompt = SelectionModel.PROMPT.format(max_num_selections=max_num_selections, choices=selections)
 
     # Build instruction dictionary
     if isinstance(instruct, Instruct):
@@ -102,9 +100,7 @@ async def select_v1(
 
     # Append selection prompt to instruction
     if instruct_dict.get("instruction", None) is not None:
-        instruct_dict["instruction"] = (
-            f"{instruct_dict['instruction']}\n\n{prompt} \n\n "
-        )
+        instruct_dict["instruction"] = f"{instruct_dict['instruction']}\n\n{prompt} \n\n "
     else:
         instruct_dict["instruction"] = prompt
 
