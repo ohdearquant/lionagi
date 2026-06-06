@@ -65,6 +65,15 @@ class RateLimitedAPIProcessor(Processor):
                     if self.limit_tokens is not None:
                         self._available_tokens = self.limit_tokens
 
+                # Re-drive deferred work. process() re-enqueues rate-limited
+                # events (instead of dropping them); without re-driving here,
+                # nothing would retry them after the budget replenishes —
+                # forward() is one-shot — and they would sit PENDING until the
+                # caller's invoke() safety timeout. Draining on each refresh is
+                # what makes the deferral actually complete.
+                if not self.queue.empty():
+                    await self.process()
+
         except get_cancelled_exc_class():
             logging.debug("Rate limit replenisher task cancelled.")
         except Exception as e:
@@ -139,15 +148,16 @@ class RateLimitedAPIProcessor(Processor):
         return True
 
     @override
-    async def handle_denied(self, event: Any) -> None:
+    async def handle_denied(self, event: Any) -> bool:
         """Rate-limit denial is a DEFERRAL, not a rejection.
 
-        Leave the event PENDING (do not terminalize it) so the base
-        ``process()`` reuse path retries it once capacity replenishes. Marking
-        it SKIPPED here — as the base does for permission denials — would silently
+        Return ``False`` so the base ``process()`` re-enqueues the event
+        (leaving it ``PENDING``) instead of terminalizing it — the call is
+        retried on a later cycle once the rate limit replenishes. Returning
+        ``True`` (as the base does for permission rejections) would silently
         drop rate-limited work.
         """
-        return None
+        return False
 
 
 class RateLimitedAPIExecutor(Executor):

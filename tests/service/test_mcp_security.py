@@ -305,3 +305,73 @@ class TestLoadMcpConfigTrustedLoad:
         # A restrictive policy must surface the denial loudly, not swallow to [].
         with pytest.raises(PermissionError):
             await mgr.load_mcp_config(str(cfg), mcp_security=MCPSecurityConfig())
+
+    async def test_load_restores_global_security_scope(self, tmp_path, monkeypatch):
+        """The permissive policy is scoped to the load, not left global (Finding 3).
+
+        Mutating the process-global default permanently would broaden trust from
+        "this config load" to "every later MCP client created in this process."
+        load_mcp_config must restore the prior default afterwards.
+        """
+        import json
+
+        from lionagi.protocols.action.manager import ActionManager
+
+        cfg = tmp_path / ".mcp.json"
+        cfg.write_text(json.dumps({"mcpServers": {"local": {"command": "echo"}}}))
+
+        # Known prior default: fail-closed.
+        MCPConnectionPool._security = None
+        try:
+            mgr = ActionManager()
+
+            async def fake_register(server_config, update=False):
+                # Policy IS permissive during the load itself.
+                assert MCPConnectionPool._security.allow_commands is True
+                return ["local_echo"]
+
+            monkeypatch.setattr(mgr, "register_mcp_server", fake_register)
+            await mgr.load_mcp_config(str(cfg))
+
+            # ...but the global default is restored once the load returns.
+            assert MCPConnectionPool._security is None
+        finally:
+            MCPConnectionPool._security = None
+
+    async def test_load_mcp_tools_helper_trusted_and_loud(self, tmp_path, monkeypatch):
+        """Standalone load_mcp_tools mirrors load_mcp_config semantics (Finding 2):
+        trusted-allow during the load, scope restored after, denial raised loudly.
+        """
+        import json
+
+        from lionagi.protocols.action.manager import ActionManager, load_mcp_tools
+
+        cfg = tmp_path / ".mcp.json"
+        cfg.write_text(json.dumps({"mcpServers": {"local": {"command": "echo"}}}))
+
+        MCPConnectionPool._security = None
+        try:
+            seen = {}
+
+            async def fake_register(self, server_config, request_options=None, update=False):
+                seen["allow_commands"] = MCPConnectionPool._security.allow_commands
+                return ["local_echo"]
+
+            monkeypatch.setattr(ActionManager, "register_mcp_server", fake_register)
+
+            # Normal load: no raise, policy permissive during load, restored after.
+            await load_mcp_tools(str(cfg))
+            assert seen["allow_commands"] is True
+            assert MCPConnectionPool._security is None
+
+            # Restrictive policy: a denial must be raised, not swallowed to [].
+            async def deny_register(self, server_config, request_options=None, update=False):
+                raise PermissionError("MCP command transport is disabled")
+
+            monkeypatch.setattr(ActionManager, "register_mcp_server", deny_register)
+            with pytest.raises(PermissionError):
+                await load_mcp_tools(str(cfg), mcp_security=MCPSecurityConfig())
+            # Even on the raising path, the global default is restored.
+            assert MCPConnectionPool._security is None
+        finally:
+            MCPConnectionPool._security = None

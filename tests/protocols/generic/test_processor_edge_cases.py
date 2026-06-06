@@ -221,9 +221,104 @@ class TestProcessorCreate:
         assert p.queue_capacity == 5
 
 
-class TestProcessorJoin:
-    async def test_join_empty_queue(self):
-        p = _proc()
-        await asyncio.wait_for(p.join(), timeout=1.0)
-        assert p.queue.qsize() == 0
-        assert p.available_capacity == p.queue_capacity
+class _RejectProc(Processor):
+    """Denies every event with a terminal (reject) decision."""
+
+    event_type = _OkEvent
+
+    async def request_permission(self, **kwargs):
+        return False
+
+
+class _DeferProc(Processor):
+    """Denies every event as a DEFERRAL (rate-limit style backpressure)."""
+
+    event_type = _OkEvent
+
+    async def request_permission(self, **kwargs):
+        return False
+
+    async def handle_denied(self, event) -> bool:
+        return False  # defer, do not terminalize
+
+
+class _DeferUntilProc(Processor):
+    """Denies the first ``deny_first`` permission checks, then allows.
+
+    Models a rate limit that replenishes: the event must survive the denials
+    (re-enqueued, not dropped) and dispatch once permission is granted.
+    """
+
+    event_type = _OkEvent
+
+    def __init__(self, *a, deny_first: int = 1, **kw):
+        super().__init__(*a, **kw)
+        self._remaining_denials = deny_first
+
+    async def request_permission(self, **kwargs):
+        if self._remaining_denials > 0:
+            self._remaining_denials -= 1
+            return False
+        return True
+
+    async def handle_denied(self, event) -> bool:
+        return False  # defer
+
+
+class TestProcessorDenial:
+    async def test_terminal_denial_marks_skipped_and_drains(self):
+        """A rejected (terminal) event reaches SKIPPED and leaves the queue."""
+        p = _RejectProc(queue_capacity=10, capacity_refresh_time=0.01, concurrency_limit=2)
+        event = _OkEvent()
+        await p.enqueue(event)
+        await asyncio.wait_for(p.process(), timeout=1.0)
+        assert event.status == EventStatus.SKIPPED
+        assert p.queue.empty()
+
+    async def test_deferred_denial_requeues_not_drops(self):
+        """A deferred event must stay in the queue (PENDING), never dropped.
+
+        Regression: process() used to dequeue a denied event and leave it
+        PENDING outside the queue, so rate-limited work was silently lost.
+        """
+        p = _DeferProc(queue_capacity=10, capacity_refresh_time=0.01, concurrency_limit=2)
+        event = _OkEvent()
+        await p.enqueue(event)
+        await asyncio.wait_for(p.process(), timeout=1.0)
+        # Re-enqueued, not dropped: still queued and still PENDING.
+        assert not p.queue.empty()
+        assert event.status == EventStatus.PENDING
+
+    async def test_deferred_batch_does_not_busy_spin(self):
+        """When every queued event is deferred, process() returns promptly
+        once a full lap has been deferred (no infinite spin)."""
+        p = _DeferProc(queue_capacity=100, capacity_refresh_time=0.01, concurrency_limit=2)
+        events = [_OkEvent() for _ in range(3)]
+        for e in events:
+            await p.enqueue(e)
+        await asyncio.wait_for(p.process(), timeout=1.0)
+        # All three preserved in the queue, none dispatched.
+        assert p.queue.qsize() == 3
+        assert all(e.status == EventStatus.PENDING for e in events)
+
+    async def test_deferred_then_granted_dispatches(self):
+        """A deferred event is dispatched on a later cycle once permission is
+        granted — proving deferral retries rather than dropping work."""
+        p = _DeferUntilProc(
+            queue_capacity=10,
+            capacity_refresh_time=0.01,
+            concurrency_limit=2,
+            deny_first=1,
+        )
+        event = _OkEvent()
+        await p.enqueue(event)
+
+        # First cycle: denied -> deferred (re-enqueued, still PENDING).
+        await asyncio.wait_for(p.process(), timeout=1.0)
+        assert not p.queue.empty()
+        assert event.status == EventStatus.PENDING
+
+        # Second cycle: permission now granted -> dispatched and completed.
+        await asyncio.wait_for(p.process(), timeout=1.0)
+        assert p.queue.empty()
+        assert event.status == EventStatus.COMPLETED
