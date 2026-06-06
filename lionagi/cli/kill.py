@@ -306,7 +306,7 @@ async def _persist_cancel(
         reason_code=reason_code,
         reason_summary=reason_summary,
         evidence_refs=[evidence],
-        source="cli",
+        source="admin",  # CLI kill is an operator/admin action (ADR-0028 source vocabulary)
         actor="user",
     )
 

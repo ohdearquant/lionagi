@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from lionagi.models import HashableModel
 
@@ -37,6 +37,7 @@ class Finding(HashableModel):
     )
     line: int | None = Field(
         default=None,
+        ge=1,
         description="1-indexed line number when known.",
     )
     description: str = Field(
@@ -48,6 +49,26 @@ class Finding(HashableModel):
             "Concrete fix the reviewer recommends. None when the finding is informational only."
         ),
     )
+
+    @field_validator("file", mode="before")
+    @classmethod
+    def _validate_file(cls, v: object) -> object:
+        """Reject absolute paths and parent-traversal components."""
+        if v is None:
+            return v
+        if not isinstance(v, str):
+            return v
+        # Reject absolute paths (Unix and Windows).
+        if v.startswith("/") or (len(v) >= 2 and v[1] == ":"):
+            raise ValueError(f"Finding.file must be a repo-relative path, not absolute: {v!r}")
+        # Reject any component that is '..' (traversal).
+        parts = v.replace("\\", "/").split("/")
+        if any(p == ".." for p in parts):
+            raise ValueError(f"Finding.file must not contain parent-traversal components: {v!r}")
+        # Reject NUL bytes (path injection).
+        if "\x00" in v:
+            raise ValueError("Finding.file must not contain NUL bytes.")
+        return v
 
 
 VerdictDecision = Literal[
@@ -107,3 +128,19 @@ class GateVerdict(SkillOutcome):
         default=None,
         description="Operator notes (free text). Often empty; rendered when present.",
     )
+
+    @model_validator(mode="after")
+    def _sync_passed(self) -> GateVerdict:
+        """Keep SkillOutcome.passed consistent with gate_passed.
+
+        - When ``passed`` is omitted (None), default it to ``gate_passed``.
+        - When both are supplied, they must agree (no contradictory state).
+        """
+        if self.passed is None:
+            self.passed = self.gate_passed
+        elif self.passed != self.gate_passed:
+            raise ValueError(
+                f"GateVerdict.gate_passed ({self.gate_passed}) and "
+                f".passed ({self.passed}) must be the same value."
+            )
+        return self
