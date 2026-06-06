@@ -9,7 +9,9 @@ import codecs
 import contextlib
 import json
 import logging
+import os
 import shutil
+import signal
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from dataclasses import field as datafield
@@ -204,6 +206,38 @@ class PiCodeRequest(BaseModel):
             return [v]
         return v
 
+    @field_validator("file_args", mode="before")
+    @classmethod
+    def _validate_file_args(cls, v: list) -> list:
+        """Reject absolute paths and directory-traversal sequences in file_args.
+
+        Pi forwards each entry as ``@<path>`` to the CLI. Without validation an
+        untrusted payload could read arbitrary files (e.g. /etc/passwd or
+        ../../secrets.txt). Validation is fail-closed: any invalid entry raises
+        ValueError before the subprocess is constructed.
+
+        Relative paths that stay inside the repo are permitted; callers that
+        need an absolute path should pre-validate and use an explicit allowlist.
+        """
+        safe: list[str] = []
+        for raw in v:
+            # Strip the leading @ prefix if present — the CLI builder re-adds it.
+            entry = raw.lstrip("@")
+            p = Path(entry)
+            if p.is_absolute():
+                raise ValueError(
+                    f"file_args entry {raw!r} is an absolute path — "
+                    "only relative paths inside the repository are allowed. "
+                    "Absolute paths can grant CLI access to arbitrary files."
+                )
+            if ".." in p.parts:
+                raise ValueError(
+                    f"file_args entry {raw!r} contains directory traversal ('..') — "
+                    "only paths that remain inside the repository are allowed."
+                )
+            safe.append(raw)
+        return safe
+
     @model_validator(mode="before")
     @classmethod
     def _infer_provider_from_model(cls, data):
@@ -239,7 +273,7 @@ class PiCodeRequest(BaseModel):
         for message in msg:
             if message["role"] != "system":
                 content = message["content"]
-                if isinstance(content, (dict, list)):
+                if isinstance(content, dict | list):
                     prompts.append(ln.json_dumps(content))
                 else:
                     prompts.append(content)
@@ -425,8 +459,6 @@ async def _ndjson_from_cli(request: PiCodeRequest):
     if PI_CLI is None:
         raise RuntimeError("Pi CLI not found. Install with: npm i -g @mariozechner/pi-coding-agent")
 
-    import os
-
     env = None
     if request.env():
         env = {**os.environ, **request.env()}
@@ -440,6 +472,11 @@ async def _ndjson_from_cli(request: PiCodeRequest):
         env=env,
         start_new_session=True,
     )
+    # Capture PGID immediately — same pattern as Claude/Codex.
+    # Guard against mocked subprocesses in tests where proc.pid may not be a
+    # real int: a MagicMock.pid coerces to 1 via __int__, and
+    # os.killpg(1, SIGTERM) would signal init/the CI runner.
+    _pgid: int | None = proc.pid if isinstance(proc.pid, int) and proc.pid > 1 else None
 
     decoder = codecs.getincrementaldecoder("utf-8")()
     json_decoder = json.JSONDecoder()
@@ -447,6 +484,31 @@ async def _ndjson_from_cli(request: PiCodeRequest):
 
     if proc.stdout is None:
         raise RuntimeError("Failed to capture stdout from Pi CLI")
+
+    # Bounded stderr drain — without this, a stderr-heavy Pi session can
+    # deadlock when the OS pipe buffer fills before stdout EOF.
+    stderr_cap = 256 * 1024
+    stderr_chunks: list[bytes] = []
+    stderr_total = 0
+
+    async def _drain_stderr() -> None:
+        nonlocal stderr_total
+        if proc.stderr is None:
+            return
+        try:
+            while True:
+                chunk = await proc.stderr.read(4096)
+                if not chunk:
+                    break
+                remaining = stderr_cap - stderr_total
+                if remaining > 0:
+                    take = chunk[:remaining]
+                    stderr_chunks.append(take)
+                    stderr_total += len(take)
+        except Exception as exc:
+            log.debug("pi stderr drain ended: %s", exc)
+
+    stderr_task = asyncio.create_task(_drain_stderr())
 
     try:
         while True:
@@ -478,21 +540,46 @@ async def _ndjson_from_cli(request: PiCodeRequest):
 
         rc = await proc.wait()
         if rc != 0:
-            err = ""
-            if proc.stderr is not None:
-                err = (await proc.stderr.read()).decode().strip()
+            drain_truncated = False
+            try:
+                await asyncio.wait_for(asyncio.shield(stderr_task), timeout=2.0)
+            except asyncio.TimeoutError:
+                drain_truncated = True
+            except asyncio.CancelledError:
+                raise
+            err = b"".join(stderr_chunks).decode(errors="replace").strip()
+            if drain_truncated:
+                err = (err or "") + " [stderr drain timed out]"
             raise RuntimeError(err or f"Pi CLI exited with code {rc}")
 
     finally:
+        # Terminate the whole process group (start_new_session=True above made
+        # pgid == proc.pid). Kill the group so descendant subprocesses started
+        # by the Pi CLI are also cleaned up — direct proc.terminate() only
+        # reaches the CLI process itself, leaving children behind.
+        pgid = _pgid
+        if pgid is not None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(pgid, signal.SIGTERM)
         with contextlib.suppress(ProcessLookupError):
             proc.terminate()
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
         except asyncio.TimeoutError:
+            if pgid is not None:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(pgid, signal.SIGKILL)
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             with contextlib.suppress(Exception):
                 await proc.wait()
+
+        # Reap the stderr drain task.
+        stderr_task.cancel()
+        try:
+            await stderr_task
+        except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001
+            pass
 
 
 async def stream_pi_cli_events(request: PiCodeRequest):

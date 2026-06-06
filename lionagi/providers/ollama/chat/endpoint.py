@@ -12,6 +12,7 @@ import logging
 
 from pydantic import BaseModel
 
+from lionagi.ln.concurrency import run_sync
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.utils import is_import_installed
 
@@ -19,10 +20,7 @@ from .._config import OllamaConfigs
 
 logger = logging.getLogger(__name__)
 
-__all__ = (
-    "OllamaChatEndpoint",
-    "OLLAMA_CHAT_ENDPOINT_CONFIG",
-)
+__all__ = ("OllamaChatEndpoint",)
 
 _HAS_OLLAMA = is_import_installed("ollama")
 
@@ -66,10 +64,11 @@ class OllamaChatEndpoint(Endpoint):
     async def call(self, request: dict | BaseModel, cache_control: bool = False, **kwargs):
         payload, headers = self.create_payload(request, **kwargs)
 
-        # Check if model exists and pull if needed
+        # Check if model exists and pull if needed (off the event loop to avoid
+        # blocking: both _list() and _pull() are synchronous Ollama SDK calls).
         model = payload.get("model")
         if model:
-            self._check_model(model)
+            await run_sync(self._check_model, model)
 
         # Pass the already-created payload directly to avoid double create_payload
         return await super().call(

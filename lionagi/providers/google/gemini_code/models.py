@@ -9,7 +9,9 @@ import contextlib
 import inspect
 import json
 import logging
+import os
 import shutil
+import signal
 import warnings
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -92,7 +94,7 @@ class GeminiCodeRequest(BaseModel):
         for message in msg:
             if message["role"] != "system":
                 content = message["content"]
-                if isinstance(content, (dict, list)):
+                if isinstance(content, dict | list):
                     prompts.append(ln.json_dumps(content))
                 else:
                     prompts.append(content)
@@ -309,6 +311,11 @@ async def _ndjson_from_cli(request: GeminiCodeRequest):
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,  # isolate from parent's SIGINT
     )
+    # Capture PGID immediately — same pattern as Claude/Codex.
+    # Guard against mocked subprocesses in tests where proc.pid may not be a
+    # real int: a MagicMock.pid coerces to 1 via __int__, and
+    # os.killpg(1, SIGTERM) would signal init/the CI runner.
+    _pgid: int | None = proc.pid if isinstance(proc.pid, int) and proc.pid > 1 else None
 
     decoder = codecs.getincrementaldecoder("utf-8")()
     json_decoder = json.JSONDecoder()
@@ -316,6 +323,31 @@ async def _ndjson_from_cli(request: GeminiCodeRequest):
 
     if proc.stdout is None:
         raise RuntimeError("Failed to capture stdout from Gemini CLI")
+
+    # Bounded stderr drain — without this, a stderr-heavy Gemini session can
+    # deadlock when the OS pipe buffer fills before stdout EOF.
+    stderr_cap = 256 * 1024
+    stderr_chunks: list[bytes] = []
+    stderr_total = 0
+
+    async def _drain_stderr() -> None:
+        nonlocal stderr_total
+        if proc.stderr is None:
+            return
+        try:
+            while True:
+                chunk = await proc.stderr.read(4096)
+                if not chunk:
+                    break
+                remaining = stderr_cap - stderr_total
+                if remaining > 0:
+                    take = chunk[:remaining]
+                    stderr_chunks.append(take)
+                    stderr_total += len(take)
+        except Exception as exc:
+            log.debug("gemini stderr drain ended: %s", exc)
+
+    stderr_task = asyncio.create_task(_drain_stderr())
 
     try:
         while True:
@@ -346,21 +378,46 @@ async def _ndjson_from_cli(request: GeminiCodeRequest):
                 log.error("Skipped unrecoverable JSON tail: %.120s...", buffer)
 
         if await proc.wait() != 0:
-            err = ""
-            if proc.stderr is not None:
-                err = (await proc.stderr.read()).decode().strip()
+            drain_truncated = False
+            try:
+                await asyncio.wait_for(asyncio.shield(stderr_task), timeout=2.0)
+            except asyncio.TimeoutError:
+                drain_truncated = True
+            except asyncio.CancelledError:
+                raise
+            err = b"".join(stderr_chunks).decode(errors="replace").strip()
+            if drain_truncated:
+                err = (err or "") + " [stderr drain timed out]"
             raise RuntimeError(err or "Gemini CLI exited non-zero")
 
     finally:
+        # Terminate the whole process group (start_new_session=True above made
+        # pgid == proc.pid). Kill the group so descendant subprocesses started
+        # by the Gemini CLI are also cleaned up — direct proc.terminate() only
+        # reaches the CLI process itself, leaving children behind.
+        pgid = _pgid
+        if pgid is not None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(pgid, signal.SIGTERM)
         with contextlib.suppress(ProcessLookupError):
             proc.terminate()
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
         except asyncio.TimeoutError:
+            if pgid is not None:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(pgid, signal.SIGKILL)
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             with contextlib.suppress(Exception):
                 await proc.wait()
+
+        # Reap the stderr drain task.
+        stderr_task.cancel()
+        try:
+            await stderr_task
+        except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001
+            pass
 
 
 async def stream_gemini_cli_events(request: GeminiCodeRequest):
