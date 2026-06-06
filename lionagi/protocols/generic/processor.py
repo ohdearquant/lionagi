@@ -244,6 +244,38 @@ class Processor(Observer):
         if events_processed > 0:
             self.available_capacity = self.queue_capacity
 
+    async def join(self) -> None:
+        """Block until the queue is drained of processable work.
+
+        Retained as part of the public :class:`Processor` API. The previous
+        implementation polled a ``_processing_count`` counter that was never
+        accurately maintained; this version has corrected semantics built on
+        the current ``process()`` contract:
+
+        - ``process()`` awaits its task group, so every event it *dispatches*
+          has completed by the time it returns.
+        - It re-enqueues events deferred by backpressure (e.g. rate limiting)
+          rather than dropping them.
+
+        ``join()`` therefore loops ``process()`` until the queue is empty.
+        When a cycle makes no progress (every remaining event was deferred and
+        re-enqueued), it sleeps one ``capacity_refresh_time`` so a replenisher
+        (or capacity refresh) can free budget before retrying — matching how
+        the rest of the system clears deferred work. It returns once the queue
+        is empty.
+
+        Note: like the original, ``join()`` waits for work to drain; if events
+        are permanently deferred with nothing replenishing capacity, it will
+        keep waiting. Pair rate-limited processors with their replenisher task.
+        """
+        while not self.queue.empty():
+            before = self.queue.qsize()
+            await self.process()
+            if not self.queue.empty() and self.queue.qsize() >= before:
+                # No progress this cycle: all remaining events were deferred.
+                # Yield so capacity can replenish before the next attempt.
+                await anyio.sleep(self.capacity_refresh_time)
+
     async def request_permission(self, **kwargs: Any) -> bool:
         """Determines if an event may proceed.
 

@@ -134,7 +134,8 @@ class TestMCPConnectionPoolGetClient:
         ) as mock_create:
             client = await MCPConnectionPool.get_client(inline_config)
             assert client is mock_client
-            mock_create.assert_called_once_with(inline_config)
+            # get_client threads the per-call security policy down to creation.
+            mock_create.assert_called_once_with(inline_config, security=None)
 
     @pytest.mark.asyncio
     async def test_get_client_reuses_connected_client(self):

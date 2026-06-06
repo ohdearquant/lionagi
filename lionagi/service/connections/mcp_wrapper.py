@@ -296,8 +296,21 @@ class MCPConnectionPool:
         cls._configs.update(servers)
 
     @classmethod
-    async def get_client(cls, server_config: dict[str, Any]) -> Any:
-        """Get or create a pooled MCP client."""
+    async def get_client(
+        cls,
+        server_config: dict[str, Any],
+        security: MCPSecurityConfig | None = None,
+    ) -> Any:
+        """Get or create a pooled MCP client.
+
+        Args:
+            server_config: Server reference or inline transport config.
+            security: Per-call security policy applied when a NEW client is
+                created. Passed explicitly down the trusted-loader call chain
+                so concurrent loads do not race on the process-global default.
+                A cached, already-validated client is returned as-is (its
+                transport was authorized at creation time).
+        """
         # Generate unique key for this config
         if "server" in server_config:
             # Server reference from .mcp.json
@@ -327,12 +340,16 @@ class MCPConnectionPool:
                     del cls._clients[cache_key]
 
             # Create new client
-            client = await cls._create_client(config)
+            client = await cls._create_client(config, security=security)
             cls._clients[cache_key] = client
             return client
 
     @classmethod
-    async def _create_client(cls, config: dict[str, Any]) -> Any:
+    async def _create_client(
+        cls,
+        config: dict[str, Any],
+        security: MCPSecurityConfig | None = None,
+    ) -> Any:
         """Create a new MCP client from config.
 
         Fail-closed security model: both URL and command transports are
@@ -347,6 +364,11 @@ class MCPConnectionPool:
 
         Args:
             config: Server configuration with 'url' or 'command' + optional 'args' and 'env'
+            security: Explicit per-call policy. Takes precedence over the
+                process-global ``cls._security`` so a trusted loader can
+                authorize THIS client's transport without mutating shared
+                state (which races across concurrent loads). When None, falls
+                back to the global default, then to fail-closed.
 
         Raises:
             PermissionError: If the transport type is not explicitly allowed by the
@@ -360,9 +382,17 @@ class MCPConnectionPool:
         if not any(k in config for k in ["url", "command"]):
             raise ValueError("Config must have either 'url' or 'command' key")
 
-        # Resolve effective security config — use the set config or the default
-        # (which has allow_commands=False and allow_urls=False, i.e., deny all).
-        effective_security = cls._security if cls._security is not None else MCPSecurityConfig()
+        # Resolve effective security config. Precedence: explicit per-call
+        # policy > process-global default > fail-closed default (deny all).
+        # Threading the policy through the call avoids bracketing awaits by
+        # mutating the shared class var, which lets concurrent loads observe
+        # each other's policy.
+        if security is not None:
+            effective_security = security
+        elif cls._security is not None:
+            effective_security = cls._security
+        else:
+            effective_security = MCPSecurityConfig()
 
         # Security validation BEFORE any import or transport construction.
         # Fail closed: raises PermissionError before FastMCP is even imported.

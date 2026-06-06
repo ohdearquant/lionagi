@@ -255,6 +255,7 @@ class ActionManager(Manager):
         tool_names: list[str] | None = None,
         request_options: dict[str, type] | None = None,
         update: bool = False,
+        security: "MCPSecurityConfig | None" = None,
     ) -> list[str]:
         """
         Register tools from an MCP server with automatic discovery.
@@ -268,6 +269,12 @@ class ActionManager(Manager):
             request_options: Optional dict mapping tool names to Pydantic model classes
                             for request validation. E.g., {"exa_search": ExaSearchRequest}
             update: If True, allow updating existing tools.
+            security: Per-call security policy for authorizing this server's
+                transport at client-creation time. Passed down to
+                ``MCPConnectionPool.get_client`` so a trusted loader does not
+                have to mutate the process-global default (which races across
+                concurrent loads). When None, the pool's standing default
+                applies (fail-closed unless a global policy is set).
 
         Returns:
             List of registered tool names
@@ -322,7 +329,7 @@ class ActionManager(Manager):
             from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
             # Get client and discover tools
-            client = await MCPConnectionPool.get_client(server_config)
+            client = await MCPConnectionPool.get_client(server_config, security=security)
             tools = await client.list_tools()
 
             # Register each discovered tool with qualified name
@@ -428,52 +435,49 @@ class ActionManager(Manager):
         )
 
         # Explicit config load = trust the declared transports unless the caller
-        # narrows it. Apply the policy ONLY for the span of this load (save and
-        # restore the pool default) so trust does not silently broaden to every
-        # later MCP client created in this process. Scoping is sound: clients
-        # for these servers are created and cached inside the loop below, so the
-        # restored fail-closed default never re-validates them.
+        # narrows it. Pass the policy DOWN the call chain (register → get_client
+        # → _create_client) rather than mutating the process-global default.
+        # Threading the policy is race-free: a concurrent load with a different
+        # policy cannot observe ours, because nothing shared is mutated. Trust
+        # also never silently broadens to later clients created outside this load.
         if mcp_security is None:
             mcp_security = MCPSecurityConfig(allow_commands=True, allow_urls=True)
-        previous_security = MCPConnectionPool._security
-        MCPConnectionPool.set_security_config(mcp_security)
-        try:
-            # Load the config file into the connection pool
-            MCPConnectionPool.load_config(config_path)
 
-            # Get server list to process
-            if server_names is None:
-                # Get all server names from loaded config
-                # The config has already been validated by load_config
-                server_names = list(MCPConnectionPool._configs.keys())
+        # Load the config file into the connection pool
+        MCPConnectionPool.load_config(config_path)
 
-            # Register tools from each server
-            all_tools = {}
-            for server_name in server_names:
-                try:
-                    # Register using server reference
-                    tools = await self.register_mcp_server({"server": server_name}, update=update)
-                    all_tools[server_name] = tools
-                    logger.info("Registered %d tools from server '%s'", len(tools), server_name)
-                except PermissionError:
-                    # A security denial affects how the config is authorized, not
-                    # a single flaky server — surface it loudly with migration
-                    # guidance rather than silently registering zero tools.
-                    logger.error(
-                        "MCP server '%s' was denied by the active MCPSecurityConfig. "
-                        "Pass mcp_security=MCPSecurityConfig(allow_commands=True, "
-                        "allow_urls=True) (or an allowlist) to load_mcp_config to "
-                        "authorize it.",
-                        server_name,
-                    )
-                    raise
-                except Exception as e:
-                    logger.warning("Failed to register server '%s': %s", server_name, e)
-                    all_tools[server_name] = []
-        finally:
-            # Restore the prior default (possibly None = fail-closed) directly;
-            # set_security_config only accepts a concrete config.
-            MCPConnectionPool._security = previous_security
+        # Get server list to process
+        if server_names is None:
+            # Get all server names from loaded config
+            # The config has already been validated by load_config
+            server_names = list(MCPConnectionPool._configs.keys())
+
+        # Register tools from each server
+        all_tools = {}
+        for server_name in server_names:
+            try:
+                # Register using server reference; authorize THIS server's
+                # transport with the load's policy (no global mutation).
+                tools = await self.register_mcp_server(
+                    {"server": server_name}, update=update, security=mcp_security
+                )
+                all_tools[server_name] = tools
+                logger.info("Registered %d tools from server '%s'", len(tools), server_name)
+            except PermissionError:
+                # A security denial affects how the config is authorized, not
+                # a single flaky server — surface it loudly with migration
+                # guidance rather than silently registering zero tools.
+                logger.error(
+                    "MCP server '%s' was denied by the active MCPSecurityConfig. "
+                    "Pass mcp_security=MCPSecurityConfig(allow_commands=True, "
+                    "allow_urls=True) (or an allowlist) to load_mcp_config to "
+                    "authorize it.",
+                    server_name,
+                )
+                raise
+            except Exception as e:
+                logger.warning("Failed to register server '%s': %s", server_name, e)
+                all_tools[server_name] = []
 
         return all_tools
 
@@ -491,10 +495,11 @@ async def load_mcp_tools(
 
     Like :meth:`ActionManager.load_mcp_config`, an explicit config load trusts
     the declared transports unless ``mcp_security`` narrows it: the policy is
-    applied only for the span of this load (the pool default is saved and
-    restored) so trust does not silently broaden to every later MCP client in
-    the process. A transport rejected by the effective policy raises
-    ``PermissionError`` loudly rather than registering zero tools.
+    threaded down to client creation for this load only (the process-global
+    default is never mutated) so concurrent loads cannot race and trust does
+    not silently broaden to every later MCP client in the process. A transport
+    rejected by the effective policy raises ``PermissionError`` loudly rather
+    than registering zero tools.
 
     Args:
         config_path: Path to .mcp.json file. If None, assumes config already loaded.
@@ -540,55 +545,53 @@ async def load_mcp_tools(
     # Create a temporary ActionManager for tool management
     manager = ActionManager()
 
+    # Trusted load: pass the policy DOWN the call chain instead of mutating the
+    # process-global default, so concurrent loads cannot observe each other's
+    # policy and trust never silently broadens to later clients.
     if mcp_security is None:
         mcp_security = MCPSecurityConfig(allow_commands=True, allow_urls=True)
-    previous_security = MCPConnectionPool._security
-    MCPConnectionPool.set_security_config(mcp_security)
-    try:
-        # Load config if provided
-        if config_path:
-            MCPConnectionPool.load_config(config_path)
 
-        # If no server names specified, discover from config
-        if server_names is None and config_path:
-            # Get all server names from loaded config
-            server_names = list(MCPConnectionPool._configs.keys())
+    # Load config if provided
+    if config_path:
+        MCPConnectionPool.load_config(config_path)
 
-        if server_names is None:
-            raise ValueError("Either provide server_names or config_path to discover servers")
+    # If no server names specified, discover from config
+    if server_names is None and config_path:
+        # Get all server names from loaded config
+        server_names = list(MCPConnectionPool._configs.keys())
 
-        # Register all servers
-        for server_name in server_names:
-            try:
-                # Get request_options for this server if provided
-                request_options = None
-                if request_options_map and server_name in request_options_map:
-                    request_options = request_options_map[server_name]
+    if server_names is None:
+        raise ValueError("Either provide server_names or config_path to discover servers")
 
-                tools_registered = await manager.register_mcp_server(
-                    {"server": server_name},
-                    request_options=request_options,
-                    update=update,
-                )
-                logger.info("Loaded %d tools from %s", len(tools_registered), server_name)
-            except PermissionError:
-                # A security denial is a misconfiguration, not a flaky server —
-                # surface it loudly with migration guidance instead of silently
-                # loading zero tools.
-                logger.error(
-                    "MCP server '%s' was denied by the active MCPSecurityConfig. "
-                    "Pass mcp_security=MCPSecurityConfig(allow_commands=True, "
-                    "allow_urls=True) (or an allowlist) to load_mcp_tools to "
-                    "authorize it.",
-                    server_name,
-                )
-                raise
-            except Exception as e:
-                logger.warning("Failed to load server '%s': %s", server_name, e)
-    finally:
-        # Restore the prior default (possibly None = fail-closed) directly;
-        # set_security_config only accepts a concrete config.
-        MCPConnectionPool._security = previous_security
+    # Register all servers
+    for server_name in server_names:
+        try:
+            # Get request_options for this server if provided
+            request_options = None
+            if request_options_map and server_name in request_options_map:
+                request_options = request_options_map[server_name]
+
+            tools_registered = await manager.register_mcp_server(
+                {"server": server_name},
+                request_options=request_options,
+                update=update,
+                security=mcp_security,
+            )
+            logger.info("Loaded %d tools from %s", len(tools_registered), server_name)
+        except PermissionError:
+            # A security denial is a misconfiguration, not a flaky server —
+            # surface it loudly with migration guidance instead of silently
+            # loading zero tools.
+            logger.error(
+                "MCP server '%s' was denied by the active MCPSecurityConfig. "
+                "Pass mcp_security=MCPSecurityConfig(allow_commands=True, "
+                "allow_urls=True) (or an allowlist) to load_mcp_tools to "
+                "authorize it.",
+                server_name,
+            )
+            raise
+        except Exception as e:
+            logger.warning("Failed to load server '%s': %s", server_name, e)
 
     # Return all registered tools as a list
     return list(manager.registry.values())

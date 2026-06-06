@@ -322,3 +322,56 @@ class TestProcessorDenial:
         await asyncio.wait_for(p.process(), timeout=1.0)
         assert p.queue.empty()
         assert event.status == EventStatus.COMPLETED
+
+
+class TestProcessorJoin:
+    """join() is a retained public API with corrected semantics: drain the
+    queue of processable work, looping process() until the queue is empty."""
+
+    async def test_join_empty_queue_returns_immediately(self):
+        p = _proc()
+        await asyncio.wait_for(p.join(), timeout=1.0)
+        assert p.queue.empty()
+
+    async def test_join_drains_all_events_to_completion(self):
+        p = _proc(queue_capacity=10)
+        events = [_OkEvent() for _ in range(5)]
+        for e in events:
+            await p.enqueue(e)
+        await asyncio.wait_for(p.join(), timeout=3.0)
+        assert p.queue.empty()
+        assert all(e.status == EventStatus.COMPLETED for e in events)
+
+    async def test_join_drains_when_queue_exceeds_capacity(self):
+        # More events than one batch's capacity: join must loop until empty.
+        p = _proc(queue_capacity=2, concurrency_limit=2)
+        events = [_OkEvent() for _ in range(5)]
+        for e in events:
+            await p.enqueue(e)
+        await asyncio.wait_for(p.join(), timeout=3.0)
+        assert p.queue.empty()
+        assert all(e.status == EventStatus.COMPLETED for e in events)
+
+    async def test_join_terminal_denial_drains_skipped(self):
+        p = _RejectProc(queue_capacity=10, capacity_refresh_time=0.01, concurrency_limit=2)
+        events = [_OkEvent() for _ in range(3)]
+        for e in events:
+            await p.enqueue(e)
+        await asyncio.wait_for(p.join(), timeout=1.0)
+        assert p.queue.empty()
+        assert all(e.status == EventStatus.SKIPPED for e in events)
+
+    async def test_join_completes_deferred_then_granted(self):
+        # Event is deferred on the first lap, then granted: join() loops past
+        # the no-progress cycle (sleeping capacity_refresh_time) and completes it.
+        p = _DeferUntilProc(
+            queue_capacity=10,
+            capacity_refresh_time=0.01,
+            concurrency_limit=2,
+            deny_first=1,
+        )
+        event = _OkEvent()
+        await p.enqueue(event)
+        await asyncio.wait_for(p.join(), timeout=2.0)
+        assert p.queue.empty()
+        assert event.status == EventStatus.COMPLETED

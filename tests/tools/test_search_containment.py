@@ -171,9 +171,14 @@ class TestSearchToolHandleRequestContainment:
         assert resp.success is True
         assert resp.count > 0
 
-    def test_search_tool_init_stores_workspace_root(self, tmp_path):
+    def test_search_tool_init_stores_resolved_workspace_root(self, tmp_path):
+        # Stored root is resolved to an absolute path at construction.
+        import os
+        from pathlib import Path
+
         tool = SearchTool(workspace_root=str(tmp_path))
-        assert tool._workspace_root == str(tmp_path)
+        assert tool._workspace_root == str(Path(tmp_path).resolve())
+        assert os.path.isabs(tool._workspace_root)
 
     def test_search_tool_default_no_workspace_root(self):
         tool = SearchTool()
@@ -204,3 +209,56 @@ class TestRelativePathResolvedAgainstRoot:
         root.mkdir()
         with pytest.raises(PermissionError, match="outside workspace root"):
             _validate_search_path("../escape", str(root))
+
+
+class TestRelativeWorkspaceRootIsFrozen:
+    """A relative workspace_root must bind at construction, not move with cwd.
+
+    Regression: SearchTool stored the raw (possibly relative) root and resolved
+    it against the process cwd at search time. A later os.chdir() then moved the
+    containment boundary — a relative 'ws' would point at the NEW cwd's 'ws',
+    letting a search escape (or refuse legitimately-contained) the intended root.
+    """
+
+    @pytest.mark.anyio
+    async def test_cwd_change_after_construction_does_not_move_boundary(
+        self, tmp_path, monkeypatch
+    ):
+        import os
+        from pathlib import Path
+
+        # Two sibling sandboxes, each containing a relative-named "ws".
+        base_a = tmp_path / "a"
+        base_b = tmp_path / "b"
+        (base_a / "ws").mkdir(parents=True)
+        (base_b / "ws").mkdir(parents=True)
+        (base_a / "ws" / "code.py").write_text("def a(): pass\n")
+        secret = base_b / "ws" / "secret.py"
+        secret.write_text("API_SECRET = 'leak'\n")
+
+        # Construct with a RELATIVE root while cwd == base_a → boundary is a/ws.
+        monkeypatch.chdir(base_a)
+        tool = SearchTool(workspace_root="ws")
+        assert tool._workspace_root == str((base_a / "ws").resolve())
+
+        # Now move cwd to base_b. A naive re-resolve of "ws" would point at b/ws.
+        monkeypatch.chdir(base_b)
+
+        # Searching b/ws (by absolute path) must be REFUSED: the frozen boundary
+        # is still a/ws, so b/ws is outside it. Pre-fix, the boundary would have
+        # followed cwd to b/ws and this search would have succeeded (leak).
+        resp = await tool.handle_request(
+            SearchRequest(
+                action=SearchAction.grep,
+                pattern="SECRET",
+                path=str(base_b / "ws"),
+            )
+        )
+        assert resp.success is False
+        assert "outside" in (resp.error or "").lower()
+
+        # And path="." must still resolve to the frozen a/ws, not b/ws.
+        resolved, err = _validate_search_path(".", tool._workspace_root)
+        assert err is None
+        assert resolved == str((base_a / "ws").resolve())
+        assert os.path.isabs(tool._workspace_root)
