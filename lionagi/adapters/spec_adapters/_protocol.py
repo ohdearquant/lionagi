@@ -1,8 +1,13 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
 """Abstract base class for Spec adapters.
 
 Adapters convert framework-agnostic Spec objects to framework-specific
 field and model definitions (Pydantic, msgspec, attrs, dataclasses).
 """
+
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
@@ -33,7 +38,7 @@ class SpecAdapter(ABC):
 
     @classmethod
     @abstractmethod
-    def create_field(cls, spec: "Spec") -> Any:
+    def create_field(cls, spec: Spec) -> Any:
         """Convert Spec to framework-specific field definition.
 
         Args:
@@ -48,7 +53,7 @@ class SpecAdapter(ABC):
     @abstractmethod
     def create_model(
         cls,
-        operable: "Operable",
+        operable: Operable,
         model_name: str,
         include: set[str] | None = None,
         exclude: set[str] | None = None,
@@ -110,7 +115,7 @@ class SpecAdapter(ABC):
         ...
 
     @classmethod
-    def create_validator(cls, spec: "Spec") -> Any:
+    def create_validator(cls, spec: Spec) -> Any:
         """Generate framework-specific validators from Spec metadata.
 
         Args:
@@ -139,7 +144,7 @@ class SpecAdapter(ABC):
         data = extract_json(text, fuzzy_parse=fuzzy)
 
         # Unwrap single-item lists/tuples
-        if isinstance(data, (list, tuple)) and len(data) == 1:
+        if isinstance(data, list | tuple) and len(data) == 1:
             data = data[0]
 
         return data
