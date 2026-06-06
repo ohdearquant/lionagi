@@ -4,6 +4,45 @@
 All notable changes to lionagi are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.26.16] - 2026-06-06
+
+### Fixed
+
+- **Codex silent failures** — `turn.failed`/`error` events were swallowed;
+  now yield `StreamChunk(type="error")`. (#1272)
+- **Codex `fast_mode`** — `service_tier=flex` → `service_tier=fast`. (#1272)
+
+### Changed
+
+- **Unified CLI provider types** — remove `ClaudeChunk`/`CodexChunk` and
+  `ClaudeSession`/`CodexSession`; shared `CLISession` + `StreamChunk`
+  passthrough. −255 lines. (#1272)
+
+## [0.26.15] - 2026-06-02
+
+Reactive orchestration, domain engines, observer-as-hook-transport.
+
+### Added
+
+- **Reactive self-expanding flow** — `SpawnRequest` injects nodes into a
+  running DAG; CLI rewired onto casts + emissions.
+- **Domain engines** (ADR-0075) — `PlanningEngine`, `ResearchEngine`,
+  `ReviewEngine`; `li o flow` routes through `run_dag`.
+- **Observer-as-hook transport** (ADR-0076) — emission/control/lifecycle
+  extracted to `_observe.py`; API-model agents drive the bus.
+- **Hook bus persistence** (ADR-0023b), pre-invoke governance gate,
+  `li o flow --workers`, compositional filter DSL.
+- **SWE-bench harness** — real instances, deterministic oracle, blind
+  judge, per-dollar verdict.
+- **Daytona sandbox** — isolated containers + context tool + tool guidance.
+
+### Fixed
+
+- **Roled agents lost tool-use** — `with_updates` dropped response schema.
+- **Studio show-detail 404** in Docker + stale frontend build.
+- **Daytona shell injection** — cwd now shell-quoted.
+- **Codex `skip_git_repo_check`** defaulted to `True`.
+
 ## [0.26.14] - 2026-05-30
 
 ### Fixed
