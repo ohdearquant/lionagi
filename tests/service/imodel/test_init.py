@@ -85,9 +85,7 @@ class TestiModel:
             "call",
             return_value=mock_response.json.return_value,
         ):
-            result = await imodel.invoke(
-                messages=[{"role": "user", "content": "Hello"}]
-            )
+            result = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 
         assert isinstance(result, APICalling)
         assert result.status == EventStatus.COMPLETED
@@ -108,9 +106,7 @@ class TestiModel:
             tasks = []
             for i in range(3):
                 task = asyncio.create_task(
-                    imodel.invoke(
-                        messages=[{"role": "user", "content": f"Message {i}"}]
-                    )
+                    imodel.invoke(messages=[{"role": "user", "content": f"Message {i}"}])
                 )
                 tasks.append(task)
 
@@ -141,9 +137,7 @@ class TestiModel:
 
         with patch.object(imodel.endpoint, "stream", return_value=mock_stream()):
             chunks = []
-            async for chunk in imodel.stream(
-                messages=[{"role": "user", "content": "Hello"}]
-            ):
+            async for chunk in imodel.stream(messages=[{"role": "user", "content": "Hello"}]):
                 if chunk:
                     chunks.append(chunk)
 
@@ -171,9 +165,7 @@ class TestiModel:
         imodel = base_imodel
 
         with patch.object(imodel.endpoint, "call", side_effect=Exception("API Error")):
-            result = await imodel.invoke(
-                messages=[{"role": "user", "content": "Hello"}]
-            )
+            result = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 
             # The invoke method returns a failed APICalling object instead of raising
             assert result.status == EventStatus.FAILED
@@ -253,11 +245,7 @@ class TestiModel:
         async def mock_request(request, cache_control=False, **kwargs):
             await asyncio.sleep(0.05)
             # The request parameter is the payload dict
-            model = (
-                request.get("model", "unknown")
-                if isinstance(request, dict)
-                else "unknown"
-            )
+            model = request.get("model", "unknown") if isinstance(request, dict) else "unknown"
             return {"model_used": model, "response": "test"}
 
         with patch(
@@ -359,9 +347,7 @@ class TestiModel:
         imodel.endpoint.session_id = "test-session-123"
 
         # Create API calling without explicit resume parameter
-        api_call = imodel.create_api_calling(
-            messages=[{"role": "user", "content": "Hello"}]
-        )
+        api_call = imodel.create_api_calling(messages=[{"role": "user", "content": "Hello"}])
 
         # Check that resume was auto-injected (in the request object for claude_code)
         assert api_call.payload["request"].resume == "test-session-123"
@@ -414,9 +400,7 @@ class TestiModel:
 
         with patch.object(imodel.endpoint, "stream", return_value=mock_stream()):
             chunks = []
-            async for chunk in imodel.stream(
-                messages=[{"role": "user", "content": "Hello"}]
-            ):
+            async for chunk in imodel.stream(messages=[{"role": "user", "content": "Hello"}]):
                 if chunk and not isinstance(chunk, APICalling):
                     chunks.append(chunk)
 
@@ -511,12 +495,8 @@ class TestiModel:
         async def mock_request_with_session(request, cache_control=False, **kwargs):
             return {"session_id": "new-session-456", "response": "test"}
 
-        with patch.object(
-            imodel.endpoint, "call", side_effect=mock_request_with_session
-        ):
-            result = await imodel.invoke(
-                messages=[{"role": "user", "content": "Hello"}]
-            )
+        with patch.object(imodel.endpoint, "call", side_effect=mock_request_with_session):
+            result = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 
         # Check that session_id was stored on the CLI endpoint
         assert imodel.endpoint.session_id == "new-session-456"
@@ -605,9 +585,7 @@ class TestiModel:
             "call",
             return_value=mock_response.json.return_value,
         ):
-            result = await imodel.invoke(
-                messages=[{"role": "user", "content": "Hello"}]
-            )
+            result = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 
         assert isinstance(result, APICalling)
         assert result.status == EventStatus.COMPLETED

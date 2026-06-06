@@ -1,6 +1,8 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -8,6 +10,7 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from lionagi.ln.concurrency import Lock
 
@@ -54,12 +57,27 @@ class MCPSecurityConfig:
     """Security configuration for MCP connection pool.
 
     Controls which commands can be executed, which environment variables
-    are passed, and connection limits. Use as an optional guard layer
-    on top of the trust-based model.
+    are passed, and connection limits.
+
+    Transport security (fail-closed by default):
+        By default both command and URL transports require an explicit
+        opt-in to allow ANY connection.  Set ``allow_commands=True`` to
+        permit command-based transports (optionally restricted further
+        with ``command_allowlist``).  Set ``allow_urls=True`` to permit
+        URL-based transports (optionally restricted further with
+        ``url_allowlist``).
 
     Attributes:
-        command_allowlist: If set, only these commands are permitted.
-            None means all commands are allowed (trust-based default).
+        allow_commands: Must be True to permit any command (stdio) transport.
+            Default False — fail closed.
+        command_allowlist: If set, only these bare command names are permitted
+            (checked after allow_commands=True). None means all bare commands
+            allowed when allow_commands=True.
+        allow_urls: Must be True to permit any URL transport. Default False —
+            fail closed.
+        url_allowlist: If set, only these exact host values are permitted
+            (checked after allow_urls=True). None means all HTTPS hosts
+            allowed when allow_urls=True (non-HTTPS always blocked).
         env_denylist_patterns: Substrings to filter from environment
             variables passed to MCP servers (case-insensitive match).
         filter_sensitive_env: If True, filters known sensitive env vars
@@ -67,7 +85,10 @@ class MCPSecurityConfig:
         max_connections_per_server: Max pooled connections per server name.
     """
 
+    allow_commands: bool = False
     command_allowlist: frozenset[str] | None = None
+    allow_urls: bool = False
+    url_allowlist: frozenset[str] | None = None
     env_denylist_patterns: frozenset[str] = field(default_factory=lambda: _SENSITIVE_ENV_PATTERNS)
     filter_sensitive_env: bool = True
     max_connections_per_server: int = 5
@@ -103,15 +124,27 @@ def _filter_env(env: dict[str, str], config: MCPSecurityConfig) -> dict[str, str
 def _validate_command(command: str, config: MCPSecurityConfig) -> None:
     """Validate command against security config.
 
+    Fails closed: commands are denied unless ``config.allow_commands`` is True.
+    When an allowlist is active, only bare command names in the allowlist pass.
+
     Args:
         command: Command to validate.
         config: Security configuration.
 
     Raises:
+        PermissionError: If command transports are not explicitly allowed.
         ValueError: If command is not in allowlist or contains
             path separators when an allowlist is active.
     """
+    if not config.allow_commands:
+        raise PermissionError(
+            f"MCP command transport is disabled (allow_commands=False). "
+            f"Set MCPSecurityConfig(allow_commands=True) to permit command-based MCP servers. "
+            f"Blocked command: '{command}'"
+        )
+
     if config.command_allowlist is None:
+        # allow_commands=True and no allowlist: any bare or path command is permitted.
         return
 
     # When allowlist is active, reject path separators and check bare name
@@ -130,6 +163,42 @@ def _validate_command(command: str, config: MCPSecurityConfig) -> None:
         raise ValueError(
             f"Command '{command}' not in allowlist. Allowed: {sorted(config.command_allowlist)}"
         )
+
+
+def _validate_url(url: str, config: MCPSecurityConfig) -> None:
+    """Validate URL against security config.
+
+    Fails closed: URL transports are denied unless ``config.allow_urls`` is
+    True AND the scheme is ``https``.  Optionally further restricted to
+    ``config.url_allowlist`` hosts.
+
+    Args:
+        url: URL to validate.
+        config: Security configuration.
+
+    Raises:
+        PermissionError: If URL transports are not explicitly allowed.
+        ValueError: If URL scheme is not https or host is not in allowlist.
+    """
+    if not config.allow_urls:
+        raise PermissionError(
+            f"MCP URL transport is disabled (allow_urls=False). "
+            f"Set MCPSecurityConfig(allow_urls=True) to permit URL-based MCP servers. "
+            f"Blocked URL: '{url}'"
+        )
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("https", "wss"):
+        raise ValueError(
+            f"MCP URL transport requires https or wss scheme. Got '{parsed.scheme}' in URL: '{url}'"
+        )
+
+    if config.url_allowlist is not None:
+        host = parsed.hostname or ""
+        if host not in config.url_allowlist:
+            raise ValueError(
+                f"MCP URL host '{host}' not in allowlist. Allowed: {sorted(config.url_allowlist)}"
+            )
 
 
 class MCPConnectionPool:
@@ -266,19 +335,23 @@ class MCPConnectionPool:
     async def _create_client(cls, config: dict[str, Any]) -> Any:
         """Create a new MCP client from config.
 
-        When a security config is set via ``set_security_config()``, commands
-        are validated against the allowlist and environment variables are
-        filtered to prevent accidental secret leakage.
+        Fail-closed security model: both URL and command transports are
+        rejected by default unless an explicit opt-in is present in the
+        security config (``allow_urls=True`` or ``allow_commands=True``).
+        When a security config is set via ``set_security_config()`` with
+        the appropriate allow flag, the URL or command is validated before
+        any transport object is constructed.
 
-        Without a security config, the trust-based model applies: users are
-        responsible for vetting the MCP servers they configure, similar to
-        how IDEs trust configured language servers.
+        Without a security config, ALL transports are denied — callers must
+        set a security config with the relevant allow flag to proceed.
 
         Args:
             config: Server configuration with 'url' or 'command' + optional 'args' and 'env'
 
         Raises:
-            ValueError: If config format is invalid or command not in allowlist.
+            PermissionError: If the transport type is not explicitly allowed by the
+                security config (fail-closed default).
+            ValueError: If config format is invalid or command/URL not in allowlist.
         """
         # Validate config structure
         if not isinstance(config, dict):
@@ -287,6 +360,17 @@ class MCPConnectionPool:
         if not any(k in config for k in ["url", "command"]):
             raise ValueError("Config must have either 'url' or 'command' key")
 
+        # Resolve effective security config — use the set config or the default
+        # (which has allow_commands=False and allow_urls=False, i.e., deny all).
+        effective_security = cls._security if cls._security is not None else MCPSecurityConfig()
+
+        # Security validation BEFORE any import or transport construction.
+        # Fail closed: raises PermissionError before FastMCP is even imported.
+        if "url" in config:
+            _validate_url(config["url"], effective_security)
+        elif "command" in config:
+            _validate_command(config["command"], effective_security)
+
         try:
             from fastmcp import Client as FastMCPClient
         except ImportError:
@@ -294,15 +378,12 @@ class MCPConnectionPool:
 
         # Handle different config formats
         if "url" in config:
-            # Direct URL connection
             client = FastMCPClient(config["url"])
         elif "command" in config:
             # Command-based connection
             command = config["command"]
 
-            # Security: validate command if security config is set
-            if cls._security is not None:
-                _validate_command(command, cls._security)
+            # (Validation already done above before fastmcp import)
 
             # Validate args if provided
             args = config.get("args", [])
@@ -314,12 +395,7 @@ class MCPConnectionPool:
             env.update(config.get("env", {}))
 
             # Security: always filter known sensitive environment variables.
-            # When a security config is set, use its deny patterns;
-            # otherwise apply the default _SENSITIVE_ENV_PATTERNS.
-            if cls._security is not None:
-                env = _filter_env(env, cls._security)
-            else:
-                env = _filter_env(env, MCPSecurityConfig())
+            env = _filter_env(env, effective_security)
 
             # Suppress server logging unless debug mode is enabled
             if not (

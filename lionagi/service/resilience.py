@@ -429,7 +429,9 @@ async def retry_with_backoff(
             # Calculate backoff with optional jitter
             if jitter:
                 # This is not used for cryptographic purposes, just for jitter
-                jitter_amount = random.uniform(1.0 - jitter_factor, 1.0 + jitter_factor)  # noqa: S311
+                jitter_amount = random.uniform(  # noqa: S311  # non-crypto jitter
+                    1.0 - jitter_factor, 1.0 + jitter_factor
+                )
                 current_delay = min(delay * jitter_amount, max_delay)
             else:
                 current_delay = min(delay, max_delay)

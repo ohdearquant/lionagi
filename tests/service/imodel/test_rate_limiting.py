@@ -156,9 +156,7 @@ class TestiModelRateLimitingEdgeCases:
             # Fire exactly limit_requests so all clear in one window
             tasks = [
                 asyncio.create_task(
-                    imodel.invoke(
-                        messages=[{"role": "user", "content": f"Request {i}"}]
-                    )
+                    imodel.invoke(messages=[{"role": "user", "content": f"Request {i}"}])
                 )
                 for i in range(5)
             ]
