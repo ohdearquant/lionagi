@@ -34,7 +34,7 @@ session = Session(
 branch = session.new_branch(
     system="You are a research assistant.",
     name="researcher",
-    imodel=li.iModel(model="gpt-4o"),
+    chat_model=li.iModel(model="gpt-4o"),
     tools=[search_fn],
     as_default_branch=True,
 )
@@ -45,7 +45,7 @@ branch = session.new_branch(
 | `system` | `System \| JsonValue` | `None` | System prompt |
 | `user` | `SenderRecipient` | `None` | Branch owner |
 | `name` | `str \| None` | `None` | Human label |
-| `imodel` | `iModel \| None` | `None` | Chat model (deprecated alias for `chat_model`) |
+| `chat_model` | `iModel \| None` | `None` | Chat model for the branch |
 | `messages` | `Pile[RoledMessage]` | `None` | Restore prior history |
 | `tools` | `list[Callable]` | `None` | Pre-registered tools |
 | `as_default_branch` | `bool` | `False` | Set as session default |
@@ -147,12 +147,12 @@ async def main():
     researcher = session.new_branch(
         system="You are a research specialist.",
         name="researcher",
-        imodel=li.iModel(model="gpt-4o"),
+        chat_model=li.iModel(model="gpt-4o"),
     )
     writer = session.new_branch(
         system="You are a technical writer.",
         name="writer",
-        imodel=li.iModel(model="gpt-4o"),
+        chat_model=li.iModel(model="gpt-4o"),
     )
 
     findings = await researcher.communicate("Summarize key advances in RAG architectures.")

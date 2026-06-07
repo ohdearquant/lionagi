@@ -116,9 +116,9 @@ async def test_communicate_no_validation(branch_with_mock_imodel: Branch):
 
 
 @pytest.mark.asyncio
-async def test_communicate_with_request_model(branch_with_mock_imodel: Branch):
+async def test_communicate_with_response_format(branch_with_mock_imodel: Branch):
     """
-    If request_model is provided,
+    If response_format is provided,
     branch tries to parse the final response => we can mock `branch.parse` to simulate success.
     """
 
@@ -127,7 +127,7 @@ async def test_communicate_with_request_model(branch_with_mock_imodel: Branch):
 
     result = await branch_with_mock_imodel.communicate(
         instruction="We want typed output",
-        request_model=MyModel,
+        response_format=MyModel,
     )
     assert result.foo == "mocked_response"
     # user + assistant stored

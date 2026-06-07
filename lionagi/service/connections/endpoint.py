@@ -138,8 +138,10 @@ class Endpoint:
                 "parse_model",
                 "actions",
                 "return_operative",
-                "operative_model",
+                # Removed operation aliases — drop so a stale caller passing
+                # one as **kwargs can't leak it into a schema-less payload.
                 "request_model",
+                "operative_model",
             }
             payload = {k: v for k, v in payload.items() if k not in non_api_params}
 

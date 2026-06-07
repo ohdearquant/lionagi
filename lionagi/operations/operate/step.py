@@ -39,10 +39,8 @@ class Step:
         parse_kwargs: dict | None = None,
         exclude_fields: list | None = None,
         field_descriptions: dict | None = None,
-        inherit_base: bool = True,
         config_dict: dict | None = None,
         doc: str | None = None,
-        frozen: bool = False,
         new_model_name: str | None = None,
         parameter_fields: dict | None = None,
         request_params: dict | None = None,
@@ -64,10 +62,8 @@ class Step:
             parse_kwargs: (Deprecated) Ignored - parse config handled internally
             exclude_fields: (Deprecated) Ignored
             field_descriptions: (Deprecated) Ignored
-            inherit_base: (Deprecated) Ignored
             config_dict: (Deprecated) Ignored
             doc: (Deprecated) Ignored
-            frozen: (Deprecated) Ignored
             new_model_name: (Deprecated) Ignored
             parameter_fields: (Deprecated) Ignored
             request_params: (Deprecated) Ignored
@@ -75,6 +71,17 @@ class Step:
         Returns:
             Configured Operative instance
         """
+        from .._guards import reject_removed_kwargs
+
+        reject_removed_kwargs(
+            kwargs,
+            {
+                "inherit_base": "fields=/base_type=",
+                "frozen": "",
+            },
+            where="Step.request_operative",
+        )
+
         # Warn on deprecated parameters that are silently ignored
         _deprecated_ignored = {
             "parse_kwargs": parse_kwargs,
@@ -93,19 +100,6 @@ class Step:
                     DeprecationWarning,
                     stacklevel=2,
                 )
-        if not inherit_base:
-            warnings.warn(
-                "inherit_base is deprecated and will be removed in v0.21.0",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        if frozen:
-            warnings.warn(
-                "frozen is deprecated and will be removed in v0.21.0",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
         # Handle backward compatibility
         name = name or operative_name
 

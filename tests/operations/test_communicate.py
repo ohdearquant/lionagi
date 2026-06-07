@@ -44,7 +44,7 @@ async def test_communicate_with_model_validation():
 
     parsed = await branch.communicate(
         instruction="Send typed output",
-        request_model=MySimpleModel,
+        response_format=MySimpleModel,
     )
     # We'll assume your code sets parsed.data = "mocked_response_string"
     assert parsed.data == "mocked_response_string"
@@ -105,30 +105,6 @@ from lionagi.operations.communicate.communicate import prepare_communicate_kw
 
 class SomeModel(BaseModel):
     data: str = "default"
-
-
-def test_prepare_communicate_kw_operative_model_deprecation():
-    """Line 48: operative_model param → DeprecationWarning."""
-    branch = make_mocked_branch_for_communicate()
-    with pytest.warns(DeprecationWarning, match="operative_model"):
-        kw = prepare_communicate_kw(branch, operative_model=SomeModel)
-    assert kw["chat_param"].response_format is SomeModel
-
-
-def test_prepare_communicate_kw_dual_response_format_raises():
-    """Line 60: response_format + request_model together → ValueError."""
-    branch = make_mocked_branch_for_communicate()
-    with pytest.raises(ValueError, match="Cannot specify both"):
-        prepare_communicate_kw(branch, response_format=SomeModel, request_model=SomeModel)
-
-
-def test_prepare_communicate_kw_operative_model_and_response_format_raises():
-    """Line 60: operative_model + response_format → ValueError."""
-    branch = make_mocked_branch_for_communicate()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        with pytest.raises(ValueError, match="Cannot specify both"):
-            prepare_communicate_kw(branch, operative_model=SomeModel, response_format=SomeModel)
 
 
 def test_prepare_communicate_kw_high_retries_capped():

@@ -153,7 +153,7 @@ class InstructionContent(MessageContent):
             inst.images.extend(imgs_list)
             inst.image_detail = data.get("image_detail") or inst.image_detail or "auto"
 
-        response_format = data.get("response_format") or data.get("request_model")
+        response_format = data.get("response_format")
         structure = data.get("structure")
 
         if response_format is not None:

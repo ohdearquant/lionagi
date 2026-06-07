@@ -164,7 +164,6 @@ class Branch(Element, Relational):
         system_sender: "SenderRecipient" = None,
         chat_model: iModel | dict | str = None,  # iModelManager kwargs
         parse_model: iModel | dict | str = None,
-        imodel: iModel = None,  # deprecated, alias of chat_model
         tools: FuncTool | list[FuncTool] = None,  # ActionManager kwargs
         log_config: DataLoggerConfig | dict = None,  # LogManager kwargs
         system_datetime: bool | str = None,
@@ -194,8 +193,6 @@ class Branch(Element, Relational):
             parse_model (iModel, optional):
                 The "parse" iModel for structured data parsing.
                 Defaults to chat_model if not provided.
-            imodel (iModel, optional):
-                Deprecated. Alias for `chat_model`.
             tools (FuncTool | list[FuncTool], optional):
                 Tools or a list of tools for the ActionManager.
             log_config (LogManagerConfig | dict, optional):
@@ -254,7 +251,6 @@ class Branch(Element, Relational):
                 sender=system_sender or self.user or MessageRole.SYSTEM,
             )
 
-        chat_model = chat_model or imodel
         if not chat_model:
             chat_model = iModel(
                 provider=settings.LIONAGI_CHAT_PROVIDER,
@@ -973,7 +969,6 @@ class Branch(Element, Relational):
         fill_value: Any = None,
         fill_mapping: dict[str, Any] | None = None,
         strict: bool = False,
-        suppress_conversion_errors: bool = False,
         response_format: type[BaseModel] = None,
     ) -> BaseModel | dict | str | None:
         """
@@ -1007,8 +1002,6 @@ class Branch(Element, Relational):
                 A mapping of specific fields to fill values.
             strict (bool):
                 If True, raises errors on ambiguous fields or data types.
-            suppress_conversion_errors (bool):
-                If True, logs or ignores conversion errors instead of raising.
 
         Returns:
             BaseModel | dict | str | None:
@@ -1138,7 +1131,6 @@ class Branch(Element, Relational):
 
         Raises:
             ValueError:
-                - If both `operative_model` and `response_format` or `request_model` are given.
                 - If the LLM's response cannot be parsed into the expected format and `handle_validation='raise'`.
         """
         _pms = {
@@ -1204,7 +1196,7 @@ class Branch(Element, Relational):
             progression (ID.IDSeq, optional):
                 Custom ordering of messages.
             response_format (type[BaseModel], optional):
-                Alias for `request_model`. If both are provided, raises ValueError.
+                A Pydantic model the response is parsed into.
             request_fields (dict|list[str], optional):
                 If you only need certain fields from the LLM's response.
             chat_model (iModel, optional):

@@ -728,33 +728,6 @@ class FieldModel(Params):
             t_ = t_ | None
         return t_
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert field model to dictionary for backward compatibility.
-
-        DEPRECATED: Use metadata_dict() instead.
-
-        Returns:
-            Dictionary representation of field configuration.
-        """
-        import warnings
-
-        warnings.warn(
-            "FieldModel.to_dict() is deprecated and will be removed in v0.21.0. "
-            "Use metadata_dict() instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.metadata_dict(
-            exclude=[
-                "nullable",
-                "listable",
-                "validator",
-                "name",
-                "validator_kwargs",
-                "annotation",
-            ]
-        )
-
     def to_spec(self) -> Spec:
         """Convert FieldModel to Spec.
 

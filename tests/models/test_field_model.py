@@ -123,15 +123,15 @@ class TestFieldModel:
         field_with_extra = FieldModel(name="test_field", default="test", custom_attr="value")
         assert hasattr(field_with_extra, "custom_attr")
 
-    def test_field_to_dict(self):
-        """Test field serialization to dictionary."""
+    def test_field_metadata_dict(self):
+        """Test field serialization to dictionary via metadata_dict."""
         field = FieldModel(
             name="test_field",
             default="default_value",
             title="Test Field",
             description="A test field",
         )
-        dict_repr = field.to_dict()
+        dict_repr = field.metadata_dict()
         assert isinstance(dict_repr, dict)
         assert dict_repr["default"] == "default_value"
         assert dict_repr["title"] == "Test Field"
