@@ -209,9 +209,7 @@ class TestStepEdgeCases:
         """Test adding actions when already in field_models."""
         from lionagi.operations.fields import ACTION_REQUESTS_FIELD
 
-        operative = Step.request_operative(
-            field_models=[ACTION_REQUESTS_FIELD], actions=True
-        )
+        operative = Step.request_operative(field_models=[ACTION_REQUESTS_FIELD], actions=True)
 
         assert isinstance(operative, Operative)
 
