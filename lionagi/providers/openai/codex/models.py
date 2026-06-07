@@ -23,7 +23,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
 from lionagi.libs.schema.as_readable import as_readable
-from lionagi.providers._cli_paths import check_path_safe, check_paths_safe, contain_paths_in_repo
+from lionagi.providers._cli_paths import (
+    check_add_dir_entries_safe,
+    check_path_safe,
+    check_paths_safe,
+    contain_paths_in_repo,
+)
 from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 
@@ -285,10 +290,18 @@ class CodexCodeRequest(BaseModel):
     @field_validator("add_dir", mode="after")
     @classmethod
     def _validate_add_dir(cls, v):
-        """Reject absolute paths and traversal sequences in add_dir entries."""
+        """Reject traversal sequences in add_dir entries.
+
+        Absolute paths are permitted — add_dir is a read-only grant that the
+        spawned CLI uses to determine which directories it may read.  The
+        orchestration layer sets repo to a per-agent artifact directory and
+        add_dir to the project root, which legitimately lies outside the repo.
+        Traversal sequences (``..``) are still rejected because they indicate
+        an unintended escape rather than a deliberate grant.
+        """
         if v is None:
             return v
-        return check_paths_safe(v, "add_dir")
+        return check_add_dir_entries_safe(v, "add_dir")
 
     @field_validator("images", mode="after")
     @classmethod
@@ -307,10 +320,13 @@ class CodexCodeRequest(BaseModel):
 
     @model_validator(mode="after")
     def _contain_path_fields_in_repo(self):
-        """Resolve path-grant fields and reject any that escape the repo root."""
+        """Resolve write-target path fields and reject any that escape the repo root.
+
+        ``add_dir`` is a read-only grant and is excluded from this check — it
+        is validated separately by ``_validate_add_dir``, which allows absolute
+        paths (deliberate grants) while still rejecting traversal sequences.
+        """
         repo_root = self.repo.resolve()
-        if self.add_dir:
-            contain_paths_in_repo(self.add_dir, repo_root, "add_dir")
         if self.images:
             contain_paths_in_repo(self.images, repo_root, "images")
         if self.output_schema is not None:

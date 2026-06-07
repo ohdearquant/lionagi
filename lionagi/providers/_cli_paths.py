@@ -17,6 +17,29 @@ Two-layer model (mirrors Pi's original design):
   2. ``contain_path_in_repo`` — resolves symlinks against a repo root and
      rejects any path whose real location escapes the root.  Apply in model
      validators after the repo root is known.
+
+Read-grant vs. write-target distinction
+---------------------------------------
+``add_dir`` / ``include_directories`` are *read grants* — the spawned CLI is
+told it may read from these directories, but it does not write there.  The
+orchestration layer legitimately sets ``repo`` to a per-agent artifact
+directory and ``add_dir`` to the project root (which is outside the artifact
+dir) so workers can read source files while writing only to their sandbox.
+
+Because of this, ``add_dir`` entries are validated with a looser rule:
+
+* Traversal sequences (``..`` components) are always rejected — they imply
+  an *unintended* escape rather than an explicit grant.
+* Absolute paths are **allowed** when they are genuine directory grants.
+  The spawned CLI interprets them as explicit access grants, which is the
+  intended semantics.
+
+Use :func:`check_add_dir_entry_safe` (and its list variant) for these fields
+instead of the stricter :func:`check_path_safe`.
+
+Write-target fields (``output_schema``, ``output_last_message``,
+``system_prompt_file``, ``mcp_config``, ``settings``) still use the strict
+two-layer check — they must remain inside the repo root.
 """
 
 from __future__ import annotations
@@ -62,6 +85,67 @@ def check_path_safe(value: str, field_name: str, *, strip_at: bool = False) -> s
             "only paths that remain inside the repository are allowed."
         )
     return value
+
+
+def check_add_dir_entry_safe(value: str, field_name: str) -> str:
+    """Validate a read-grant directory path.
+
+    Unlike :func:`check_path_safe`, absolute paths are permitted because they
+    represent explicit directory grants to the spawned CLI (e.g. granting
+    access to the project root when ``repo`` is set to a narrower artifact
+    directory).  Traversal sequences are still rejected because they indicate
+    an unintended escape rather than a deliberate grant.
+
+    Parameters
+    ----------
+    value:
+        The raw path string to validate.
+    field_name:
+        Name of the originating field, used in error messages.
+
+    Returns
+    -------
+    str
+        The original *value* if it passes validation.
+
+    Raises
+    ------
+    ValueError
+        If the path contains ``..`` traversal components.
+    """
+    p = Path(value)
+    if ".." in p.parts:
+        raise ValueError(
+            f"{field_name} entry {value!r} contains directory traversal ('..') — "
+            "use an explicit absolute path to grant access to directories outside "
+            "the repository instead of relative traversal sequences."
+        )
+    return value
+
+
+def check_add_dir_entries_safe(values: list[str], field_name: str) -> list[str]:
+    """Apply :func:`check_add_dir_entry_safe` to every item in a list.
+
+    Parameters
+    ----------
+    values:
+        List of raw path strings.
+    field_name:
+        Name of the originating field, used in error messages.
+
+    Returns
+    -------
+    list[str]
+        The original list if all entries pass.
+
+    Raises
+    ------
+    ValueError
+        On the first entry that fails.
+    """
+    for v in values:
+        check_add_dir_entry_safe(v, field_name)
+    return values
 
 
 def check_paths_safe(

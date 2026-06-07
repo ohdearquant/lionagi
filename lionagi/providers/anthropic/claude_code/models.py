@@ -23,7 +23,11 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
 from lionagi.libs.schema.as_readable import as_readable
-from lionagi.providers._cli_paths import check_path_safe, check_paths_safe, contain_paths_in_repo
+from lionagi.providers._cli_paths import (
+    check_add_dir_entries_safe,
+    check_path_safe,
+    contain_paths_in_repo,
+)
 from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 
@@ -306,10 +310,18 @@ class ClaudeCodeRequest(BaseModel):
     @field_validator("add_dir", mode="after")
     @classmethod
     def _validate_add_dir(cls, v):
-        """Reject absolute paths and traversal sequences in add_dir entries."""
+        """Reject traversal sequences in add_dir entries.
+
+        Absolute paths are permitted — add_dir is a read-only grant that the
+        spawned CLI uses to determine which directories it may read.  The
+        orchestration layer sets repo to a per-agent artifact directory and
+        add_dir to the project root, which legitimately lies outside the repo.
+        Traversal sequences (``..``) are still rejected because they indicate
+        an unintended escape rather than a deliberate grant.
+        """
         if v is None:
             return v
-        return check_paths_safe(v, "add_dir")
+        return check_add_dir_entries_safe(v, "add_dir")
 
     @field_validator(
         "system_prompt_file",
@@ -412,10 +424,11 @@ class ClaudeCodeRequest(BaseModel):
                     f"Workspace: {cwd_resolved}"
                 ) from None
 
-        # Repo-containment: resolve path-grant fields and reject symlink escapes.
+        # Repo-containment: resolve write-target path fields and reject symlink
+        # escapes.  ``add_dir`` is a read-only grant validated separately by
+        # ``_validate_add_dir`` — absolute paths there are deliberate grants,
+        # not escapes, and must not be rejected here.
         repo_root = self.repo.resolve()
-        if self.add_dir:
-            contain_paths_in_repo(self.add_dir, repo_root, "add_dir")
         for fname, fval in (
             ("system_prompt_file", self.system_prompt_file),
             ("append_system_prompt_file", self.append_system_prompt_file),

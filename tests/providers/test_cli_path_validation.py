@@ -3,17 +3,17 @@
 """Attack-driven path-validation tests for agentic-CLI providers.
 
 Each provider (Codex, Claude Code, Gemini, Pi) accepts path-grant fields
-that flow into subprocess argv.  A traversal or absolute path in any of
-these fields could let the spawned CLI read arbitrary host files.
+that flow into subprocess argv.  A traversal or absolute path in the wrong
+field could let the spawned CLI read or write arbitrary host files.
 
-These tests verify that the shared containment helper is wired correctly:
-  - traversal paths (``../../etc/passwd``) are rejected at model-construction
-    time, before any subprocess is launched;
-  - absolute paths (``/etc/passwd``) are likewise rejected;
-  - legitimate in-repo relative paths are accepted.
-
-Tests are designed to FAIL on the old behaviour (no validation on
-Codex / Claude Code / Gemini).
+These tests verify that the shared containment helpers are wired correctly:
+  - traversal paths (``../../etc/passwd``) are always rejected;
+  - absolute paths are rejected in write-target fields (output_schema,
+    system_prompt_file, etc.) but allowed in read-grant fields (add_dir)
+    because the orchestration layer legitimately sets repo to a per-agent
+    artifact directory and add_dir to the wider project root;
+  - legitimate relative paths are accepted everywhere;
+  - symlink-escape attempts are caught by the repo-containment layer.
 """
 
 from __future__ import annotations
@@ -75,6 +75,33 @@ class TestCliPathsHelper:
         # Must not raise
         contain_path_in_repo("src/main.py", repo_root, "field")
 
+    def test_check_add_dir_entry_safe_allows_absolute(self):
+        """Absolute paths are legitimate read grants and must not be rejected."""
+        from lionagi.providers._cli_paths import check_add_dir_entry_safe
+
+        # Must not raise — this is the core of the orchestration regression fix
+        result = check_add_dir_entry_safe("/home/user/projects/myproject", "add_dir")
+        assert result == "/home/user/projects/myproject"
+
+    def test_check_add_dir_entry_safe_rejects_traversal(self):
+        """Traversal sequences are still rejected even in read-grant fields."""
+        from lionagi.providers._cli_paths import check_add_dir_entry_safe
+
+        with pytest.raises(ValueError, match="traversal"):
+            check_add_dir_entry_safe("../../etc", "add_dir")
+
+    def test_check_add_dir_entry_safe_accepts_relative(self):
+        from lionagi.providers._cli_paths import check_add_dir_entry_safe
+
+        result = check_add_dir_entry_safe("subdir/work", "add_dir")
+        assert result == "subdir/work"
+
+    def test_check_add_dir_entries_safe_rejects_traversal_in_list(self):
+        from lionagi.providers._cli_paths import check_add_dir_entries_safe
+
+        with pytest.raises(ValueError, match="traversal"):
+            check_add_dir_entries_safe(["ok", "../../bad", "/abs/ok"], "add_dir")
+
 
 # ---------------------------------------------------------------------------
 # Codex provider — CodexCodeRequest
@@ -84,12 +111,13 @@ class TestCliPathsHelper:
 class TestCodexPathValidation:
     """Path-grant fields in CodexCodeRequest must be validated before argv."""
 
-    # add_dir attacks
-    def test_add_dir_absolute_rejected(self):
+    # add_dir — read-grant field: absolute paths allowed, traversal rejected
+    def test_add_dir_absolute_allowed(self):
+        """Absolute add_dir paths are deliberate read grants and must be accepted."""
         from lionagi.providers.openai.codex.models import CodexCodeRequest
 
-        with pytest.raises(Exception, match="absolute path"):
-            CodexCodeRequest(prompt="hi", add_dir=["/etc"])
+        req = CodexCodeRequest(prompt="hi", add_dir=["/home/user/projects"])
+        assert req.add_dir == ["/home/user/projects"]
 
     def test_add_dir_traversal_rejected(self):
         from lionagi.providers.openai.codex.models import CodexCodeRequest
@@ -97,7 +125,7 @@ class TestCodexPathValidation:
         with pytest.raises(Exception, match="traversal"):
             CodexCodeRequest(prompt="hi", add_dir=["../../etc"])
 
-    def test_add_dir_valid_accepted(self):
+    def test_add_dir_valid_relative_accepted(self):
         from lionagi.providers.openai.codex.models import CodexCodeRequest
 
         req = CodexCodeRequest(prompt="hi", add_dir=["subdir/work"])
@@ -160,18 +188,36 @@ class TestCodexPathValidation:
         req = CodexCodeRequest(prompt="hi", output_last_message="results/last.txt")
         assert str(req.output_last_message) == "results/last.txt"
 
-    def test_add_dir_symlink_escape_rejected(self, tmp_path):
-        """A symlinked add_dir that resolves outside the repo must be rejected."""
+    def test_add_dir_orchestration_regression(self, tmp_path):
+        """Regression: repo=artifact_dir with add_dir=[project_root] must succeed.
+
+        The orchestration layer sets repo to a per-agent artifact directory and
+        adds the project root (outside that artifact dir) to add_dir so workers
+        can read source files.  This must not be rejected.
+        """
         from lionagi.providers.openai.codex.models import CodexCodeRequest
 
-        outside = tmp_path / "outside"
-        outside.mkdir()
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        (repo / "escape").symlink_to(outside, target_is_directory=True)
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        artifact_dir = (
+            tmp_path
+            / "project"
+            / ".lionagi"
+            / "runs"
+            / "20260607T120000-abc123"
+            / "agents"
+            / "agent-1"
+        )
+        artifact_dir.mkdir(parents=True)
 
-        with pytest.raises(Exception, match="outside the repository"):
-            CodexCodeRequest(prompt="hi", repo=repo, add_dir=["escape"])
+        # artifact_dir is inside project_root, but project_root is "outside"
+        # artifact_dir — this is the orchestration scenario
+        req = CodexCodeRequest(
+            prompt="implement the feature",
+            repo=artifact_dir,
+            add_dir=[str(project_root)],
+        )
+        assert str(project_root) in req.add_dir
 
 
 # ---------------------------------------------------------------------------
@@ -258,12 +304,13 @@ class TestClaudeCodePathValidation:
         req = ClaudeCodeRequest(prompt="hi", settings=".claude/settings.json")
         assert str(req.settings) == ".claude/settings.json"
 
-    # add_dir attacks
-    def test_add_dir_absolute_rejected(self):
+    # add_dir — read-grant field: absolute paths allowed, traversal rejected
+    def test_add_dir_absolute_allowed(self):
+        """Absolute add_dir paths are deliberate read grants and must be accepted."""
         from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
 
-        with pytest.raises(Exception, match="absolute path"):
-            ClaudeCodeRequest(prompt="hi", add_dir=["/tmp/work"])
+        req = ClaudeCodeRequest(prompt="hi", add_dir=["/home/user/projects"])
+        assert req.add_dir == ["/home/user/projects"]
 
     def test_add_dir_traversal_rejected(self):
         from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
@@ -271,11 +318,40 @@ class TestClaudeCodePathValidation:
         with pytest.raises(Exception, match="traversal"):
             ClaudeCodeRequest(prompt="hi", add_dir=["../../tmp/work"])
 
-    def test_add_dir_valid_accepted(self):
+    def test_add_dir_valid_relative_accepted(self):
         from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
 
         req = ClaudeCodeRequest(prompt="hi", add_dir=["workspace/subdir"])
         assert req.add_dir == ["workspace/subdir"]
+
+    def test_add_dir_orchestration_regression(self, tmp_path):
+        """Regression: repo=artifact_dir with add_dir=[project_root] must succeed.
+
+        The orchestration layer sets repo to a per-agent artifact directory and
+        adds the project root (outside that artifact dir) to add_dir so workers
+        can read source files.  This must not be rejected.
+        """
+        from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
+
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        artifact_dir = (
+            tmp_path
+            / "project"
+            / ".lionagi"
+            / "runs"
+            / "20260607T120000-abc123"
+            / "agents"
+            / "agent-1"
+        )
+        artifact_dir.mkdir(parents=True)
+
+        req = ClaudeCodeRequest(
+            prompt="implement the feature",
+            repo=artifact_dir,
+            add_dir=[str(project_root)],
+        )
+        assert str(project_root) in req.add_dir
 
     def test_mcp_config_symlink_escape_rejected(self, tmp_path):
         """A symlinked mcp_config that resolves outside the repo must be rejected."""
