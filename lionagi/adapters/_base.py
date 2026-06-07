@@ -156,6 +156,10 @@ def _redact_value(key: str, value: Any) -> Any:
         # Non-sensitive key, but the nested dict may contain sensitive sub-keys
         # or URL values — recurse so they are caught.
         return _redact_details(value)
+    if isinstance(value, list):
+        # Each list element may be a dict with sensitive sub-keys, a URL string,
+        # or another list — recurse with the same key so nested values are caught.
+        return [_redact_value(key, item) for item in value]
     return value
 
 

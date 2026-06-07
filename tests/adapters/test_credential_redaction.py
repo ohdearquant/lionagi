@@ -188,3 +188,49 @@ class TestAdapterErrorDoesNotLeakCredentials:
         err_str = str(err)
         assert "tok-abc" not in err_str
         assert "tok-xyz" not in err_str
+
+
+class TestListLeakRegression:
+    """Regression: list values under non-sensitive keys must also be redacted.
+
+    A credential URL inside a list element (e.g. ``errors=[{'input': 'postgresql://u:PW@h/db'}]``)
+    or a bare list of URL strings under any non-sensitive key must not appear in
+    AdapterError string representations.
+    """
+
+    def test_credential_url_inside_list_of_dicts_under_non_sensitive_key(self):
+        """Attack: errors=[{'input': 'postgresql://u:REALPW@h/db'}] must not leak REALPW.
+
+        Previously the non-sensitive-key branch of _redact_value returned a list
+        as-is, so dict elements (and their URL strings) bypassed redaction entirely.
+        """
+        from lionagi.adapters._base import AdapterValidationError
+
+        err = AdapterValidationError(
+            adapter="x",
+            errors=[{"input": "postgresql://u:REALPW@h/db"}],
+        )
+        err_str = str(err)
+        assert "REALPW" not in err_str, (
+            f"netloc password leaked from list[dict] under non-sensitive key: {err_str!r}"
+        )
+
+    def test_bare_credential_url_strings_in_list_under_non_sensitive_key(self):
+        """Attack: a list of bare credential URL strings must have passwords redacted.
+
+        The same non-sensitive-key branch previously skipped list-of-strings,
+        so each URL string was returned unmodified.
+        """
+        err = AdapterError(
+            "connection error",
+            details={
+                "candidates": [
+                    "postgresql://alice:SECRETPW@primary/db",
+                    "postgresql://alice:SECRETPW@replica/db",
+                ]
+            },
+        )
+        err_str = str(err)
+        assert "SECRETPW" not in err_str, (
+            f"netloc password leaked from list of URL strings under non-sensitive key: {err_str!r}"
+        )
