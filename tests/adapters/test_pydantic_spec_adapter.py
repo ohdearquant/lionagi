@@ -203,9 +203,7 @@ class TestEndToEnd:
         operable = Operable(specs, name="Player")
 
         # Use Operable's create_model method
-        PlayerModel = operable.create_model(
-            adapter="pydantic", model_name="PlayerModel"
-        )
+        PlayerModel = operable.create_model(adapter="pydantic", model_name="PlayerModel")
 
         assert issubclass(PlayerModel, BaseModel)
         player = PlayerModel(username="player1")

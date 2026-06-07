@@ -26,13 +26,7 @@ interface ReviewVerdictCardProps {
   content: Record<string, unknown>;
 }
 
-const SEVERITY_ORDER: Finding["severity"][] = [
-  "critical",
-  "high",
-  "medium",
-  "low",
-  "info",
-];
+const SEVERITY_ORDER: Finding["severity"][] = ["critical", "high", "medium", "low", "info"];
 const BLOCKING_SEVERITIES = new Set<Finding["severity"]>(["critical", "high"]);
 
 const SEVERITY_LABEL: Record<Finding["severity"], string> = {
@@ -43,10 +37,7 @@ const SEVERITY_LABEL: Record<Finding["severity"], string> = {
   info: "Info",
 };
 
-export default function ReviewVerdictCard({
-  name,
-  content,
-}: ReviewVerdictCardProps) {
+export default function ReviewVerdictCard({ name, content }: ReviewVerdictCardProps) {
   const c = content as unknown as ReviewVerdictContent;
   const verdict = c.verdict ?? "UNKNOWN";
   const findings = c.findings ?? [];
@@ -75,17 +66,13 @@ export default function ReviewVerdictCard({
           <StatusPill value={verdict} taxonomy="verdict" />
           <span className="text-body text-content-primary">{name}</span>
           {c.round != null ? (
-            <span className="text-meta text-content-muted">
-              round {c.round}
-            </span>
+            <span className="text-meta text-content-muted">round {c.round}</span>
           ) : null}
         </div>
       </header>
 
       {c.summary ? (
-        <div className="px-3 py-2 text-body text-content-secondary">
-          {c.summary}
-        </div>
+        <div className="px-3 py-2 text-body text-content-secondary">{c.summary}</div>
       ) : null}
 
       <div className="grid grid-cols-2 gap-3 border-t border-edge px-3 py-2">
@@ -97,17 +84,13 @@ export default function ReviewVerdictCard({
             {SEVERITY_ORDER.map((s) =>
               counts[s] > 0 ? (
                 <span key={s} className="tabular-nums">
-                  <span className="text-content-primary">
-                    {SEVERITY_LABEL[s]}
-                  </span>{" "}
+                  <span className="text-content-primary">{SEVERITY_LABEL[s]}</span>{" "}
                   <span className="text-content-secondary">{counts[s]}</span>
                 </span>
               ) : null,
             )}
             {findings.length === 0 ? (
-              <span className="text-meta text-content-muted">
-                no findings
-              </span>
+              <span className="text-meta text-content-muted">no findings</span>
             ) : null}
           </div>
         </div>
@@ -136,14 +119,15 @@ export default function ReviewVerdictCard({
           </div>
           <ul className="space-y-2">
             {blocking.map((f, i) => (
-              <li key={i} className="rounded border border-status-error/30 bg-status-error-bg/40 p-2">
+              <li
+                key={i}
+                className="rounded border border-status-error/30 bg-status-error-bg/40 p-2"
+              >
                 <div className="flex items-center gap-2">
                   <span className="rounded bg-status-error/10 px-1.5 py-0.5 text-meta uppercase tracking-wide text-status-error">
                     {SEVERITY_LABEL[f.severity]}
                   </span>
-                  <span className="text-body text-content-primary">
-                    {f.description}
-                  </span>
+                  <span className="text-body text-content-primary">{f.description}</span>
                 </div>
                 {f.file ? (
                   <div className="mt-1 font-mono text-meta text-content-muted">

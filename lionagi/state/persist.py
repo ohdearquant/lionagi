@@ -67,9 +67,7 @@ async def persist_session(db: StateDB, session: Session) -> None:
         await _persist_branch(db, session_id, branch, all_message_ids)
 
     # Add only NEW messages to session progression
-    new_session_msgs = [
-        mid for mid in all_message_ids if mid not in existing_session_msgs
-    ]
+    new_session_msgs = [mid for mid in all_message_ids if mid not in existing_session_msgs]
     for mid in new_session_msgs:
         await db.append_to_progression(session_prog_id, mid)
 
@@ -136,10 +134,7 @@ async def _persist_branch(
         sys_dict = branch.system.to_dict(mode="db")
         system_msg_id = sys_dict["id"]
         await db.insert_message(sys_dict)
-        if (
-            system_msg_id not in existing_msg_ids
-            and system_msg_id not in all_message_ids
-        ):
+        if system_msg_id not in existing_msg_ids and system_msg_id not in all_message_ids:
             all_message_ids.append(system_msg_id)
 
     # On resume the branch row already exists (INSERT OR IGNORE would be a no-op).

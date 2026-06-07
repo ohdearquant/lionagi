@@ -8,7 +8,6 @@ from lionagi.service.connections.registry import EndpointType
 
 
 class PerplexityConfigs(ProviderConfig, Enum):
-
     CHAT = (
         "chat/completions",
         ["chat"],

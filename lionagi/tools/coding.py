@@ -28,17 +28,12 @@ if TYPE_CHECKING:
     from lionagi.session.branch import Branch
 
 
-# ---------------------------------------------------------------------------
-# Workspace path validation (Finding 14)
-# ---------------------------------------------------------------------------
-
 _DENIED_NAMES: frozenset[str] = frozenset(
     {".env", ".netrc", "id_rsa", "id_ed25519", "id_ecdsa", ".htpasswd"}
 )
 
 
 def _resolve_workspace_path(path: str, workspace_root: Path) -> Path:
-    """Finding 14: resolve path under workspace_root; raise PermissionError if it escapes."""
     raw = Path(path).expanduser()
     candidate = raw if raw.is_absolute() else workspace_root / raw
     # GAP B: check symlink on candidate BEFORE resolve() follows it
@@ -291,7 +286,6 @@ _IMAGE_MEDIA_TYPES = {
 
 
 def _read_image_sync(path: str, workspace_root: Path) -> dict:
-    # Finding 14: validate path before reading image bytes
     try:
         p = _resolve_workspace_path(path, workspace_root)
     except PermissionError as e:
@@ -313,7 +307,6 @@ def _read_image_sync(path: str, workspace_root: Path) -> dict:
 
 
 def _read_file_sync(path: str, offset: int, max_lines: int, workspace_root: Path) -> dict:
-    # Finding 14: validate path under workspace root
     try:
         p = _resolve_workspace_path(path, workspace_root)
     except PermissionError as e:
@@ -360,7 +353,6 @@ def _read_file_sync(path: str, offset: int, max_lines: int, workspace_root: Path
 def _list_dir_sync(
     path: str, recursive: bool, file_types: list[str] | None, workspace_root: Path
 ) -> dict:
-    # Finding 14: validate directory path
     try:
         base = _resolve_workspace_path(path, workspace_root)
     except PermissionError as e:
@@ -376,7 +368,6 @@ def _list_dir_sync(
 
 
 def _write_file_sync(file_path: str, content: str, workspace_root: Path) -> dict:
-    # Finding 14: validate path before writing
     try:
         p = _resolve_workspace_path(file_path, workspace_root)
     except PermissionError as e:
@@ -408,7 +399,6 @@ def _edit_file_sync(
     replace_all: bool,
     workspace_root: Path,
 ) -> dict:
-    # Finding 14: validate path before reading or writing
     try:
         p = _resolve_workspace_path(file_path, workspace_root)
     except PermissionError as e:
@@ -472,10 +462,7 @@ _MAX_OUTPUT_BYTES = 100_000
 
 
 def _drain_stream(stream, buf: bytearray) -> bool:
-    """Finding 5: read stream into buf up to _MAX_OUTPUT_BYTES; return True if truncated.
-
-    Continues reading even after cap to prevent pipe-buffer deadlock.
-    """
+    """Continues reading even after cap to prevent pipe-buffer deadlock."""
     truncated = False
     while True:
         try:
@@ -493,7 +480,6 @@ def _drain_stream(stream, buf: bytearray) -> bool:
 
 
 def _subprocess_sync(cmd, shell: bool, timeout_s: float, cwd: str | None) -> dict:
-    # Finding 5: use Popen + threads for bounded memory capture and child-group kill
     try:
         proc = subprocess.Popen(  # noqa: S603
             cmd,
@@ -626,7 +612,6 @@ class CodingToolkit(LionTool):
     system_tool_name = "coding_toolkit"
 
     def security_pre(self, tool_name: str, handler: Callable) -> CodingToolkit:
-        """Finding 13: register a security hook that runs before user pre-hooks."""
         self._security_pre_hooks.setdefault(tool_name, []).append(handler)
         return self
 
@@ -643,12 +628,8 @@ class CodingToolkit(LionTool):
         return self
 
     def _build_preprocessor(self, tool_name: str) -> Callable | None:
-        """Build a chained preprocessor from registered hooks for this tool.
-
-        Finding 13: security_pre hooks run before user pre hooks.
-        """
+        """Build a chained preprocessor from registered hooks for this tool."""
         security_hooks = [
-            # Finding 13: security hooks first, then user hooks
             *self._security_pre_hooks.get("*", []),
             *self._security_pre_hooks.get(tool_name, []),
         ]
@@ -700,14 +681,13 @@ class CodingToolkit(LionTool):
         workspace_root: str | Path | None = None,
         tools: Sequence[str] | None = None,
     ):
-        self._security_pre_hooks: dict[str, list[Callable]] = {}  # Finding 13
+        self._security_pre_hooks: dict[str, list[Callable]] = {}
         self._pre_hooks: dict[str, list[Callable]] = {}
         self._post_hooks: dict[str, list[Callable]] = {}
         self._error_hooks: dict[str, list[Callable]] = {}
         self.notify = notify
         self.notify_threshold = notify_threshold
         self.notify_max_tokens = notify_max_tokens
-        # Finding 14: workspace root for path containment checks
         self.workspace_root = Path(workspace_root or Path.cwd()).expanduser().resolve()
         # Which tools to register. None -> the lean default core; pass an explicit
         # list to opt into context/sandbox/subagent.
@@ -724,7 +704,6 @@ class CodingToolkit(LionTool):
         call_count = [0]
         msgs = branch.msgs
         notify = self.notify
-        # Finding 14: capture workspace root for use in all sync file helpers
         workspace_root = self.workspace_root
 
         def _system_status() -> str | None:
@@ -805,7 +784,6 @@ class CodingToolkit(LionTool):
             if action == "read":
                 start = max(0, offset or 0)
                 max_lines = limit if (limit and limit > 0) else 2000
-                # Finding 14: pass workspace_root to enforce path containment
                 result = await run_sync(_read_file_sync, path, start, max_lines, workspace_root)
                 _track(result)
                 return result
@@ -843,7 +821,6 @@ class CodingToolkit(LionTool):
                     guard = _check_read_guard(file_path)
                     if guard:
                         return {"success": False, "error": guard}
-                # Finding 14: pass workspace_root to enforce path containment
                 result = await run_sync(_write_file_sync, file_path, content, workspace_root)
                 _track(result)
                 return result
@@ -855,7 +832,6 @@ class CodingToolkit(LionTool):
                 guard = _check_read_guard(file_path)
                 if guard:
                     return {"success": False, "error": guard}
-                # Finding 14: pass workspace_root to enforce path containment
                 result = await run_sync(
                     _edit_file_sync,
                     file_path,

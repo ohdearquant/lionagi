@@ -23,9 +23,7 @@ class NvidiaNimChatEndpoint(Endpoint):
         if config is None:
             from lionagi.config import settings
 
-            kwargs.setdefault(
-                "api_key", settings.NVIDIA_NIM_API_KEY or "dummy-key-for-testing"
-            )
+            kwargs.setdefault("api_key", settings.NVIDIA_NIM_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("kwargs", {"model": "meta/llama3-8b-instruct"})
             kwargs.setdefault("requires_tokens", True)
         super().__init__(config, **kwargs)
