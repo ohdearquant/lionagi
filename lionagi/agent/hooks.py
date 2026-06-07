@@ -73,7 +73,16 @@ def guard_paths(
         if not raw_path:
             return None
 
-        resolved = Path(raw_path).expanduser().resolve(strict=False)
+        expanded = Path(raw_path).expanduser()
+        if not expanded.is_absolute() and allowed_roots:
+            # Resolve relative paths against the workspace root so that
+            # "src/foo.py" is treated as workspace-relative, not process-cwd-
+            # relative.  Without this a relative in-workspace path would
+            # resolve to <process_cwd>/src/foo.py which almost never equals the
+            # configured allowed root and would be wrongly blocked.
+            resolved = (allowed_roots[0] / expanded).resolve(strict=False)
+        else:
+            resolved = expanded.resolve(strict=False)
 
         if allowed_roots:
             if not any(resolved == root or root in resolved.parents for root in allowed_roots):

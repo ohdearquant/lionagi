@@ -95,10 +95,22 @@ class AgentSpec:
         effort: str | None = "high",
         system_prompt: str | None = None,
         cwd: str | None = None,
+        secure: bool = True,
         **kwargs: Any,
     ) -> AgentSpec:
-        """Preset for a coding agent — implementer role + coding tools."""
-        return cls.compose(
+        """Preset for a coding agent — implementer role + coding tools.
+
+        By default (``secure=True``), wires two guards:
+
+        - ``guard_destructive`` as a pre-hook on ``bash`` — blocks destructive
+          shell commands (rm -rf, force-push, etc.).
+        - ``guard_paths`` as a pre-hook on ``reader`` and ``editor`` — restricts
+          file access to the workspace root (``cwd`` if provided, else
+          ``Path.cwd()`` at call time).
+
+        Set ``secure=False`` to disable these defaults and manage hooks manually.
+        """
+        spec = cls.compose(
             "implementer",
             model=model,
             effort=effort,
@@ -107,6 +119,15 @@ class AgentSpec:
             cwd=cwd,
             **kwargs,
         )
+        if secure:
+            from lionagi.agent.hooks import guard_destructive, guard_paths
+
+            spec.pre("bash", guard_destructive)
+            workspace_root = str(Path(cwd) if cwd else Path.cwd())
+            path_guard = guard_paths(allowed_paths=[workspace_root])
+            spec.pre("reader", path_guard)
+            spec.pre("editor", path_guard)
+        return spec
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> AgentSpec:
