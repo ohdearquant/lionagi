@@ -13,6 +13,11 @@ _log = logging.getLogger(__name__)
 
 _TEMPLATE_RE = re.compile(r"\{\{(\w+)\}\}")
 
+# ADR-0027 defines the closed set of action kinds.  The CLI parser accepts
+# "playbook" as an alias for "play" for backward compatibility.
+_VALID_ACTION_KINDS = frozenset({"agent", "flow", "fanout", "play"})
+_ALIAS_ACTION_KINDS: dict[str, str] = {"playbook": "play"}
+
 
 def _render_template(template: str, context: dict) -> str:
     """Replace {{var}} placeholders with values from trigger context."""
@@ -32,6 +37,12 @@ def _render_template(template: str, context: dict) -> str:
 
 def build_argv(schedule: dict, trigger_context: dict) -> list[str]:
     kind = schedule["action_kind"]
+    # Normalize legacy alias and validate against the closed set (LIONAGI-AUDIT-003).
+    kind = _ALIAS_ACTION_KINDS.get(kind, kind)
+    if kind not in _VALID_ACTION_KINDS:
+        raise ValueError(
+            f"Unknown action_kind {kind!r}. Valid kinds: {sorted(_VALID_ACTION_KINDS)}"
+        )
     model = schedule.get("action_model") or ""
     prompt = schedule.get("action_prompt") or ""
     agent = schedule.get("action_agent")

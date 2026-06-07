@@ -89,6 +89,9 @@ def _default_reason_code_for_status(status: str) -> str:
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 
+# ADR-0028: closed vocabulary for transition-history ``source`` column.
+_VALID_STATUS_SOURCES: frozenset[str] = frozenset({"executor", "agent", "admin", "system"})
+
 _SESSION_COLUMNS = frozenset(
     {
         "name",
@@ -775,7 +778,7 @@ class StateDB:
             adr="ADR-0012",
         )
         now = time.time()
-        await self.db.execute(
+        cur = await self.db.execute(
             """INSERT OR IGNORE INTO sessions (id, created_at, node_metadata, name, user,
                progression_id, first_msg_id, last_msg_id, updated_at,
                playbook_name, agent_name, invocation_kind, show_topic,
@@ -831,8 +834,11 @@ class StateDB:
             ),
         )
         # ADR-0020: keep invocations.session_count in sync so list queries
-        # don't need a JOIN.
-        if session.get("invocation_id"):
+        # don't need a JOIN.  Only increment when the INSERT actually created
+        # a row (rowcount == 0 means INSERT OR IGNORE was a no-op — duplicate
+        # id).  This prevents retries or idempotent replays from inflating the
+        # count beyond the actual number of distinct sessions.
+        if session.get("invocation_id") and cur.rowcount:
             await self.db.execute(
                 "UPDATE invocations SET session_count = session_count + 1, "
                 "updated_at = ? WHERE id = ?",
@@ -871,10 +877,33 @@ class StateDB:
         )
         await self.db.commit()
 
-    async def update_session(self, session_id: str, **fields: Any) -> None:
+    async def update_session(
+        self,
+        session_id: str,
+        *,
+        reason_code: str | None = None,
+        reason_summary: str = "",
+        evidence_refs: list[dict[str, Any]] | None = None,
+        reason_source: str = "executor",
+        reason_actor: str | None = None,
+        **fields: Any,
+    ) -> None:
+        """Update session fields; route status changes through update_status().
+
+        ADR-0028: when ``status`` is among the updated fields, the transition
+        goes through :meth:`update_status` so the denormalized reason columns
+        and ``status_transitions`` history row are written atomically.
+
+        Pass ``reason_code`` (required when status is in fields) plus optional
+        ``reason_summary`` / ``evidence_refs`` / ``reason_source`` /
+        ``reason_actor`` to control the transition record.  Non-status fields
+        are written by the legacy UPDATE path below (separate transaction).
+
+        Backwards compatibility: callers that pass ``status`` without a
+        ``reason_code`` get a deprecation warning + a default code derived
+        from the status.  Remove the fallback in a future release.
+        """
         _validate_columns(fields, _SESSION_COLUMNS)
-        if "status" in fields:
-            _validate_session_status(fields["status"])
         if "invocation_kind" in fields:
             _validate_enum(
                 "invocation_kind",
@@ -889,15 +918,53 @@ class StateDB:
                 _SOURCE_KINDS,
                 adr="ADR-0012",
             )
-        fields["updated_at"] = time.time()
-        sets = ", ".join(f"{k} = ?" for k in fields)
-        vals = list(fields.values()) + [session_id]
-        # noqa: S608 — column names allowlisted via _validate_columns
-        await self.db.execute(
-            f"UPDATE sessions SET {sets} WHERE id = ?",  # noqa: S608
-            vals,
-        )
-        await self.db.commit()
+
+        status_value = fields.pop("status", None)
+        if status_value is not None:
+            _validate_session_status(status_value)
+            if reason_code is None:
+                from warnings import warn
+
+                resolved = _default_reason_code_for_entity_status("session", status_value)
+                if resolved is None:
+                    raise ValueError(
+                        f"update_session() called with status={status_value!r} but "
+                        f"no canonical default reason_code exists for "
+                        f"(session, {status_value!r}). Pass reason_code "
+                        f"explicitly from lionagi/state/reasons.py."
+                    )
+                reason_code = resolved
+                warn(
+                    f"update_session({session_id!r}, status={status_value!r}) "
+                    "called without reason_code; defaulting to "
+                    f"{reason_code!r}. Pass reason_code explicitly "
+                    "(ADR-0028 Phase 2 deprecation).",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+            await self.update_status(
+                "session",
+                session_id,
+                new_status=status_value,
+                reason_code=reason_code,
+                reason_summary=reason_summary,
+                evidence_refs=evidence_refs,
+                source=reason_source,
+                actor=reason_actor,
+            )
+
+        # Remaining (non-status) fields go through the legacy update path
+        # in a separate write — update_status() already touched updated_at.
+        if fields:
+            fields["updated_at"] = time.time()
+            sets = ", ".join(f"{k} = ?" for k in fields)
+            vals = list(fields.values()) + [session_id]
+            # noqa: S608 — column names allowlisted via _validate_columns
+            await self.db.execute(
+                f"UPDATE sessions SET {sets} WHERE id = ?",  # noqa: S608
+                vals,
+            )
+            await self.db.commit()
 
     async def update_artifact_verification(
         self,
@@ -963,10 +1030,15 @@ class StateDB:
 
         Raises:
             ValueError: ``reason_code`` not in
-                :data:`VALID_REASON_CODES`, or ``entity_type`` not
-                recognized.
+                :data:`VALID_REASON_CODES`, ``entity_type`` not recognized,
+                or ``source`` not in the closed vocabulary.
             LookupError: Entity row not found.
         """
+        if source not in _VALID_STATUS_SOURCES:
+            raise ValueError(
+                f"update_status() called with source={source!r}; "
+                f"must be one of {sorted(_VALID_STATUS_SOURCES)}."
+            )
         canonical_type = _validate_entity_type_for_reason(entity_type)
         _validate_reason_code(reason_code)
         table = _reason_entity_table(canonical_type)

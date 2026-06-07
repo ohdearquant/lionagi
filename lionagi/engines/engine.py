@@ -182,9 +182,31 @@ class EngineRun:
             task.add_done_callback(self._active.discard)
 
     async def wait_quiescence(self) -> None:
-        """Block until no spawned task remains (the termination condition)."""
+        """Block until no spawned task remains and surface any task failures.
+
+        Non-cancellation exceptions from spawned tasks are collected and
+        re-raised as a single ``ExceptionGroup`` (Python 3.11+) or the first
+        exception on 3.10, so callers are never silently missing failed nodes.
+        CancelledError from individual tasks is silently discarded — the whole
+        run is not cancelled when a single exploration branch is cancelled.
+        """
         while self._active:
-            await asyncio.gather(*list(self._active), return_exceptions=True)
+            results = await asyncio.gather(*list(self._active), return_exceptions=True)
+            task_errors = [
+                r
+                for r in results
+                if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError)
+            ]
+            if task_errors:
+                for exc in task_errors:
+                    logger.error("engine spawned task failed: %s", exc)
+                # Re-raise: ExceptionGroup on 3.11+, first exception on 3.10.
+                import sys
+
+                if sys.version_info >= (3, 11):
+                    raise ExceptionGroup("engine spawned task(s) failed", task_errors)  # type: ignore[name-defined]  # noqa: F821
+                else:
+                    raise task_errors[0] from None
 
     # -- team loop ------------------------------------------------------------
 
