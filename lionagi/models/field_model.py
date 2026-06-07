@@ -675,6 +675,8 @@ class FieldModel(Params):
     @override
     def __repr__(self) -> str:
         """String representation of the field model."""
+        import types
+
         attrs = []
         if self.is_nullable:
             attrs.append("nullable")
@@ -684,7 +686,12 @@ class FieldModel(Params):
             attrs.append("validated")
 
         attr_str = f" [{', '.join(attrs)}]" if attrs else ""
-        base_type_name = "Any" if self._is_sentinel(self.base_type) else self.base_type.__name__
+        if self._is_sentinel(self.base_type):
+            base_type_name = "Any"
+        elif isinstance(self.base_type, types.UnionType):
+            base_type_name = str(self.base_type)
+        else:
+            base_type_name = getattr(self.base_type, "__name__", str(self.base_type))
         return f"FieldModel({base_type_name}{attr_str})"
 
     @property
