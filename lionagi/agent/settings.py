@@ -191,10 +191,19 @@ def _kill_proc_group(proc: asyncio.subprocess.Process) -> None:  # type: ignore[
 
     Suppresses all errors so a best-effort kill never masks the real exception.
     """
+    pid = getattr(proc, "pid", None)
+    # Guard the pid before signalling. os.killpg is POSIX-only. A pid of 0/1
+    # (or a test double whose ``pid`` coerces to 1 via ``__index__``) would
+    # target the init/session process group — on a CI runner that group
+    # contains the test process itself, so an unguarded killpg here SIGKILLs
+    # the whole runner. Only signal a real child process. Because the hook
+    # subprocess is spawned with start_new_session=True, its pgid == its pid.
+    if not (hasattr(os, "killpg") and isinstance(pid, int) and pid > 1):
+        return
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except Exception:  # noqa: BLE001
-        logger.debug("Failed to kill process group for pid %s", proc.pid, exc_info=True)
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        logger.debug("Failed to kill process group for pid %s", pid, exc_info=True)
 
 
 async def _wait_proc(proc: asyncio.subprocess.Process, grace: float = 2.0) -> None:  # type: ignore[name-defined]

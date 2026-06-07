@@ -213,3 +213,49 @@ async def test_post_hook_timeout_kills_process_group(monkeypatch):
 
     assert result is None
     assert killed, "Expected killpg to be called after post-hook timeout"
+
+
+# ---------------------------------------------------------------------------
+# _kill_proc_group must never signal the init/session process group. A test
+# double (or a not-yet-spawned proc) whose ``pid`` coerces to 1 via __index__
+# would make os.killpg(1, ...) signal process group 1 — which on a CI runner
+# contains the test process itself, SIGKILLing the whole run. Only a real
+# child pid (> 1) may be signalled.
+# ---------------------------------------------------------------------------
+
+
+def test_kill_proc_group_ignores_unreal_pid(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from lionagi.agent.settings import _kill_proc_group
+
+    called: list = []
+    monkeypatch.setattr(
+        "lionagi.agent.settings.os.killpg", lambda *a: called.append(a)
+    )
+
+    _kill_proc_group(MagicMock())  # MagicMock().pid -> 1 via __index__
+    for bad in (0, 1):
+        proc = MagicMock()
+        proc.pid = bad
+        _kill_proc_group(proc)
+
+    assert called == [], "killpg must not fire for mock/0/1 pids (would kill the runner)"
+
+
+def test_kill_proc_group_signals_real_pid(monkeypatch):
+    import signal
+    from unittest.mock import MagicMock
+
+    from lionagi.agent.settings import _kill_proc_group
+
+    called: list = []
+    monkeypatch.setattr(
+        "lionagi.agent.settings.os.killpg", lambda pgid, sig: called.append((pgid, sig))
+    )
+
+    proc = MagicMock()
+    proc.pid = 4242
+    _kill_proc_group(proc)
+
+    assert called == [(4242, signal.SIGKILL)]
