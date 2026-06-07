@@ -239,9 +239,7 @@ def compare_results(current: dict[str, Any], baseline: dict[str, Any]) -> str:
             delta = float("inf")
         else:
             delta = (cur_med - base_med) / base_med
-        lines.append(
-            f"- {name}: median {cur_med:.6f}s vs {base_med:.6f}s -> {delta:+.1%}"
-        )
+        lines.append(f"- {name}: median {cur_med:.6f}s vs {base_med:.6f}s -> {delta:+.1%}")
     return "\n".join(lines)
 
 

@@ -275,9 +275,7 @@ async def _import_one_run(
             continue
 
         branch_id = branch_data.get("id") or branch_file.stem
-        branch_created_at = branch_data.get("created_at") or _mtime_as_float(
-            branch_file
-        )
+        branch_created_at = branch_data.get("created_at") or _mtime_as_float(branch_file)
 
         # Extract messages and ordering from Pile format.
         messages_pile = branch_data.get("messages", {})
@@ -356,9 +354,7 @@ async def _import_one_run(
             last_msg_id=session_msg_ids[-1],
         )
 
-    print(
-        f"  imported {run_id}: {total_branches} branch(es), {total_messages} message(s)"
-    )
+    print(f"  imported {run_id}: {total_branches} branch(es), {total_messages} message(s)")
     return 1, total_branches, total_messages
 
 
@@ -396,9 +392,7 @@ async def _import_teams() -> dict[str, int]:
                 continue
 
             # Idempotency: check before inserting.
-            cur = await db.db.execute(
-                "SELECT 1 FROM teams WHERE id = ? LIMIT 1", (team_id,)
-            )
+            cur = await db.db.execute("SELECT 1 FROM teams WHERE id = ? LIMIT 1", (team_id,))
             if await cur.fetchone() is not None:
                 counts["skipped_teams"] += 1
                 continue
@@ -512,9 +506,7 @@ async def _list_sessions(*, limit: int = 50, status: str | None = None) -> None:
             sstat = (row["status"] or "")[:10]
             updated = row["updated_at"]
             updated_str = (
-                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(updated))
-                if updated
-                else ""
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(updated)) if updated else ""
             )
 
             branch_cur = await db.db.execute(
@@ -531,10 +523,7 @@ async def _list_sessions(*, limit: int = 50, status: str | None = None) -> None:
                 prog_data = await db.get_progression(prog_row["progression_id"])
                 msg_count = len(prog_data)
 
-            print(
-                f"{sid:<36}  {name:<16}  {sstat:<10}  "
-                f"{bc:>8}  {msg_count:>8}  {updated_str:<20}"
-            )
+            print(f"{sid:<36}  {name:<16}  {sstat:<10}  {bc:>8}  {msg_count:>8}  {updated_str:<20}")
 
 
 # ── Maintenance commands: stats / checkpoint / vacuum / prune ───────────────
@@ -738,9 +727,7 @@ async def _doctor(
     cutoff = _time.time() - (stale_hours * 3600)
 
     async with StateDB() as db:
-        cur = await db.db.execute(
-            "SELECT id, started_at FROM sessions WHERE status = 'running'"
-        )
+        cur = await db.db.execute("SELECT id, started_at FROM sessions WHERE status = 'running'")
         rows = await cur.fetchall()
         total = len(rows)
         victims: list[str] = []

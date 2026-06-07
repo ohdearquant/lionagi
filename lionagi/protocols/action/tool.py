@@ -147,9 +147,7 @@ class Tool(Element):
         """This is not implemented, as Tools are not typically created from arbitrary dicts."""
         raise NotImplementedError("`Tool.from_dict` is not supported.")
 
-    def to_dict(
-        self, mode: Literal["python", "json", "db"] = "python", **kw
-    ) -> dict[str, Any]:
+    def to_dict(self, mode: Literal["python", "json", "db"] = "python", **kw) -> dict[str, Any]:
         """
         Serialize the Tool to a dict, including the `function` name.
 

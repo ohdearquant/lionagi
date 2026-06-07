@@ -110,9 +110,7 @@ class LionMessenger(LionTool):
             if msg not in branch.msgs.messages:
                 branch.msgs.messages.include(msg)
 
-        def messenger(
-            action: str, to: str | list[str] = None, content: str = None
-        ) -> str:
+        def messenger(action: str, to: str | list[str] = None, content: str = None) -> str:
             """Send messages to teammates, signal done/finished, or wake a teammate.
 
             Args:
@@ -143,9 +141,7 @@ class LionMessenger(LionTool):
                 return "; ".join(results)
 
             elif action == "done":
-                fire(
-                    "done", name=_sender_name, sender_id=sender_id, reason=content or ""
-                )
+                fire("done", name=_sender_name, sender_id=sender_id, reason=content or "")
                 return f"{_sender_name} is now done: {content or 'no reason'}"
 
             elif action == "finished":
@@ -155,9 +151,7 @@ class LionMessenger(LionTool):
                     sender_id=sender_id,
                     reason=content or "",
                 )
-                return (
-                    f"{_sender_name} is permanently finished: {content or 'no reason'}"
-                )
+                return f"{_sender_name} is permanently finished: {content or 'no reason'}"
 
             elif action == "wakeup":
                 if not to or not content:
