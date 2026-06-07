@@ -1196,7 +1196,7 @@ class Branch(Element, Relational):
             progression (ID.IDSeq, optional):
                 Custom ordering of messages.
             response_format (type[BaseModel], optional):
-                Alias for `request_model`. If both are provided, raises ValueError.
+                A Pydantic model the response is parsed into.
             request_fields (dict|list[str], optional):
                 If you only need certain fields from the LLM's response.
             chat_model (iModel, optional):

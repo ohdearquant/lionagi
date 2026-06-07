@@ -16,7 +16,7 @@ __all__ = ("CustomRenderer", "CustomParser", "StructureFormat")
 class CustomRenderer(Protocol):
     """Protocol for custom instruction renderers.
 
-    Implementations format request_model schema for custom output formats.
+    Implementations format the request model's schema for custom output formats.
 
     Args:
         model: Pydantic model class defining expected response schema

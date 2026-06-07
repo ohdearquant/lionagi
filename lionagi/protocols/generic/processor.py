@@ -65,7 +65,6 @@ class Processor(Observer):
         self.capacity_refresh_time = capacity_refresh_time
         self.max_queue_size = max_queue_size
         # TODO(#1043 Phase 3): migrate to lionagi.ln.concurrency.Queue (API shape differs)
-        # TODO(#1260): Phase-3 follow-up tracking issue (see docs/followups-2026-06.md).
         self.queue = asyncio.Queue(maxsize=max_queue_size)
         self._available_capacity = queue_capacity
         self._execution_mode = False
