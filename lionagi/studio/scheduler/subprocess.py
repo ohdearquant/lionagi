@@ -100,8 +100,13 @@ async def spawn_and_wait(argv: list[str], invocation_id: str) -> tuple[int, str]
     # os.getpgid(proc.pid) raises ProcessLookupError and we'd skip the group
     # kill. start_new_session=True makes pgid == proc.pid. Guard mocked pids
     # in tests: a MagicMock.pid coerces to 1, and killpg(1, …) hits init.
+    # os.killpg is POSIX-only: on Windows leave _pgid None so the group-kill
+    # path is skipped and cleanup falls through to proc.terminate()/kill()
+    # instead of raising AttributeError.
     _pgid: int | None = (
-        proc.pid if isinstance(proc.pid, int) and proc.pid > 1 else None
+        proc.pid
+        if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1
+        else None
     )
 
     try:

@@ -379,6 +379,47 @@ class TestSpawnAndWaitCancellation:
         assert killpg_calls, "the process GROUP must be signalled, not just the child"
         assert killpg_calls[0] == (proc.pid, sp.signal.SIGTERM)
 
+    async def test_cancel_no_killpg_platform(self, monkeypatch):
+        """os.killpg is POSIX-only: on Windows cancellation must still terminate
+        the direct child, not raise AttributeError from the cancel handler
+        (which only suppresses ProcessLookupError/PermissionError)."""
+        from lionagi.studio.scheduler import subprocess as sp
+
+        class _FakeProc:
+            def __init__(self):
+                self.pid = 424243
+                self.terminated = False
+
+            async def communicate(self):
+                await asyncio.Event().wait()
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                pass
+
+            async def wait(self):
+                return -15
+
+        proc = _FakeProc()
+
+        async def fake_exec(*a, **k):
+            return proc
+
+        monkeypatch.setattr(sp.asyncio, "create_subprocess_exec", fake_exec)
+        # Simulate Windows: os.killpg does not exist.
+        monkeypatch.delattr(sp.os, "killpg", raising=False)
+
+        task = asyncio.create_task(sp.spawn_and_wait(["sleep", "30"], "inv-2"))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        task.cancel()
+        # Must surface CancelledError, NOT AttributeError.
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert proc.terminated is True, "child must be terminated even without killpg"
+
 
 class TestFireCancellationRecorded:
     """Codex #1283 P1: when stop() cancels an in-flight _fire, the run and
