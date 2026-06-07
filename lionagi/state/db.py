@@ -12,7 +12,7 @@ from typing import Any
 import aiosqlite
 
 from lionagi._paths import LIONAGI_HOME
-from lionagi.ln._json_dump import json_dumps as _json_dumps
+from lionagi.ln import json_dumps as _json_dumps
 from lionagi.ln.concurrency import Lock
 from lionagi.state.reasons import (
     PlayReasons as _PlayReasons,
