@@ -27,7 +27,7 @@ class TestiModelDefaultProvider:
         m = iModel(model="gpt-4o-mini", api_key="test-key")
         assert m is not None
 
-    def test_bare_model_resolves_settings_provider(self, monkeypatch):
+    def test_bare_model_resolves_settings_provider(self):
         """Provider falls back to LIONAGI_CHAT_PROVIDER when not supplied.
 
         The default value of LIONAGI_CHAT_PROVIDER is 'openai', so the
@@ -37,7 +37,7 @@ class TestiModelDefaultProvider:
         # The endpoint config must have resolved a provider, not be empty.
         assert m.endpoint.config.provider  # truthy — some provider was set
 
-    def test_bare_model_uses_env_override(self, monkeypatch):
+    def test_bare_model_uses_env_override(self):
         """LIONAGI_CHAT_PROVIDER env override is respected.
 
         Patch the singleton so no real env var mutation is needed.
