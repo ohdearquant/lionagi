@@ -110,6 +110,7 @@ def _cleanup_worktree_sync(session: SandboxSession) -> dict:
         ["branch", "-D", session.branch_name],
         cwd=session.repo_root,
     )
+    session.is_active = False
     return {
         "worktree_removed": rc1 == 0,
         "branch_deleted": rc2 == 0,

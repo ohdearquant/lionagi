@@ -196,9 +196,23 @@ async def test_sandbox_merge_cleans_up_worktree(git_repo):
     assert not os.path.exists(worktree_path)
 
 
+async def test_sandbox_merge_sets_is_active_false(git_repo):
+    session = await create_sandbox(str(git_repo))
+    assert session.is_active is True
+    await sandbox_merge(session)
+    assert session.is_active is False
+
+
 # ---------------------------------------------------------------------------
 # sandbox_discard
 # ---------------------------------------------------------------------------
+
+
+async def test_sandbox_discard_sets_is_active_false(git_repo):
+    session = await create_sandbox(str(git_repo))
+    assert session.is_active is True
+    await sandbox_discard(session)
+    assert session.is_active is False
 
 
 async def test_sandbox_discard_removes_worktree(git_repo):
