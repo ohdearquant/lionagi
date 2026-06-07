@@ -90,15 +90,19 @@ class ScriptModel(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_responses(cls, data: Any) -> Any:
-        """Accept raw dicts in ``responses`` and dispatch to subclasses."""
+        """Accept raw dicts in ``responses`` and dispatch to subclasses.
+
+        Works on a shallow copy so the caller-supplied dict is never mutated.
+        """
 
         if isinstance(data, dict):
+            data = dict(data)
             raw = data.get("responses")
             if isinstance(raw, list):
                 coerced: list[Any] = []
                 for entry in raw:
                     if isinstance(entry, dict):
-                        coerced.append(_build_entry(entry))
+                        coerced.append(_build_entry(dict(entry)))
                     else:
                         coerced.append(entry)
                 data["responses"] = coerced
