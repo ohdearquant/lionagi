@@ -322,11 +322,12 @@ def test_identity_session_marker_mismatch_rejected(monkeypatch: pytest.MonkeyPat
 
 
 def test_identity_absent_marker_requires_create_time_match(monkeypatch: pytest.MonkeyPatch):
-    """Session expected + no env marker: cmdline alone is NOT enough.
+    """Session expected + no env marker: needs create_time AND lionagi cmdline.
 
     A lionagi-looking cmdline cannot distinguish THIS run from a different
-    concurrent run that recycled the PID. Without the env marker, identity must
-    be positively proven by a matching create_time; otherwise skip the kill.
+    concurrent run that recycled the PID, and a create_time match alone could be
+    a recycled PID that started inside the tolerance. Without the env marker,
+    both must hold; otherwise skip the kill.
     """
     _mock_psutil(
         monkeypatch,
@@ -336,17 +337,37 @@ def test_identity_absent_marker_requires_create_time_match(monkeypatch: pytest.M
     )
     # No create_time recorded → cannot prove this run → skip.
     assert _check_pid_identity(42, "lionagi", expected_session_id="run-123") is False
-    # Recorded create_time matches the live process → positively identified.
+    # create_time matches AND cmdline is lionagi → positively identified.
     assert (
         _check_pid_identity(
             42, "lionagi", expected_session_id="run-123", expected_create_time=500.0
         )
         is True
     )
-    # Recorded create_time differs → recycled PID → skip.
+    # create_time differs → recycled PID → skip.
     assert (
         _check_pid_identity(
             42, "lionagi", expected_session_id="run-123", expected_create_time=1.0
+        )
+        is False
+    )
+
+
+def test_identity_absent_marker_rejects_nonlionagi_cmdline(monkeypatch: pytest.MonkeyPatch):
+    """No marker + matching create_time but a non-lionagi cmdline → reject.
+
+    Guards the recycled-PID case where an unrelated process started within the
+    create_time tolerance: create_time alone must not authorize the kill.
+    """
+    _mock_psutil(
+        monkeypatch,
+        cmdline=["/usr/bin/vim", "/Users/lion/projects/lionagi/README.md"],
+        environ={},
+        create_time=500.0,
+    )
+    assert (
+        _check_pid_identity(
+            42, "lionagi", expected_session_id="run-123", expected_create_time=500.0
         )
         is False
     )
@@ -390,14 +411,22 @@ async def test_do_kill_identity_mismatch_reports_failure(
 
 
 def test_identity_create_time_mismatch_rejected(monkeypatch: pytest.MonkeyPatch):
-    """A recycled PID with a different start time is rejected even if cmdline matches."""
+    """create_time is a tight fingerprint: only a sub-tolerance match is accepted.
+
+    Same host/kernel → create_time is reproducible to sub-tick precision, so the
+    tolerance is ~10ms. A 0.5s difference is a *different* process and must be
+    rejected; only a near-exact match (within tick rounding) is accepted.
+    """
     _mock_psutil(
         monkeypatch,
         cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
         create_time=100.0,
     )
     assert _check_pid_identity(42, "lionagi", expected_create_time=999.0) is False
-    assert _check_pid_identity(42, "lionagi", expected_create_time=100.5) is True
+    # 0.5s apart → different process → reject (was accepted under the old 2s gate).
+    assert _check_pid_identity(42, "lionagi", expected_create_time=100.5) is False
+    # within tick-rounding tolerance → accepted.
+    assert _check_pid_identity(42, "lionagi", expected_create_time=100.05) is True
 
 
 # ── current_pid_markers (launch-time recording) ───────────────────────────────

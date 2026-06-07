@@ -42,11 +42,12 @@ async def _start_invocation(
     from lionagi.state.db import StateDB
 
     inv_id = uuid.uuid4().hex[:12]
-    # Record this process's identity so `li kill` can verify the PID before
-    # signalling (CWE-362). The skill runs in this process — getpid() is correct.
-    from lionagi.cli.kill import current_pid_markers
-
-    node_metadata = {**(metadata or {}), **current_pid_markers()}
+    # No pid markers here: `li invoke start` is a short-lived CLI command that
+    # creates the row and exits (INV=$(li invoke start ...)); it is NOT the
+    # long-lived owner. Recording its pid would be a recycled-PID hazard — a
+    # later live process reusing it could make `li kill` mis-signal or make
+    # --all-stale skip the invocation. An invocation is a PID-less umbrella over
+    # the child sessions it spawns; those carry their own pid markers.
     async with StateDB() as db:
         await db.create_invocation(
             {
@@ -56,7 +57,7 @@ async def _start_invocation(
                 "prompt": prompt,
                 "started_at": time.time(),
                 "status": "running",
-                "node_metadata": node_metadata,
+                "node_metadata": metadata,
             }
         )
     return inv_id

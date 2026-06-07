@@ -728,8 +728,10 @@ async def _run_flow_inner(
     ctx_lp = getattr(env, "_live_persist", None)
     if ctx_lp and ctx_lp.get("db"):
         with contextlib.suppress(Exception):
+            # Merge kill-identity markers last so this DAG write keeps the PID.
+            _markers = ctx_lp.get("identity_markers") or {}
             await ctx_lp["db"].update_session(
-                ctx_lp["session_id"], node_metadata=json.dumps(early_graph)
+                ctx_lp["session_id"], node_metadata=json.dumps({**early_graph, **_markers})
             )
 
     # ── Progress + segment + branch-status plumbing (Studio) ──────────
@@ -789,7 +791,11 @@ async def _run_flow_inner(
 
         async def _do():
             with contextlib.suppress(Exception):
-                await ctx["db"].update_session(ctx["session_id"], node_metadata=json.dumps(extras))
+                # Merge kill-identity markers last so segment writes keep the PID.
+                _markers = ctx.get("identity_markers") or {}
+                await ctx["db"].update_session(
+                    ctx["session_id"], node_metadata=json.dumps({**extras, **_markers})
+                )
 
         _aio.ensure_future(_do())
 

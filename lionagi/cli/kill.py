@@ -102,9 +102,13 @@ def current_pid_markers() -> dict[str, Any]:
 
 
 # Tolerance (seconds) when comparing a recorded process start time against the
-# live process's create_time. Clocks and rounding differ slightly between the
-# launcher and psutil; 2s is comfortably tighter than any PID-recycle window.
-_CREATE_TIME_TOLERANCE = 2.0
+# live process's create_time. Launcher and killer read the SAME kernel data on
+# the SAME host, so the value is reproducible to sub-tick precision (verified:
+# repeated psutil.create_time() calls return an identical float, and it survives
+# JSON round-trip losslessly). The only legitimate drift is clock-tick rounding
+# (~10ms on Linux, CLK_TCK=100), so the window is kept tight — a recycled PID
+# must have started within this window AND be a lionagi process to slip through.
+_CREATE_TIME_TOLERANCE = 0.1
 
 
 def _cmdline_is_lionagi(cmdline: list[str], expected_cmd: str) -> bool:
@@ -159,9 +163,10 @@ def _check_pid_identity(
     cmdline gate only shows the process is *some* lionagi run, which cannot
     distinguish this run from a different concurrent run that recycled the PID.
     So if the env marker is absent/unreadable, we require a matching
-    ``create_time`` and refuse to fall through to cmdline. The cmdline gate
-    remains the fallback only when no session id is expected (e.g. invocations,
-    which carry no env marker) and create_time was not recorded.
+    ``create_time`` AND a lionagi cmdline together — neither alone is enough
+    (a recycled PID could start inside the create_time tolerance, or be an
+    unrelated lionagi process). The cmdline gate is the sole signal only when no
+    session id is expected (e.g. invocations, which carry no env marker).
     """
     try:
         proc = psutil.Process(pid)
@@ -183,9 +188,11 @@ def _check_pid_identity(
                 marker = None  # env unreadable
             if marker is not None:
                 return marker == expected_session_id
-            # Marker absent/unreadable: cmdline can't prove THIS run, so require
-            # a positive create_time match instead of falling through.
-            return create_time_ok is True
+            # Marker absent/unreadable: cmdline alone can't prove THIS run, so
+            # require BOTH a positive create_time match AND a lionagi cmdline.
+            # Either alone is insufficient — a recycled PID could start within
+            # the create_time tolerance, or be an unrelated lionagi process.
+            return create_time_ok is True and _cmdline_is_lionagi(proc.cmdline(), expected_cmd)
 
         cmdline = proc.cmdline()
     except (psutil.NoSuchProcess, psutil.AccessDenied):
