@@ -181,6 +181,21 @@ class EngineRun:
             self._active.add(task)
             task.add_done_callback(self._active.discard)
 
+    async def cancel_active(self) -> None:
+        """Cancel every in-flight spawned task and wait for it to finish.
+
+        Used when the primary pipeline fails so that no background task (e.g. a
+        verifier spawned just before the failure) outlives the run and keeps
+        mutating shared state.
+        """
+        if not self._active:
+            return
+        for t in list(self._active):
+            t.cancel()
+        await asyncio.gather(*list(self._active), return_exceptions=True)
+        # Callbacks remove tasks from _active as they settle.
+        self._active.clear()
+
     async def wait_quiescence(self) -> None:
         """Block until no spawned task remains, then surface any task failures.
 

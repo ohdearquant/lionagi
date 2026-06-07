@@ -15,12 +15,12 @@ converge), the complement to research's recursive *Tree* shape.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from pydantic import Field
 
 from lionagi.casts.emission import Finding, Verdict
+from lionagi.ln import gather as ln_gather
 
 from .engine import Engine, EngineEvent, EngineRun
 
@@ -165,7 +165,15 @@ class ReviewEngine(Engine):
         run.observe(IssueFound, lambda i, _c: self._on_issue(run, i))
 
         # Fan out: one reviewer per dimension, in parallel.
-        await asyncio.gather(*(self._review_dimension(run, artifact, d) for d in dims))
+        # Using ln_gather (structured concurrency) so a dimension failure cancels
+        # siblings and no coroutine outlives this scope.
+        try:
+            await ln_gather(*(self._review_dimension(run, artifact, d) for d in dims))
+        except BaseException:
+            # Cancel any verifier tasks that were spawned before the failure so
+            # no background work keeps mutating shared run state after _run exits.
+            await run.cancel_active()
+            raise
         # Drain any adversarial verifiers spawned by high-severity issues.
         await run.wait_quiescence()
         return await self._verdict(run, artifact, dims)
