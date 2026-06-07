@@ -54,6 +54,12 @@ app.add_middleware(
 
 @app.middleware("http")
 async def require_studio_bearer_token(request: Request, call_next):
+    # CORS preflight requests arrive without an Authorization header by design.
+    # Let them pass through so CORSMiddleware can respond with the correct
+    # Allow-* headers; blocking them here would prevent browsers from ever
+    # reaching authenticated endpoints from a separate frontend origin.
+    if request.method == "OPTIONS":
+        return await call_next(request)
     token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
     path = request.url.path
     if token and request.headers.get("authorization") != f"Bearer {token}":

@@ -101,12 +101,12 @@ class TestArtifactAuthBypass:
         assert resp.status_code == 200
 
     def test_stats_still_open(self, monkeypatch, tmp_path):
-        """/api/stats remains accessible (existing behaviour must not regress)."""
+        """/api/stats requires auth when a token is configured."""
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-secret")
         client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
 
         resp = client.get("/api/stats")
-        assert resp.status_code == 200
+        assert resp.status_code == 401
 
     def test_artifact_auth_disabled_when_no_token(self, monkeypatch, tmp_path):
         """Without LIONAGI_STUDIO_AUTH_TOKEN all routes are open."""
@@ -490,9 +490,7 @@ class TestInvocationReasonAggregation:
             actor="test",
         )
 
-    async def test_sigint_aborted_child_aggregates_to_cancelled_sigint(
-        self, monkeypatch, tmp_path
-    ):
+    async def test_sigint_aborted_child_aggregates_to_cancelled_sigint(self, monkeypatch, tmp_path):
         monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
         from lionagi.state.db import StateDB
         from lionagi.state.reasons import RunReasons
