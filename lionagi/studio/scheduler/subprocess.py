@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
@@ -90,7 +91,24 @@ async def spawn_and_wait(argv: list[str], invocation_id: str) -> tuple[int, str]
         env=env,
     )
 
-    _, stderr = await proc.communicate()
+    try:
+        _, stderr = await proc.communicate()
+    except asyncio.CancelledError:
+        # Cancellation (e.g. scheduler shutdown) must not leave the spawned
+        # `uv run li` child detached. Terminate it, give it a moment to exit,
+        # then kill, before re-raising so the caller can record the cancel.
+        _log.warning("spawn_and_wait cancelled; terminating child for %s", invocation_id)
+        with contextlib.suppress(ProcessLookupError):
+            proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except (TimeoutError, asyncio.TimeoutError):
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+        raise
+
     exit_code = proc.returncode or 0
     stderr_tail = (stderr[-2048:] if stderr else b"").decode(errors="replace")
 

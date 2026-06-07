@@ -267,3 +267,135 @@ class TestBuildArgvValidation:
 
         with pytest.raises(ValueError, match="Unknown action_kind"):
             build_argv({"action_kind": ""}, {})
+
+
+# ---------------------------------------------------------------------------
+# Codex #1283 — orphaned subprocess on cancel + invalid-kind run recording
+# ---------------------------------------------------------------------------
+
+
+def _interval_schedule(**over):
+    s = {
+        "id": "sched-x",
+        "name": "test-sched",
+        "trigger_type": "interval",
+        "interval_sec": 60,
+        "action_kind": "agent",
+        "action_model": "gpt-4",
+        "action_prompt": "hi",
+        "overlap_policy": "allow",
+    }
+    s.update(over)
+    return s
+
+
+class TestFireBuildFailureRecorded:
+    """Codex #1283 P2: an invalid action_kind raised inside _fire (build_argv)
+    before the schedule_run row existed, so the generic handler called
+    update_status() on a missing row (LookupError) and left the invocation
+    stuck `running`. The failure must be recorded deterministically instead."""
+
+    async def test_invalid_kind_records_failed_run_and_invocation(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+        from lionagi.state.db import StateDB
+        from lionagi.studio.scheduler.engine import SchedulerEngine
+
+        engine = SchedulerEngine()
+        run_id = "run-bad"
+        # Seed a valid schedule row (schedules.action_kind has a CHECK, so the
+        # bad kind can only reach _fire via a chain action override carrying the
+        # existing schedule_id). schedule_runs.schedule_id FK -> schedules.
+        async with StateDB() as db:
+            await db.create_schedule(_interval_schedule())
+        schedule = _interval_schedule(action_kind="totally-bogus")  # same id
+
+        # Must NOT raise (no LookupError leaking out) and must return cleanly.
+        await engine._fire(schedule, run_id, trigger_context={})
+
+        async with StateDB() as db:
+            run = await db.get_schedule_run(run_id)
+            assert run is not None, "schedule_run row must exist for the bad fire"
+            assert run["status"] == "failed"
+            inv = await db.get_invocation(run["invocation_id"])
+            assert inv is not None
+            assert inv["status"] == "failed", "invocation must not be left running"
+        # Not tracked as running after returning.
+        assert schedule["id"] not in engine._running
+
+
+class TestSpawnAndWaitCancellation:
+    """Codex #1283 P1: cancelling spawn_and_wait must terminate the spawned
+    child, not leave it detached."""
+
+    async def test_cancel_terminates_child(self, monkeypatch):
+        from lionagi.studio.scheduler import subprocess as sp
+
+        class _FakeProc:
+            def __init__(self):
+                self.terminated = False
+                self.killed = False
+                self.returncode = -15
+
+            async def communicate(self):
+                await asyncio.Event().wait()  # block until cancelled
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.killed = True
+
+            async def wait(self):
+                return self.returncode
+
+        proc = _FakeProc()
+
+        async def fake_exec(*a, **k):
+            return proc
+
+        monkeypatch.setattr(sp.asyncio, "create_subprocess_exec", fake_exec)
+
+        task = asyncio.create_task(sp.spawn_and_wait(["sleep", "30"], "inv-1"))
+        # Let it reach communicate() and block.
+        for _ in range(5):
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert proc.terminated is True, "child must be terminated on cancellation"
+
+
+class TestFireCancellationRecorded:
+    """Codex #1283 P1: when stop() cancels an in-flight _fire, the run and
+    invocation must be recorded as cancelled, not left `running`."""
+
+    async def test_cancel_during_spawn_records_cancelled(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+        from lionagi.state.db import StateDB
+        from lionagi.studio.scheduler import subprocess as sp
+        from lionagi.studio.scheduler.engine import SchedulerEngine
+
+        started = asyncio.Event()
+
+        async def blocking_spawn(argv, inv_id):
+            started.set()
+            await asyncio.Event().wait()  # block until the _fire task is cancelled
+
+        # _fire imports spawn_and_wait from .subprocess at call time.
+        monkeypatch.setattr(sp, "spawn_and_wait", blocking_spawn)
+
+        async with StateDB() as db:
+            await db.create_schedule(_interval_schedule())  # satisfy schedule_run FK
+
+        engine = SchedulerEngine()
+        run_id = "run-cancel"
+        engine._tracked_fire(_interval_schedule(), run_id, trigger_context={})
+
+        await started.wait()  # row created, now inside spawn
+        await engine.stop()  # cancels + awaits the fire task
+
+        async with StateDB() as db:
+            run = await db.get_schedule_run(run_id)
+            assert run is not None and run["status"] == "cancelled"
+            inv = await db.get_invocation(run["invocation_id"])
+            assert inv is not None and inv["status"] == "cancelled"
