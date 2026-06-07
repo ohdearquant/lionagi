@@ -53,14 +53,11 @@ class TestSystemTemplateDeprecation:
         assert len(deprecations) == 0
 
     def test_branch_still_functional_with_template_param(self):
-        """Passing system_template warns but does not break Branch creation."""
+        """Passing system_template warns but does not create an Instruction message."""
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            branch = Branch(
-                system="You are helpful.",
-                system_template="ignored {{ template }}",
-            )
+            branch = Branch(system_template="ignored {{ template }}")
 
-        # Branch should still be usable
+        # Branch is usable and the deprecated param caused no message to be added
         assert branch is not None
-        assert len(branch.messages) >= 1
+        assert len(branch.messages) == 0

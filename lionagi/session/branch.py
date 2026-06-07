@@ -260,8 +260,6 @@ class Branch(Element, Relational):
             for x in [
                 system,
                 system_datetime,
-                system_template,
-                system_template_context,
                 use_lion_system_message,
             ]
         ):
