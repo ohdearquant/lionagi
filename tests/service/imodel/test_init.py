@@ -32,10 +32,16 @@ class TestiModel:
         assert imodel.endpoint.config.provider == "openai"
         assert imodel.endpoint.config.kwargs["model"] == "gpt-4.1-mini"
 
-    def test_imodel_initialization_missing_provider(self):
-        """Test that iModel raises error when provider cannot be determined."""
-        with pytest.raises(ValueError, match="Provider must be provided"):
-            iModel(model="gpt-4.1-mini")  # No provider, no slash in model
+    def test_imodel_missing_provider_falls_back_to_settings_default(self):
+        """A bare iModel(model=...) resolves the provider from settings.
+
+        When no provider is supplied and the model name contains no slash,
+        the constructor falls back to LIONAGI_CHAT_PROVIDER from settings
+        rather than raising.  The endpoint must resolve to a non-empty provider.
+        """
+        m = iModel(model="gpt-4.1-mini", api_key="test-key")
+        assert m.endpoint.config.provider  # truthy — settings default was applied
+        assert m.endpoint.config.provider != "gpt-4.1-mini"  # model name is not the provider
 
     def test_api_key_environment_variable_lookup(self):
         """Test that API keys are correctly looked up from environment."""
