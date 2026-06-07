@@ -21,18 +21,16 @@ from typing import Any
 # Per-invocation_kind activity thresholds (seconds). Single-shot runs
 # are tight; multi-agent flows get headroom.
 STALE_THRESHOLDS: dict[str, int] = {
-    "agent": 6 * 3600,        # 6h — single agent
-    "play": 6 * 3600,         # 6h — single-play run
-    "flow": 12 * 3600,        # 12h — multi-agent DAG
-    "fanout": 12 * 3600,      # 12h — parallel fanout
-    "show-play": 12 * 3600,   # 12h — show-managed plays
+    "agent": 6 * 3600,  # 6h — single agent
+    "play": 6 * 3600,  # 6h — single-play run
+    "flow": 12 * 3600,  # 12h — multi-agent DAG
+    "fanout": 12 * 3600,  # 12h — parallel fanout
+    "show-play": 12 * 3600,  # 12h — show-managed plays
 }
 DEFAULT_STALE_THRESHOLD: int = 6 * 3600
 
 
-def staleness_check(
-    session: dict[str, Any], *, now: float | None = None
-) -> str | None:
+def staleness_check(session: dict[str, Any], *, now: float | None = None) -> str | None:
     """Return ``"stale"`` if ``session`` is running past its activity threshold.
 
     Returns ``None`` for terminal sessions — ADR-0024's
@@ -48,14 +46,8 @@ def staleness_check(
     """
     if session.get("status") != "running":
         return None
-    threshold = STALE_THRESHOLDS.get(
-        session.get("invocation_kind"), DEFAULT_STALE_THRESHOLD
-    )
-    last_activity = (
-        session.get("last_message_at")
-        or session.get("updated_at")
-        or 0
-    )
+    threshold = STALE_THRESHOLDS.get(session.get("invocation_kind"), DEFAULT_STALE_THRESHOLD)
+    last_activity = session.get("last_message_at") or session.get("updated_at") or 0
     ts = now if now is not None else time.time()
     if ts - last_activity > threshold:
         return "stale"

@@ -14,9 +14,7 @@ class OpenaiChatEndpoint(Endpoint):
         if config is None:
             from lionagi.config import settings
 
-            kwargs.setdefault(
-                "api_key", settings.OPENAI_API_KEY or "dummy-key-for-testing"
-            )
+            kwargs.setdefault("api_key", settings.OPENAI_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("kwargs", {"model": settings.OPENAI_DEFAULT_MODEL})
             kwargs.setdefault("requires_tokens", True)
         super().__init__(config, **kwargs)

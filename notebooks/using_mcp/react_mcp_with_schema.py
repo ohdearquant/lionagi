@@ -5,12 +5,12 @@ Test ReAct reasoning with MCP search tools and proper Pydantic schemas
 
 import asyncio
 
+from lionagi.service.third_party.exa_models import ExaSearchRequest
+from lionagi.service.third_party.pplx_models import PerplexityChatRequest
 from pydantic import BaseModel
 
 from lionagi import Branch, iModel
 from lionagi.protocols.action.manager import load_mcp_tools
-from lionagi.service.third_party.exa_models import ExaSearchRequest
-from lionagi.service.third_party.pplx_models import PerplexityChatRequest
 
 
 class ExaRequest(BaseModel):
@@ -39,9 +39,7 @@ async def test_react_with_mcp():
     )
     print(f"   ✅ Loaded {len(tools)} search tools with schemas:")
     for tool in tools:
-        print(
-            f"      - {tool.function} (has request_options: {tool.request_options is not None})"
-        )
+        print(f"      - {tool.function} (has request_options: {tool.request_options is not None})")
 
     # 2. Create a Branch with the tools
     print("\n2. Creating Branch with gpt-4.1-mini...")
@@ -54,9 +52,7 @@ async def test_react_with_mcp():
 
     # 3. Run ReAct reasoning
     print("\n3. Running ReAct reasoning (max 3 extensions)...")
-    print(
-        "   Question: What are the latest developments in Model Context Protocol (MCP)?"
-    )
+    print("   Question: What are the latest developments in Model Context Protocol (MCP)?")
     print("\n   Executing ReAct...")
 
     try:
