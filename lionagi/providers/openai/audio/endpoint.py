@@ -35,9 +35,7 @@ class OpenaiAudioSpeechEndpoint(Endpoint):
         if config is None:
             from lionagi.config import settings
 
-            kwargs.setdefault(
-                "api_key", settings.OPENAI_API_KEY or "dummy-key-for-testing"
-            )
+            kwargs.setdefault("api_key", settings.OPENAI_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("timeout", 120)
             kwargs.setdefault("max_retries", 3)
         super().__init__(config=config, **kwargs)
@@ -102,9 +100,7 @@ class OpenaiAudioTranscriptionEndpoint(Endpoint):
         if config is None:
             from lionagi.config import settings
 
-            kwargs.setdefault(
-                "api_key", settings.OPENAI_API_KEY or "dummy-key-for-testing"
-            )
+            kwargs.setdefault("api_key", settings.OPENAI_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("timeout", 120)
             kwargs.setdefault("max_retries", 3)
         super().__init__(config=config, **kwargs)
@@ -147,9 +143,7 @@ class OpenaiAudioTranscriptionEndpoint(Endpoint):
             )
 
         # Remove Content-Type from headers — aiohttp sets it automatically with boundary
-        multipart_headers = {
-            k: v for k, v in headers.items() if k.lower() != "content-type"
-        }
+        multipart_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
 
         async with self._create_http_session() as session:
             async with session.post(

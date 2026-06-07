@@ -21,9 +21,7 @@ def compare(
     """
     lines = []
     norm_note = f" (normalized by {normalize_by})" if normalize_by else ""
-    lines.append(
-        f"Threshold: {threshold:.0%} (negative = faster, positive = slower){norm_note}"
-    )
+    lines.append(f"Threshold: {threshold:.0%} (negative = faster, positive = slower){norm_note}")
     ok = True
 
     cur_results = current.get("results", {})

@@ -78,9 +78,7 @@ class FieldModel(Params):
     """
 
     # Class configuration - let Params handle Unset population
-    _config: ClassVar[ModelConfig] = ModelConfig(
-        prefill_unset=True, none_as_sentinel=True
-    )
+    _config: ClassVar[ModelConfig] = ModelConfig(prefill_unset=True, none_as_sentinel=True)
 
     # Public fields (all start as Unset when not provided)
     base_type: type[Any]
@@ -134,8 +132,7 @@ class FieldModel(Params):
                 or isinstance(
                     self.base_type, types.UnionType
                 )  # Python 3.10+ union types (str | None)
-                or str(type(self.base_type))
-                == "<class 'types.UnionType'>"  # Fallback check
+                or str(type(self.base_type)) == "<class 'types.UnionType'>"  # Fallback check
             )
             if not is_valid_type:
                 raise ValueError(
@@ -236,9 +233,7 @@ class FieldModel(Params):
             return "field"
 
         # If not found, raise AttributeError as usual
-        raise AttributeError(
-            f"'{self.__class__.__name__}' object has no attribute '{name}'"
-        )
+        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
 
     # ---- factory helpers -------------------------------------------------- #
 
@@ -456,9 +451,7 @@ class FieldModel(Params):
         updated = {**existing, **kwargs}
 
         current_metadata = () if self._is_sentinel(self.metadata) else self.metadata
-        filtered_metadata = tuple(
-            m for m in current_metadata if m.key != "json_schema_extra"
-        )
+        filtered_metadata = tuple(m for m in current_metadata if m.key != "json_schema_extra")
         new_metadata = (
             *filtered_metadata,
             Meta("json_schema_extra", updated),
@@ -652,9 +645,7 @@ class FieldModel(Params):
                         result = validator(value)
                         # If validator returns False (simple boolean validator), raise error
                         if result is False:
-                            validator_name = getattr(
-                                validator, "__name__", f"validator_{i}"
-                            )
+                            validator_name = getattr(validator, "__name__", f"validator_{i}")
                             raise ValidationError(
                                 f"Validation failed for {validator_name}",
                                 details={
@@ -693,9 +684,7 @@ class FieldModel(Params):
             attrs.append("validated")
 
         attr_str = f" [{', '.join(attrs)}]" if attrs else ""
-        base_type_name = (
-            "Any" if self._is_sentinel(self.base_type) else self.base_type.__name__
-        )
+        base_type_name = "Any" if self._is_sentinel(self.base_type) else self.base_type.__name__
         return f"FieldModel({base_type_name}{attr_str})"
 
     @property

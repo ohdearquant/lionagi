@@ -9,9 +9,7 @@ class OpenaiEmbedEndpoint(Endpoint):
         if config is None:
             from lionagi.config import settings
 
-            kwargs.setdefault(
-                "api_key", settings.OPENAI_API_KEY or "dummy-key-for-testing"
-            )
+            kwargs.setdefault("api_key", settings.OPENAI_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("kwargs", {"model": "text-embedding-3-small"})
             kwargs.setdefault("requires_tokens", True)
         super().__init__(config, **kwargs)

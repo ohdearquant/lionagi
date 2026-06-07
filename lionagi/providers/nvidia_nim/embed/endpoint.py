@@ -14,8 +14,6 @@ class NvidiaNimEmbedEndpoint(Endpoint):
         if config is None:
             from lionagi.config import settings
 
-            kwargs.setdefault(
-                "api_key", settings.NVIDIA_NIM_API_KEY or "dummy-key-for-testing"
-            )
+            kwargs.setdefault("api_key", settings.NVIDIA_NIM_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("kwargs", {"model": "nvidia/nv-embed-v1"})
         super().__init__(config, **kwargs)

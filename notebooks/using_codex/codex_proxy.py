@@ -21,14 +21,13 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
-from loguru import logger
-
 from lionagi.service.connections.providers.codex_cli import CodexCLIEndpoint
 from lionagi.service.third_party.codex_models import (
     CODEX_CLI,
     HAS_CODEX_CLI,
     CodexCodeRequest,
 )
+from loguru import logger
 
 logger.remove()
 logger.add(sys.stderr, level="INFO")

@@ -136,15 +136,9 @@ class Step:
             fields_dict["reason"] = reason_spec
 
         if actions:
-            fields_dict["action_required"] = get_default_field(
-                "action_required"
-            ).to_spec()
-            fields_dict["action_requests"] = get_default_field(
-                "action_requests"
-            ).to_spec()
-            fields_dict["action_responses"] = get_default_field(
-                "action_responses"
-            ).to_spec()
+            fields_dict["action_required"] = get_default_field("action_required").to_spec()
+            fields_dict["action_requests"] = get_default_field("action_requests").to_spec()
+            fields_dict["action_responses"] = get_default_field("action_responses").to_spec()
 
         # Add custom fields (will override defaults if same name)
         if fields:
