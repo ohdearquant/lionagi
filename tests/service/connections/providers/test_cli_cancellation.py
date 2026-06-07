@@ -465,3 +465,63 @@ class TestEmptyResponsesGuard:
             # Must not raise IndexError on responses[-1]
             result = await endpoint._call({"request": mock_request}, {})
             assert isinstance(result, dict)
+
+
+# ---------------------------------------------------------------------------
+# 7. Non-Unix cleanup: os.killpg unavailable must not break cleanup
+# ---------------------------------------------------------------------------
+
+
+def _make_cleanup_mock_proc(pid=12345):
+    mock_proc = MagicMock()
+    mock_proc.pid = pid
+    mock_proc.stdout = MagicMock()
+    mock_proc.stdout.read = AsyncMock(return_value=b"")
+    mock_proc.stderr = MagicMock()
+    mock_proc.stderr.read = AsyncMock(return_value=b"")
+    mock_proc.wait = AsyncMock(return_value=0)
+    mock_proc.terminate = MagicMock()
+    mock_proc.kill = MagicMock()
+    return mock_proc
+
+
+class TestKillpgUnavailablePlatform:
+    """os.killpg is POSIX-only. On Windows a real pid still set _pgid, so the
+    finally-block killpg call raised AttributeError (only ProcessLookupError /
+    PermissionError suppressed), failing even a successful run. Cleanup must
+    fall through to proc.terminate() instead."""
+
+    @pytest.mark.asyncio
+    async def test_claude_cleanup_no_killpg_platform(self, monkeypatch):
+        from lionagi.providers.anthropic.claude_code import models
+
+        request = models.ClaudeCodeRequest(prompt="test")
+        mock_proc = _make_cleanup_mock_proc(pid=9201)
+        monkeypatch.delattr(models.os, "killpg", raising=False)
+
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+            mock_exec.return_value = mock_proc
+            async with contextlib.aclosing(models._ndjson_from_cli(request)) as stream:
+                async for _ in stream:
+                    pass
+
+        mock_proc.terminate.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_codex_cleanup_no_killpg_platform(self, monkeypatch):
+        from lionagi.providers.openai.codex import models
+
+        request = models.CodexCodeRequest(prompt="test")
+        mock_proc = _make_cleanup_mock_proc(pid=9202)
+        monkeypatch.delattr(models.os, "killpg", raising=False)
+
+        with (
+            patch("lionagi.providers.openai.codex.models.CODEX_CLI", "codex"),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+        ):
+            mock_exec.return_value = mock_proc
+            async with contextlib.aclosing(models._ndjson_from_cli(request)) as stream:
+                async for _ in stream:
+                    pass
+
+        mock_proc.terminate.assert_called()
