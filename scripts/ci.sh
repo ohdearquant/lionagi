@@ -23,11 +23,8 @@ _require() {
 
 lint-python() {
   echo "==> ruff check"
-  # Scope to non-core paths by default. Core SDK (lionagi/) has pre-existing
-  # violations from the black+isort era; full migration tracked separately.
-  # Pre-commit ruff hook still catches violations in edited core files.
   if [ $# -eq 0 ]; then
-    uv run ruff check apps/ tests/ marketplace/ scripts/
+    uv run ruff check lionagi/ apps/ tests/ marketplace/ scripts/
   else
     uv run ruff check "$@"
   fi
