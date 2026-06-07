@@ -207,9 +207,7 @@ def test_fix_json_string_empty():
 
 def test_fix_json_string_complex_with_escapes():
     """Test fix_json_string with complex JSON containing escapes"""
-    json_str = (
-        r'{"data": {"path": "C:\\test\\", "text": "say \"hi\"", "newline": "a\nb"'
-    )
+    json_str = r'{"data": {"path": "C:\\test\\", "text": "say \"hi\"", "newline": "a\nb"'
     result = fix_json_string(json_str)
     # Should add missing closing brackets while preserving escapes
     assert result.endswith("}}")

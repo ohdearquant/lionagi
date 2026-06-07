@@ -26,6 +26,7 @@ from lionagi.state.artifact_verifier import (
 from ._agents import build_deadline_preamble, load_agent_profile
 from ._logging import hint, log_error
 from ._providers import (
+    PROVIDER_BYPASS_KWARGS,
     PROVIDER_EFFORT_KWARG,
     PROVIDER_FAST_KWARGS,
     PROVIDER_YOLO_KWARGS,
@@ -35,6 +36,39 @@ from ._providers import (
     resolve_persisted_effort,
 )
 from ._runs import allocate_run, find_branch, load_last_branch, save_last_branch_pointer
+
+
+def _extract_partial_output(branch) -> str:
+    """Return the last assistant message text accumulated before a timeout.
+
+    Walks the branch progression in reverse and returns the first assistant
+    message content found.  Returns an empty string if nothing is available —
+    callers may treat that the same as a ``None`` result.
+    """
+    try:
+        progression = branch.msgs.progression
+        messages = branch.msgs.messages
+        for msg_id in reversed(list(progression)):
+            msg = (
+                messages.get(msg_id)
+                if hasattr(messages, "get")
+                else (messages[msg_id] if msg_id in messages else None)
+            )
+            if msg is None:
+                continue
+            role = getattr(msg, "role", None)
+            if str(role).lower() != "assistant":
+                continue
+            content = getattr(msg, "content", None)
+            if content is None:
+                continue
+            rendered = getattr(content, "rendered", None)
+            if rendered:
+                return str(rendered)
+            return str(content) if str(content) else ""
+    except Exception:  # noqa: S110
+        pass
+    return ""
 
 
 async def _run_agent(
@@ -52,6 +86,7 @@ async def _run_agent(
     fast: bool = False,
     invocation_id: str | None = None,
     project: str | None = None,
+    bypass: bool = False,
 ) -> tuple[str, str, str, str]:
     """Execute one agent turn (new or resumed).
 
@@ -121,7 +156,18 @@ async def _run_agent(
         )
 
     if branch is None:
-        chat_model = build_chat_model(provider, model, yolo, verbose, theme, effort, fast)
+        # Warn when codex is used without any bypass-like flag: the default
+        # sandbox blocks all tool calls and the agent will silently hang.
+        # Issue #1158: surface this early rather than after 20+ wasted minutes.
+        if provider == "codex" and not yolo and not bypass:
+            from lionagi.cli._logging import warn
+
+            warn(
+                "codex models require --bypass or --yolo for local file access. "
+                "Without one of these flags the agent may hang silently. "
+                "Re-run with --bypass or use an agent profile (-a)."
+            )
+        chat_model = build_chat_model(provider, model, yolo, verbose, theme, effort, fast, bypass)
         # Resolve the effort value to persist: captures post-clamp values
         # (e.g. "max"→"xhigh" for codex) and forces None for providers that
         # don't accept an effort kwarg at all (e.g. gemini).  The helper is
@@ -144,7 +190,9 @@ async def _run_agent(
             kwarg = PROVIDER_EFFORT_KWARG.get(provider)
             if kwarg:
                 cfg[kwarg] = effort
-        if yolo:
+        if bypass:
+            cfg.update(PROVIDER_BYPASS_KWARGS.get(provider, {}))
+        elif yolo:
             cfg.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
         if fast:
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
@@ -192,6 +240,31 @@ async def _run_agent(
     # structured reason code and summary for the status transition.
     _terminal_status = "completed"
     _terminal_exc: BaseException | None = None
+
+    # Issue #1154: optional progress heartbeat — emits elapsed-time lines
+    # every 60 s so callers can see the agent is alive during long runs.
+    # Only started when --timeout is set (the main use case for long runs).
+    _heartbeat_task = None
+    if timeout is not None:
+        import asyncio as _asyncio
+        import time as _hb_time
+
+        _hb_start = _hb_time.monotonic()
+
+        async def _heartbeat_loop():
+            while True:
+                await _asyncio.sleep(60)
+                elapsed = int(_hb_time.monotonic() - _hb_start)
+                from lionagi.cli._logging import hint as _hint
+
+                _hint(f"[progress] {elapsed}s elapsed — agent still running…")
+
+        try:
+            _heartbeat_task = _asyncio.ensure_future(_heartbeat_loop())
+        except RuntimeError:
+            # No running loop (shouldn't happen here, but guard defensively).
+            _heartbeat_task = None
+
     try:
         res = await branch.operate(
             instruction=prompt,
@@ -215,7 +288,9 @@ async def _run_agent(
         from lionagi.cli._logging import warn
 
         warn(f"agent timed out after {timeout}s")
-        res = None
+        # Issue #1152: preserve any partial output the branch accumulated
+        # before the timeout rather than discarding it entirely.
+        res = _extract_partial_output(branch) or None
     except BaseException as exc:
         from lionagi.ln.concurrency import get_cancelled_exc_class
 
@@ -226,6 +301,15 @@ async def _run_agent(
         _terminal_exc = exc
         raise
     finally:
+        # Cancel the progress heartbeat (safe no-op if never started).
+        if _heartbeat_task is not None:
+            _heartbeat_task.cancel()
+            import asyncio as _asyncio2
+            import contextlib as _contextlib
+
+            with _contextlib.suppress(_asyncio2.CancelledError, Exception):
+                await _heartbeat_task
+
         # Shield teardown from outer cancellation (KeyboardInterrupt, anyio
         # task-group cancel). Without the shield the first await below
         # raises CancelledError, skipping iModel shutdown — leaking the
@@ -469,8 +553,12 @@ async def _setup_live_persist(
                     exc_info=True,
                 )
 
-        ctx["hook"] = _on_message
-        branch.on_message_added.append(_on_message)
+        # ADR-0023b: persistence rides the session hook bus (MESSAGE_ADD), not a
+        # parallel on_message_added callback. The _on_message body is unchanged;
+        # only its dispatch route moves onto the one transport.
+        from lionagi.hooks import route_message_persistence
+
+        ctx["hook"] = route_message_persistence(session, branch, _on_message)
         return ctx
     except Exception as exc:
         logging.getLogger("lionagi.cli").warning(
@@ -628,14 +716,11 @@ async def _teardown_live_persist(
             metadata=metadata,
         )
 
-        # Remove ALL matching registrations of our hook. ``list.remove``
-        # only removes the first match; if a caller appended the same
-        # callable twice (test / dev), a closed-DB hook would survive
-        # teardown and fire on later messages.
-        hook = ctx["hook"]
-        ctx["branch"].on_message_added[:] = [
-            h for h in ctx["branch"].on_message_added if h is not hook
-        ]
+        # Detach the persistence handler from the session hook bus so a
+        # closed-DB handler can't fire on later messages (ADR-0023b).
+        from lionagi.hooks import unroute_message_persistence
+
+        unroute_message_persistence(ctx["branch"], ctx["hook"])
     except Exception as exc:
         log.warning("live persist teardown failed: %s", exc, exc_info=True)
         # Surface the original status on best-effort failure so the
@@ -730,6 +815,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 fast=args.fast,
                 invocation_id=getattr(args, "invocation", None),
                 project=getattr(args, "project", None),
+                bypass=getattr(args, "bypass", False),
             )
         )
     except KeyboardInterrupt:

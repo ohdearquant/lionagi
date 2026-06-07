@@ -14,12 +14,19 @@ Public surface:
 
 * :class:`HookPoint` — the enumerated event vocabulary.
 * :class:`HookBus` — per-session pub/sub registry.
+* :class:`HookSignal` — typed envelope recording an emission onto the observer.
 * :func:`hook` — decorator for registering custom handlers.
 * :class:`StopHook` — handler may raise to abort siblings on the same point.
 * :func:`load_hooks_for_agent` — build a HookBus from an agent profile.
+
+Per ADR-0076 the bus is re-based onto the session observer: it is the
+ordered/blocking dispatch *discipline* over the observer's single event
+*transport*, not a parallel bus.
 """
 
-from .bus import HookBus, HookPoint, StopHook, hook
+from __future__ import annotations
+
+from .bus import HookBus, HookPoint, HookSignal, StopHook, hook
 from .loader import (
     DEFAULT_HOOKS,
     build_session_bus,
@@ -27,10 +34,12 @@ from .loader import (
     register_handler,
     resolve_handler,
 )
+from .persist import route_message_persistence, unroute_message_persistence
 
 __all__ = [
     "HookBus",
     "HookPoint",
+    "HookSignal",
     "StopHook",
     "hook",
     "DEFAULT_HOOKS",
@@ -38,4 +47,6 @@ __all__ = [
     "load_hooks_for_agent",
     "register_handler",
     "resolve_handler",
+    "route_message_persistence",
+    "unroute_message_persistence",
 ]

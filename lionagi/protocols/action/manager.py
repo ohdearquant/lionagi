@@ -2,9 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from lionagi.service.connections.mcp_wrapper import MCPSecurityConfig
 
 from lionagi.protocols._concepts import Manager
 from lionagi.protocols.messages.action_request import ActionRequest
@@ -103,9 +106,7 @@ class ActionManager(Manager):
             )
         self.registry[tool.function] = tool
 
-    def register_tools(
-        self, tools: list[FuncTool] | FuncTool, update: bool = False
-    ) -> None:
+    def register_tools(self, tools: list[FuncTool] | FuncTool, update: bool = False) -> None:
         """
         Register multiple tools at once.
 
@@ -123,9 +124,7 @@ class ActionManager(Manager):
         for t in tools_list:
             self.register_tool(t, update=update)
 
-    def match_tool(
-        self, action_request: ActionRequest | BaseModel | dict
-    ) -> FunctionCalling:
+    def match_tool(self, action_request: ActionRequest | BaseModel | dict) -> FunctionCalling:
         """
         Convert an ActionRequest (or dict with "function"/"arguments")
         into a `FunctionCalling` instance by finding the matching tool.
@@ -173,10 +172,9 @@ class ActionManager(Manager):
             `FunctionCalling` event after it completes execution.
         """
         function_calling = self.match_tool(func_call)
-        try:
-            await function_calling.invoke()
-        except Exception:
-            pass  # Error captured in function_calling.execution
+        # invoke() is total: a tool failure is captured as FAILED status +
+        # execution.error, not raised. Cancellation still propagates.
+        await function_calling.invoke()
         return function_calling
 
     @property
@@ -217,9 +215,7 @@ class ActionManager(Manager):
                 return {"tools": self.schema_list}
             return []
         else:
-            schemas = self._get_tool_schema(
-                tools, auto_register=auto_register, update=update
-            )
+            schemas = self._get_tool_schema(tools, auto_register=auto_register, update=update)
             return {"tools": schemas}
 
     def _get_tool_schema(
@@ -259,6 +255,7 @@ class ActionManager(Manager):
         tool_names: list[str] | None = None,
         request_options: dict[str, type] | None = None,
         update: bool = False,
+        security: "MCPSecurityConfig | None" = None,
     ) -> list[str]:
         """
         Register tools from an MCP server with automatic discovery.
@@ -272,6 +269,12 @@ class ActionManager(Manager):
             request_options: Optional dict mapping tool names to Pydantic model classes
                             for request validation. E.g., {"exa_search": ExaSearchRequest}
             update: If True, allow updating existing tools.
+            security: Per-call security policy for authorizing this server's
+                transport at client-creation time. Passed down to
+                ``MCPConnectionPool.get_client`` so a trusted loader does not
+                have to mutate the process-global default (which races across
+                concurrent loads). When None, the pool's standing default
+                applies (fail-closed unless a global policy is set).
 
         Returns:
             List of registered tool names
@@ -291,6 +294,15 @@ class ActionManager(Manager):
             )
         """
         registered_tools = []
+
+        # Record the authorized policy for this server BEFORE building tools, so
+        # the lazily-created client at first tool invocation (the tool_names
+        # branch never calls get_client here) and any later reconnect re-apply
+        # it instead of falling back to the fail-closed default.
+        if security is not None:
+            from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+            MCPConnectionPool.remember_security(server_config, security)
 
         # Extract server name for qualified naming
         server_name = None
@@ -326,7 +338,7 @@ class ActionManager(Manager):
             from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
             # Get client and discover tools
-            client = await MCPConnectionPool.get_client(server_config)
+            client = await MCPConnectionPool.get_client(server_config, security=security)
             tools = await client.list_tools()
 
             # Register each discovered tool with qualified name
@@ -355,18 +367,14 @@ class ActionManager(Manager):
                             "function": {
                                 "name": tool.name,
                                 "description": (
-                                    tool.description
-                                    if hasattr(tool, "description")
-                                    else None
+                                    tool.description if hasattr(tool, "description") else None
                                 ),
                                 "parameters": tool.inputSchema,
                             },
                         }
                 except Exception as schema_error:
                     # If schema extraction fails, let Tool auto-generate from function signature
-                    logging.warning(
-                        f"Could not extract schema for {tool.name}: {schema_error}"
-                    )
+                    logging.warning(f"Could not extract schema for {tool.name}: {schema_error}")
                     tool_schema = None
 
                 try:
@@ -388,18 +396,37 @@ class ActionManager(Manager):
         config_path: str,
         server_names: list[str] | None = None,
         update: bool = False,
+        mcp_security: "MCPSecurityConfig | None" = None,
     ) -> dict[str, list[str]]:
         """
         Load MCP configurations from a .mcp.json file with auto-discovery.
+
+        Loading a config file is an explicit trust action: by pointing lionagi at
+        a ``.mcp.json`` you are authorizing its command/URL transports. Therefore
+        this method defaults to a permissive ``MCPSecurityConfig`` (commands and
+        URLs allowed). To restrict what a config may register — e.g. when the
+        config path itself comes from a less-trusted source — pass an explicit
+        ``mcp_security`` with allowlists or the relevant ``allow_*`` flags off.
+
+        The low-level connection pool remains fail-closed by default, so any
+        transport built WITHOUT going through a trusted loader like this one is
+        still denied unless a security config explicitly permits it.
 
         Args:
             config_path: Path to .mcp.json configuration file
             server_names: Optional list of server names to load.
                          If None, loads all servers.
             update: If True, allow updating existing tools.
+            mcp_security: Security policy for the transports declared in the
+                config. Defaults to allow-commands + allow-urls (trusted load).
 
         Returns:
             Dict mapping server names to lists of registered tool names
+
+        Raises:
+            PermissionError: If a server's transport is rejected by the effective
+                ``mcp_security`` policy — surfaced loudly (not swallowed) so a
+                misconfiguration does not silently register zero tools.
 
         Example:
             # Load all servers and auto-discover their tools
@@ -411,7 +438,19 @@ class ActionManager(Manager):
                 server_names=["search", "memory"]
             )
         """
-        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+        from lionagi.service.connections.mcp_wrapper import (
+            MCPConnectionPool,
+            MCPSecurityConfig,
+        )
+
+        # Explicit config load = trust the declared transports unless the caller
+        # narrows it. Pass the policy DOWN the call chain (register → get_client
+        # → _create_client) rather than mutating the process-global default.
+        # Threading the policy is race-free: a concurrent load with a different
+        # policy cannot observe ours, because nothing shared is mutated. Trust
+        # also never silently broadens to later clients created outside this load.
+        if mcp_security is None:
+            mcp_security = MCPSecurityConfig(allow_commands=True, allow_urls=True)
 
         # Load the config file into the connection pool
         MCPConnectionPool.load_config(config_path)
@@ -426,14 +465,25 @@ class ActionManager(Manager):
         all_tools = {}
         for server_name in server_names:
             try:
-                # Register using server reference
+                # Register using server reference; authorize THIS server's
+                # transport with the load's policy (no global mutation).
                 tools = await self.register_mcp_server(
-                    {"server": server_name}, update=update
+                    {"server": server_name}, update=update, security=mcp_security
                 )
                 all_tools[server_name] = tools
-                logger.info(
-                    "Registered %d tools from server '%s'", len(tools), server_name
+                logger.info("Registered %d tools from server '%s'", len(tools), server_name)
+            except PermissionError:
+                # A security denial affects how the config is authorized, not
+                # a single flaky server — surface it loudly with migration
+                # guidance rather than silently registering zero tools.
+                logger.error(
+                    "MCP server '%s' was denied by the active MCPSecurityConfig. "
+                    "Pass mcp_security=MCPSecurityConfig(allow_commands=True, "
+                    "allow_urls=True) (or an allowlist) to load_mcp_config to "
+                    "authorize it.",
+                    server_name,
                 )
+                raise
             except Exception as e:
                 logger.warning("Failed to register server '%s': %s", server_name, e)
                 all_tools[server_name] = []
@@ -446,10 +496,19 @@ async def load_mcp_tools(
     server_names: list[str] | None = None,
     request_options_map: dict[str, dict[str, type]] | None = None,
     update: bool = False,
+    mcp_security: "MCPSecurityConfig | None" = None,
 ) -> list[Tool]:
     """
     Standalone helper function to load MCP tools from servers.
     Creates an ActionManager internally and returns tools ready for use.
+
+    Like :meth:`ActionManager.load_mcp_config`, an explicit config load trusts
+    the declared transports unless ``mcp_security`` narrows it: the policy is
+    threaded down to client creation for this load only (the process-global
+    default is never mutated) so concurrent loads cannot race and trust does
+    not silently broaden to every later MCP client in the process. A transport
+    rejected by the effective policy raises ``PermissionError`` loudly rather
+    than registering zero tools.
 
     Args:
         config_path: Path to .mcp.json file. If None, assumes config already loaded.
@@ -458,9 +517,15 @@ async def load_mcp_tools(
         request_options_map: Optional dict mapping server names to tool request options.
                              E.g., {"search": {"exa_search": ExaSearchRequest}}
         update: If True, allow updating existing tools.
+        mcp_security: Security policy for the transports declared in the config.
+                     Defaults to allow-commands + allow-urls (trusted load).
 
     Returns:
         List of Tool objects ready to use with Branch
+
+    Raises:
+        PermissionError: If a server's transport is rejected by the effective
+            ``mcp_security`` policy — surfaced loudly (not swallowed).
 
     Example:
         # Simple one-liner to get MCP tools
@@ -481,10 +546,19 @@ async def load_mcp_tools(
         )
         branch = Branch(tools=tools)
     """
-    from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+    from lionagi.service.connections.mcp_wrapper import (
+        MCPConnectionPool,
+        MCPSecurityConfig,
+    )
 
     # Create a temporary ActionManager for tool management
     manager = ActionManager()
+
+    # Trusted load: pass the policy DOWN the call chain instead of mutating the
+    # process-global default, so concurrent loads cannot observe each other's
+    # policy and trust never silently broadens to later clients.
+    if mcp_security is None:
+        mcp_security = MCPSecurityConfig(allow_commands=True, allow_urls=True)
 
     # Load config if provided
     if config_path:
@@ -496,9 +570,7 @@ async def load_mcp_tools(
         server_names = list(MCPConnectionPool._configs.keys())
 
     if server_names is None:
-        raise ValueError(
-            "Either provide server_names or config_path to discover servers"
-        )
+        raise ValueError("Either provide server_names or config_path to discover servers")
 
     # Register all servers
     for server_name in server_names:
@@ -512,8 +584,21 @@ async def load_mcp_tools(
                 {"server": server_name},
                 request_options=request_options,
                 update=update,
+                security=mcp_security,
             )
             logger.info("Loaded %d tools from %s", len(tools_registered), server_name)
+        except PermissionError:
+            # A security denial is a misconfiguration, not a flaky server —
+            # surface it loudly with migration guidance instead of silently
+            # loading zero tools.
+            logger.error(
+                "MCP server '%s' was denied by the active MCPSecurityConfig. "
+                "Pass mcp_security=MCPSecurityConfig(allow_commands=True, "
+                "allow_urls=True) (or an allowlist) to load_mcp_tools to "
+                "authorize it.",
+                server_name,
+            )
+            raise
         except Exception as e:
             logger.warning("Failed to load server '%s': %s", server_name, e)
 

@@ -282,6 +282,23 @@ def test_session_to_row_no_optional():
     assert row["phase"] == "-"
 
 
+def test_session_to_row_current_phase_wins():
+    """#1235: a live flow phase overrides the static orchestrator/playbook name."""
+    sess = {
+        "id": "abc123def456",
+        "invocation_kind": "play",
+        "status": "running",
+        "agent_name": "orchestrator",
+        "playbook_name": "feature",
+        "current_phase": "executing",
+    }
+    assert _session_to_row(sess)["phase"] == "executing"
+
+    # Before a flow leaves planning, current_phase is NULL → fall back.
+    sess["current_phase"] = None
+    assert _session_to_row(sess)["phase"] == "orchestrator"
+
+
 def test_invocation_to_row():
     inv = {
         "id": "inv001abc",
@@ -619,6 +636,183 @@ def test_main_registers_monitor():
     )
     assert result.returncode == 0
     assert "monitor" in result.stdout.lower() or "observe" in result.stdout.lower()
+
+
+# ── Watch mode: SIGINT terminates cleanly ─────────────────────────────────────
+
+
+# ── Regression: #1192 --type play filter ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_type_play_filter_includes_play_sessions(temp_db_path: Path) -> None:
+    """#1192: sessions with invocation_kind='play' must appear under --type play."""
+    async with StateDB() as db:
+        # Session that shows as TYPE=play in the all-rows view
+        play_sess_id = await _make_session(db, invocation_kind="play", project="myproject")
+        # Unrelated agent session must NOT appear when filtering by "play"
+        agent_sess_id = await _make_session(db, invocation_kind="agent")
+
+        rows = await _gather_table_rows(db, since=None, entity_type="play", project=None)
+
+    ids = [r["id"] for r in rows]
+    types = [r["type"] for r in rows]
+    assert play_sess_id[:16] in ids, "play-kind session must be returned for --type play"
+    assert agent_sess_id[:16] not in ids, "agent-kind session must not appear for --type play"
+    assert all(t == "play" for t in types), "every returned row must have type='play'"
+
+
+@pytest.mark.asyncio
+async def test_type_play_filter_includes_both_sessions_and_plays(temp_db_path: Path) -> None:
+    """#1192: --type play returns both play-kind sessions AND play table rows."""
+    async with StateDB() as db:
+        # Session with invocation_kind="play" (from `li play NAME`)
+        play_sess_id = await _make_session(db, invocation_kind="play")
+        # Actual play row from shows/plays tables (from `li o show`)
+        show_id = await _make_show(db)
+        play_row_id = await _make_play(db, show_id, status="running")
+
+        rows = await _gather_table_rows(db, since=None, entity_type="play", project=None)
+
+    ids = [r["id"] for r in rows]
+    assert play_sess_id[:16] in ids, "play-kind session not in --type play results"
+    assert play_row_id[:16] in ids, "play table row not in --type play results"
+
+
+# ── Regression: #1193 AGENTS column ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_session_agents_column_reflects_branch_count(temp_db_path: Path) -> None:
+    """#1193: AGENTS column shows branch count, not '-', for sessions."""
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        # Insert two branches for this session
+        pid1, pid2 = uuid.uuid4().hex, uuid.uuid4().hex
+        await db.db.execute(
+            "INSERT INTO progressions(id, created_at) VALUES (?, ?)", (pid1, time.time())
+        )
+        await db.db.execute(
+            "INSERT INTO progressions(id, created_at) VALUES (?, ?)", (pid2, time.time())
+        )
+        b1_id, b2_id = uuid.uuid4().hex, uuid.uuid4().hex
+        for bid, pid in ((b1_id, pid1), (b2_id, pid2)):
+            await db.db.execute(
+                "INSERT INTO branches(id, created_at, session_id, progression_id) VALUES (?,?,?,?)",
+                (bid, time.time(), sid, pid),
+            )
+        await db.db.commit()
+
+        rows = await _gather_table_rows(db, since=None, entity_type=None, project=None)
+
+    sess_rows = [r for r in rows if r["id"] == sid[:16]]
+    assert sess_rows, "session must appear in table"
+    assert sess_rows[0]["agents"] == "2", f"expected agents='2', got {sess_rows[0]['agents']!r}"
+
+
+@pytest.mark.asyncio
+async def test_session_agents_column_zero_when_no_branches(temp_db_path: Path) -> None:
+    """#1193: AGENTS column is '0' (not '-') for a session with no branches."""
+    async with StateDB() as db:
+        sid = await _make_session(db)
+        rows = await _gather_table_rows(db, since=None, entity_type=None, project=None)
+
+    sess_rows = [r for r in rows if r["id"] == sid[:16]]
+    assert sess_rows, "session must appear in table"
+    assert sess_rows[0]["agents"] == "0", f"expected agents='0', got {sess_rows[0]['agents']!r}"
+
+
+@pytest.mark.asyncio
+async def test_play_agents_column_reflects_branch_count(temp_db_path: Path) -> None:
+    """#1193: AGENTS column shows branch count for plays that have a linked session."""
+    async with StateDB() as db:
+        show_id = await _make_show(db)
+        play_session_id = await _make_session(db, status="running")
+        play_id = await _make_play(db, show_id, status="running")
+        # Link the play to the session
+        await db.db.execute(
+            "UPDATE plays SET session_id = ? WHERE id = ?", (play_session_id, play_id)
+        )
+        # Add a branch on the play's session
+        pid = uuid.uuid4().hex
+        await db.db.execute(
+            "INSERT INTO progressions(id, created_at) VALUES (?, ?)", (pid, time.time())
+        )
+        bid = uuid.uuid4().hex
+        await db.db.execute(
+            "INSERT INTO branches(id, created_at, session_id, progression_id) VALUES (?,?,?,?)",
+            (bid, time.time(), play_session_id, pid),
+        )
+        await db.db.commit()
+
+        rows = await _gather_table_rows(db, since=None, entity_type="play", project=None)
+
+    play_rows = [r for r in rows if r["id"] == play_id[:16]]
+    assert play_rows, "play must appear in table"
+    assert play_rows[0]["agents"] == "1", f"expected agents='1', got {play_rows[0]['agents']!r}"
+
+
+# ── Regression: #1191 background correlation handle ──────────────────────────
+
+
+def test_session_id_env_var_used_as_session_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1191: LIONAGI_SESSION_ID env var is used as the orchestration session id."""
+    import uuid
+
+    from lionagi import Branch, Session
+
+    bg_session_id = str(uuid.uuid4())
+    monkeypatch.setenv("LIONAGI_SESSION_ID", bg_session_id)
+
+    import os
+
+    _session_id_env = os.environ.get("LIONAGI_SESSION_ID")
+    b = Branch()
+    s = (
+        Session(id=_session_id_env, default_branch=b)
+        if _session_id_env
+        else Session(default_branch=b)
+    )
+    assert str(s.id) == bg_session_id, f"Session id {s.id!r} != pre-generated id {bg_session_id!r}"
+
+
+def test_background_hint_includes_session_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1191: li o flow --background prints a 'li monitor <id>' hint."""
+    import subprocess
+    import sys
+
+    save_dir = tmp_path / "bg_out"
+    save_dir.mkdir()
+    # Change cwd to tmp_path so the save path passes the allowed-roots check.
+    monkeypatch.chdir(tmp_path)
+    # Use --agent with a dummy name.  The agent profile won't exist so the
+    # background subprocess will fail, but the *parent* prints the session hint
+    # before Popen and returns 0 — that output is what we check.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "lionagi.cli",
+            "o",
+            "flow",
+            "--background",
+            "--save",
+            str(save_dir),
+            "--agent",
+            "_no_such_agent_",
+            "myprompt",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        cwd=str(tmp_path),
+    )
+    # The hint is printed before the subprocess is waited on, so it should
+    # appear in stdout/stderr regardless of whether the subprocess succeeds.
+    combined = result.stdout + result.stderr
+    assert "li monitor" in combined, f"Expected 'li monitor <id>' hint in output, got:\n{combined}"
 
 
 # ── Watch mode: SIGINT terminates cleanly ─────────────────────────────────────

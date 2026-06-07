@@ -36,7 +36,10 @@ function resolveApiBase(): string {
       return `${window.location.protocol}//localhost:8765`;
     }
   }
-  return "";
+  // Never fall back to same-origin ("") — that routes /api/* to the Next.js
+  // server which has no API handlers and returns 404. Always point explicitly
+  // at the Studio backend. Restores #1146 intent, fixes regression #1215.
+  return "http://localhost:8765";
 }
 
 export const API_BASE = resolveApiBase();

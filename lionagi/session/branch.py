@@ -38,19 +38,67 @@ from lionagi.protocols.messages import (
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.manager import iModel, iModelManager
 from lionagi.tools.base import LionTool
-from lionagi.utils import copy
 
 from .prompts import LION_SYSTEM_MESSAGE
 
 if TYPE_CHECKING:
     from lionagi.operations.operate.operative import Operative
     from lionagi.operations.types import Middle
+    from lionagi.session.control import LoopControl, LoopDirective
 
 
 __all__ = ("Branch",)
 
 
 _DEFAULT_ALCALL_PARAMS = None
+
+
+def _strip_capability_block(text: str) -> str:
+    """Remove a previously-injected capability block (between its markers)."""
+    if not text:
+        return ""
+    from .capabilities import CAP_BEGIN, CAP_END
+
+    start = text.find(CAP_BEGIN)
+    if start == -1:
+        return text
+    end = text.find(CAP_END, start)
+    if end == -1:
+        # Unbalanced markers (truncated block, or the begin marker appears in
+        # the user's own prompt): leave the text intact rather than discard
+        # everything after the marker — silent prompt corruption is worse than
+        # a stale block, which a re-grant overwrites cleanly.
+        return text
+    return (text[:start] + text[end + len(CAP_END) :]).strip()
+
+
+def _merge_instruct(
+    instruct: "Instruct | dict[str, Any] | None",
+    instruction=None,
+    guidance=None,
+    context=None,
+) -> dict:
+    """Normalize ``instruct`` to a dict, overlaying loose instruction fields.
+
+    Lets ``ReAct``/``ReActStream`` accept either a full ``Instruct``/dict or the
+    individual ``instruction``/``guidance``/``context`` keywords — the same shape
+    ``operate`` accepts. This is what makes a model-emitted ``SpawnRequest`` with
+    ``operation="ReAct"`` routable: the orchestration node builder passes a bare
+    ``instruction=`` parameter uniformly across every allowed operation.
+    """
+    if isinstance(instruct, Instruct):
+        merged = instruct.to_dict()
+    elif instruct:
+        merged = dict(instruct)
+    else:
+        merged = {}
+    if instruction is not None:
+        merged["instruction"] = instruction
+    if guidance is not None:
+        merged["guidance"] = guidance
+    if context is not None:
+        merged["context"] = context
+    return merged
 
 
 class Branch(Element, Relational):
@@ -100,6 +148,11 @@ class Branch(Element, Relational):
     _imodel_manager: iModelManager | None = PrivateAttr(None)
     _log_manager: DataLogger | None = PrivateAttr(None)
     _operation_manager: OperationManager | None = PrivateAttr(None)
+    _observer: Any = PrivateAttr(None)
+    _hooks: Any = PrivateAttr(None)
+    _capabilities: Any = PrivateAttr(None)
+    _loop_control: "LoopControl | None" = PrivateAttr(None)
+    _signal_tasks: list = PrivateAttr(default_factory=list)
 
     def __init__(
         self,
@@ -167,6 +220,16 @@ class Branch(Element, Relational):
         from lionagi.protocols.messages.manager import MessageManager
 
         self._message_manager = MessageManager(messages=messages)
+        # Universal signal emission: every message any path adds (CLI stream,
+        # API turn, tool act) raises its bus signal through this one hook, so
+        # observer-powered orchestration is transport-agnostic. Scheduled in the
+        # background (see _schedule_emit) and drained at operation boundaries.
+        self._message_manager._on_message_added.append(self._schedule_emit)
+        # NOTE: the ordered-persistence hook (_persist_via_bus, ADR-0023b) is NOT
+        # registered here. It is async, and the *sync* add_message path (used for
+        # the construction-time system message) rejects async callbacks. The CLI
+        # live-persist wiring registers it via hooks.route_message_persistence in
+        # an async context, after which only a_add_message is used.
 
         if any(
             bool(x)
@@ -334,6 +397,194 @@ class Branch(Element, Relational):
             return getattr(self, operation)
         return self._operation_manager.registry.get(operation)
 
+    async def emit(self, event: Any) -> list[Any]:
+        """Emit an event to the owning session's observer, if attached.
+
+        Set by ``Session.include_branches``. When the branch is standalone
+        (no session), emission is a no-op returning ``[]``. This is how a
+        tool or operation running in a branch raises a typed structured-output
+        event into the session's reactive bus.
+        """
+        if self._observer is None:
+            return []
+        return await self._observer.emit(event)
+
+    async def authorize(self, action: Any) -> bool:
+        """Consult the session's pre-invoke governance gate for ``action``.
+
+        Delegates to ``observer.authorize`` (ADR-0076 Follow-up 1). A standalone
+        branch (no observer) always allows, so ungoverned branches are unaffected.
+        Used by tool execution to block a denied call before it runs.
+        """
+        if self._observer is None:
+            return True
+        return await self._observer.authorize(action)
+
+    async def _persist_via_bus(self, msg: Any) -> None:
+        """``on_message_added`` hook: drive ordered persistence on the hook bus.
+
+        When a hook bus is attached (``_hooks`` — set by CLI live-persist wiring),
+        emit ``MESSAGE_ADD`` so the registered persistence handler writes this
+        message through the one transport (ADR-0023b). Unlike ``_schedule_emit``
+        this is awaited inside the message-add, so per-branch message order is
+        preserved (progression appends must not race). No-op without a bus, so
+        library and API usage are unaffected.
+        """
+        if self._hooks is None:
+            return
+        from lionagi.hooks.bus import HookPoint
+
+        await self._hooks.emit(HookPoint.MESSAGE_ADD, branch_id=str(self.id), message=msg)
+
+    def _schedule_emit(self, msg: Any) -> None:
+        """``on_message_added`` hook: schedule this message's bus emission.
+
+        Fire-and-forget (tracked in ``_signal_tasks``, drained by
+        ``drain_signals``) so a slow observer handler never stalls the message
+        pipeline — the same non-blocking contract the CLI stream loop relied on,
+        now applied to EVERY transport. No-op without an observer.
+        """
+        if self._observer is None:
+            return
+        import asyncio
+
+        from lionagi.operations._observe import emit_message
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Sync add outside an event loop — emission is async-only; skip.
+            # (Not a real orchestration path; observers run under async ops.)
+            return
+        self._signal_tasks.append(loop.create_task(emit_message(self, msg)))
+
+    async def drain_signals(self) -> None:
+        """Await all pending background emissions and clear the queue.
+
+        Called at operation boundaries (run finally, operate/ReAct turn) so a
+        signal emitted on turn N — e.g. a ``SpawnRequest`` — is observed before
+        the orchestration decides quiescence. Handler exceptions are collected,
+        not raised, mirroring the prior CLI-stream drain semantics.
+        """
+        if not self._signal_tasks:
+            return
+        from lionagi.ln.concurrency import gather as _gather
+
+        tasks, self._signal_tasks = self._signal_tasks, []
+        await _gather(*tasks, return_exceptions=True)
+
+    async def _observed_run(self, coro: Any) -> Any:
+        """Wrap a public branch operation with bus lifecycle + signal drain.
+
+        One boundary for every transport/loop (operate, ReAct, communicate):
+        emit RunStart → run → drain this run's emissions (so a SpawnRequest the
+        turn produced is observed before the orchestration settles) → emit
+        RunEnd / RunFailed. ``coro`` is the already-constructed operation
+        coroutine. No-op lifecycle when standalone; the drain is always safe.
+        """
+        has_observer = self._observer is not None
+        if has_observer:
+            from .signal import RunStart
+
+            await self.emit(RunStart())
+        try:
+            result = await coro
+        except BaseException as exc:
+            await self.drain_signals()
+            if has_observer:
+                from .signal import RunFailed
+
+                await self.emit(RunFailed(data=exc))
+            raise
+        await self.drain_signals()
+        if has_observer:
+            from .signal import RunEnd
+
+            await self.emit(RunEnd(data=result))
+        return result
+
+    async def emit_and_log(self, event: Any) -> list[Any]:
+        """Log an event to the DataLogger AND emit it onto the reactive bus.
+
+        The log is the durable record (persisted, outlives the session); the
+        emission is the in-memory reactive trace handlers can react to. Called
+        where an ``Event`` (an ``APICalling``, a tool call) completes, so
+        ``session.observe(APICalling, EventStatus.FAILED)`` reacts to a failed
+        call instead of only finding it after the fact in the logs. Emission is a
+        no-op for a standalone branch (no session); logging always happens.
+        """
+        self._log_manager.log(event)
+        return await self.emit(event)
+
+    def control(self, directive: "LoopDirective", *, reason: str | None = None) -> None:
+        """Queue a loop-control directive.
+
+        Called from an observer handler to steer the in-flight run.
+        The run loop polls this after each message signal.
+        """
+        from lionagi.session.control import LoopControl
+
+        self._loop_control = LoopControl(directive, reason)
+
+    def poll_control(self) -> "LoopControl | None":
+        """Return and CLEAR any queued directive (one-shot).
+
+        Returns ``None`` when no directive is pending.
+        """
+        ctrl, self._loop_control = self._loop_control, None
+        return ctrl
+
+    @property
+    def capabilities(self) -> Any:
+        """The agent's capability grant — an ``Operable`` of named typed
+        ``Spec``s the agent is allowed to emit. The streaming run loop parses
+        each assistant message against it: keys must be a subset of
+        ``capabilities.allowed()`` (else the emission is illegal and dropped),
+        and present capabilities are raised as a ``StructuredOutput`` bundle
+        onto the session bus. ``None`` (default) disables per-message
+        extraction; tool-use signals still fire.
+
+        Set the runtime grant directly (pure data, no prompt change), or use
+        :meth:`grant_capabilities` to also tell the model what it may emit.
+        """
+        return self._capabilities
+
+    @capabilities.setter
+    def capabilities(self, operable: Any) -> None:
+        self._capabilities = operable
+
+    def grant_capabilities(self, operable: Any, *, prompt: bool = True) -> None:
+        """Opt this branch into per-message capability emission.
+
+        Sets the runtime grant and (when ``prompt``) injects an idempotent
+        capability-instruction block into the system message so the model knows
+        which structured fields it may emit. Re-granting replaces the block;
+        :meth:`revoke_capabilities` removes it. Old strict behavior
+        (``operate(response_format=...)``) is untouched — that's the
+        final-output parse; this is per-message emission.
+        """
+        self._capabilities = operable
+        if prompt:
+            from .capabilities import CAP_BEGIN, CAP_END, render_capabilities_prompt
+
+            block = f"{CAP_BEGIN}\n{render_capabilities_prompt(operable)}\n{CAP_END}"
+            base = _strip_capability_block(self._system_text())
+            combined = f"{base.rstrip()}\n\n{block}" if base.strip() else block
+            self.msgs.set_system(self.msgs.create_system(system=combined))
+
+    def revoke_capabilities(self) -> None:
+        """Clear the capability grant and remove its system-prompt block."""
+        self._capabilities = None
+        base = _strip_capability_block(self._system_text())
+        if self.msgs.system is not None:
+            self.msgs.set_system(self.msgs.create_system(system=base or None))
+
+    def _system_text(self) -> str:
+        sys_msg = self.msgs.system
+        if sys_msg is None:
+            return ""
+        return sys_msg.content.system_message or ""
+
     # -------------------------------------------------------------------------
     # Cloning
     # -------------------------------------------------------------------------
@@ -368,21 +619,15 @@ class Branch(Element, Relational):
         """
         if sender is not None:
             if not ID.is_id(sender):
-                raise ValueError(
-                    f"Cannot clone Branch: '{sender}' is not a valid sender ID."
-                )
+                raise ValueError(f"Cannot clone Branch: '{sender}' is not a valid sender ID.")
             sender = ID.get_id(sender)
 
         system = self.msgs.system.clone() if self.msgs.system else None
         tools = (
-            list(self._action_manager.registry.values())
-            if self._action_manager.registry
-            else None
+            list(self._action_manager.registry.values()) if self._action_manager.registry else None
         )
         # Transfer iModels: CLI endpoints get a fresh copy, API endpoints share
-        chat_model = (
-            self.chat_model.copy() if self.chat_model.is_cli else self.chat_model
-        )
+        chat_model = self.chat_model.copy() if self.chat_model.is_cli else self.chat_model
         parse_model = (
             self.parse_model.copy()
             if (self.parse_model is not self.chat_model and self.parse_model.is_cli)
@@ -411,9 +656,7 @@ class Branch(Element, Relational):
             tools = tools.to_tool()
         self._action_manager.register_tool(tools, update=update)
 
-    def register_tools(
-        self, tools: FuncTool | list[FuncTool] | LionTool, update: bool = False
-    ):
+    def register_tools(self, tools: FuncTool | list[FuncTool] | LionTool, update: bool = False):
         """
         Registers one or more tools in the ActionManager.
 
@@ -497,7 +740,7 @@ class Branch(Element, Relational):
         async def _connect(**kwargs):
             """connect to an api endpoint"""
             api_call = await imodel.invoke(**kwargs)
-            self._log_manager.log(api_call)
+            await self.emit_and_log(api_call)
             return api_call.response
 
         _connect.__name__ = name or imodel.endpoint.name
@@ -719,18 +962,14 @@ class Branch(Element, Relational):
     async def parse(
         self,
         text: str,
-        handle_validation: Literal[
-            "raise", "return_value", "return_none"
-        ] = "return_value",
+        handle_validation: Literal["raise", "return_value", "return_none"] = "return_value",
         max_retries: int = 3,
         request_type: type[BaseModel] = None,
         operative: "Operative" = None,
         similarity_algo="jaro_winkler",
         similarity_threshold: float = 0.85,
         fuzzy_match: bool = True,
-        handle_unmatched: Literal[
-            "ignore", "raise", "remove", "fill", "force"
-        ] = "force",
+        handle_unmatched: Literal["ignore", "raise", "remove", "fill", "force"] = "force",
         fill_value: Any = None,
         fill_mapping: dict[str, Any] | None = None,
         strict: bool = False,
@@ -776,11 +1015,7 @@ class Branch(Element, Relational):
                 Parsed model instance, or a fallback based on `handle_validation`.
         """
 
-        _pms = {
-            k: v
-            for k, v in locals().items()
-            if k not in ("self", "_pms") and v is not None
-        }
+        _pms = {k: v for k, v in locals().items() if k not in ("self", "_pms") and v is not None}
         from lionagi.operations.parse.parse import parse, prepare_parse_kws
 
         return await parse(self, **prepare_parse_kws(self, **_pms))
@@ -812,9 +1047,7 @@ class Branch(Element, Relational):
         verbose_action: bool = False,
         field_models: list[FieldModel] = None,
         exclude_fields: list | dict | None = None,
-        handle_validation: Literal[
-            "raise", "return_value", "return_none"
-        ] = "return_value",
+        handle_validation: Literal["raise", "return_value", "return_none"] = "return_value",
         include_token_usage_to_model: bool = False,
         stream_persist: bool = False,
         persist_dir: str | None = None,
@@ -917,7 +1150,13 @@ class Branch(Element, Relational):
             _pms.update(kwargs)
         from lionagi.operations.operate.operate import operate, prepare_operate_kw
 
-        return await operate(self, **prepare_operate_kw(self, **_pms))
+        # Run lifecycle (RunStart → RunEnd|RunFailed) + signal drain via the
+        # shared boundary. Orthogonal to capabilities (no grant required) — it
+        # reports the run, not an exercised capability. ``RunEnd.data`` unwraps
+        # so ``session.observe(ResultType)`` still fires on the final result;
+        # the per-message capability bundles are distinct payloads (no
+        # double-emit). No-op when the branch is standalone.
+        return await self._observed_run(operate(self, **prepare_operate_kw(self, **_pms)))
 
     async def communicate(
         self,
@@ -1004,7 +1243,7 @@ class Branch(Element, Relational):
             prepare_communicate_kw,
         )
 
-        return await communicate(self, **prepare_communicate_kw(self, **_pms))
+        return await self._observed_run(communicate(self, **prepare_communicate_kw(self, **_pms)))
 
     async def act(
         self,
@@ -1015,11 +1254,7 @@ class Branch(Element, Relational):
         suppress_errors: bool = True,
         call_params: AlcallParams = None,
     ) -> list[ActionResponse]:
-        _pms = {
-            k: v
-            for k, v in locals().items()
-            if k not in ("self", "_pms") and v is not None
-        }
+        _pms = {k: v for k, v in locals().items() if k not in ("self", "_pms") and v is not None}
         from lionagi.operations.act.act import act, prepare_act_kw
 
         return await act(self, **prepare_act_kw(self, **_pms))
@@ -1085,9 +1320,12 @@ class Branch(Element, Relational):
 
         return await interpret(self, **prepare_interpret_kw(self, **_pms))
 
-    async def ReAct(
+    async def ReAct(  # noqa: N802
         self,
-        instruct: "Instruct | dict[str, Any]",
+        instruct: "Instruct | dict[str, Any]" = None,
+        instruction: Instruction | JsonValue = None,
+        guidance: JsonValue = None,
+        context: JsonValue = None,
         interpret: bool = False,
         interpret_domain: str | None = None,
         interpret_style: str | None = None,
@@ -1122,8 +1360,16 @@ class Branch(Element, Relational):
         Args:
             branch (Branch):
                 The active branch context that orchestrates messages, models, and actions.
-            instruct (Instruct | dict[str, Any]):
+            instruct (Instruct | dict[str, Any], optional):
                 The user's instruction object or a dict with equivalent keys.
+                If omitted, the loose ``instruction``/``guidance``/``context``
+                keywords are used instead (the same shape ``operate`` accepts).
+            instruction (Instruction | JsonValue, optional):
+                The main instruction, used when ``instruct`` is not given.
+            guidance (JsonValue, optional):
+                Strategic direction, overlaid onto ``instruct`` when provided.
+            context (JsonValue, optional):
+                Background data, overlaid onto ``instruct`` when provided.
             interpret (bool, optional):
                 If `True`, first interprets (`branch.interpret`) the instructions to refine them
                 before proceeding. Defaults to `False`.
@@ -1185,44 +1431,49 @@ class Branch(Element, Relational):
         """
         from lionagi.operations.ReAct.ReAct import ReAct
 
+        instruct = _merge_instruct(instruct, instruction, guidance, context)
+
         # Remove potential duplicate parameters from kwargs
         kwargs_filtered = {
-            k: v
-            for k, v in kwargs.items()
-            if k not in {"verbose_analysis", "verbose_action"}
+            k: v for k, v in kwargs.items() if k not in {"verbose_analysis", "verbose_action"}
         }
 
-        return await ReAct(
-            self,
-            instruct,
-            interpret=interpret,
-            interpret_domain=interpret_domain,
-            interpret_style=interpret_style,
-            interpret_sample=interpret_sample,
-            interpret_kwargs=interpret_kwargs,
-            tools=tools,
-            tool_schemas=tool_schemas,
-            response_format=response_format,
-            extension_allowed=extension_allowed,
-            max_extensions=max_extensions,
-            response_kwargs=response_kwargs,
-            return_analysis=return_analysis,
-            analysis_model=analysis_model,
-            verbose_action=verbose,
-            verbose_analysis=verbose,
-            verbose_length=verbose_length,
-            interpret_model=interpret_model,
-            intermediate_response_options=intermediate_response_options,
-            intermediate_listable=intermediate_listable,
-            reasoning_effort=reasoning_effort,
-            display_as=display_as,
-            include_token_usage_to_model=include_token_usage_to_model,
-            **kwargs_filtered,
+        return await self._observed_run(
+            ReAct(
+                self,
+                instruct,
+                interpret=interpret,
+                interpret_domain=interpret_domain,
+                interpret_style=interpret_style,
+                interpret_sample=interpret_sample,
+                interpret_kwargs=interpret_kwargs,
+                tools=tools,
+                tool_schemas=tool_schemas,
+                response_format=response_format,
+                extension_allowed=extension_allowed,
+                max_extensions=max_extensions,
+                response_kwargs=response_kwargs,
+                return_analysis=return_analysis,
+                analysis_model=analysis_model,
+                verbose_action=verbose,
+                verbose_analysis=verbose,
+                verbose_length=verbose_length,
+                interpret_model=interpret_model,
+                intermediate_response_options=intermediate_response_options,
+                intermediate_listable=intermediate_listable,
+                reasoning_effort=reasoning_effort,
+                display_as=display_as,
+                include_token_usage_to_model=include_token_usage_to_model,
+                **kwargs_filtered,
+            )
         )
 
-    async def ReActStream(
+    async def ReActStream(  # noqa: N802
         self,
-        instruct: "Instruct | dict[str, Any]",
+        instruct: "Instruct | dict[str, Any]" = None,
+        instruction: Instruction | JsonValue = None,
+        guidance: JsonValue = None,
+        context: JsonValue = None,
         interpret: bool = False,
         interpret_domain: str | None = None,
         interpret_style: str | None = None,
@@ -1255,10 +1506,8 @@ class Branch(Element, Relational):
             ParseParam,
         )
 
-        # Convert Instruct to dict if needed
-        instruct_dict = (
-            instruct.to_dict() if isinstance(instruct, Instruct) else dict(instruct)
-        )
+        # Convert Instruct to dict if needed, overlaying loose instruction fields
+        instruct_dict = _merge_instruct(instruct, instruction, guidance, context)
 
         # Build InterpretContext if interpretation requested
         intp_param = None

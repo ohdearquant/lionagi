@@ -39,13 +39,34 @@ async def _act(
             "function": action_request.function,
             "arguments": action_request.arguments,
         }
-    if not isinstance(_request, dict) or not {"function", "arguments"} <= set(
-        _request.keys()
-    ):
+    if not isinstance(_request, dict) or not {"function", "arguments"} <= set(_request.keys()):
         raise ValueError(
             "action_request must be an ActionRequest, BaseModel with 'function'"
             " and 'arguments', or dict with 'function' and 'arguments'."
         )
+
+    # ADR-0076 Follow-up 1: pre-invoke governance gate. When the session sets
+    # ``session.gate(check)``, a denied tool call is blocked BEFORE execution and
+    # surfaced to the model as a tool result (so a ReAct loop can adapt), never
+    # raised. No gate / standalone branch → always allowed (additive).
+    from lionagi.session.control import ToolInvocation
+
+    _args = _request["arguments"] if isinstance(_request["arguments"], dict) else {}
+    if not await branch.authorize(
+        ToolInvocation(function=_request["function"], arguments=_args, branch_id=str(branch.id))
+    ):
+        denial = {"error": "denied by governance gate", "function": _request["function"]}
+        if not isinstance(action_request, ActionRequest):
+            action_request = ActionRequest(content=_request, sender=branch.id, recipient=branch.id)
+        if action_request not in branch.messages:
+            await branch.msgs.a_add_message(action_request=action_request)
+        await branch.msgs.a_add_message(
+            action_request=action_request,
+            action_output=denial,
+            sender=branch.id,
+            recipient=branch.id,
+        )
+        return ActionResponseModel(function=_request["function"], arguments=_args, output=denial)
 
     try:
         if verbose_action:
@@ -55,9 +76,7 @@ async def _act(
 
         func_call = await branch._action_manager.invoke(_request)
         if verbose_action:
-            logger.debug(
-                "Action %s invoked, status: %s.", _request["function"], func_call.status
-            )
+            logger.debug("Action %s invoked, status: %s.", _request["function"], func_call.status)
 
     except Exception as e:
         content = {
@@ -101,7 +120,7 @@ async def _act(
             )
         raise e
 
-    branch._log_manager.log(func_call)
+    await branch.emit_and_log(func_call)
 
     if not isinstance(action_request, ActionRequest):
         action_request = ActionRequest(
@@ -188,9 +207,7 @@ async def _concurrent_act(
         return await _act(branch, req, suppress_errors, verbose_action)
 
     # AlcallParams expects a list as first argument
-    action_request_list = (
-        action_request if isinstance(action_request, list) else [action_request]
-    )
+    action_request_list = action_request if isinstance(action_request, list) else [action_request]
 
     return await call_params(action_request_list, _wrapper)
 
@@ -202,9 +219,7 @@ async def _sequential_act(
     verbose_action: bool = False,
 ) -> list:
     """Execute actions sequentially."""
-    action_request = (
-        action_request if isinstance(action_request, list) else [action_request]
-    )
+    action_request = action_request if isinstance(action_request, list) else [action_request]
     results = []
     for req in action_request:
         result = await _act(branch, req, suppress_errors, verbose_action)

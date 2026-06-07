@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
+__all__ = ("AgentConfig",)
 
 
 @dataclass
@@ -43,6 +43,8 @@ class AgentConfig:
     model: str | None = None
     effort: str | None = None
     system_prompt: str = ""
+    role: str | None = None
+    modes: list[str] = field(default_factory=list)
     tools: list[str] = field(default_factory=list)
     hook_handlers: dict[str, list[Callable]] = field(default_factory=dict)
     permissions: dict[str, Any] = field(default_factory=dict)
@@ -65,6 +67,30 @@ class AgentConfig:
     def on_error(self, tool_name: str, handler: Callable) -> AgentConfig:
         self.hook_handlers.setdefault(f"error:{tool_name}", []).append(handler)
         return self
+
+    def build_system_message(self) -> str:
+        """Compose the system prompt from role + modes + literal system_prompt.
+
+        ``role`` (a built-in role name or Role) contributes its behavioral body;
+        each entry in ``modes`` (a built-in mode name or Mode) contributes its
+        behaviors; ``system_prompt`` is appended as extra preamble. With no role
+        or modes set, this returns ``system_prompt`` unchanged (backward
+        compatible).
+        """
+        from lionagi.casts.pattern import Mode, Role
+
+        parts: list[str] = []
+        if self.role:
+            role = self.role if not isinstance(self.role, str) else Role.load(self.role)
+            if role.body:
+                parts.append(role.body)
+        for m in self.modes:
+            mode = m if not isinstance(m, str) else Mode.load(m)
+            if mode.behaviors:
+                parts.append(mode.behaviors)
+        if self.system_prompt:
+            parts.append(self.system_prompt)
+        return "\n\n".join(parts)
 
     @classmethod
     def coding(
@@ -103,6 +129,8 @@ class AgentConfig:
               bash.allow: ["git *", "cargo *", "uv *"]
               bash.deny: ["rm -rf *"]
         """
+        import yaml
+
         p = Path(path)
         with open(p) as f:
             data = yaml.safe_load(f) or {}
@@ -137,6 +165,8 @@ class AgentConfig:
 
     def to_yaml(self, path: str | Path) -> None:
         """Save config to YAML (without hook callables — those are code-only)."""
+        import yaml
+
         data = {
             "name": self.name,
             "model": self.model,
@@ -156,37 +186,14 @@ class AgentConfig:
 
 
 _CODING_SYSTEM_PROMPT = """\
-You are a coding agent with tools for reading, editing, and searching code, \
-running shell commands, managing your conversation context, and delegating \
-tasks to sub-agents.
+You are a coding agent operating in a real codebase. You have tools to read and
+edit files, search code, and run shell commands:
 
-## Tools available
-- **reader**: Read files (with line numbers) or list directories. Always read a file before editing it.
-- **editor**: Write new files or edit existing ones via exact string replacement.
-- **bash**: Run shell commands (builds, tests, git, etc.).
-- **search**: Search code with grep (regex) or find files by name.
-- **context**: Check your context usage and evict old tool outputs when running low.
-- **subagent**: Delegate a scoped task to a sub-agent with its own context.
+- **reader**: read files (with line numbers) or list directories.
+- **editor**: create files or edit them via exact string replacement.
+- **bash**: run shell commands (builds, tests, git, ...).
+- **search**: grep code by regex, or find files by name.
 
-## Workflow
-1. Understand the task. Ask clarifying questions if needed.
-2. Search/read relevant code to build understanding.
-3. Plan your changes before editing.
-4. Make targeted edits — prefer edit (string replacement) over full file writes.
-5. Verify changes: run tests, check builds, review diffs.
-6. If context gets large, use context to evict old search/bash results.
-
-## Efficiency
-- You have up to 20 tool-use rounds, but stop as soon as the task is done. \
-Don't use all 20 rounds just because they're available.
-- Batch related reads together when possible.
-- If you need more rounds to finish, say so in your final answer — the user \
-can continue the conversation.
-
-## Rules
-- Always read a file before editing it (the editor enforces this).
-- Prefer small, targeted edits over full file rewrites.
-- Run tests after making changes.
-- Don't make changes beyond what's asked.
-- If unsure, read more code before acting.
+Read a file before you edit it (the editor enforces this), and verify your
+changes when you can. Beyond that, use your judgment to accomplish the task.
 """

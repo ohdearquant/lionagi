@@ -1,3 +1,5 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
 import argparse
@@ -65,13 +67,39 @@ def run_studio(args: argparse.Namespace) -> int:
     return _studio_start(args)
 
 
-def _find_frontend_dir() -> Path | None:
+def _find_repo_root() -> Path | None:
+    """Return the lionagi repo root if we're running from a source checkout."""
     pkg_root = Path(__file__).resolve().parents[1]
     repo_root = pkg_root.parent
+    if (repo_root / "apps" / "studio").is_dir():
+        return repo_root
+    return None
+
+
+def _find_frontend_dir() -> Path | None:
+    repo_root = _find_repo_root()
+    if repo_root is None:
+        return None
     candidate = repo_root / "apps" / "studio" / "frontend"
     if (candidate / "package.json").exists():
         return candidate
     return None
+
+
+def _ensure_apps_importable() -> bool:
+    """Add repo root to sys.path so `apps.studio.server.app` is importable.
+
+    Returns True if the apps package is available (either already on path or
+    we added the repo root). Returns False if running from an installed wheel
+    with no source checkout nearby.
+    """
+    repo_root = _find_repo_root()
+    if repo_root is None:
+        return False
+    repo_root_str = str(repo_root)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
+    return True
 
 
 def _has_docker() -> bool:
@@ -129,8 +157,16 @@ def _studio_start(args: argparse.Namespace) -> int:
 def _start_backend_only(host: str, port: int) -> int:
     import uvicorn
 
+    if not _ensure_apps_importable():
+        print(
+            "Error: studio backend not found. Run from the lionagi repo root or install "
+            "the full studio package.",
+            file=sys.stderr,
+        )
+        return 1
+
     print(f"Lion Studio API: http://{host}:{port}")
-    uvicorn.run("apps.studio.server.app:app", host=host, port=port)
+    uvicorn.run("lionagi.studio.app:app", host=host, port=port)
     return 0
 
 
@@ -246,8 +282,18 @@ def _start_local(
     print(f"Lion Studio API: http://{host}:{port}")
     print("Press Ctrl+C to stop")
 
+    if not _ensure_apps_importable():
+        if frontend_proc:
+            frontend_proc.terminate()
+        print(
+            "Error: studio backend not found. Run from the lionagi repo root or install "
+            "the full studio package.",
+            file=sys.stderr,
+        )
+        return 1
+
     try:
-        uvicorn.run("apps.studio.server.app:app", host=host, port=port)
+        uvicorn.run("lionagi.studio.app:app", host=host, port=port)
     except KeyboardInterrupt:
         print("\nStopping Lion Studio...")
     finally:
@@ -259,6 +305,63 @@ def _start_local(
                 frontend_proc.kill()
                 frontend_proc.wait()
     return 0
+
+
+def _is_build_stale(frontend_dir: Path) -> bool:
+    """Return True when the production build is absent or older than source files.
+
+    The check compares the mtime of ``.next/BUILD_ID`` — written by Next.js on
+    every successful ``next build`` — against the newest mtime found under the
+    source trees that affect the compiled bundle: ``app/``, ``lib/``,
+    ``components/``, ``package.json``, and ``next.config.mjs``.  Any source file
+    newer than the build marker means the cached bundle is stale.
+
+    Returns True (rebuild required) in three situations:
+    - ``.next/BUILD_ID`` is absent (no prior build).
+    - A source file is newer than ``.next/BUILD_ID``.
+    - ``os.stat`` raises for any path (safe default: rebuild).
+    """
+    build_marker = frontend_dir / ".next" / "BUILD_ID"
+    if not build_marker.exists():
+        return True
+
+    try:
+        marker_mtime = build_marker.stat().st_mtime
+    except OSError:
+        return True  # cannot stat marker — rebuild to be safe
+
+    # Source subtrees that, when changed, invalidate the compiled bundle.
+    source_roots = [
+        frontend_dir / "app",
+        frontend_dir / "lib",
+        frontend_dir / "components",
+    ]
+    # Top-level config files that affect the build.
+    source_files = [
+        frontend_dir / "package.json",
+        frontend_dir / "next.config.mjs",
+    ]
+
+    for f in source_files:
+        try:
+            if f.exists() and f.stat().st_mtime > marker_mtime:
+                return True
+        except OSError:
+            return True
+
+    for root in source_roots:
+        if not root.is_dir():
+            continue
+        for p in root.rglob("*"):
+            if not p.is_file():
+                continue
+            try:
+                if p.stat().st_mtime > marker_mtime:
+                    return True
+            except OSError:
+                return True  # unreadable source file — rebuild to be safe
+
+    return False
 
 
 def _launch_frontend(
@@ -289,8 +392,12 @@ def _launch_frontend(
     if dev_mode:
         cmd = ["npx", "next", "dev", "--port", str(frontend_port)]  # noqa: S607
     else:
-        if not (frontend_dir / ".next").exists():
-            print("Building frontend (first run)...")
+        # Rebuild whenever the source is newer than the last successful build.
+        # NEXT_PUBLIC_STUDIO_API_BASE is inlined at build time, so a stale
+        # .next/ bundle may point at the wrong API origin — always rebuild on
+        # source changes to prevent "API unreachable" from stale bundles.
+        if _is_build_stale(frontend_dir):
+            print("Building frontend...")
             try:
                 subprocess.run(  # noqa: S603
                     ["npx", "next", "build"],  # noqa: S607

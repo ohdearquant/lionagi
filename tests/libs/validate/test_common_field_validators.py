@@ -113,9 +113,7 @@ class TestValidateSameDtypeFlatList:
 
     def test_dropna_removes_none(self):
         """Test dropna removes None values."""
-        result = validate_same_dtype_flat_list(
-            DummyCls, [1, None, 2, None, 3], int, dropna=True
-        )
+        result = validate_same_dtype_flat_list(DummyCls, [1, None, 2, None, 3], int, dropna=True)
         assert result == [1, 2, 3]
 
     def test_dropna_false_keeps_none(self):
@@ -160,9 +158,7 @@ class TestValidateNullableStringField:
     def test_custom_field_name_in_error(self):
         """Test custom field name appears in error message."""
         with pytest.raises(ValueError, match="username must be a string"):
-            validate_nullable_string_field(
-                DummyCls, 123, field_name="username", strict=True
-            )
+            validate_nullable_string_field(DummyCls, 123, field_name="username", strict=True)
 
     def test_string_with_content(self):
         """Test string with whitespace and content."""

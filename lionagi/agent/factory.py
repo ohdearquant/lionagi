@@ -1,4 +1,4 @@
-# Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -8,51 +8,51 @@ from typing import TYPE_CHECKING, Any
 
 from lionagi.session.branch import Branch
 
-from .config import AgentConfig
+from .spec import AgentSpec
 
 if TYPE_CHECKING:
-    pass
+    from .config import AgentConfig
+
+__all__ = ("create_agent",)
 
 
 async def create_agent(
-    config: AgentConfig,
+    config: AgentSpec | AgentConfig,
     *,
     load_settings: bool = True,
     project_dir: str | None = None,
     trust_project_settings: bool = False,
     trusted_hook_modules: set[str] | frozenset[str] | None = None,
 ) -> Branch:
-    """Create a fully configured Branch from an AgentConfig.
+    """Create a fully configured Branch from an AgentSpec (or legacy AgentConfig).
 
-    Wires: settings → hooks → system prompt → model → tools.
+    Wires: settings -> hooks -> system prompt -> model -> tools -> emissions.
 
     Args:
-        config: Agent configuration.
-        load_settings: If True, load hooks from .lionagi/settings.yaml
-            (global always; project-local only when trust_project_settings=True).
+        config: Agent specification. AgentConfig is accepted for back-compat
+            and converted internally via AgentSpec.from_legacy().
+        load_settings: If True, load hooks from .lionagi/settings.yaml.
         project_dir: Project root for settings resolution. Auto-detected if None.
-        trust_project_settings: If True, load and apply hooks from project-local
-            .lionagi/settings.yaml. Defaults to False (Finding 1: safe default).
+        trust_project_settings: If True, load project-local settings.
         trusted_hook_modules: Python module paths allowed for import-based hooks.
-            Defaults to {"lionagi.agent.hooks"}.
-
-    Usage::
-
-        config = AgentConfig.coding(model="openai/gpt-4.1")
-        branch = await create_agent(config)
-        response = await branch.chat("Fix the bug in utils.py")
 
     Returns:
         A Branch ready to use with tools registered and hooks applied.
     """
+    from .config import AgentConfig
+
+    if isinstance(config, AgentConfig):
+        spec = AgentSpec.from_legacy(config)
+    else:
+        spec = config
+
     if load_settings:
         from .settings import apply_hooks_from_settings
         from .settings import load_settings as _load
 
-        # Finding 1: only load project-local hooks when explicitly trusted
         settings = _load(project_dir, include_project=trust_project_settings)
         apply_hooks_from_settings(
-            config,
+            spec,
             settings,
             trusted_hook_modules=trusted_hook_modules,
         )
@@ -61,86 +61,86 @@ async def create_agent(
 
     branch_kwargs = {}
 
-    if config.model:
+    if spec.model:
         from lionagi.cli._providers import (
-            _CLAUDE_PROVIDER_NAMES,
+            CLI_PROVIDERS,
             PROVIDER_EFFORT_KWARG,
             parse_model_spec,
         )
 
-        ms = parse_model_spec(config.model)
+        ms = parse_model_spec(spec.model)
         if "/" in ms.model:
             provider, model_name = ms.model.split("/", 1)
         else:
             provider = model_name = ms.model
 
         extra = {}
-        effort = config.effort or ms.effort
+        effort = spec.effort or ms.effort
         if effort:
             kwarg = PROVIDER_EFFORT_KWARG.get(provider)
             if kwarg:
                 extra[kwarg] = effort
-        if config.yolo:
+        if spec.yolo:
             from lionagi.cli._providers import PROVIDER_YOLO_KWARGS
 
             extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
 
+        # CLI providers (codex/claude_code) auth via subprocess — a placeholder
+        # api_key is fine. API providers must resolve their real key from
+        # settings; forcing "dummy" there silently breaks auth (the model can
+        # never call out). So only pin the placeholder for CLI providers.
+        if provider in CLI_PROVIDERS:
+            extra["api_key"] = "dummy"
+
         chat_model = iModel(
             provider=provider,
             model=model_name,
-            api_key="dummy",
             **extra,
         )
         branch_kwargs["chat_model"] = chat_model
 
     branch = Branch(**branch_kwargs)
 
-    if config.system_prompt:
-        if config.lion_system:
+    system_message = spec.build_system_message()
+    if system_message:
+        if spec.lion_system:
             from lionagi.session.prompts import LION_SYSTEM_MESSAGE
 
-            full_prompt = LION_SYSTEM_MESSAGE.strip() + "\n\n" + config.system_prompt
+            full_prompt = LION_SYSTEM_MESSAGE.strip() + "\n\n" + system_message
         else:
-            full_prompt = config.system_prompt
+            full_prompt = system_message
         branch.msgs.set_system(branch.msgs.create_system(system=full_prompt))
 
-    _apply_permissions(config)
-    _register_tools(branch, config)
-    await _load_mcp(branch, config, trust_project_settings=trust_project_settings)
+    _apply_permissions(spec)
+    _register_tools(branch, spec)
+    await _load_mcp(branch, spec, trust_project_settings=trust_project_settings)
+
+    if op := spec.emission_operable():
+        branch.grant_capabilities(op)
 
     return branch
 
 
-def _apply_permissions(config: AgentConfig) -> None:
-    """Convert permission config into a security_pre hook on all tools.
-
-    Finding 13: uses 'security_pre' phase so permission hooks always run
-    before user-defined pre-hooks.
-    """
-    if not config.permissions:
+def _apply_permissions(spec: AgentSpec) -> None:
+    """Convert permission config into a security_pre hook on all tools."""
+    if spec.permissions is None:
         return
 
     from .permissions import PermissionPolicy
 
-    if isinstance(config.permissions, PermissionPolicy):
-        policy = config.permissions
-    elif isinstance(config.permissions, dict):
-        policy = PermissionPolicy.from_dict(config.permissions)
+    if isinstance(spec.permissions, PermissionPolicy):
+        policy = spec.permissions
     else:
         return
 
-    # Finding 13: insert permission hook into security_pre phase, not pre phase
-    config.hook_handlers.setdefault("security_pre:*", []).insert(
-        0, policy.to_pre_hook()
-    )
+    spec.hook_handlers.setdefault("security_pre:*", []).insert(0, policy.to_pre_hook())
 
 
-def _tool_hooks(config: AgentConfig, phase: str, tool_name: str) -> list[Callable]:
-    """Finding 15: collect hooks for a tool from all relevant phase:name keys."""
+def _tool_hooks(spec: AgentSpec, phase: str, tool_name: str) -> list[Callable]:
     return [
-        *config.hook_handlers.get(f"{phase}:*", []),
-        *config.hook_handlers.get(f"{phase}:{tool_name}", []),
-        *config.hook_handlers.get(f"{phase}:{tool_name}_tool", []),
+        *spec.hook_handlers.get(f"{phase}:*", []),
+        *spec.hook_handlers.get(f"{phase}:{tool_name}", []),
+        *spec.hook_handlers.get(f"{phase}:{tool_name}_tool", []),
     ]
 
 
@@ -152,7 +152,6 @@ def _chain_pre_hooks(
     user_hooks = user_hooks or []
     hooks = [*security_hooks, *user_hooks]
     if user_hooks:
-        # User pre-hooks may rewrite args; validate the final args too.
         hooks.extend(security_hooks)
     if not hooks:
         return None
@@ -183,11 +182,10 @@ def _chain_post_hooks(tool_name: str, hooks: list[Callable]) -> Callable | None:
     return chained
 
 
-def _attach_hooks(tool: Any, config: AgentConfig, canonical_name: str) -> Any:
-    """Finding 15: attach security_pre + pre + post hooks to a standalone tool."""
-    security_hooks = _tool_hooks(config, "security_pre", canonical_name)
-    user_pre_hooks = _tool_hooks(config, "pre", canonical_name)
-    post_hooks = _tool_hooks(config, "post", canonical_name)
+def _attach_hooks(tool: Any, spec: AgentSpec, canonical_name: str) -> Any:
+    security_hooks = _tool_hooks(spec, "security_pre", canonical_name)
+    user_pre_hooks = _tool_hooks(spec, "pre", canonical_name)
+    post_hooks = _tool_hooks(spec, "post", canonical_name)
     pre = _chain_pre_hooks(canonical_name, security_hooks, user_pre_hooks)
     post = _chain_post_hooks(canonical_name, post_hooks)
     if pre is not None:
@@ -197,54 +195,52 @@ def _attach_hooks(tool: Any, config: AgentConfig, canonical_name: str) -> Any:
     return tool
 
 
-def _register_tools(branch: Branch, config: AgentConfig) -> None:
-    """Register tools based on config.tools list, applying hooks."""
-    for tool_spec in config.tools:
+def _register_tools(branch: Branch, spec: AgentSpec) -> None:
+    for tool_spec in spec.tools:
         if tool_spec == "coding":
-            _register_coding_tools(branch, config)
+            _register_coding_tools(branch, spec)
         elif tool_spec == "reader":
             from lionagi.tools.file.reader import ReaderTool
 
-            # Finding 15: attach config hooks to standalone reader tool
-            tool = _attach_hooks(ReaderTool().to_tool(), config, "reader")
+            tool = _attach_hooks(ReaderTool().to_tool(), spec, "reader")
             branch.register_tools(tool)
         elif tool_spec == "editor":
             from lionagi.tools.file.editor import EditorTool
 
-            # Finding 15: attach config hooks to standalone editor tool
-            tool = _attach_hooks(EditorTool().to_tool(), config, "editor")
+            tool = _attach_hooks(EditorTool().to_tool(), spec, "editor")
             branch.register_tools(tool)
         elif tool_spec == "bash":
             from lionagi.tools.code.bash import BashTool
 
-            # Finding 15: attach config hooks to standalone bash tool
-            tool = _attach_hooks(BashTool().to_tool(), config, "bash")
+            tool = _attach_hooks(BashTool().to_tool(), spec, "bash")
             branch.register_tools(tool)
         elif tool_spec == "search":
+            from pathlib import Path
+
             from lionagi.tools.code.search import SearchTool
 
-            # Finding 15: attach config hooks to standalone search tool
-            tool = _attach_hooks(SearchTool().to_tool(), config, "search")
+            workspace_root = str(Path(spec.cwd) if spec.cwd else Path.cwd())
+            tool = _attach_hooks(
+                SearchTool(workspace_root=workspace_root).to_tool(), spec, "search"
+            )
             branch.register_tools(tool)
 
 
-def _register_coding_tools(branch: Branch, config: AgentConfig) -> None:
-    """Register CodingToolkit with hooks from config."""
+def _register_coding_tools(branch: Branch, spec: AgentSpec) -> None:
     from pathlib import Path
 
     from lionagi.tools.coding import CodingToolkit
 
-    workspace_root = Path(config.cwd) if config.cwd else Path.cwd()
+    workspace_root = Path(spec.cwd) if spec.cwd else Path.cwd()
     toolkit = CodingToolkit(workspace_root=workspace_root)
 
-    for key, handlers in config.hook_handlers.items():
+    for key, handlers in spec.hook_handlers.items():
         parts = key.split(":", 1)
         if len(parts) != 2:
             continue
         phase, tool_name = parts
         for handler in handlers:
             if phase == "security_pre":
-                # Finding 13: wire security_pre hooks into CodingToolkit's dedicated phase
                 toolkit.security_pre(tool_name, handler)
             elif phase == "pre":
                 toolkit.pre(tool_name, handler)
@@ -259,29 +255,21 @@ def _register_coding_tools(branch: Branch, config: AgentConfig) -> None:
 
 async def _load_mcp(
     branch: Branch,
-    config: AgentConfig,
+    spec: AgentSpec,
     *,
     trust_project_settings: bool = False,
 ) -> None:
-    """Auto-discover and load MCP tools from .mcp.json files.
-
-    Discovery order:
-        1. config.mcp_config_path (explicit)
-        2. .lionagi/.mcp.json (project-local, only when trusted)
-        3. cwd/.mcp.json (current directory, only when trusted)
-        4. ~/.lionagi/.mcp.json (global)
-    """
     from pathlib import Path
 
     mcp_path = None
 
-    if config.mcp_config_path:
-        p = Path(config.mcp_config_path)
+    if spec.mcp_config_path:
+        p = Path(spec.mcp_config_path)
         if p.is_file():
             mcp_path = str(p)
     else:
         candidates = []
-        cwd = Path(config.cwd) if config.cwd else Path.cwd()
+        cwd = Path(spec.cwd) if spec.cwd else Path.cwd()
 
         if trust_project_settings:
             for parent in [cwd, *cwd.parents]:
@@ -302,5 +290,5 @@ async def _load_mcp(
 
     await branch.acts.load_mcp_config(
         mcp_path,
-        server_names=config.mcp_servers,
+        server_names=spec.mcp_servers,
     )

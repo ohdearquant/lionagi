@@ -34,9 +34,9 @@ def patched_app(shows_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     _list_shows_db() returns no rows (forcing the filesystem fallback that
     reads from the patched SHOWS_ROOT, not the real state.db).
     """
-    import apps.studio.server.config as config_mod
-    import apps.studio.server.services.shows as shows_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.config as config_mod
+    import lionagi.studio.services.shows as shows_mod
 
     shows_root.mkdir(parents=True, exist_ok=True)
     fake_db = tmp_path / "state.db"  # does not exist → _db_available() returns False
@@ -46,7 +46,7 @@ def patched_app(shows_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(shows_mod, "DEFAULT_DB_PATH", fake_db)
     monkeypatch.setattr(shows_mod, "_DB", str(fake_db))
 
-    from apps.studio.server.app import app
+    from lionagi.studio.app import app
 
     return TestClient(app)
 
@@ -162,9 +162,9 @@ def sqlite_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     The DB is populated with a row in the 'shows' table so that get_show()
     takes the SQLite code path and sets status_source == 'sqlite'.
     """
-    import apps.studio.server.config as config_mod
-    import apps.studio.server.services.shows as shows_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.config as config_mod
+    import lionagi.studio.services.shows as shows_mod
 
     shows_root = tmp_path / "shows"
     shows_root.mkdir(parents=True)
@@ -210,7 +210,7 @@ def sqlite_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     finally:
         _loop.close()
 
-    from apps.studio.server.app import app
+    from lionagi.studio.app import app
 
     return TestClient(app), topic
 
@@ -228,6 +228,103 @@ def test_show_detail_status_source_is_sqlite_with_db(sqlite_patched_app):
     data = r.json()
     assert "status_source" in data, "status_source field missing from response"
     assert data["status_source"] == "sqlite", (
-        f"status_source must be 'sqlite' when show row exists in DB, "
-        f"got {data['status_source']!r}"
+        f"status_source must be 'sqlite' when show row exists in DB, got {data['status_source']!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Docker regression test: get_show works from DB even when show dir is absent
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def docker_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Simulate the Docker scenario: state.db is mounted but show dirs are NOT.
+
+    list_shows() returns topics from the DB; get_show(topic) must also return
+    the show (not 404) even though the show directory does not exist on disk.
+    This is the exact regression that caused every topic from list_shows() to
+    return 404 in Docker.
+    """
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.config as config_mod
+    import lionagi.studio.services.shows as shows_mod
+
+    # shows_root is created but show subdirectories are intentionally absent.
+    shows_root = tmp_path / "shows"
+    shows_root.mkdir(parents=True)
+    fake_db = tmp_path / "state.db"
+
+    monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(shows_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(shows_mod, "_DB", str(fake_db))
+
+    topic = "overnight-sweep"
+    # Deliberately do NOT create shows_root / topic on disk.
+
+    async def _seed_db():
+        async with state_db_mod.StateDB() as db:
+            await db.db.execute(
+                """INSERT INTO shows (id, topic, goal, status, show_dir, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(uuid.uuid4()),
+                    topic,
+                    "overnight sweep goal",
+                    "active",
+                    str(shows_root / topic),  # path that does NOT exist on disk
+                    0.0,
+                    0.0,
+                ),
+            )
+            await db.db.commit()
+
+    _loop = asyncio.new_event_loop()
+    try:
+        _loop.run_until_complete(_seed_db())
+    finally:
+        _loop.close()
+
+    from lionagi.studio.app import app
+
+    return TestClient(app), topic
+
+
+def test_get_show_returns_200_when_dir_absent_but_db_has_row(docker_patched_app):
+    """get_show must not 404 when the show directory is absent but the DB row exists.
+
+    Regression test for the Docker bug: list_shows() reads the DB (returns 27
+    shows), but get_show(topic) checked show_dir.is_dir() first and returned
+    None (→ 404) for every topic because the host show dirs are not mounted in
+    the container.
+
+    The fix: only return None when BOTH the dir is absent AND no DB row exists.
+    """
+    client, topic = docker_patched_app
+
+    # list_shows should include the topic (from DB)
+    list_r = client.get("/api/shows")
+    assert list_r.status_code == 200
+    listed_topics = {item["topic"] for item in list_r.json()}
+    assert topic in listed_topics, f"{topic!r} missing from list_shows() response"
+
+    # get_show must also succeed (not 404) — this is the regression case
+    detail_r = client.get(f"/api/shows/{topic}")
+    assert detail_r.status_code == 200, (
+        f"get_show returned {detail_r.status_code} for topic {topic!r} "
+        f"that list_shows() listed — Docker 404 regression"
+    )
+    data = detail_r.json()
+    assert data["topic"] == topic
+    assert data["status_source"] == "sqlite"
+    assert data["status"] == "active"
+    assert isinstance(data["plays"], list)
+
+
+def test_get_show_returns_404_when_dir_absent_and_no_db_row(docker_patched_app):
+    """get_show must still 404 for topics not in DB and not on filesystem."""
+    client, _topic = docker_patched_app
+    r = client.get("/api/shows/nonexistent-topic-xyz")
+    assert r.status_code == 404

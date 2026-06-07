@@ -4,8 +4,8 @@
 """Section 1 tests: _graph_from_metadata() and get_session() DAG graph paths.
 
 Coverage targets:
-  - apps.studio.server.services.sessions._graph_from_metadata  (all branches)
-  - apps.studio.server.services.sessions.get_session           (node_metadata → graph)
+  - lionagi.studio.services.sessions._graph_from_metadata  (all branches)
+  - lionagi.studio.services.sessions.get_session           (node_metadata → graph)
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ def dag_metadata() -> dict:
 
 @pytest.fixture
 def patched_sessions_db(tmp_path, monkeypatch):
-    import apps.studio.server.services.sessions as svc
+    import lionagi.studio.services.sessions as svc
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(svc, "_DB", str(db_path))
@@ -64,19 +64,21 @@ async def seed_session(
     prog_id = f"{session_id}-prog"
     async with StateDB(db_path) as db:
         await db.create_progression(prog_id)
-        await db.create_session({
-            "id": session_id,
-            "created_at": 100.0,
-            "updated_at": 100.0,
-            "progression_id": prog_id,
-            "name": "Test Session",
-            "status": status,
-            "started_at": started_at,
-            "ended_at": ended_at,
-            "node_metadata": node_metadata,
-            "invocation_kind": "flow",
-            "source_kind": "live",
-        })
+        await db.create_session(
+            {
+                "id": session_id,
+                "created_at": 100.0,
+                "updated_at": 100.0,
+                "progression_id": prog_id,
+                "name": "Test Session",
+                "status": status,
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "node_metadata": node_metadata,
+                "invocation_kind": "flow",
+                "source_kind": "live",
+            }
+        )
     return prog_id
 
 
@@ -98,7 +100,7 @@ async def overwrite_session_node_metadata(db_path: Path, session_id: str, raw: s
 
 
 def test_graph_from_metadata_none_empty_and_invalid_json_return_none():
-    from apps.studio.server.services.sessions import _graph_from_metadata
+    from lionagi.studio.services.sessions import _graph_from_metadata
 
     assert _graph_from_metadata(None) is None
     assert _graph_from_metadata("") is None
@@ -111,12 +113,10 @@ def test_graph_from_metadata_none_empty_and_invalid_json_return_none():
 
 
 def test_graph_from_metadata_rejects_non_dict_and_missing_operations():
-    from apps.studio.server.services.sessions import _graph_from_metadata
+    from lionagi.studio.services.sessions import _graph_from_metadata
 
     assert _graph_from_metadata(json.dumps(["not", "a", "dict"])) is None
-    assert _graph_from_metadata(
-        json.dumps({"agents": [{"id": "a1", "name": "Analyst"}]})
-    ) is None
+    assert _graph_from_metadata(json.dumps({"agents": [{"id": "a1", "name": "Analyst"}]})) is None
     assert _graph_from_metadata(json.dumps({"agents": [], "operations": []})) is None
 
 
@@ -126,7 +126,7 @@ def test_graph_from_metadata_rejects_non_dict_and_missing_operations():
 
 
 def test_graph_from_metadata_builds_nodes_and_dependency_edges():
-    from apps.studio.server.services.sessions import _graph_from_metadata
+    from lionagi.studio.services.sessions import _graph_from_metadata
 
     graph = _graph_from_metadata(json.dumps(dag_metadata()))
 
@@ -164,7 +164,7 @@ def test_graph_from_metadata_builds_nodes_and_dependency_edges():
 
 
 def test_graph_from_metadata_filters_malformed_agents_and_operations():
-    from apps.studio.server.services.sessions import _graph_from_metadata
+    from lionagi.studio.services.sessions import _graph_from_metadata
 
     meta = {
         "agents": [
@@ -197,7 +197,7 @@ def test_graph_from_metadata_filters_malformed_agents_and_operations():
 
 
 def test_graph_from_metadata_unknown_agent_uses_blank_role_and_assignment():
-    from apps.studio.server.services.sessions import _graph_from_metadata
+    from lionagi.studio.services.sessions import _graph_from_metadata
 
     meta = {
         "agents": [],
@@ -220,7 +220,7 @@ def test_graph_from_metadata_unknown_agent_uses_blank_role_and_assignment():
 
 
 def test_graph_from_metadata_malformed_depends_on_does_not_create_character_edges():
-    from apps.studio.server.services.sessions import _graph_from_metadata
+    from lionagi.studio.services.sessions import _graph_from_metadata
 
     meta = {
         "agents": [{"id": "a1", "name": "Analyst", "model": "gpt-5"}],
@@ -321,38 +321,44 @@ async def test_get_session_orders_branch_messages_and_keeps_dag_graph(patched_se
     async with StateDB(db_path) as db:
         # Progression lists msg-2 first, then msg-1 — order must follow progression
         await db.create_progression("branch-prog", ["msg-2", "msg-1"])
-        await db.insert_message({
-            "id": "msg-1",
-            "created_at": 101.0,
-            "content": {"text": "first-created"},
-            "sender": "user",
-            "recipient": "worker",
-            "role": "user",
-            "node_metadata": {
-                "lion_class": "lionagi.protocols.messages.instruction.Instruction"
-            },
-        })
-        await db.insert_message({
-            "id": "msg-2",
-            "created_at": 102.0,
-            "content": {"text": "first-in-progression"},
-            "sender": "worker",
-            "recipient": "user",
-            "role": "assistant",
-            "node_metadata": {
-                "lion_class": "lionagi.protocols.messages.assistant_response.AssistantResponse"
-            },
-        })
-        await db.create_branch({
-            "id": "branch-1",
-            "created_at": 100.5,
-            "name": "worker",
-            "session_id": "sess-branch-dag",
-            "progression_id": "branch-prog",
-            "model": "openai/gpt-5.4",
-            "provider": "openai",
-            "agent_name": "worker",
-        })
+        await db.insert_message(
+            {
+                "id": "msg-1",
+                "created_at": 101.0,
+                "content": {"text": "first-created"},
+                "sender": "user",
+                "recipient": "worker",
+                "role": "user",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.instruction.Instruction"
+                },
+            }
+        )
+        await db.insert_message(
+            {
+                "id": "msg-2",
+                "created_at": 102.0,
+                "content": {"text": "first-in-progression"},
+                "sender": "worker",
+                "recipient": "user",
+                "role": "assistant",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.assistant_response.AssistantResponse"
+                },
+            }
+        )
+        await db.create_branch(
+            {
+                "id": "branch-1",
+                "created_at": 100.5,
+                "name": "worker",
+                "session_id": "sess-branch-dag",
+                "progression_id": "branch-prog",
+                "model": "openai/gpt-5.4",
+                "provider": "openai",
+                "agent_name": "worker",
+            }
+        )
 
     result = await svc.get_session("sess-branch-dag")
 
@@ -400,16 +406,18 @@ async def seed_branch(
             await db.create_progression(prog_id, msg_ids)
         else:
             await db.create_progression(prog_id)
-        await db.create_branch({
-            "id": branch_id,
-            "created_at": 200.0,
-            "name": name,
-            "session_id": session_id,
-            "progression_id": prog_id,
-            "model": "gpt-5",
-            "provider": "openai",
-            "agent_name": name,
-        })
+        await db.create_branch(
+            {
+                "id": branch_id,
+                "created_at": 200.0,
+                "name": name,
+                "session_id": session_id,
+                "progression_id": prog_id,
+                "model": "gpt-5",
+                "provider": "openai",
+                "agent_name": name,
+            }
+        )
     return prog_id
 
 
@@ -435,8 +443,9 @@ async def test_list_sessions_returns_empty_for_empty_db(patched_sessions_db):
 
 async def test_list_sessions_single_session_correct_fields(patched_sessions_db):
     svc, db_path = patched_sessions_db
-    await seed_session(db_path, session_id="sess-fields", status="completed",
-                       started_at=10.0, ended_at=20.0)
+    await seed_session(
+        db_path, session_id="sess-fields", status="completed", started_at=10.0, ended_at=20.0
+    )
 
     rows = await svc.list_sessions()
 
@@ -517,27 +526,30 @@ async def test_get_session_messages_after_returns_empty_when_db_absent(patched_s
 async def test_get_session_messages_after_filters_by_timestamp(patched_sessions_db):
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-ts")
-    await seed_branch(db_path, branch_id="br-ts", session_id="sess-ts",
-                      msg_ids=["m-old", "m-new"])
+    await seed_branch(db_path, branch_id="br-ts", session_id="sess-ts", msg_ids=["m-old", "m-new"])
     async with StateDB(db_path) as db:
-        await db.insert_message({
-            "id": "m-old",
-            "created_at": 50.0,
-            "content": {"text": "old"},
-            "sender": "user",
-            "recipient": "worker",
-            "role": "user",
-            "node_metadata": {},
-        })
-        await db.insert_message({
-            "id": "m-new",
-            "created_at": 150.0,
-            "content": {"text": "new"},
-            "sender": "user",
-            "recipient": "worker",
-            "role": "assistant",
-            "node_metadata": {},
-        })
+        await db.insert_message(
+            {
+                "id": "m-old",
+                "created_at": 50.0,
+                "content": {"text": "old"},
+                "sender": "user",
+                "recipient": "worker",
+                "role": "user",
+                "node_metadata": {},
+            }
+        )
+        await db.insert_message(
+            {
+                "id": "m-new",
+                "created_at": 150.0,
+                "content": {"text": "new"},
+                "sender": "user",
+                "recipient": "worker",
+                "role": "assistant",
+                "node_metadata": {},
+            }
+        )
 
     result = await svc.get_session_messages_after("sess-ts", 100.0)
 
@@ -551,27 +563,32 @@ async def test_get_session_messages_after_preserves_progression_order(patched_se
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-order")
     # progression lists m-second before m-first (reverse of creation timestamp)
-    await seed_branch(db_path, branch_id="br-order", session_id="sess-order",
-                      msg_ids=["m-second", "m-first"])
+    await seed_branch(
+        db_path, branch_id="br-order", session_id="sess-order", msg_ids=["m-second", "m-first"]
+    )
     async with StateDB(db_path) as db:
-        await db.insert_message({
-            "id": "m-first",
-            "created_at": 101.0,
-            "content": {"text": "first by time"},
-            "sender": "user",
-            "recipient": "worker",
-            "role": "user",
-            "node_metadata": {},
-        })
-        await db.insert_message({
-            "id": "m-second",
-            "created_at": 102.0,
-            "content": {"text": "second by time"},
-            "sender": "assistant",
-            "recipient": "worker",
-            "role": "assistant",
-            "node_metadata": {},
-        })
+        await db.insert_message(
+            {
+                "id": "m-first",
+                "created_at": 101.0,
+                "content": {"text": "first by time"},
+                "sender": "user",
+                "recipient": "worker",
+                "role": "user",
+                "node_metadata": {},
+            }
+        )
+        await db.insert_message(
+            {
+                "id": "m-second",
+                "created_at": 102.0,
+                "content": {"text": "second by time"},
+                "sender": "assistant",
+                "recipient": "worker",
+                "role": "assistant",
+                "node_metadata": {},
+            }
+        )
 
     result = await svc.get_session_messages_after("sess-order", 0.0)
 
@@ -583,29 +600,35 @@ async def test_get_session_messages_after_preserves_progression_order(patched_se
 async def test_get_session_messages_after_aggregates_across_branches(patched_sessions_db):
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-multi")
-    await seed_branch(db_path, branch_id="br-alpha", session_id="sess-multi",
-                      msg_ids=["ma-1"], name="alpha")
-    await seed_branch(db_path, branch_id="br-beta", session_id="sess-multi",
-                      msg_ids=["mb-1"], name="beta")
+    await seed_branch(
+        db_path, branch_id="br-alpha", session_id="sess-multi", msg_ids=["ma-1"], name="alpha"
+    )
+    await seed_branch(
+        db_path, branch_id="br-beta", session_id="sess-multi", msg_ids=["mb-1"], name="beta"
+    )
     async with StateDB(db_path) as db:
-        await db.insert_message({
-            "id": "ma-1",
-            "created_at": 200.0,
-            "content": {"text": "from alpha"},
-            "sender": "alpha",
-            "recipient": "system",
-            "role": "assistant",
-            "node_metadata": {},
-        })
-        await db.insert_message({
-            "id": "mb-1",
-            "created_at": 201.0,
-            "content": {"text": "from beta"},
-            "sender": "beta",
-            "recipient": "system",
-            "role": "assistant",
-            "node_metadata": {},
-        })
+        await db.insert_message(
+            {
+                "id": "ma-1",
+                "created_at": 200.0,
+                "content": {"text": "from alpha"},
+                "sender": "alpha",
+                "recipient": "system",
+                "role": "assistant",
+                "node_metadata": {},
+            }
+        )
+        await db.insert_message(
+            {
+                "id": "mb-1",
+                "created_at": 201.0,
+                "content": {"text": "from beta"},
+                "sender": "beta",
+                "recipient": "system",
+                "role": "assistant",
+                "node_metadata": {},
+            }
+        )
 
     result = await svc.get_session_messages_after("sess-multi", 0.0)
 

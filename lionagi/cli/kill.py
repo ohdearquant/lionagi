@@ -137,6 +137,11 @@ _SEARCH_ORDER = ("sessions", "invocations", "plays", "shows")
 # alive. Use `li kill <play_or_show_id> --recursive` for explicit cleanup.
 _STALE_SWEEP_ORDER = ("sessions", "invocations")
 
+# Play statuses that are NOT terminal — the play is still in-progress.
+_PLAY_ACTIVE_STATUSES = frozenset(
+    {"pending", "prepared", "running", "running_complete", "gated", "redoing"}
+)
+
 # Map DB table name → canonical entity type for update_status().
 _TABLE_TO_ENTITY_TYPE = {
     "sessions": "session",
@@ -301,7 +306,7 @@ async def _persist_cancel(
         reason_code=reason_code,
         reason_summary=reason_summary,
         evidence_refs=[evidence],
-        source="cli",
+        source="admin",  # CLI kill is an operator/admin action (ADR-0028 source vocabulary)
         actor="user",
     )
 
@@ -431,6 +436,35 @@ async def _do_kill(
     return 0
 
 
+async def _play_child_stale(db: Any, play_row: dict[str, Any]) -> bool:
+    """Return True if a play's linked session has terminated (child-derived staleness).
+
+    A play is child-stale only when ``session_id`` is set and the linked
+    session is no longer running. Plays with no session_id are not yet
+    started and must not be swept.
+    """
+    session_id = play_row.get("session_id")
+    if not session_id:
+        return False
+    cur = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (session_id,))
+    row = await cur.fetchone()
+    if row is None:
+        return False
+    return row["status"] != "running"
+
+
+async def _show_children_all_terminal(db: Any, show_id: str) -> bool:
+    """Return True if a show has >= 1 child play and all are in terminal states.
+
+    A show with no plays is not yet active and must not be swept.
+    """
+    cur = await db.db.execute("SELECT status FROM plays WHERE show_id = ?", (show_id,))
+    rows = await cur.fetchall()
+    if not rows:
+        return False
+    return all(row["status"] not in _PLAY_ACTIVE_STATUSES for row in rows)
+
+
 async def _do_kill_all_stale(
     *,
     threshold_seconds: int,
@@ -534,6 +568,109 @@ async def _do_kill_all_stale(
                 )
                 killed += 1
                 print(f"  cancelled stale {entity_type} {entity_id[:12]} (pid={pid})")
+
+        # ── Child-derived staleness sweep for plays (#1144) ───────────
+        # A play is child-stale when its linked session has terminated.
+        # This is separate from the PID sweep above: plays never carry a
+        # direct PID, so they can't be detected by process absence alone.
+        play_cur = await db.db.execute("SELECT * FROM plays WHERE status = 'running'")
+        play_rows = await play_cur.fetchall()
+        for row in play_rows:
+            row_dict = db._row_to_dict(row)
+            play_id = row_dict["id"]
+
+            started = row_dict.get("started_at") or row_dict.get("created_at") or 0
+            if started > cutoff:
+                skipped_recent += 1
+                if verbose:
+                    print(
+                        f"  skip play {play_id[:12]}: started recently (< {threshold_seconds}s ago)"
+                    )
+                continue
+
+            if not await _play_child_stale(db, row_dict):
+                if verbose:
+                    print(f"  skip play {play_id[:12]}: child session still running or absent")
+                continue
+
+            if dry_run:
+                print(f"  (dry-run) would cancel stale play {play_id[:12]} (child-derived)")
+                killed += 1
+                continue
+
+            evidence = {
+                "kind": "child_stale_kill",
+                "reason": "child_session_terminal",
+                "killed_at": time.time(),
+                "threshold_seconds": threshold_seconds,
+            }
+            if user_reason:
+                evidence["user_reason"] = user_reason
+            await _persist_cancel(
+                db,
+                "play",
+                play_id,
+                reason_code=RunReasons.CANCELLED_STALE_AUTO,
+                reason_summary=(
+                    f"Stale auto-cancel: child session terminated. {user_reason}".strip()
+                ),
+                evidence=evidence,
+            )
+            killed += 1
+            print(f"  cancelled stale play {play_id[:12]} (child-derived)")
+
+        # ── Child-derived staleness sweep for shows (#1144) ───────────
+        # A show is child-stale when all child plays have terminated.
+        show_cur = await db.db.execute("SELECT * FROM shows WHERE status = 'active'")
+        show_rows = await show_cur.fetchall()
+        for row in show_rows:
+            row_dict = db._row_to_dict(row)
+            show_id = row_dict["id"]
+
+            started = (
+                row_dict.get("started_at")
+                or row_dict.get("updated_at")
+                or row_dict.get("created_at")
+                or 0
+            )
+            if started > cutoff:
+                skipped_recent += 1
+                if verbose:
+                    print(
+                        f"  skip show {show_id[:12]}: started recently (< {threshold_seconds}s ago)"
+                    )
+                continue
+
+            if not await _show_children_all_terminal(db, show_id):
+                if verbose:
+                    print(f"  skip show {show_id[:12]}: has active child plays or no plays")
+                continue
+
+            if dry_run:
+                print(f"  (dry-run) would cancel stale show {show_id[:12]} (child-derived)")
+                killed += 1
+                continue
+
+            evidence = {
+                "kind": "child_stale_kill",
+                "reason": "all_child_plays_terminal",
+                "killed_at": time.time(),
+                "threshold_seconds": threshold_seconds,
+            }
+            if user_reason:
+                evidence["user_reason"] = user_reason
+            await _persist_cancel(
+                db,
+                "show",
+                show_id,
+                reason_code=RunReasons.CANCELLED_STALE_AUTO,
+                reason_summary=(
+                    f"Stale auto-cancel: all child plays terminated. {user_reason}".strip()
+                ),
+                evidence=evidence,
+            )
+            killed += 1
+            print(f"  cancelled stale show {show_id[:12]} (child-derived)")
 
     prefix = "(dry-run) would cancel" if dry_run else "cancelled"
     print(

@@ -131,7 +131,10 @@ def _validate_progression(value: Any, collections: dict[UUID, T], /) -> Progress
 
 
 def _validate_collections(value: Any, item_type: set | None, strict_type: bool, /) -> dict[str, T]:
-    if not value:
+    # Short-circuit genuinely empty input (None, empty list/dict/str) but NOT a
+    # single Observable that happens to be falsy — e.g. an empty Progression or
+    # Pile is a valid item whose len() is 0, and must not be silently dropped.
+    if not value and not isinstance(value, Observable):
         return {}
 
     value = to_list_type(value)
@@ -778,6 +781,14 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
     def _getitem(self, key: Any) -> Any | list | T:
         if key is None:
             raise ValueError("getitem key not provided.")
+
+        # A bare type queries by it: ``pile[FindingEmitted]`` → items that *are*
+        # (or carry a field of) that type, via a TypeFilter. Returns a filtered
+        # Pile, like a slice. A Filter instance is callable and handled below.
+        if isinstance(key, type):
+            from lionagi.ln.types import TypeFilter
+
+            return self._filter_by_function(TypeFilter(key))
 
         if callable(key) and not isinstance(key, (UUID, Element, type)):  # noqa: UP038
             return self._filter_by_function(key)

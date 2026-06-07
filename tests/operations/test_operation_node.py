@@ -191,9 +191,7 @@ async def test_operation_invoke_with_basemodel_params():
     await op.invoke()
 
     # Verify the method was called with unpacked parameters
-    branch.operate.assert_called_once_with(
-        instruction="Complex task", count=3, enabled=False
-    )
+    branch.operate.assert_called_once_with(instruction="Complex task", count=3, enabled=False)
 
     # Verify response
     assert op.response == {"operation": "operate", "result": "success"}
@@ -244,9 +242,7 @@ async def test_operation_invoke_all_operations():
 
     # Set up all mock methods
     branch.chat = AsyncMock(return_value="chat_response: test")
-    branch.operate = AsyncMock(
-        return_value={"operation": "operate", "result": "success"}
-    )
+    branch.operate = AsyncMock(return_value={"operation": "operate", "result": "success"})
     branch.communicate = AsyncMock(return_value="communicate_response")
     branch.parse = AsyncMock(return_value={"parsed": True})
     branch.ReAct = AsyncMock(return_value={"react": "result"})
@@ -303,10 +299,11 @@ async def test_operation_invoke_invalid_operation():
     # Then change to invalid type (bypassing validation)
     op.operation = "invalid_operation"
 
-    # Invoke should raise ValueError for unsupported operation
+    # invoke() is total: the unsupported-operation error is captured as FAILED state.
     _set_branch(op, branch)
-    with pytest.raises(ValueError, match="Unsupported operation type"):
-        await op.invoke()
+    await op.invoke()
+    assert op.execution.status == EventStatus.FAILED
+    assert "Unsupported operation type" in str(op.execution.error)
 
 
 @pytest.mark.asyncio
@@ -332,10 +329,9 @@ async def test_operation_invoke_exception_handling():
 
     op = Operation(operation="chat", parameters={"instruction": "This will fail"})
     _set_branch(op, branch)
-    with pytest.raises(RuntimeError, match="Test error occurred"):
-        await op.invoke()
+    await op.invoke()  # total: the error is captured as FAILED state, not re-raised
 
-    # Verify error handling — exception is recorded via add_error AND re-raised
+    # Verify error handling — exception is recorded via add_error, not re-raised
     assert op.execution.status == EventStatus.FAILED
     assert isinstance(op.execution.error, RuntimeError)
     assert str(op.execution.error) == "Test error occurred"
@@ -440,10 +436,7 @@ async def test_operation_concurrent_invocations():
     branch.get_operation = MagicMock(side_effect=mock_get_operation)
 
     # Create multiple operations
-    ops = [
-        Operation(operation="chat", parameters={"instruction": f"Task {i}"})
-        for i in range(5)
-    ]
+    ops = [Operation(operation="chat", parameters={"instruction": f"Task {i}"}) for i in range(5)]
 
     # Invoke all operations concurrently
     for op in ops:

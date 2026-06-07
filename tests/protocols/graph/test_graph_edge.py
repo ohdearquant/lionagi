@@ -281,17 +281,13 @@ class TestEdgeLabelInitCoverage:
     def test_invalid_label_raises(self):
         """Line 101: label=[1, 2] → ValueError."""
         h, t = _make_nodes()
-        with pytest.raises(
-            ValueError, match="Label must be a string or a list of strings"
-        ):
+        with pytest.raises(ValueError, match="Label must be a string or a list of strings"):
             Edge(h, t, label=[1, 2])
 
     def test_invalid_label_dict_raises(self):
         """Line 101: label=dict → ValueError."""
         h, t = _make_nodes()
-        with pytest.raises(
-            ValueError, match="Label must be a string or a list of strings"
-        ):
+        with pytest.raises(ValueError, match="Label must be a string or a list of strings"):
             Edge(h, t, label={"a": 1})
 
 
@@ -344,18 +340,14 @@ class TestEdgeLabelSetterCoverage:
         """Line 141: non-string list → ValueError."""
         h, t = _make_nodes()
         e = Edge(h, t)
-        with pytest.raises(
-            ValueError, match="Label must be a string or a list of strings"
-        ):
+        with pytest.raises(ValueError, match="Label must be a string or a list of strings"):
             e.label = [1, 2]
 
     def test_set_mixed_type_list_raises(self):
         """Line 141: mixed-type list → ValueError."""
         h, t = _make_nodes()
         e = Edge(h, t)
-        with pytest.raises(
-            ValueError, match="Label must be a string or a list of strings"
-        ):
+        with pytest.raises(ValueError, match="Label must be a string or a list of strings"):
             e.label = ["valid", 42]
 
 

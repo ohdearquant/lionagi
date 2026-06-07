@@ -24,9 +24,9 @@ async def test_save_definition_creates_db_row_and_file(tmp_path, monkeypatch):
     insert a row, then write the file.  It must NOT return success without a
     row in the definitions table.
     """
-    import apps.studio.server.services.definitions as defs_mod
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
 
     # Redirect LIONAGI_HOME → tmp dirs so no real agent/playbook dirs are needed
     fake_home = tmp_path / "lionagi_home"
@@ -83,9 +83,9 @@ async def test_save_definition_creates_db_row_and_file(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_save_definition_increments_version(tmp_path, monkeypatch):
     """Calling save_definition() twice for the same (kind, name) must increment version."""
-    import apps.studio.server.services.definitions as defs_mod
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -113,8 +113,8 @@ async def test_save_definition_increments_version(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_save_definition_unknown_kind_raises(tmp_path, monkeypatch):
     """save_definition() with an unknown kind must raise ValueError (not return success)."""
-    import apps.studio.server.services.definitions as defs_mod
     import lionagi.cli._runs as cli_runs_mod
+    import lionagi.studio.services.definitions as defs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -137,9 +137,9 @@ async def test_save_definition_unknown_kind_raises(tmp_path, monkeypatch):
 
 def _make_patched_client(tmp_path, monkeypatch):
     """Return a TestClient with definitions service redirected to tmp_path."""
-    import apps.studio.server.services.definitions as defs_mod
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -159,7 +159,7 @@ def _make_patched_client(tmp_path, monkeypatch):
 
     from fastapi.testclient import TestClient
 
-    from apps.studio.server.app import app
+    from lionagi.studio.app import app
 
     return TestClient(app)
 
@@ -167,12 +167,12 @@ def _make_patched_client(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "encoded_name",
     [
-        "%2A",       # URL-encoded * (glob wildcard)
-        "%2e%2e",    # URL-encoded .. (directory traversal)
-        "foo%2Fbar", # URL-encoded / (path separator — ASGI may split before service)
-        "foo%00bar", # NUL byte
-        "foo%3Fbar", # URL-encoded ? (glob metachar)
-        "%5B%5D",    # URL-encoded [] (glob metachar)
+        "%2A",  # URL-encoded * (glob wildcard)
+        "%2e%2e",  # URL-encoded .. (directory traversal)
+        "foo%2Fbar",  # URL-encoded / (path separator — ASGI may split before service)
+        "foo%00bar",  # NUL byte
+        "foo%3Fbar",  # URL-encoded ? (glob metachar)
+        "%5B%5D",  # URL-encoded [] (glob metachar)
     ],
 )
 @pytest.mark.integration
@@ -241,9 +241,9 @@ def test_rollback_definition_rejects_unsafe_name(encoded_name, tmp_path, monkeyp
 @pytest.mark.asyncio
 async def test_save_definition_accepts_safe_names(name, tmp_path, monkeypatch):
     """Normal safe names must not be rejected by the validation layer."""
-    import apps.studio.server.services.definitions as defs_mod
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -271,9 +271,9 @@ async def test_save_definition_accepts_safe_names(name, tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_save_definition_accepts_valid_kinds(kind, tmp_path, monkeypatch):
     """Valid kind values ('agent', 'playbook') must pass the validation gate."""
-    import apps.studio.server.services.definitions as defs_mod
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -313,9 +313,9 @@ async def test_concurrent_save_disk_reflects_highest_version(tmp_path, monkeypat
     """
     import asyncio
 
-    import apps.studio.server.services.definitions as defs_mod
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -373,9 +373,9 @@ async def test_save_definition_db_failure_does_not_write_file(tmp_path, monkeypa
     """When StateDB.save_definition() raises, the service must NOT write the
     disk file and must propagate the exception (so the router can return 500).
     """
-    import apps.studio.server.services.definitions as defs_mod
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -411,9 +411,9 @@ async def test_save_definition_db_failure_does_not_write_file(tmp_path, monkeypa
 
 def test_save_definition_db_failure_returns_500_from_router(tmp_path, monkeypatch):
     """The router must surface a DB failure as HTTP 500 (not 200)."""
-    import apps.studio.server.services.definitions as defs_mod
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()
@@ -438,7 +438,7 @@ def test_save_definition_db_failure_returns_500_from_router(tmp_path, monkeypatc
 
     from fastapi.testclient import TestClient
 
-    from apps.studio.server.app import app
+    from lionagi.studio.app import app
 
     client = TestClient(app, raise_server_exceptions=False)
     r = client.post(
@@ -465,9 +465,9 @@ async def test_get_definition_follows_symlink(tmp_path, monkeypatch):
     Fix: security is maintained by validate_name_component() on the route
     parameter, not by resolving symlink targets.
     """
-    import apps.studio.server.services.definitions as defs_mod
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
 
     # Set up an "external" target directory (simulates firm/agents/)
     external_dir = tmp_path / "firm" / "agents"
@@ -511,9 +511,9 @@ async def test_save_definition_writes_through_symlink(tmp_path, monkeypatch):
     already exists, _find_definition_file returns it, and write_text follows
     symlinks by default on POSIX).
     """
-    import apps.studio.server.services.definitions as defs_mod
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
 
     external_dir = tmp_path / "firm" / "agents"
     external_dir.mkdir(parents=True)
@@ -562,7 +562,7 @@ def test_find_definition_file_missing_base_returns_none(tmp_path):
     without an existence check, causing FileNotFoundError on a fresh home where
     the kind directory has not yet been created.
     """
-    from apps.studio.server.services.definitions import _find_definition_file
+    from lionagi.studio.services.definitions import _find_definition_file
 
     missing_base = tmp_path / "does_not_exist"
     # Must not raise FileNotFoundError
@@ -579,9 +579,9 @@ async def test_save_definition_fresh_home_no_kind_dir(tmp_path, monkeypatch):
     FileNotFoundError in the slow-path iterdir.  After the fix, it returns None
     and falls back to the default disk_file path, then creates the directory.
     """
-    import apps.studio.server.services.definitions as defs_mod
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
 
     fake_home = tmp_path / "lionagi_home"
     fake_home.mkdir()

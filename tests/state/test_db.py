@@ -198,6 +198,8 @@ async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
             # ADR-0029: new artifact columns must be reconciled on old DBs.
             "artifact_contract_json",
             "artifact_verification_json",
+            # #1235: live flow phase column for `li monitor`.
+            "current_phase",
         ):
             assert must_have in cols, f"sessions.{must_have} not migrated"
         cur = await db.db.execute("PRAGMA table_info(branches)")
@@ -404,6 +406,15 @@ async def test_update_session_rejects_bad_columns(db: StateDB):
     s = await _make_session(db)
     with pytest.raises(ValueError, match="Invalid column"):
         await db.update_session(s["id"], nonexistent_column="boom")
+
+
+async def test_update_session_current_phase(db: StateDB):
+    """#1235: current_phase round-trips for the `li monitor` PHASE column."""
+    s = await _make_session(db, status="running")
+    assert (await db.get_session(s["id"]))["current_phase"] is None
+
+    await db.update_session(s["id"], current_phase="executing")
+    assert (await db.get_session(s["id"]))["current_phase"] == "executing"
 
 
 async def test_list_sessions_by_status(db: StateDB):

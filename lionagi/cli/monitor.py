@@ -150,8 +150,13 @@ async def _query_running_sessions(
     *,
     since: float | None = None,
     project: str | None = None,
+    invocation_kind: str | None = None,
 ) -> list[dict[str, Any]]:
-    query = "SELECT * FROM sessions WHERE status = 'running'"
+    query = (
+        "SELECT sessions.*, "
+        "(SELECT COUNT(*) FROM branches WHERE session_id = sessions.id) AS branch_count "
+        "FROM sessions WHERE status = 'running'"  # noqa: S608
+    )
     params: list[Any] = []
     if since is not None:
         query += " AND updated_at >= ?"
@@ -159,6 +164,9 @@ async def _query_running_sessions(
     if project:
         query += " AND project = ?"
         params.append(project)
+    if invocation_kind is not None:
+        query += " AND invocation_kind = ?"
+        params.append(invocation_kind)
     query += " ORDER BY started_at DESC"
     cur = await db.db.execute(query, params)
     rows = await cur.fetchall()
@@ -204,7 +212,11 @@ async def _query_running_plays(
 ) -> list[dict[str, Any]]:
     running_statuses = ("running", "running_complete", "gated", "redoing", "prepared")
     placeholders = ",".join("?" * len(running_statuses))
-    query = f"SELECT * FROM plays WHERE status IN ({placeholders})"  # noqa: S608
+    query = (
+        f"SELECT plays.*, "  # noqa: S608
+        f"(SELECT COUNT(*) FROM branches WHERE session_id = plays.session_id) AS branch_count "
+        f"FROM plays WHERE status IN ({placeholders})"
+    )
     params: list[Any] = list(running_statuses)
     if since is not None:
         query += " AND updated_at >= ?"
@@ -391,9 +403,13 @@ def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
         "type": sess.get("invocation_kind") or "session",
         "project": sess.get("project") or "-",
         "status": sess.get("status") or "?",
-        "phase": sess.get("agent_name") or sess.get("playbook_name") or "-",
+        # #1235: live flow phase (executing/synthesizing) wins over the
+        # static orchestrator/playbook name once a flow leaves planning.
+        "phase": (
+            sess.get("current_phase") or sess.get("agent_name") or sess.get("playbook_name") or "-"
+        ),
         "elapsed": _elapsed(sess.get("started_at"), sess.get("ended_at")),
-        "agents": "-",
+        "agents": str(sess.get("branch_count") or 0),
     }
 
 
@@ -429,7 +445,7 @@ def _play_to_row(play: dict[str, Any]) -> dict[str, Any]:
         "status": play.get("status") or "?",
         "phase": _trunc(play.get("name") or "-", 18),
         "elapsed": _elapsed(play.get("started_at"), play.get("ended_at")),
-        "agents": "-",
+        "agents": str(play.get("branch_count") or 0),
     }
 
 
@@ -618,8 +634,13 @@ async def _gather_table_rows(
     """Collect entity rows across all tables and convert to table-row dicts."""
     rows: list[dict[str, Any]] = []
 
-    if entity_type in (None, "session", "agent", "play_session"):
-        sessions = await _query_running_sessions(db, since=since, project=project)
+    if entity_type in (None, "session", "agent", "play_session", "play"):
+        # For specific type filters, restrict to sessions whose invocation_kind matches.
+        # "session" (no filter) and None (all) show every running session.
+        inv_kind = entity_type if entity_type not in (None, "session") else None
+        sessions = await _query_running_sessions(
+            db, since=since, project=project, invocation_kind=inv_kind
+        )
         rows.extend(_session_to_row(s) for s in sessions)
 
     if entity_type in (None, "invocation"):

@@ -4,6 +4,195 @@
 All notable changes to lionagi are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.26.16] - 2026-06-06
+
+### Fixed
+
+- **Codex silent failures** — `turn.failed`/`error` events were swallowed;
+  now yield `StreamChunk(type="error")`. (#1272)
+- **Codex `fast_mode`** — `service_tier=flex` → `service_tier=fast`. (#1272)
+
+### Changed
+
+- **Unified CLI provider types** — remove `ClaudeChunk`/`CodexChunk` and
+  `ClaudeSession`/`CodexSession`; shared `CLISession` + `StreamChunk`
+  passthrough. −255 lines. (#1272)
+
+## [0.26.15] - 2026-06-02
+
+Reactive orchestration, domain engines, observer-as-hook-transport.
+
+### Added
+
+- **Reactive self-expanding flow** — `SpawnRequest` injects nodes into a
+  running DAG; CLI rewired onto casts + emissions.
+- **Domain engines** (ADR-0075) — `PlanningEngine`, `ResearchEngine`,
+  `ReviewEngine`; `li o flow` routes through `run_dag`.
+- **Observer-as-hook transport** (ADR-0076) — emission/control/lifecycle
+  extracted to `_observe.py`; API-model agents drive the bus.
+- **Hook bus persistence** (ADR-0023b), pre-invoke governance gate,
+  `li o flow --workers`, compositional filter DSL.
+- **SWE-bench harness** — real instances, deterministic oracle, blind
+  judge, per-dollar verdict.
+- **Daytona sandbox** — isolated containers + context tool + tool guidance.
+
+### Fixed
+
+- **Roled agents lost tool-use** — `with_updates` dropped response schema.
+- **Studio show-detail 404** in Docker + stale frontend build.
+- **Daytona shell injection** — cwd now shell-quoted.
+- **Codex `skip_git_repo_check`** defaulted to `True`.
+
+## [0.26.14] - 2026-05-30
+
+### Fixed
+
+- **Dockerfile CMD target** — Docker image CMD still referenced the old
+  `apps.studio.server.app:app` after the backend moved to `lionagi/studio/`
+  in v0.26.13. Updated to `lionagi.studio.app:app`. Also added
+  `MARKETPLACE_MANIFEST` fallback for pip-installed environments.
+- **Dropped `[nlip]` optional dep group** — removed from pyproject.toml;
+  users who need nlip install `ag2[nlip]` directly. Starlette pinned
+  `>=0.46.2,<1.0` for FastAPI 0.115 compat.
+
+## [0.26.13] - 2026-05-30
+
+Universal AgentSpec, inline emission contracts, loop control, Studio in-wheel, and a large CLI/Studio bug-fix sweep.
+
+### Added
+
+- **Inline-Python roles/modes + emission contracts** — roles and modes are now a
+  closed, built-in set defined in Python (`casts/roles/*.py`, `casts/roles/modes/*.py`),
+  replacing the `.md` files and the string-keyed `ROLE_CAPABILITIES` dict. Each
+  `Role` co-locates its emission contract (`emits`) with a 22-model emission
+  ontology in `casts/emission.py`. Bad references are import errors, not silent
+  `None`. (#1224)
+- **Universal AgentSpec** — `AgentSpec` replaces `AgentConfig` as the primary
+  agent creation surface. Composes `Profile` (frozen `Role + tuple[Mode]` with
+  mode conflict detection) + model/tools/permissions/pack/emission grant.
+  `from_legacy()` bridge preserves backward compatibility. Pack policy block
+  rendered into system prompt. (#1227, closes #1212, #1213)
+- **Loop control** — `LoopDirective` enum (CONTINUE/CANCEL/BREAK),
+  `Branch.control()`/`poll_control()` one-shot API, `_check_control` seam in
+  the `run()` stream loop. Observers can cleanly stop a running stream. (#1226)
+- **`li schedule` CLI** — `li schedule list/get/create/enable/disable/trigger/
+  delete/runs` wired to Studio REST API. Stdlib `urllib` only — no new deps.
+  (#1218, closes #1165)
+- **`li play` heartbeat/watchdog** — per-op heartbeat every 60s so flow.log
+  never goes silent; 10-min idle stall warning; smart staleness for
+  `li kill --all-stale` (child-derived sweep for plays/shows). (#1217,
+  closes #1150, #1144)
+- **`li play --help` common flags** — shows `--bypass`, `--team-mode`,
+  `--timeout`, `--save`, `--cwd`, `--effort`, `--yolo`. (#1218, closes #1194)
+- **Observe-by-role** — `RoleFilter` and `role=` keyword on
+  `SessionObserver.observe`/`Session.observe`; subscribe to "anything emitted by
+  role X" without enumerating types. `Signal.emitter_role` field. (#1219,
+  closes #1208)
+
+### Changed
+
+- **Studio backend moved into `lionagi/studio/`** — ships with the Python wheel;
+  `pip install lionagi[studio]` now includes the backend. `li studio` uvicorn
+  target updated. Frontend stays in `apps/studio/`. (#1228, supersedes #1201)
+- **Non-blocking observer dispatch** — `_emit_message_signal` scheduled as
+  background `asyncio.Task`; all tasks drained in `finally`. Async handlers in
+  `observer.emit()` run concurrently via `ln.gather` (structured concurrency)
+  instead of serially. (#1219, closes #1214)
+- **CLI orchestration wiring** — `FlowAgent` gains `modes`/`permissions`;
+  planner roster built from casts ontology; plan validation for unknown
+  roles/modes/permission presets; permission translation for claude_code
+  provider. (#1227)
+- **Dropped `[nlip]` optional dependency group** — `ag2[nlip]` removed from
+  optional deps and `[sandbox]`; users who need nlip install `ag2[nlip]`
+  directly. Starlette pinned `>=0.46.2,<1.0`. (#1218, closes #1133)
+
+### Fixed
+
+- **Codex stdin hang** — both codex and claude_code subprocess providers now
+  redirect `stdin` to `DEVNULL`, preventing fd contention when multiple agents
+  run concurrently. (#1216, closes #1158)
+- **`--bypass` silently ignored** — `bypass=True` now injects provider-specific
+  kwargs (codex: `bypass_approvals`; claude: `permission_mode`). (#1216,
+  closes #1158)
+- **Timeout discards partial output** — `_extract_partial_output()` preserves
+  the last assistant message on hard timeout. (#1216, closes #1152)
+- **Progress heartbeat** — 60s heartbeat when `--timeout` is set. (#1216,
+  closes #1154)
+- **`response_format` serialization** — `InstructionContent.to_dict` now
+  includes `response_format` when it's a plain dict. (#1219, closes #1160)
+- **Studio API_BASE 404** — `resolveApiBase()` fallback changed from `""` to
+  `http://localhost:8765`. Fixes empty playbooks/skills pages. (#1220,
+  closes #1215, #1157, #1156)
+- **Studio MODEL column** — runs table cell count matched to header; Model
+  column now renders. (#1220, closes #1167)
+- **Studio dashboard staleness** — stale card hint corrected; show-status synced
+  from filesystem; orphaned Health column removed; Projects breadcrumb and
+  favicon fixed. (#1221, closes #1162, #1161, #1176, #1168)
+- **`li monitor` type filter** — `--type play` now queries sessions with
+  `invocation_kind='play'`; AGENTS column shows actual branch count;
+  play↔monitor correlation via pre-generated UUID. (#1223, closes #1192,
+  #1193, #1191)
+- **Studio cwd** — `li studio` works from any directory (superseded by
+  in-wheel move). (#1218, closes #1201)
+- **Codex `service_tier`** — changed from `priority` (unsupported, caused
+  hangs) to `flex`.
+
+## [0.26.12] - 2026-05-29
+
+Reactive capability bus + casts Role/Mode composition.
+
+### Added
+
+- **Reactive capability bus** (ADR-0072) — an agent's turn becomes an
+  observable, typed event stream. A *capability* is a named, typed
+  structured-output field an agent may emit inline as a fenced ```json block in
+  its ordinary text; a `SessionObserver` dispatches each to handlers in real
+  time, mid-run, without a dedicated emit tool. Built on lionagi's own
+  primitives (`Element`/`Pile`/`Flow`/`Observer`). (#1204, #1206, #1207)
+  - `Signal` / `StructuredOutput` envelopes, plus run-lifecycle
+    `RunStart` / `RunEnd` / `RunFailed` signals.
+  - **Filter DSL** (`lionagi.ln.types`): `TypeFilter`, `SpecFilter`,
+    `FieldRef` (via `Spec.q`), composable with `& | ~`. Subscribe by type
+    (`session.observe(Finding)`) or by named-field value
+    (`session.observe(flower.q == "rose")`).
+  - `branch.grant_capabilities(operable)` opts a branch into per-message
+    emission and injects a schema-derived instruction block; the legality rule
+    is `set(keys) ⊆ grant`, with over-grant attempts surfaced as an observable
+    `CapabilityViolation`. `response_format` (strict final parse) and
+    capabilities (per-message emission) remain orthogonal knobs.
+- **Casts Role/Mode pattern** — a thin `Pattern` dataclass with a dense
+  built-in role roster and a default operational pack; `AgentConfig` composes
+  `role` + `modes` into the system prompt. (#1200, #1202, #1205)
+- **`Structure` / `JsonStructure`** (`protocols/structure/`) — composable
+  schema builders wrapping `Operable`, handling both `BaseModel` and `dict`
+  response formats as first-class citizens. Wired through `ChatParam` /
+  `ParseParam`; `communicate()` and `run_and_collect()` extract the structure
+  from the instruction as the single source of truth for rendering + parsing.
+  (#1159)
+- **`lionagi.testing`** module — test infrastructure shipped with the library
+  so the CLI and downstream consumers can be tested without real API calls:
+  `ScriptedEndpoint` (`provider="scripted"`), `ScriptModel` (YAML/JSON/dict
+  fixtures with positional + `when:` matching), and `TestBranch` factories.
+  Consolidates 20+ ad-hoc inline mocks. (#1151)
+
+### Changed
+
+- **`InstructionContent` refactored** to delegate rendering/parsing to an
+  auto-created `JsonStructure` when `response_format` is set. Removes the
+  internal `_schema_dict`, `_model_class`, `custom_renderer`,
+  `structure_format`, `render()`, `response_model_cls`, and `schema_dict`
+  members. Public `branch.operate`/`communicate` behavior is unchanged. (#1159)
+
+### Fixed
+
+- **`Pile.include` dropped falsy `Observable` items** — items whose truthiness
+  is `False` were silently skipped on include. (#1203)
+
+### Docs
+
+- Governance ADR series 0053–0070, charter DSL v0, and governance standards;
+  OSS-purity cleanup of the ADR corpus. (#1185, #1190)
+
 ## [0.26.11] - 2026-05-25
 
 ### Fixed

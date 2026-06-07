@@ -74,9 +74,15 @@ async def test_setup_creates_session_branch_progression_rows(
     assert ctx["branch_prog_id"]
     assert ctx["existing_msg_ids"] == set()
     assert ctx["new_msg_ids"] == []
-    # The hook was registered (exactly once) on the branch.
-    assert ctx["hook"] in branch.on_message_added
-    assert sum(1 for h in branch.on_message_added if h is ctx["hook"]) == 1
+    # Persistence rides the hook bus (ADR-0023b): the persist handler is on the
+    # session bus, and the branch's emit hook drives MESSAGE_ADD.
+    from lionagi.hooks.bus import HookPoint
+
+    bus = branch._hooks
+    assert bus is not None
+    assert ctx["hook"] in bus.handlers_for(HookPoint.MESSAGE_ADD)
+    assert sum(1 for h in bus.handlers_for(HookPoint.MESSAGE_ADD) if h is ctx["hook"]) == 1
+    assert branch._persist_via_bus in branch.on_message_added
 
     # Spot-check the DB rows landed.
     async with StateDB() as db:
@@ -143,8 +149,9 @@ async def test_setup_db_open_failure_disables_persist_no_thread_leak(
     ctx = await _setup_live_persist(branch)
 
     assert ctx is None
-    # The hook was NEVER registered when setup failed.
-    assert branch.on_message_added == []
+    # The PERSISTENCE hook was NEVER registered when setup failed — only the
+    # branch's baseline signal-emission hook (_schedule_emit) remains.
+    assert branch.on_message_added == [branch._schedule_emit]
     # No leaked aiosqlite worker — the count is stable.
     assert _aiosqlite_thread_count() == before
 
@@ -176,7 +183,8 @@ async def test_setup_create_session_failure_closes_db(
     ctx = await _setup_live_persist(branch)
 
     assert ctx is None
-    assert branch.on_message_added == []
+    # Only the baseline signal-emission hook remains; no persistence hook.
+    assert branch.on_message_added == [branch._schedule_emit]
     # Give aiosqlite a moment to join its thread after close().
     for _ in range(20):
         if _aiosqlite_thread_count() == before:
@@ -357,22 +365,25 @@ async def test_teardown_updates_session_bookmarks_and_status(
     assert s["ended_at"] is not None
 
 
-async def test_teardown_removes_all_duplicate_hook_registrations(
+async def test_teardown_detaches_persistence_from_bus(
     temp_db_path: Path,
 ):
-    """If the same hook callable is appended twice (test/dev mistake or
-    a re-entrant setup), teardown removes ALL copies — not just the
-    first — so a closed-DB hook cannot survive teardown.
+    """Teardown detaches the persistence handler from the session hook bus and
+    the emit hook (_persist_via_bus) from the branch (ADR-0023b), so a closed-DB
+    handler cannot survive teardown and fire on later messages.
     """
+    from lionagi.hooks.bus import HookPoint
+
     branch = Branch(name="b1")
     ctx = await _setup_live_persist(branch)
-    # Register the same hook a second time on purpose.
-    branch.on_message_added.append(ctx["hook"])
-    assert sum(1 for h in branch.on_message_added if h is ctx["hook"]) == 2
+    bus = branch._hooks
+    assert ctx["hook"] in bus.handlers_for(HookPoint.MESSAGE_ADD)
+    assert branch._persist_via_bus in branch.on_message_added
 
     await _teardown_live_persist(ctx, status="completed")
 
-    assert sum(1 for h in branch.on_message_added if h is ctx["hook"]) == 0
+    assert ctx["hook"] not in bus.handlers_for(HookPoint.MESSAGE_ADD)
+    assert branch._persist_via_bus not in branch.on_message_added
 
 
 async def test_teardown_closes_db_even_if_bookmark_update_fails(

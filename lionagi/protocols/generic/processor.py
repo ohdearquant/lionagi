@@ -132,10 +132,6 @@ class Processor(Observer):
         """
         return await self.queue.get()
 
-    async def join(self) -> None:
-        """Blocks until the queue is empty and all tasks are done."""
-        await self.queue.join()
-
     async def stop(self) -> None:
         """Signals the processor to stop processing events."""
         self._stop_event.set()
@@ -173,67 +169,112 @@ class Processor(Observer):
         Marks events as PROCESSING, invokes them asynchronously, and waits
         for tasks to complete. Resets capacity afterward if any events
         were processed.
+
+        A denied event is never silently dropped:
+
+        - a *terminal* denial (``handle_denied`` returns ``True``) gives the
+          event a terminal status (e.g. ``SKIPPED``) and frees its slot;
+        - a *deferred* denial (``handle_denied`` returns ``False`` — e.g. rate
+          limiting) re-enqueues the event so a later ``process()`` cycle (or a
+          concurrent ``forward()``) retries it once capacity replenishes,
+          instead of dropping it out of the queue while leaving it ``PENDING``.
+
+        The cycle stops once every still-queued event has been deferred, so a
+        saturated limit cannot busy-spin the loop.
         """
-        prev_event: Event | None = None
         events_processed = 0
+        deferred = 0
 
         async with create_task_group() as tg:
             while self.available_capacity > 0 and not self.queue.empty():
-                next_event = None
-                if prev_event and prev_event.status == EventStatus.PENDING:
-                    # Wait if previous event is still pending
-                    await anyio.sleep(self.capacity_refresh_time)
-                    next_event = prev_event
-                else:
-                    next_event = await self.dequeue()
+                next_event = await self.dequeue()
 
-                if await self.request_permission(**next_event.request):
-                    if next_event.streaming:
-                        # For streaming, we need to consume the async generator.
-                        # Catch exceptions so TaskGroup is not aborted — event
-                        # status is already FAILED/CANCELLED before the raise.
-                        async def consume_stream(event):
-                            try:
-                                async for _ in event.stream():
-                                    pass
-                            except Exception:
-                                pass  # Status already recorded by Event.stream()
-
-                        if self._concurrency_sem:
-
-                            async def stream_with_sem(event):
-                                async with self._concurrency_sem:
-                                    await consume_stream(event)
-
-                            tg.start_soon(stream_with_sem, next_event)
-                        else:
-                            tg.start_soon(consume_stream, next_event)
+                if not await self.request_permission(**next_event.request):
+                    if await self.handle_denied(next_event):
+                        # Terminal denial: the event now holds a terminal
+                        # status; consume its capacity slot and move on.
+                        self._available_capacity -= 1
                     else:
-                        # For non-streaming, just invoke.
-                        # Catch exceptions so TaskGroup is not aborted — event
-                        # status is already FAILED/CANCELLED before the raise.
-                        async def _invoke_safe(event):
-                            try:
+                        # Deferred denial: put the event back so it is retried
+                        # rather than lost. Do NOT consume capacity — the event
+                        # has not been processed.
+                        await self.enqueue(next_event)
+                        deferred += 1
+                        if deferred >= self.queue.qsize():
+                            # Every queued event has been deferred this lap;
+                            # capacity is exhausted for now. Stop to avoid
+                            # busy-spinning until the limit replenishes.
+                            break
+                    continue
+
+                # invoke()/stream() are total: a business failure is captured
+                # as FAILED status, not raised, so one event's failure never
+                # aborts the TaskGroup. Cancellation (BaseException) still
+                # propagates — correctly aborting the group.
+                if next_event.streaming:
+
+                    async def consume_stream(event):
+                        async for _ in event.stream():
+                            pass
+
+                    if self._concurrency_sem:
+
+                        async def stream_with_sem(event):
+                            async with self._concurrency_sem:
+                                await consume_stream(event)
+
+                        tg.start_soon(stream_with_sem, next_event)
+                    else:
+                        tg.start_soon(consume_stream, next_event)
+                else:
+                    if self._concurrency_sem:
+
+                        async def invoke_with_sem(event):
+                            async with self._concurrency_sem:
                                 await event.invoke()
-                            except Exception:
-                                pass  # Status already recorded by Event.invoke()
 
-                        if self._concurrency_sem:
+                        tg.start_soon(invoke_with_sem, next_event)
+                    else:
+                        tg.start_soon(next_event.invoke)
 
-                            async def invoke_with_sem(event):
-                                async with self._concurrency_sem:
-                                    await _invoke_safe(event)
-
-                            tg.start_soon(invoke_with_sem, next_event)
-                        else:
-                            tg.start_soon(_invoke_safe, next_event)
-                    events_processed += 1
-
-                prev_event = next_event
+                events_processed += 1
+                deferred = 0
                 self._available_capacity -= 1
 
         if events_processed > 0:
             self.available_capacity = self.queue_capacity
+
+    async def join(self) -> None:
+        """Block until the queue is drained of processable work.
+
+        Retained as part of the public :class:`Processor` API. The previous
+        implementation polled a ``_processing_count`` counter that was never
+        accurately maintained; this version has corrected semantics built on
+        the current ``process()`` contract:
+
+        - ``process()`` awaits its task group, so every event it *dispatches*
+          has completed by the time it returns.
+        - It re-enqueues events deferred by backpressure (e.g. rate limiting)
+          rather than dropping them.
+
+        ``join()`` therefore loops ``process()`` until the queue is empty.
+        When a cycle makes no progress (every remaining event was deferred and
+        re-enqueued), it sleeps one ``capacity_refresh_time`` so a replenisher
+        (or capacity refresh) can free budget before retrying — matching how
+        the rest of the system clears deferred work. It returns once the queue
+        is empty.
+
+        Note: like the original, ``join()`` waits for work to drain; if events
+        are permanently deferred with nothing replenishing capacity, it will
+        keep waiting. Pair rate-limited processors with their replenisher task.
+        """
+        while not self.queue.empty():
+            before = self.queue.qsize()
+            await self.process()
+            if not self.queue.empty() and self.queue.qsize() >= before:
+                # No progress this cycle: all remaining events were deferred.
+                # Yield so capacity can replenish before the next attempt.
+                await anyio.sleep(self.capacity_refresh_time)
 
     async def request_permission(self, **kwargs: Any) -> bool:
         """Determines if an event may proceed.
@@ -247,6 +288,23 @@ class Processor(Observer):
         Returns:
             bool: True if the event is allowed, False otherwise.
         """
+        return True
+
+    async def handle_denied(self, event: Event) -> bool:
+        """Handle an event whose ``request_permission`` returned False.
+
+        Called once per denied event, after it has been dequeued. Returns
+        whether the denial is *terminal*:
+
+        - ``True`` (default): the denial is a rejection. The base marks the
+          event ``SKIPPED`` (a terminal status) so it is not left stuck
+          ``PENDING`` outside the queue, and ``process()`` frees its slot.
+        - ``False``: the denial is a *deferral* ("try again shortly" rather
+          than "reject"). ``process()`` re-enqueues the event so a later cycle
+          retries it. Subclasses whose denial is rate-limit backpressure (e.g.
+          :class:`RateLimitedAPIProcessor`) override this to return ``False``.
+        """
+        event.status = EventStatus.SKIPPED
         return True
 
     async def execute(self) -> None:
@@ -423,12 +481,8 @@ class Executor(Observer):
             "total_events": len(self.pile),
             "status_counts": self.status_counts(),
             "pending_queue": len(self.pending),
-            "processor_running": (
-                self.processor.execution_mode if self.processor else False
-            ),
-            "processor_stopped": (
-                self.processor.is_stopped() if self.processor else True
-            ),
+            "processor_running": (self.processor.execution_mode if self.processor else False),
+            "processor_stopped": (self.processor.is_stopped() if self.processor else True),
         }
 
     def __contains__(self, ref: ID[Event].Ref) -> bool:

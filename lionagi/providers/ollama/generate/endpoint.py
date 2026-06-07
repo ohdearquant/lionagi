@@ -18,7 +18,6 @@ from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.utils import is_import_installed
 
 from .._config import OllamaConfigs
-from .models import OllamaGenerateRequest
 
 __all__ = ("OllamaGenerateEndpoint",)
 

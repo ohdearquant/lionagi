@@ -50,14 +50,18 @@ async def test_create_agent_default_no_coding_tools():
 # ---------------------------------------------------------------------------
 
 
-_CODING_TOOLS = {"reader", "editor", "bash", "search", "context", "sandbox", "subagent"}
+# Lean default — context/sandbox/subagent are opt-in, not registered by default.
+_CODING_TOOLS = {"reader", "editor", "bash", "search"}
+_EXTRA_CODING_TOOLS = {"context", "sandbox", "subagent"}
 
 
-async def test_create_agent_coding_preset_registers_7_tools():
+async def test_create_agent_coding_preset_registers_core_tools():
     config = AgentConfig.coding()
     branch = await _make(config)
-    registered_coding = _CODING_TOOLS.intersection(branch.acts.registry.keys())
-    assert registered_coding == _CODING_TOOLS
+    registry = set(branch.acts.registry.keys())
+    assert _CODING_TOOLS.issubset(registry)
+    # extras must NOT be registered by default
+    assert not _EXTRA_CODING_TOOLS.intersection(registry)
 
 
 async def test_create_agent_coding_preset_tool_names():
@@ -73,9 +77,7 @@ async def test_create_agent_coding_all_tools_async():
     config = AgentConfig.coding()
     branch = await _make(config)
     for name, tool in branch.acts.registry.items():
-        assert asyncio.iscoroutinefunction(
-            tool.func_callable
-        ), f"Tool '{name}' is not async"
+        assert asyncio.iscoroutinefunction(tool.func_callable), f"Tool '{name}' is not async"
 
 
 # ---------------------------------------------------------------------------
@@ -170,18 +172,14 @@ async def test_create_agent_load_settings_false_no_side_effects(monkeypatch):
         called.append(True)
         return {}
 
-    monkeypatch.setattr(
-        "lionagi.agent.settings.load_settings", fake_load, raising=False
-    )
+    monkeypatch.setattr("lionagi.agent.settings.load_settings", fake_load, raising=False)
 
     config = AgentConfig()
     await create_agent(config, load_settings=False)
     assert called == [], "load_settings was called despite load_settings=False"
 
 
-async def test_create_agent_does_not_autoload_project_mcp_without_trust(
-    tmp_path, monkeypatch
-):
+async def test_create_agent_does_not_autoload_project_mcp_without_trust(tmp_path, monkeypatch):
     from lionagi.protocols.action.manager import ActionManager
 
     project = tmp_path / "project"
@@ -282,9 +280,7 @@ async def test_create_agent_parses_model_provider_effort_and_yolo_kwargs(monkeyp
     import lionagi.cli._providers as providers_mod
     import lionagi.service.imodel as imodel_mod
 
-    monkeypatch.setitem(
-        providers_mod.PROVIDER_EFFORT_KWARG, "openai", "reasoning_effort"
-    )
+    monkeypatch.setitem(providers_mod.PROVIDER_EFFORT_KWARG, "openai", "reasoning_effort")
     monkeypatch.setitem(providers_mod.PROVIDER_YOLO_KWARGS, "openai", {"stream": True})
 
     real_init = imodel_mod.iModel.__init__
@@ -311,9 +307,7 @@ async def test_create_agent_parses_model_provider_effort_and_yolo_kwargs(monkeyp
 # ---------------------------------------------------------------------------
 
 
-async def test_create_agent_does_not_load_project_settings_without_trust(
-    tmp_path, monkeypatch
-):
+async def test_create_agent_does_not_load_project_settings_without_trust(tmp_path, monkeypatch):
     import lionagi.agent.settings as settings_mod
 
     (tmp_path / ".lionagi").mkdir(parents=True)
@@ -386,9 +380,7 @@ async def test_create_agent_model_without_slash_uses_model_as_provider(monkeypat
 
 
 async def test_create_agent_system_prompt_without_lion_system():
-    config = AgentConfig(
-        system_prompt="You are a helpful assistant.", lion_system=False
-    )
+    config = AgentConfig(system_prompt="You are a helpful assistant.", lion_system=False)
     branch = await create_agent(config, load_settings=False)
     sys_msg = branch.msgs.system
     assert sys_msg is not None
@@ -495,7 +487,6 @@ async def test_attach_hooks_adds_postprocessor_for_standalone_tool():
 
 
 async def test_register_coding_tools_skips_malformed_keys():
-
     config = AgentConfig.coding()
     config.hook_handlers["malformed_no_colon"] = [lambda *a: None]
     branch = await _make(config)
@@ -570,3 +561,31 @@ async def test_load_mcp_breaks_at_lionagi_dir(tmp_path, monkeypatch):
     )
 
     assert calls and calls[0] == str(mcp_file)
+
+
+# ---------------------------------------------------------------------------
+# Search tool workspace containment wiring (regression)
+# ---------------------------------------------------------------------------
+
+
+async def test_search_tool_gets_workspace_root_from_cwd(tmp_path):
+    """tools=["search"] must wire spec.cwd into SearchTool.workspace_root.
+
+    Regression: the standalone search branch registered SearchTool() with no
+    workspace_root, so normal agents got no containment. Here a search outside
+    the configured cwd must be rejected fail-closed.
+    """
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    config = AgentConfig(tools=["search"], cwd=str(ws))
+    branch = await _make(config)
+
+    key = next(k for k in branch.acts.registry.keys() if "search" in k)
+    tool = branch.acts.registry[key]
+
+    result = await tool.func_callable(action="grep", pattern="x", path=str(outside))
+    assert result["success"] is False
+    assert "workspace root" in (result.get("error") or "")

@@ -21,7 +21,7 @@ class TestOpenDb:
     @pytest.mark.integration
     def test_open_db_sets_wal_mode(self, tmp_path):
         """open_db() must switch the connection to WAL journal mode."""
-        from apps.studio.server.services._db import open_db
+        from lionagi.studio.services._db import open_db
 
         db_path = str(tmp_path / "test.db")
 
@@ -37,7 +37,7 @@ class TestOpenDb:
     @pytest.mark.integration
     def test_open_db_sets_busy_timeout(self, tmp_path):
         """open_db() must set busy_timeout = 5000 ms."""
-        from apps.studio.server.services._db import open_db
+        from lionagi.studio.services._db import open_db
 
         db_path = str(tmp_path / "test.db")
 
@@ -53,7 +53,7 @@ class TestOpenDb:
     @pytest.mark.integration
     def test_open_db_sets_row_factory(self, tmp_path):
         """open_db() must set row_factory so rows are accessible by column name."""
-        from apps.studio.server.services._db import open_db
+        from lionagi.studio.services._db import open_db
 
         db_path = str(tmp_path / "test.db")
 
@@ -75,7 +75,7 @@ class TestOpenDb:
         """sessions.py must import and use _open_db (not bare aiosqlite.connect)."""
         import inspect
 
-        import apps.studio.server.services.sessions as sessions_mod
+        import lionagi.studio.services.sessions as sessions_mod
 
         src = inspect.getsource(sessions_mod)
         # Verify _open_db is imported
@@ -86,21 +86,17 @@ class TestOpenDb:
         for line in src.splitlines():
             stripped = line.strip()
             if "aiosqlite.connect(" in stripped and not stripped.startswith("#"):
-                raise AssertionError(
-                    f"sessions.py still uses bare aiosqlite.connect(): {line!r}"
-                )
+                raise AssertionError(f"sessions.py still uses bare aiosqlite.connect(): {line!r}")
 
     def test_shows_service_uses_open_db(self):
         """shows.py must import and use _open_db (not bare aiosqlite.connect)."""
         import inspect
 
-        import apps.studio.server.services.shows as shows_mod
+        import lionagi.studio.services.shows as shows_mod
 
         src = inspect.getsource(shows_mod)
         assert "_open_db" in src, "shows.py must import open_db as _open_db"
         for line in src.splitlines():
             stripped = line.strip()
             if "aiosqlite.connect(" in stripped and not stripped.startswith("#"):
-                raise AssertionError(
-                    f"shows.py still uses bare aiosqlite.connect(): {line!r}"
-                )
+                raise AssertionError(f"shows.py still uses bare aiosqlite.connect(): {line!r}")

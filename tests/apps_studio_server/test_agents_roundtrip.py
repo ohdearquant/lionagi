@@ -27,7 +27,7 @@ def _write_agent_md(path, content: str) -> None:
 
 def _make_agents_root(tmp_path, monkeypatch):
     """Point _AGENTS_ROOT at a temp directory."""
-    import apps.studio.server.services.agents as agents_mod
+    import lionagi.studio.services.agents as agents_mod
 
     root = tmp_path / "agents"
     root.mkdir()
@@ -42,7 +42,7 @@ def _make_agents_root(tmp_path, monkeypatch):
 
 def test_get_agent_surfaces_yolo_and_fast_mode(tmp_path, monkeypatch):
     """An agent .md with yolo: true and fast_mode: false round-trips via get_agent()."""
-    from apps.studio.server.services.agents import get_agent
+    from lionagi.studio.services.agents import get_agent
 
     root = _make_agents_root(tmp_path, monkeypatch)
     md = root / "myagent.md"
@@ -67,7 +67,7 @@ def test_get_agent_surfaces_yolo_and_fast_mode(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 1b: lion_system surfaces in get_agent() response (MEDIUM-2 codex finding)
+# Test 1b: lion_system surfaces in get_agent() response
 # ---------------------------------------------------------------------------
 
 
@@ -78,7 +78,7 @@ def test_get_agent_surfaces_lion_system(tmp_path, monkeypatch):
     not covered by the existing round-trip tests — this is the regression the
     PR description targets (contract drift between agents.py and cli/_agents.py).
     """
-    from apps.studio.server.services.agents import get_agent
+    from lionagi.studio.services.agents import get_agent
 
     root = _make_agents_root(tmp_path, monkeypatch)
     md = root / "sysagent.md"
@@ -106,7 +106,7 @@ def test_get_agent_surfaces_lion_system(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Tests 1c/1d/1e: absent bool fields emit CLI defaults (round-2 MEDIUM finding)
+# Tests 1c/1d/1e: absent bool fields emit CLI defaults
 # ---------------------------------------------------------------------------
 
 
@@ -117,7 +117,7 @@ def test_get_agent_lion_system_defaults_true(tmp_path, monkeypatch):
     lionagi/agent/config.py:53). Studio must emit the same default so callers
     see consistent behaviour regardless of whether the key is present.
     """
-    from apps.studio.server.services.agents import get_agent
+    from lionagi.studio.services.agents import get_agent
 
     root = _make_agents_root(tmp_path, monkeypatch)
     md = root / "no_lionsys.md"
@@ -145,7 +145,7 @@ def test_get_agent_yolo_defaults_false(tmp_path, monkeypatch):
 
     The CLI defaults yolo to False (lionagi/cli/_agents.py:191).
     """
-    from apps.studio.server.services.agents import get_agent
+    from lionagi.studio.services.agents import get_agent
 
     root = _make_agents_root(tmp_path, monkeypatch)
     md = root / "no_yolo.md"
@@ -173,7 +173,7 @@ def test_get_agent_fast_mode_defaults_false(tmp_path, monkeypatch):
 
     The CLI defaults fast_mode to False (lionagi/cli/_agents.py:192).
     """
-    from apps.studio.server.services.agents import get_agent
+    from lionagi.studio.services.agents import get_agent
 
     root = _make_agents_root(tmp_path, monkeypatch)
     md = root / "no_fastmode.md"
@@ -203,7 +203,7 @@ def test_get_agent_fast_mode_defaults_false(tmp_path, monkeypatch):
 
 def test_update_agent_writes_yolo_field(tmp_path, monkeypatch):
     """update_agent(name, {'yolo': False}) persists yolo: false and get_agent() returns it."""
-    from apps.studio.server.services.agents import get_agent, update_agent
+    from lionagi.studio.services.agents import get_agent, update_agent
 
     root = _make_agents_root(tmp_path, monkeypatch)
     md = root / "myagent.md"
@@ -231,13 +231,13 @@ def test_update_agent_writes_yolo_field(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 2b: update_agent() writes lion_system field to disk (MEDIUM-2 codex finding)
+# Test 2b: update_agent() writes lion_system field to disk
 # ---------------------------------------------------------------------------
 
 
 def test_update_agent_writes_lion_system_field(tmp_path, monkeypatch):
     """update_agent(name, {'lion_system': True}) persists lion_system: true and get_agent() reads it."""
-    from apps.studio.server.services.agents import get_agent, update_agent
+    from lionagi.studio.services.agents import get_agent, update_agent
 
     root = _make_agents_root(tmp_path, monkeypatch)
     md = root / "sysagent2.md"
@@ -271,7 +271,7 @@ def test_update_agent_writes_lion_system_field(tmp_path, monkeypatch):
 
 def test_get_agent_migrates_reasoning_effort_to_effort(tmp_path, monkeypatch):
     """A file with reasoning_effort: high is returned with effort: 'high', no reasoning_effort key."""
-    from apps.studio.server.services.agents import get_agent
+    from lionagi.studio.services.agents import get_agent
 
     root = _make_agents_root(tmp_path, monkeypatch)
     md = root / "legacy.md"
@@ -301,7 +301,7 @@ def test_get_agent_migrates_reasoning_effort_to_effort(tmp_path, monkeypatch):
 
 def test_update_agent_canonicalises_model_with_provider(tmp_path, monkeypatch):
     """model: claude-sonnet-4-6 (no prefix) + provider: claude → model: 'claude/claude-sonnet-4-6'."""
-    from apps.studio.server.services.agents import get_agent, update_agent
+    from lionagi.studio.services.agents import get_agent, update_agent
 
     root = _make_agents_root(tmp_path, monkeypatch)
     md = root / "noprefix.md"

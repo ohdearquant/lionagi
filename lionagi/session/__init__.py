@@ -4,7 +4,23 @@
 from lionagi.protocols.messages import Message  # noqa: E402
 
 from .branch import Branch
+from .capabilities import CapabilityViolation, render_capabilities_prompt
 from .exchange import Exchange
+from .observer import SessionObserver
 from .session import Session
+from .signal import (
+    Signal,
+    StructuredOutput,
+)
 
-__all__ = ["Branch", "Exchange", "Message", "Session"]
+__all__ = [
+    "Branch",
+    "CapabilityViolation",
+    "Exchange",
+    "Message",
+    "Session",
+    "SessionObserver",
+    "Signal",
+    "StructuredOutput",
+    "render_capabilities_prompt",
+]

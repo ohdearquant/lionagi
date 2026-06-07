@@ -174,9 +174,7 @@ def get_token_budget(branch: Branch) -> TokenBudget:
             msg = pile[uid]
             c = msg.content if hasattr(msg, "content") else ""
             if c:
-                used += TokenCalculator.tokenize(
-                    str(c) if not isinstance(c, str) else c
-                )
+                used += TokenCalculator.tokenize(str(c) if not isinstance(c, str) else c)
 
     model_name = None
     try:

@@ -3,8 +3,13 @@
 
 import contextlib
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from lionagi.hooks.bus import HookBus
+
+    from .observer import SessionObserver
 
 from pydantic import Field, JsonValue, PrivateAttr, field_serializer, model_validator
 from typing_extensions import Self
@@ -24,7 +29,7 @@ from lionagi.protocols.types import (
 
 from .._errors import ItemNotFoundError
 from ..ln import lcall
-from ..protocols.generic import Flow, Progression
+from ..protocols.generic import Flow
 from ..protocols.messages import Message
 from ..service.imodel import iModel
 from .branch import ActionManager, Branch, OperationManager, Tool
@@ -48,6 +53,8 @@ class Session(Node, Relational):
     name: str = Field(default="Session")
     user: SenderRecipient | None = None
     _operation_manager: OperationManager = PrivateAttr(default_factory=OperationManager)
+    _observer: Any = PrivateAttr(default=None)
+    _hooks: Any = PrivateAttr(default=None)
 
     @field_serializer("user")
     def _serialize_user(self, value: SenderRecipient | None) -> JsonValue:
@@ -66,6 +73,9 @@ class Session(Node, Relational):
 
             branch.user = self.id
             branch._operation_manager = self._operation_manager
+            branch._observer = self.observer
+            if self._hooks is not None:
+                branch._hooks = self._hooks
             if not self.exchange.has(branch.id):
                 self.exchange.register(branch.id)
             if self.default_branch is None:
@@ -76,9 +86,7 @@ class Session(Node, Relational):
         for i in branches:
             _take_in_branch(i)
 
-    def register_operation(
-        self, operation: str, func: Callable, *, update: bool = False
-    ):
+    def register_operation(self, operation: str, func: Callable, *, update: bool = False):
         self._operation_manager.register(operation, func, update=update)
 
     def operation(self, name: str = None, *, update: bool = False):
@@ -106,6 +114,91 @@ class Session(Node, Relational):
 
         return decorator
 
+    async def run_operation(
+        self, operation: str, *, branch: Branch | ID.Ref | None = None, **kwargs: Any
+    ) -> Any:
+        """Directly invoke a registered operation (or built-in branch method).
+
+        Resolves ``operation`` via ``branch.get_operation`` — a registered
+        ``@session.operation()`` function or a built-in verb (chat, operate,
+        ReAct, …) — and calls it with ``**kwargs``. The direct counterpart to
+        graph execution: handy for observer handlers and one-off calls.
+        """
+        b = branch or self.default_branch
+        if isinstance(b, str | UUID):
+            b = self.branches[b]
+        meth = b.get_operation(operation)
+        if meth is None:
+            raise ValueError(f"Unknown operation: {operation!r}")
+        return await meth(**kwargs)
+
+    # ==================== Hook bus ====================
+
+    @property
+    def hooks(self) -> "HookBus":
+        """Per-session hook bus (ADR-0023), lazily created and bound to the observer."""
+        if self._hooks is None:
+            from lionagi.hooks import build_session_bus
+
+            self._hooks = build_session_bus(observer=self.observer)
+        return self._hooks
+
+    # ==================== Reactive event observation ====================
+
+    @property
+    def observer(self) -> "SessionObserver":
+        """Lazily-created reactive event dispatcher bound to this session."""
+        if self._observer is None:
+            from .observer import SessionObserver
+
+            self._observer = SessionObserver(session=self)
+        return self._observer
+
+    def observe(
+        self,
+        *keys: type | Callable | Any,
+        handler: Callable | None = None,
+        role: str | None = None,
+    ) -> Any:
+        """Subscribe a handler to one or more AND-composed conditions. Usable as a decorator.
+
+        Handlers receive ``(matched, session)`` and fire when every condition
+        matches an emitted payload. Each *key* is a type, a Filter, or an
+        ``__as_filter__`` provider (``EventStatus.FAILED``) —
+        ``session.observe(APICalling, EventStatus.FAILED)`` reacts to failed API
+        calls. Mirrors ``@session.operation()``.
+
+        ``role`` subscribes by the emitting agent's role name — fires on anything
+        emitted by an agent with that role regardless of capability type.
+        """
+        return self.observer.observe(*keys, handler=handler, role=role)
+
+    def route(self, condition: Callable, *, into: str) -> "SessionObserver":
+        """Auto-append emitted events matching ``condition`` to a named stream."""
+        return self.observer.route(condition, into=into)
+
+    def gate(self, check: Callable) -> "SessionObserver":
+        """Set the permission gate run before an emitted event is honored.
+
+        The governance seam — charter/gate mediation plugs in here. Return
+        falsy (or raise) to deny: the event is still recorded, but no
+        observers fire.
+        """
+        return self.observer.gate(check)
+
+    async def emit(self, event: Any) -> list[Any]:
+        """Emit an event: gate → record → route → dispatch. Returns handler results."""
+        return await self.observer.emit(event)
+
+    async def authorize(self, action: Any) -> bool:
+        """Consult the pre-invoke governance gate: may ``action`` proceed?
+
+        The blocking counterpart to ``emit``'s post-record gate — consulted
+        before an operation runs (ADR-0076 Follow-up 1). Allows when no gate is
+        set. Denials are recorded onto the observer Flow as ``GateDenied``.
+        """
+        return await self.observer.authorize(action)
+
     @model_validator(mode="after")
     def _initialize_branches(self) -> Self:
         if self.default_branch is None:
@@ -126,8 +219,8 @@ class Session(Node, Relational):
         """Get a branch by its ID or name."""
 
         with contextlib.suppress(ItemNotFoundError, ValueError):
-            id = ID.get_id(branch)
-            return self.branches[id]
+            id_ = ID.get_id(branch)
+            return self.branches[id_]
 
         if isinstance(branch, str):
             if b := self._lookup_branch_by_name(branch):
@@ -310,6 +403,10 @@ class Session(Node, Relational):
         default_branch: Branch | ID.Ref | None = None,
         alcall_params: Any = None,
         on_progress: Any = None,
+        reactive: bool = False,
+        spawn_type: type | None = None,
+        node_builder: Any = None,
+        max_spawn: int = 50,
     ) -> dict[str, Any]:
         """
         Execute a graph-based workflow using multi-branch orchestration.
@@ -323,11 +420,19 @@ class Session(Node, Relational):
             default_branch: Branch to use as default (defaults to self.default_branch)
             alcall_params: Parameters for async parallel call execution
             on_progress: Callback(op_id, name, status, elapsed_s) for progress tracking
+            reactive: If True, run the self-expanding executor — operations may
+                emit a ``spawn_type`` payload that injects new operations into the
+                live graph without halting.
+            spawn_type: Emission type that triggers injection (default
+                ``casts.emission.SpawnRequest``). Only used when ``reactive``.
+            node_builder: ``(spawn_request, emitter_op) -> Operation | None`` that
+                turns a spawn payload into a graph node. Only used when ``reactive``.
+            max_spawn: Hard cap on dynamic injections. Only used when ``reactive``.
         """
         from lionagi.operations.flow import flow
 
         branch = default_branch or self.default_branch
-        if isinstance(branch, (str, UUID)):
+        if isinstance(branch, str | UUID):
             branch = self.branches[branch]
 
         return await flow(
@@ -340,7 +445,51 @@ class Session(Node, Relational):
             verbose=verbose,
             alcall_params=alcall_params,
             on_progress=on_progress,
+            reactive=reactive,
+            spawn_type=spawn_type,
+            node_builder=node_builder,
+            max_spawn=max_spawn,
         )
+
+    async def flow_stream(
+        self,
+        graph: Graph,
+        *,
+        context: dict[str, Any] | None = None,
+        max_concurrent: int = 5,
+        verbose: bool = False,
+        default_branch: Branch | ID.Ref | None = None,
+        alcall_params: Any = None,
+        spawn_type: type | None = None,
+        node_builder: Any = None,
+        max_spawn: int = 50,
+    ):
+        """Stream graph execution — yield a ``FlowEvent`` as each op completes.
+
+        Async generator over the reactive (self-expanding) engine: downstream
+        ops auto-run as deps satisfy, spawned ops grow the live DAG, and each
+        completion is surfaced immediately rather than batched. Consume with
+        ``async for event in session.flow_stream(graph): ...``.
+        """
+        from lionagi.operations.flow import flow_stream
+
+        branch = default_branch or self.default_branch
+        if isinstance(branch, str | UUID):
+            branch = self.branches[branch]
+
+        async for event in flow_stream(
+            session=self,
+            graph=graph,
+            branch=branch,
+            context=context,
+            max_concurrent=max_concurrent,
+            verbose=verbose,
+            alcall_params=alcall_params,
+            spawn_type=spawn_type,
+            node_builder=node_builder,
+            max_spawn=max_spawn,
+        ):
+            yield event
 
 
 __all__ = ("Session",)

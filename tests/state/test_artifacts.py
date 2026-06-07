@@ -67,9 +67,7 @@ async def test_insert_artifact_with_invocation_link(db: StateDB):
 
 async def test_insert_artifact_with_session_link(db: StateDB):
     s = await _make_session(db, status="completed")
-    gate = GateVerdict(
-        summary="ok", gate_passed=True, feedback="all green", passed=True
-    )
+    gate = GateVerdict(summary="ok", gate_passed=True, feedback="all green", passed=True)
     await db.insert_artifact(
         session_id=s["id"],
         kind=gate.outcome_kind,
@@ -196,7 +194,7 @@ async def test_list_artifacts_ordered_by_created_at(db: StateDB):
             await db.insert_artifact(
                 invocation_id=inv["id"],
                 kind="review_verdict",
-                name=f"round-{i+1}",
+                name=f"round-{i + 1}",
                 content={"verdict": "APPROVE", "round": i + 1},
             )
         )

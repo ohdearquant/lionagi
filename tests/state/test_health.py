@@ -262,10 +262,7 @@ def test_worst_health_empty_is_healthy():
 
 def test_worst_health_zombie_beats_orphaned():
     """Zombie sits at the top of the severity scale."""
-    assert (
-        worst_health([SessionHealth.ORPHANED, SessionHealth.ZOMBIE])
-        == SessionHealth.ZOMBIE
-    )
+    assert worst_health([SessionHealth.ORPHANED, SessionHealth.ZOMBIE]) == SessionHealth.ZOMBIE
 
 
 def test_severity_table_covers_all_health_levels():

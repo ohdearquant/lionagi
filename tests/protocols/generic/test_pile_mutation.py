@@ -32,6 +32,53 @@ class OtherItem(Element):
     name: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Regression: sized Element that is falsy when empty must not be dropped
+# ---------------------------------------------------------------------------
+
+
+class TestIncludeFalsyElement:
+    """An empty Progression/Pile is a valid item whose len() is 0.
+
+    Regression for the `if not value: return {}` short-circuit in
+    _validate_collections that silently dropped any falsy Observable.
+    """
+
+    def test_include_empty_progression(self):
+        from lionagi.protocols.generic.progression import Progression
+
+        pile = Pile()
+        prog = Progression(name="empty")
+        assert not prog  # empty → falsy
+        pile.include(prog)
+        assert len(pile) == 1
+        assert prog.id in pile
+
+    def test_include_empty_pile(self):
+        pile = Pile()
+        inner = Pile()  # empty → falsy
+        pile.include(inner)
+        assert len(pile) == 1
+
+    def test_nonempty_progression_is_single_item(self):
+        from lionagi.protocols.generic.progression import Progression
+
+        a, b = Item(value=1), Item(value=2)
+        prog = Progression(order=[a.id, b.id], name="ord")
+        pile = Pile()
+        pile.include(prog)
+        # the Progression is ONE item, not expanded into its member UUIDs
+        assert len(pile) == 1
+        assert prog.id in pile
+
+    def test_empty_inputs_still_noop(self):
+        pile = Pile()
+        pile.include([])
+        pile.include(None)
+        pile.include("")
+        assert len(pile) == 0
+
+
 @pytest.fixture
 def three_items():
     return [Item(value=i) for i in range(3)]

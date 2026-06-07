@@ -13,7 +13,6 @@ MUST-FIX
   3. E402 — helpers declared below imports in `cli/orchestrate/flow.py`.
 
 SHOULD-FIX
-  - Duplicate FlowAgent.id / FlowOp.id rejected at plan validation.
   - `max_ops` / `max_agents` accept 0 as "unlimited".
   - `_clamp_claude_effort` behavior: xhigh → high on non-opus-4-7 Claude
     models; preserved on opus-4-7; untouched for non-xhigh efforts.
@@ -29,7 +28,6 @@ from lionagi.cli._logging import _LazyStderrHandler
 from lionagi.cli._providers import _clamp_claude_effort
 from lionagi.cli.main import _handle_play_shortcut
 from lionagi.cli.orchestrate import _resolve_playbook_path, _validate_spec_fields
-from lionagi.cli.orchestrate.flow import FlowAgent, FlowOp, FlowPlan
 from lionagi.cli.skill import resolve_skill_path
 from lionagi.service.hooks._types import HookEventTypes
 from lionagi.service.hooks.hook_registry import HookRegistry
@@ -38,9 +36,7 @@ from lionagi.service.hooks.hook_registry import HookRegistry
 
 
 class TestSkillSymlinkContainment:
-    def test_rejects_skill_md_symlink_pointing_outside_root(
-        self, monkeypatch, tmp_path: Path
-    ):
+    def test_rejects_skill_md_symlink_pointing_outside_root(self, monkeypatch, tmp_path: Path):
         """A SKILL.md inside the skills root that is itself a symlink to
         an arbitrary file must be rejected before read_text() follows it.
         """
@@ -90,9 +86,7 @@ class TestSkillSymlinkContainment:
 
 
 class TestPlaybookSymlinkContainment:
-    def test_rejects_playbook_symlink_pointing_outside_root(
-        self, monkeypatch, tmp_path: Path
-    ):
+    def test_rejects_playbook_symlink_pointing_outside_root(self, monkeypatch, tmp_path: Path):
         secret = tmp_path / "secret.yaml"
         secret.write_text("evil: true\n")
 
@@ -130,53 +124,6 @@ class TestHookRegistryAliases:
 
         reg = HookRegistry(hooks={"pre_event_create_hook": hook})
         assert HookEventTypes.PreEventCreate in reg._hooks
-
-
-# ── SHOULD-FIX: Duplicate id rejection in plan validation ───────────
-
-
-class TestPlanValidation:
-    """FlowPlan is validated in _run_flow_inner; we exercise the
-    validator via a minimal plan construction path.
-    """
-
-    def test_duplicate_agent_id_rejected(self):
-        # Pydantic validates FlowAgent construction, but a plan with
-        # two agents sharing an id should fail at the flow-level check.
-        # We construct the plan directly and import the validator.
-
-        # Build plan with duplicate agent ids
-        a1 = FlowAgent(id="r1", role="researcher")
-        a2 = FlowAgent(id="r1", role="researcher")  # duplicate
-        ops = [
-            FlowOp(id="o1", agent_id="r1", instruction="task a"),
-        ]
-        plan = FlowPlan(agents=[a1, a2], operations=ops)
-
-        # Simulate the validator block — it returns an error string
-        seen: set = set()
-        err = None
-        for a in plan.agents:
-            if a.id in seen:
-                err = f"duplicate FlowAgent.id {a.id!r}"
-                break
-            seen.add(a.id)
-        assert err is not None
-        assert "duplicate" in err.lower()
-
-    def test_duplicate_op_id_rejected(self):
-        ops = [
-            FlowOp(id="o1", agent_id="r1", instruction="a"),
-            FlowOp(id="o1", agent_id="r1", instruction="b"),
-        ]
-        seen: set = set()
-        err = None
-        for op in ops:
-            if op.id in seen:
-                err = f"duplicate FlowOp.id {op.id!r}"
-                break
-            seen.add(op.id)
-        assert err is not None
 
 
 # ── SHOULD-FIX: max_ops/max_agents 0 = unlimited ────────────────────
@@ -244,9 +191,7 @@ class TestHandlePlayShortcut:
     def test_play_rewrite(self, monkeypatch, tmp_path):
         """`li play NAME [rest]` → `o flow -p NAME [rest]`."""
         monkeypatch.setenv("HOME", str(tmp_path))
-        rewritten = _handle_play_shortcut(
-            ["play", "rewrite", "--tabs", "5", "query text"]
-        )
+        rewritten = _handle_play_shortcut(["play", "rewrite", "--tabs", "5", "query text"])
         assert rewritten == [
             "o",
             "flow",

@@ -8,14 +8,12 @@ import time
 
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.ln.concurrency import move_on_after
-from lionagi.operations.fields import Instruct
+from lionagi.orchestration import plan
+from lionagi.orchestration.prompts import SYNTHESIS_INSTRUCTION
 
-from .._agents import AgentProfile
 from .._logging import log_error, progress
 from .._providers import parse_model_spec
 from ._common import (
-    AGENT_REQUEST_FIELDS,
-    AgentRequest,
     _create_fanout_team,
     _format_result_json,
     _format_result_text,
@@ -23,9 +21,10 @@ from ._common import (
 )
 from ._orchestration import (
     OrchestrationEnv,
+    available_roles,
     build_worker_branch,
     finalize_orchestration,
-    resolve_worker_spec,
+    role_roster,
     setup_orchestration,
     start_live_persist,
     stop_live_persist,
@@ -59,6 +58,10 @@ async def _run_fanout(
     project: str | None = None,
 ) -> str:
     """Three-phase fan-out: decompose → fan out → synthesize."""
+    from lionagi.ln.concurrency.errors import cache_cancelled_exc_class
+
+    cache_cancelled_exc_class()
+
     env = setup_orchestration(
         pattern_name="Fanout",
         model_spec=model_spec,
@@ -78,9 +81,8 @@ async def _run_fanout(
     # ADR-0022: orchestrator default model + effort on the session row.
     # Per-worker model is written branch-side when build_worker_branch runs.
     from .._providers import parse_model_spec as _parse_model_spec
-    _orc_ms = (
-        _parse_model_spec(env.default_model_spec) if env.default_model_spec else None
-    )
+
+    _orc_ms = _parse_model_spec(env.default_model_spec) if env.default_model_spec else None
     _orc_provider = None
     if _orc_ms and "/" in _orc_ms.model:
         _orc_provider = _orc_ms.model.split("/", 1)[0]
@@ -135,9 +137,9 @@ async def _run_fanout(
         _terminal_status = "timed_out"
         raise
     except BaseException as exc:
-        from lionagi.ln.concurrency import get_cancelled_exc_class
+        from lionagi.ln.concurrency.errors import cancelled_exc_classes
 
-        if isinstance(exc, get_cancelled_exc_class()):
+        if isinstance(exc, cancelled_exc_classes()):
             _terminal_status = "cancelled"
         else:
             _terminal_status = "failed"
@@ -168,120 +170,70 @@ async def _run_fanout_inner(
     team_name: str | None = None,
     _shared: dict | None = None,
 ) -> str:
-    """Inner fanout logic (no timeout wrapper)."""
+    """Inner fanout logic (no timeout wrapper).
+
+    Clean-break design: the orchestrator (casts ``orchestrator`` role) decomposes
+    the task into a ``list[TaskAssignment]`` (casts coordination emission) over
+    the role roster. Each assignment runs on a worker built from its casts role.
+    No bespoke ``AgentRequest`` model, no per-worker model field.
+    """
     t0 = time.monotonic()
 
-    # Resolve worker profiles up-front — fanout pre-computes worker names
-    # from profile names so teams can be created before Phase 1.
-    worker_profiles: list[AgentProfile | None] = []
-    if workers_str:
-        worker_model_list: list[str] = []
-        for token in (s.strip() for s in workers_str.split(",")):
-            wmodel, wprofile = resolve_worker_spec(token)
-            worker_model_list.append(wmodel)
-            worker_profiles.append(wprofile)
-    else:
-        ms = parse_model_spec(model_spec)
-        worker_model_list = [ms.model] * num_workers
-        worker_profiles = [None] * num_workers
+    # ── Phase 1: Orchestrator decomposes into TaskAssignments ─────────
+    roster = available_roles()
+    progress(f"Phase 1: Orchestrator decomposing task into ≤{num_workers} assignments...")
+    assignments = await plan(
+        env.orc_branch,
+        prompt,
+        roles=roster,
+        dag=False,
+        guidance=role_roster(env.default_model_spec),
+        max_tasks=num_workers,
+    )
+    t_decompose = time.monotonic() - t0
+    if not assignments:
+        return "Orchestrator produced no assignments."
+    progress(f"Phase 1 done ({t_decompose:.1f}s): {len(assignments)} assignments generated.")
 
-    # Pre-compute names so teams can be materialized before Phase 1.
+    # Worker model pool: heterogeneous fanout via --workers M1,M2 (assignment i
+    # uses pool[i % len]); without it, every worker uses the default model.
+    pool = [s.strip() for s in workers_str.split(",")] if workers_str else []
+
+    # Deduplicated names by assignee role (researcher, researcher-2, ...).
     worker_names: list[str] = []
-    for i, wp in enumerate(worker_profiles):
-        if wp and wp.name:
-            base = wp.name
-            count = sum(
-                1 for n in worker_names if n == base or n.startswith(f"{base}-")
-            )
-            worker_names.append(f"{base}-{count + 1}" if count > 0 else base)
-        else:
-            worker_names.append(f"worker-{i + 1}")
+    name_counts: dict[str, int] = {}
+    for ta in assignments:
+        name_counts[ta.assignee] = name_counts.get(ta.assignee, 0) + 1
+        n = name_counts[ta.assignee]
+        worker_names.append(f"{ta.assignee}-{n}" if n > 1 else ta.assignee)
 
     if team_name:
         env.team_data = _create_fanout_team(team_name, worker_names)
-        progress(
-            f"Team '{team_name}' created ({env.team_data['id']}): {', '.join(worker_names)}"
-        )
+        progress(f"Team '{team_name}' created ({env.team_data['id']}): {', '.join(worker_names)}")
 
     if _shared is not None:
         _shared["session"] = env.session
 
-    # ── Phase 1: Orchestrator decomposes task ─────────────────────────
-    worker_descriptions = []
-    for i, wm in enumerate(worker_model_list):
-        wp = worker_profiles[i] if i < len(worker_profiles) else None
-        if wp and wp.name:
-            worker_descriptions.append(
-                f"{worker_names[i]} (role: {wp.name}, model: {wm})"
-            )
-        else:
-            worker_descriptions.append(f"{worker_names[i]} (model: {wm})")
-    roster_guidance = "; ".join(worker_descriptions)
-
-    root = env.builder.add_operation(
-        "operate",
-        branch=env.orc_branch,
-        instruct=Instruct(
-            instruction=(
-                f"Generate {len(worker_model_list)} agent requests. "
-                f"{AgentRequest.DECOMPOSITION_INSTRUCTION}"
-            ),
-            context={"user_prompt": prompt},
-            guidance=(
-                f"Available workers: {roster_guidance}. {AgentRequest.DECOMPOSITION_DISCIPLINE}"
-            ),
-        ),
-        field_models=[AGENT_REQUEST_FIELDS],
-        reason=True,
-    )
-
-    progress(
-        f"Phase 1: Orchestrator decomposing task into {len(worker_model_list)} agent requests..."
-    )
-
-    result1 = await env.session.flow(env.builder.get_graph())
-    t_decompose = time.monotonic() - t0
-
-    root_result = result1.get("operation_results", {}).get(root)
-    agents = getattr(root_result, "agents", None) or []
-
-    if not agents:
-        return "Orchestrator produced no agent requests."
-
-    progress(f"Phase 1 done ({t_decompose:.1f}s): {len(agents)} requests generated.")
-
-    # ── Phase 2: Fan out ──────────────────────────────────────────────
-    default_ms = parse_model_spec(model_spec)
+    # ── Phase 2: Fan out — one worker branch per assignment ───────────
     fanned_nodes: list[str] = []
     fanned_labels: list[str] = []
 
-    for i, a in enumerate(agents):
-        # Pick the model: orchestrator override > profile > default
-        wprofile = worker_profiles[i] if i < len(worker_profiles) else None
-        desired_model = (
-            a.model or (wprofile.model if wprofile else None) or default_ms.model
-        )
+    for i, ta in enumerate(assignments):
+        model_override = pool[i % len(pool)] if pool else None
         wname = worker_names[i]
-
         w_branch, w_model, _ = build_worker_branch(
             env,
             agent_id=wname,
-            role=wprofile.name if wprofile else f"worker-{i + 1}",
-            model_override=desired_model,
+            role=ta.assignee,
+            model_override=model_override,
             explicit_name=wname,
+            modes=ta.modes or None,
         )
-
-        worker_context = [
-            {"overall_task": prompt},
-            a.instruct.context or "",
-        ]
         node = env.builder.add_operation(
             "operate",
             branch=w_branch,
-            depends_on=[root],
-            instruction=a.instruct.instruction,
-            guidance=a.instruct.guidance,
-            context=worker_context,
+            instruction=ta.task,
+            context=[{"overall_task": prompt}],
         )
         fanned_nodes.append(node)
         fanned_labels.append(w_model)
@@ -332,10 +284,8 @@ async def _run_fanout_inner(
 
         progress(f"Phase 3: Synthesis [{synth_label}]...")
 
-        synth_instruction = synthesis_prompt or (
-            f"Synthesize the following {len(contexts)} worker responses "
-            f"into a cohesive analysis.\n\n"
-            f"Original task: {prompt}"
+        synth_instruction = (
+            synthesis_prompt or f"{SYNTHESIS_INSTRUCTION}\n\nOriginal task: {prompt}"
         )
 
         synth_node = env.builder.add_operation(
@@ -372,9 +322,7 @@ async def _run_fanout_inner(
 
     # ── Post to team ─────────────────────────────────────────────────
     if env.team_data:
-        _post_results_to_team(
-            env.team_data, worker_results, worker_names, synthesis_result
-        )
+        _post_results_to_team(env.team_data, worker_results, worker_names, synthesis_result)
         progress(
             f"\nTeam '{env.team_data['name']}' ({env.team_data['id']}): "
             f"{len(worker_results)} results posted."
@@ -389,9 +337,7 @@ async def _run_fanout_inner(
         prompt=prompt,
         extras={
             "workers": fanned_labels,
-            "synthesis_model": (
-                synthesis_result["model"] if synthesis_result else None
-            ),
+            "synthesis_model": (synthesis_result["model"] if synthesis_result else None),
         },
     )
 

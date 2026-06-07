@@ -54,11 +54,11 @@ Override: `branch.operate(instruction=..., middle=my_callable)`. Force stream: `
 
 ### Operations (`operations/`)
 
-Modules: chat, parse, operate, ReAct, select, interpret, communicate, run, act. `Session.flow()` executes DAGs via `OperationGraphBuilder`. Same `branch=` reuses Branch without cloning — state accumulates (FlowAgent → many FlowOps).
+Modules: chat, parse, operate, ReAct, select, interpret, communicate, run, act. `Session.flow()` executes DAGs via `OperationGraphBuilder`. Same `branch=` reuses Branch without cloning — state accumulates.
 
 ### Tools / Utilities / Config
 
-- **Tools** (`protocols/action/`): schemas via `function_to_schema()`, registered with `branch.register_tools()`. Sync/async + MCP.
+- **Tools** (`protocols/action/`): `FunctionCalling` handles schema extraction + invocation, registered with `branch.register_tools()`. Sync/async + MCP.
 - **Utilities** (`ln/`): `alcall()`, `bcall()`, `race()`, `retry()` · `fuzzy_json()` for malformed LLM JSON · `Undefined`/`Unset` sentinels (`is_sentinel()`).
 - **Config** (`config.py`): `AppSettings` from env. Defaults: `LIONAGI_CHAT_PROVIDER=openai`, `LIONAGI_CHAT_MODEL=gpt-4.1-mini`.
 
@@ -80,11 +80,9 @@ Modules: chat, parse, operate, ReAct, select, interpret, communicate, run, act. 
 - `cli/team.py` — `li team`: inbox (`~/.lionagi/teams/{id}.json`), concurrent writes via `fcntl.flock`
 - `cli/_project.py` — `detect_project(cwd)`: returns `(project_name, project_source)` via detection cascade (see ADR-0026)
 - `cli/orchestrate/` — `li o fanout` / `li o flow`:
-  - `flow.py` — FlowAgent + FlowOp DAG. `--team-mode` enables `li team` routing mid-pipeline.
-  - `_common.py` — `AgentRequest` schema + `TEAM_COORD_SECTION` worker prompt template
-  - `fanout.py` — flat parallel workers · `_orchestration.py` — shared setup/finalize
-
-`FlowAgent`, `FlowOp`, `FlowPlan`, `FlowControlVerdict` use `Field(description=...)` — schema-driven prompting.
+  - `flow.py` — DAG planning (`plan()`), reactive expansion (`SpawnRequest`), `FlowPlanError`. `--team-mode` enables `li team` routing mid-pipeline.
+  - `_common.py` — `BARE_WORKER_SYSTEM` / `TEAM_WORKER_SYSTEM` / `TEAM_COORD_SECTION` prompt templates
+  - `fanout.py` — flat parallel workers · `_orchestration.py` — `OrchestrationEnv`, `OperationGraphBuilder`, shared setup/finalize
 
 Project detection runs at every session creation site (`cli/agent.py`, `cli/orchestrate/_orchestration.py`, `cli/state.py`). The resolved `project` and `project_source` columns are written to the `sessions` table and displayed in Studio.
 
@@ -107,3 +105,7 @@ Every run: `~/.lionagi/runs/{run_id}/` (`YYYYMMDDTHHMMSS-{uuid6}`).
 - **Pile + Progression**: Storage (dict) and ordering (deque) are independent. Multiple orderings over same Pile.
 - **Observable** (`protocols/contracts.py`): Structural typing — Element auto-satisfies without explicit inheritance.
 - **Serialization**: `element.to_dict(mode="python"|"json"|"db")`.
+
+## Code Conventions
+
+- **No internal references in code comments or docstrings.** Never embed internal audit IDs, review-bot mentions, PR/issue numbers, or finding labels (e.g. `AUDIT-005`, `Codex #1278`, `Finding 4`, `fixed in #887`) in committed source. These are internal tracking artifacts — describe *what the code does and why* in plain terms instead. Commit messages and PR descriptions are the place for tracking references, not the code. (Provider/product names like the Codex or Claude CLI are fine — those describe the code, not an audit.)

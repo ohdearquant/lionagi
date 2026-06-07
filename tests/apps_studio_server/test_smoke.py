@@ -38,16 +38,16 @@ def _make_client(
         d.mkdir(parents=True)
 
     # Patch config + service modules
-    import apps.studio.server.config as config_mod
-    import apps.studio.server.services.agents as agents_mod
-    import apps.studio.server.services.definitions as defs_mod
-    import apps.studio.server.services.playbooks as playbooks_mod
-    import apps.studio.server.services.runs as runs_mod
-    import apps.studio.server.services.sessions as sessions_mod
-    import apps.studio.server.services.shows as shows_mod
-    import apps.studio.server.services.stats as stats_mod
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
+    import lionagi.studio.config as config_mod
+    import lionagi.studio.services.agents as agents_mod
+    import lionagi.studio.services.definitions as defs_mod
+    import lionagi.studio.services.playbooks as playbooks_mod
+    import lionagi.studio.services.runs as runs_mod
+    import lionagi.studio.services.sessions as sessions_mod
+    import lionagi.studio.services.shows as shows_mod
+    import lionagi.studio.services.stats as stats_mod
 
     monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
@@ -104,7 +104,7 @@ def _make_client(
         pb = playbooks_root / "my-playbook.playbook.yaml"
         pb.write_text("description: Test playbook\nsteps: {}\nlinks: []\n")
 
-    from apps.studio.server.app import app
+    from lionagi.studio.app import app
 
     return TestClient(app)
 
@@ -116,7 +116,7 @@ def _make_client(
 
 @pytest.mark.integration
 def test_app_imports():
-    from apps.studio.server.app import app
+    from lionagi.studio.app import app
 
     assert app.title == "Lion Studio Server"
 
@@ -310,7 +310,7 @@ def test_path_traversal_encoded_dotdot_agents(tmp_path, monkeypatch):
 
 @pytest.mark.integration
 def test_agent_update_round_trips_effort_and_provider_model(tmp_path, monkeypatch):
-    import apps.studio.server.services.agents as agents_mod
+    import lionagi.studio.services.agents as agents_mod
 
     agents_root = tmp_path / "agents"
     agents_root.mkdir()
@@ -318,11 +318,7 @@ def test_agent_update_round_trips_effort_and_provider_model(tmp_path, monkeypatc
 
     agent_path = agents_root / "my-agent.md"
     agent_path.write_text(
-        "---\n"
-        "model: claude/old-model\n"
-        "reasoning_effort: medium\n"
-        "---\n\n"
-        "old body\n"
+        "---\nmodel: claude/old-model\nreasoning_effort: medium\n---\n\nold body\n"
     )
 
     updated = agents_mod.update_agent(

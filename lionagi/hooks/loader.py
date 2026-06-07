@@ -33,6 +33,14 @@ from .bus import HookBus, HookHandler, HookPoint
 
 logger = logging.getLogger("lionagi.hooks.loader")
 
+__all__ = (
+    "DEFAULT_HOOKS",
+    "register_handler",
+    "resolve_handler",
+    "load_hooks_for_agent",
+    "build_session_bus",
+)
+
 # Default wiring per ADR-0023 §"Default hooks (no configuration needed)".
 DEFAULT_HOOKS: dict[HookPoint, list[HookHandler]] = {
     HookPoint.SESSION_START: [_builtins.persist_session_start],
@@ -52,9 +60,7 @@ _REGISTRY: dict[str, HookHandler] = {
 }
 
 
-def register_handler(
-    name: str, handler: Callable[..., Awaitable[Any]]
-) -> None:
+def register_handler(name: str, handler: Callable[..., Awaitable[Any]]) -> None:
     """Register a callable under ``name`` for agent-YAML lookup.
 
     Re-registration overrides — last writer wins. User-defined handlers
@@ -75,10 +81,7 @@ def resolve_handler(name: str) -> HookHandler:
     try:
         return _REGISTRY[name]
     except KeyError as exc:
-        raise KeyError(
-            f"Unknown hook handler {name!r}. "
-            f"Registered: {sorted(_REGISTRY)}"
-        ) from exc
+        raise KeyError(f"Unknown hook handler {name!r}. Registered: {sorted(_REGISTRY)}") from exc
 
 
 def registered_handlers() -> list[str]:
@@ -104,8 +107,7 @@ def load_hooks_for_agent(
             point = HookPoint(point_str)
         except ValueError as exc:
             raise ValueError(
-                f"Unknown hook point {point_str!r}; "
-                f"valid: {sorted(p.value for p in HookPoint)}"
+                f"Unknown hook point {point_str!r}; valid: {sorted(p.value for p in HookPoint)}"
             ) from exc
         if not isinstance(handler_names, list):
             raise ValueError(
@@ -118,6 +120,8 @@ def load_hooks_for_agent(
 
 def build_session_bus(
     agent_hooks: dict[str, list[str]] | None = None,
+    *,
+    observer: Any = None,
 ) -> HookBus:
     """Construct a per-session bus with defaults + profile overrides.
 
@@ -127,9 +131,11 @@ def build_session_bus(
     profile doesn't mention keep the default.
 
     ADR-0023 §"Bus lifecycle" — one bus per session, created at session
-    init, passed to all branches.
+    init, passed to all branches. Per ADR-0076, ``observer`` binds the bus
+    to the session's :class:`SessionObserver` (the shared event transport)
+    so emissions are recorded there; pass ``session.observer`` at wiring.
     """
-    bus = HookBus()
+    bus = HookBus(observer=observer)
     overrides = load_hooks_for_agent(agent_hooks)
 
     for point, handlers in DEFAULT_HOOKS.items():

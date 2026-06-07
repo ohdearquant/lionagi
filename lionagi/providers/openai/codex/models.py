@@ -9,11 +9,11 @@ import contextlib
 import inspect
 import json
 import logging
+import os
 import shutil
+import signal
 import warnings
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
-from dataclasses import field as datafield
 from functools import partial
 from pathlib import Path
 from textwrap import shorten
@@ -23,6 +23,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
 from lionagi.libs.schema.as_readable import as_readable
+from lionagi.service.types.cli_session import CLISession
+from lionagi.service.types.stream_chunk import StreamChunk
 
 HAS_CODEX_CLI = False
 CODEX_CLI = None
@@ -60,9 +62,7 @@ CodexReasoningEffort = Literal[
 ]
 
 __all__ = (
-    "CodexChunk",
     "CodexCodeRequest",
-    "CodexSession",
     "stream_codex_cli",
 )
 
@@ -185,8 +185,12 @@ class CodexCodeRequest(BaseModel):
 
     # ── features (order 60–69) ────────────────────────────────────
     skip_git_repo_check: bool = Field(
-        default=False,
-        description="Allow running outside a git repository",
+        default=True,
+        description=(
+            "Allow running outside a git repository. Default True: agents routinely "
+            "run in per-task artifact dirs that are not git repos, where codex would "
+            "otherwise refuse with 'Not inside a trusted directory'."
+        ),
         json_schema_extra=_cli("--skip-git-repo-check", 60, "bool"),
     )
     ephemeral: bool = Field(
@@ -227,13 +231,12 @@ class CodexCodeRequest(BaseModel):
         description="Plan-mode reasoning effort (emitted as -c plan_mode_reasoning_effort=<val>)",
     )
 
-    # ── fast mode (priority service tier) ────────────────────────
+    # ── fast mode (fast service tier) ────────────────────────────
     fast_mode: bool = Field(
         default=False,
         description=(
-            "Route this request through OpenAI's *priority* service tier for "
-            "lower latency. Emitted as ``-c service_tier=priority``. "
-            "Requires an OpenAI account with priority-tier eligibility. "
+            "Route this request through OpenAI's *fast* service tier for "
+            "lower latency. Emitted as ``-c service_tier=fast``. "
             "Does NOT cap or change ``reasoning_effort`` — "
             "``fast_mode=True`` with ``reasoning_effort='xhigh'`` is valid "
             "and gives maximum reasoning depth on the fast lane."
@@ -292,7 +295,7 @@ class CodexCodeRequest(BaseModel):
         for message in msg:
             if message["role"] != "system":
                 content = message["content"]
-                if isinstance(content, (dict, list)):
+                if isinstance(content, dict | list):
                     prompts.append(ln.json_dumps(content))
                 else:
                     prompts.append(content)
@@ -325,14 +328,10 @@ class CodexCodeRequest(BaseModel):
         ws_path = Path(self.ws)
 
         if ws_path.is_absolute():
-            raise ValueError(
-                f"Workspace path must be relative, got absolute: {self.ws}"
-            )
+            raise ValueError(f"Workspace path must be relative, got absolute: {self.ws}")
 
         if ".." in ws_path.parts:
-            raise ValueError(
-                f"Directory traversal detected in workspace path: {self.ws}"
-            )
+            raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
 
         repo_resolved = self.repo.resolve()
         result = (self.repo / ws_path).resolve()
@@ -402,9 +401,9 @@ class CodexCodeRequest(BaseModel):
                 ]
             )
 
-        # Fast mode → -c service_tier=priority (priority lane, lower latency)
+        # Fast mode → -c service_tier=fast
         if self.fast_mode:
-            args.extend(["-c", "service_tier=priority"])
+            args.extend(["-c", "service_tier=fast"])
 
         # Images (repeat -i per image)
         for image in self.images:
@@ -460,126 +459,7 @@ class CodexCodeRequest(BaseModel):
         return args
 
 
-# --------------------------------------------------------------------------- chunks & session
-
-
-@dataclass
-class CodexChunk:
-    """Low-level wrapper around every JSON object from the Codex CLI."""
-
-    raw: dict[str, Any]
-    type: str
-    # convenience views
-    text: str | None = None
-    tool_use: dict[str, Any] | None = None
-    tool_result: dict[str, Any] | None = None
-
-
-@dataclass
-class CodexSession:
-    """Aggregated view of a whole Codex CLI conversation."""
-
-    session_id: str | None = None
-    model: str | None = None
-
-    # chronological log
-    chunks: list[CodexChunk] = datafield(default_factory=list)
-
-    # materialized views
-    messages: list[dict[str, Any]] = datafield(default_factory=list)
-    tool_uses: list[dict[str, Any]] = datafield(default_factory=list)
-    tool_results: list[dict[str, Any]] = datafield(default_factory=list)
-
-    # final summary
-    result: str = ""
-    usage: dict[str, Any] = datafield(default_factory=dict)
-    total_cost_usd: float | None = None
-    num_turns: int | None = None
-    duration_ms: int | None = None
-    is_error: bool = False
-    summary: dict | None = None
-
-    def populate_summary(self) -> None:
-        self.summary = _extract_summary(self)
-
-
-def _extract_summary(session: CodexSession) -> dict[str, Any]:
-    """Extract summary from session data."""
-    tool_counts: dict[str, int] = {}
-    tool_details: list[dict[str, Any]] = []
-    file_operations: dict[str, list[str]] = {
-        "reads": [],
-        "writes": [],
-        "edits": [],
-    }
-    key_actions: list[str] = []
-
-    for tool_use in session.tool_uses:
-        tool_name = tool_use.get("name", "unknown")
-        tool_input = tool_use.get("input", {})
-        tool_id = tool_use.get("id", "")
-
-        tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
-        tool_details.append({"tool": tool_name, "id": tool_id, "input": tool_input})
-
-        if tool_name in ("read_file", "Read", "read"):
-            file_path = tool_input.get("path", tool_input.get("file_path", "unknown"))
-            file_operations["reads"].append(file_path)
-            key_actions.append(f"Read {file_path}")
-
-        elif tool_name in ("write_file", "create_file", "Write", "write"):
-            file_path = tool_input.get("path", tool_input.get("file_path", "unknown"))
-            file_operations["writes"].append(file_path)
-            key_actions.append(f"Wrote {file_path}")
-
-        elif tool_name in ("edit_file", "patch", "Edit", "edit"):
-            file_path = tool_input.get("path", tool_input.get("file_path", "unknown"))
-            file_operations["edits"].append(file_path)
-            key_actions.append(f"Edited {file_path}")
-
-        elif tool_name in (
-            "shell",
-            "terminal",
-            "run_shell_command",
-            "Bash",
-            "bash",
-        ):
-            command = tool_input.get("command", tool_input.get("cmd", ""))
-            command_summary = command[:50] + "..." if len(command) > 50 else command
-            key_actions.append(f"Ran: {command_summary}")
-
-        elif tool_name.startswith("mcp_") or tool_name.startswith("mcp__"):
-            operation = tool_name.replace("mcp__", "").replace("mcp_", "")
-            key_actions.append(f"MCP {operation}")
-
-        else:
-            key_actions.append(f"Used {tool_name}")
-
-    key_actions = (
-        list(dict.fromkeys(key_actions)) if key_actions else ["No specific actions"]
-    )
-
-    for op_type in file_operations:
-        file_operations[op_type] = list(dict.fromkeys(file_operations[op_type]))
-
-    result_summary = (
-        (session.result[:200] + "...") if len(session.result) > 200 else session.result
-    )
-
-    return {
-        "tool_counts": tool_counts,
-        "tool_details": tool_details,
-        "file_operations": file_operations,
-        "key_actions": key_actions,
-        "total_tool_calls": sum(tool_counts.values()),
-        "result_summary": result_summary,
-        "usage_stats": {
-            "total_cost_usd": session.total_cost_usd,
-            "num_turns": session.num_turns,
-            "duration_ms": session.duration_ms,
-            **session.usage,
-        },
-    }
+CodexSession = CLISession
 
 
 # --------------------------------------------------------------------------- NDJSON stream
@@ -604,6 +484,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     proc = await asyncio.create_subprocess_exec(
         CODEX_CLI,
         *request.as_cmd_args(),
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,  # isolate from parent's SIGINT
@@ -615,8 +496,13 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     # Guard against mocked subprocesses in tests where proc.pid may not
     # be a real int: a MagicMock.pid coerces to 1 via __int__, and
     # os.killpg(1, SIGTERM) signals init/the CI runner.
+    # os.killpg is POSIX-only: on Windows leave _pgid None so the group-kill
+    # path is skipped and cleanup falls through to proc.terminate()/kill()
+    # instead of raising AttributeError from the finally block.
     _codex_pgid: int | None = (
-        proc.pid if isinstance(proc.pid, int) and proc.pid > 1 else None
+        proc.pid
+        if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1
+        else None
     )
 
     decoder = codecs.getincrementaldecoder("utf-8")()
@@ -704,9 +590,6 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
         # Terminate the whole process group (start_new_session=True
         # above made pgid == proc.pid). Captured up-front so a reap
         # before teardown doesn't make us skip the group kill.
-        import os
-        import signal
-
         pgid = _codex_pgid
         if pgid is not None:
             with contextlib.suppress(ProcessLookupError, PermissionError):
@@ -731,10 +614,10 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
         stderr_task.cancel()
         try:
             await stderr_task
-        except (
+        except (  # noqa: S110, BLE001
             asyncio.CancelledError,
             Exception,
-        ):  # noqa: S110, BLE001 — intentional teardown reap
+        ):
             pass
 
 
@@ -782,7 +665,7 @@ def _pp_tool_result(tr: dict[str, Any], theme: str = "light") -> None:
     print_readable(body, border=False, panel=False, theme=theme)
 
 
-def _pp_final(sess: CodexSession, theme: str = "light") -> None:
+def _pp_final(sess: CLISession, theme: str = "light") -> None:
     usage = sess.usage or {}
     cost_str = f"${sess.total_cost_usd:.4f}" if sess.total_cost_usd else "N/A"
     txt = (
@@ -801,22 +684,21 @@ def _pp_final(sess: CodexSession, theme: str = "light") -> None:
 
 async def stream_codex_cli(
     request: CodexCodeRequest,
-    session: CodexSession | None = None,
+    session: CLISession | None = None,
     *,
     on_text: Callable[[str], None] | None = None,
     on_tool_use: Callable[[dict[str, Any]], None] | None = None,
     on_tool_result: Callable[[dict[str, Any]], None] | None = None,
-    on_final: Callable[[CodexSession], None] | None = None,
-) -> AsyncIterator[CodexChunk | dict | CodexSession]:
-    """
-    Consume the JSONL stream from Codex CLI and return a populated
-    CodexSession.
+    on_final: Callable[[CLISession], None] | None = None,
+) -> AsyncIterator[StreamChunk | CLISession]:
+    """Consume the JSONL stream from Codex CLI, yield StreamChunks, and
+    populate a CodexSession accumulator.
 
-    Handles flexible event type names since Codex CLI output format
-    may vary.
+    Yields ``StreamChunk`` for every content-bearing event so the endpoint
+    can pass them straight through without conversion.
     """
     if session is None:
-        session = CodexSession()
+        session = CLISession()
     theme = request.cli_display_theme or "light"
     _start_monotonic = asyncio.get_running_loop().time()
 
@@ -824,8 +706,6 @@ async def stream_codex_cli(
     try:
         async for obj in stream:
             typ = obj.get("type", "unknown")
-            chunk = CodexChunk(raw=obj, type=typ)
-            session.chunks.append(chunk)
 
             # -- thread / session start --
             if typ in ("thread.started", "system", "init", "session.start"):
@@ -834,7 +714,9 @@ async def stream_codex_cli(
                     obj.get("session_id", obj.get("id")),
                 )
                 session.model = obj.get("model")
-                yield obj
+                sc = StreamChunk(type="system", metadata=obj)
+                session.chunks.append(sc)
+                yield sc
 
             # -- item.completed (agent_message, reasoning, tool calls) --
             elif typ == "item.completed":
@@ -843,12 +725,13 @@ async def stream_codex_cli(
 
                 if item_type == "agent_message":
                     text = item.get("text", "")
-                    chunk.text = text
                     session.messages.append(item)
                     await _maybe_await(on_text, text)
                     if request.verbose_output:
                         _pp_text(text, theme)
-                    yield chunk
+                    sc = StreamChunk(type="text", content=text, metadata=obj)
+                    session.chunks.append(sc)
+                    yield sc
 
                 elif item_type in ("function_call", "tool_call"):
                     tu = {
@@ -859,73 +742,79 @@ async def stream_codex_cli(
                             item.get("input", item.get("args", {})),
                         ),
                     }
-                    chunk.tool_use = tu
                     session.tool_uses.append(tu)
                     await _maybe_await(on_tool_use, tu)
                     if request.verbose_output:
                         _pp_tool_use(tu, theme)
-                    yield chunk
+                    sc = StreamChunk(
+                        type="tool_use",
+                        tool_name=tu["name"],
+                        tool_id=tu["id"],
+                        tool_input=tu["input"],
+                        metadata=obj,
+                    )
+                    session.chunks.append(sc)
+                    yield sc
 
                 elif item_type == "command_execution":
-                    # Codex CLI emits command_execution items with command +
-                    # aggregated_output + exit_code. Treat as a paired
-                    # tool_use + tool_result so downstream message routing
-                    # records both the request and the result.
                     item_id = item.get("id", "")
                     command = item.get("command", "")
                     output = item.get("aggregated_output", "")
                     exit_code = item.get("exit_code")
                     status = item.get("status", "")
-                    is_error = status == "failed" or (
-                        exit_code is not None and exit_code != 0
-                    )
+                    is_error = status == "failed" or (exit_code is not None and exit_code != 0)
 
                     tu = {"id": item_id, "name": "Bash", "input": {"command": command}}
-                    chunk.tool_use = tu
                     session.tool_uses.append(tu)
                     await _maybe_await(on_tool_use, tu)
                     if request.verbose_output:
                         _pp_tool_use(tu, theme)
-                    yield chunk
+                    sc = StreamChunk(
+                        type="tool_use",
+                        tool_name="Bash",
+                        tool_id=item_id,
+                        tool_input={"command": command},
+                        metadata=obj,
+                    )
+                    session.chunks.append(sc)
+                    yield sc
 
-                    # Emit paired tool_result on a fresh chunk so the caller
-                    # always sees both halves of the exchange.
-                    result_chunk = CodexChunk(raw=obj, type=typ)
-                    tr = {
-                        "tool_use_id": item_id,
-                        "content": output,
-                        "is_error": is_error,
-                    }
-                    result_chunk.tool_result = tr
+                    tr = {"tool_use_id": item_id, "content": output, "is_error": is_error}
                     session.tool_results.append(tr)
-                    session.chunks.append(result_chunk)
                     await _maybe_await(on_tool_result, tr)
                     if request.verbose_output:
                         _pp_tool_result(tr, theme)
-                    yield result_chunk
+                    sc = StreamChunk(
+                        type="tool_result",
+                        tool_id=item_id,
+                        tool_output=output,
+                        is_error=is_error,
+                        metadata=obj,
+                    )
+                    session.chunks.append(sc)
+                    yield sc
 
                 elif item_type == "file_change":
-                    # Codex CLI emits file_change items with a `changes` list.
-                    # Surface each change as a single Edit tool call so the
-                    # branch records what files were touched.
                     item_id = item.get("id", "")
                     changes = item.get("changes", [])
                     status = item.get("status", "")
                     is_error = status == "failed"
 
-                    tu = {
-                        "id": item_id,
-                        "name": "Edit",
-                        "input": {"changes": changes},
-                    }
-                    chunk.tool_use = tu
+                    tu = {"id": item_id, "name": "Edit", "input": {"changes": changes}}
                     session.tool_uses.append(tu)
                     await _maybe_await(on_tool_use, tu)
                     if request.verbose_output:
                         _pp_tool_use(tu, theme)
-                    yield chunk
+                    sc = StreamChunk(
+                        type="tool_use",
+                        tool_name="Edit",
+                        tool_id=item_id,
+                        tool_input={"changes": changes},
+                        metadata=obj,
+                    )
+                    session.chunks.append(sc)
+                    yield sc
 
-                    result_chunk = CodexChunk(raw=obj, type=typ)
                     summary_parts = [
                         f"{c.get('kind', 'change')}: {c.get('path', '?')}"
                         for c in changes
@@ -936,13 +825,19 @@ async def stream_codex_cli(
                         "content": "; ".join(summary_parts) or status,
                         "is_error": is_error,
                     }
-                    result_chunk.tool_result = tr
                     session.tool_results.append(tr)
-                    session.chunks.append(result_chunk)
                     await _maybe_await(on_tool_result, tr)
                     if request.verbose_output:
                         _pp_tool_result(tr, theme)
-                    yield result_chunk
+                    sc = StreamChunk(
+                        type="tool_result",
+                        tool_id=item_id,
+                        tool_output=tr["content"],
+                        is_error=is_error,
+                        metadata=obj,
+                    )
+                    session.chunks.append(sc)
+                    yield sc
 
                 elif item_type == "function_call_output":
                     tr = {
@@ -950,18 +845,24 @@ async def stream_codex_cli(
                         "content": item.get("output", item.get("content", "")),
                         "is_error": item.get("is_error", False),
                     }
-                    chunk.tool_result = tr
                     session.tool_results.append(tr)
                     await _maybe_await(on_tool_result, tr)
                     if request.verbose_output:
                         _pp_tool_result(tr, theme)
-                    yield chunk
+                    sc = StreamChunk(
+                        type="tool_result",
+                        tool_id=tr["tool_use_id"],
+                        tool_output=tr["content"],
+                        is_error=tr["is_error"],
+                        metadata=obj,
+                    )
+                    session.chunks.append(sc)
+                    yield sc
 
                 elif item_type == "reasoning":
-                    yield chunk
-
-                else:
-                    yield chunk
+                    sc = StreamChunk(type="thinking", content=item.get("text"), metadata=obj)
+                    session.chunks.append(sc)
+                    yield sc
 
             # -- turn.completed (usage stats) --
             elif typ == "turn.completed":
@@ -978,6 +879,11 @@ async def stream_codex_cli(
                     if isinstance(err, dict)
                     else obj.get("message", str(err))
                 )
+                if request.verbose_output:
+                    log.error("Codex error: %s", session.result)
+                sc = StreamChunk(type="error", content=session.result, metadata=obj)
+                session.chunks.append(sc)
+                yield sc
 
             # -- legacy event types (older CLI versions) --
             elif typ in ("message", "assistant", "agent"):
@@ -986,41 +892,44 @@ async def stream_codex_cli(
 
                 content = msg.get("content", "")
                 if isinstance(content, str):
-                    chunk.text = content
                     await _maybe_await(on_text, content)
                     if request.verbose_output:
                         _pp_text(content, theme)
+                    sc = StreamChunk(type="text", content=content, metadata=obj)
+                    session.chunks.append(sc)
+                    yield sc
                 elif isinstance(content, list):
                     for blk in content:
-                        if isinstance(blk, dict):
-                            btype = blk.get("type")
-                            if btype == "text":
-                                text = blk.get("text", "")
-                                chunk.text = text
-                                await _maybe_await(on_text, text)
-                                if request.verbose_output:
-                                    _pp_text(text, theme)
-                            elif btype in (
-                                "tool_use",
-                                "function_call",
-                            ):
-                                tu = {
-                                    "id": blk.get("id", ""),
-                                    "name": blk.get(
-                                        "name",
-                                        blk.get("function", {}).get("name", ""),
-                                    ),
-                                    "input": blk.get(
-                                        "input",
-                                        blk.get("arguments", {}),
-                                    ),
-                                }
-                                chunk.tool_use = tu
-                                session.tool_uses.append(tu)
-                                await _maybe_await(on_tool_use, tu)
-                                if request.verbose_output:
-                                    _pp_tool_use(tu, theme)
-                yield chunk
+                        if not isinstance(blk, dict):
+                            continue
+                        btype = blk.get("type")
+                        if btype == "text":
+                            text = blk.get("text", "")
+                            await _maybe_await(on_text, text)
+                            if request.verbose_output:
+                                _pp_text(text, theme)
+                            sc = StreamChunk(type="text", content=text, metadata=obj)
+                            session.chunks.append(sc)
+                            yield sc
+                        elif btype in ("tool_use", "function_call"):
+                            tu = {
+                                "id": blk.get("id", ""),
+                                "name": blk.get("name", blk.get("function", {}).get("name", "")),
+                                "input": blk.get("input", blk.get("arguments", {})),
+                            }
+                            session.tool_uses.append(tu)
+                            await _maybe_await(on_tool_use, tu)
+                            if request.verbose_output:
+                                _pp_tool_use(tu, theme)
+                            sc = StreamChunk(
+                                type="tool_use",
+                                tool_name=tu["name"],
+                                tool_id=tu["id"],
+                                tool_input=tu["input"],
+                                metadata=obj,
+                            )
+                            session.chunks.append(sc)
+                            yield sc
 
             elif typ in ("result", "response", "session.end"):
                 session.result = obj.get(
@@ -1038,19 +947,14 @@ async def stream_codex_cli(
     finally:
         await stream.aclose()
 
-    # Reconstruct session.result from chunk texts when the CLI didn't emit a
-    # dedicated "response"/"result" event. CodexChunk has no delta flag, so all
-    # text chunks are treated as independent parts.
     if not session.result:
-        parts = [c.text for c in session.chunks if c.text is not None]
+        parts = [c.content for c in session.chunks if c.type == "text" and c.content]
         if parts:
             session.result = "\n".join(parts)
     if session.num_turns is None and session.messages:
         session.num_turns = len(session.messages)
     if session.duration_ms is None:
-        session.duration_ms = int(
-            (asyncio.get_running_loop().time() - _start_monotonic) * 1000
-        )
+        session.duration_ms = int((asyncio.get_running_loop().time() - _start_monotonic) * 1000)
 
     await _maybe_await(on_final, session)
     if request.verbose_output:

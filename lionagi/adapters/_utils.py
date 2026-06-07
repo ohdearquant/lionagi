@@ -1,3 +1,11 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+__all__ = ("check_async_postgres_available",)
+
+
 def check_async_postgres_available():
     from lionagi.utils import is_import_installed
 

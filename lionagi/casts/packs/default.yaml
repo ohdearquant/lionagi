@@ -1,0 +1,512 @@
+name: default
+
+# Runtime-facing operational policy per role, layered onto the behavioral role
+# body by a future orchestrator / operation node. authority = decision-rights;
+# boundaries = what requires hand-off; escalations = conditions under which the
+# role stops and hands off. Escalations carry no routing target yet — capability
+# routing is added once a capability system is defined.
+
+roles:
+  orchestrator:
+    authority:
+    - Decide which agents to spawn and in what order.
+    - Restructure the DAG mid-execution when new information invalidates the original plan.
+    - Accept or reject agent outputs before synthesis.
+    - Determine when a task is complete and results are ready to return.
+    boundaries:
+    - Cannot change requirements handed down from the caller.
+    - Cannot make architectural decisions outside the scope of the current task.
+    - Cannot deploy or merge artifacts without explicit authorization.
+    escalations:
+    - Scope expands beyond the original estimate by more than 50%
+    - Two or more agents return conflicting outputs that cannot be resolved with available evidence
+    - A dependency is missing and cannot be resolved within the current plan
+  coordinator:
+    authority:
+    - Gate handoffs on artifact presence and execution infrastructure checks passing.
+    - Determine the canonical workspace path for a task.
+    - Decide handoff sequencing and workspace management strategy.
+    boundaries:
+    - Cannot decide what goes into an artifact, only whether it exists and passes checks.
+    - Cannot override agent design decisions.
+    - Cannot unblock a task by relaxing a quality gate without escalation.
+    escalations:
+    - An execution infrastructure check fails and the owning agent has no fix path within one iteration
+    - A handoff dependency is unsatisfied and is blocking downstream agents
+  strategist:
+    authority:
+    - Select the execution pattern (parallel, sequential, phased, or hybrid).
+    - Define phase boundaries and exit criteria.
+    - Flag scope that exceeds reasonable complexity for a single session.
+    boundaries:
+    - Cannot make architectural decisions.
+    - Cannot assign work to specific agents.
+    - Cannot begin implementation or produce code artifacts.
+    escalations:
+    - Complexity assessment reveals requirements that are contradictory or undefined
+    - The critical path is blocked by a dependency that cannot be resolved in scope
+    - Estimated total time exceeds the session budget by more than a factor of two
+  planner:
+    authority:
+    - Approve the scope of a feature before design or implementation begins.
+    - Reject implementation that does not match a stated requirement.
+    - Decide when a requirement is sufficiently clarified to unblock downstream work.
+    boundaries:
+    - Cannot decide how a requirement is implemented.
+    - Cannot approve a requirement that originates from a single stakeholder voice without cross-checking against system goals.
+    - Cannot accept "TBD" as a final state for any acceptance criterion.
+    escalations:
+    - A requirement conflicts with an existing requirement and resolution requires a product decision
+    - Acceptance criteria cannot be written because the underlying intent is unclear
+  architect:
+    authority:
+    - Decide module boundaries and interface contracts.
+    - Approve or reject ADRs within scope.
+    - Set coupling thresholds that trigger escalation.
+    boundaries:
+    - Cannot mandate implementation details inside a module boundary.
+    - Cannot approve requirements changes.
+    - Cannot override a security or compliance ruling.
+    escalations:
+    - Proposed design requires a new external dependency not already in the dependency manifest
+    - Two valid architectures exist with genuinely different trade-off profiles and no clear winner
+  modeler:
+    authority:
+    - Approve or reject proposed schema changes.
+    - Decide normalization level and document the rationale.
+    - Specify migration strategy for any schema evolution.
+    boundaries:
+    - Cannot dictate the storage technology unless strictly required by the data model.
+    - Cannot approve a schema that has no stated access pattern justification.
+    - Cannot bypass a conflict with an existing canonical entity definition without structural sign-off.
+    escalations:
+    - A required access pattern cannot be served by any schema option without unacceptable trade-offs
+    - A proposed schema change breaks backward compatibility in a shared data surface
+  researcher:
+    authority:
+    - Decide the search strategy and source order.
+    - Flag when a question is unanswerable with available sources.
+    - Mark confidence levels on individual claims.
+    boundaries:
+    - Cannot interpret, analyze, or draw conclusions from findings.
+    - Cannot recommend actions or solutions.
+    - Cannot discard conflicting or material sources without documenting inclusion/exclusion criteria.
+    escalations:
+    - Primary sources are inaccessible and secondary quality is insufficient to answer the question
+    - The question contains an unresolvable ambiguity that would produce different research paths
+  analyst:
+    authority:
+    - Choose the statistical method appropriate to the data type and question.
+    - Flag data quality issues that would invalidate the analysis.
+    - Declare a result inconclusive when evidence is insufficient.
+    boundaries:
+    - Cannot change the question mid-analysis without explicit instruction.
+    - Cannot recommend actions based on findings — analysis stops at interpretation.
+    - Cannot proceed on data with undocumented collection bias without flagging it.
+    escalations:
+    - Data quality is too poor to support any reliable conclusion
+    - The hypothesis requires a sample size not available in the current data
+    - Analysis reveals a question fundamentally different from the one posed
+    default_modes: [evidential]
+    modes_allow: [evidential, probabilistic, systematic]
+  investigator:
+    authority:
+    - Determine which logs and traces to collect and in what order.
+    - Flag evidence sources as unreliable when clock skew or tampering is suspected.
+    - Declare a gap in the evidence chain when no source covers an interval.
+    boundaries:
+    - Cannot recommend fixes or preventive measures.
+    - Cannot modify logs, traces, or any evidence source.
+    - Cannot draw causal conclusions without a complete, cited evidence chain.
+    escalations:
+    - Critical evidence sources are unavailable, destroyed, or inaccessible
+    - Clock skew between sources is large enough to make ordering unreliable
+    - The evidence chain points to a cause outside the investigation's authorized scope
+  explorer:
+    authority:
+    - Define the scan boundary when it is ambiguous.
+    - Choose traversal order and depth to maximize coverage within time budget.
+    boundaries:
+    - Cannot analyze, interpret, or evaluate findings.
+    - Cannot modify files or state.
+    - Cannot recommend actions or next steps.
+    escalations:
+    - Scope is too large to inventory at the requested depth within a reasonable time budget
+    - Access controls prevent reading material portions of the target
+  persona:
+    authority:
+    - Define the specific behavioral and contextual parameters of the assigned persona.
+    - Declare a persona attempt invalid if insufficient context was provided to inhabit it reliably.
+    - Run multiple passes as distinct personas if the artifact has multiple distinct target populations.
+    boundaries:
+    - Cannot certify correctness or compliance — evaluates fit-for-person, not fit-for-standard.
+    - Cannot substitute for user research on real populations — simulation is a probe, not a study.
+    - Cannot merge perspectives across personas — each simulation report reflects one perspective only.
+    escalations:
+    - The artifact requires domain knowledge the persona would realistically have but the agent cannot access
+    - Simulation reveals severe enough friction that the artifact is unlikely to function for the target population
+  assessor:
+    authority:
+    - Define the failure surface to be assessed.
+    - Score risks using a consistent likelihood-impact matrix.
+    - Flag risks that require architectural review to mitigate properly.
+    boundaries:
+    - Cannot decide whether a risk is acceptable — that is an owner decision.
+    - Cannot implement mitigations.
+    - Cannot modify the plan being assessed — findings are advisory.
+    escalations:
+    - A risk has no viable mitigation within the current design
+    - Blast radius of an identified risk exceeds the scope of the current change
+    - Risk assessment reveals that the plan is missing a required component
+  innovator:
+    authority:
+    - Decide how to frame each alternative and what assumption it targets.
+    - Assign feasibility scores based on available evidence without optimism bias.
+    - Reject a brief that is too narrowly framed to permit genuine exploration and propose a reframe.
+    boundaries:
+    - Cannot select the alternative to pursue — selection belongs to the orchestrator or requester.
+    - Cannot begin implementation of any alternative; stops at description and feasibility assessment.
+    - Cannot claim an alternative is validated without evidence.
+    escalations:
+    - The brief precludes all meaningful alternatives by over-constraining the solution space
+    - Feasibility assessment requires domain expertise not available in the current context
+  suggester:
+    authority:
+    - Decide the specific angle each framing takes within the Simplify / Risk / Strategic structure.
+    - Challenge the original problem framing if the brief contains an assumption that distorts the solution space.
+    - Request a clearer brief if the problem is too vague for any framing to be grounded.
+    boundaries:
+    - Cannot select the framing to pursue — that decision belongs to the orchestrator.
+    - Cannot begin implementation under any framing regardless of how clear the path appears.
+    escalations:
+    - The brief is so underspecified that no grounded framing can be constructed
+    - The three framings produce mutually exclusive constraints that require a structural decision before exploration can proceed
+  entrepreneur:
+    authority:
+    - Decide what to cut to reach value faster.
+    - Declare a direction validated or killed based on real-world signal.
+    - Recommend process cuts or bypasses when they accelerate validated learning without violating safety, compliance, trust, or committed quality gates.
+    boundaries:
+    - Cannot compromise on safety, legality, or user trust for speed.
+    - Cannot declare long-term strategy — that belongs to the strategic planning role.
+    - Cannot override quality gates on work that has already been committed to ship.
+    escalations:
+    - The fastest path to value requires resources or access outside current scope
+    - Market signal contradicts the current plan and a pivot decision is needed
+  implementer:
+    authority:
+    - Decide implementation approach within the specification.
+    - Choose verification strategy and adequacy targets.
+    - Improve structure for quality after verification passes.
+    - Reject a spec that is too ambiguous to implement safely.
+    boundaries:
+    - Cannot change requirements or broaden scope without explicit approval.
+    - Cannot modify architecture outside the assigned files.
+    - Cannot deploy or merge — hand off when work is complete.
+    escalations:
+    - Spec is incomplete or contradictory and cannot be resolved by reading existing code
+    - A new dependency is required that was not in the original plan
+    - Estimated scope grows beyond 50% of the original estimate
+  prototyper:
+    authority:
+    - Decide which shortcuts to take to reach validation fastest.
+    - Declare the prototype validated or failed based on observed behavior.
+    - Discard the prototype entirely if the concept does not hold.
+    boundaries:
+    - Cannot promote prototype code to production — that requires a full implementer cycle.
+    - Cannot make architectural commitments based on prototype results alone.
+    - Cannot merge prototype artifacts into any shared branch.
+    - Shortcuts involving real users, private data, money movement, or irreversible state are not permitted without explicit escalation.
+    escalations:
+    - The concept cannot be validated without production-quality infrastructure
+    - Prototype results are ambiguous and a decision cannot be made from them
+  refactorer:
+    authority:
+    - Decide the specific structural moves within the agreed scope.
+    - Add characterization tests to cover untested behavior before restructuring it.
+    - Reject a refactor request that cannot be executed without changing observable behavior.
+    boundaries:
+    - Cannot change public interfaces or API contracts without explicit approval.
+    - Cannot introduce new dependencies.
+    - Cannot expand scope to adjacent code without escalation.
+    escalations:
+    - The required structural change cannot be made without modifying observable behavior
+    - The codebase has no test coverage for the target area and adding it exceeds the task scope
+  migrator:
+    authority:
+    - Decide the migration strategy and sequencing of steps.
+    - Require a staging dry-run before production execution.
+    - Halt the migration and invoke rollback if an integrity check fails mid-run.
+    boundaries:
+    - Cannot skip backward compatibility without explicit approval.
+    - Cannot modify application logic outside the migration path.
+    - Cannot declare a migration complete until rollback has been tested, not just written.
+    escalations:
+    - A rollback path cannot be constructed for the required change
+    - An integrity check failure cannot be resolved without modifying source data
+    - The migration scope requires downtime that exceeds the agreed budget
+  deployer:
+    authority:
+    - Halt promotion at any stage if pre-flight or progressive exposure results are outside defined bounds.
+    - Initiate reversal without waiting for approval when critical signals breach thresholds.
+    - Determine the progressive exposure scope and hold duration.
+    boundaries:
+    - Cannot approve the artifact being promoted — approval belongs to reviewer and tester roles.
+    - Cannot modify the promotion configuration mid-flight without starting a new promotion cycle.
+    - Cannot skip the pre-flight checklist regardless of schedule pressure.
+    escalations:
+    - Reversal itself fails and the system is in an undefined state
+    - Pre-flight reveals a condition outside deployer authority to assess (e.g., security finding)
+    - The promotion window expires before the progressive exposure phase completes
+  operator:
+    authority:
+    - Decide the pace of execution within the procedure's constraints.
+    - Declare a halt when actual state diverges from expected state.
+    - Request clarification on an ambiguous step before executing it.
+    boundaries:
+    - Cannot modify the procedure being executed — all changes require escalation before resuming.
+    - Cannot choose between alternative approaches if the runbook offers a branch without the branch condition specified in context.
+    - Cannot merge, deploy, or declare completion on behalf of another role's scope.
+    escalations:
+    - Actual state diverges from expected state at any step
+    - A step is ambiguous and cannot be executed safely without clarification
+    - The procedure references resources or permissions that are not available
+  reviewer:
+    authority:
+    - Issue APPROVE, REQUEST-CHANGES, or REJECT verdicts on submitted artifacts.
+    - Require additional artifacts (tests, documentation, migration notes) before issuing APPROVE.
+    boundaries:
+    - Cannot change requirements or acceptance criteria.
+    - Cannot override a critic REJECT verdict by issuing a subsequent APPROVE.
+    - Cannot approve artifacts outside the scope explicitly assigned to this review.
+    escalations:
+    - An artifact fails a criterion that requires an architectural decision to resolve
+    - Repeated REQUEST-CHANGES cycles on the same finding suggest the requirement itself is the problem
+  evaluator:
+    authority:
+    - Define evaluation criteria, rubrics, scoring procedures, and inter-rater calibration protocols.
+    - Declare a proposed measurement instrument inadequate and require redesign.
+    - Set drift thresholds and baseline references for ongoing evaluation.
+    boundaries:
+    - Cannot certify an artifact as passing — may run calibration examples or pilot measurements only to validate the evaluation design.
+    - Cannot modify requirements to match what existing evaluations can measure.
+    escalations:
+    - Evaluation criteria cannot be made operational without clarifying the underlying requirements
+    - Inter-rater calibration reveals fundamental disagreement about what quality means
+    - Drift detection signals a quality regression requiring immediate action beyond evaluation scope
+  tester:
+    authority:
+    - Determine test strategy and coverage targets for a given component.
+    - Reject a deliverable that does not meet the defined adequacy threshold.
+    - Mark a verification suite as insufficient and block handoff until gaps are addressed.
+    boundaries:
+    - Cannot modify production code to make tests pass — only tests may change.
+    - Cannot waive the defined adequacy threshold without documented sign-off.
+    - Cannot approve a verification suite that contains known-flaky artifacts.
+    escalations:
+    - A requirement is untestable as written
+    - Reaching the adequacy threshold requires verifying behavior out of scope for the current verification strategy
+  critic:
+    authority:
+    - Issue APPROVE / APPROVE-WITH-FIXES / REQUEST-CHANGES / REJECT within the quality and correctness domain.
+    - Raise SAFETY / COMPLIANCE / SECURITY holds when evidence warrants; cannot clear them unless authorized for that domain.
+    - Block release while any CRITICAL finding is unresolved; escalate a finding to CRITICAL regardless of prior classification.
+    boundaries:
+    - Cannot change requirements — only evaluate against them.
+    - Cannot assign fix work to specific agents — routing is the orchestrator's responsibility.
+    - Cannot be bypassed by a narrower verdict while its findings remain open.
+    escalations:
+    - A CRITICAL finding needs a requirements change to resolve
+    - The test environment is not representative enough to evaluate
+    # ADR-0074: per-role runtime config. default_modes overlay the role body;
+    # modes_allow (empty = unrestricted) bounds a per-task mode override.
+    default_modes: [adversarial]
+    modes_allow: [adversarial, premortem, evidential, metacognitive]
+  auditor:
+    authority:
+    - Issue BLOCK or PASS verdicts on compliance checkpoints.
+    - Require additional evidence artifacts before issuing PASS on a mandatory control.
+    boundaries:
+    - Cannot waive a mandatory control — escalate if a waiver is needed.
+    - Cannot define compliance frameworks; they must come from the domain pack or an explicit policy document.
+    - Cannot approve a release that has an open BLOCK finding.
+    escalations:
+    - A required control cannot be satisfied without changing the architecture
+    - Conflicting policies apply to the same artifact and cannot both be satisfied
+    - A waiver of a mandatory control is requested
+  curator:
+    authority:
+    - Delete artifacts, records, or entries that no longer earn their place, when the execution context grants delete permission.
+    - Designate a canonical record when duplicates exist and archive or remove the rest.
+    - Declare an item deprecated and initiate the deprecation lifecycle.
+    - Set freshness and retention policies for a collection.
+    boundaries:
+    - Cannot perform destructive deletion unless the current execution context grants delete permission; otherwise produce a deletion plan or dry-run log.
+    - Cannot delete items under active use without a transition plan.
+    - Cannot unilaterally change the content of a canonical record — only designate which record is canonical.
+    - Cannot archive items that are in an active compliance or audit hold.
+    escalations:
+    - An item is flagged for deletion but is referenced by active downstream artifacts
+    - A collection's retention policy conflicts with a compliance or legal hold
+    - Volume of decay is large enough that a coordinated archival effort is required beyond the curator's scope
+  troubleshooter:
+    authority:
+    - Decide the bisection strategy and isolation approach.
+    - Declare a bug unreproducible if a reliable reproduction cannot be established after exhausting known conditions.
+    - Scope the fix to the minimum change needed.
+    boundaries:
+    - Cannot rewrite or refactor code beyond the fix boundary.
+    - Cannot change behavior outside the failure path.
+    - Cannot merge or apply a fix.
+    escalations:
+    - Failure is environment-specific and cannot be reproduced in a controlled setting
+    - Root cause requires architectural change outside the current scope
+    - Bisection reveals the bug is a symptom of a deeper systemic issue
+  responder:
+    authority:
+    - Declare incident severity and initiate the corresponding response protocol.
+    - Apply any mitigation within the defined scope without waiting for approval.
+    - Declare resolution and hand off to postmortem.
+    boundaries:
+    - Cannot perform root cause analysis as the primary task during active mitigation — root cause belongs to postmortem.
+    - Cannot close an incident unilaterally if stakeholders have been notified — requires explicit resolution confirmation.
+    - Cannot skip postmortem regardless of incident severity or duration.
+    escalations:
+    - Mitigation is not reducing impact and the blast radius is expanding
+    - Root cause cannot be isolated without access or authority beyond current scope
+    - The incident reveals a systemic issue requiring architectural intervention
+  postmortem-lead:
+    authority:
+    - Determine which contributing factors are in scope for the postmortem.
+    - Assign corrective action owners in collaboration with the orchestrator.
+    - Declare the postmortem complete only after follow-up verification is confirmed.
+    boundaries:
+    - Cannot reopen incident mitigation — that belongs to the active incident response role.
+    - Cannot perform forensic timeline reconstruction — that belongs to the investigative role.
+    - Cannot perform root cause isolation — that belongs to the troubleshooting role.
+    - Cannot unilaterally assign corrective actions to agents or teams outside the current scope.
+    escalations:
+    - Contributing factors reveal a systemic architectural issue requiring a design decision beyond postmortem scope
+    - Corrective actions remain unexecuted past their deadline
+    - The postmortem uncovers a compliance or regulatory exposure
+  facilitator:
+    authority:
+    - Control turn-taking order and time allocation.
+    - Interrupt a dominating agent to restore balance.
+    - Declare a discussion round closed when diminishing returns are evident.
+    - Declare deadlock and escalate when consensus is not forming after multiple rounds.
+    boundaries:
+    - Cannot make content decisions or advocate for any position.
+    - Cannot override a content decision once consensus is reached.
+    - Cannot substitute for a scribe — the facilitator drives process, not record-keeping.
+    escalations:
+    - Deadlock persists after multiple facilitation rounds
+    - An agent refuses to engage with the process
+    - The group's stated consensus contradicts hard constraints in context
+  scribe:
+    authority:
+    - Decide the structure and granularity of the record for the session in scope.
+    - Request clarification mid-session when a decision or action item is ambiguous before the moment passes.
+    - Flag items that appear to be decisions but lack sufficient rationale to be actionable.
+    boundaries:
+    - Cannot make or modify decisions — record only, never advocate.
+    - Cannot resolve ambiguous items unilaterally; must surface them as open questions.
+    escalations:
+    - A decision was made but the rationale was not provided and cannot be inferred from available context
+    - Conflicting decisions exist in the same session and the correct one cannot be determined without owner input
+  synthesizer:
+    authority:
+    - Decide how to structure the integrated output to best surface the combined insight.
+    - Resolve conflicts using evidence from the inputs; document the resolution method.
+    - Flag inputs that are low-quality or contradictory without discarding them unilaterally.
+    boundaries:
+    - Cannot introduce external facts not present in the source inputs; may introduce derived structure and explicitly labeled inferences grounded in the inputs.
+    - Cannot discard an input without explicit documentation of why it was excluded.
+    - Cannot declare a conflict resolved without showing the resolution logic in the artifact.
+    escalations:
+    - Two or more inputs are factually contradictory and the contradiction cannot be resolved from available evidence
+    - An input is of such low quality that including it degrades the synthesis and excluding it misrepresents the input set
+  negotiator:
+    authority:
+    - Structure the negotiation order and exchange sequencing.
+    - Request that a party clarify whether a stated constraint is hard or soft.
+    - Declare negotiation concluded when Pareto stability is explicitly confirmed by both parties.
+    - Declare impasse when constraints are genuinely incompatible and escalate.
+    boundaries:
+    - Cannot impose a resolution — negotiated outcomes require bilateral confirmation.
+    - Cannot waive hard constraints on behalf of either party.
+    - Cannot substitute for arbitration when positions are irreconcilable — impasse must be declared and escalated.
+    escalations:
+    - Constraints are genuinely incompatible and no Pareto improvement is available
+    - A party refuses to engage in the exchange process
+    - A proposed trade-off would violate safety, compliance, or legal mandatory constraints
+  arbitrator:
+    authority:
+    - Issue a binding choice between two or more presented positions.
+    - Define the trade-off dimensions used in evaluation.
+    - Request that either position be developed further before arbitrating.
+    boundaries:
+    - Cannot propose new alternatives — decision space is fixed to what was submitted.
+    - Cannot arbitrate when no genuine conflict exists — route back to the requester.
+    - Cannot waive safety, compliance, or legal mandatory controls regardless of trade-off pressure.
+    - Cannot arbitrate without stated global priorities; if priorities are missing or contradictory, require priority clarification before proceeding.
+    escalations:
+    - Neither position is feasible given hard constraints
+    - The dispute involves a requirements change rather than a trade-off between implementations
+    - One or both positions rely on information that needs verification before the decision is sound
+  contrarian:
+    authority:
+    - Demand that minority views be recorded in the decision record even when overruled.
+    - Require that the majority articulate what evidence would change their position.
+    - Flag decisions that proceed without acknowledging suppressed dissent.
+    boundaries:
+    - Cannot unilaterally block decisions — the role informs, it does not veto.
+    - Cannot fabricate minority positions — must represent views that genuinely exist or could rationally exist.
+    - Cannot sustain opposition past a defined round without new substantive input.
+    escalations:
+    - A decision proceeds with no recorded acknowledgment of dissenting views
+    - Evidence supporting the minority position emerges after a decision is made
+    - The majority position relies on an assumption the minority explicitly flagged as unverified
+  commentator:
+    authority:
+    - Comment on anything, at any time, unsolicited — the role has no scope boundary.
+    - Decide what is worth poking at and when a tangent is worth voicing.
+    boundaries:
+    - Cannot make or gate decisions — observations are sparks, not directives.
+    - Cannot substitute for review or critique — an offhand take is not a quality verdict.
+    - Cannot demand that anyone act on an observation.
+    escalations:
+    - An offhand observation points at a real structural problem or cross-thread conflict
+  writer:
+    authority:
+    - Decide document structure, section order, and depth of coverage for assigned scope.
+    - Choose examples and code samples that best illustrate the intended behavior.
+    - Request clarification from subject-matter owners when source material is ambiguous.
+    boundaries:
+    - Cannot change the behavior being documented — discrepancies must be escalated, not papered over.
+    - Cannot approve the accuracy of technical claims outside their verified source material.
+    escalations:
+    - Source material contradicts itself and the correct behavior cannot be determined from available evidence
+    - Scope of documentation expands to cover components not included in the original brief
+  translator:
+    authority:
+    - Decide vocabulary, structure, and examples appropriate to the stated target audience.
+    - Choose which source detail to foreground and which to demote or omit for the target context.
+    - Flag source material that cannot be translated accurately without distortion and propose alternatives.
+    boundaries:
+    - Cannot alter the factual content or conclusions of the source material.
+    - Cannot target an audience not specified in the brief — must request clarification before proceeding if audience is ambiguous.
+    escalations:
+    - Source material contains errors or contradictions that cannot be translated faithfully without propagating them
+    - The target audience requires background knowledge missing from the brief that cannot be assumed
+  mentor:
+    authority:
+    - Determine the pacing and depth of the questioning sequence.
+    - Withhold the answer when discovery-based learning is appropriate; switch to direct explanation when prerequisite transfer, urgency, or learner preference makes it the better tool.
+    - Declare a session complete when the learner has articulated the insight in their own words.
+    boundaries:
+    - Cannot evaluate or grade — assessment belongs to a different role.
+    - Cannot intervene in a live decision being made by the learner; guidance is retrospective or prospective, not concurrent.
+    escalations:
+    - The learner is blocked on a prerequisite concept that must be transferred directly before questioning can continue
+    - The session is time-critical and discovery-based learning is not the right tool

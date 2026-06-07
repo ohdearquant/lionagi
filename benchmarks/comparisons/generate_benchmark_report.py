@@ -119,9 +119,7 @@ def md_table(headers, rows):
 
 def rank_block(rows, metric_key, lion_name):
     # Sort ascending (lower is better)
-    rows_sorted = sorted(
-        rows, key=lambda r: (r.get(metric_key, float("inf")), r["framework"])
-    )
+    rows_sorted = sorted(rows, key=lambda r: (r.get(metric_key, float("inf")), r["framework"]))
     if not rows_sorted:
         return rows_sorted, None, None
     best_val = rows_sorted[0].get(metric_key, float("inf"))
@@ -235,11 +233,7 @@ def build_composite(by_cat_mode, categories, modes):
     # Collect all frameworks present in the selected sections
     frameworks = set()
     for (cat, mode), sect in by_cat_mode.items():
-        if (
-            cat in categories
-            and mode in modes
-            and (cat, mode) not in EXCLUDE_FROM_COMPOSITE
-        ):
+        if cat in categories and mode in modes and (cat, mode) not in EXCLUDE_FROM_COMPOSITE:
             for r in sect:
                 frameworks.add(r["framework"])
 
@@ -263,12 +257,8 @@ def build_composite(by_cat_mode, categories, modes):
                 {
                     "framework": fw,
                     "gmean_ms": geomean(medians),
-                    "avg_rss_mb": (
-                        (sum(rss_vals) / len(rss_vals)) if rss_vals else float("nan")
-                    ),
-                    "avg_uss_mb": (
-                        (sum(uss_vals) / len(uss_vals)) if uss_vals else float("nan")
-                    ),
+                    "avg_rss_mb": ((sum(rss_vals) / len(rss_vals)) if rss_vals else float("nan")),
+                    "avg_uss_mb": ((sum(uss_vals) / len(uss_vals)) if uss_vals else float("nan")),
                     "n": n,
                 }
             )
@@ -317,9 +307,7 @@ def composite_section(out, by_cat_mode, title, categories, modes, lion_name):
 
 
 def main():
-    ap = argparse.ArgumentParser(
-        description="Generate benchmark report from CSV/JSON outputs"
-    )
+    ap = argparse.ArgumentParser(description="Generate benchmark report from CSV/JSON outputs")
     ap.add_argument(
         "--summary",
         required=False,
@@ -400,13 +388,9 @@ def main():
         if lion_pair and not math.isinf(best_val):
             lion_val, second_val = lion_pair
             if lion_val is not None and second_val is not None:
-                adv = percent_delta(
-                    second_val, lion_val
-                )  # how much slower #2 is vs lion
+                adv = percent_delta(second_val, lion_val)  # how much slower #2 is vs lion
                 if adv > -1e-9:  # #2 >= lion
-                    out.append(
-                        f"> **LionAGI advantage:** median {adv:+.1f}% vs #2 in this table."
-                    )
+                    out.append(f"> **LionAGI advantage:** median {adv:+.1f}% vs #2 in this table.")
                     out.append("")
 
         # Flag tiny-baseline sections (e.g., imports ~0.1 ms)
@@ -483,17 +467,13 @@ def main():
     # Feature parity (fixed)
     out.append("## Feature Parity Matrix")
     out.append("")
-    out.append(
-        "This matrix demonstrates the equivalence of test cases across frameworks:"
-    )
+    out.append("This matrix demonstrates the equivalence of test cases across frameworks:")
     out.append("")
     out.append(feature_parity_section())
     out.append("")
     out.append("### Documentation Sources")
     out.append("")
-    out.append(
-        "The benchmark design follows official documentation from each framework:"
-    )
+    out.append("The benchmark design follows official documentation from each framework:")
     out.append("")
     out.append(
         "- **LangGraph**: [Graph API & compile()](https://langchain-ai.github.io/langgraph/reference/graphs/)"
@@ -514,16 +494,10 @@ def main():
     out.append("## Methodology")
     out.append("")
     out.append("### Measurement Approach")
-    out.append(
-        "- **Cold Mode**: Full import + object construction (serverless scenario)"
-    )
-    out.append(
-        "- **Construct Mode**: Object construction only (post-import, per-request cost)"
-    )
+    out.append("- **Cold Mode**: Full import + object construction (serverless scenario)")
+    out.append("- **Construct Mode**: Object construction only (post-import, per-request cost)")
     out.append("- **Memory**: RSS (Resident Set Size) and USS (Unique Set Size) deltas")
-    out.append(
-        "- **Statistics**: Median, P95, MAD, trimmed mean for robustness against outliers"
-    )
+    out.append("- **Statistics**: Median, P95, MAD, trimmed mean for robustness against outliers")
     out.append("")
     out.append("### Environmental Controls")
     out.append("- CPU pinning for reduced scheduler noise")

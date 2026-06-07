@@ -5,7 +5,7 @@
 
 Tests verify that:
 1. fast_mode=False (default) emits no service_tier arg.
-2. fast_mode=True emits ``-c service_tier=priority`` in the command args.
+2. fast_mode=True emits ``-c service_tier=fast`` in the command args.
 3. fast_mode does NOT cap or remove reasoning_effort.
 4. Profile frontmatter ``fast_mode: true`` is parsed and propagated to
    CodexCodeRequest via build_imodel_from_spec (mocked iModel).
@@ -38,18 +38,17 @@ def test_fast_mode_default_false():
     assert "service_tier" not in " ".join(args)
 
 
-# ── 2. fast_mode=True emits service_tier=priority ────────────────────────
+# ── 2. fast_mode=True emits service_tier=fast ────────────────────────────
 
 
 def test_fast_mode_true_emits_service_tier():
-    """fast_mode=True inserts -c service_tier=priority into CLI args."""
+    """fast_mode=True inserts -c service_tier=fast into CLI args."""
     req = CodexCodeRequest(prompt="hello", fast_mode=True)
     args = req.as_cmd_args()
-    # Should contain -c service_tier=priority as adjacent pair
     for i, arg in enumerate(args[:-1]):
-        if arg == "-c" and args[i + 1] == "service_tier=priority":
+        if arg == "-c" and args[i + 1] == "service_tier=fast":
             return
-    pytest.fail(f"service_tier=priority not found in args: {args}")
+    pytest.fail(f"service_tier=fast not found in args: {args}")
 
 
 # ── 3. fast_mode does NOT alter reasoning_effort ─────────────────────────
@@ -59,9 +58,9 @@ def test_fast_mode_preserves_reasoning_effort():
     """fast_mode=True does not cap or remove reasoning_effort."""
     req = CodexCodeRequest(prompt="hello", fast_mode=True, reasoning_effort="xhigh")
     args = req.as_cmd_args()
-    # Both service_tier=priority and reasoning_effort=xhigh must appear
+    # Both service_tier=fast and reasoning_effort=xhigh must appear
     flat = " ".join(args)
-    assert "service_tier=priority" in flat
+    assert "service_tier=fast" in flat
     assert "reasoning_effort=xhigh" in flat
 
 

@@ -8,7 +8,6 @@ from lionagi.service.connections.registry import EndpointType
 
 
 class FirecrawlConfigs(ProviderConfig, Enum):
-
     SCRAPE = (
         "v1/scrape",
         ["scrape"],

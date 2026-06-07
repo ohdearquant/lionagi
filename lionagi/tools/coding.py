@@ -11,7 +11,7 @@ import shlex
 import signal
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -28,17 +28,12 @@ if TYPE_CHECKING:
     from lionagi.session.branch import Branch
 
 
-# ---------------------------------------------------------------------------
-# Workspace path validation (Finding 14)
-# ---------------------------------------------------------------------------
-
 _DENIED_NAMES: frozenset[str] = frozenset(
     {".env", ".netrc", "id_rsa", "id_ed25519", "id_ecdsa", ".htpasswd"}
 )
 
 
 def _resolve_workspace_path(path: str, workspace_root: Path) -> Path:
-    """Finding 14: resolve path under workspace_root; raise PermissionError if it escapes."""
     raw = Path(path).expanduser()
     candidate = raw if raw.is_absolute() else workspace_root / raw
     # GAP B: check symlink on candidate BEFORE resolve() follows it
@@ -69,7 +64,9 @@ class ReaderRequest(BaseModel):
         ...,
         description=(
             "Action to perform. One of:\n"
-            "- 'read': Read a file and return its contents with line numbers.\n"
+            "- 'read': Read a file. Each line is returned as `<number>\\t<code>`; the "
+            "line-number prefix is for your reference only — strip it (and the tab) "
+            "before using any text as an editor old_string.\n"
             "- 'list_dir': List files in a directory."
         ),
     )
@@ -119,7 +116,15 @@ class EditorRequest(BaseModel):
     )
     old_string: str | None = Field(
         None,
-        description="Exact text to find. Required for 'edit'. Must match byte-for-byte.",
+        description=(
+            "Exact text to find. Required for 'edit'. Must match the file byte-for-byte. "
+            "IMPORTANT: the reader returns lines as `<number>\\t<code>` — do NOT include "
+            "the leading line-number + tab prefix here; match only the actual code, "
+            "preserving its exact indentation. Use the smallest snippet that is unique "
+            "(usually 2-4 adjacent lines); if it is not unique the edit fails — add a "
+            "little more surrounding context, or set replace_all=True to change every "
+            "occurrence."
+        ),
     )
     new_string: str | None = Field(
         None,
@@ -134,7 +139,12 @@ class EditorRequest(BaseModel):
 class BashRequest(BaseModel):
     command: str = Field(
         ...,
-        description="Shell command to execute.",
+        description=(
+            "A single shell command to execute. Shell control operators are NOT "
+            "supported and will be rejected — no `&&`, `||`, `|`, `;`, redirects "
+            "(`<`/`>`), backticks, or `$(...)`. Run one command per call; to work in "
+            "a directory pass cwd= instead of `cd x && ...`."
+        ),
     )
     timeout: int | None = Field(
         None,
@@ -276,7 +286,6 @@ _IMAGE_MEDIA_TYPES = {
 
 
 def _read_image_sync(path: str, workspace_root: Path) -> dict:
-    # Finding 14: validate path before reading image bytes
     try:
         p = _resolve_workspace_path(path, workspace_root)
     except PermissionError as e:
@@ -297,10 +306,7 @@ def _read_image_sync(path: str, workspace_root: Path) -> dict:
     }
 
 
-def _read_file_sync(
-    path: str, offset: int, max_lines: int, workspace_root: Path
-) -> dict:
-    # Finding 14: validate path under workspace root
+def _read_file_sync(path: str, offset: int, max_lines: int, workspace_root: Path) -> dict:
     try:
         p = _resolve_workspace_path(path, workspace_root)
     except PermissionError as e:
@@ -347,7 +353,6 @@ def _read_file_sync(
 def _list_dir_sync(
     path: str, recursive: bool, file_types: list[str] | None, workspace_root: Path
 ) -> dict:
-    # Finding 14: validate directory path
     try:
         base = _resolve_workspace_path(path, workspace_root)
     except PermissionError as e:
@@ -363,7 +368,6 @@ def _list_dir_sync(
 
 
 def _write_file_sync(file_path: str, content: str, workspace_root: Path) -> dict:
-    # Finding 14: validate path before writing
     try:
         p = _resolve_workspace_path(file_path, workspace_root)
     except PermissionError as e:
@@ -395,7 +399,6 @@ def _edit_file_sync(
     replace_all: bool,
     workspace_root: Path,
 ) -> dict:
-    # Finding 14: validate path before reading or writing
     try:
         p = _resolve_workspace_path(file_path, workspace_root)
     except PermissionError as e:
@@ -408,7 +411,19 @@ def _edit_file_sync(
 
     count = original.count(old_string)
     if count == 0:
-        return {"success": False, "error": f"old_string not found in {file_path}"}
+        hint = ""
+        # Most common cause on a fresh read: the model copied the reader's
+        # `<number>\t` line-number prefix into old_string. If stripping a
+        # leading "<digits><tab>" from each line WOULD match, say so.
+        stripped = re.sub(r"(?m)^\s*\d+\t", "", old_string)
+        if stripped != old_string and stripped in original:
+            hint = (
+                " — it matches once you remove the line-number prefixes. Drop the "
+                "leading `<number>\\t` from each line (keep only the code)."
+            )
+        elif old_string.strip() and old_string.strip() in original:
+            hint = " — a match exists ignoring surrounding whitespace; check indentation."
+        return {"success": False, "error": f"old_string not found in {file_path}{hint}"}
     if count > 1 and not replace_all:
         return {
             "success": False,
@@ -447,10 +462,7 @@ _MAX_OUTPUT_BYTES = 100_000
 
 
 def _drain_stream(stream, buf: bytearray) -> bool:
-    """Finding 5: read stream into buf up to _MAX_OUTPUT_BYTES; return True if truncated.
-
-    Continues reading even after cap to prevent pipe-buffer deadlock.
-    """
+    """Continues reading even after cap to prevent pipe-buffer deadlock."""
     truncated = False
     while True:
         try:
@@ -468,9 +480,8 @@ def _drain_stream(stream, buf: bytearray) -> bool:
 
 
 def _subprocess_sync(cmd, shell: bool, timeout_s: float, cwd: str | None) -> dict:
-    # Finding 5: use Popen + threads for bounded memory capture and child-group kill
     try:
-        proc = subprocess.Popen(
+        proc = subprocess.Popen(  # noqa: S603
             cmd,
             shell=shell,
             stdout=subprocess.PIPE,
@@ -503,7 +514,8 @@ def _subprocess_sync(cmd, shell: bool, timeout_s: float, cwd: str | None) -> dic
     try:
         proc.wait(timeout=timeout_s)
     except subprocess.TimeoutExpired:
-        if isinstance(proc.pid, int) and proc.pid > 1:
+        # os.killpg is POSIX-only; on Windows fall through to proc.kill().
+        if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1:
             with contextlib.suppress(ProcessLookupError, OSError):
                 os.killpg(proc.pid, signal.SIGKILL)
         else:
@@ -541,6 +553,25 @@ def _subprocess_sync(cmd, shell: bool, timeout_s: float, cwd: str | None) -> dic
 # ---------------------------------------------------------------------------
 # CodingToolkit
 # ---------------------------------------------------------------------------
+
+
+#: Every tool the coding toolkit can build.
+ALL_CODING_TOOLS: tuple[str, ...] = (
+    "reader",
+    "editor",
+    "bash",
+    "search",
+    "context",
+    "sandbox",
+    "subagent",
+)
+
+#: Tools registered by default — the proven, in-use core. ``context`` (manual
+#: context eviction), ``sandbox`` (git-worktree sessions), and ``subagent``
+#: (delegation) are opt-in: they add capability surface the agent rarely uses,
+#: and delegation in particular shouldn't be advertised before a single agent is
+#: solid. Enable extras explicitly via ``CodingToolkit(tools=[...])``.
+DEFAULT_CODING_TOOLS: tuple[str, ...] = ("reader", "editor", "bash", "search")
 
 
 class CodingToolkit(LionTool):
@@ -582,7 +613,6 @@ class CodingToolkit(LionTool):
     system_tool_name = "coding_toolkit"
 
     def security_pre(self, tool_name: str, handler: Callable) -> CodingToolkit:
-        """Finding 13: register a security hook that runs before user pre-hooks."""
         self._security_pre_hooks.setdefault(tool_name, []).append(handler)
         return self
 
@@ -599,12 +629,8 @@ class CodingToolkit(LionTool):
         return self
 
     def _build_preprocessor(self, tool_name: str) -> Callable | None:
-        """Build a chained preprocessor from registered hooks for this tool.
-
-        Finding 13: security_pre hooks run before user pre hooks.
-        """
+        """Build a chained preprocessor from registered hooks for this tool."""
         security_hooks = [
-            # Finding 13: security hooks first, then user hooks
             *self._security_pre_hooks.get("*", []),
             *self._security_pre_hooks.get(tool_name, []),
         ]
@@ -654,16 +680,23 @@ class CodingToolkit(LionTool):
         notify_threshold: float = 0.7,
         notify_max_tokens: int = 200_000,
         workspace_root: str | Path | None = None,
+        tools: Sequence[str] | None = None,
     ):
-        self._security_pre_hooks: dict[str, list[Callable]] = {}  # Finding 13
+        self._security_pre_hooks: dict[str, list[Callable]] = {}
         self._pre_hooks: dict[str, list[Callable]] = {}
         self._post_hooks: dict[str, list[Callable]] = {}
         self._error_hooks: dict[str, list[Callable]] = {}
         self.notify = notify
         self.notify_threshold = notify_threshold
         self.notify_max_tokens = notify_max_tokens
-        # Finding 14: workspace root for path containment checks
         self.workspace_root = Path(workspace_root or Path.cwd()).expanduser().resolve()
+        # Which tools to register. None -> the lean default core; pass an explicit
+        # list to opt into context/sandbox/subagent.
+        selected = tuple(tools) if tools is not None else DEFAULT_CODING_TOOLS
+        unknown = [t for t in selected if t not in ALL_CODING_TOOLS]
+        if unknown:
+            raise ValueError(f"unknown coding tool(s): {unknown}. Valid: {list(ALL_CODING_TOOLS)}")
+        self.enabled_tools = selected
 
     def bind(self, branch: Branch) -> list[Tool]:
         from lionagi.protocols.messages import ActionResponse
@@ -672,9 +705,6 @@ class CodingToolkit(LionTool):
         call_count = [0]
         msgs = branch.msgs
         notify = self.notify
-        threshold = self.notify_threshold
-        max_tokens = self.notify_max_tokens
-        # Finding 14: capture workspace root for use in all sync file helpers
         workspace_root = self.workspace_root
 
         def _system_status() -> str | None:
@@ -755,10 +785,7 @@ class CodingToolkit(LionTool):
             if action == "read":
                 start = max(0, offset or 0)
                 max_lines = limit if (limit and limit > 0) else 2000
-                # Finding 14: pass workspace_root to enforce path containment
-                result = await run_sync(
-                    _read_file_sync, path, start, max_lines, workspace_root
-                )
+                result = await run_sync(_read_file_sync, path, start, max_lines, workspace_root)
                 _track(result)
                 return result
             elif action == "list_dir":
@@ -780,7 +807,9 @@ class CodingToolkit(LionTool):
             """Write or edit files. You must read a file before editing it.
 
             Use action='write' to create or overwrite. Use action='edit' for
-            exact string replacement — safer than full rewrites.
+            exact string replacement — safer than full rewrites. When building
+            old_string from reader output, strip the `<number>\\t` line-number
+            prefix and keep only the code, with its exact indentation.
             """
             if action == "write":
                 if content is None:
@@ -793,10 +822,7 @@ class CodingToolkit(LionTool):
                     guard = _check_read_guard(file_path)
                     if guard:
                         return {"success": False, "error": guard}
-                # Finding 14: pass workspace_root to enforce path containment
-                result = await run_sync(
-                    _write_file_sync, file_path, content, workspace_root
-                )
+                result = await run_sync(_write_file_sync, file_path, content, workspace_root)
                 _track(result)
                 return result
             elif action == "edit":
@@ -807,7 +833,6 @@ class CodingToolkit(LionTool):
                 guard = _check_read_guard(file_path)
                 if guard:
                     return {"success": False, "error": guard}
-                # Finding 14: pass workspace_root to enforce path containment
                 result = await run_sync(
                     _edit_file_sync,
                     file_path,
@@ -827,10 +852,12 @@ class CodingToolkit(LionTool):
             timeout: int = None,
             cwd: str = None,
         ) -> dict:
-            """Execute a shell command and return stdout, stderr, and return code.
+            """Execute a single shell command and return stdout, stderr, and return code.
 
             Use for running builds, tests, git commands, and any system operations.
-            Output is truncated if it exceeds 100 KB per stream.
+            One command per call — shell operators (&&, ||, |, ;, redirects, backticks,
+            $(...)) are rejected; pass cwd= to run in a directory. Output is truncated
+            if it exceeds 100 KB per stream.
             """
             timeout_ms = max(1, min(timeout or 30000, 300000))
             timeout_s = timeout_ms / 1000.0
@@ -875,9 +902,7 @@ class CodingToolkit(LionTool):
             """
             if action == "grep":
                 try:
-                    search_path = str(
-                        _resolve_workspace_path(path or ".", workspace_root)
-                    )
+                    search_path = str(_resolve_workspace_path(path or ".", workspace_root))
                 except PermissionError as e:
                     return {"success": False, "error": str(e)}
                 limit = max_results or 50
@@ -887,9 +912,7 @@ class CodingToolkit(LionTool):
                 raw = await run_sync(_subprocess_sync, cmd, False, 30.0, None)
                 if raw.get("returncode") == 2:
                     return {"success": False, "error": raw["stderr"].strip()}
-                lines = (
-                    raw["stdout"].strip().split("\n") if raw["stdout"].strip() else []
-                )
+                lines = raw["stdout"].strip().split("\n") if raw["stdout"].strip() else []
                 total = len(lines)
                 return {
                     "success": True,
@@ -899,9 +922,7 @@ class CodingToolkit(LionTool):
                 }
             elif action == "find":
                 try:
-                    search_path = str(
-                        _resolve_workspace_path(path or ".", workspace_root)
-                    )
+                    search_path = str(_resolve_workspace_path(path or ".", workspace_root))
                 except PermissionError as e:
                     return {"success": False, "error": str(e)}
                 limit = max_results or 100
@@ -909,9 +930,7 @@ class CodingToolkit(LionTool):
                 raw = await run_sync(_subprocess_sync, cmd, False, 30.0, None)
                 if raw.get("returncode", 0) != 0 and raw.get("stderr", "").strip():
                     return {"success": False, "error": raw["stderr"].strip()}
-                lines = (
-                    raw["stdout"].strip().split("\n") if raw["stdout"].strip() else []
-                )
+                lines = raw["stdout"].strip().split("\n") if raw["stdout"].strip() else []
                 total = len(lines)
                 return {
                     "success": True,
@@ -1020,9 +1039,7 @@ class CodingToolkit(LionTool):
                 cp = _ensure_current_progression()
                 keep = keep_last if keep_last is not None else 5
                 ar_uids = [
-                    uid
-                    for uid in cp
-                    if uid in pile and isinstance(pile[uid], ActionResponse)
+                    uid for uid in cp if uid in pile and isinstance(pile[uid], ActionResponse)
                 ]
                 if len(ar_uids) <= keep:
                     return {
@@ -1145,18 +1162,10 @@ class CodingToolkit(LionTool):
             - safe: read + write + search, bash restricted (no rm/sudo)
             - allow_all: full access (use for trusted implementation tasks)
             """
-            from lionagi.agent.config import AgentConfig
-            from lionagi.agent.permissions import PermissionPolicy
+            from lionagi.agent.spec import AgentSpec
 
             max_turns = min(max(1, max_turns), 50)
             sub_cwd = cwd or (str(workspace_root) if workspace_root else None)
-
-            perm_map = {
-                "read_only": PermissionPolicy.read_only(),
-                "safe": PermissionPolicy.safe(),
-                "allow_all": PermissionPolicy.allow_all(),
-            }
-            sub_permissions = perm_map.get(permissions, PermissionPolicy.read_only())
 
             try:
                 model_spec = None
@@ -1171,22 +1180,23 @@ class CodingToolkit(LionTool):
                 except AttributeError:
                     pass
 
-                sub_config = AgentConfig(
-                    name="subagent",
+                sub_spec = AgentSpec.compose(
+                    "implementer",
                     model=model_spec,
                     tools=["coding"],
-                    permissions=sub_permissions,
-                    cwd=sub_cwd,
+                    permissions=permissions,
                     system_prompt=(
                         "You are a sub-agent. Complete the assigned task concisely. "
                         "Report your findings and any changes made. Be thorough but brief."
                     ),
-                    lion_system=False,
+                    cwd=sub_cwd,
+                    yolo=False,
                 )
+                sub_spec.lion_system = False
 
                 from lionagi.agent.factory import create_agent as _create
 
-                sub_branch = await _create(sub_config, load_settings=False)
+                sub_branch = await _create(sub_spec, load_settings=False)
 
                 result = await sub_branch.ReAct(
                     instruction=instruction,
@@ -1217,6 +1227,8 @@ class CodingToolkit(LionTool):
 
         tools = []
         for name, func, request_cls in tool_defs:
+            if name not in self.enabled_tools:
+                continue
             tools.append(
                 Tool(
                     func_callable=func,

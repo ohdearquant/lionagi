@@ -12,8 +12,7 @@ def _ensure_headless_backend(save_path) -> None:
         import matplotlib
 
         matplotlib.use("Agg", force=True)
-    except Exception:
-        # Backend already bound and can't switch — savefig still works.
+    except Exception:  # noqa: S110 — backend already bound and can't switch; savefig still works
         pass
 
 
@@ -25,9 +24,7 @@ def visualize_graph(
 ):
     """Visualize an executed or in-progress operation graph.
 
-    Reads node status from ``builder._executed`` and metadata on each
-    node. For pre-execution plan preview, use :func:`visualize_plan`
-    which draws directly from a FlowPlan.
+    Reads node status from ``builder._executed`` and metadata on each node.
     """
     from lionagi.utils import is_import_installed
 
@@ -51,7 +48,7 @@ def visualize_graph(
     graph = builder.get_graph()
 
     # Convert to networkx
-    G = nx.DiGraph()
+    G = nx.DiGraph()  # noqa: N806 — networkx convention for a graph object
 
     # Track node positions for hierarchical layout
     node_levels = {}
@@ -65,9 +62,7 @@ def visualize_graph(
         G.add_node(node_id)
 
         # Determine level based on dependencies
-        in_edges = [
-            e for e in graph.internal_edges.values() if str(e.tail)[:8] == node_id
-        ]
+        in_edges = [e for e in graph.internal_edges.values() if str(e.tail)[:8] == node_id]
         if not in_edges:
             level = 0  # Root nodes
         else:
@@ -285,7 +280,9 @@ def visualize_graph(
     )
 
     # Add statistics box
-    stats_text = f"Nodes: {len(G.nodes())}\nEdges: {len(G.edges())}\nExecuted: {len(builder._executed)}"
+    stats_text = (
+        f"Nodes: {len(G.nodes())}\nEdges: {len(G.edges())}\nExecuted: {len(builder._executed)}"
+    )
     if nodes_by_level:
         max_level = max(nodes_by_level.keys())
         stats_text += f"\nLevels: {max_level + 1}"
@@ -311,226 +308,6 @@ def visualize_graph(
         p.parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(p, dpi=150, bbox_inches="tight")
         print(f"Graph saved: {p}")
-        plt.close()
-    else:
-        plt.show()
-
-
-def visualize_plan(
-    plan,
-    title: str | None = None,
-    figsize=(14, 10),
-    save_path: str | None = None,
-):
-    """Visualize a FlowPlan BEFORE execution.
-
-    Draws directly from ``plan.agents`` and ``plan.operations`` — does
-    not require a hydrated OperationGraphBuilder. Used by
-    ``li o flow --dry-run --show-graph`` to preview the planned DAG.
-
-    Nodes are FlowOps (labeled with their agent's role and op id).
-    Edges are ``depends_on`` relationships. All non-control ops render
-    as 'Pending' since this is pre-execution; control ops render in
-    a distinct color.
-    """
-    from lionagi.utils import is_import_installed
-
-    if not is_import_installed("matplotlib"):
-        raise ImportError(
-            "matplotlib is required for visualization. "
-            "Please install it using `pip install matplotlib`."
-        )
-    if not is_import_installed("networkx"):
-        raise ImportError(
-            "networkx is required for visualization. "
-            "Please install it using `pip install networkx`."
-        )
-
-    _ensure_headless_backend(save_path)
-
-    import matplotlib.pyplot as plt
-    import networkx as nx
-    import numpy as np
-
-    # agent_id → role lookup so node labels show the role rather than raw id
-    agent_role: dict[str, str] = {a.id: a.role for a in plan.agents}
-    ops_by_id = {op.id: op for op in plan.operations}
-
-    # Build DiGraph
-    G = nx.DiGraph()
-    node_labels: dict[str, str] = {}
-    node_colors: list[str] = []
-    node_sizes: list[int] = []
-
-    # Compute dependency levels (topological depth)
-    levels: dict[str, int] = {}
-
-    def _level(op_id: str, path: set) -> int:
-        if op_id in levels:
-            return levels[op_id]
-        if op_id in path:
-            # Cycle protection — shouldn't happen in a valid plan
-            levels[op_id] = 0
-            return 0
-        op = ops_by_id.get(op_id)
-        if not op:
-            return 0
-        deps = [d for d in (op.depends_on or []) if d in ops_by_id]
-        if not deps:
-            levels[op_id] = 0
-            return 0
-        new_path = path | {op_id}
-        lvl = max(_level(d, new_path) for d in deps) + 1
-        levels[op_id] = lvl
-        return lvl
-
-    for op in plan.operations:
-        _level(op.id, set())
-
-    # Add nodes with styling
-    for op in plan.operations:
-        G.add_node(op.id)
-        role = agent_role.get(op.agent_id, op.agent_id)
-        node_labels[op.id] = f"{role}\n[{op.id}]"
-        if op.control:
-            node_colors.append("#DDA0DD")  # Plum — control / critic checkpoint
-            node_sizes.append(3500)
-        else:
-            node_colors.append("#E0E0E0")  # Light gray — pending
-            node_sizes.append(3000)
-
-    # Add edges
-    edge_colors: list[str] = []
-    edge_styles: list[str] = []
-    edge_widths: list[float] = []
-    for op in plan.operations:
-        for dep in op.depends_on or []:
-            if dep in ops_by_id:
-                G.add_edge(dep, op.id)
-                edge_colors.append("#808080")
-                edge_styles.append("solid")
-                edge_widths.append(1.5)
-
-    # Hierarchical layout — group nodes by level, multi-row for wide levels
-    nodes_by_level: dict[int, list[str]] = {}
-    for node_id, level in levels.items():
-        nodes_by_level.setdefault(level, []).append(node_id)
-
-    pos: dict[str, tuple[float, float]] = {}
-    y_spacing = 2.5
-    for level, nodes in nodes_by_level.items():
-        num_nodes = len(nodes)
-        if num_nodes <= 6:
-            x_spacing = 2.5
-            x_offset = -(num_nodes - 1) * x_spacing / 2
-            for i, nid in enumerate(nodes):
-                pos[nid] = (x_offset + i * x_spacing, -level * y_spacing)
-        else:
-            nodes_per_row = min(6, int(np.ceil(np.sqrt(num_nodes * 1.5))))
-            for i, nid in enumerate(nodes):
-                row = i // nodes_per_row
-                col = i % nodes_per_row
-                nodes_in_row = min(nodes_per_row, num_nodes - row * nodes_per_row)
-                x_spacing = 2.5
-                x_offset = -(nodes_in_row - 1) * x_spacing / 2
-                y_offset = row * 0.8
-                pos[nid] = (
-                    x_offset + col * x_spacing,
-                    -level * y_spacing - y_offset,
-                )
-
-    # Render
-    plt.figure(figsize=figsize)
-    nx.draw_networkx_nodes(
-        G,
-        pos,
-        node_color=node_colors,
-        node_size=node_sizes,
-        alpha=0.9,
-        linewidths=2,
-        edgecolors="black",
-    )
-
-    for i, (u, v) in enumerate(G.edges()):
-        u_pos = pos[u]
-        v_pos = pos[v]
-        connectionstyle = (
-            "arc3,rad=0.2" if abs(u_pos[0] - v_pos[0]) > 5 else "arc3,rad=0.1"
-        )
-        nx.draw_networkx_edges(
-            G,
-            pos,
-            [(u, v)],
-            edge_color=[edge_colors[i]],
-            style=edge_styles[i],
-            width=edge_widths[i],
-            alpha=0.7,
-            arrows=True,
-            arrowsize=20,
-            arrowstyle="-|>",
-            connectionstyle=connectionstyle,
-        )
-
-    nx.draw_networkx_labels(
-        G,
-        pos,
-        node_labels,
-        font_size=9,
-        font_weight="bold",
-        font_family="monospace",
-    )
-
-    plan_title = title or (
-        f"Flow DAG plan — {len(plan.agents)} agents / " f"{len(plan.operations)} ops"
-    )
-    plt.title(plan_title, fontsize=18, fontweight="bold", pad=20)
-    plt.axis("off")
-
-    from matplotlib.lines import Line2D
-    from matplotlib.patches import Patch
-
-    legend_elements = [
-        Patch(facecolor="#E0E0E0", edgecolor="black", label="Pending"),
-        Patch(facecolor="#DDA0DD", edgecolor="black", label="Control"),
-        Line2D([0], [0], color="#808080", linewidth=2, label="Depends on"),
-    ]
-    plt.legend(
-        handles=legend_elements,
-        loc="upper left",
-        bbox_to_anchor=(0, 1),
-        frameon=True,
-        fancybox=True,
-        shadow=True,
-    )
-
-    max_level = max(nodes_by_level) if nodes_by_level else 0
-    stats_text = (
-        f"Agents: {len(plan.agents)}\n"
-        f"Ops:    {len(plan.operations)}\n"
-        f"Edges:  {len(G.edges())}\n"
-        f"Levels: {max_level + 1}"
-    )
-    plt.text(
-        0.98,
-        0.02,
-        stats_text,
-        transform=plt.gca().transAxes,
-        bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.8),
-        verticalalignment="bottom",
-        horizontalalignment="right",
-        fontsize=10,
-        fontfamily="monospace",
-    )
-
-    plt.tight_layout()
-
-    if save_path:
-        from pathlib import Path
-
-        p = Path(save_path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(p, dpi=150, bbox_inches="tight")
-        print(f"Plan graph saved: {p}")
         plt.close()
     else:
         plt.show()
