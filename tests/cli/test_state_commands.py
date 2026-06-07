@@ -162,9 +162,7 @@ async def test_ls_lists_seeded_sessions(
     capsys: pytest.CaptureFixture,
 ):
     async with StateDB() as db:
-        sid = await _seed_session(
-            db, name="foo", status="running", updated_at=time.time()
-        )
+        sid = await _seed_session(db, name="foo", status="running", updated_at=time.time())
 
     await _list_sessions(limit=50, status=None)
     out = capsys.readouterr().out
@@ -179,9 +177,7 @@ async def test_ls_limit_caps_results(
 ):
     async with StateDB() as db:
         for i in range(5):
-            await _seed_session(
-                db, name=f"s{i}", status="completed", updated_at=time.time() - i
-            )
+            await _seed_session(db, name=f"s{i}", status="completed", updated_at=time.time() - i)
 
     await _list_sessions(limit=2, status=None)
     out = capsys.readouterr().out
@@ -195,9 +191,7 @@ async def test_ls_status_filter(
     capsys: pytest.CaptureFixture,
 ):
     async with StateDB() as db:
-        await _seed_session(
-            db, name="finished", status="completed", updated_at=time.time()
-        )
+        await _seed_session(db, name="finished", status="completed", updated_at=time.time())
         await _seed_session(db, name="open", status="running", updated_at=time.time())
 
     await _list_sessions(limit=50, status="completed")
@@ -382,15 +376,9 @@ async def test_prune_keeps_n_most_recent_even_when_old(temp_db_path: Path):
     old_ts = now - (60 * 86400)
     async with StateDB() as db:
         # All three sessions are OLD.
-        s1 = await _seed_session(
-            db, name="oldest", status="completed", updated_at=old_ts - 100
-        )
-        s2 = await _seed_session(
-            db, name="middle", status="completed", updated_at=old_ts - 50
-        )
-        s3 = await _seed_session(
-            db, name="newest_old", status="completed", updated_at=old_ts
-        )
+        s1 = await _seed_session(db, name="oldest", status="completed", updated_at=old_ts - 100)
+        s2 = await _seed_session(db, name="middle", status="completed", updated_at=old_ts - 50)
+        s3 = await _seed_session(db, name="newest_old", status="completed", updated_at=old_ts)
 
     # keep_n=2: must preserve the 2 most recent (s2, s3).
     result = await _prune(keep_days=30, keep_n=2, dry_run=False)
@@ -429,12 +417,14 @@ async def test_doctor_dry_run_does_not_modify_status(temp_db_path: Path):
     async with StateDB() as db:
         stale = await _seed_session(db, status="running")
         await db.db.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?", (old, stale),
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (old, stale),
         )
         await db.db.commit()
         recent = await _seed_session(db, status="running")
         await db.db.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?", (now, recent),
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now, recent),
         )
         await db.db.commit()
 
@@ -462,12 +452,14 @@ async def test_doctor_sweeps_stale_running_sessions_to_aborted(
     async with StateDB() as db:
         stale = await _seed_session(db, status="running")
         await db.db.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?", (old, stale),
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (old, stale),
         )
         await db.db.commit()
         recent = await _seed_session(db, status="running")
         await db.db.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?", (now, recent),
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now, recent),
         )
         await db.db.commit()
 
@@ -490,7 +482,8 @@ async def test_doctor_handles_null_started_at_as_stale(temp_db_path: Path):
     async with StateDB() as db:
         sid = await _seed_session(db, status="running")
         await db.db.execute(
-            "UPDATE sessions SET started_at = NULL WHERE id = ?", (sid,),
+            "UPDATE sessions SET started_at = NULL WHERE id = ?",
+            (sid,),
         )
         await db.db.commit()
 
@@ -536,7 +529,8 @@ async def test_doctor_does_not_overwrite_session_that_completed_post_select(
     async with StateDB() as db:
         racy = await _seed_session(db, status="running")
         await db.db.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?", (old, racy),
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (old, racy),
         )
         truly_stale = await _seed_session(db, status="running")
         await db.db.execute(
@@ -561,8 +555,7 @@ async def test_doctor_does_not_overwrite_session_that_completed_post_select(
             ):
                 self._fired = True
                 await self._real.execute(
-                    "UPDATE sessions SET status = 'completed', ended_at = ? "
-                    "WHERE id = ?",
+                    "UPDATE sessions SET status = 'completed', ended_at = ? WHERE id = ?",
                     (now, racy),
                 )
                 await self._real.commit()
@@ -604,7 +597,8 @@ async def test_doctor_with_failed_new_status(temp_db_path: Path):
     async with StateDB() as db:
         sid = await _seed_session(db, status="running")
         await db.db.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?", (old, sid),
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (old, sid),
         )
         await db.db.commit()
 

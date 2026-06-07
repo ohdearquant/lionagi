@@ -198,3 +198,102 @@ async def test_run_dag_emits_node_lifecycle_signals():
     assert len(result["completed_operations"]) == 1
     assert started == ["root"]  # NodeStarted reached the observer with the branch name
     assert len(completed) == 1  # NodeCompleted carried the op id
+
+
+# ── LIONAGI-AUDIT-001: spawned task failures surface to caller ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_spawned_task_failure_is_reported():
+    """Regression: wait_quiescence() must not silently swallow task exceptions.
+
+    A spawned coroutine that raises RuntimeError must cause wait_quiescence
+    to propagate that exception rather than returning successfully.
+    """
+    run = _run()
+
+    async def boom():
+        await asyncio.sleep(0)
+        raise RuntimeError("engine node failed")
+
+    run.spawn(boom())
+    # On Python 3.11+ an ExceptionGroup is raised; on 3.10 the first exception
+    # is re-raised directly.  Either way, the call must NOT return normally.
+    raised: BaseException | None = None
+    try:
+        await run.wait_quiescence()
+    except BaseException as exc:
+        raised = exc
+    assert raised is not None, "wait_quiescence must raise when a spawned task fails"
+    # The original error message must be visible somewhere in the exception chain.
+    assert "engine node failed" in str(raised)
+
+
+@pytest.mark.asyncio
+async def test_spawned_task_cancellation_is_not_surfaced():
+    """CancelledError from a spawned task must be silently discarded —
+    the whole run is not cancelled when a single branch is cancelled."""
+    run = _run()
+    done: list[int] = []
+
+    async def cancel_me():
+        raise asyncio.CancelledError
+
+    async def succeed():
+        await asyncio.sleep(0)
+        done.append(1)
+
+    run.spawn(cancel_me())
+    run.spawn(succeed())
+    # Must not raise; the CancelledError is discarded.
+    await run.wait_quiescence()
+    assert done == [1]
+
+
+@pytest.mark.asyncio
+async def test_failed_parent_still_drains_spawned_child():
+    """A parent that spawns a child and then fails must NOT short-circuit the
+    wait. wait_quiescence must drain the child to completion (genuine
+    quiescence — no background work left running) before surfacing the failure.
+    """
+    run = _run()
+    child_ran = asyncio.Event()
+
+    async def child():
+        await asyncio.sleep(0.02)
+        child_ran.set()
+
+    async def parent():
+        run.spawn(child())  # schedule child, then fail
+        await asyncio.sleep(0)
+        raise RuntimeError("parent failed after spawning child")
+
+    run.spawn(parent())
+
+    raised: BaseException | None = None
+    try:
+        await run.wait_quiescence()
+    except BaseException as exc:
+        raised = exc
+
+    assert raised is not None, "parent failure must be surfaced"
+    assert "parent failed after spawning child" in str(raised)
+    # The contract: the run is genuinely quiescent — child finished, none left.
+    assert child_ran.is_set(), "child spawned by failed parent must still run"
+    assert not run._active, "wait_quiescence must leave no background tasks running"
+
+
+@pytest.mark.asyncio
+async def test_successful_tasks_do_not_raise():
+    """Successful spawned tasks must complete without raising."""
+    run = _run()
+    results: list[str] = []
+
+    async def work(val: str) -> None:
+        await asyncio.sleep(0)
+        results.append(val)
+
+    run.spawn(work("a"))
+    run.spawn(work("b"))
+    await run.wait_quiescence()
+    assert sorted(results) == ["a", "b"]

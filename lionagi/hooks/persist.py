@@ -21,6 +21,11 @@ from typing import Any
 
 from .bus import HookHandler, HookPoint
 
+__all__ = (
+    "route_message_persistence",
+    "unroute_message_persistence",
+)
+
 
 def route_message_persistence(
     session: Any,

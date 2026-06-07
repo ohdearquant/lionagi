@@ -38,6 +38,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("lionagi.hooks")
 
+__all__ = (
+    "HookPoint",
+    "HookBus",
+    "HookSignal",
+    "HookHandler",
+    "StopHook",
+    "hook",
+)
+
 
 class HookPoint(str, Enum):
     """ADR-0023 §"Event payloads" — closed vocabulary of hook points."""
@@ -66,7 +75,12 @@ class HookPoint(str, Enum):
     ARTIFACT_CREATED = "artifact.created"
 
 
-HookHandler = Callable[..., Awaitable[Any]]
+# HookHandler accepts both sync and async callables.  The bus calls the
+# handler and awaits the result only if inspect.isawaitable() returns True
+# (see HookBus.emit).  The type reflects the actual contract; narrowing to
+# Awaitable[Any] only would produce false type errors for sync handlers that
+# are tested and supported.
+HookHandler = Callable[..., Awaitable[Any] | Any]
 
 
 class StopHook(Exception):  # noqa: N818 — control-flow signal, not an error

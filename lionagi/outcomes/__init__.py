@@ -13,14 +13,16 @@ separation is deliberate so a future Studio-only consumer can import
 outcomes without pulling in framework machinery.
 """
 
+from __future__ import annotations
+
 from ._base import SkillOutcome
 from .ci import CIResult
 from .verdict import Finding, GateVerdict, ReviewVerdict
 
-__all__ = [
+__all__ = (
     "SkillOutcome",
     "ReviewVerdict",
     "GateVerdict",
     "Finding",
     "CIResult",
-]
+)
