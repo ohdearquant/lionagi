@@ -10,9 +10,7 @@ def test_dir_to_files_invalid_directory(mod_paths, ensure_fake_lionagi, tmp_path
         mod.dir_to_files(tmp_path / "does_not_exist")
 
 
-def test_dir_to_files_non_recursive_and_filter(
-    mod_paths, ensure_fake_lionagi, tmp_path
-):
+def test_dir_to_files_non_recursive_and_filter(mod_paths, ensure_fake_lionagi, tmp_path):
     mod = importlib.import_module(mod_paths["api_mod"])
     (tmp_path / "a.txt").write_text("a")
     (tmp_path / "b.md").write_text("b")

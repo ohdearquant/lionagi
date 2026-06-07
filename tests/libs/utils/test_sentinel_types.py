@@ -33,9 +33,7 @@ class TestSentinelTypesIntegrity:
         b = UndefinedType()
         assert a is b, "Multiple UndefinedType instances must be the same object"
         assert a is Undefined, "UndefinedType instance must be the global Undefined"
-        assert (
-            b is Undefined
-        ), "All UndefinedType instances must be the global Undefined"
+        assert b is Undefined, "All UndefinedType instances must be the global Undefined"
 
     def test_singleton_identity_unset(self):
         """Test: SingletonIdentity (CRITICAL) for UnsetType.
@@ -66,14 +64,10 @@ class TestSentinelTypesIntegrity:
         THEN the result must be the original Undefined object (verify using 'is').
         """
         shallow_copy = copy.copy(Undefined)
-        assert (
-            shallow_copy is Undefined
-        ), "copy.copy(Undefined) must return the same object"
+        assert shallow_copy is Undefined, "copy.copy(Undefined) must return the same object"
 
         deep_copy = copy.deepcopy(Undefined)
-        assert (
-            deep_copy is Undefined
-        ), "copy.deepcopy(Undefined) must return the same object"
+        assert deep_copy is Undefined, "copy.deepcopy(Undefined) must return the same object"
 
     def test_immutability_under_copy_unset(self):
         """Test: ImmutabilityUnderCopy (CRITICAL: State Safety) for Unset.
@@ -95,9 +89,7 @@ class TestSentinelTypesIntegrity:
         # Test Undefined
         pickled_undefined = pickle.dumps(Undefined)
         unpickled_undefined = pickle.loads(pickled_undefined)
-        assert (
-            unpickled_undefined is Undefined
-        ), "Unpickled Undefined must be the same object"
+        assert unpickled_undefined is Undefined, "Unpickled Undefined must be the same object"
 
         # Test Unset
         pickled_unset = pickle.dumps(Unset)
