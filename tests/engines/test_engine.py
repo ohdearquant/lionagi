@@ -251,6 +251,39 @@ async def test_spawned_task_cancellation_is_not_surfaced():
 
 
 @pytest.mark.asyncio
+async def test_failed_parent_still_drains_spawned_child():
+    """A parent that spawns a child and then fails must NOT short-circuit the
+    wait. wait_quiescence must drain the child to completion (genuine
+    quiescence — no background work left running) before surfacing the failure.
+    """
+    run = _run()
+    child_ran = asyncio.Event()
+
+    async def child():
+        await asyncio.sleep(0.02)
+        child_ran.set()
+
+    async def parent():
+        run.spawn(child())  # schedule child, then fail
+        await asyncio.sleep(0)
+        raise RuntimeError("parent failed after spawning child")
+
+    run.spawn(parent())
+
+    raised: BaseException | None = None
+    try:
+        await run.wait_quiescence()
+    except BaseException as exc:
+        raised = exc
+
+    assert raised is not None, "parent failure must be surfaced"
+    assert "parent failed after spawning child" in str(raised)
+    # The contract: the run is genuinely quiescent — child finished, none left.
+    assert child_ran.is_set(), "child spawned by failed parent must still run"
+    assert not run._active, "wait_quiescence must leave no background tasks running"
+
+
+@pytest.mark.asyncio
 async def test_successful_tasks_do_not_raise():
     """Successful spawned tasks must complete without raising."""
     run = _run()
