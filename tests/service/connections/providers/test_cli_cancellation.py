@@ -1,6 +1,6 @@
 """Regression tests for CLI subprocess cancellation (Ctrl+C / SIGINT).
 
-Root cause (fixed in #887): Without start_new_session=True, Ctrl+C sends
+Root cause: Without start_new_session=True, Ctrl+C sends
 SIGINT to both Python and the CLI subprocess. The child handles SIGINT
 gracefully and exits with a partial result, causing auto_finish to spawn
 a new session instead of stopping.
@@ -456,7 +456,7 @@ class TestEmptyResponsesGuard:
 
 
 # ---------------------------------------------------------------------------
-# 7. Gemini & Pi process-group kill (AUDIT-005)
+# 7. Process-group kill + non-Unix cleanup
 # ---------------------------------------------------------------------------
 
 
@@ -475,7 +475,7 @@ def _make_mock_proc(pid=12345):
 
 
 class TestProcessGroupCleanup:
-    """AUDIT-005: Gemini and Pi cleanup must use os.killpg on the process group.
+    """Gemini and Pi cleanup must use os.killpg on the process group.
 
     Claude and Codex capture the PGID immediately after spawn and call
     os.killpg(pgid, SIGTERM/SIGKILL) in cleanup so that descendant processes
@@ -484,7 +484,7 @@ class TestProcessGroupCleanup:
 
     @pytest.mark.asyncio
     async def test_gemini_cleanup_calls_killpg(self):
-        """Gemini _ndjson_from_cli cleanup must call os.killpg (AUDIT-005)."""
+        """Gemini _ndjson_from_cli cleanup must call os.killpg."""
         from lionagi.providers.google.gemini_code.models import (
             GeminiCodeRequest,
             _ndjson_from_cli,
@@ -511,12 +511,12 @@ class TestProcessGroupCleanup:
         # At least one killpg(9001, ...) call must have been made.
         assert any(pgid == 9001 for pgid, _ in killpg_calls), (
             f"Expected os.killpg(9001, ...) in cleanup; got {killpg_calls}. "
-            "Gemini must terminate the whole process group (AUDIT-005)."
+            "Gemini must terminate the whole process group."
         )
 
     @pytest.mark.asyncio
     async def test_pi_cleanup_calls_killpg(self):
-        """Pi _ndjson_from_cli cleanup must call os.killpg (AUDIT-005)."""
+        """Pi _ndjson_from_cli cleanup must call os.killpg."""
         from lionagi.providers.pi.cli.models import PiCodeRequest, _ndjson_from_cli
 
         request = PiCodeRequest(prompt="test")
@@ -539,7 +539,7 @@ class TestProcessGroupCleanup:
 
         assert any(pgid == 9002 for pgid, _ in killpg_calls), (
             f"Expected os.killpg(9002, ...) in cleanup; got {killpg_calls}. "
-            "Pi must terminate the whole process group (AUDIT-005)."
+            "Pi must terminate the whole process group."
         )
 
     @pytest.mark.asyncio
@@ -580,7 +580,7 @@ class TestProcessGroupCleanup:
 
     @pytest.mark.asyncio
     async def test_gemini_cleanup_no_killpg_platform(self, monkeypatch):
-        """Codex #1278: on a platform without os.killpg (Windows), cleanup must
+        """On a platform without os.killpg (Windows), cleanup must
         fall through to proc.terminate() instead of raising AttributeError from
         the finally block (which only suppresses ProcessLookupError)."""
         from lionagi.providers.google.gemini_code import models
@@ -607,7 +607,7 @@ class TestProcessGroupCleanup:
 
     @pytest.mark.asyncio
     async def test_pi_cleanup_no_killpg_platform(self, monkeypatch):
-        """Codex #1278: Pi cleanup must not raise AttributeError when os.killpg
+        """Pi cleanup must not raise AttributeError when os.killpg
         is unavailable (Windows); it falls back to proc.terminate()."""
         from lionagi.providers.pi.cli import models
 
@@ -629,13 +629,55 @@ class TestProcessGroupCleanup:
         mock_proc.terminate.assert_called()
 
 
+class TestKillpgUnavailablePlatform:
+    """os.killpg is POSIX-only. On Windows a real pid still set _pgid, so the
+    finally-block killpg call raised AttributeError (only ProcessLookupError /
+    PermissionError suppressed), failing even a successful run. Cleanup must
+    fall through to proc.terminate() instead."""
+
+    @pytest.mark.asyncio
+    async def test_claude_cleanup_no_killpg_platform(self, monkeypatch):
+        from lionagi.providers.anthropic.claude_code import models
+
+        request = models.ClaudeCodeRequest(prompt="test")
+        mock_proc = _make_mock_proc(pid=9201)
+        monkeypatch.delattr(models.os, "killpg", raising=False)
+
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+            mock_exec.return_value = mock_proc
+            async with contextlib.aclosing(models._ndjson_from_cli(request)) as stream:
+                async for _ in stream:
+                    pass
+
+        mock_proc.terminate.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_codex_cleanup_no_killpg_platform(self, monkeypatch):
+        from lionagi.providers.openai.codex import models
+
+        request = models.CodexCodeRequest(prompt="test")
+        mock_proc = _make_mock_proc(pid=9202)
+        monkeypatch.delattr(models.os, "killpg", raising=False)
+
+        with (
+            patch("lionagi.providers.openai.codex.models.CODEX_CLI", "codex"),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+        ):
+            mock_exec.return_value = mock_proc
+            async with contextlib.aclosing(models._ndjson_from_cli(request)) as stream:
+                async for _ in stream:
+                    pass
+
+        mock_proc.terminate.assert_called()
+
+
 # ---------------------------------------------------------------------------
-# 8. Gemini & Pi stderr deadlock prevention (AUDIT-004)
+# 8. Gemini & Pi stderr deadlock prevention
 # ---------------------------------------------------------------------------
 
 
 class TestStderrDeadlockPrevention:
-    """AUDIT-004: stderr-heavy subprocesses must not deadlock.
+    """stderr-heavy subprocesses must not deadlock.
 
     Gemini and Pi now drain stderr concurrently via an asyncio task.
     We feed a large stderr payload and verify:
@@ -645,7 +687,7 @@ class TestStderrDeadlockPrevention:
 
     @pytest.mark.asyncio
     async def test_gemini_large_stderr_does_not_deadlock(self):
-        """Gemini _ndjson_from_cli must not deadlock with large stderr (AUDIT-004)."""
+        """Gemini _ndjson_from_cli must not deadlock with large stderr."""
         import asyncio
 
         from lionagi.providers.google.gemini_code.models import (
@@ -695,7 +737,7 @@ class TestStderrDeadlockPrevention:
 
     @pytest.mark.asyncio
     async def test_pi_large_stderr_does_not_deadlock(self):
-        """Pi _ndjson_from_cli must not deadlock with large stderr (AUDIT-004)."""
+        """Pi _ndjson_from_cli must not deadlock with large stderr."""
         from lionagi.providers.pi.cli.models import PiCodeRequest, _ndjson_from_cli
 
         request = PiCodeRequest(prompt="test")
