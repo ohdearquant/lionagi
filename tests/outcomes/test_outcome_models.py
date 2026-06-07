@@ -39,9 +39,6 @@ def test_skill_outcome_dump_round_trips():
     assert again == o
 
 
-# ── ReviewVerdict ─────────────────────────────────────────────────────────────
-
-
 def test_review_verdict_default_outcome_kind_pinned():
     """ADR-0021 promises kind='review_verdict' — frontend dispatch depends on it."""
     v = ReviewVerdict(
@@ -184,3 +181,93 @@ def test_outcome_kinds_are_distinct():
         CIResult(summary="x").outcome_kind,
     }
     assert len(kinds) == 3
+
+
+def test_finding_rejects_absolute_unix_path():
+    with pytest.raises(ValidationError, match="repo-relative"):
+        Finding(severity="high", category="security", description="x", file="/etc/passwd")
+
+
+def test_finding_rejects_absolute_windows_path():
+    with pytest.raises(ValidationError, match="repo-relative"):
+        Finding(severity="high", category="security", description="x", file="C:\\secret.py")
+
+
+def test_finding_rejects_parent_traversal():
+    with pytest.raises(ValidationError, match="traversal"):
+        Finding(severity="high", category="security", description="x", file="../secret.py")
+
+
+def test_finding_rejects_deep_traversal():
+    with pytest.raises(ValidationError, match="traversal"):
+        Finding(
+            severity="medium",
+            category="correctness",
+            description="x",
+            file="foo/../../etc/passwd",
+        )
+
+
+def test_finding_rejects_nul_byte():
+    with pytest.raises(ValidationError, match="NUL"):
+        Finding(severity="low", category="style", description="x", file="foo\x00bar.py")
+
+
+def test_finding_rejects_line_zero():
+    """Line numbers must be 1-indexed (ge=1); 0 is invalid."""
+    with pytest.raises(ValidationError):
+        Finding(severity="low", category="style", description="x", line=0)
+
+
+def test_finding_rejects_negative_line():
+    with pytest.raises(ValidationError):
+        Finding(severity="low", category="style", description="x", line=-3)
+
+
+def test_finding_accepts_valid_relative_path():
+    f = Finding(severity="low", category="style", description="x", file="src/main.py")
+    assert f.file == "src/main.py"
+
+
+def test_finding_accepts_none_file():
+    f = Finding(severity="low", category="style", description="x", file=None)
+    assert f.file is None
+
+
+def test_finding_accepts_positive_line():
+    f = Finding(severity="info", category="docs", description="x", line=42)
+    assert f.line == 42
+
+
+def test_gate_verdict_defaults_passed_to_gate_passed_true():
+    """When passed is omitted, it defaults to gate_passed (LIONAGI-AUDIT-003)."""
+    g = GateVerdict(gate_passed=True, summary="ok")
+    assert g.passed is True
+
+
+def test_gate_verdict_defaults_passed_to_gate_passed_false():
+    g = GateVerdict(gate_passed=False, summary="nope")
+    assert g.passed is False
+
+
+def test_gate_verdict_rejects_contradictory_passed():
+    """gate_passed=True and passed=False is a contradictory state and must fail."""
+    with pytest.raises(ValidationError, match="gate_passed"):
+        GateVerdict(gate_passed=True, passed=False, summary="contradicts")
+
+
+def test_gate_verdict_rejects_contradictory_passed_reversed():
+    with pytest.raises(ValidationError, match="gate_passed"):
+        GateVerdict(gate_passed=False, passed=True, summary="contradicts")
+
+
+def test_gate_verdict_consistent_both_true():
+    g = GateVerdict(gate_passed=True, passed=True, summary="consistent")
+    assert g.gate_passed is True
+    assert g.passed is True
+
+
+def test_gate_verdict_consistent_both_false():
+    g = GateVerdict(gate_passed=False, passed=False, summary="consistent")
+    assert g.gate_passed is False
+    assert g.passed is False

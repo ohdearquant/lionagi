@@ -1,4 +1,5 @@
-from __future__ import annotations
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
 
 """JSON serialization utilities built on orjson.
 
@@ -8,6 +9,8 @@ Provides flexible serialization with:
 - NDJSON streaming for iterables
 - Caching of default handlers for performance
 """
+
+from __future__ import annotations
 
 import contextlib
 import datetime as dt
@@ -146,9 +149,9 @@ def get_orjson_default(
         typ = obj.__class__
         func = cache.get(typ)
         if func is None:
-            for T in order_tuple:
-                if issubclass(typ, T):
-                    f = ser.get(T)
+            for typ_cls in order_tuple:
+                if issubclass(typ, typ_cls):
+                    f = ser.get(typ_cls)
                     if f:
                         cache[typ] = f
                         func = f

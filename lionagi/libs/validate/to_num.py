@@ -53,7 +53,7 @@ def to_num(
         TypeError: For invalid input types or invalid type conversions.
     """
     # Validate input
-    if isinstance(input_, (list, tuple)):
+    if isinstance(input_, list | tuple):
         raise TypeError("Input cannot be a sequence")
 
     # Handle boolean input
@@ -61,7 +61,7 @@ def to_num(
         return validate_num_type(num_type)(input_)
 
     # Handle direct numeric input
-    if isinstance(input_, (int, float, complex, Decimal)):
+    if isinstance(input_, int | float | complex | Decimal):
         inferred_type = type(input_)
         if isinstance(input_, Decimal):
             inferred_type = float
@@ -82,9 +82,7 @@ def to_num(
     target_type = validate_num_type(num_type)
 
     number_matches = (
-        number_matches[:num_count]
-        if num_count < len(number_matches)
-        else number_matches
+        number_matches[:num_count] if num_count < len(number_matches) else number_matches
     )
 
     for type_and_value in number_matches:

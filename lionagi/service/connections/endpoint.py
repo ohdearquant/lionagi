@@ -300,9 +300,10 @@ class Endpoint:
                     # Extract and return the JSON response
                     return await response.json()
                 finally:
-                    # Ensure response is properly released if coroutine is cancelled between retries
+                    # Ensure response is properly released if coroutine is cancelled between retries.
+                    # aiohttp.ClientResponse.release() is synchronous (not a coroutine) — do not await.
                     if response is not None and not response.closed:
-                        await response.release()
+                        response.release()
 
         # Define a giveup function for backoff
         def giveup_on_client_error(e):

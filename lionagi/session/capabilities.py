@@ -10,7 +10,6 @@ validate (``operable.create_model(...).model_validate(...)``, keys ⊆ grant).
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
@@ -55,7 +54,9 @@ def render_capabilities_prompt(operable: Operable) -> str:
     contract: dict = {"properties": schema.get("properties", {})}
     if "$defs" in schema:
         contract["$defs"] = schema["$defs"]
-    block = json.dumps(contract, indent=2, default=str)
+    from lionagi.ln import json_dumps
+
+    block = json_dumps(contract, pretty=True, safe_fallback=True)
     names = ", ".join(sorted(operable.allowed()))
 
     return (

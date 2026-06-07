@@ -3,7 +3,6 @@
 
 """Tests for lionagi/operations/chat/_prepare.py::_prepare_run_kwargs."""
 
-
 from lionagi.operations.chat._prepare import _prepare_run_kwargs
 from lionagi.operations.types import ChatParam
 from lionagi.session.branch import Branch

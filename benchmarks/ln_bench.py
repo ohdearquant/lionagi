@@ -46,9 +46,7 @@ async def _bench_once(fn: Callable[[], Coroutine[Any, Any, Any]]) -> float:
     return time.perf_counter() - t0
 
 
-async def _bench_repeat(
-    name: str, repeat: int, fn: Callable[[], Coroutine[Any, Any, Any]]
-) -> Stat:
+async def _bench_repeat(name: str, repeat: int, fn: Callable[[], Coroutine[Any, Any, Any]]) -> Stat:
     runs = []
     for _ in range(repeat):
         runs.append(await _bench_once(fn))
@@ -58,9 +56,7 @@ async def _bench_repeat(
 # --- Scenario implementations ---
 
 
-def scenario_alcall_async_noop_1000_conc_100() -> (
-    Callable[[], Coroutine[Any, Any, Any]]
-):
+def scenario_alcall_async_noop_1000_conc_100() -> Callable[[], Coroutine[Any, Any, Any]]:
     async def _run():
         async def noop(x):
             await anyio.sleep(0)
@@ -107,16 +103,10 @@ def scenario_to_list_flatten_nested_10000() -> Callable[[], Coroutine[Any, Any, 
     return _run
 
 
-def scenario_to_list_flatten_unique_2000_mixed() -> (
-    Callable[[], Coroutine[Any, Any, Any]]
-):
+def scenario_to_list_flatten_unique_2000_mixed() -> Callable[[], Coroutine[Any, Any, Any]]:
     async def _run():
         mixed = [
-            (
-                {"a": i, "b": i % 5}
-                if i % 3 == 0
-                else (i, i % 7) if i % 3 == 1 else [i, i]
-            )
+            ({"a": i, "b": i % 5} if i % 3 == 0 else (i, i % 7) if i % 3 == 1 else [i, i])
             for i in range(2000)
         ]
         to_list(
@@ -135,9 +125,7 @@ def scenario_hash_dict_complex_1000() -> Callable[[], Coroutine[Any, Any, Any]]:
         obj = {
             "ints": list(range(50)),
             "floats": [i / 10 for i in range(50)],
-            "nested": {
-                f"k{i}": {"v": i, "arr": list(range(i % 10))} for i in range(50)
-            },
+            "nested": {f"k{i}": {"v": i, "arr": list(range(i % 10))} for i in range(50)},
             "mix": [{"i": i, "t": (i, str(i))} for i in range(50)],
         }
         for _ in range(1000):
@@ -151,8 +139,7 @@ def scenario_json_dumps_medium_1000() -> Callable[[], Coroutine[Any, Any, Any]]:
         obj = {
             "name": "benchmark",
             "items": [
-                {"id": i, "text": f"item-{i}", "values": list(range(10))}
-                for i in range(200)
+                {"id": i, "text": f"item-{i}", "values": list(range(10))} for i in range(200)
             ],
             "flags": {"a": True, "b": False, "n": None},
         }
@@ -223,9 +210,7 @@ def compare_results(current: dict[str, Any], baseline: dict[str, Any]) -> str:
             delta = float("inf")
         else:
             delta = (cur_med - base_med) / base_med
-        lines.append(
-            f"- {name}: median {cur_med:.6f}s vs {base_med:.6f}s -> {delta:+.1%}"
-        )
+        lines.append(f"- {name}: median {cur_med:.6f}s vs {base_med:.6f}s -> {delta:+.1%}")
     return "\n".join(lines)
 
 

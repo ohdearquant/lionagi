@@ -147,6 +147,9 @@ class SchedulerEngine:
         self._task: asyncio.Task | None = None
         self._running: dict[str, str] = {}  # schedule_id -> run_id
         self._stopping = False
+        # Tracks outstanding _fire tasks so stop() can cancel and await them,
+        # preventing fire-and-forget orphans after shutdown (LIONAGI-AUDIT-002).
+        self._fire_tasks: set[asyncio.Task] = set()
 
     async def start(self) -> None:
         _log.info("Scheduler engine starting")
@@ -163,6 +166,24 @@ class SchedulerEngine:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        # Cancel and await all outstanding fire tasks so subprocess spawns
+        # do not outlive the scheduler (LIONAGI-AUDIT-002 fix).
+        if self._fire_tasks:
+            for ft in list(self._fire_tasks):
+                ft.cancel()
+            await asyncio.gather(*self._fire_tasks, return_exceptions=True)
+            self._fire_tasks.clear()
+
+    def _tracked_fire(self, *args: Any, **kwargs: Any) -> asyncio.Task:
+        """Create a _fire task and keep a reference until it completes.
+
+        Prevents fire-and-forget orphan tasks from surviving scheduler shutdown.
+        The done callback removes the handle from the tracking set automatically.
+        """
+        task = asyncio.create_task(self._fire(*args, **kwargs))
+        self._fire_tasks.add(task)
+        task.add_done_callback(self._fire_tasks.discard)
+        return task
 
     async def fire_now(self, schedule_id: str) -> str | None:
         """Manual trigger — fire a schedule immediately. Returns run_id."""
@@ -171,8 +192,8 @@ class SchedulerEngine:
         if not schedule:
             return None
         run_id = uuid.uuid4().hex[:12]
-        asyncio.create_task(
-            self._fire(schedule, run_id, trigger_context={"manual": True, "fired_at": time.time()})
+        self._tracked_fire(
+            schedule, run_id, trigger_context={"manual": True, "fired_at": time.time()}
         )
         return run_id
 
@@ -205,12 +226,10 @@ class SchedulerEngine:
                         s["name"],
                         s["id"],
                     )
-                    asyncio.create_task(
-                        self._fire(
-                            s,
-                            run_id,
-                            trigger_context={"missed_recovery": True, "fired_at": now},
-                        )
+                    self._tracked_fire(
+                        s,
+                        run_id,
+                        trigger_context={"missed_recovery": True, "fired_at": now},
                     )
                 else:
                     # policy in {"skip", default}: drop the missed fire,
@@ -353,7 +372,7 @@ class SchedulerEngine:
 
         run_id = uuid.uuid4().hex[:12]
         ctx = {"scheduled": True, "fired_at": now, "next_fire_at": schedule.get("next_fire_at")}
-        asyncio.create_task(self._fire(schedule, run_id, trigger_context=ctx))
+        self._tracked_fire(schedule, run_id, trigger_context=ctx)
 
     async def _fire(
         self,
@@ -383,8 +402,72 @@ class SchedulerEngine:
                 }
             )
 
-        # Build argv
-        argv = build_argv(schedule, trigger_context)
+        # Build argv. A build failure (e.g. an invalid action_kind that slipped
+        # past the Studio API, which only checks presence) must be recorded
+        # deterministically: the invocation already exists as `running` and no
+        # schedule_run row exists yet, so the generic handler below would call
+        # update_status() on a missing row (LookupError) and leave the
+        # invocation stuck `running`. Record a failed run + fail the invocation
+        # here, advance next_fire so it doesn't re-fire the bad schedule every
+        # tick, and return.
+        try:
+            argv = build_argv(schedule, trigger_context)
+        except Exception as exc:
+            _log.exception(
+                "Invalid schedule action for %s (run %s)", schedule.get("name"), run_id
+            )
+            _end_time = time.time()
+            next_at = self._compute_next_fire(schedule, now)
+            async with StateDB() as db:
+                await db.create_schedule_run(
+                    {
+                        "id": run_id,
+                        "schedule_id": sid,
+                        "invocation_id": inv_id,
+                        "trigger_context": trigger_context,
+                        "action_kind": schedule.get("action_kind"),
+                        "action_args": [],
+                        "status": "failed",
+                        "chain_parent_id": chain_parent_id,
+                        "chain_depth": chain_depth,
+                        "fired_at": now,
+                        "ended_at": _end_time,
+                        "error_detail": str(exc),
+                    }
+                )
+                await db.update_status(
+                    "schedule_run",
+                    run_id,
+                    new_status="failed",
+                    reason_code=RunReasons.FAILED_EXCEPTION,
+                    reason_summary=f"{type(exc).__name__}: {exc}",
+                    evidence_refs=[{"kind": "schedule", "id": sid}],
+                    source="executor",
+                    actor=run_id,
+                    metadata={"exception_class": type(exc).__name__},
+                )
+                inv_status, inv_rc, inv_rs, inv_ev, inv_meta = (
+                    await _resolve_invocation_terminal(
+                        db, inv_id, fallback_status="failed", exception=exc
+                    )
+                )
+                await db.update_invocation(inv_id, ended_at=_end_time)
+                await db.update_status(
+                    "invocation",
+                    inv_id,
+                    new_status=inv_status,
+                    reason_code=inv_rc,
+                    reason_summary=inv_rs,
+                    evidence_refs=inv_ev,
+                    source="executor",
+                    actor=inv_id,
+                    metadata=inv_meta,
+                )
+                update_fields: dict[str, Any] = {"last_fired_at": now}
+                if next_at:
+                    update_fields["next_fire_at"] = next_at
+                await db.update_schedule(sid, **update_fields)
+            return
 
         # Create schedule_run
         async with StateDB() as db:
@@ -515,6 +598,47 @@ class SchedulerEngine:
                         chain_depth=chain_depth + 1,
                     )
 
+        except asyncio.CancelledError:
+            # Scheduler shutdown (stop() cancels outstanding fire tasks).
+            # spawn_and_wait has already terminated the child; record the run
+            # and invocation as cancelled so they don't linger as `running`,
+            # then re-raise to honour cooperative cancellation.
+            _log.info("Schedule fire cancelled %s (run %s)", schedule.get("name"), run_id)
+            _end_time = time.time()
+            try:
+                async with StateDB() as db:
+                    await db.update_schedule_run(
+                        run_id,
+                        ended_at=_end_time,
+                        error_detail="Scheduler shutdown",
+                        reason_code=RunReasons.CANCELLED_SYSTEM,
+                        status="cancelled",
+                        reason_summary="Schedule run cancelled by scheduler shutdown.",
+                        evidence_refs=[{"kind": "schedule", "id": sid}],
+                        reason_actor=run_id,
+                    )
+                    inv_status, inv_rc, inv_rs, inv_ev, inv_meta = (
+                        await _resolve_invocation_terminal(
+                            db, inv_id, fallback_status="cancelled"
+                        )
+                    )
+                    await db.update_invocation(inv_id, ended_at=_end_time)
+                    await db.update_status(
+                        "invocation",
+                        inv_id,
+                        new_status=inv_status,
+                        reason_code=inv_rc,
+                        reason_summary=inv_rs,
+                        evidence_refs=inv_ev,
+                        source="executor",
+                        actor=inv_id,
+                        metadata=inv_meta,
+                    )
+            except Exception:
+                _log.exception(
+                    "Failed to record cancellation for run %s during shutdown", run_id
+                )
+            raise
         except Exception as exc:
             _log.exception("Error in schedule fire %s (run %s)", schedule.get("name"), run_id)
             _end_time = time.time()

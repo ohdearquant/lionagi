@@ -215,9 +215,14 @@ def _register_tools(branch: Branch, spec: AgentSpec) -> None:
             tool = _attach_hooks(BashTool().to_tool(), spec, "bash")
             branch.register_tools(tool)
         elif tool_spec == "search":
+            from pathlib import Path
+
             from lionagi.tools.code.search import SearchTool
 
-            tool = _attach_hooks(SearchTool().to_tool(), spec, "search")
+            workspace_root = str(Path(spec.cwd) if spec.cwd else Path.cwd())
+            tool = _attach_hooks(
+                SearchTool(workspace_root=workspace_root).to_tool(), spec, "search"
+            )
             branch.register_tools(tool)
 
 

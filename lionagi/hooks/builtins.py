@@ -22,6 +22,15 @@ from typing import Any
 
 logger = logging.getLogger("lionagi.hooks.builtins")
 
+__all__ = (
+    "persist_session_start",
+    "persist_session_end",
+    "persist_branch_provenance",
+    "persist_message",
+    "log_api_metrics",
+    "log_tool_use",
+)
+
 
 async def persist_session_start(
     *,
@@ -36,10 +45,17 @@ async def persist_session_start(
 ) -> None:
     """Write the ADR-0022 provenance set + open the lifecycle window."""
     from lionagi.state.db import StateDB
+    from lionagi.state.reasons import RunReasons
 
     async with StateDB() as db:
         await db.update_session(
             session_id,
+            # status="running" routes through update_status(), which requires
+            # a reason_code — pass it explicitly so the transition records a
+            # canonical "started" cause instead of tripping the deprecation
+            # shim (which would raise on the running status and be swallowed by
+            # the bus, silently dropping all the provenance fields above).
+            reason_code=RunReasons.STARTED_OK,
             model=model,
             provider=provider,
             effort=effort,

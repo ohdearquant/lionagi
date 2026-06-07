@@ -49,9 +49,7 @@ __all__ = (
 )
 
 
-async def gather(
-    *aws: Awaitable[T], return_exceptions: bool = False
-) -> list[T | BaseException]:
+async def gather(*aws: Awaitable[T], return_exceptions: bool = False) -> list[T | BaseException]:
     """Run awaitables concurrently, return list of results.
 
     Args:
@@ -331,7 +329,7 @@ async def retry(
 
             delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
             if jitter:
-                delay *= 1 + random.random() * jitter
+                delay *= 1 + random.random() * jitter  # noqa: S311  # non-crypto: jitter for backoff timing
 
             if deadline is not None:
                 remaining = deadline - current_time()

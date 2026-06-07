@@ -22,9 +22,7 @@ class TestImportBridge:
         try:
             from lionagi.protocols.types import LegacyObservable, Observable
         except ImportError:
-            pytest.fail(
-                "Could not import Observable and LegacyObservable from types.py"
-            )
+            pytest.fail("Could not import Observable and LegacyObservable from types.py")
 
         # Import the sources of truth
         from lionagi.protocols._concepts import Observable as V0Source
@@ -35,18 +33,14 @@ class TestImportBridge:
         assert issubclass(Observable, Protocol)
 
         # Verify LegacyObservable (the V0 ABC)
-        assert (
-            LegacyObservable is V0Source
-        ), "types.LegacyObservable should be the V0 ABC"
+        assert LegacyObservable is V0Source, "types.LegacyObservable should be the V0 ABC"
         # Check if it's an ABCMeta (standard check for Abstract Base Classes)
-        assert isinstance(
-            LegacyObservable, ABCMeta
-        ), "LegacyObservable should be an ABC"
+        assert isinstance(LegacyObservable, ABCMeta), "LegacyObservable should be an ABC"
 
         # Ensure they are distinct
-        assert (
-            Observable is not LegacyObservable
-        ), "V1 Observable and LegacyObservable should be distinct objects"
+        assert Observable is not LegacyObservable, (
+            "V1 Observable and LegacyObservable should be distinct objects"
+        )
 
     def test_bridge_utilities_exported(self):
         """Verify bridge utilities are exported from types.py."""
@@ -76,9 +70,7 @@ class TestImportBridge:
         from lionagi.protocols.types import Observable
 
         # Should be the same object
-        assert (
-            ObservableProto is Observable
-        ), "ObservableProto should be the same as Observable"
+        assert ObservableProto is Observable, "ObservableProto should be the same as Observable"
 
     def test_all_exports_in_module_all(self):
         """Verify all new exports are listed in __all__."""
@@ -97,9 +89,7 @@ class TestImportBridge:
 
         # Verify they can actually be imported
         for export in required_exports:
-            assert hasattr(
-                types, export
-            ), f"'{export}' should be available in types module"
+            assert hasattr(types, export), f"'{export}' should be available in types module"
 
     def test_backward_compatibility_import_paths(self):
         """Verify existing import paths still work."""

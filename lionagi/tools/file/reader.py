@@ -16,25 +16,19 @@ from lionagi.protocols.action.tool import Tool
 
 from ..base import LionTool
 
-# Finding 8/9: deny access to sensitive filenames
 _DENIED_NAMES: frozenset[str] = frozenset(
     {".env", ".netrc", "id_rsa", "id_ed25519", "id_ecdsa", ".htpasswd"}
 )
-# Finding 9: allowed document extensions for the 'open' action
 _DOC_EXTENSIONS: frozenset[str] = frozenset({".pdf", ".pptx", ".docx", ".html", ".htm"})
-# Finding 9: max document size for 'open' (50 MB)
 _MAX_DOC_BYTES = 50 * 1024 * 1024
-# Finding 8: max files returned by list_dir
 _MAX_LIST_FILES = 1_000
 
 _CACHE_TTL_SECONDS = 300  # 5 minutes
 
 
 def _resolve_workspace_path(path: str, workspace_root: Path) -> Path:
-    """Finding 8: resolve path under workspace_root; raise PermissionError if it escapes."""
     raw = Path(path).expanduser()
     candidate = raw if raw.is_absolute() else workspace_root / raw
-    # GAP B: check symlink on candidate BEFORE resolve() follows it
     if candidate.is_symlink():
         raise PermissionError(f"Refusing to access symlink: {path!r}")
     resolved = candidate.resolve(strict=False)
@@ -119,7 +113,6 @@ def _read_sync(
     limit: int | None,
     workspace_root: Path,
 ) -> ReaderResponse:
-    # Finding 8: validate path before opening
     try:
         p = _resolve_workspace_path(path, workspace_root)
     except PermissionError as e:
@@ -160,7 +153,6 @@ def _list_dir_sync(
     file_types: list[str] | None,
     workspace_root: Path,
 ) -> ReaderResponse:
-    # Finding 8: validate directory path before listing
     try:
         base = _resolve_workspace_path(path, workspace_root)
     except PermissionError as e:
@@ -172,7 +164,6 @@ def _list_dir_sync(
     from lionagi.libs.file.process import dir_to_files
 
     try:
-        # Finding 8: cap listing to prevent unbounded output
         files = dir_to_files(
             str(base),
             recursive=bool(recursive),
@@ -191,8 +182,6 @@ def _open_sync(
     workspace_root: Path,
     allowed_url_hosts: frozenset[str],
 ) -> ReaderResponse:
-    """Finding 9: validate path/URL before passing to docling."""
-    # Finding 9: split URL vs local file handling
     # NOTE: docling import is intentionally deferred until AFTER all URL/SSRF
     # validation so that the security checks remain testable without the
     # optional docling dependency installed.
@@ -290,9 +279,7 @@ class ReaderTool(LionTool):
         self._tool = None
         self._cache: dict[str, tuple[str, float]] = {}
         self._cache_ttl = cache_ttl
-        # Finding 8: default to CWD when no workspace root is specified
         self.workspace_root = Path(workspace_root or Path.cwd()).expanduser().resolve()
-        # Finding 9: no URL hosts allowed by default
         self._allowed_url_hosts: frozenset[str] = frozenset(allowed_url_hosts or ())
 
     async def handle_request(self, request: ReaderRequest) -> ReaderResponse:

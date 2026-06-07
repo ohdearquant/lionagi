@@ -9,10 +9,10 @@ import contextlib
 import inspect
 import json
 import logging
+import os
 import shutil
+import signal
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
-from dataclasses import field as datafield
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -23,6 +23,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
 from lionagi.libs.schema.as_readable import as_readable
+from lionagi.service.types.cli_session import CLISession
+from lionagi.service.types.stream_chunk import StreamChunk
 
 HAS_CLAUDE_CODE_CLI = False
 CLAUDE_CLI = None
@@ -53,8 +55,6 @@ ClaudeInputFormat = Literal["text", "stream-json"]
 
 __all__ = (
     "ClaudeCodeRequest",
-    "ClaudeChunk",
-    "ClaudeSession",
     "stream_claude_code_cli",
 )
 
@@ -318,7 +318,7 @@ class ClaudeCodeRequest(BaseModel):
         if resume or continue_conversation:
             continue_conversation = True
             prompt = msg[-1]["content"]
-            if isinstance(prompt, (dict, list)):
+            if isinstance(prompt, dict | list):
                 prompt = ln.json_dumps(prompt)
 
         # 2. else, use entire messages except system message
@@ -329,9 +329,7 @@ class ClaudeCodeRequest(BaseModel):
                 if message["role"] != "system":
                     content = message["content"]
                     prompts.append(
-                        ln.json_dumps(content)
-                        if isinstance(content, (dict, list))
-                        else content
+                        ln.json_dumps(content) if isinstance(content, dict | list) else content
                     )
 
             prompt = "\n".join(prompts)
@@ -367,10 +365,7 @@ class ClaudeCodeRequest(BaseModel):
             raise ValueError("--fork-session requires --resume or --continue")
 
         # Permission flag mutual exclusivity
-        if (
-            self.allow_dangerously_skip_permissions
-            and self.permission_mode == "bypassPermissions"
-        ):
+        if self.allow_dangerously_skip_permissions and self.permission_mode == "bypassPermissions":
             raise ValueError(
                 "allow_dangerously_skip_permissions and "
                 "permission_mode='bypassPermissions' are mutually exclusive"
@@ -378,9 +373,7 @@ class ClaudeCodeRequest(BaseModel):
 
         # System prompt mutual exclusivity
         if self.system_prompt and self.system_prompt_file:
-            raise ValueError(
-                "--system-prompt and --system-prompt-file are mutually exclusive"
-            )
+            raise ValueError("--system-prompt and --system-prompt-file are mutually exclusive")
 
         # Workspace bounds check for bypassPermissions
         if self.permission_mode == "bypassPermissions":
@@ -406,14 +399,10 @@ class ClaudeCodeRequest(BaseModel):
         ws_path = Path(self.ws)
 
         if ws_path.is_absolute():
-            raise ValueError(
-                f"Workspace path must be relative, got absolute: {self.ws}"
-            )
+            raise ValueError(f"Workspace path must be relative, got absolute: {self.ws}")
 
         if ".." in ws_path.parts:
-            raise ValueError(
-                f"Directory traversal detected in workspace path: {self.ws}"
-            )
+            raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
 
         repo_resolved = self.repo.resolve()
         result = (self.repo / ws_path).resolve()
@@ -536,9 +525,7 @@ class ClaudeCodeRequest(BaseModel):
                 args.extend(str(v) for v in val)
 
             elif kind == "json_value":
-                serialized = (
-                    json.dumps(val) if isinstance(val, (dict, list)) else str(val)
-                )
+                serialized = json.dumps(val) if isinstance(val, dict | list) else str(val)
                 args.extend([flag, serialized])
 
             elif kind == "repeat":
@@ -554,142 +541,7 @@ class ClaudeCodeRequest(BaseModel):
 # --------------------------------------------------------------------------- chunks & session
 
 
-@dataclass
-class ClaudeChunk:
-    """Low-level wrapper around every NDJSON object coming from the CLI."""
-
-    raw: dict[str, Any]
-    type: str
-    # convenience views
-    thinking: str | None = None
-    text: str | None = None
-    tool_use: dict[str, Any] | None = None
-    tool_result: dict[str, Any] | None = None
-
-
-@dataclass
-class ClaudeSession:
-    """Aggregated view of a whole CLI conversation."""
-
-    session_id: str | None = None
-    model: str | None = None
-
-    # chronological log
-    chunks: list[ClaudeChunk] = datafield(default_factory=list)
-
-    # materialised views
-    thinking_log: list[str] = datafield(default_factory=list)
-    messages: list[dict[str, Any]] = datafield(default_factory=list)
-    tool_uses: list[dict[str, Any]] = datafield(default_factory=list)
-    tool_results: list[dict[str, Any]] = datafield(default_factory=list)
-
-    # final summary
-    result: str = ""
-    usage: dict[str, Any] = datafield(default_factory=dict)
-    total_cost_usd: float | None = None
-    num_turns: int | None = None
-    duration_ms: int | None = None
-    duration_api_ms: int | None = None
-    is_error: bool = False
-    summary: dict | None = None
-
-    def populate_summary(self) -> None:
-        self.summary = _extract_summary(self)
-
-
-def _extract_summary(session: ClaudeSession) -> dict[str, Any]:
-    tool_counts = {}
-    tool_details = []
-    file_operations = {"reads": [], "writes": [], "edits": []}
-    key_actions = []
-
-    # Process tool uses from the clean materialized view
-    for tool_use in session.tool_uses:
-        tool_name = tool_use.get("name", "unknown")
-        tool_input = tool_use.get("input", {})
-        tool_id = tool_use.get("id", "")
-
-        # Count tool usage
-        tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
-
-        # Store detailed info
-        tool_details.append({"tool": tool_name, "id": tool_id, "input": tool_input})
-
-        # Categorize file operations and actions
-        if tool_name in ["Read", "read"]:
-            file_path = tool_input.get("file_path", "unknown")
-            file_operations["reads"].append(file_path)
-            key_actions.append(f"Read {file_path}")
-
-        elif tool_name in ["Write", "write"]:
-            file_path = tool_input.get("file_path", "unknown")
-            file_operations["writes"].append(file_path)
-            key_actions.append(f"Wrote {file_path}")
-
-        elif tool_name in ["Edit", "edit", "MultiEdit"]:
-            file_path = tool_input.get("file_path", "unknown")
-            file_operations["edits"].append(file_path)
-            key_actions.append(f"Edited {file_path}")
-
-        elif tool_name in ["Bash", "bash"]:
-            command = tool_input.get("command", "")
-            command_summary = command[:50] + "..." if len(command) > 50 else command
-            key_actions.append(f"Ran: {command_summary}")
-
-        elif tool_name in ["Glob", "glob"]:
-            pattern = tool_input.get("pattern", "")
-            key_actions.append(f"Searched files: {pattern}")
-
-        elif tool_name in ["Grep", "grep"]:
-            pattern = tool_input.get("pattern", "")
-            key_actions.append(f"Searched content: {pattern}")
-
-        elif tool_name in ["Task", "task", "Agent"]:
-            description = tool_input.get("description", "")
-            key_actions.append(f"Spawned agent: {description}")
-
-        elif tool_name.startswith("mcp__"):
-            operation = tool_name.replace("mcp__", "")
-            key_actions.append(f"MCP {operation}")
-
-        elif tool_name == "TodoWrite":
-            todos = tool_input.get("todos", [])
-            key_actions.append(f"Created {len(todos)} todos")
-
-        else:
-            key_actions.append(f"Used {tool_name}")
-
-    # Deduplicate key actions
-    key_actions = (
-        list(dict.fromkeys(key_actions))
-        if key_actions
-        else ["No specific actions detected"]
-    )
-
-    # Deduplicate file paths
-    for op_type in file_operations:
-        file_operations[op_type] = list(dict.fromkeys(file_operations[op_type]))
-
-    # Extract result summary (first 200 chars)
-    result_summary = (
-        (session.result[:200] + "...") if len(session.result) > 200 else session.result
-    )
-
-    return {
-        "tool_counts": tool_counts,
-        "tool_details": tool_details,
-        "file_operations": file_operations,
-        "key_actions": key_actions,
-        "total_tool_calls": sum(tool_counts.values()),
-        "result_summary": result_summary,
-        "usage_stats": {
-            "total_cost_usd": session.total_cost_usd,
-            "num_turns": session.num_turns,
-            "duration_ms": session.duration_ms,
-            "duration_api_ms": session.duration_api_ms,
-            **session.usage,
-        },
-    }
+ClaudeSession = CLISession
 
 
 # --------------------------------------------------------------------------- NDJSON stream
@@ -723,8 +575,13 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
     # Guard against mocked subprocesses in tests where proc.pid may not
     # be a real int: a MagicMock.pid coerces to 1 via __int__, and
     # os.killpg(1, SIGTERM) signals init/the CI runner.
+    # os.killpg is POSIX-only: on Windows leave _pgid None so the group-kill
+    # path is skipped and cleanup falls through to proc.terminate()/kill()
+    # instead of raising AttributeError from the finally block.
     _claude_pgid: int | None = (
-        proc.pid if isinstance(proc.pid, int) and proc.pid > 1 else None
+        proc.pid
+        if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1
+        else None
     )
 
     decoder = codecs.getincrementaldecoder("utf-8")()
@@ -811,9 +668,6 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
         # Terminate the whole process group (start_new_session=True
         # above made pgid == proc.pid). Captured up-front so a reap
         # before teardown doesn't make us skip the group kill.
-        import os
-        import signal
-
         pgid = _claude_pgid
         if pgid is not None:
             with contextlib.suppress(ProcessLookupError, PermissionError):
@@ -836,19 +690,14 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
         stderr_task.cancel()
         try:
             await stderr_task
-        except (
-            asyncio.CancelledError,
-            Exception,
-        ):  # noqa: S110, BLE001 — intentional teardown reap
+        except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001
             pass
 
 
 # --------------------------------------------------------------------------- SSE route
 async def stream_cc_cli_events(request: ClaudeCodeRequest):
     if not CLAUDE_CLI:
-        raise RuntimeError(
-            "Claude CLI binary not found (npm i -g @anthropic-ai/claude-code)"
-        )
+        raise RuntimeError("Claude CLI binary not found (npm i -g @anthropic-ai/claude-code)")
     async with contextlib.aclosing(_ndjson_from_cli(request)) as stream:
         async for obj in stream:
             yield obj
@@ -894,17 +743,13 @@ def _pp_tool_use(tu: dict[str, Any], theme) -> None:
 def _pp_tool_result(tr: dict[str, Any], theme) -> None:
     body_preview = shorten(str(tr["content"]).replace("\n", " "), 130)
     status = "ERR" if tr.get("is_error") else "OK"
-    body = (
-        f"- 📄 Tool Result({tr['tool_use_id']}) - {status}\n\n\tcontent: {body_preview}"
-    )
+    body = f"- 📄 Tool Result({tr['tool_use_id']}) - {status}\n\n\tcontent: {body_preview}"
     print_readable(body, border=False, panel=False, theme=theme)
 
 
-def _pp_final(sess: ClaudeSession, theme) -> None:
+def _pp_final(sess: CLISession, theme) -> None:
     usage = sess.usage or {}
-    cost_str = (
-        f"${sess.total_cost_usd:.4f}" if sess.total_cost_usd is not None else "N/A"
-    )
+    cost_str = f"${sess.total_cost_usd:.4f}" if sess.total_cost_usd is not None else "N/A"
     txt = (
         f"### ✅ Session complete - {datetime.now(timezone.utc).isoformat(timespec='seconds')} UTC\n"
         f"**Result:**\n\n{sess.result or ''}\n\n"
@@ -929,41 +774,47 @@ async def _maybe_await(func, *args, **kw):
 # --------------------------------------------------------------------------- main parser
 async def stream_claude_code_cli(  # noqa: C901
     request: ClaudeCodeRequest,
-    session: ClaudeSession | None = None,
+    session: CLISession | None = None,
     *,
     on_system: Callable[[dict[str, Any]], None] | None = None,
     on_thinking: Callable[[str], None] | None = None,
     on_text: Callable[[str], None] | None = None,
     on_tool_use: Callable[[dict[str, Any]], None] | None = None,
     on_tool_result: Callable[[dict[str, Any]], None] | None = None,
-    on_final: Callable[[ClaudeSession], None] | None = None,
-) -> AsyncIterator[ClaudeChunk | dict | ClaudeSession]:
-    """
-    Consume the ND-JSON stream produced by ndjson_from_cli()
-    and return a fully-populated ClaudeSession.
-
-    If callbacks are omitted a default pretty-print is emitted.
-    """
+    on_final: Callable[[CLISession], None] | None = None,
+) -> AsyncIterator[StreamChunk | CLISession]:
+    """Consume ND-JSON from the Claude Code CLI, yield StreamChunks,
+    and populate a CLISession accumulator."""
     if session is None:
-        session = ClaudeSession()
+        session = CLISession()
     theme = request.cli_display_theme or "light"
+    seen_system_ids: set[str] = set()
 
     stream = stream_cc_cli_events(request)
     try:
         async for obj in stream:
             typ = obj.get("type", "unknown")
-            chunk = ClaudeChunk(raw=obj, type=typ)
-            session.chunks.append(chunk)
 
             # ------------------------ SYSTEM -----------------------------------
             if typ == "system":
-                data = obj
-                session.session_id = data.get("session_id", session.session_id)
-                session.model = data.get("model", session.model)
-                await _maybe_await(on_system, data)
+                session.session_id = obj.get("session_id", session.session_id)
+                session.model = obj.get("model", session.model)
+                await _maybe_await(on_system, obj)
                 if request.verbose_output:
-                    _pp_system(data, theme)
-                yield data
+                    sid = str(obj.get("session_id", ""))
+                    if obj.get("model") and sid not in seen_system_ids:
+                        seen_system_ids.add(sid)
+                        _pp_system(obj, theme)
+                sc = StreamChunk(
+                    type="system",
+                    metadata={
+                        "session_id": obj.get("session_id"),
+                        "model": obj.get("model"),
+                        "tools": obj.get("tools", []),
+                    },
+                )
+                session.chunks.append(sc)
+                yield sc
 
             # ------------------------ ASSISTANT --------------------------------
             elif typ == "assistant":
@@ -974,30 +825,38 @@ async def stream_claude_code_cli(  # noqa: C901
                     btype = blk.get("type")
                     if btype == "thinking":
                         thought = blk.get("thinking", "").strip()
-                        chunk.thinking = thought
                         session.thinking_log.append(thought)
                         await _maybe_await(on_thinking, thought)
                         if request.verbose_output:
                             _pp_thinking(thought, theme)
+                        sc = StreamChunk(type="thinking", content=thought, metadata=obj)
+                        session.chunks.append(sc)
+                        yield sc
 
                     elif btype == "text":
                         text = blk.get("text", "")
-                        chunk.text = text
                         await _maybe_await(on_text, text)
                         if request.verbose_output:
                             _pp_assistant_text(text, theme)
+                        sc = StreamChunk(type="text", content=text, metadata=obj)
+                        session.chunks.append(sc)
+                        yield sc
 
                     elif btype == "tool_use":
-                        tu = {
-                            "id": blk["id"],
-                            "name": blk["name"],
-                            "input": blk["input"],
-                        }
-                        chunk.tool_use = tu
+                        tu = {"id": blk["id"], "name": blk["name"], "input": blk["input"]}
                         session.tool_uses.append(tu)
                         await _maybe_await(on_tool_use, tu)
                         if request.verbose_output:
                             _pp_tool_use(tu, theme)
+                        sc = StreamChunk(
+                            type="tool_use",
+                            tool_name=tu["name"],
+                            tool_id=tu["id"],
+                            tool_input=tu["input"],
+                            metadata=obj,
+                        )
+                        session.chunks.append(sc)
+                        yield sc
 
                     elif btype == "tool_result":
                         tr = {
@@ -1005,12 +864,19 @@ async def stream_claude_code_cli(  # noqa: C901
                             "content": blk["content"],
                             "is_error": blk.get("is_error", False),
                         }
-                        chunk.tool_result = tr
                         session.tool_results.append(tr)
                         await _maybe_await(on_tool_result, tr)
                         if request.verbose_output:
                             _pp_tool_result(tr, theme)
-                yield chunk
+                        sc = StreamChunk(
+                            type="tool_result",
+                            tool_id=tr["tool_use_id"],
+                            tool_output=tr["content"],
+                            is_error=tr["is_error"],
+                            metadata=obj,
+                        )
+                        session.chunks.append(sc)
+                        yield sc
 
             # ------------------------ USER (tool_result containers) ------------
             elif typ == "user":
@@ -1023,12 +889,19 @@ async def stream_claude_code_cli(  # noqa: C901
                             "content": blk["content"],
                             "is_error": blk.get("is_error", False),
                         }
-                        chunk.tool_result = tr
                         session.tool_results.append(tr)
                         await _maybe_await(on_tool_result, tr)
                         if request.verbose_output:
                             _pp_tool_result(tr, theme)
-                yield chunk
+                        sc = StreamChunk(
+                            type="tool_result",
+                            tool_id=tr["tool_use_id"],
+                            tool_output=tr["content"],
+                            is_error=tr["is_error"],
+                            metadata=obj,
+                        )
+                        session.chunks.append(sc)
+                        yield sc
 
             # ------------------------ RESULT -----------------------------------
             elif typ == "result":
@@ -1046,7 +919,6 @@ async def stream_claude_code_cli(  # noqa: C901
     finally:
         await stream.aclose()
 
-    # final pretty print
     await _maybe_await(on_final, session)
     if request.verbose_output:
         _pp_final(session, theme)

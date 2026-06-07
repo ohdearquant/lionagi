@@ -72,6 +72,35 @@ def _strip_capability_block(text: str) -> str:
     return (text[:start] + text[end + len(CAP_END) :]).strip()
 
 
+def _merge_instruct(
+    instruct: "Instruct | dict[str, Any] | None",
+    instruction=None,
+    guidance=None,
+    context=None,
+) -> dict:
+    """Normalize ``instruct`` to a dict, overlaying loose instruction fields.
+
+    Lets ``ReAct``/``ReActStream`` accept either a full ``Instruct``/dict or the
+    individual ``instruction``/``guidance``/``context`` keywords — the same shape
+    ``operate`` accepts. This is what makes a model-emitted ``SpawnRequest`` with
+    ``operation="ReAct"`` routable: the orchestration node builder passes a bare
+    ``instruction=`` parameter uniformly across every allowed operation.
+    """
+    if isinstance(instruct, Instruct):
+        merged = instruct.to_dict()
+    elif instruct:
+        merged = dict(instruct)
+    else:
+        merged = {}
+    if instruction is not None:
+        merged["instruction"] = instruction
+    if guidance is not None:
+        merged["guidance"] = guidance
+    if context is not None:
+        merged["context"] = context
+    return merged
+
+
 class Branch(Element, Relational):
     """
     Manages a conversation 'branch' with messages, tools, and iModels.
@@ -1285,7 +1314,10 @@ class Branch(Element, Relational):
 
     async def ReAct(  # noqa: N802
         self,
-        instruct: "Instruct | dict[str, Any]",
+        instruct: "Instruct | dict[str, Any]" = None,
+        instruction: Instruction | JsonValue = None,
+        guidance: JsonValue = None,
+        context: JsonValue = None,
         interpret: bool = False,
         interpret_domain: str | None = None,
         interpret_style: str | None = None,
@@ -1320,8 +1352,16 @@ class Branch(Element, Relational):
         Args:
             branch (Branch):
                 The active branch context that orchestrates messages, models, and actions.
-            instruct (Instruct | dict[str, Any]):
+            instruct (Instruct | dict[str, Any], optional):
                 The user's instruction object or a dict with equivalent keys.
+                If omitted, the loose ``instruction``/``guidance``/``context``
+                keywords are used instead (the same shape ``operate`` accepts).
+            instruction (Instruction | JsonValue, optional):
+                The main instruction, used when ``instruct`` is not given.
+            guidance (JsonValue, optional):
+                Strategic direction, overlaid onto ``instruct`` when provided.
+            context (JsonValue, optional):
+                Background data, overlaid onto ``instruct`` when provided.
             interpret (bool, optional):
                 If `True`, first interprets (`branch.interpret`) the instructions to refine them
                 before proceeding. Defaults to `False`.
@@ -1383,6 +1423,8 @@ class Branch(Element, Relational):
         """
         from lionagi.operations.ReAct.ReAct import ReAct
 
+        instruct = _merge_instruct(instruct, instruction, guidance, context)
+
         # Remove potential duplicate parameters from kwargs
         kwargs_filtered = {
             k: v for k, v in kwargs.items() if k not in {"verbose_analysis", "verbose_action"}
@@ -1420,7 +1462,10 @@ class Branch(Element, Relational):
 
     async def ReActStream(  # noqa: N802
         self,
-        instruct: "Instruct | dict[str, Any]",
+        instruct: "Instruct | dict[str, Any]" = None,
+        instruction: Instruction | JsonValue = None,
+        guidance: JsonValue = None,
+        context: JsonValue = None,
         interpret: bool = False,
         interpret_domain: str | None = None,
         interpret_style: str | None = None,
@@ -1453,8 +1498,8 @@ class Branch(Element, Relational):
             ParseParam,
         )
 
-        # Convert Instruct to dict if needed
-        instruct_dict = instruct.to_dict() if isinstance(instruct, Instruct) else dict(instruct)
+        # Convert Instruct to dict if needed, overlaying loose instruction fields
+        instruct_dict = _merge_instruct(instruct, instruction, guidance, context)
 
         # Build InterpretContext if interpretation requested
         intp_param = None

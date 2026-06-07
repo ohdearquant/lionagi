@@ -66,6 +66,7 @@ LEGACY_IMPORTED: Final[str] = "legacy.imported"
 class RunReasons:
     """Outcomes of session execution (the CLI teardown's view)."""
 
+    STARTED_OK = "run.started.ok"
     COMPLETED_OK = "run.completed.ok"
     FAILED_EXIT_NONZERO = "run.failed.exit_nonzero"
     FAILED_EXCEPTION = "run.failed.exception"

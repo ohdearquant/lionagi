@@ -37,13 +37,13 @@ jobs:
     - name: Lint markdown (formatting)
       uses: DavidAnson/markdownlint-cli2-action@v23
       with:
-        globs: "docs/**/*.md,README.md,AGENT.md,CLAUDE.md,CHANGELOG.md"
+        globs: "docs/**/*.md,README.md,AGENT.md,CLAUDE.md,CONTRIBUTING.md,CHANGELOG.md"
         config: ".markdownlint.json"
 
     - name: Check internal links
       uses: lycheeverse/lychee-action@v2
       with:
-        args: "--no-progress --offline docs/ README.md AGENT.md CLAUDE.md"
+        args: "--no-progress --offline docs/ README.md AGENT.md CLAUDE.md CONTRIBUTING.md"
         fail: true
 
   test:
@@ -51,7 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # PRs: oldest + newest only (60% faster). Full matrix on push to main.
+        # PRs: oldest + newest only (60% faster). Full matrix on main/develop pushes.
         python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.10","3.14"]' || '["3.10","3.11","3.12","3.13","3.14"]') }}
     steps:
     - uses: actions/checkout@v6

@@ -4,7 +4,6 @@
 from pydantic import BaseModel
 
 from lionagi.service.connections.endpoint import Endpoint
-from lionagi.service.connections.endpoint_config import EndpointConfig
 
 from .._config import DeepSeekConfigs
 from .models import DeepseekChatCompletionsRequest, normalize_deepseek_usage
@@ -27,9 +26,7 @@ class DeepseekChatEndpoint(Endpoint):
         if config is None:
             from lionagi.config import settings
 
-            kwargs.setdefault(
-                "api_key", settings.DEEPSEEK_API_KEY or "dummy-key-for-testing"
-            )
+            kwargs.setdefault("api_key", settings.DEEPSEEK_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("kwargs", {"model": "deepseek-chat"})
             kwargs.setdefault("requires_tokens", True)
         super().__init__(config, **kwargs)

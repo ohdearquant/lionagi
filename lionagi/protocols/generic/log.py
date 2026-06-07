@@ -31,9 +31,7 @@ class DataLoggerConfig(BaseModel):
     persist_dir: str | Path = "./data/logs"
     subfolder: str | None = None
     file_prefix: str | None = None
-    capacity: int | None = (
-        None  # None means unbounded; set a value for long-running sessions
-    )
+    capacity: int | None = None  # None means unbounded; set a value for long-running sessions
     extension: str = ".json"
     use_timestamp: bool = True
     hash_digits: int | None = Field(5, ge=0, le=10)

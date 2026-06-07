@@ -112,6 +112,10 @@ async def parse(
             response_format=(
                 parse_param.response_format
                 if isinstance(parse_param.response_format, BaseModel)
+                or (
+                    isinstance(parse_param.response_format, type)
+                    and issubclass(parse_param.response_format, BaseModel)
+                )
                 else None
             ),
             imodel=parse_param.imodel or branch.parse_model,

@@ -25,7 +25,13 @@ def uid() -> str:
     return str(uuid.uuid4())
 
 
-async def _make_session(db: StateDB, *, project: str | None = None, project_source: str | None = None, status: str | None = None) -> dict:
+async def _make_session(
+    db: StateDB,
+    *,
+    project: str | None = None,
+    project_source: str | None = None,
+    status: str | None = None,
+) -> dict:
     prog_id = uid()
     await db.create_progression(prog_id)
     session = {
@@ -109,6 +115,7 @@ async def test_create_project_all_fields(db: StateDB):
 
 async def test_create_project_duplicate_raises(db: StateDB):
     import aiosqlite
+
     await db.create_project("dup-proj")
     with pytest.raises(aiosqlite.IntegrityError):
         await db.create_project("dup-proj")
@@ -210,12 +217,14 @@ async def test_delete_project_non_studio_returns_false(db: StateDB):
 async def test_create_session_auto_registers_project(db: StateDB):
     prog_id = uid()
     await db.create_progression(prog_id)
-    await db.create_session({
-        "id": uid(),
-        "progression_id": prog_id,
-        "project": "auto/project",
-        "project_source": "git_remote",
-    })
+    await db.create_session(
+        {
+            "id": uid(),
+            "progression_id": prog_id,
+            "project": "auto/project",
+            "project_source": "git_remote",
+        }
+    )
     project = await db.get_project("auto/project")
     assert project is not None
     assert project["source"] == "git_remote"
@@ -224,10 +233,12 @@ async def test_create_session_auto_registers_project(db: StateDB):
 async def test_create_session_no_project_skips_registration(db: StateDB):
     prog_id = uid()
     await db.create_progression(prog_id)
-    await db.create_session({
-        "id": uid(),
-        "progression_id": prog_id,
-    })
+    await db.create_session(
+        {
+            "id": uid(),
+            "progression_id": prog_id,
+        }
+    )
     result = await db.list_projects()
     assert result == []
 
@@ -235,12 +246,14 @@ async def test_create_session_no_project_skips_registration(db: StateDB):
 async def test_create_session_missing_project_source_defaults_to_git_remote(db: StateDB):
     prog_id = uid()
     await db.create_progression(prog_id)
-    await db.create_session({
-        "id": uid(),
-        "progression_id": prog_id,
-        "project": "my/proj",
-        # no project_source
-    })
+    await db.create_session(
+        {
+            "id": uid(),
+            "progression_id": prog_id,
+            "project": "my/proj",
+            # no project_source
+        }
+    )
     project = await db.get_project("my/proj")
     assert project is not None
     assert project["source"] == "git_remote"
