@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
@@ -63,11 +66,20 @@ def fuzzy_match_keys(
         raise TypeError("First argument must be a dictionary")
     if keys is None:
         raise TypeError("Keys argument cannot be None")
+    # A bare str is a Sequence[str] but iterating it yields single characters,
+    # not key names.  Reject it early with a clear message rather than silently
+    # producing wrong results.
+    if isinstance(keys, str):
+        raise TypeError(
+            "keys must be a Mapping (dict) or a non-string Sequence of key names "
+            "(e.g. list, tuple, frozenset); got a bare str"
+        )
     if not 0.0 <= similarity_threshold <= 1.0:
         raise ValueError("similarity_threshold must be between 0.0 and 1.0")
 
-    # Extract expected keys
-    fields_set = set(keys) if isinstance(keys, list) else set(keys.keys())
+    # Extract expected keys: Mapping types expose their keys via .keys();
+    # all other Sequence types (list, tuple, frozenset, …) are iterable directly.
+    fields_set = set(keys.keys()) if isinstance(keys, Mapping) else set(keys)
     if not fields_set:
         return d_.copy()  # Return copy of original if no expected keys
 
