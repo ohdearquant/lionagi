@@ -24,6 +24,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
 from lionagi.libs.schema.as_readable import as_readable
+from lionagi.providers._cli_paths import (
+    check_paths_safe,
+    contain_paths_in_repo,
+)
 
 HAS_PI_CLI = False
 PI_CLI = None
@@ -219,24 +223,16 @@ class PiCodeRequest(BaseModel):
         Relative paths that stay inside the repo are permitted; callers that
         need an absolute path should pre-validate and use an explicit allowlist.
         """
-        safe: list[str] = []
-        for raw in v:
-            # Strip the leading @ prefix if present — the CLI builder re-adds it.
-            entry = raw.lstrip("@")
-            p = Path(entry)
-            if p.is_absolute():
-                raise ValueError(
-                    f"file_args entry {raw!r} is an absolute path — "
-                    "only relative paths inside the repository are allowed. "
-                    "Absolute paths can grant CLI access to arbitrary files."
-                )
-            if ".." in p.parts:
-                raise ValueError(
-                    f"file_args entry {raw!r} contains directory traversal ('..') — "
-                    "only paths that remain inside the repository are allowed."
-                )
-            safe.append(raw)
-        return safe
+        return check_paths_safe(list(v), "file_args", strip_at=True)
+
+    @field_validator("extension", "skill", mode="before")
+    @classmethod
+    def _validate_path_fields(cls, v):
+        """Reject absolute paths and traversal sequences in extension/skill lists."""
+        if v is None:
+            return v
+        items = [v] if isinstance(v, str) else list(v)
+        return check_paths_safe(items, "extension/skill")
 
     @model_validator(mode="after")
     def _contain_file_args_in_repo(self) -> PiCodeRequest:
@@ -249,17 +245,11 @@ class PiCodeRequest(BaseModel):
         subprocess is constructed.
         """
         repo_root = self.repo.resolve()
-        for raw in self.file_args:
-            entry = raw.lstrip("@")
-            resolved = (repo_root / entry).resolve()
-            try:
-                resolved.relative_to(repo_root)
-            except ValueError as exc:
-                raise ValueError(
-                    f"file_args entry {raw!r} resolves to {resolved} which is "
-                    f"outside the repository root {repo_root} (symlink escape). "
-                    "Only paths that remain inside the repository are allowed."
-                ) from exc
+        contain_paths_in_repo(self.file_args, repo_root, "file_args", strip_at=True)
+        if self.extension:
+            contain_paths_in_repo(self.extension, repo_root, "extension")
+        if self.skill:
+            contain_paths_in_repo(self.skill, repo_root, "skill")
         return self
 
     @model_validator(mode="before")

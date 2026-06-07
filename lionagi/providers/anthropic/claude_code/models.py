@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
 from lionagi.libs.schema.as_readable import as_readable
+from lionagi.providers._cli_paths import check_path_safe, check_paths_safe, contain_paths_in_repo
 from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 
@@ -302,6 +303,29 @@ class ClaudeCodeRequest(BaseModel):
             return [v]
         return v
 
+    @field_validator("add_dir", mode="after")
+    @classmethod
+    def _validate_add_dir(cls, v):
+        """Reject absolute paths and traversal sequences in add_dir entries."""
+        if v is None:
+            return v
+        return check_paths_safe(v, "add_dir")
+
+    @field_validator(
+        "system_prompt_file",
+        "append_system_prompt_file",
+        "mcp_config",
+        "settings",
+        mode="before",
+    )
+    @classmethod
+    def _validate_path_fields(cls, v):
+        """Reject absolute paths and traversal sequences in file path fields."""
+        if v is None:
+            return v
+        check_path_safe(str(v), "system_prompt_file/append_system_prompt_file/mcp_config/settings")
+        return v
+
     @model_validator(mode="before")
     def _validate_message_prompt(cls, data):
         if "prompt" in data and data["prompt"]:
@@ -387,6 +411,19 @@ class ClaudeCodeRequest(BaseModel):
                     f"repository bounds. Repository: {repo_resolved}, "
                     f"Workspace: {cwd_resolved}"
                 ) from None
+
+        # Repo-containment: resolve path-grant fields and reject symlink escapes.
+        repo_root = self.repo.resolve()
+        if self.add_dir:
+            contain_paths_in_repo(self.add_dir, repo_root, "add_dir")
+        for fname, fval in (
+            ("system_prompt_file", self.system_prompt_file),
+            ("append_system_prompt_file", self.append_system_prompt_file),
+            ("mcp_config", self.mcp_config),
+            ("settings", self.settings),
+        ):
+            if fval is not None:
+                contain_paths_in_repo([str(fval)], repo_root, fname)
 
         return self
 

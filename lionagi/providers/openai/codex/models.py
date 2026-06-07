@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
 from lionagi.libs.schema.as_readable import as_readable
+from lionagi.providers._cli_paths import check_path_safe, check_paths_safe, contain_paths_in_repo
 from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 
@@ -280,6 +281,43 @@ class CodexCodeRequest(BaseModel):
         if isinstance(v, str):
             return [v]
         return v
+
+    @field_validator("add_dir", mode="after")
+    @classmethod
+    def _validate_add_dir(cls, v):
+        """Reject absolute paths and traversal sequences in add_dir entries."""
+        if v is None:
+            return v
+        return check_paths_safe(v, "add_dir")
+
+    @field_validator("images", mode="after")
+    @classmethod
+    def _validate_images(cls, v):
+        """Reject absolute paths and traversal sequences in image paths."""
+        return check_paths_safe(v, "images")
+
+    @field_validator("output_schema", "output_last_message", mode="before")
+    @classmethod
+    def _validate_output_paths(cls, v):
+        """Reject absolute paths and traversal sequences in output path fields."""
+        if v is None:
+            return v
+        check_path_safe(str(v), "output_schema/output_last_message")
+        return v
+
+    @model_validator(mode="after")
+    def _contain_path_fields_in_repo(self):
+        """Resolve path-grant fields and reject any that escape the repo root."""
+        repo_root = self.repo.resolve()
+        if self.add_dir:
+            contain_paths_in_repo(self.add_dir, repo_root, "add_dir")
+        if self.images:
+            contain_paths_in_repo(self.images, repo_root, "images")
+        if self.output_schema is not None:
+            contain_paths_in_repo([str(self.output_schema)], repo_root, "output_schema")
+        if self.output_last_message is not None:
+            contain_paths_in_repo([str(self.output_last_message)], repo_root, "output_last_message")
+        return self
 
     @model_validator(mode="before")
     @classmethod

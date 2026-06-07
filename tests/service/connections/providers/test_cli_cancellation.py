@@ -388,7 +388,7 @@ class TestToolAllowlistArgs:
 
         request = ClaudeCodeRequest(
             prompt="test",
-            mcp_config="/path/to/config.json",
+            mcp_config=".mcp/config.json",
         )
         args = request.as_cmd_args()
 

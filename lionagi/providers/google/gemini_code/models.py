@@ -21,10 +21,11 @@ from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
 from lionagi.libs.schema.as_readable import as_readable
+from lionagi.providers._cli_paths import check_paths_safe, contain_paths_in_repo
 
 HAS_GEMINI_CLI = False
 GEMINI_CLI = None
@@ -103,6 +104,20 @@ class GeminiCodeRequest(BaseModel):
 
         data["prompt"] = "\n".join(prompts)
         return data
+
+    @field_validator("include_directories", mode="after")
+    @classmethod
+    def _validate_include_directories(cls, v):
+        """Reject absolute paths and traversal sequences in include_directories."""
+        return check_paths_safe(v, "include_directories")
+
+    @model_validator(mode="after")
+    def _contain_directories_in_repo(self):
+        """Resolve include_directories and reject entries that escape the repo root."""
+        if self.include_directories:
+            repo_root = self.repo.resolve()
+            contain_paths_in_repo(self.include_directories, repo_root, "include_directories")
+        return self
 
     @model_validator(mode="after")
     def _warn_dangerous_settings(self):
