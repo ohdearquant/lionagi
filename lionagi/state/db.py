@@ -12,6 +12,7 @@ from typing import Any
 import aiosqlite
 
 from lionagi._paths import LIONAGI_HOME
+from lionagi.ln import json_dumps as _json_dumps
 from lionagi.ln.concurrency import Lock
 from lionagi.state.reasons import (
     PlayReasons as _PlayReasons,
@@ -292,7 +293,7 @@ def _to_json_column(value: Any) -> Any:
     """
     if value is None or isinstance(value, bytes | bytearray | memoryview):
         return value
-    return json.dumps(value)
+    return _json_dumps(value)
 
 
 def _validate_session_status(status: Any) -> None:
@@ -643,7 +644,7 @@ class StateDB:
     ) -> None:
         await self.db.execute(
             "INSERT OR IGNORE INTO progressions (id, created_at, collection) VALUES (?, ?, ?)",
-            (progression_id, time.time(), json.dumps(collection or [])),
+            (progression_id, time.time(), _json_dumps(collection or [])),
         )
         await self.db.commit()
 
@@ -961,8 +962,8 @@ class StateDB:
         canonical_type = _validate_entity_type_for_reason(entity_type)
         _validate_reason_code(reason_code)
         table = _reason_entity_table(canonical_type)
-        evidence_json = json.dumps(evidence_refs or [])
-        metadata_json = json.dumps(metadata) if metadata is not None else None
+        evidence_json = _json_dumps(evidence_refs or [])
+        metadata_json = _json_dumps(metadata) if metadata is not None else None
         now = time.time()
 
         # Single transaction: status + denormalized reason + transition row.
@@ -2088,7 +2089,7 @@ class StateDB:
                 play.get("merged_at"),
                 play.get("gate_passed"),
                 play.get("gate_feedback"),
-                json.dumps(play.get("depends_on", [])),
+                _json_dumps(play.get("depends_on", [])),
                 play.get("sort_order", 0),
                 play.get("created_at", now),
                 now,
