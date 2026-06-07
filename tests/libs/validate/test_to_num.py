@@ -167,9 +167,7 @@ class TestExtractNumbers:
     def test_extracts_complex(self):
         """Lines 128-140: complex number matched."""
         matches = extract_numbers("z = 1+2j")
-        assert any(
-            t in ("complex", "complex_sci", "pure_imaginary") for t, _ in matches
-        )
+        assert any(t in ("complex", "complex_sci", "pure_imaginary") for t, _ in matches)
 
 
 # --- validate_num_type (lines 156-161) ---

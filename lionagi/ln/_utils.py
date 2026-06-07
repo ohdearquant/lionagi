@@ -75,15 +75,50 @@ async def acreate_path(
     async def _impl() -> AsyncPath:
         nonlocal directory, filename
 
+        # Capture the ORIGINAL base root (symlinks resolved) BEFORE `filename`
+        # can redirect `directory` into a subdirectory. All containment checks
+        # validate against this fixed root, so a symlinked subdirectory pointing
+        # outside the base cannot be used to escape.
+        base_root = StdPath(str(directory)).resolve()
+
         if "/" in filename:
+            parts = filename.split("/")
+            # Fail-closed: reject any path component that is '.' or '..' to
+            # prevent directory traversal before any filesystem side effect.
+            for component in parts:
+                if component in (".", ".."):
+                    raise ValueError(
+                        f"Filename components must not be '.' or '..'; "
+                        f"got component {component!r} in {filename!r}."
+                    )
             sub_dir, filename = (
-                filename.split("/")[:-1],
-                filename.split("/")[-1],
+                parts[:-1],
+                parts[-1],
             )
             directory = AsyncPath(directory) / "/".join(sub_dir)
 
         if "\\" in filename:
             raise ValueError("Filename cannot contain directory separators.")
+
+        if filename in (".", ".."):
+            raise ValueError(f"Filename must not be '.' or '..'; got {filename!r}.")
+
+        # Verify the (possibly redirected) directory AND the final candidate
+        # both resolve to a location within the original base root. Both are
+        # fully resolve()-d so symlinks are followed — a symlinked subdir OR a
+        # symlinked final component (e.g. base/link.txt -> /outside) escaping
+        # the root is rejected before any filesystem side effect. resolve() on a
+        # not-yet-existing final component simply normalizes it under the dir.
+        dir_resolved = StdPath(str(directory)).resolve()
+        candidate_resolved = (dir_resolved / filename).resolve()
+        for escapee in (dir_resolved, candidate_resolved):
+            try:
+                escapee.relative_to(base_root)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Resolved path {escapee} escapes base directory "
+                    f"{base_root}. Refusing to create path."
+                ) from exc
 
         directory = AsyncPath(directory)
         if "." in filename:
@@ -106,9 +141,7 @@ async def acreate_path(
         await full_path.parent.mkdir(parents=True, exist_ok=dir_exist_ok)
 
         if await full_path.exists() and not file_exist_ok:
-            raise FileExistsError(
-                f"File {full_path} already exists and file_exist_ok is False."
-            )
+            raise FileExistsError(f"File {full_path} already exists and file_exist_ok is False.")
 
         return full_path
 
@@ -166,14 +199,10 @@ def import_module(
         ImportError: If the module cannot be imported.
     """
     try:
-        full_import_path = (
-            f"{package_name}.{module_name}" if module_name else package_name
-        )
+        full_import_path = f"{package_name}.{module_name}" if module_name else package_name
 
         if import_name:
-            import_name = (
-                [import_name] if not isinstance(import_name, list) else import_name
-            )
+            import_name = [import_name] if not isinstance(import_name, list) else import_name
             a = __import__(
                 full_import_path,
                 fromlist=import_name,
@@ -366,7 +395,7 @@ def coerce_created_at(v: Any) -> datetime:
     if isinstance(v, datetime):
         return v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v
 
-    if isinstance(v, (int, float)):
+    if isinstance(v, int | float):
         return datetime.fromtimestamp(v, tz=timezone.utc)
 
     if isinstance(v, str):
