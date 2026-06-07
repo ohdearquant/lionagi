@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum as _Enum
 from typing import Any, ClassVar
@@ -262,7 +261,11 @@ class DataClass:
         return hash(self) == hash(other)
 
 
-KeysLike = Sequence[str] | KeysDict
+# Concrete key-container types accepted by fuzzy_match_keys.
+# Bare ``str`` is intentionally excluded: iterating a str yields individual
+# characters, not key names.  Generic Sequences other than list/tuple are also
+# excluded because the runtime guard rejects them.
+KeysLike = list[str] | tuple[str, ...] | set[str] | frozenset[str] | KeysDict
 
 
 @dataclass(slots=True, frozen=True)
