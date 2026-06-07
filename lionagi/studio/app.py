@@ -27,13 +27,10 @@ from .routers import (
 )
 from .services import stats as stats_svc
 
-_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-
-# API route prefixes whose GET responses contain agent-produced content that
-# must be protected when a bearer token is configured.  Admin, artifacts,
-# invocations, and sessions all return sensitive run data and must be gated
-# the same way as mutating routes when a token is present.
-_PROTECTED_GET_PREFIXES = ("/api/admin/", "/api/artifacts", "/api/invocations", "/api/sessions")
+# Paths that remain reachable without a bearer token regardless of whether
+# LIONAGI_STUDIO_AUTH_TOKEN is set.  This is intentionally a very small set:
+# only pure liveness probes that carry no application state belong here.
+_PUBLIC_PATHS = frozenset({"/health"})
 
 
 @asynccontextmanager
@@ -60,11 +57,10 @@ async def require_studio_bearer_token(request: Request, call_next):
     token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
     path = request.url.path
     if token and request.headers.get("authorization") != f"Bearer {token}":
-        # Gate all methods on protected GET prefixes (admin, artifacts).
-        if any(path.startswith(pfx) for pfx in _PROTECTED_GET_PREFIXES):
-            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
-        # Gate mutating methods on all other /api/* routes.
-        if path.startswith("/api") and request.method in _MUTATING_METHODS:
+        # Allow only explicit liveness probes without a token.  Every other
+        # route — including all /api/* paths regardless of HTTP method — is
+        # protected when a token is configured.
+        if path not in _PUBLIC_PATHS:
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
 

@@ -3,11 +3,15 @@
 
 """Attack-driven regression tests for bearer-token protection on GET routes.
 
-Before the fix, GET /api/invocations and GET /api/sessions returned agent-
-produced run data without authentication, even when LIONAGI_STUDIO_AUTH_TOKEN
-was set.  Any unauthenticated caller could enumerate all sessions and
-invocations.  These tests assert that the guard fires on those routes and that
-a valid token still allows access.
+Before the fix, GET /api/invocations and GET /api/sessions (and many other
+data-returning routes) returned agent-produced content without authentication,
+even when LIONAGI_STUDIO_AUTH_TOKEN was set.  Any unauthenticated caller could
+enumerate sessions, runs, projects, schedules, teams, agents, playbooks,
+definitions, shows, and aggregate stats.
+
+The middleware now uses a default-deny posture: when a token is configured,
+every path that is not in the explicit public allowlist (_PUBLIC_PATHS) returns
+401 regardless of HTTP method.  The only public path is /health.
 """
 
 from __future__ import annotations
@@ -19,6 +23,26 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from fastapi.testclient import TestClient  # noqa: E402
+
+# Every data-returning GET prefix that must be gated when a token is configured.
+_DATA_GET_PREFIXES = [
+    "/api/runs/",
+    "/api/projects/",
+    "/api/schedules/",
+    "/api/teams/",
+    "/api/agents/",
+    "/api/playbooks/",
+    "/api/definitions/",
+    "/api/shows/",
+    "/api/stats",
+    "/api/invocations/",
+    "/api/sessions/",
+    "/api/admin/health",
+    "/api/admin/doctor",
+    "/api/artifacts/",
+    "/api/skills/",
+    "/api/plugins/",
+]
 
 
 def _make_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
@@ -75,7 +99,7 @@ class TestGetInvocationsAuthGuard:
         client = _make_client(monkeypatch, tmp_path)
 
         resp = client.get("/api/invocations/", headers={"Authorization": "Bearer testsecret"})
-        assert resp.status_code != 401
+        assert resp.status_code == 200
 
     def test_open_when_no_token_configured(self, monkeypatch, tmp_path):
         """When LIONAGI_STUDIO_AUTH_TOKEN is absent, /api/invocations/ is open."""
@@ -117,7 +141,7 @@ class TestGetSessionsAuthGuard:
         client = _make_client(monkeypatch, tmp_path)
 
         resp = client.get("/api/sessions/", headers={"Authorization": "Bearer testsecret"})
-        assert resp.status_code != 401
+        assert resp.status_code == 200
 
     def test_open_when_no_token_configured(self, monkeypatch, tmp_path):
         """When LIONAGI_STUDIO_AUTH_TOKEN is absent, /api/sessions/ is open."""
@@ -126,3 +150,77 @@ class TestGetSessionsAuthGuard:
 
         resp = client.get("/api/sessions/")
         assert resp.status_code != 401
+
+
+@pytest.mark.integration
+class TestDefaultDenyAllDataRoutes:
+    """Every data-returning GET prefix must be 401 when a token is configured.
+
+    This is a parametrized regression guard: adding a new router cannot
+    silently open a new unauthenticated GET surface.  Any route not listed in
+    _DATA_GET_PREFIXES AND not in _PUBLIC_PATHS is already covered by the
+    default-deny middleware, but explicit enumeration here makes regressions
+    obvious immediately.
+    """
+
+    @pytest.mark.parametrize("prefix", _DATA_GET_PREFIXES)
+    def test_unauthenticated_returns_401(self, monkeypatch, tmp_path, prefix):
+        """GET <prefix> without a token must return 401 when auth is configured."""
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
+        client = _make_client(monkeypatch, tmp_path)
+
+        resp = client.get(prefix)
+        assert resp.status_code == 401, (
+            f"Expected 401 for unauthenticated GET {prefix!r} "
+            f"but got {resp.status_code}.  Route is unprotected."
+        )
+
+    @pytest.mark.parametrize("prefix", _DATA_GET_PREFIXES)
+    def test_wrong_token_returns_401(self, monkeypatch, tmp_path, prefix):
+        """GET <prefix> with a wrong token must return 401."""
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
+        client = _make_client(monkeypatch, tmp_path)
+
+        resp = client.get(prefix, headers={"Authorization": "Bearer wrong"})
+        assert resp.status_code == 401
+
+    @pytest.mark.parametrize("prefix", _DATA_GET_PREFIXES)
+    def test_correct_token_passes_middleware(self, monkeypatch, tmp_path, prefix):
+        """GET <prefix> with the correct token must pass the auth middleware (not 401)."""
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
+        client = _make_client(monkeypatch, tmp_path)
+
+        resp = client.get(prefix, headers={"Authorization": "Bearer testsecret"})
+        assert resp.status_code != 401, (
+            f"Valid token was rejected for GET {prefix!r}: status {resp.status_code}"
+        )
+
+    @pytest.mark.parametrize("prefix", _DATA_GET_PREFIXES)
+    def test_open_when_no_token_configured(self, monkeypatch, tmp_path, prefix):
+        """Without LIONAGI_STUDIO_AUTH_TOKEN, all routes remain open for local dev."""
+        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+        client = _make_client(monkeypatch, tmp_path)
+
+        resp = client.get(prefix)
+        assert resp.status_code != 401
+
+
+@pytest.mark.integration
+class TestPublicAllowlist:
+    """The explicit public allowlist must remain reachable without a token."""
+
+    def test_health_reachable_without_token(self, monkeypatch, tmp_path):
+        """GET /health must return 200 even when a token is configured."""
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
+        client = _make_client(monkeypatch, tmp_path)
+
+        resp = client.get("/health")
+        assert resp.status_code == 200
+
+    def test_health_reachable_with_wrong_token(self, monkeypatch, tmp_path):
+        """GET /health must return 200 regardless of Authorization header value."""
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
+        client = _make_client(monkeypatch, tmp_path)
+
+        resp = client.get("/health", headers={"Authorization": "Bearer wrong"})
+        assert resp.status_code == 200
