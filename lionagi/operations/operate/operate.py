@@ -64,6 +64,18 @@ def prepare_operate_kw(
     middle: Middle | None = None,
     **kwargs,
 ) -> dict:
+    from .._guards import reject_removed_kwargs
+
+    reject_removed_kwargs(
+        kwargs,
+        {
+            "request_model": "response_format=",
+            "operative_model": "response_format=",
+            "imodel": "chat_model=",
+        },
+        where="operate",
+    )
+
     chat_model = chat_model or branch.chat_model
     parse_model = parse_model or chat_model
 

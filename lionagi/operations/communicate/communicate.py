@@ -40,6 +40,18 @@ def prepare_communicate_kw(
     include_token_usage_to_model: bool = False,
     **kwargs,
 ):
+    from .._guards import reject_removed_kwargs
+
+    reject_removed_kwargs(
+        kwargs,
+        {
+            "request_model": "response_format=",
+            "operative_model": "response_format=",
+            "imodel": "chat_model=",
+        },
+        where="communicate",
+    )
+
     imodel = chat_model or branch.chat_model
     parse_model = parse_model or branch.parse_model
 

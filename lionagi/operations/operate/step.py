@@ -71,6 +71,17 @@ class Step:
         Returns:
             Configured Operative instance
         """
+        from .._guards import reject_removed_kwargs
+
+        reject_removed_kwargs(
+            kwargs,
+            {
+                "inherit_base": "fields=/base_type=",
+                "frozen": "",
+            },
+            where="Step.request_operative",
+        )
+
         # Warn on deprecated parameters that are silently ignored
         _deprecated_ignored = {
             "parse_kwargs": parse_kwargs,
