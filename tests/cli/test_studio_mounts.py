@@ -12,8 +12,8 @@ boundary check, so a symlink pointing at an arbitrary host path (e.g. /etc or
 
 The guard resolves every symlink to its real path and rejects any target that
 falls outside the declared allowlist of safe roots BEFORE the docker run argv
-is constructed.  Rejection is fail-closed: the mount is silently skipped and a
-warning is emitted to stderr.
+is constructed.  Rejection is fail-closed: the mount is dropped (with a warning)
+so the docker run argv is never contaminated by an escape path.
 """
 
 from __future__ import annotations
@@ -107,6 +107,10 @@ class TestSymlinkEscapeIsRejected:
 
         Returns the list passed to subprocess.run (the first positional arg).
         """
+        from lionagi.cli._logging import configure_cli_logging
+
+        configure_cli_logging(verbose=False)
+
         import lionagi.cli.studio as studio_mod
 
         lionagi_home = tmp_path / ".lionagi"

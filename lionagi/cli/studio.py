@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from lionagi.cli._logging import warn
+
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 
 
@@ -254,8 +256,8 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
     # Security constraint: symlink targets are resolved to their real path
     # (no symlink chain games) and then checked against an allowlist of safe
     # roots before they are added to the docker run argv. Any target that
-    # resolves outside the allowlist is silently dropped so the docker run
-    # argv is never contaminated by an escape path.
+    # resolves outside the allowlist is dropped (with a warning) so the docker
+    # run argv is never contaminated by an escape path.
     allowed_roots = _mount_allowed_roots()
     symlink_mounts: set[Path] = set()
     for subdir_name in ("agents", "skills", "playbooks", "teams"):
@@ -274,10 +276,9 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
             # targets, mount the target itself.
             mount_src = target if target.is_dir() else target.parent
             if not _is_mount_allowed(mount_src, allowed_roots):
-                print(
-                    f"Warning: symlink target {mount_src} is outside the allowed mount "
-                    "roots and will not be mounted.",
-                    file=sys.stderr,
+                warn(
+                    f"symlink target {mount_src} is outside the allowed mount "
+                    "roots and will not be mounted."
                 )
                 continue
             symlink_mounts.add(mount_src)
