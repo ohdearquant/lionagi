@@ -551,7 +551,8 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         result = self.__class__(
             collections=self.values(),
             item_type=self.item_type,
-            order=self.progression,
+            strict_type=self.strict_type,
+            order=list(self.progression),
         )
         result.include(list(other))
         return result
@@ -588,6 +589,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         result = self.__class__(
             collections=values,
             item_type=self.item_type,
+            strict_type=self.strict_type,
         )
         return result
 
@@ -612,6 +614,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         return self.__class__(
             collections=values,
             item_type=self.item_type,
+            strict_type=self.strict_type,
         )
 
     @override
@@ -916,7 +919,11 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
                 self.progression.exclude(pops)
                 result = [self.collections.pop(i) for i in pops]
                 result = (
-                    self.__class__(collections=result, item_type=self.item_type)
+                    self.__class__(
+                        collections=result,
+                        item_type=self.item_type,
+                        strict_type=self.strict_type,
+                    )
                     if len(result) > 1
                     else result[0]
                 )

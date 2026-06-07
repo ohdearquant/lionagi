@@ -110,9 +110,9 @@ pandas_missing = importlib.util.find_spec("pandas") is None
 
 
 class TestInPlaceSetOps:
-    """In-place set ops mutate self — tested here because |= / &= / ^=
-    are uncovered and work correctly (unlike __or__, __and__, __xor__
-    which have an 'items=' kwarg bug)."""
+    """In-place set ops mutate self — |= / &= / ^= operate on self and
+    return self, distinct from the non-in-place __or__/__and__/__xor__
+    which return a fresh Pile."""
 
     def setup_method(self):
         self.a0, self.a1, self.a2 = Item(value=0), Item(value=1), Item(value=2)
@@ -313,6 +313,57 @@ class TestNonInPlaceSetOps:
         _ = p1 & p2
         assert len(p1) == 2
         assert len(p2) == 1
+
+
+class TestSetOpsIntegrity:
+    """The non-in-place set ops must build the result from copies of self's
+    internal state — never alias the left operand's Progression, and never
+    silently relax a strict pile to non-strict."""
+
+    def setup_method(self):
+        self.a0, self.a1, self.a2 = Item(value=0), Item(value=1), Item(value=2)
+
+    def test_or_does_not_alias_left_progression(self):
+        """``p1 | p2`` must not mutate p1's progression through the shared
+        order object — including p2's item only into the result, leaving p1
+        internally consistent (collections and progression stay in sync)."""
+        p1 = Pile(collections=[self.a0])
+        p2 = Pile(collections=[self.a1])
+        before = list(p1.progression)
+        _ = p1 | p2
+        assert list(p1.progression) == before
+        assert self.a1 not in p1
+        assert len(p1.progression) == len(p1.collections) == 1
+        # values() walks progression -> collections; corruption would KeyError.
+        assert [i.value for i in p1.values()] == [self.a0.value]
+
+    def test_or_preserves_strict_type(self):
+        p1 = Pile(collections=[self.a0], item_type={Item}, strict_type=True)
+        p2 = Pile(collections=[self.a1], item_type={Item}, strict_type=True)
+        result = p1 | p2
+        assert result.strict_type is True
+
+    def test_and_preserves_strict_type(self):
+        p1 = Pile(collections=[self.a0, self.a1], item_type={Item}, strict_type=True)
+        p2 = Pile(collections=[self.a1], item_type={Item}, strict_type=True)
+        result = p1 & p2
+        assert result.strict_type is True
+
+    def test_xor_preserves_strict_type(self):
+        p1 = Pile(collections=[self.a0, self.a1], item_type={Item}, strict_type=True)
+        p2 = Pile(collections=[self.a1, self.a2], item_type={Item}, strict_type=True)
+        result = p1 ^ p2
+        assert result.strict_type is True
+
+    def test_multi_pop_preserves_strict_type(self):
+        p = Pile(
+            collections=[self.a0, self.a1, self.a2],
+            item_type={Item},
+            strict_type=True,
+        )
+        popped = p.pop(slice(0, 2))
+        assert isinstance(popped, Pile)
+        assert popped.strict_type is True
 
 
 class TestMultiItemPop:
