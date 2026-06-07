@@ -11,6 +11,7 @@ from typing import Any, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
+from lionagi.libs.validate.validate_boolean import validate_boolean
 from lionagi.ln import json_dumps
 
 Scalar = float | int | str | bool
@@ -173,6 +174,11 @@ def _coerce_result(result: Any, target_type: Any) -> Any:
     if isinstance(result, dict):
         return json_dumps(result)
     if not isinstance(result, scalar):
+        # bool(str) uses Python truthiness: bool('false') == True.
+        # Use validate_boolean so that 'false'/'0'/'no' → False and
+        # 'true'/'1'/'yes' → True, matching common tool return conventions.
+        if scalar is bool:
+            return validate_boolean(result)
         return scalar(result)
     return result
 
