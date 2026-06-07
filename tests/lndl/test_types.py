@@ -29,6 +29,11 @@ class NestedModel(BaseModel):
     inner: SimpleModel | None = None
 
 
+class OptionalModel(BaseModel):
+    note: str | None = None
+    count: int | None = None
+
+
 def make_action_call(name="act1", fn="fetch", args=None):
     return ActionCall(
         name=name,
@@ -337,3 +342,30 @@ class TestCoerceResultOptionalScalar:
         result = _coerce_result({"a": 1}, str | None)
         parsed = json.loads(result)
         assert parsed == {"a": 1}
+
+    # --- None preservation (Codex #1281 regression) ---
+
+    def test_none_result_optional_str_preserved(self):
+        """A legitimately-None result for `str | None` must stay None, not become
+        the literal string 'None'."""
+        assert _coerce_result(None, str | None) is None
+
+    def test_none_result_optional_int_preserved(self):
+        """None for `int | None` must stay None, not raise from int(None)."""
+        assert _coerce_result(None, int | None) is None
+
+    def test_none_result_optional_float_preserved(self):
+        assert _coerce_result(None, float | None) is None
+
+    def test_none_result_required_scalar_passes_through(self):
+        """None for a required scalar passes through so model_validate raises a
+        clear validation error instead of silently coercing to 'None'."""
+        assert _coerce_result(None, str) is None
+
+    def test_none_revalidates_optional_field_to_none(self):
+        """End-to-end: an action returning None for an Optional field stays None
+        through revalidate_with_action_results (was corrupted to 'None')."""
+        ac = ActionCall(name="opt", function="maybe", arguments={}, raw_call="maybe()")
+        m = OptionalModel.model_construct(note=ac)
+        result = revalidate_with_action_results(m, {"opt": None})
+        assert result.note is None
