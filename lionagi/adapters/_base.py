@@ -99,7 +99,7 @@ _SENSITIVE_QUERY_PARAMS: frozenset[str] = frozenset(
 def _redact_url(value: str) -> str:
     """Sanitize a URL string for safe inclusion in error messages.
 
-    Redacts:
+    Redacts for ALL URL schemes (not just a known whitelist):
     - The password component of ``user:password@host`` netloc credentials.
     - Any query-string parameter whose name matches ``_SENSITIVE_QUERY_PARAMS``.
     """
@@ -107,8 +107,8 @@ def _redact_url(value: str) -> str:
         parsed = urllib.parse.urlparse(value)
     except Exception:
         return value
-    scheme = parsed.scheme.lower()
-    if scheme not in _CREDENTIAL_SCHEMES:
+    # Require a scheme so plain strings are not mis-parsed as URLs.
+    if not parsed.scheme:
         return value
 
     replacements: dict[str, str] = {}
@@ -145,14 +145,22 @@ def _redact_value(key: str, value: Any) -> Any:
         if isinstance(value, str):
             return _redact_url(value) if "://" in value else "***"
         if isinstance(value, dict):
-            return dict.fromkeys(value, "***")
+            # The entire dict is under a sensitive key — blank all leaf values.
+            return {k: "***" for k in value}
+        if isinstance(value, list):
+            return [_redact_value(key, item) for item in value]
         return "***"
     if isinstance(value, str) and "://" in value:
         return _redact_url(value)
+    if isinstance(value, dict):
+        # Non-sensitive key, but the nested dict may contain sensitive sub-keys
+        # or URL values — recurse so they are caught.
+        return _redact_details(value)
     return value
 
 
 def _redact_details(details: dict[str, Any]) -> dict[str, Any]:
+    """Recursively redact sensitive keys and URL credentials from a details dict."""
     redacted: dict[str, Any] = {}
     for k, v in details.items():
         v = _redact_value(k, v)

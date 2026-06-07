@@ -3,13 +3,19 @@
 
 """Attack-driven regression tests for credential redaction in adapter errors.
 
-Issue (High, security): _redact_url only masked the URL netloc password
-(user:pass@host), but left query-string credentials (e.g. ?token=secret&
-api_key=k) in plain text inside AdapterError messages, which may be logged
-or displayed.
+Security boundary: credentials embedded in error detail values must never
+appear in AdapterError string representations, regardless of the URL scheme
+or nesting depth of the details dict.
 
-Fix: _redact_url now also redacts query parameters whose key matches
-_SENSITIVE_QUERY_PARAMS.
+Two attack vectors are covered:
+
+1. Non-whitelisted URL scheme (e.g. ``s3://``, ``ftp://``, ``jdbc://``):
+   previously the scheme guard returned the URL unmodified, leaking any
+   query-parameter credentials.
+
+2. Nested dict in error details: previously ``_redact_details`` walked only
+   the top-level dict, so a value that was itself a dict escaped redaction
+   entirely.
 """
 
 from __future__ import annotations
@@ -62,16 +68,36 @@ class TestRedactUrlQueryCredentials:
         # No sensitive keys → URL unchanged
         assert result == url
 
-    def test_non_credentialed_scheme_unchanged(self):
-        """Schemes not in _CREDENTIAL_SCHEMES must pass through untouched."""
-        url = "ftp://example.com?token=secret"
+    def test_non_http_scheme_query_credentials_redacted(self):
+        """Attack: non-whitelisted scheme (s3://) with ?token= must be redacted.
+
+        Previously the scheme-whitelist guard returned the URL unmodified,
+        leaking query-parameter credentials for any scheme not in
+        _CREDENTIAL_SCHEMES (s3, ftp, jdbc, custom, …).
+        """
+        url = "s3://my-bucket/path?token=supersecret&safe=ok"
         result = _redact_url(url)
-        assert result == url
+        assert "supersecret" not in result, "token value leaked through non-whitelisted scheme"
+        assert "token=***" in result
+        # Non-sensitive param preserved
+        assert "safe=ok" in result
+
+    def test_ftp_scheme_query_credentials_redacted(self):
+        """Attack: ftp:// scheme with ?api_key= must be redacted."""
+        url = "ftp://files.example.com/data?api_key=privatekeyvalue"
+        result = _redact_url(url)
+        assert "privatekeyvalue" not in result, "api_key leaked through ftp:// scheme"
+        assert "api_key=***" in result
 
     def test_empty_query_unchanged(self):
         url = "https://example.com/path"
         result = _redact_url(url)
         assert result == url
+
+    def test_no_scheme_string_unchanged(self):
+        """Bare strings with no scheme must not be mis-parsed as URLs."""
+        value = "just-a-plain-string"
+        assert _redact_url(value) == value
 
 
 class TestAdapterErrorDoesNotLeakCredentials:
@@ -83,7 +109,7 @@ class TestAdapterErrorDoesNotLeakCredentials:
     """
 
     def test_url_with_query_token_not_in_error_str(self):
-        """Regression for the exact scenario from the audit finding."""
+        """Regression: URL detail containing query credentials must be redacted."""
         err = AdapterError(
             "connection failed",
             details={"url": "https://example.com/cb?token=secret&api_key=k"},
@@ -113,3 +139,52 @@ class TestAdapterErrorDoesNotLeakCredentials:
         assert "api.example.com" in err_str
         # The secret must not
         assert "secret123" not in err_str
+
+    def test_non_http_scheme_url_credential_not_in_error_str(self):
+        """Attack: s3:// URL with ?token= in a detail must not appear in error string.
+
+        This reproduces the bypass where a non-whitelisted scheme caused
+        _redact_url to return the URL unmodified, leaking token values into
+        logged error messages.
+        """
+        err = AdapterError(
+            "storage error",
+            details={"url": "s3://my-bucket/key?token=s3secrettoken123&region=us-east-1"},
+        )
+        err_str = str(err)
+        assert "s3secrettoken123" not in err_str, (
+            "token value leaked through s3:// URL in AdapterError string"
+        )
+
+    def test_nested_dict_detail_credentials_redacted(self):
+        """Attack: secret inside a nested dict detail value must be redacted.
+
+        Previously _redact_details only walked the top-level dict.  A value
+        that was itself a dict escaped redaction entirely, leaking any
+        sensitive keys it contained.
+        """
+        err = AdapterError(
+            "config error",
+            details={
+                "connection": {
+                    "url": "postgresql://user:pass@host/db",
+                    "secret": "db-secret-value",
+                    "host": "db.example.com",
+                }
+            },
+        )
+        err_str = str(err)
+        assert "pass" not in err_str, "nested netloc password leaked"
+        assert "db-secret-value" not in err_str, "nested 'secret' key value leaked"
+        # Non-sensitive nested key (host) may or may not appear; we only
+        # require that credentials are absent.
+
+    def test_nested_dict_under_sensitive_key_all_values_redacted(self):
+        """A dict stored under a sensitive top-level key must be fully redacted."""
+        err = AdapterError(
+            "auth error",
+            details={"token": {"access": "tok-abc", "refresh": "tok-xyz"}},
+        )
+        err_str = str(err)
+        assert "tok-abc" not in err_str
+        assert "tok-xyz" not in err_str
