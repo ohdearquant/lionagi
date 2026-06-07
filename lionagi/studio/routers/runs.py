@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import Any
 
+import anyio
 from fastapi import APIRouter, HTTPException, Query
 
 from ..services import runs as runs_svc
@@ -27,7 +29,10 @@ async def list_runs(
 
 @router.get("/{run_id}")
 async def get_run(run_id: str) -> dict[str, Any]:
-    run = runs_svc.get_run(run_id)
+    # get_run performs synchronous filesystem I/O (directory iteration, JSON
+    # reads, stat calls); offload to a worker thread to avoid blocking the
+    # event loop.
+    run = await anyio.to_thread.run_sync(partial(runs_svc.get_run, run_id))
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
     return run

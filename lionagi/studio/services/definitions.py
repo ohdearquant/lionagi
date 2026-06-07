@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import time
+from functools import partial
 from pathlib import Path
 from typing import Any
+
+import anyio
 
 from lionagi.cli._runs import LIONAGI_HOME
 from lionagi.state.db import DEFAULT_DB_PATH
@@ -52,46 +55,51 @@ async def _ensure_db() -> bool:
 
 async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
     """List current (latest version) definitions from disk, enriched with version info from DB."""
-    result = []
 
-    kinds = [kind] if kind else list(KIND_DIRS.keys())
-    for k in kinds:
-        base = KIND_DIRS.get(k)
-        if not base or not base.exists():
-            continue
-
-        seen_names: set[str] = set()
-        all_files: list[Path] = []
-        for ext in ("*.md", "*.playbook.yaml", "*.yaml"):
-            all_files.extend(sorted(base.glob(ext)))
-            all_files.extend(sorted(base.glob(f"*/{ext}")))
-        for f in all_files:
-            fname = f.name
-            if fname.endswith(".playbook.yaml"):
-                name = fname.removesuffix(".playbook.yaml")
-            elif fname.endswith(".yaml"):
-                name = fname.removesuffix(".yaml")
-            else:
-                name = f.stem
-            if f.parent != base:
-                name = f.parent.name
-            if name in seen_names:
+    def _scan_disk(kind_filter: str | None) -> list[dict[str, Any]]:
+        """Synchronous disk scan — runs in a worker thread."""
+        result: list[dict[str, Any]] = []
+        kinds = [kind_filter] if kind_filter else list(KIND_DIRS.keys())
+        for k in kinds:
+            base = KIND_DIRS.get(k)
+            if not base or not base.exists():
                 continue
-            seen_names.add(name)
 
-            entry = {
-                "kind": k,
-                "name": name,
-                "path": _relative_path(f),
-                "disk_path": _relative_path(f),
-                "has_versions": False,
-                "version": 0,
-                "updated_at": f.stat().st_mtime,
-            }
+            seen_names: set[str] = set()
+            all_files: list[Path] = []
+            for ext in ("*.md", "*.playbook.yaml", "*.yaml"):
+                all_files.extend(sorted(base.glob(ext)))
+                all_files.extend(sorted(base.glob(f"*/{ext}")))
+            for f in all_files:
+                fname = f.name
+                if fname.endswith(".playbook.yaml"):
+                    name = fname.removesuffix(".playbook.yaml")
+                elif fname.endswith(".yaml"):
+                    name = fname.removesuffix(".yaml")
+                else:
+                    name = f.stem
+                if f.parent != base:
+                    name = f.parent.name
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
 
-            result.append(entry)
+                entry = {
+                    "kind": k,
+                    "name": name,
+                    "path": _relative_path(f),
+                    "disk_path": _relative_path(f),
+                    "has_versions": False,
+                    "version": 0,
+                    "updated_at": f.stat().st_mtime,
+                }
 
-    # Batch-enrich all entries with version info in one DB round-trip (#989).
+                result.append(entry)
+        return result
+
+    result = await anyio.to_thread.run_sync(partial(_scan_disk, kind))
+
+    # Batch-enrich all entries with version info in one DB round-trip.
     if result and await _ensure_db():
         conditions = " OR ".join("(kind = ? AND name = ?)" for _ in result)
         params = [value for item in result for value in (item["kind"], item["name"])]
@@ -123,11 +131,11 @@ async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
     if not base:
         return None
 
-    disk_file = _find_definition_file(base, name)
+    disk_file = await anyio.to_thread.run_sync(partial(_find_definition_file, base, name))
     if not disk_file:
         return None
 
-    content = disk_file.read_text()
+    content = await anyio.to_thread.run_sync(disk_file.read_text)
 
     versions: list[dict[str, Any]] = []
     if await _ensure_db():
@@ -227,7 +235,7 @@ async def save_definition(
     # concurrent saves cannot interleave their DB commit + file write.
     lock = await _lock_for(kind, name)
     async with lock:
-        disk_file = _find_definition_file(base, name)
+        disk_file = await anyio.to_thread.run_sync(partial(_find_definition_file, base, name))
         if not disk_file:
             disk_file = base / f"{name}.md"
 
@@ -246,8 +254,11 @@ async def save_definition(
             )
 
         # Only write to disk after DB row is committed.
-        disk_file.parent.mkdir(parents=True, exist_ok=True)
-        disk_file.write_text(content)
+        def _write_disk() -> None:
+            disk_file.parent.mkdir(parents=True, exist_ok=True)
+            disk_file.write_text(content)
+
+        await anyio.to_thread.run_sync(_write_disk)
 
     # F-A3-4 (ADR-0016 §"Save semantics"): response field is "saved_at", not "created_at"
     return {
@@ -312,11 +323,13 @@ async def snapshot_current(kind: str | None = None) -> int:
     defs = await list_definitions(kind)
 
     for d in defs:
-        disk_path = _find_definition_file(KIND_DIRS[d["kind"]], d["name"])
+        disk_path = await anyio.to_thread.run_sync(
+            partial(_find_definition_file, KIND_DIRS[d["kind"]], d["name"])
+        )
         if disk_path is None:
             continue
 
-        content = disk_path.read_text()
+        content = await anyio.to_thread.run_sync(disk_path.read_text)
 
         if d["has_versions"]:
             latest = await get_version(d["kind"], d["name"], d["version"])
