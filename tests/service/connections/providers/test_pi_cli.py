@@ -210,3 +210,89 @@ async def test_pi_cli_endpoint_stream_maps_pi_chunks_to_stream_chunks(monkeypatc
     assert chunks[2].tool_input == {"path": "a.py"}
     assert chunks[3].tool_output == {"ok": True}
     assert chunks[4].content == "done"
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-006 regression: Pi file_args path validation (fail-closed)
+# ---------------------------------------------------------------------------
+
+
+class TestPiFileArgsValidation:
+    """AUDIT-006: Pi file_args must reject absolute paths and ``..`` traversal.
+
+    Without validation, PiCodeRequest(file_args=["../../secrets.txt"]) would
+    cause the CLI to emit ``@../../secrets.txt`` and read an arbitrary file.
+    The validator must raise ValueError at model construction time (fail-closed)
+    before any subprocess is launched.
+    """
+
+    def test_absolute_path_is_rejected(self):
+        """Absolute path in file_args must raise ValueError (AUDIT-006)."""
+        with pytest.raises(ValueError, match="absolute path"):
+            PiCodeRequest(prompt="hello", file_args=["/etc/passwd"])
+
+    def test_absolute_path_with_at_prefix_is_rejected(self):
+        """Absolute path with @ prefix in file_args must raise ValueError."""
+        with pytest.raises(ValueError, match="absolute path"):
+            PiCodeRequest(prompt="hello", file_args=["@/etc/passwd"])
+
+    def test_dotdot_traversal_is_rejected(self):
+        """Directory traversal (``..``) in file_args must raise ValueError (AUDIT-006)."""
+        with pytest.raises(ValueError, match="traversal"):
+            PiCodeRequest(prompt="hello", file_args=["../../secrets.txt"])
+
+    def test_dotdot_with_at_prefix_is_rejected(self):
+        """``@../../secrets.txt`` traversal must be caught before CLI launch."""
+        with pytest.raises(ValueError, match="traversal"):
+            PiCodeRequest(prompt="hello", file_args=["@../../secrets.txt"])
+
+    def test_relative_path_is_allowed(self):
+        """Safe relative paths inside the repo must be accepted."""
+        req = PiCodeRequest(prompt="hello", file_args=["README.md", "src/main.py"])
+        assert "@README.md" in req.as_cmd_args()
+        assert "@src/main.py" in req.as_cmd_args()
+
+    def test_at_prefixed_relative_path_is_allowed(self):
+        """``@``-prefixed relative paths must pass validation unchanged."""
+        req = PiCodeRequest(prompt="hello", file_args=["@pyproject.toml"])
+        args = req.as_cmd_args()
+        # The builder should not double-prefix already-@-prefixed entries.
+        assert "@pyproject.toml" in args
+
+    def test_empty_file_args_is_allowed(self):
+        """An empty file_args list must not raise."""
+        req = PiCodeRequest(prompt="hello", file_args=[])
+        assert req.file_args == []
+
+    def test_mixed_valid_and_invalid_raises_on_invalid(self):
+        """If any entry is invalid the whole list must be rejected."""
+        with pytest.raises(ValueError):
+            PiCodeRequest(
+                prompt="hello",
+                file_args=["safe.txt", "/absolute/path.txt"],
+            )
+
+    def test_symlink_escape_rejected(self, tmp_path):
+        """A repo-local symlink to outside the repo must be rejected.
+
+        ``repo/link -> /outside`` with file_args=["link/secret.txt"] is
+        lexically clean (no abs path, no ``..``) but resolves outside the repo.
+        The model-level validator resolves against repo.resolve() and rejects it.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("secret")
+        (repo / "link").symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(ValueError, match="outside the repository"):
+            PiCodeRequest(prompt="hi", repo=repo, file_args=["link/secret.txt"])
+
+    def test_real_relative_path_inside_repo_allowed(self, tmp_path):
+        """A genuine relative path inside the repo passes the symlink check."""
+        repo = tmp_path / "repo"
+        (repo / "src").mkdir(parents=True)
+        (repo / "src" / "main.py").write_text("x = 1")
+        req = PiCodeRequest(prompt="hi", repo=repo, file_args=["src/main.py"])
+        assert "@src/main.py" in req.as_cmd_args()
