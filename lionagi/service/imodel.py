@@ -1,6 +1,8 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import asyncio
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
@@ -120,7 +122,9 @@ class iModel:  # noqa: N801
                     model = model.replace(provider + "/", "")
                     kwargs["model"] = model
                 else:
-                    raise ValueError("Provider must be provided")
+                    from lionagi.config import settings
+
+                    provider = settings.LIONAGI_CHAT_PROVIDER
 
         if api_key is not None:
             kwargs["api_key"] = api_key
@@ -444,7 +448,7 @@ class iModel:  # noqa: N801
         """
         return self.endpoint.request_options
 
-    async def __aenter__(self) -> "iModel":
+    async def __aenter__(self) -> iModel:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -454,7 +458,7 @@ class iModel:  # noqa: N801
         """Stop the executor and release resources."""
         await self.executor.stop()
 
-    def copy(self, share_session: bool = False) -> "iModel":
+    def copy(self, share_session: bool = False) -> iModel:
         """Create a new iModel with the same configuration but a fresh ID and executor.
 
         Args:
