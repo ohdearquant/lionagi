@@ -1105,7 +1105,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         if clear:
             self.clear()
 
-    @async_synchronized
     async def adump(
         self,
         fp: str | Path,
@@ -1115,7 +1114,34 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         clear=False,
         **kw,
     ) -> None:
-        return self.dump(fp, obj_key=obj_key, mode=mode, clear=clear, **kw)
+        """Async dump: snapshot under lock, write outside lock, clear only on success."""
+        from lionagi.ln.concurrency import run_sync
+
+        async with self.async_lock:
+            snapshot_ids = set(self.collections.keys())
+            df = self.to_df()
+
+        def _write() -> None:
+            match obj_key:
+                case "parquet":
+                    df.to_parquet(fp, engine="pyarrow", index=False, **kw)
+                case "json":
+                    df.to_json(fp, orient="records", lines=True, mode=mode, **kw)
+                case "csv":
+                    df.to_csv(fp, index=False, mode=mode, **kw)
+                case _:
+                    raise ValueError(
+                        f"Unsupported obj_key: {obj_key}. "
+                        "Supported keys are 'json', 'csv', 'parquet'."
+                    )
+
+        await run_sync(_write)
+
+        if clear:
+            async with self.async_lock:
+                self.progression.exclude(list(snapshot_ids))
+                for uid in snapshot_ids:
+                    self.collections.pop(uid, None)
 
     def filter_by_type(
         self,

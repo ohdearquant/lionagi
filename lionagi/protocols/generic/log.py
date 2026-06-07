@@ -203,9 +203,44 @@ class DataLogger:
         clear: bool | None = None,
         persist_path: str | Path | None = None,
     ) -> None:
-        """Asynchronously dump the logs to a file."""
+        """Async dump: snapshot under lock, write outside lock, clear only on success."""
+        from lionagi.ln.concurrency import run_sync
+
         async with self.logs:
-            self.dump(clear=clear, persist_path=persist_path)
+            if not self.logs:
+                logger.debug("No logs to dump.")
+                return
+            fp = persist_path or self._create_path()
+            snapshot_ids = set(self.logs.collections.keys())
+            df = self.logs.to_df()
+
+        do_clear = self._config.clear_after_dump if clear is None else clear
+        suffix = fp.suffix.lower()
+
+        def _write() -> None:
+            if suffix == ".csv":
+                df.to_csv(fp, index=False)
+            elif suffix == ".json":
+                df.to_json(fp, orient="records", lines=True)
+            else:
+                raise ValueError(f"Unsupported file extension: {suffix}")
+
+        try:
+            await run_sync(_write)
+            logger.info(f"Dumped logs to {fp}")
+        except Exception as e:
+            if "JSON serializable" in str(e):
+                logger.debug(f"Could not serialize logs to JSON: {e}")
+            else:
+                logger.error(f"Failed to dump logs: {e}")
+                raise
+            return
+
+        if do_clear:
+            async with self.logs:
+                self.logs.progression.exclude(list(snapshot_ids))
+                for uid in snapshot_ids:
+                    self.logs.collections.pop(uid, None)
 
     def _create_path(self) -> Path:
         """
