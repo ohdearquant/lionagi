@@ -236,9 +236,7 @@ class TestMessengerBindWakeup:
         branch = _make_branch(ex)
         alice_id = uuid4()
         ex.register(alice_id)
-        tool = m.bind(
-            branch, roster={"alice": alice_id}, sender_name="bob", channel="team"
-        )
+        tool = m.bind(branch, roster={"alice": alice_id}, sender_name="bob", channel="team")
         result = tool.func_callable(action="wakeup", to="alice", content="stand up")
         assert "Woke up alice" in result
         assert len(branch._included) == 1
@@ -252,9 +250,7 @@ class TestMessengerBindWakeup:
         alice_id = uuid4()
         ex.register(alice_id)
         tool = m.bind(branch, roster={"alice": alice_id})
-        result = tool.func_callable(
-            action="wakeup", to=["alice", "bob"], content="rise"
-        )
+        result = tool.func_callable(action="wakeup", to=["alice", "bob"], content="rise")
         assert "Woke up alice" in result
 
 

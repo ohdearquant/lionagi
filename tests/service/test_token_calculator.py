@@ -98,9 +98,7 @@ class TestTokenize:
 
     def test_return_tokens_and_decoded(self):
         """return_tokens=True + return_decoded=True returns (count, decoded_str)."""
-        result = TokenCalculator.tokenize(
-            "hello world", return_tokens=True, return_decoded=True
-        )
+        result = TokenCalculator.tokenize("hello world", return_tokens=True, return_decoded=True)
         assert isinstance(result, tuple)
         count, decoded = result
         assert isinstance(count, int)
@@ -202,9 +200,7 @@ class TestTokenize:
 
     def test_unicode_string(self):
         """Unicode string should be tokenizable."""
-        result = TokenCalculator.tokenize(
-            "hello in Japanese: \u3053\u3093\u306b\u3061\u306f"
-        )
+        result = TokenCalculator.tokenize("hello in Japanese: \u3053\u3093\u306b\u3061\u306f")
         assert isinstance(result, int)
         assert result > 0
 
@@ -234,9 +230,7 @@ class TestCalculateChatitem:
 
     def test_dict_with_text_key_returns_positive(self, tokenizer):
         """Dict with 'text' key returns a positive token count."""
-        result = TokenCalculator._calculate_chatitem(
-            {"text": "hello world"}, tokenizer, "gpt-4o"
-        )
+        result = TokenCalculator._calculate_chatitem({"text": "hello world"}, tokenizer, "gpt-4o")
         assert isinstance(result, int)
         assert result > 0
 
@@ -286,9 +280,7 @@ class TestCalculateChatitem:
 
     def test_dict_without_text_or_image_url(self, tokenizer):
         """Dict without 'text' or 'image_url' returns None (no branch matches)."""
-        result = TokenCalculator._calculate_chatitem(
-            {"role": "user"}, tokenizer, "gpt-4o"
-        )
+        result = TokenCalculator._calculate_chatitem({"role": "user"}, tokenizer, "gpt-4o")
         assert result is None
 
     def test_empty_list(self, tokenizer):
@@ -445,9 +437,7 @@ class TestCalculateMessageTokens:
         """
         messages = [{"role": "user", "content": "hello world"}]
         result_default = TokenCalculator.calculate_message_tokens(messages)
-        result_gpt35 = TokenCalculator.calculate_message_tokens(
-            messages, model="gpt-3.5-turbo"
-        )
+        result_gpt35 = TokenCalculator.calculate_message_tokens(messages, model="gpt-3.5-turbo")
         assert result_default > 4
         assert result_gpt35 > 4
 
@@ -476,9 +466,7 @@ class TestCalculateMessageTokens:
 
     def test_large_conversation_overhead(self):
         """50 messages with content produce more than just overhead."""
-        messages = [
-            {"role": "user", "content": f"Message number {i}"} for i in range(50)
-        ]
+        messages = [{"role": "user", "content": f"Message number {i}"} for i in range(50)]
         result = TokenCalculator.calculate_message_tokens(messages)
         # 50 * 4 overhead + actual content tokens
         assert result > 200
@@ -554,9 +542,7 @@ class TestTokenizeStandalone:
     def test_decoded_output_matches_input(self):
         """Decoded output should reconstruct the original text."""
         text = "hello world"
-        _, decoded = TokenCalculator.tokenize(
-            text, return_tokens=True, return_decoded=True
-        )
+        _, decoded = TokenCalculator.tokenize(text, return_tokens=True, return_decoded=True)
         assert decoded == text
 
     def test_different_encoding_names_produce_tokens(self):

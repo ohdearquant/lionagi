@@ -3,10 +3,15 @@
 
 """Core types for LNDL."""
 
+from __future__ import annotations
+
+import types
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Union, get_args, get_origin
 
 from pydantic import BaseModel
+
+from lionagi.ln import json_dumps
 
 Scalar = float | int | str | bool
 
@@ -66,7 +71,10 @@ class LNDLOutput:
     def __getattr__(self, key: str) -> BaseModel | ActionCall | Scalar:
         if key in ("fields", "lvars", "lacts", "actions", "raw_out_block"):
             return object.__getattribute__(self, key)
-        return self.fields[key]
+        try:
+            return self.fields[key]
+        except KeyError:
+            raise AttributeError(key) from None
 
 
 def has_action_calls(model: BaseModel) -> bool:
@@ -114,14 +122,58 @@ def ensure_no_action_calls(model: BaseModel) -> BaseModel:
     return model
 
 
-def _coerce_result(result: Any, target_type: type | None) -> Any:
-    """Coerce a tool result to match the target field type."""
-    if target_type in (str, int, float, bool) and isinstance(result, dict):
-        import json
+_SCALAR_TYPES: tuple[type, ...] = (str, int, float, bool)
 
-        return json.dumps(result, ensure_ascii=False)
-    if target_type in (str, int, float, bool) and not isinstance(result, target_type):
-        return target_type(result)
+
+def _unwrap_scalar(annotation: Any) -> type | None:
+    """Extract the scalar type from a plain or Optional scalar annotation.
+
+    Returns the scalar type if *annotation* is ``str``, ``int``, ``float``,
+    ``bool``, or a ``Union``/PEP-604 union of one of those with ``None``.
+    Returns ``None`` otherwise.
+
+    Examples::
+
+        _unwrap_scalar(str)          → str
+        _unwrap_scalar(str | None)   → str
+        _unwrap_scalar(int | None)   → int
+        _unwrap_scalar(list[str])    → None
+    """
+    if annotation in _SCALAR_TYPES:
+        return annotation  # type: ignore[return-value]
+
+    # Handle both typing.Union[X, None] and X | None (PEP 604 UnionType)
+    origin = get_origin(annotation)
+    if origin is Union or isinstance(annotation, types.UnionType):
+        args = [a for a in get_args(annotation) if a is not type(None)]
+        if len(args) == 1 and args[0] in _SCALAR_TYPES:
+            return args[0]  # type: ignore[return-value]
+
+    return None
+
+
+def _coerce_result(result: Any, target_type: Any) -> Any:
+    """Coerce a tool result to match the target field type.
+
+    Handles both plain scalar types (``str``, ``int``, ``float``, ``bool``)
+    and optional scalar types (e.g. ``str | None``, ``Optional[int]``).
+    Dict results targeting a scalar are serialised to JSON via
+    :func:`lionagi.ln.json_dumps`.
+    """
+    scalar = _unwrap_scalar(target_type)
+    if scalar is None:
+        return result
+    # A legitimately-None result for an Optional scalar (str | None, int | None)
+    # must pass through untouched. Coercing would corrupt it: scalar(None) yields
+    # the literal "None" for str and raises for int/float. Leaving it None lets
+    # model_validate accept it for Optional fields and raise a clear error for
+    # required ones — never silently fabricate a value.
+    if result is None:
+        return None
+    if isinstance(result, dict):
+        return json_dumps(result)
+    if not isinstance(result, scalar):
+        return scalar(result)
     return result
 
 

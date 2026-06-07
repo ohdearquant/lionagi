@@ -118,9 +118,7 @@ class TestLogManager:
         assert len(manager.logs) == 0
 
     def test_custom_initialization(self):
-        manager = LogManager(
-            persist_dir="/custom/path", capacity=100, extension=".json"
-        )
+        manager = LogManager(persist_dir="/custom/path", capacity=100, extension=".json")
         assert manager._config.persist_dir == "/custom/path"
         assert manager._config.capacity == 100
         assert manager._config.extension == ".json"

@@ -200,9 +200,7 @@ class CircuitBreaker:
                 if now - self.last_failure_time >= self.recovery_time:
                     await self._change_state(CircuitState.HALF_OPEN)
                 else:
-                    recovery_remaining = self.recovery_time - (
-                        now - self.last_failure_time
-                    )
+                    recovery_remaining = self.recovery_time - (now - self.last_failure_time)
                     self._metrics["rejected_count"] += 1
 
                     logger.warning(
@@ -227,9 +225,7 @@ class CircuitBreaker:
 
             return True
 
-    async def execute(
-        self, func: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any
-    ) -> T:
+    async def execute(self, func: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any) -> T:
         """
         Execute a coroutine with circuit breaker protection.
 
@@ -272,9 +268,7 @@ class CircuitBreaker:
 
         except Exception as e:
             # Determine if this exception should count as a circuit failure
-            is_excluded = any(
-                isinstance(e, exc_type) for exc_type in self.excluded_exceptions
-            )
+            is_excluded = any(isinstance(e, exc_type) for exc_type in self.excluded_exceptions)
 
             if not is_excluded:
                 async with self._lock:
@@ -429,17 +423,15 @@ async def retry_with_backoff(
             # No need to store the exception since we're raising it if max retries reached
             retries += 1
             if retries > max_retries:
-                logger.warning(
-                    f"Maximum retries ({max_retries}) reached for {func.__name__}"
-                )
+                logger.warning(f"Maximum retries ({max_retries}) reached for {func.__name__}")
                 raise
 
             # Calculate backoff with optional jitter
             if jitter:
                 # This is not used for cryptographic purposes, just for jitter
-                jitter_amount = random.uniform(
+                jitter_amount = random.uniform(  # noqa: S311  # non-crypto jitter
                     1.0 - jitter_factor, 1.0 + jitter_factor
-                )  # noqa: S311
+                )
                 current_delay = min(delay * jitter_amount, max_delay)
             else:
                 current_delay = min(delay, max_delay)
