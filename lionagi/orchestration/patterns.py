@@ -271,7 +271,7 @@ def build_dag_graph(
     session: Session,
     assignments: list[TaskAssignment],
     roles: dict[str, Branch],
-) -> tuple[Graph, list[str]]:
+) -> tuple[Graph, list[str | None]]:
     """Wire assignments into a dependency DAG (honours ``depends_on``).
 
     Like :func:`build_fanout_graph`, each assignment runs on a *clone* of its
