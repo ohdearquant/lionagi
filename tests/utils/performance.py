@@ -160,9 +160,7 @@ class TestPerformanceMonitor:
             if metrics.get("duration", 0) > threshold
         }
 
-    def get_memory_heavy_tests(
-        self, threshold: float = 50.0
-    ) -> dict[str, dict[str, Any]]:
+    def get_memory_heavy_tests(self, threshold: float = 50.0) -> dict[str, dict[str, Any]]:
         """
         Get tests that exceed memory usage threshold.
 
@@ -401,9 +399,7 @@ class PerformanceRegression:
             baseline_value = baseline_metrics.get(metric_name, 0)
 
             if baseline_value > 0:
-                percentage_change = (
-                    (current_value - baseline_value) / baseline_value
-                ) * 100
+                percentage_change = ((current_value - baseline_value) / baseline_value) * 100
                 regressions[metric_name] = percentage_change > tolerance_percent
 
         return regressions

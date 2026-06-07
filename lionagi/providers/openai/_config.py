@@ -8,7 +8,6 @@ from lionagi.service.connections.registry import EndpointType
 
 
 class OpenAIConfigs(ProviderConfig, Enum):
-
     CHAT = (
         "chat/completions",
         ["chat"],
@@ -72,7 +71,6 @@ OpenAIConfigs._PROVIDER_ALIASES = []
 
 
 class CodexConfigs(ProviderConfig, Enum):
-
     CLI = (
         "query_cli",
         ["cli", "code"],
