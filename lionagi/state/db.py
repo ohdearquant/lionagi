@@ -40,6 +40,7 @@ from lionagi.state.reasons import (
 # for (entity, status) pairs without a canonical default, forcing the
 # caller to surface a clear error instead of synthesizing nonsense.
 _RUN_DEFAULTS: dict[str, str] = {
+    "running": _RunReasons.STARTED_OK,
     "completed": _RunReasons.COMPLETED_OK,
     "failed": _RunReasons.FAILED_EXCEPTION,
     "timed_out": _RunReasons.TIMED_OUT_DEADLINE,

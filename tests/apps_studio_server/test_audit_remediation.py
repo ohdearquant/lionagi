@@ -325,13 +325,15 @@ class TestFireBuildFailureRecorded:
 
 class TestSpawnAndWaitCancellation:
     """Codex #1283 P1: cancelling spawn_and_wait must terminate the spawned
-    child, not leave it detached."""
+    PROCESS GROUP, not just the direct child — `uv run li` forks the real
+    worker, so signalling only the direct child orphans grandchildren."""
 
-    async def test_cancel_terminates_child(self, monkeypatch):
+    async def test_cancel_terminates_child_and_group(self, monkeypatch):
         from lionagi.studio.scheduler import subprocess as sp
 
         class _FakeProc:
             def __init__(self):
+                self.pid = 424242  # > 1 so the group-kill path engages
                 self.terminated = False
                 self.killed = False
                 self.returncode = -15
@@ -351,9 +353,19 @@ class TestSpawnAndWaitCancellation:
         proc = _FakeProc()
 
         async def fake_exec(*a, **k):
+            # The fix must request its own session/process group.
+            assert k.get("start_new_session") is True, (
+                "subprocess must start_new_session so the group is killable"
+            )
             return proc
 
+        killpg_calls: list[tuple[int, int]] = []
+
+        def fake_killpg(pgid, sig):
+            killpg_calls.append((pgid, sig))
+
         monkeypatch.setattr(sp.asyncio, "create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(sp.os, "killpg", fake_killpg)
 
         task = asyncio.create_task(sp.spawn_and_wait(["sleep", "30"], "inv-1"))
         # Let it reach communicate() and block.
@@ -362,7 +374,10 @@ class TestSpawnAndWaitCancellation:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        assert proc.terminated is True, "child must be terminated on cancellation"
+
+        assert proc.terminated is True, "direct child must be terminated"
+        assert killpg_calls, "the process GROUP must be signalled, not just the child"
+        assert killpg_calls[0] == (proc.pid, sp.signal.SIGTERM)
 
 
 class TestFireCancellationRecorded:
