@@ -359,23 +359,17 @@ class TestActionManagerMatchTool:
     """match_tool() converts ActionRequest/dict to FunctionCalling."""
 
     def test_match_tool_with_dict(self, populated_manager):
-        fc = populated_manager.match_tool(
-            {"function": "add", "arguments": {"a": 1, "b": 2}}
-        )
+        fc = populated_manager.match_tool({"function": "add", "arguments": {"a": 1, "b": 2}})
         assert fc is not None
 
     def test_match_tool_returns_function_calling(self, populated_manager):
         from lionagi.protocols.action.function_calling import FunctionCalling
 
-        fc = populated_manager.match_tool(
-            {"function": "add", "arguments": {"a": 1, "b": 2}}
-        )
+        fc = populated_manager.match_tool({"function": "add", "arguments": {"a": 1, "b": 2}})
         assert isinstance(fc, FunctionCalling)
 
     def test_match_tool_function_name(self, populated_manager):
-        fc = populated_manager.match_tool(
-            {"function": "add", "arguments": {"a": 1, "b": 2}}
-        )
+        fc = populated_manager.match_tool({"function": "add", "arguments": {"a": 1, "b": 2}})
         assert fc.function == "add"
 
     def test_match_unknown_raises(self, populated_manager):
@@ -451,17 +445,13 @@ class TestActionManagerInvoke:
 
     @pytest.mark.asyncio
     async def test_invoke_with_dict(self, populated_manager):
-        fc = await populated_manager.invoke(
-            {"function": "add", "arguments": {"a": 2, "b": 3}}
-        )
+        fc = await populated_manager.invoke({"function": "add", "arguments": {"a": 2, "b": 3}})
         assert fc.execution is not None
         assert fc.execution.response == 5
 
     @pytest.mark.asyncio
     async def test_invoke_add_result(self, populated_manager):
-        fc = await populated_manager.invoke(
-            {"function": "add", "arguments": {"a": 10, "b": 20}}
-        )
+        fc = await populated_manager.invoke({"function": "add", "arguments": {"a": 10, "b": 20}})
         assert fc.execution.response == 30
 
     @pytest.mark.asyncio
@@ -482,9 +472,7 @@ class TestActionManagerInvoke:
     async def test_invoke_returns_function_calling(self, populated_manager):
         from lionagi.protocols.action.function_calling import FunctionCalling
 
-        fc = await populated_manager.invoke(
-            {"function": "add", "arguments": {"a": 1, "b": 1}}
-        )
+        fc = await populated_manager.invoke({"function": "add", "arguments": {"a": 1, "b": 1}})
         assert isinstance(fc, FunctionCalling)
 
     @pytest.mark.asyncio

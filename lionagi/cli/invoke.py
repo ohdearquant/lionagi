@@ -57,9 +57,7 @@ async def _start_invocation(
     return inv_id
 
 
-async def _end_invocation(
-    invocation_id: str, *, status: str, metadata: dict | None
-) -> dict | None:
+async def _end_invocation(invocation_id: str, *, status: str, metadata: dict | None) -> dict | None:
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
@@ -81,9 +79,7 @@ async def _end_invocation(
         return await db.get_invocation(invocation_id)
 
 
-async def _list_invocations(
-    *, skill: str | None, status: str | None, limit: int
-) -> list[dict]:
+async def _list_invocations(*, skill: str | None, status: str | None, limit: int) -> list[dict]:
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
@@ -105,9 +101,7 @@ def add_invoke_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     inv_sub = invoke.add_subparsers(dest="invoke_command", required=True)
 
-    start = inv_sub.add_parser(
-        "start", help="Open a new invocation. Prints the id to stdout."
-    )
+    start = inv_sub.add_parser("start", help="Open a new invocation. Prints the id to stdout.")
     start.add_argument(
         "--skill",
         required=True,
@@ -138,7 +132,11 @@ def add_invoke_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--status",
         default="completed",
         choices=[
-            "completed", "failed", "timed_out", "aborted", "cancelled",
+            "completed",
+            "failed",
+            "timed_out",
+            "aborted",
+            "cancelled",
         ],
         help="Terminal status (ADR-0025 vocabulary).",
     )
@@ -150,12 +148,8 @@ def add_invoke_subparser(subparsers: argparse._SubParsersAction) -> None:
 
     ls = inv_sub.add_parser("list", help="List recent invocations.")
     ls.add_argument("--skill", default=None, help="Filter by skill name.")
-    ls.add_argument(
-        "--status", default=None, help="Filter by status (one of the 6 values)."
-    )
-    ls.add_argument(
-        "--limit", type=int, default=20, help="Max rows to print (default 20)."
-    )
+    ls.add_argument("--status", default=None, help="Filter by status (one of the 6 values).")
+    ls.add_argument("--limit", type=int, default=20, help="Max rows to print (default 20).")
 
 
 def _parse_metadata(raw: str | None) -> dict | None:
@@ -199,33 +193,23 @@ def run_invoke(args: argparse.Namespace) -> int:
             log_error(str(exc))
             return 1
         result = run_async(
-            _end_invocation(
-                args.invocation_id, status=args.status, metadata=metadata
-            )
+            _end_invocation(args.invocation_id, status=args.status, metadata=metadata)
         )
         if result is None:
             log_error(f"invocation not found: {args.invocation_id}")
             return 1
-        print(
-            f"{args.invocation_id}: {result['status']} "
-            f"({result['session_count']} session(s))"
-        )
+        print(f"{args.invocation_id}: {result['status']} ({result['session_count']} session(s))")
         return 0
 
     if args.invoke_command == "list":
-        rows = run_async(
-            _list_invocations(
-                skill=args.skill, status=args.status, limit=args.limit
-            )
-        )
+        rows = run_async(_list_invocations(skill=args.skill, status=args.status, limit=args.limit))
         if not rows:
             print("(no invocations)", file=sys.stderr)
             return 0
         for r in rows:
             prompt = (r.get("prompt") or "").replace("\n", " ")[:60]
             print(
-                f"{r['id']}  {r['skill']:<20}  {r['status']:<10}  "
-                f"{r['session_count']:>3}  {prompt}"
+                f"{r['id']}  {r['skill']:<20}  {r['status']:<10}  {r['session_count']:>3}  {prompt}"
             )
         return 0
 

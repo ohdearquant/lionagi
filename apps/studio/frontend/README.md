@@ -18,7 +18,7 @@ Talks to the Lion Studio backend at `process.env.NEXT_PUBLIC_STUDIO_API_BASE`
 | `/agents/[name]`         | Agent profile detail with frontmatter, body, and edit link.                                                    |
 | `/agents/[name]/edit`    | Edit an existing agent profile.                                                                                |
 | `/agents/new`            | Author a new agent profile.                                                                                    |
-| `/runs`                  | Runs table sourced from SQLite `sessions` (enriched as run summaries), with cost/duration/status filters.       |
+| `/runs`                  | Runs table sourced from SQLite `sessions` (enriched as run summaries), with cost/duration/status filters.      |
 | `/runs/[id]`             | Run detail with branch timelines, messages, API calls, DAG visualization, and live SSE stream for active runs. |
 
 ## Foundation

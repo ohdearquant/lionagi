@@ -165,9 +165,7 @@ class TestMessageRouting:
 
         exchange.register(sender_id)
 
-        msg = exchange.send(
-            sender_id, None, content={"text": "test"}, channel="updates"
-        )
+        msg = exchange.send(sender_id, None, content={"text": "test"}, channel="updates")
 
         assert msg.channel == "updates"
 

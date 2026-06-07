@@ -306,9 +306,7 @@ class OperationGraphBuilder:
         Returns:
             List of unexecuted operations
         """
-        return [
-            op for op_id, op in self._operations.items() if op_id not in self._executed
-        ]
+        return [op for op_id, op in self._operations.items() if op_id not in self._executed]
 
     def add_conditional_branch(
         self,
@@ -356,16 +354,12 @@ class OperationGraphBuilder:
 
         # Add false branch if specified
         if false_op:
-            false_node = create_operation(
-                operation=false_op, parameters={"branch": "false"}
-            )
+            false_node = create_operation(operation=false_op, parameters={"branch": "false"})
             self.graph.add_node(false_node)
             self._operations[false_node.id] = false_node
             result["false"] = false_node.id
 
-            false_edge = Edge(
-                head=check_node.id, tail=false_node.id, label=["if_false"]
-            )
+            false_edge = Edge(head=check_node.id, tail=false_node.id, label=["if_false"])
             self.graph.add_edge(false_edge)
 
             self._current_heads = [true_node.id, false_node.id]
