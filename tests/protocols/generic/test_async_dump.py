@@ -178,3 +178,48 @@ class TestDataLoggerAdump:
         fp = tmp_path / "test_dump.xml"
         with pytest.raises(ValueError, match="Unsupported file extension"):
             await logger_with_logs.adump(persist_path=fp)
+
+    @pytest.mark.asyncio
+    async def test_adump_preserves_logs_when_write_fails(self, tmp_path):
+        """Data must not be cleared when the write fails."""
+        config = DataLoggerConfig(
+            persist_dir=str(tmp_path),
+            auto_save_on_exit=False,
+            clear_after_dump=True,
+        )
+        dl = DataLogger(_config=config)
+        for i in range(3):
+            dl.log(Element())
+        assert len(dl.logs) == 3
+
+        # A path whose suffix triggers the unsupported-extension branch.
+        fp = tmp_path / "test_dump.xml"
+        with pytest.raises(ValueError, match="Unsupported file extension"):
+            await dl.adump(clear=True, persist_path=fp)
+
+        # Logs must still be intact — write never succeeded.
+        assert len(dl.logs) == 3
+
+
+# ---------------------------------------------------------------------------
+# Pile.adump — write-failure data preservation
+# ---------------------------------------------------------------------------
+
+
+class TestPileAdumpWriteFailure:
+    """Pile.adump must not clear data when the write raises."""
+
+    @pytest.mark.asyncio
+    async def test_adump_preserves_pile_when_write_fails(self, tmp_path):
+        """Clear must not happen if the write raises."""
+        items = [MockElement(value=i) for i in range(4)]
+        p = Pile(collections=items)
+        assert len(p) == 4
+
+        # An unsupported format triggers ValueError inside _write.
+        fp = tmp_path / "dump.json"
+        with pytest.raises(ValueError, match="Unsupported obj_key"):
+            await p.adump(fp, obj_key="xml", clear=True)
+
+        # Pile must be unchanged.
+        assert len(p) == 4

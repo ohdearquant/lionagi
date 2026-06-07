@@ -203,29 +203,17 @@ class DataLogger:
         clear: bool | None = None,
         persist_path: str | Path | None = None,
     ) -> None:
-        """Asynchronously dump the logs to a file.
-
-        Snapshots log data under the async lock and then offloads the
-        blocking file I/O to a worker thread so the event loop is never
-        blocked.
-        """
+        """Async dump: snapshot under lock, write outside lock, clear only on success."""
         from lionagi.ln.concurrency import run_sync
 
-        # Snapshot data under the async lock so the collection is
-        # consistent, then release the lock before doing blocking I/O.
         async with self.logs:
             if not self.logs:
                 logger.debug("No logs to dump.")
                 return
-
             fp = persist_path or self._create_path()
-            # Delegate to Pile.to_df() while we still hold the lock.
             df = self.logs.to_df()
 
-            do_clear = self._config.clear_after_dump if clear is None else clear
-            if do_clear:
-                self.logs.clear()
-
+        do_clear = self._config.clear_after_dump if clear is None else clear
         suffix = fp.suffix.lower()
 
         def _write() -> None:
@@ -245,6 +233,11 @@ class DataLogger:
             else:
                 logger.error(f"Failed to dump logs: {e}")
                 raise
+            return
+
+        if do_clear:
+            async with self.logs:
+                self.logs.clear()
 
     def _create_path(self) -> Path:
         """

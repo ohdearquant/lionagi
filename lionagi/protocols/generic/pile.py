@@ -1114,15 +1114,11 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         clear=False,
         **kw,
     ) -> None:
-        """Async dump: snapshot data under lock, then write via thread pool."""
+        """Async dump: snapshot under lock, write outside lock, clear only on success."""
         from lionagi.ln.concurrency import run_sync
 
-        # Snapshot data while holding the async lock so the collection is
-        # consistent, then release the lock before performing blocking I/O.
         async with self.async_lock:
             df = self.to_df()
-            if clear:
-                self._clear()
 
         def _write() -> None:
             match obj_key:
@@ -1139,6 +1135,10 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
                     )
 
         await run_sync(_write)
+
+        if clear:
+            async with self.async_lock:
+                self._clear()
 
     def filter_by_type(
         self,
