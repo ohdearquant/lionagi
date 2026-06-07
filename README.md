@@ -38,8 +38,8 @@ li studio --dev                 # starts backend + frontend with hot reload
 - **Lion Studio** — web UI for orchestrating agent workflows: projects, scheduled runs, execution DAGs, branch inspection, and multi-agent monitoring.
 - **Project management (ADR-0026)** — per-repo `.lionagi/config.toml` for project identity. Sessions auto-group by project. `--project NAME` flag on all CLI commands.
 - **Scheduled runs (ADR-0027)** — cron, interval, and GitHub-poll triggers with DAG-based conditional chains (`on_fail`/`on_success`). Studio becomes an active operator, not just a monitor.
-- **Agent infrastructure** — `AgentConfig` presets (`.coding()`, `.research()`) with built-in permission policies, hooks, and tool registration via `create_agent()`.
-- **Sandbox tool** — `SandboxSession` uses git worktrees for isolated editing: `create()` → edit → `diff()` → `commit()` → `merge()` or `discard()`.
+- **Agent infrastructure** — `AgentConfig` preset (`.coding()`) with built-in permission policies, hooks, and tool registration via `create_agent()`.
+- **Sandbox tool** — `SandboxSession` dataclass with module-level async functions for git worktree isolation: `create_sandbox()` → edit → `sandbox_diff()` → `sandbox_commit()` → `sandbox_merge()` or `sandbox_discard()`.
 
 ## Install
 
@@ -88,8 +88,8 @@ For multi-agent orchestration without Python, see [CLI Quick Start](docs/getting
 | **team** | Persistent inbox messaging between agents via `li team send/receive`. |
 | **operate** | `branch.operate(instruction=…)` — tool use + structured output + optional streaming. |
 | **persist** | Every run saved to `~/.lionagi/runs/{run_id}/`. Resume with `li agent -r <branch-id>`. |
-| **AgentConfig** | Preset agent configurations (coding, research) with permission policies, hooks, and tool registration. |
-| **Sandbox** | Git worktree isolation for safe experimentation — `SandboxSession.create()` → edit → diff → merge or discard. |
+| **AgentConfig** | Preset agent configuration (`.coding()`) with permission policies, hooks, and tool registration. |
+| **Sandbox** | Git worktree isolation for safe experimentation — `create_sandbox()` → edit → `sandbox_diff()` → `sandbox_merge()` or `sandbox_discard()`. |
 
 ## CLI — `li`
 
