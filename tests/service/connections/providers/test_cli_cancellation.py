@@ -36,9 +36,7 @@ class TestSubprocessSessionIsolation:
 
         from lionagi.providers.anthropic.claude_code.models import _ndjson_from_cli
 
-        with patch(
-            "asyncio.create_subprocess_exec", new_callable=AsyncMock
-        ) as mock_exec:
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
             mock_proc = MagicMock()
             mock_proc.stdout = MagicMock()
             mock_proc.stdout.read = AsyncMock(return_value=b"")
@@ -57,9 +55,9 @@ class TestSubprocessSessionIsolation:
             # Verify start_new_session=True was passed
             mock_exec.assert_called_once()
             _, kwargs = mock_exec.call_args
-            assert (
-                kwargs.get("start_new_session") is True
-            ), "CLI subprocess must use start_new_session=True to isolate from SIGINT"
+            assert kwargs.get("start_new_session") is True, (
+                "CLI subprocess must use start_new_session=True to isolate from SIGINT"
+            )
 
     @pytest.mark.asyncio
     async def test_codex_cli_uses_start_new_session(self):
@@ -72,9 +70,7 @@ class TestSubprocessSessionIsolation:
 
         with (
             patch("lionagi.providers.openai.codex.models.CODEX_CLI", "codex"),
-            patch(
-                "asyncio.create_subprocess_exec", new_callable=AsyncMock
-            ) as mock_exec,
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
         ):
             mock_proc = MagicMock()
             mock_proc.stdout = MagicMock()
@@ -105,9 +101,7 @@ class TestSubprocessSessionIsolation:
 
         with (
             patch("lionagi.providers.google.gemini_code.models.GEMINI_CLI", "gemini"),
-            patch(
-                "asyncio.create_subprocess_exec", new_callable=AsyncMock
-            ) as mock_exec,
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
         ):
             mock_proc = MagicMock()
             mock_proc.stdout = MagicMock()
@@ -167,9 +161,9 @@ class TestCancellationSkipsAutoFinish:
 
             # stream_claude_code_cli must only be called ONCE —
             # the second (auto_finish) call must never happen
-            assert (
-                stream_call_count == 1
-            ), f"auto_finish spawned {stream_call_count - 1} extra session(s) after cancellation"
+            assert stream_call_count == 1, (
+                f"auto_finish spawned {stream_call_count - 1} extra session(s) after cancellation"
+            )
 
     @pytest.mark.asyncio
     async def test_keyboard_interrupt_skips_auto_finish(self):
@@ -282,9 +276,7 @@ class TestCancellationSkipsAutoFinish:
             result = await endpoint._call({"request": mock_request}, {})
 
             # auto_finish SHOULD trigger normally
-            assert (
-                stream_call_count == 2
-            ), "auto_finish should fire on normal completion"
+            assert stream_call_count == 2, "auto_finish should fire on normal completion"
 
 
 # ---------------------------------------------------------------------------
@@ -306,9 +298,7 @@ class TestNdjsonCleanupPropagation:
 
         request = ClaudeCodeRequest(prompt="test")
 
-        with patch(
-            "asyncio.create_subprocess_exec", new_callable=AsyncMock
-        ) as mock_exec:
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
             mock_proc = MagicMock()
 
             read_call = 0
@@ -404,9 +394,7 @@ class TestToolAllowlistArgs:
 
         idx = args.index("--mcp-config")
         config_val = args[idx + 1]
-        assert (
-            '"' not in config_val
-        ), f"mcp_config value {config_val!r} has embedded quotes"
+        assert '"' not in config_val, f"mcp_config value {config_val!r} has embedded quotes"
 
 
 # ---------------------------------------------------------------------------
@@ -465,3 +453,233 @@ class TestEmptyResponsesGuard:
             # Must not raise IndexError on responses[-1]
             result = await endpoint._call({"request": mock_request}, {})
             assert isinstance(result, dict)
+
+
+# ---------------------------------------------------------------------------
+# 7. Gemini & Pi process-group kill (AUDIT-005)
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_proc(pid=12345):
+    """Build a minimal mock subprocess suitable for ndjson_from_cli tests."""
+    mock_proc = MagicMock()
+    mock_proc.pid = pid
+    mock_proc.stdout = MagicMock()
+    mock_proc.stdout.read = AsyncMock(return_value=b"")
+    mock_proc.stderr = MagicMock()
+    mock_proc.stderr.read = AsyncMock(return_value=b"")
+    mock_proc.wait = AsyncMock(return_value=0)
+    mock_proc.terminate = MagicMock()
+    mock_proc.kill = MagicMock()
+    return mock_proc
+
+
+class TestProcessGroupCleanup:
+    """AUDIT-005: Gemini and Pi cleanup must use os.killpg on the process group.
+
+    Claude and Codex capture the PGID immediately after spawn and call
+    os.killpg(pgid, SIGTERM/SIGKILL) in cleanup so that descendant processes
+    started by the CLI are also terminated.  Gemini and Pi now mirror this.
+    """
+
+    @pytest.mark.asyncio
+    async def test_gemini_cleanup_calls_killpg(self):
+        """Gemini _ndjson_from_cli cleanup must call os.killpg (AUDIT-005)."""
+        from lionagi.providers.google.gemini_code.models import (
+            GeminiCodeRequest,
+            _ndjson_from_cli,
+        )
+
+        request = GeminiCodeRequest(prompt="test")
+        mock_proc = _make_mock_proc(pid=9001)
+        killpg_calls: list[tuple] = []
+
+        with (
+            patch("lionagi.providers.google.gemini_code.models.GEMINI_CLI", "gemini"),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch(
+                "lionagi.providers.google.gemini_code.models.os.killpg",
+                side_effect=lambda pgid, sig: killpg_calls.append((pgid, sig)),
+            ),
+        ):
+            mock_exec.return_value = mock_proc
+
+            async with contextlib.aclosing(_ndjson_from_cli(request)) as stream:
+                async for _ in stream:
+                    pass
+
+        # At least one killpg(9001, ...) call must have been made.
+        assert any(pgid == 9001 for pgid, _ in killpg_calls), (
+            f"Expected os.killpg(9001, ...) in cleanup; got {killpg_calls}. "
+            "Gemini must terminate the whole process group (AUDIT-005)."
+        )
+
+    @pytest.mark.asyncio
+    async def test_pi_cleanup_calls_killpg(self):
+        """Pi _ndjson_from_cli cleanup must call os.killpg (AUDIT-005)."""
+        from lionagi.providers.pi.cli.models import PiCodeRequest, _ndjson_from_cli
+
+        request = PiCodeRequest(prompt="test")
+        mock_proc = _make_mock_proc(pid=9002)
+        killpg_calls: list[tuple] = []
+
+        with (
+            patch("lionagi.providers.pi.cli.models.PI_CLI", "pi"),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch(
+                "lionagi.providers.pi.cli.models.os.killpg",
+                side_effect=lambda pgid, sig: killpg_calls.append((pgid, sig)),
+            ),
+        ):
+            mock_exec.return_value = mock_proc
+
+            async with contextlib.aclosing(_ndjson_from_cli(request)) as stream:
+                async for _ in stream:
+                    pass
+
+        assert any(pgid == 9002 for pgid, _ in killpg_calls), (
+            f"Expected os.killpg(9002, ...) in cleanup; got {killpg_calls}. "
+            "Pi must terminate the whole process group (AUDIT-005)."
+        )
+
+    @pytest.mark.asyncio
+    async def test_gemini_mock_pid_guard_skips_killpg(self):
+        """Gemini must NOT call os.killpg when proc.pid is a mock (pid > 1 guard)."""
+        from lionagi.providers.google.gemini_code.models import (
+            GeminiCodeRequest,
+            _ndjson_from_cli,
+        )
+
+        request = GeminiCodeRequest(prompt="test")
+        mock_proc = _make_mock_proc()
+        # Simulate a MagicMock pid (like in test environments where proc.pid is
+        # not a real int but isinstance check still passes if set to 1).
+        mock_proc.pid = 1  # pid=1 should be filtered out by the safety guard
+
+        killpg_calls: list = []
+
+        with (
+            patch("lionagi.providers.google.gemini_code.models.GEMINI_CLI", "gemini"),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch(
+                "lionagi.providers.google.gemini_code.models.os.killpg",
+                side_effect=lambda pgid, sig: killpg_calls.append((pgid, sig)),
+            ),
+        ):
+            mock_exec.return_value = mock_proc
+
+            async with contextlib.aclosing(_ndjson_from_cli(request)) as stream:
+                async for _ in stream:
+                    pass
+
+        # pid=1 must be blocked by the isinstance + pid > 1 guard.
+        assert killpg_calls == [], (
+            f"os.killpg was called with pid=1: {killpg_calls}. "
+            "The safety guard must prevent signalling init/CI runner."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 8. Gemini & Pi stderr deadlock prevention (AUDIT-004)
+# ---------------------------------------------------------------------------
+
+
+class TestStderrDeadlockPrevention:
+    """AUDIT-004: stderr-heavy subprocesses must not deadlock.
+
+    Gemini and Pi now drain stderr concurrently via an asyncio task.
+    We feed a large stderr payload and verify:
+    1. The stream completes without hanging.
+    2. The drained bytes appear in the error message on non-zero exit.
+    """
+
+    @pytest.mark.asyncio
+    async def test_gemini_large_stderr_does_not_deadlock(self):
+        """Gemini _ndjson_from_cli must not deadlock with large stderr (AUDIT-004)."""
+        import asyncio
+
+        from lionagi.providers.google.gemini_code.models import (
+            GeminiCodeRequest,
+            _ndjson_from_cli,
+        )
+
+        request = GeminiCodeRequest(prompt="test")
+        large_stderr = b"E: " + b"x" * 65536  # 64 KB — fills a typical pipe buffer
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 9003
+        mock_proc.stdout = MagicMock()
+        # stdout returns empty immediately (no JSON output)
+        mock_proc.stdout.read = AsyncMock(return_value=b"")
+        mock_proc.stderr = MagicMock()
+        stderr_reads = [large_stderr, b""]
+        stderr_idx = 0
+
+        async def fake_stderr_read(n):
+            nonlocal stderr_idx
+            val = stderr_reads[min(stderr_idx, len(stderr_reads) - 1)]
+            stderr_idx += 1
+            return val
+
+        mock_proc.stderr.read = fake_stderr_read
+        mock_proc.wait = AsyncMock(return_value=1)  # non-zero exit to test error path
+        mock_proc.terminate = MagicMock()
+        mock_proc.kill = MagicMock()
+
+        with (
+            patch("lionagi.providers.google.gemini_code.models.GEMINI_CLI", "gemini"),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("lionagi.providers.google.gemini_code.models.os.killpg"),
+        ):
+            mock_exec.return_value = mock_proc
+
+            with pytest.raises(RuntimeError) as exc_info:
+                async with contextlib.aclosing(_ndjson_from_cli(request)) as stream:
+                    async for _ in stream:
+                        pass
+
+        # The error message should include the captured stderr content.
+        assert "x" * 10 in str(exc_info.value), (
+            "Stderr content was not captured in the error — concurrent drain may be broken"
+        )
+
+    @pytest.mark.asyncio
+    async def test_pi_large_stderr_does_not_deadlock(self):
+        """Pi _ndjson_from_cli must not deadlock with large stderr (AUDIT-004)."""
+        from lionagi.providers.pi.cli.models import PiCodeRequest, _ndjson_from_cli
+
+        request = PiCodeRequest(prompt="test")
+        large_stderr = b"E: " + b"y" * 65536
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 9004
+        mock_proc.stdout = MagicMock()
+        mock_proc.stdout.read = AsyncMock(return_value=b"")
+        mock_proc.stderr = MagicMock()
+        stderr_reads = [large_stderr, b""]
+        stderr_idx = 0
+
+        async def fake_stderr_read(n):
+            nonlocal stderr_idx
+            val = stderr_reads[min(stderr_idx, len(stderr_reads) - 1)]
+            stderr_idx += 1
+            return val
+
+        mock_proc.stderr.read = fake_stderr_read
+        mock_proc.wait = AsyncMock(return_value=1)
+        mock_proc.terminate = MagicMock()
+        mock_proc.kill = MagicMock()
+
+        with (
+            patch("lionagi.providers.pi.cli.models.PI_CLI", "pi"),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("lionagi.providers.pi.cli.models.os.killpg"),
+        ):
+            mock_exec.return_value = mock_proc
+
+            with pytest.raises(RuntimeError) as exc_info:
+                async with contextlib.aclosing(_ndjson_from_cli(request)) as stream:
+                    async for _ in stream:
+                        pass
+
+        assert "y" * 10 in str(exc_info.value)

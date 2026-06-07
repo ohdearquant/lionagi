@@ -171,9 +171,7 @@ class TestOpenAIIntegration:
             for chunk in chunks:
                 yield chunk
 
-        with patch.object(
-            openai_imodel.endpoint, "stream", return_value=mock_openai_stream()
-        ):
+        with patch.object(openai_imodel.endpoint, "stream", return_value=mock_openai_stream()):
             chunks = []
             async for chunk in openai_imodel.stream(
                 messages=[{"role": "user", "content": "Hello"}],
@@ -192,9 +190,7 @@ class TestOpenAIIntegration:
 
     def test_openai_url_construction(self):
         """Test OpenAI URL construction."""
-        endpoint = match_endpoint(
-            provider="openai", endpoint="chat", model="gpt-4.1-mini"
-        )
+        endpoint = match_endpoint(provider="openai", endpoint="chat", model="gpt-4.1-mini")
 
         url = endpoint.config.full_url
         assert "api.openai.com" in url
@@ -230,9 +226,7 @@ class TestOpenAIIntegration:
             response["id"] = f"chatcmpl-{request['messages'][0]['content'][-1]}"
             return response
 
-        with patch.object(
-            openai_imodel.endpoint, "call", side_effect=mock_request_with_delay
-        ):
+        with patch.object(openai_imodel.endpoint, "call", side_effect=mock_request_with_delay):
             tasks = []
             for i in range(3):
                 task = asyncio.create_task(
@@ -340,9 +334,7 @@ class TestOpenAIIntegration:
             "call",
             side_effect=aiohttp.ClientError("Rate limit exceeded"),
         ):
-            result = await openai_imodel.invoke(
-                messages=[{"role": "user", "content": "Hello"}]
-            )
+            result = await openai_imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 
             # The invoke method returns a failed APICalling object instead of raising
             assert result.status == EventStatus.FAILED
@@ -398,18 +390,13 @@ class TestGeminiIntegration:
     def test_gemini_endpoint_configuration(self, gemini_imodel):
         """Test that Gemini endpoint is configured correctly."""
         assert gemini_imodel.endpoint.config.provider == "gemini"
-        assert (
-            "generativelanguage.googleapis.com"
-            in gemini_imodel.endpoint.config.base_url
-        )
+        assert "generativelanguage.googleapis.com" in gemini_imodel.endpoint.config.base_url
 
     def test_gemini_config_defaults(self):
         """Test _get_gemini_config returns correct defaults."""
         config = _get_gemini_config()
         assert config.provider == "gemini"
-        assert (
-            config.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
-        )
+        assert config.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
         assert config.endpoint == "chat/completions"
         assert config.auth_type == "bearer"
         assert config.method == "POST"
@@ -455,17 +442,13 @@ class TestGeminiIntegration:
 
     def test_gemini_match_endpoint_routing(self):
         """Test that match_endpoint routes 'gemini' + 'chat' correctly."""
-        endpoint = match_endpoint(
-            provider="gemini", endpoint="chat", model="gemini-2.5-flash"
-        )
+        endpoint = match_endpoint(provider="gemini", endpoint="chat", model="gemini-2.5-flash")
         assert isinstance(endpoint, GeminiChatEndpoint)
         assert endpoint.config.provider == "gemini"
 
     def test_gemini_url_construction(self):
         """Test Gemini URL construction."""
-        endpoint = match_endpoint(
-            provider="gemini", endpoint="chat", model="gemini-2.5-flash"
-        )
+        endpoint = match_endpoint(provider="gemini", endpoint="chat", model="gemini-2.5-flash")
         url = endpoint.config.full_url
         assert "generativelanguage.googleapis.com" in url
         assert "chat/completions" in url
