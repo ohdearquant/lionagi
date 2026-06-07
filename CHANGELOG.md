@@ -4,6 +4,49 @@
 All notable changes to lionagi are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.26.17] - 2026-06-07
+
+Security-hardening pass: fail-closed boundaries across MCP transports, file/exec
+paths, and CLI providers, plus SSRF and credential-leak guards — alongside the
+#1257 bug sweep.
+
+### Security
+
+- **Fail-closed MCP transports** — full inline MCP transport now fingerprinted
+  into the policy key (closes a trust-leak where differing transports could share
+  a policy entry); MCP transports fail closed under threaded access, with
+  rate-limit deferral and processor-join fixes. (#1285, #1279)
+- **Image-URL SSRF guard** — outbound image-URL fetches are validated and
+  message construction hardened. (#1280)
+- **Fail-closed path/exec boundaries** — tool path and exec boundaries reject on
+  ambiguity instead of proceeding. (#1281)
+- **CLI provider validation** — async correctness fixes plus fail-closed CLI path
+  validation. (#1278)
+- **Auth gating + credential redaction** — agent auth gating, spawn-constraint
+  enforcement, and credential redaction across adapters/models. (#1282)
+- **Artifact auth + input validation** — status-history integrity, artifact
+  authorization, and input validation across state/cli/studio. (#1283)
+- **Dependabot** — resolved 6 dependency vulnerabilities. (#1274)
+
+### Fixed
+
+- **Bug sweep** — pi-CLI parser events, SIGINT reason code, `li kill`
+  PID-identity guard against recycled PIDs, lndl export. (#1257)
+- **`os.killpg` on non-Unix** — guarded for platforms without process groups.
+  (#1286)
+
+### Changed
+
+- **`lionagi/` ruff gate enabled** plus Studio UI alignment. (#1284)
+- Ruff format + mechanical lint cleanup, no behavior change. (#1277)
+
+### Docs
+
+- README CLI section, ADR taxonomy, deprecation purge, migration-guide extract,
+  DeepWiki integration. (#1259)
+- Forbid internal audit/review references in committed code comments. (#1287)
+- Align AGENT.md + CONTRIBUTING.md with actual tooling. (#1275)
+
 ## [0.26.16] - 2026-06-06
 
 ### Fixed
