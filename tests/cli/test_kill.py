@@ -337,14 +337,72 @@ def test_identity_session_marker_mismatch_rejected(monkeypatch: pytest.MonkeyPat
     assert _check_pid_identity(42, "lionagi", expected_session_id="run-123") is False
 
 
-def test_identity_absent_marker_falls_through_to_cmdline(monkeypatch: pytest.MonkeyPatch):
-    """A session with no env marker still matches via the cmdline token gate."""
+def test_identity_absent_marker_requires_create_time_match(monkeypatch: pytest.MonkeyPatch):
+    """Session expected + no env marker: cmdline alone is NOT enough.
+
+    A lionagi-looking cmdline cannot distinguish THIS run from a different
+    concurrent run that recycled the PID. Without the env marker, identity must
+    be positively proven by a matching create_time; otherwise skip the kill.
+    """
     _mock_psutil(
         monkeypatch,
         cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
         environ={},
+        create_time=500.0,
     )
-    assert _check_pid_identity(42, "lionagi", expected_session_id="run-123") is True
+    # No create_time recorded → cannot prove this run → skip.
+    assert _check_pid_identity(42, "lionagi", expected_session_id="run-123") is False
+    # Recorded create_time matches the live process → positively identified.
+    assert (
+        _check_pid_identity(
+            42, "lionagi", expected_session_id="run-123", expected_create_time=500.0
+        )
+        is True
+    )
+    # Recorded create_time differs → recycled PID → skip.
+    assert (
+        _check_pid_identity(
+            42, "lionagi", expected_session_id="run-123", expected_create_time=1.0
+        )
+        is False
+    )
+
+
+async def test_do_kill_identity_mismatch_reports_failure(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """identity_mismatch must NOT report success: no 'killed' line, exit code 1.
+
+    The session stays running and `li kill` returns non-zero so callers/scripts
+    see the kill was blocked rather than silently 'successful'.
+    """
+    async with StateDB() as db:
+        sid = str(uuid.uuid4())
+        prog = str(uuid.uuid4())
+        await db.create_progression(prog)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog,
+                "status": "running",
+                "started_at": time.time(),
+                "node_metadata": {"pid": 4242, "pid_create_time": 100.0},
+            }
+        )
+
+    # Live pid but a different create_time → recycled → identity_mismatch.
+    _mock_psutil(
+        monkeypatch,
+        cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+        create_time=999.0,
+    )
+
+    rc = await _do_kill(sid)
+    assert rc == 1, "blocked kill must return non-zero"
+
+    async with StateDB() as db:
+        cur = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (sid,))
+        assert (await cur.fetchone())["status"] == "running", "must not cancel an unverified PID"
 
 
 def test_identity_create_time_mismatch_rejected(monkeypatch: pytest.MonkeyPatch):

@@ -161,9 +161,16 @@ def _check_pid_identity(
        background launcher). When *expected_session_id* is given and the live
        process exposes a matching marker, that is a definitive match; a
        *different* marker means another lionagi run now holds this PID — reject.
-       An absent marker is inconclusive, so fall through.
     3. cmdline — exact-token match that the process really is a lionagi CLI
        invocation (see ``_cmdline_is_lionagi``).
+
+    When a session id is expected, identity must be *positively* proven: the
+    cmdline gate only shows the process is *some* lionagi run, which cannot
+    distinguish this run from a different concurrent run that recycled the PID.
+    So if the env marker is absent/unreadable, we require a matching
+    ``create_time`` and refuse to fall through to cmdline. The cmdline gate
+    remains the fallback only when no session id is expected (e.g. invocations,
+    which carry no env marker) and create_time was not recorded.
     """
     try:
         import psutil  # optional dependency
@@ -180,17 +187,27 @@ def _check_pid_identity(
     try:
         proc = psutil.Process(pid)
         # create_time gate — recycled PID has a different start time.
+        # Tri-state: None = not recorded, True/False = checked against the live process.
+        create_time_ok: bool | None = None
         if expected_create_time is not None:
-            if abs(proc.create_time() - expected_create_time) > _CREATE_TIME_TOLERANCE:
-                return False
-        # session-marker gate — exact per-run identity when accessible.
+            create_time_ok = (
+                abs(proc.create_time() - expected_create_time) <= _CREATE_TIME_TOLERANCE
+            )
+            if not create_time_ok:
+                return False  # PID recycled to a different process
+
+        # session-marker gate — exact per-run identity.
         if expected_session_id is not None:
             try:
                 marker = proc.environ().get("LIONAGI_SESSION_ID")
             except (psutil.AccessDenied, NotImplementedError):
-                marker = None  # can't read env; fall through to cmdline
+                marker = None  # env unreadable
             if marker is not None:
                 return marker == expected_session_id
+            # Marker absent/unreadable: cmdline can't prove THIS run, so require
+            # a positive create_time match instead of falling through.
+            return create_time_ok is True
+
         cmdline = proc.cmdline()
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False
@@ -570,6 +587,10 @@ async def _do_kill(
             return 1
 
         results = []
+        # Identity-mismatch results are NOT kills — the PID failed verification
+        # and was left running. _kill_one already warned with details; here we
+        # just suppress the misleading "killed" line and fail the exit code.
+        blocked = []
 
         if recursive:
             children = await _list_running_children(db, entity_type, row["id"])
@@ -584,7 +605,13 @@ async def _do_kill(
                     verbose=verbose,
                 )
                 results.append(r)
-                print(f"  killed child {child_type} {child_row['id'][:12]} (signal={r['signal']})")
+                if r["signal"] == "identity_mismatch":
+                    blocked.append(r)
+                else:
+                    print(
+                        f"  killed child {child_type} {child_row['id'][:12]} "
+                        f"(signal={r['signal']})"
+                    )
 
         r = await _kill_one(
             db,
@@ -596,9 +623,12 @@ async def _do_kill(
             verbose=verbose,
         )
         results.append(r)
-        print(f"killed {entity_type} {row['id'][:12]} (signal={r['signal']}, pid={r['pid']})")
+        if r["signal"] == "identity_mismatch":
+            blocked.append(r)
+        else:
+            print(f"killed {entity_type} {row['id'][:12]} (signal={r['signal']}, pid={r['pid']})")
 
-    return 0
+    return 1 if blocked else 0
 
 
 async def _play_child_stale(db: Any, play_row: dict[str, Any]) -> bool:
