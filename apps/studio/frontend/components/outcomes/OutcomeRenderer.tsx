@@ -16,25 +16,12 @@ export default function OutcomeRenderer({ artifact }: OutcomeRendererProps) {
   switch (artifact.kind) {
     case "review_verdict":
       return (
-        <ReviewVerdictCard
-          name={artifact.name}
-          content={content as Record<string, unknown>}
-        />
+        <ReviewVerdictCard name={artifact.name} content={content as Record<string, unknown>} />
       );
     case "gate_verdict":
-      return (
-        <GateVerdictCard
-          name={artifact.name}
-          content={content as Record<string, unknown>}
-        />
-      );
+      return <GateVerdictCard name={artifact.name} content={content as Record<string, unknown>} />;
     case "ci_result":
-      return (
-        <CIResultCard
-          name={artifact.name}
-          content={content as Record<string, unknown>}
-        />
-      );
+      return <CIResultCard name={artifact.name} content={content as Record<string, unknown>} />;
     default:
       return (
         <div className="rounded border border-edge bg-surface-raised p-3">
@@ -42,9 +29,7 @@ export default function OutcomeRenderer({ artifact }: OutcomeRendererProps) {
             <span>{artifact.kind}</span>
             <span className="font-mono">{artifact.id.slice(0, 8)}</span>
           </div>
-          <div className="mb-1 text-body text-content-primary">
-            {artifact.name}
-          </div>
+          <div className="mb-1 text-body text-content-primary">{artifact.name}</div>
           <pre className="overflow-x-auto rounded bg-surface-base p-2 text-meta font-mono text-content-secondary">
             {JSON.stringify(content, null, 2)}
           </pre>

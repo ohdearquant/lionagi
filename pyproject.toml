@@ -198,6 +198,8 @@ ignore = [
 ]
 "cookbooks/**" = ["S101", "B904", "N"]
 "scripts/**" = ["S", "E731"]
+# LOG_CONFIG property mirrors the legacy Settings.Config.LOG attribute name.
+"lionagi/config.py" = ["N802"]
 "apps/studio/**" = [
     "S108",   # /tmp in dev server
     "B007",   # unused loop vars

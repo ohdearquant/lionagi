@@ -79,9 +79,7 @@ def make_mock_branch(name: str = "TestBranch") -> Branch:
         return fake_call
 
     mock_invoke = AsyncMock(side_effect=_fake_invoke)
-    mock_chat_model = iModel(
-        provider="openai", model="gpt-4.1-mini", api_key="test_key"
-    )
+    mock_chat_model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
     mock_chat_model.invoke = mock_invoke
 
     branch.chat_model = mock_chat_model
@@ -176,8 +174,7 @@ class TestEdgeCasesAndErrors:
 
         # Create multiple independent operations
         ops = [
-            Operation(operation="chat", parameters={"instruction": f"Task {i}"})
-            for i in range(5)
+            Operation(operation="chat", parameters={"instruction": f"Task {i}"}) for i in range(5)
         ]
 
         graph = Graph()
@@ -185,9 +182,7 @@ class TestEdgeCasesAndErrors:
             graph.add_node(op)
 
         # Execute with max_concurrent=2
-        result = await session.flow(
-            graph, parallel=True, max_concurrent=2, verbose=False
-        )
+        result = await session.flow(graph, parallel=True, max_concurrent=2, verbose=False)
 
         # All operations should complete
         assert len(result["completed_operations"]) == 5
@@ -211,9 +206,7 @@ class TestEdgeCasesAndErrors:
         graph.add_node(op2)
         graph.add_edge(Edge(head=op1.id, tail=op2.id))
 
-        result = await session.flow(
-            graph, context={"initial": "context"}, parallel=False
-        )
+        result = await session.flow(graph, context={"initial": "context"}, parallel=False)
 
         # op2 should have inherited context from op1
         assert op2.parameters.get("context") is not None
@@ -589,9 +582,7 @@ class TestSessionFlowAsyncEdgeCases:
 
         # Apply timeout to flow execution - should raise TimeoutError
         with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(
-                session.flow(graph, parallel=False, verbose=False), timeout=0.5
-            )
+            await asyncio.wait_for(session.flow(graph, parallel=False, verbose=False), timeout=0.5)
 
     @pytest.mark.asyncio
     async def test_error_propagation_across_parallel_branches(self):
@@ -718,9 +709,7 @@ class TestSessionFlowAsyncEdgeCases:
         for op in [op_fast, op_medium, op_slow]:
             graph.add_node(op)
 
-        result = await session.flow(
-            graph, parallel=True, max_concurrent=3, verbose=False
-        )
+        result = await session.flow(graph, parallel=True, max_concurrent=3, verbose=False)
 
         # All operations should complete despite potential timing differences
         assert len(result["completed_operations"]) == 3

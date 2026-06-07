@@ -48,15 +48,8 @@ function CheckRow({
     <div className="flex items-center justify-between gap-3 py-1 text-body">
       <span className="text-content-primary">{label}</span>
       <span className="flex items-center gap-2">
-        {detail ? (
-          <span className="tabular-nums text-content-secondary">{detail}</span>
-        ) : null}
-        <span
-          className={
-            "tabular-nums " +
-            (passed ? "text-status-success" : "text-status-error")
-          }
-        >
+        {detail ? <span className="tabular-nums text-content-secondary">{detail}</span> : null}
+        <span className={"tabular-nums " + (passed ? "text-status-success" : "text-status-error")}>
           {passed ? "passed" : "failed"}
         </span>
       </span>
@@ -86,9 +79,7 @@ export default function CIResultCard({ name, content }: CIResultCardProps) {
       </header>
 
       {c.summary ? (
-        <div className="px-3 py-2 text-body text-content-secondary">
-          {c.summary}
-        </div>
+        <div className="px-3 py-2 text-body text-content-secondary">{c.summary}</div>
       ) : null}
 
       <section className="border-t border-edge px-3 py-2">
@@ -127,18 +118,12 @@ export default function CIResultCard({ name, content }: CIResultCardProps) {
           <ul className="space-y-1 text-body">
             {c.commands.map((cmd, i) => (
               <li key={i} className="flex items-center justify-between gap-3">
-                <span className="font-mono text-content-primary truncate">
-                  {cmd.command}
-                </span>
+                <span className="font-mono text-content-primary truncate">{cmd.command}</span>
                 <span className="flex items-center gap-2 shrink-0">
                   <span className="tabular-nums text-content-secondary">
                     {formatDuration(cmd.duration_seconds)}
                   </span>
-                  <span
-                    className={
-                      cmd.passed ? "text-status-success" : "text-status-error"
-                    }
-                  >
+                  <span className={cmd.passed ? "text-status-success" : "text-status-error"}>
                     {cmd.passed ? "✓" : "✕"}
                   </span>
                 </span>

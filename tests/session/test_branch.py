@@ -221,9 +221,7 @@ async def test_invoke_action_no_tools(branch_with_mock_imodel: Branch):
     If we pass an ActionRequest referencing an unregistered tool,
     we expect an error ActionResponseModel + a Log error about 'not registered'.
     """
-    req = ActionRequest(
-        content={"function": "unregistered_tool", "arguments": {"x": 1}}
-    )
+    req = ActionRequest(content={"function": "unregistered_tool", "arguments": {"x": 1}})
     resp = await branch_with_mock_imodel.act(req)
 
     # Now returns error response instead of empty list
@@ -250,9 +248,7 @@ async def test_invoke_action_ok(branch_with_mock_imodel: Branch):
     # register the tool
     branch_with_mock_imodel.acts.register_tool(echo_tool)
 
-    req = ActionRequest(
-        content={"function": "echo_tool", "arguments": {"text": "hello"}}
-    )
+    req = ActionRequest(content={"function": "echo_tool", "arguments": {"text": "hello"}})
     resp = await branch_with_mock_imodel.act(req)
     # Should get ActionResponseModel with output = "ECHO: hello"
     assert resp is not None
@@ -275,9 +271,7 @@ async def test_invoke_action_suppress_errors(branch_with_mock_imodel: Branch):
     req = ActionRequest(content={"function": "fail_tool", "arguments": {}})
 
     result = await branch_with_mock_imodel.act(req, suppress_errors=True)
-    assert result == [
-        ActionResponseModel(function="fail_tool", arguments={}, output=None)
-    ]
+    assert result == [ActionResponseModel(function="fail_tool", arguments={}, output=None)]
     logs = branch_with_mock_imodel.logs
     assert len(logs) == 1
     assert logs[-1].content["execution"]["response"] is None
@@ -504,9 +498,7 @@ async def test_react_stream_verbose_true_yields_analysis(monkeypatch):
 
     monkeypatch.setattr("lionagi.operations.ReAct.ReAct.ReActStream", fake_react_stream)
     # as_readable needs to exist; stub it out
-    monkeypatch.setattr(
-        "lionagi.libs.schema.as_readable.as_readable", lambda *a, **kw: None
-    )
+    monkeypatch.setattr("lionagi.libs.schema.as_readable.as_readable", lambda *a, **kw: None)
 
     results = await _drain(branch.ReActStream({"instruction": "q"}, verbose=True))
     assert results == [analysis_obj]
@@ -629,16 +621,12 @@ def test_branch_round_trips_without_duplicate_system_message():
     )
 
     original_msg_count = len(original.msgs.messages)
-    original_system_count = sum(
-        1 for m in original.msgs.messages if isinstance(m, System)
-    )
+    original_system_count = sum(1 for m in original.msgs.messages if isinstance(m, System))
 
     data = original.to_dict()
     restored = Branch.from_dict(data)
 
-    restored_system_count = sum(
-        1 for m in restored.msgs.messages if isinstance(m, System)
-    )
+    restored_system_count = sum(1 for m in restored.msgs.messages if isinstance(m, System))
 
     assert len(restored.msgs.messages) == original_msg_count
     assert restored_system_count == original_system_count

@@ -31,9 +31,7 @@ class LeakTracker:
         self._lock = threading.Lock()
 
     def track(self, obj: object, *, name: str | None, kind: str | None) -> None:
-        info = LeakInfo(
-            name=name or f"obj-{id(obj)}", kind=kind, created_at=time.time()
-        )
+        info = LeakInfo(name=name or f"obj-{id(obj)}", kind=kind, created_at=time.time())
         key = id(obj)
 
         def _finalizer(_key: int = key) -> None:
@@ -60,9 +58,7 @@ class LeakTracker:
 _TRACKER = LeakTracker()
 
 
-def track_resource(
-    obj: object, name: str | None = None, kind: str | None = None
-) -> None:
+def track_resource(obj: object, name: str | None = None, kind: str | None = None) -> None:
     _TRACKER.track(obj, name=name, kind=kind)
 
 

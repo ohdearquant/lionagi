@@ -165,7 +165,9 @@ function LinkCard({ link, index, stepNames, onUpdate, onDelete }: LinkCardProps)
       <div className="flex flex-wrap items-center gap-3">
         {/* From */}
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <label htmlFor={`link-${index}-from`} className="text-xs uppercase text-neutral-500">from</label>
+          <label htmlFor={`link-${index}-from`} className="text-xs uppercase text-neutral-500">
+            from
+          </label>
           <select
             id={`link-${index}-from`}
             value={link.from}
@@ -188,7 +190,9 @@ function LinkCard({ link, index, stepNames, onUpdate, onDelete }: LinkCardProps)
 
         {/* To */}
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <label htmlFor={`link-${index}-to`} className="text-xs uppercase text-neutral-500">to</label>
+          <label htmlFor={`link-${index}-to`} className="text-xs uppercase text-neutral-500">
+            to
+          </label>
           <select
             id={`link-${index}-to`}
             value={link.to}
@@ -245,7 +249,10 @@ function LinkCard({ link, index, stepNames, onUpdate, onDelete }: LinkCardProps)
         <div className="flex flex-col gap-3">
           {/* Condition */}
           <div className="flex flex-col gap-1">
-            <label htmlFor={`link-${index}-condition`} className="text-xs uppercase text-neutral-500">
+            <label
+              htmlFor={`link-${index}-condition`}
+              className="text-xs uppercase text-neutral-500"
+            >
               condition
               <span className="ml-1 normal-case text-neutral-600">(optional)</span>
             </label>
@@ -270,7 +277,9 @@ function LinkCard({ link, index, stepNames, onUpdate, onDelete }: LinkCardProps)
       {/* Code mode body */}
       {mode === "code" ? (
         <div className="flex flex-col gap-1">
-          <label htmlFor={`link-${index}-handler`} className="text-xs uppercase text-neutral-500">handler</label>
+          <label htmlFor={`link-${index}-handler`} className="text-xs uppercase text-neutral-500">
+            handler
+          </label>
           <textarea
             id={`link-${index}-handler`}
             value={link.handler ?? ""}
