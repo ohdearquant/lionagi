@@ -217,7 +217,7 @@ def test_terminate_pid_identity_mismatch_no_signal_sent(
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
-    monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
 
     result = _terminate_pid(42, grace_seconds=0.1, expected_cmd="lionagi")
     assert result == "identity_mismatch"
@@ -238,28 +238,12 @@ def test_terminate_pid_identity_match_sends_signal(
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
-    monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
 
     result = _terminate_pid(42, grace_seconds=0.01, expected_cmd="lionagi")
     # SIGTERM must have been sent
     assert any(sig == __import__("signal").SIGTERM for _, sig in kill_calls)
     assert result in ("sigterm", "sigkill")
-
-
-def test_terminate_pid_no_psutil_skips_kill(monkeypatch: pytest.MonkeyPatch):
-    """If psutil is not installed, kill is skipped to avoid PID-reuse race."""
-    import sys
-
-    kill_calls: list[tuple[int, int]] = []
-    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
-    monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
-
-    # Simulate psutil absent by making the import raise ImportError.
-    monkeypatch.setitem(sys.modules, "psutil", None)  # type: ignore[arg-type]
-
-    result = _terminate_pid(42, grace_seconds=0.1, expected_cmd="lionagi")
-    assert result == "identity_mismatch"
-    assert kill_calls == []
 
 
 def _mock_psutil(
@@ -282,7 +266,7 @@ def _mock_psutil(
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
-    monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
     return kill_calls
 
 
@@ -433,18 +417,6 @@ def test_current_pid_markers_records_own_pid():
     assert markers["pid_create_time"] == pytest.approx(
         psutil.Process(os.getpid()).create_time()
     )
-
-
-def test_current_pid_markers_pid_only_without_psutil(monkeypatch: pytest.MonkeyPatch):
-    """Without psutil, only the pid is recorded — no create_time key."""
-    import os
-    import sys
-
-    from lionagi.cli.kill import current_pid_markers
-
-    monkeypatch.setitem(sys.modules, "psutil", None)  # type: ignore[arg-type]
-    markers = current_pid_markers()
-    assert markers == {"pid": os.getpid()}
 
 
 async def test_kill_one_skips_recycled_pid_via_create_time(

@@ -21,11 +21,12 @@ Entity types resolved from id: session, invocation, play, show.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import os
 import signal
 import time
 from typing import Any
+
+import psutil
 
 from ._logging import log_error, warn
 
@@ -88,19 +89,13 @@ def current_pid_markers() -> dict[str, Any]:
     creation time — but only from the process that actually owns the run, never
     from a launcher that spawns the run as a subprocess.
 
-    Always includes ``"pid"``. Includes ``"pid_create_time"`` when psutil is
-    available, which lets ``li kill`` reject a recycled PID whose start time no
-    longer matches (CWE-362). If psutil is absent the create_time gate is simply
-    inactive and identity falls back to the session-marker / cmdline checks.
+    Includes the process start time so ``li kill`` can reject a recycled PID
+    whose start time no longer matches (CWE-362).
     """
-    markers: dict[str, Any] = {"pid": os.getpid()}
-    # psutil is optional and create_time can fail on some platforms; the pid
-    # alone still drives the session-marker / cmdline identity gates.
-    with contextlib.suppress(Exception):
-        import psutil
-
-        markers["pid_create_time"] = psutil.Process(os.getpid()).create_time()
-    return markers
+    return {
+        "pid": os.getpid(),
+        "pid_create_time": psutil.Process(os.getpid()).create_time(),
+    }
 
 
 # ── Signal / terminate ─────────────────────────────────────────────────────────
@@ -147,10 +142,6 @@ def _check_pid_identity(
 ) -> bool:
     """Return True iff the live process at *pid* is the lionagi run we recorded.
 
-    Uses psutil when available.  If psutil is not installed, logs a warning
-    and returns False so the caller skips the kill rather than risk signalling
-    a recycled PID (CWE-362).
-
     Identity is established in order of decreasing certainty:
 
     1. ``create_time`` — when *expected_create_time* was recorded at launch, a
@@ -172,18 +163,6 @@ def _check_pid_identity(
     remains the fallback only when no session id is expected (e.g. invocations,
     which carry no env marker) and create_time was not recorded.
     """
-    try:
-        import psutil  # optional dependency
-    except ImportError:
-        import logging
-
-        logging.getLogger("lionagi.cli").warning(
-            "psutil unavailable — skipping kill of pid %d to avoid PID-reuse race; "
-            "install psutil (pip install psutil) to enable identity checks",
-            pid,
-        )
-        return False
-
     try:
         proc = psutil.Process(pid)
         # create_time gate — recycled PID has a different start time.
@@ -228,8 +207,8 @@ def _terminate_pid(
     If the process doesn't exist at all, returns "already_dead".
     If *expected_cmd* is given, verifies the live process is the lionagi run we
     recorded (see ``_check_pid_identity``) before signalling; returns
-    "identity_mismatch" (and skips the kill) if the check fails or psutil is
-    unavailable — prevents PID-reuse races (CWE-362).
+    "identity_mismatch" (and skips the kill) if the check fails — prevents
+    PID-reuse races (CWE-362).
     If SIGTERM is enough, returns "sigterm".  If the grace period expires
     and the process is still alive, escalates to SIGKILL and returns "sigkill".
     """
