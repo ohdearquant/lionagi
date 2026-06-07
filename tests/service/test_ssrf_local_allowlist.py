@@ -10,19 +10,31 @@ loopback traffic, making those providers unusable.
 The fix adds allow_local_network=True to EndpointConfig, which is propagated
 to is_ssrf_safe(allow_local=True).  When allow_local is set:
 
-  * Loopback addresses (127.0.0.0/8, ::1) are permitted.
+  * Only the exact canonical loopback hostname literals are permitted:
+    localhost, 127.0.0.1, ::1, [::1].  The check is performed on the raw
+    hostname string BEFORE DNS resolution.
+
+  * Any other hostname — including external names that resolve to 127.0.0.1
+    (DNS rebinding) and alternate numeric encodings of the loopback address —
+    is rejected immediately.
+
+  * After DNS resolution, every resolved address is verified to be loopback.
+    A canonical hostname resolving to a public or non-loopback address is
+    rejected.
+
   * Link-local and metadata addresses (169.254.0.0/16) remain blocked.
+
   * All other blocked ranges (RFC 1918, CGN, IPv6 private) remain blocked.
 
 Attack model: a caller who sets allow_local_network=True on their endpoint
-must NOT gain the ability to reach metadata services or other private ranges
-that are not loopback.
+must NOT gain the ability to reach metadata services, private ranges, or
+any host other than the canonical loopback literals.
 """
 
 from __future__ import annotations
 
 import socket
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -60,36 +72,138 @@ def _make_endpoint_with_url(base_url: str, *, allow_local_network: bool = False)
 
 
 # ---------------------------------------------------------------------------
-# 1. is_ssrf_safe with allow_local=True — loopback permitted
+# 1. is_ssrf_safe with allow_local=True — canonical loopback literals allowed
+# ---------------------------------------------------------------------------
+
+
+def test_localhost_allowed_with_allow_local():
+    """'localhost' passes when allow_local=True (canonical literal)."""
+    assert is_ssrf_safe("localhost", allow_local=True) is True
+
+
+def test_127_0_0_1_allowed_with_allow_local():
+    """'127.0.0.1' passes when allow_local=True (canonical literal)."""
+    assert is_ssrf_safe("127.0.0.1", allow_local=True) is True
+
+
+def test_ipv6_loopback_allowed_when_allow_local():
+    """'::1' (IPv6 loopback) passes when allow_local=True (canonical literal)."""
+    assert is_ssrf_safe("::1", allow_local=True) is True
+
+
+# ---------------------------------------------------------------------------
+# 2. DNS rebinding rejection — Invariant A
+#    A non-canonical hostname that resolves to 127.0.0.1 must be rejected
+#    even with allow_local=True, because the raw hostname check fires first.
+# ---------------------------------------------------------------------------
+
+
+def test_dns_rebinding_external_hostname_resolving_to_loopback_rejected():
+    """DNS rebinding: evil.example resolving to 127.0.0.1 is rejected with allow_local=True.
+
+    The loopback exemption is gated on the raw hostname string before DNS
+    resolution.  An external hostname that happens to resolve to 127.0.0.1
+    does NOT qualify as a local endpoint.
+    """
+    with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("127.0.0.1")):
+        assert is_ssrf_safe("evil.example", allow_local=True) is False
+
+
+def test_dns_rebinding_totally_local_name_resolving_to_loopback_rejected():
+    """DNS rebinding: a name designed to look local but not in canonical set is rejected."""
+    with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("127.0.0.1")):
+        assert is_ssrf_safe("totally-local.internal", allow_local=True) is False
+
+
+def test_dns_rebinding_loopback_label_resolving_to_loopback_rejected():
+    """DNS rebinding: 'loopback.example' resolving to 127.0.0.1 is rejected."""
+    with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("127.0.0.1")):
+        assert is_ssrf_safe("loopback.example", allow_local=True) is False
+
+
+# ---------------------------------------------------------------------------
+# 3. Alternate encodings rejected — Invariant B
+#    Non-canonical spellings of the loopback address are not in the canonical
+#    set and are therefore rejected before DNS resolution.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "encoding",
+    [
+        "2130706433",  # decimal integer for 127.0.0.1
+        "017700000001",  # octal for 127.0.0.1
+        "0x7f000001",  # hex for 127.0.0.1
+        "127.1",  # short-form IPv4
+        "127.000.000.001",  # zero-padded IPv4
+        "::ffff:127.0.0.1",  # IPv4-mapped IPv6 loopback
+        "::127.0.0.1",  # IPv4-compatible IPv6 loopback
+    ],
+)
+def test_alternate_loopback_encoding_rejected(encoding):
+    """Alternate loopback spellings are rejected with allow_local=True.
+
+    Only the canonical literals (localhost, 127.0.0.1, ::1, [::1]) are
+    accepted.  Non-canonical encodings are rejected before DNS resolution,
+    regardless of what they resolve to.
+    """
+    # We do not even need to mock DNS — the raw hostname check fires first.
+    assert is_ssrf_safe(encoding, allow_local=True) is False
+
+
+# ---------------------------------------------------------------------------
+# 4. Defense in depth: post-resolution loopback verification — Invariant C
+#    Even a canonical hostname resolving to a non-loopback IP is rejected.
+# ---------------------------------------------------------------------------
+
+
+def test_canonical_hostname_resolving_to_public_ip_rejected():
+    """If 'localhost' resolves to a public IP (DNS hijack), reject it.
+
+    A local-mode endpoint pointing at a public IP is not a valid local
+    endpoint — the caller declared local intent but the network says otherwise.
+    """
+    with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("8.8.8.8")):
+        assert is_ssrf_safe("localhost", allow_local=True) is False
+
+
+def test_canonical_hostname_resolving_to_private_ip_rejected():
+    """If 'localhost' resolves to an RFC 1918 IP (DNS hijack), reject it."""
+    with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("10.0.0.1")):
+        assert is_ssrf_safe("localhost", allow_local=True) is False
+
+
+def test_canonical_hostname_resolving_to_imds_rejected():
+    """If 'localhost' resolves to the IMDS address (DNS hijack), reject it."""
+    with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("169.254.169.254")):
+        assert is_ssrf_safe("localhost", allow_local=True) is False
+
+
+# ---------------------------------------------------------------------------
+# 5. Public IPs rejected under allow_local=True — Invariant D
+#    allow_local is a loopback-only flag; public targets are not permitted.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "ip",
     [
-        "127.0.0.1",  # IPv4 loopback
-        "127.255.255.255",  # IPv4 loopback boundary
+        "8.8.8.8",
+        "1.1.1.1",
+        "2001:4860:4860::8888",
     ],
 )
-def test_loopback_ipv4_allowed_when_allow_local(ip):
-    """Loopback IPv4 addresses pass the guard when allow_local=True."""
-    with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo(ip)):
-        assert is_ssrf_safe("localhost", allow_local=True) is True
+def test_public_ip_hostname_rejected_under_allow_local(ip):
+    """Public IPs as the hostname are rejected when allow_local=True.
 
-
-def test_ipv6_loopback_allowed_when_allow_local():
-    """::1 (IPv6 loopback) passes the guard when allow_local=True."""
-    with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("::1")):
-        assert is_ssrf_safe("localhost", allow_local=True) is True
-
-
-def test_localhost_allowed_with_allow_local():
-    """'localhost' (real DNS, resolves to 127.0.0.1 or ::1) passes when allow_local=True."""
-    assert is_ssrf_safe("localhost", allow_local=True) is True
+    A public IP literal is not in the canonical loopback allowlist; the raw
+    hostname check rejects it before any DNS resolution.
+    """
+    assert is_ssrf_safe(ip, allow_local=True) is False
 
 
 # ---------------------------------------------------------------------------
-# 2. is_ssrf_safe with allow_local=True — IMDS / metadata still blocked
+# 6. Invariant E: IMDS / link-local / private / 0.0.0.0 blocked regardless
 # ---------------------------------------------------------------------------
 
 
@@ -101,18 +215,9 @@ def test_localhost_allowed_with_allow_local():
     ],
 )
 def test_imds_still_blocked_when_allow_local(ip):
-    """Link-local / metadata addresses remain blocked even with allow_local=True.
-
-    This is the core security invariant: allow_local ONLY exempts loopback,
-    not the full link-local range (169.254.0.0/16).
-    """
+    """Link-local / metadata addresses remain blocked even with allow_local=True."""
     with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo(ip)):
         assert is_ssrf_safe("evil.internal", allow_local=True) is False
-
-
-# ---------------------------------------------------------------------------
-# 3. is_ssrf_safe with allow_local=True — other private ranges still blocked
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -124,6 +229,7 @@ def test_imds_still_blocked_when_allow_local(ip):
         "100.64.0.1",  # CGN (RFC 6598)
         "fc00::1",  # IPv6 unique local
         "fe80::1",  # IPv6 link-local
+        "0.0.0.0",  # bind-all
     ],
 )
 def test_private_ranges_still_blocked_when_allow_local(ip):
@@ -133,7 +239,7 @@ def test_private_ranges_still_blocked_when_allow_local(ip):
 
 
 # ---------------------------------------------------------------------------
-# 4. is_ssrf_safe default — loopback still blocked (backward compat)
+# 7. is_ssrf_safe default — loopback still blocked (backward compat)
 # ---------------------------------------------------------------------------
 
 
@@ -149,26 +255,7 @@ def test_localhost_blocked_by_default():
 
 
 # ---------------------------------------------------------------------------
-# 5. Public IPs still permitted with allow_local=True
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "ip",
-    [
-        "8.8.8.8",
-        "1.1.1.1",
-        "2001:4860:4860::8888",
-    ],
-)
-def test_public_ips_still_safe_with_allow_local(ip):
-    """Public IPs remain safe when allow_local=True."""
-    with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo(ip)):
-        assert is_ssrf_safe("example.com", allow_local=True) is True
-
-
-# ---------------------------------------------------------------------------
-# 6. EndpointConfig.allow_local_network field
+# 8. EndpointConfig.allow_local_network field
 # ---------------------------------------------------------------------------
 
 
@@ -196,7 +283,7 @@ def test_endpoint_config_allow_local_network_can_be_set():
 
 
 # ---------------------------------------------------------------------------
-# 7. Endpoint._assert_ssrf_safe_url — integration with allow_local_network
+# 9. Endpoint._assert_ssrf_safe_url — integration with allow_local_network
 # ---------------------------------------------------------------------------
 
 
@@ -241,12 +328,17 @@ def test_assert_ssrf_safe_url_blocks_rfc1918_even_with_flag():
         ep._assert_ssrf_safe_url()
 
 
-def test_assert_ssrf_safe_url_blocks_public_ollama_spoof():
-    """A URL spoofed to look local but resolving to a public IP is not affected."""
-    ep = _make_endpoint_with_url("http://localhost:11434/v1", allow_local_network=True)
-    # Simulate DNS rebinding: 'localhost' resolves to a public IP — still safe
-    with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("8.8.8.8")):
-        ep._assert_ssrf_safe_url()  # public IP always passes
+def test_assert_ssrf_safe_url_blocks_evil_domain_dns_rebinding():
+    """Endpoint with evil.example:11434 DNS-patched to 127.0.0.1 is rejected.
+
+    Even with allow_local_network=True, an external hostname resolving to
+    loopback must be rejected.  The raw hostname 'evil.example' is not in the
+    canonical loopback allowlist, so it is rejected before DNS resolution.
+    """
+    ep = _make_endpoint_with_url("http://evil.example:11434/v1", allow_local_network=True)
+    with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("127.0.0.1")):
+        with pytest.raises(PermissionError, match="SSRF guard"):
+            ep._assert_ssrf_safe_url()
 
 
 def test_assert_ssrf_safe_url_blocks_imds_via_loopback_spoofed_name():
@@ -254,19 +346,30 @@ def test_assert_ssrf_safe_url_blocks_imds_via_loopback_spoofed_name():
     ep = _make_endpoint_with_url(
         "http://totally-local.example.com:11434/v1", allow_local_network=True
     )
-    # DNS rebind: 'totally-local.example.com' resolves to IMDS IP
     with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("169.254.169.254")):
         with pytest.raises(PermissionError, match="SSRF guard"):
             ep._assert_ssrf_safe_url()
 
 
+def test_assert_ssrf_safe_url_blocks_public_ip_even_with_allow_local():
+    """A URL with a public IP literal is blocked even with allow_local_network=True.
+
+    A public IP literal is not a canonical loopback hostname, so it is rejected
+    regardless of the allow_local flag.  A remote Ollama deployment must use a
+    different mechanism — this flag is loopback-only.
+    """
+    ep = _make_endpoint_with_url("http://8.8.8.8:11434/v1", allow_local_network=True)
+    with pytest.raises(PermissionError, match="SSRF guard"):
+        ep._assert_ssrf_safe_url()
+
+
 # ---------------------------------------------------------------------------
-# 8. Ollama EndpointConfig sets allow_local_network=True via config
+# 10. Ollama EndpointConfig carries allow_local_network
 # ---------------------------------------------------------------------------
 
 
 def test_ollama_endpoint_config_carries_allow_local_network():
-    """Verify the Ollama-like endpoint config correctly sets allow_local_network."""
+    """Verify an Ollama-like endpoint config correctly sets allow_local_network."""
     config = EndpointConfig(
         name="ollama_chat",
         provider="ollama",
@@ -276,7 +379,6 @@ def test_ollama_endpoint_config_carries_allow_local_network():
         allow_local_network=True,
     )
     assert config.allow_local_network is True
-    # Sanity: full_url contains localhost
     assert "localhost" in config.full_url
 
 

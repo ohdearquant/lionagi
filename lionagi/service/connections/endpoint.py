@@ -1,6 +1,8 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -66,7 +68,7 @@ class Endpoint:
             **self.config.client_kwargs,
         )
 
-    def copy_runtime_state_to(self, other: "Endpoint") -> None:
+    def copy_runtime_state_to(self, other: Endpoint) -> None:
         """Copy non-serialized runtime state to a same-type endpoint clone."""
 
     @property
