@@ -42,4 +42,7 @@ class OllamaEmbedEndpoint(Endpoint):
             )
         # Ollama does not need an API key
         kwargs.pop("api_key", None)
+        # Ollama runs on the local machine; allow loopback addresses in the SSRF
+        # guard while keeping all other blocked ranges (IMDS etc.) enforced.
+        kwargs.setdefault("allow_local_network", True)
         super().__init__(config=config, **kwargs)
