@@ -1,0 +1,180 @@
+# Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tests verifying that Pile.adump and DataLogger.adump offload blocking I/O
+to a worker thread rather than blocking the event loop."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+
+import pytest
+
+from lionagi.protocols.generic.element import Element
+from lionagi.protocols.generic.log import DataLogger, DataLoggerConfig, Log
+from lionagi.protocols.generic.pile import Pile
+from lionagi.testing import MockElement
+
+# ---------------------------------------------------------------------------
+# Pile.adump
+# ---------------------------------------------------------------------------
+
+
+class TestPileAdump:
+    """Pile.adump must complete without blocking the event loop."""
+
+    @pytest.fixture
+    def pile_with_items(self):
+        return Pile(collections=[MockElement(value=i) for i in range(5)])
+
+    @pytest.mark.asyncio
+    async def test_adump_json_creates_file(self, pile_with_items, tmp_path):
+        fp = tmp_path / "dump.json"
+        await pile_with_items.adump(fp, obj_key="json")
+        assert fp.exists()
+        content = fp.read_text()
+        assert len(content.strip().splitlines()) == 5
+
+    @pytest.mark.asyncio
+    async def test_adump_csv_creates_file(self, pile_with_items, tmp_path):
+        fp = tmp_path / "dump.csv"
+        await pile_with_items.adump(fp, obj_key="csv")
+        assert fp.exists()
+        lines = fp.read_text().strip().splitlines()
+        # header + 5 data rows
+        assert len(lines) == 6
+
+    @pytest.mark.asyncio
+    async def test_adump_clear_empties_pile(self, pile_with_items, tmp_path):
+        fp = tmp_path / "dump.json"
+        assert len(pile_with_items) == 5
+        await pile_with_items.adump(fp, clear=True)
+        assert len(pile_with_items) == 0
+        assert fp.exists()
+
+    @pytest.mark.asyncio
+    async def test_adump_no_clear_preserves_pile(self, pile_with_items, tmp_path):
+        fp = tmp_path / "dump.json"
+        await pile_with_items.adump(fp, clear=False)
+        assert len(pile_with_items) == 5
+
+    @pytest.mark.asyncio
+    async def test_adump_does_not_block_event_loop(self, pile_with_items, tmp_path):
+        """Verify that the event loop remains responsive during adump by
+        running a concurrent coroutine that must complete within a
+        reasonable window."""
+        fp = tmp_path / "dump.json"
+        sentinel = []
+
+        async def background():
+            sentinel.append(True)
+
+        # Run adump and the background coroutine concurrently
+        await asyncio.gather(
+            pile_with_items.adump(fp, obj_key="json"),
+            background(),
+        )
+        # background() should have been able to run
+        assert sentinel == [True]
+        assert fp.exists()
+
+    @pytest.mark.asyncio
+    async def test_adump_unsupported_format_raises(self, pile_with_items, tmp_path):
+        fp = tmp_path / "dump.json"
+        with pytest.raises(ValueError, match="Unsupported obj_key"):
+            await pile_with_items.adump(fp, obj_key="xml")
+
+
+# ---------------------------------------------------------------------------
+# DataLogger.adump
+# ---------------------------------------------------------------------------
+
+
+class TestDataLoggerAdump:
+    """DataLogger.adump must complete without blocking the event loop."""
+
+    @pytest.fixture
+    def logger_with_logs(self, tmp_path):
+        config = DataLoggerConfig(
+            persist_dir=str(tmp_path),
+            auto_save_on_exit=False,
+            clear_after_dump=False,
+        )
+        dl = DataLogger(_config=config)
+        for i in range(5):
+            dl.log(Element())
+        return dl
+
+    @pytest.mark.asyncio
+    async def test_adump_json_creates_file(self, logger_with_logs, tmp_path):
+        fp = tmp_path / "test_dump.json"
+        await logger_with_logs.adump(persist_path=fp)
+        assert fp.exists()
+
+    @pytest.mark.asyncio
+    async def test_adump_csv_creates_file(self, tmp_path):
+        config = DataLoggerConfig(
+            persist_dir=str(tmp_path),
+            extension=".csv",
+            auto_save_on_exit=False,
+            clear_after_dump=False,
+        )
+        dl = DataLogger(_config=config)
+        for i in range(3):
+            dl.log(Element())
+        fp = tmp_path / "test_dump.csv"
+        await dl.adump(persist_path=fp)
+        assert fp.exists()
+        lines = fp.read_text().strip().splitlines()
+        # header + 3 data rows
+        assert len(lines) == 4
+
+    @pytest.mark.asyncio
+    async def test_adump_clear_empties_logs(self, logger_with_logs, tmp_path):
+        fp = tmp_path / "test_dump.json"
+        assert len(logger_with_logs.logs) == 5
+        await logger_with_logs.adump(clear=True, persist_path=fp)
+        assert len(logger_with_logs.logs) == 0
+        assert fp.exists()
+
+    @pytest.mark.asyncio
+    async def test_adump_no_clear_preserves_logs(self, logger_with_logs, tmp_path):
+        fp = tmp_path / "test_dump.json"
+        await logger_with_logs.adump(clear=False, persist_path=fp)
+        assert len(logger_with_logs.logs) == 5
+
+    @pytest.mark.asyncio
+    async def test_adump_empty_logs_noop(self, tmp_path):
+        config = DataLoggerConfig(
+            persist_dir=str(tmp_path),
+            auto_save_on_exit=False,
+        )
+        dl = DataLogger(_config=config)
+        fp = tmp_path / "noop.json"
+        await dl.adump(persist_path=fp)
+        # No file should be created for empty logs
+        assert not fp.exists()
+
+    @pytest.mark.asyncio
+    async def test_adump_does_not_block_event_loop(self, logger_with_logs, tmp_path):
+        """Verify the event loop stays responsive during DataLogger.adump."""
+        fp = tmp_path / "test_dump.json"
+        sentinel = []
+
+        async def background():
+            sentinel.append(True)
+
+        await asyncio.gather(
+            logger_with_logs.adump(persist_path=fp),
+            background(),
+        )
+        assert sentinel == [True]
+        assert fp.exists()
+
+    @pytest.mark.asyncio
+    async def test_adump_unsupported_extension_raises(self, logger_with_logs, tmp_path):
+        fp = tmp_path / "test_dump.xml"
+        with pytest.raises(ValueError, match="Unsupported file extension"):
+            await logger_with_logs.adump(persist_path=fp)

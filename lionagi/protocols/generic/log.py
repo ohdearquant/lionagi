@@ -203,9 +203,48 @@ class DataLogger:
         clear: bool | None = None,
         persist_path: str | Path | None = None,
     ) -> None:
-        """Asynchronously dump the logs to a file."""
+        """Asynchronously dump the logs to a file.
+
+        Snapshots log data under the async lock and then offloads the
+        blocking file I/O to a worker thread so the event loop is never
+        blocked.
+        """
+        from lionagi.ln.concurrency import run_sync
+
+        # Snapshot data under the async lock so the collection is
+        # consistent, then release the lock before doing blocking I/O.
         async with self.logs:
-            self.dump(clear=clear, persist_path=persist_path)
+            if not self.logs:
+                logger.debug("No logs to dump.")
+                return
+
+            fp = persist_path or self._create_path()
+            # Delegate to Pile.to_df() while we still hold the lock.
+            df = self.logs.to_df()
+
+            do_clear = self._config.clear_after_dump if clear is None else clear
+            if do_clear:
+                self.logs.clear()
+
+        suffix = fp.suffix.lower()
+
+        def _write() -> None:
+            if suffix == ".csv":
+                df.to_csv(fp, index=False)
+            elif suffix == ".json":
+                df.to_json(fp, orient="records", lines=True)
+            else:
+                raise ValueError(f"Unsupported file extension: {suffix}")
+
+        try:
+            await run_sync(_write)
+            logger.info(f"Dumped logs to {fp}")
+        except Exception as e:
+            if "JSON serializable" in str(e):
+                logger.debug(f"Could not serialize logs to JSON: {e}")
+            else:
+                logger.error(f"Failed to dump logs: {e}")
+                raise
 
     def _create_path(self) -> Path:
         """
