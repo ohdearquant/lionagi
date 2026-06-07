@@ -549,9 +549,10 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
             raise TypeError(f"Invalid type for Pile operation. expected <Pile>, got {type(other)}")
 
         result = self.__class__(
-            items=self.values(),
+            collections=self.values(),
             item_type=self.item_type,
-            order=self.progression,
+            strict_type=self.strict_type,
+            order=list(self.progression),
         )
         result.include(list(other))
         return result
@@ -586,8 +587,9 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         ]
 
         result = self.__class__(
-            items=values,
+            collections=values,
             item_type=self.item_type,
+            strict_type=self.strict_type,
         )
         return result
 
@@ -610,8 +612,9 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
         values = [i for i in self if i in other]
         return self.__class__(
-            items=values,
+            collections=values,
             item_type=self.item_type,
+            strict_type=self.strict_type,
         )
 
     @override
@@ -916,7 +919,11 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
                 self.progression.exclude(pops)
                 result = [self.collections.pop(i) for i in pops]
                 result = (
-                    self.__class__(items=result, item_type=self.item_type)
+                    self.__class__(
+                        collections=result,
+                        item_type=self.item_type,
+                        strict_type=self.strict_type,
+                    )
                     if len(result) > 1
                     else result[0]
                 )
@@ -987,7 +994,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
     def is_homogenous(self) -> bool:
         """Check if all items are same type."""
-        return len(self.collections) < 2 or all(is_same_dtype(self.collections.values()))
+        return len(self.collections) < 2 or is_same_dtype(list(self.collections.values()))
 
     @classmethod
     def list_adapters(cls) -> list[str]:
