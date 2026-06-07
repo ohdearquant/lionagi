@@ -46,13 +46,18 @@ class CommonMeta(Enum):
 
     @classmethod
     def _validate_common_metas(cls, **kw):
-        """Validate common metadata constraints."""
-        if kw.get("default") and kw.get("default_factory"):
+        """Validate common metadata constraints.
+
+        Uses key-presence checks rather than truthiness so that falsy-but-valid
+        values (e.g. ``default=0``, ``default=False``) are handled correctly.
+        """
+        if "default" in kw and "default_factory" in kw:
             raise ValueError("Cannot provide both 'default' and 'default_factory'")
-        if _df := kw.get("default_factory"):
-            if not callable(_df):
+        if "default_factory" in kw:
+            if not callable(kw["default_factory"]):
                 raise ValueError("'default_factory' must be callable")
-        if _val := kw.get("validator"):
+        if "validator" in kw:
+            _val = kw["validator"]
             _val = [_val] if not isinstance(_val, list) else _val
             if not all(callable(v) for v in _val):
                 raise ValueError("Validators must be a list of functions or a function")
