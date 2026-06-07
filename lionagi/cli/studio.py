@@ -9,7 +9,47 @@ import subprocess
 import sys
 from pathlib import Path
 
+from lionagi.cli._logging import warn
+
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
+
+
+def _mount_allowed_roots() -> list[Path]:
+    """Return the ordered list of host path prefixes that may be bind-mounted.
+
+    Only resolved (real) paths whose first component is one of these roots are
+    permitted. Anything outside — including /etc, /proc, /var, or paths that
+    escape via double-symlink chains — is rejected before it reaches the docker
+    run argv.
+
+    The set is intentionally conservative: the user's home directory and the
+    XDG config home (which defaults to ~/.config). Projects that need additional
+    roots should symlink from inside an allowed root rather than pointing
+    directly at a system path.
+    """
+    roots: list[Path] = [Path.home().resolve()]
+    xdg_config = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config:
+        xdg_path = Path(xdg_config).resolve()
+        if xdg_path not in roots:
+            roots.append(xdg_path)
+    return roots
+
+
+def _is_mount_allowed(resolved_path: Path, allowed_roots: list[Path]) -> bool:
+    """Return True when *resolved_path* is strictly under an allowed root.
+
+    Both *resolved_path* and every entry in *allowed_roots* must already be
+    fully resolved (no symlinks). The check uses Path.is_relative_to so that
+    a root of ``/home/user`` does not match ``/home/username``.
+    """
+    for root in allowed_roots:
+        try:
+            if resolved_path.is_relative_to(root):
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 def _add_studio_flags(parser: argparse.ArgumentParser) -> None:
@@ -212,6 +252,13 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
     # symlinks inside the container. Many power-user setups symlink content
     # from external project dirs (e.g. ~/projects/firm/agents/*) into
     # ~/.lionagi/agents/ — without these extra mounts the symlinks dangle.
+    #
+    # Security constraint: symlink targets are resolved to their real path
+    # (no symlink chain games) and then checked against an allowlist of safe
+    # roots before they are added to the docker run argv. Any target that
+    # resolves outside the allowlist is dropped (with a warning) so the docker
+    # run argv is never contaminated by an escape path.
+    allowed_roots = _mount_allowed_roots()
     symlink_mounts: set[Path] = set()
     for subdir_name in ("agents", "skills", "playbooks", "teams"):
         subdir = lionagi_home / subdir_name
@@ -228,6 +275,12 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
             # symlink resolves identically inside the container. For directory
             # targets, mount the target itself.
             mount_src = target if target.is_dir() else target.parent
+            if not _is_mount_allowed(mount_src, allowed_roots):
+                warn(
+                    f"symlink target {mount_src} is outside the allowed mount "
+                    "roots and will not be mounted."
+                )
+                continue
             symlink_mounts.add(mount_src)
 
     for mount_src in sorted(symlink_mounts):
