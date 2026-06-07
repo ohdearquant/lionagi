@@ -199,7 +199,8 @@ class TestEndpoint:
         mock_response.status = 200
         mock_response.json = AsyncMock(return_value={"success": True})
         mock_response.closed = False
-        mock_response.release = AsyncMock()
+        # aiohttp.ClientResponse.release() is synchronous — must NOT be an AsyncMock
+        mock_response.release = MagicMock()
         mock_response.request_info = MagicMock()
         mock_response.history = []
         mock_response.headers = {}
@@ -234,6 +235,54 @@ class TestEndpoint:
         # Verify session was cleaned up via context manager
         assert len(exit_called) == 1
         mock_session.__aexit__.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_response_release_is_called_synchronously(self, openai_config, mock_response):
+        """Regression: aiohttp.ClientResponse.release() is synchronous (not a coroutine).
+
+        Awaiting a synchronous release() raises TypeError at runtime. This test
+        ensures the finally block calls release() without await so that real
+        aiohttp responses are cleaned up correctly on success, error, and
+        cancellation paths.
+        """
+        # Disable OpenAI compatibility for pure HTTP test
+        openai_config.openai_compatible = False
+        endpoint = Endpoint(config=openai_config)
+
+        release_await_attempted = []
+
+        # A MagicMock (sync) will track calls; an AsyncMock would mask the bug.
+        sync_release = MagicMock()
+
+        mock_response.status = 200
+        mock_response.json = AsyncMock(return_value={"released": True})
+        mock_response.closed = False
+        mock_response.release = sync_release
+        mock_response.request_info = MagicMock()
+        mock_response.history = []
+        mock_response.headers = {}
+
+        mock_session = AsyncMock(spec=aiohttp.ClientSession)
+        mock_session.request = AsyncMock(return_value=mock_response)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        def mock_session_class(*args, **kwargs):
+            return mock_session
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch("aiohttp.ClientSession", side_effect=mock_session_class):
+                request = {
+                    "messages": [{"role": "user", "content": "test"}],
+                    "model": "gpt-4.1-mini",
+                }
+                result = await endpoint.call(request)
+
+        # release() must have been called exactly once, synchronously
+        sync_release.assert_called_once()
+        # It must NOT have been awaited (MagicMock.return_value was not iterated/awaited)
+        assert len(release_await_attempted) == 0
+        assert result is not None
 
     @pytest.mark.asyncio
     async def test_parallel_execution_isolation(self, openai_config):
@@ -725,7 +774,8 @@ class TestEndpointSSRFGuard:
         mock_response.status = 200
         mock_response.closed = False
         mock_response.json = AsyncMock(return_value={"ok": True})
-        mock_response.release = AsyncMock()
+        # aiohttp.ClientResponse.release() is synchronous — must NOT be an AsyncMock
+        mock_response.release = MagicMock()
 
         mock_session = AsyncMock()
         mock_session.request = AsyncMock(return_value=mock_response)

@@ -129,12 +129,7 @@ class TestiModelRateLimitingEdgeCases:
     async def test_burst_requests_rate_limiting(self, mock_response):
         """Test rate limiting behavior with burst of requests.
 
-        Rate-limited requests over the per-window budget stay PENDING
-        until the next refresh, and currently the executor's forward()
-        is not re-invoked on replenishment — those calls would block
-        until the iModel.invoke 10s safety timeout. Fire exactly
-        limit_requests so the burst all clears in one window and the
-        assertion runs without paying for that timeout.
+        Fire exactly limit_requests so the burst all clears in one window.
         """
         imodel = iModel(
             provider="openai",
@@ -156,9 +151,7 @@ class TestiModelRateLimitingEdgeCases:
             # Fire exactly limit_requests so all clear in one window
             tasks = [
                 asyncio.create_task(
-                    imodel.invoke(
-                        messages=[{"role": "user", "content": f"Request {i}"}]
-                    )
+                    imodel.invoke(messages=[{"role": "user", "content": f"Request {i}"}])
                 )
                 for i in range(5)
             ]
@@ -169,3 +162,49 @@ class TestiModelRateLimitingEdgeCases:
         successful = [r for r in results if isinstance(r, APICalling)]
         assert len(successful) == 5
         assert call_count == 5
+
+    @pytest.mark.asyncio
+    async def test_over_budget_burst_completes_not_dropped(self, mock_response):
+        """Requests exceeding the per-window budget must NOT be silently dropped.
+
+        Regression: a rate-limited (denied) event was dequeued and left PENDING
+        outside the queue, so the over-budget calls were lost and the caller's
+        invoke() blocked until its 10s safety timeout. The fix re-enqueues
+        deferred events and the replenisher re-drives process() on each refresh,
+        so every over-budget call eventually completes once the budget refills.
+        """
+        imodel = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+            limit_requests=3,
+            capacity_refresh_time=0.1,
+        )
+
+        call_count = 0
+
+        async def count_calls(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            await asyncio.sleep(0.005)
+            return mock_response.json.return_value
+
+        with patch.object(imodel.endpoint, "call", side_effect=count_calls):
+            # Fire well over the per-window budget (3) in one burst.
+            tasks = [
+                asyncio.create_task(
+                    imodel.invoke(messages=[{"role": "user", "content": f"Request {i}"}])
+                )
+                for i in range(8)
+            ]
+            # Comfortably within invoke()'s 10s safety timeout, but spanning
+            # several 0.1s refresh windows so deferred work is re-driven.
+            results = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True), timeout=8.0
+            )
+
+        successful = [r for r in results if isinstance(r, APICalling)]
+        completed = [r for r in successful if r.status == EventStatus.COMPLETED]
+        # None dropped: all 8 over-budget calls eventually completed.
+        assert len(completed) == 8
+        assert call_count == 8

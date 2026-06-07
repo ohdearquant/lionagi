@@ -1,10 +1,14 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
+
 from pydantic import PrivateAttr
 
 from lionagi.protocols.types import DataLogger, Event, EventStatus
 from lionagi.service.hooks import HookEvent, HookEventTypes
+
+_logger = logging.getLogger(__name__)
 
 global_hook_logger = DataLogger(
     persist_dir="./data/logs",
@@ -163,8 +167,15 @@ class HookedEvent(Event):
         if h_ev := self._post_invoke_hook_event:
             try:
                 await h_ev.invoke()
-            except BaseException:
-                pass  # Don't fail after data already sent
+            except Exception as _hook_exc:
+                # Post-stream hook failure: data already sent to caller, so we
+                # must not reraise. Log at WARNING so the failure is visible
+                # without aborting the completed stream.
+                _logger.warning(
+                    "Post-stream hook failed (data already sent): %s",
+                    _hook_exc,
+                    exc_info=True,
+                )
             await global_hook_logger.alog(h_ev)
 
     def create_pre_invoke_hook(
