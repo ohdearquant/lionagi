@@ -16,6 +16,7 @@ via a constructed SpawnRequest with model_construct).
 
 from __future__ import annotations
 
+import inspect
 import logging
 
 import pytest
@@ -91,3 +92,36 @@ class TestRoleNodeBuilderOperationConstraint:
         req = SpawnRequest(instruction="x")
         node = nb(req, None)
         assert node.operation == "operate"
+
+
+class TestSpawnedNodeParamsBindToTarget:
+    """An allowed operation that routes cleanly must also be *invocable*.
+
+    The node builder emits ``parameters={"instruction": ...}`` uniformly for
+    every allowed operation. Routing alone is not enough — the parameters must
+    bind to the target ``Branch`` method's signature, or the spawn fails at
+    invocation. ``Branch.ReAct`` historically required ``instruct`` (not
+    ``instruction``), so an allowed ReAct spawn raised ``TypeError`` at run time.
+    """
+
+    @pytest.mark.parametrize("op", sorted(_SPAWN_ALLOWED_OPERATIONS))
+    def test_node_params_bind_to_branch_method(self, op: str):
+        roles = _make_roles("researcher")
+        nb = role_node_builder(roles)
+        node = nb(SpawnRequest(instruction="do work", operation=op), None)
+
+        method = getattr(Branch, op)
+        # bind the built request against the real method signature (drop self).
+        sig = inspect.signature(method)
+        sig.bind_partial(roles["researcher"], **node.request)
+
+    def test_react_accepts_instruction_keyword(self):
+        """Regression: Branch.ReAct must accept a bare ``instruction=`` keyword."""
+        node = role_node_builder(_make_roles("researcher"))(
+            SpawnRequest(instruction="analyze the logs", operation="ReAct"), None
+        )
+        assert node.request == {"instruction": "analyze the logs"}
+        params = inspect.signature(Branch.ReAct).parameters
+        assert "instruction" in params
+        # instruct must be optional now, not a required positional.
+        assert params["instruct"].default is None
