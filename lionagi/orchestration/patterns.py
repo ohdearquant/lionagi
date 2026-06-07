@@ -95,8 +95,13 @@ def role_node_builder(roles: dict[str, Branch]):
             op,
             parameters={"instruction": req.instruction},
         )
-        target = roles.get(req.assignee) if req.assignee else None
-        if target is not None:
+        if req.assignee:
+            target = roles.get(req.assignee)
+            if target is None:
+                raise ValueError(
+                    f"SpawnRequest assignee {req.assignee!r} is not a "
+                    f"recognized role (known: {sorted(roles)})"
+                )
             node.branch_id = target.id
         return node
 
