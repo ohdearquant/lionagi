@@ -131,9 +131,7 @@ async def test_invoke_pre_hook_should_exit_raises_exit_cause():
 async def test_invoke_pre_hook_should_exit_no_cause_raises_generic():
     """Pre-hook _should_exit=True with no cause raises generic RuntimeError (line 88)."""
     h = SimpleHooked()
-    h._pre_invoke_hook_event = _fake_hook(
-        EventStatus.COMPLETED, should_exit=True, exit_cause=None
-    )
+    h._pre_invoke_hook_event = _fake_hook(EventStatus.COMPLETED, should_exit=True, exit_cause=None)
     with pytest.raises(RuntimeError, match="requested exit"):
         await h._invoke()
 
