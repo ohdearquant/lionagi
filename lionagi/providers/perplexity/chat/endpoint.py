@@ -9,7 +9,6 @@ This module configures endpoints for different Sonar model tiers.
 """
 
 from lionagi.service.connections.endpoint import Endpoint
-from lionagi.service.connections.endpoint_config import EndpointConfig
 
 from .._config import PerplexityConfigs
 
@@ -27,9 +26,7 @@ class PerplexityChatEndpoint(Endpoint):
         if config is None:
             from lionagi.config import settings
 
-            kwargs.setdefault(
-                "api_key", settings.PERPLEXITY_API_KEY or "dummy-key-for-testing"
-            )
+            kwargs.setdefault("api_key", settings.PERPLEXITY_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("kwargs", {"model": "sonar"})
             kwargs.setdefault("requires_tokens", True)
         super().__init__(config, **kwargs)

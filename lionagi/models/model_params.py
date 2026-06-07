@@ -83,9 +83,7 @@ class ModelParams(Params):
     """
 
     # Class configuration - let Params handle Unset population
-    _config: ClassVar[ModelConfig] = ModelConfig(
-        prefill_unset=True, none_as_sentinel=True
-    )
+    _config: ClassVar[ModelConfig] = ModelConfig(prefill_unset=True, none_as_sentinel=True)
 
     # Public fields (all start as Unset when not provided)
     name: str | None
@@ -117,13 +115,8 @@ class ModelParams(Params):
 
         # Minimal domain validation - only check what matters
         if not self._is_sentinel(self.base_type):
-            if not (
-                inspect.isclass(self.base_type)
-                and issubclass(self.base_type, BaseModel)
-            ):
-                raise ValueError(
-                    f"base_type must be BaseModel subclass, got {self.base_type}"
-                )
+            if not (inspect.isclass(self.base_type) and issubclass(self.base_type, BaseModel)):
+                raise ValueError(f"base_type must be BaseModel subclass, got {self.base_type}")
 
         # Process and merge all field sources
         self._process_fields()
@@ -159,9 +152,7 @@ class ModelParams(Params):
         if not self._is_sentinel(self.base_type):
             base_fields = copy(self.base_type.model_fields)
             if not self._is_sentinel(self.exclude_fields):
-                base_fields = {
-                    k: v for k, v in base_fields.items() if k not in self.exclude_fields
-                }
+                base_fields = {k: v for k, v in base_fields.items() if k not in self.exclude_fields}
             fields.update(base_fields)
 
         # Process field_models
@@ -298,9 +289,7 @@ class ModelParams(Params):
         model = create_model(
             model_name,
             __base__=base_type,
-            __config__=(
-                self.config_dict if not self._is_sentinel(self.config_dict) else None
-            ),
+            __config__=(self.config_dict if not self._is_sentinel(self.config_dict) else None),
             __doc__=self.doc if not self._is_sentinel(self.doc) else None,
             __validators__=self._validators if self._validators else None,
             **self.use_fields,

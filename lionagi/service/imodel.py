@@ -140,9 +140,7 @@ class iModel:  # noqa: N801
         # 3. Configure executor ---------------------------------------------
         # Resolve defaults based on endpoint type
         if queue_capacity is None:
-            queue_capacity = (
-                self.endpoint.DEFAULT_QUEUE_CAPACITY if self.endpoint.is_cli else 100
-            )
+            queue_capacity = self.endpoint.DEFAULT_QUEUE_CAPACITY if self.endpoint.is_cli else 100
         if concurrency_limit is None and self.endpoint.is_cli:
             concurrency_limit = self.endpoint.DEFAULT_CONCURRENCY_LIMIT
 
@@ -184,11 +182,7 @@ class iModel:  # noqa: N801
                 registry=self.hook_registry,
                 event_like=create_event_type,
                 params=create_event_hook_params or {},
-                exit=(
-                    self.exit_hook
-                    if create_event_exit_hook is None
-                    else create_event_exit_hook
-                ),
+                exit=(self.exit_hook if create_event_exit_hook is None else create_event_exit_hook),
                 timeout=create_event_hook_timeout,
             )
             await h_ev.invoke()
@@ -262,9 +256,7 @@ class iModel:  # noqa: N801
             kwargs["resume"] = self.endpoint.session_id
 
         transport_arg_keys = getattr(self.endpoint, "transport_arg_keys", ())
-        call_kwargs = {
-            k: kwargs.pop(k) for k in list(kwargs) if k in transport_arg_keys
-        }
+        call_kwargs = {k: kwargs.pop(k) for k in list(kwargs) if k in transport_arg_keys}
 
         # The new Endpoint.create_payload returns (payload, headers)
         payload, headers = self.endpoint.create_payload(request=kwargs)
@@ -302,10 +294,8 @@ class iModel:  # noqa: N801
         # Hook registry takes priority over streaming_process_func.
         # If the registry handles the chunk type, streaming_process_func is not called.
         if chunk_key is not None:
-            hook_result, should_exit, _status = (
-                await self.hook_registry.handle_streaming_chunk(
-                    chunk_key, chunk, exit=self.exit_hook
-                )
+            hook_result, should_exit, _status = await self.hook_registry.handle_streaming_chunk(
+                chunk_key, chunk, exit=self.exit_hook
             )
             if should_exit:
                 if (

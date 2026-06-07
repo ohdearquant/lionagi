@@ -266,7 +266,6 @@ class TestAllConsistency:
         # importorskip.  importorskip inside parametrize args is evaluated at
         # collection time and silently skips the whole module on any import
         # error — exactly the failure mode this file is meant to catch.
-        # See codex P1 finding on PR #1143.
         list(_lionagi.__all__),
     )
     def test_all_symbol_importable_via_getattr(self, symbol: str) -> None:

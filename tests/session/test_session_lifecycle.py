@@ -76,9 +76,7 @@ def make_mock_branch(name: str = "TestBranch") -> Branch:
         return fake_call
 
     mock_invoke = AsyncMock(side_effect=_fake_invoke)
-    mock_chat_model = iModel(
-        provider="openai", model="gpt-4.1-mini", api_key="test_key"
-    )
+    mock_chat_model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
     mock_chat_model.invoke = mock_invoke
 
     branch.chat_model = mock_chat_model
@@ -161,9 +159,7 @@ class TestBasicFlowExecution:
         # Create parallel graph
         graph, ops = make_parallel_graph()
 
-        result = await session.flow(
-            graph, parallel=True, max_concurrent=3, verbose=False
-        )
+        result = await session.flow(graph, parallel=True, max_concurrent=3, verbose=False)
 
         # Verify all operations completed
         assert len(result["completed_operations"]) == 4

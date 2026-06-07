@@ -117,9 +117,7 @@ def jaro_distance(s: str, t: str) -> float:
 
     transpositions //= 2
 
-    return (
-        matches / s_len + matches / t_len + (matches - transpositions) / matches
-    ) / 3.0
+    return (matches / s_len + matches / t_len + (matches - transpositions) / matches) / 3.0
 
 
 def jaro_winkler_similarity(s: str, t: str, scaling: float = 0.1) -> float:
@@ -313,15 +311,11 @@ def string_similarity(
     elif callable(algorithm):
         score_func = algorithm
     else:
-        raise ValueError(
-            "algorithm must be a string specifying a built-in algorithm or a callable"
-        )
+        raise ValueError("algorithm must be a string specifying a built-in algorithm or a callable")
 
     # Calculate similarities
     results = []
-    for idx, (orig_word, comp_word) in enumerate(
-        zip(original_words, compare_words, strict=False)
-    ):
+    for idx, (orig_word, comp_word) in enumerate(zip(original_words, compare_words, strict=False)):
         # Skip different length strings for hamming similarity
         if algorithm == "hamming" and len(comp_word) != len(compare_word):
             continue

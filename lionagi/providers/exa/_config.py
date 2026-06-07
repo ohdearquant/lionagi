@@ -8,7 +8,6 @@ from lionagi.service.connections.registry import EndpointType
 
 
 class ExaConfigs(ProviderConfig, Enum):
-
     SEARCH = (
         "search",
         [],
