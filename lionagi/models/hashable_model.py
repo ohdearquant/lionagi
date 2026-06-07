@@ -54,7 +54,7 @@ class HashableModel(BaseModel):
             case "python":
                 return cls.model_validate(data, **kw)
             case "json":
-                if isinstance(data, str):
+                if isinstance(data, str | bytes):
                     data = orjson.loads(data)
                 return cls.model_validate(data, **kw)
             case "db":
@@ -80,9 +80,7 @@ class HashableModel(BaseModel):
         return b_
 
     @classmethod
-    def from_json(
-        cls, data: bytes | str, mode: ConversionMode = "json", **kwargs
-    ) -> Self:
+    def from_json(cls, data: bytes | str, mode: ConversionMode = "json", **kwargs) -> Self:
         """Creates an instance of this class from a JSON string."""
         return cls.from_dict(data, mode=mode, **kwargs)
 

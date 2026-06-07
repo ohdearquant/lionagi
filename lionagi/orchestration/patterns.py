@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from lionagi import FieldModel
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.casts.emission import (
+    _SPAWN_ALLOWED_OPERATIONS,
     SpawnRequest,
     TaskAssignment,
     build_emission_operable,
@@ -76,8 +77,22 @@ def role_node_builder(roles: dict[str, Branch]):
     """
 
     def build(req: SpawnRequest, emitter: Operation) -> Operation:
+        # Defense-in-depth: validate the operation at the routing boundary even
+        # though SpawnRequest.operation is already typed as a Literal. Custom
+        # operation names registered on a session branch must NOT be reachable
+        # via model-emitted spawn requests. Fail closed on anything outside the
+        # documented allowlist.
+        op = req.operation or "operate"
+        if op not in _SPAWN_ALLOWED_OPERATIONS:
+            logger.warning(
+                "SpawnRequest.operation %r is outside the allowed set %r — "
+                "falling back to 'operate'. (Possible prompt injection.)",
+                op,
+                sorted(_SPAWN_ALLOWED_OPERATIONS),
+            )
+            op = "operate"
         node = create_operation(
-            req.operation or "operate",
+            op,
             parameters={"instruction": req.instruction},
         )
         target = roles.get(req.assignee) if req.assignee else None

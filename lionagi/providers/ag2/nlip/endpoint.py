@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
-from typing import Any
 
 from pydantic import BaseModel
 
@@ -57,10 +56,8 @@ class AG2NlipEndpoint(AgenticEndpoint):
         prompt = req_dict.pop("prompt", "")
         return {"request": AG2NlipRequest(messages=messages, prompt=prompt)}, {}
 
-    async def stream(
-        self, request: dict | BaseModel, **kwargs
-    ) -> AsyncIterator[StreamChunk]:
-        from .models import AG2NlipRequest, call_nlip_remote
+    async def stream(self, request: dict | BaseModel, **kwargs) -> AsyncIterator[StreamChunk]:
+        from .models import call_nlip_remote
 
         if isinstance(request, dict) and "request" in request:
             request_obj = request["request"]
@@ -72,9 +69,7 @@ class AG2NlipEndpoint(AgenticEndpoint):
             request_obj.messages[-1]["content"] if request_obj.messages else ""
         )
         if not prompt:
-            raise ValueError(
-                "AG2NlipEndpoint requires a non-empty prompt or at least one message."
-            )
+            raise ValueError("AG2NlipEndpoint requires a non-empty prompt or at least one message.")
 
         url = kwargs.get("url", self._url)
         if not url:

@@ -50,8 +50,7 @@ async def basic_coding_agent() -> None:
 
     budget = branch.token_budget
     print(
-        f"Token budget — used: {budget.used}, limit: {budget.limit}, "
-        f"usage: {budget.usage_pct:.1%}"
+        f"Token budget — used: {budget.used}, limit: {budget.limit}, usage: {budget.usage_pct:.1%}"
     )
 
     # With a model configured, the branch is ready for:
@@ -170,9 +169,7 @@ async def context_management() -> None:
 
     # Evict all but the last 3 ActionResponse messages.
     keep = 3
-    ar_uids = [
-        uid for uid in cp if uid in pile and isinstance(pile[uid], ActionResponse)
-    ]
+    ar_uids = [uid for uid in cp if uid in pile and isinstance(pile[uid], ActionResponse)]
     to_evict = ar_uids[:-keep] if keep > 0 else ar_uids
     cp.exclude(to_evict)
 
@@ -428,10 +425,7 @@ async def token_budget_awareness() -> None:
     print("=== Initial state ===")
     b = branch.token_budget
     print(f"  used={b.used}  limit={b.limit}  remaining={b.remaining}")
-    print(
-        f"  usage_pct={b.usage_pct:.1%}  "
-        f"is_warning={b.is_warning}  is_critical={b.is_critical}"
-    )
+    print(f"  usage_pct={b.usage_pct:.1%}  is_warning={b.is_warning}  is_critical={b.is_critical}")
 
     # Simulate filling context with bulky search results.
     pile = branch.msgs.messages

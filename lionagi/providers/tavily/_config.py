@@ -8,7 +8,6 @@ from lionagi.service.connections.registry import EndpointType
 
 
 class TavilyConfigs(ProviderConfig, Enum):
-
     SEARCH = (
         "search",
         [],

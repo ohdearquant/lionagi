@@ -154,10 +154,7 @@ class TestGenerateHashableRepresentation:
             expected_inner_dict_rep,
         )
 
-        assert (
-            hash_utils._generate_hashable_representation(struct_instance)
-            == expected_rep
-        )
+        assert hash_utils._generate_hashable_representation(struct_instance) == expected_rep
 
     def test_pydantic_model_representation(self):
         from pydantic import BaseModel
@@ -184,9 +181,7 @@ class TestGenerateHashableRepresentation:
             expected_inner_dict_rep,
         )
 
-        assert (
-            hash_utils._generate_hashable_representation(model_instance) == expected_rep
-        )
+        assert hash_utils._generate_hashable_representation(model_instance) == expected_rep
 
 
 class TestHashDict:
@@ -264,33 +259,25 @@ class TestHashDict:
 
         # To test it properly, we need to see if the hash of the original, modified object is different.
         original_data_mutated = {"a": [1, 2]}  # Start fresh for this
-        hash_before_mutation_strict = hash_utils.hash_dict(
-            original_data_mutated, strict=True
-        )
+        hash_before_mutation_strict = hash_utils.hash_dict(original_data_mutated, strict=True)
         original_data_mutated["a"].append(3)  # Mutate it
-        hash_after_mutation_strict = hash_utils.hash_dict(
-            original_data_mutated, strict=True
-        )
+        hash_after_mutation_strict = hash_utils.hash_dict(original_data_mutated, strict=True)
 
         assert hash_before_mutation_strict != hash_after_mutation_strict
 
         # And confirm that if strict was False, the hash would be based on the current state
         original_data_mutated_nostrict = {"a": [1, 2]}
         # hash_utils._generate_hashable_representation will process current state
-        hash_nostrict_before = hash_utils.hash_dict(
-            original_data_mutated_nostrict, strict=False
-        )
+        hash_nostrict_before = hash_utils.hash_dict(original_data_mutated_nostrict, strict=False)
         original_data_mutated_nostrict["a"].append(3)
-        hash_nostrict_after = hash_utils.hash_dict(
-            original_data_mutated_nostrict, strict=False
-        )
+        hash_nostrict_after = hash_utils.hash_dict(original_data_mutated_nostrict, strict=False)
         assert hash_nostrict_before != hash_nostrict_after
 
         # Check that the initial strict hash is repeatable
         data_for_repeat = {"a": [1, 2]}
-        assert hash_utils.hash_dict(
-            data_for_repeat, strict=True
-        ) == hash_utils.hash_dict({"a": [1, 2]}, strict=True)
+        assert hash_utils.hash_dict(data_for_repeat, strict=True) == hash_utils.hash_dict(
+            {"a": [1, 2]}, strict=True
+        )
 
     def test_unhashable_representation_raises_typeerror(self):
         # Covers L116-L117

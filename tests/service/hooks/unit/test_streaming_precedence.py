@@ -33,9 +33,7 @@ class TestStreamingPrecedence:
         result = await imodel.process_chunk({"value": "raw"})
 
         assert result == {"hooked": True, "original": {"value": "raw"}}
-        assert (
-            processor_called == []
-        ), "streaming_process_func must not run when hook handles chunk"
+        assert processor_called == [], "streaming_process_func must not run when hook handles chunk"
 
     @pytest.mark.asyncio
     async def test_streaming_process_func_runs_when_no_hook_registered(self):

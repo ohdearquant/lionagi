@@ -63,7 +63,9 @@ def main() -> int:
         source = plugin.get("source", "")
         if source:
             if source in seen_sources:
-                print(f"FAIL [{name}]: duplicate source '{source}' (also used by index {seen_sources[source]})")
+                print(
+                    f"FAIL [{name}]: duplicate source '{source}' (also used by index {seen_sources[source]})"
+                )
                 plugin_ok = False
                 failures += 1
             else:
@@ -93,7 +95,9 @@ def main() -> int:
                 # Per-plugin plugin.json validation
                 per_plugin_json = source_dir / ".claude-plugin" / "plugin.json"
                 if not per_plugin_json.exists():
-                    print(f"FAIL [{name}]: Listed source '{plugin['source']}' has no .claude-plugin/plugin.json")
+                    print(
+                        f"FAIL [{name}]: Listed source '{plugin['source']}' has no .claude-plugin/plugin.json"
+                    )
                     plugin_ok = False
                     failures += 1
                 else:
@@ -107,23 +111,31 @@ def main() -> int:
                     for field in PER_PLUGIN_STRING_FIELDS:
                         val = per_plugin.get(field)
                         if val is not None and not isinstance(val, str):
-                            print(f"FAIL [{name}]: plugin.json '{field}' must be a string, got {type(val).__name__}")
+                            print(
+                                f"FAIL [{name}]: plugin.json '{field}' must be a string, got {type(val).__name__}"
+                            )
                             plugin_ok = False
                             failures += 1
                     for field in PER_PLUGIN_OPTIONAL_STRINGS:
                         val = per_plugin.get(field)
                         if val is not None and not isinstance(val, str):
-                            print(f"FAIL [{name}]: plugin.json '{field}' must be a string, got {type(val).__name__}")
+                            print(
+                                f"FAIL [{name}]: plugin.json '{field}' must be a string, got {type(val).__name__}"
+                            )
                             plugin_ok = False
                             failures += 1
                     author = per_plugin.get("author")
                     if author is not None and not isinstance(author, dict):
-                        print(f"FAIL [{name}]: plugin.json 'author' must be an object, got {type(author).__name__}")
+                        print(
+                            f"FAIL [{name}]: plugin.json 'author' must be an object, got {type(author).__name__}"
+                        )
                         plugin_ok = False
                         failures += 1
                     mcp = per_plugin.get("mcpServers")
                     if mcp is not None and not isinstance(mcp, dict):
-                        print(f"FAIL [{name}]: plugin.json 'mcpServers' must be an object, got {type(mcp).__name__}")
+                        print(
+                            f"FAIL [{name}]: plugin.json 'mcpServers' must be an object, got {type(mcp).__name__}"
+                        )
                         plugin_ok = False
                         failures += 1
                     # Reject stub mcpServers entries
@@ -154,7 +166,9 @@ def main() -> int:
                     ok = False
             for server_cfg in pdata.get("mcpServers", {}).values():
                 if server_cfg.get("type") == "stub":
-                    print(f"FAIL [standalone:{plugin_dir}]: plugin.json contains stub mcpServers entry")
+                    print(
+                        f"FAIL [standalone:{plugin_dir}]: plugin.json contains stub mcpServers entry"
+                    )
                     failures += 1
                     ok = False
             if ok:

@@ -18,9 +18,7 @@ from lionagi.protocols.action.tool import Tool
 
 from ..base import LionTool
 
-# Finding 2/3: shell control operators that bypass argv-safe execution
 _SHELL_CONTROL = re.compile(r"(;|&&|\|\||\||`|\$\(|[<>]|\n)")
-# Finding 5: cap output at 100 KB per stream before storing in memory
 _MAX_OUTPUT_BYTES = 100_000
 
 
@@ -48,7 +46,6 @@ class BashRequest(BaseModel):
             "If omitted, inherits the current process working directory."
         ),
     )
-    # Finding 3: shell=False by default; only trusted callers set allow_shell=True
     allow_shell: bool = Field(
         False,
         description="Allow shell control operators. Only set via trusted code.",
@@ -76,7 +73,7 @@ class BashResponse(BaseModel):
 
 
 def _command_for_subprocess(request: BashRequest) -> tuple[str | list[str], bool]:
-    """Finding 3: return (cmd, shell) pair. Rejects shell operators unless trusted."""
+    """Rejects shell operators unless trusted."""
     if request.allow_shell:
         return request.command, True
     if _SHELL_CONTROL.search(request.command):
@@ -90,10 +87,7 @@ def _command_for_subprocess(request: BashRequest) -> tuple[str | list[str], bool
 
 
 def _drain(stream, buf: bytearray) -> bool:
-    """Finding 5: read stream into buf up to _MAX_OUTPUT_BYTES; return True if truncated.
-
-    Continues reading after the cap is reached to prevent pipe-buffer deadlock.
-    """
+    """Continues reading after the cap is reached to prevent pipe-buffer deadlock."""
     truncated = False
     while True:
         try:
@@ -126,8 +120,7 @@ def _subprocess_sync(
     cwd: str | None,
 ) -> BashResponse:
     try:
-        # Finding 4: start_new_session=True so we can kill the entire process group
-        proc = subprocess.Popen(
+        proc = subprocess.Popen(  # noqa: S603  # cmd validated by _command_for_subprocess: shlex-split argv or trusted shell mode
             cmd,
             shell=shell,
             stdout=subprocess.PIPE,
@@ -149,7 +142,6 @@ def _subprocess_sync(
     def _drain_stderr():
         stderr_truncated[0] = _drain(proc.stderr, stderr_buf)
 
-    # Finding 5: read both streams concurrently in threads to cap memory use
     t_out = threading.Thread(target=_drain_stdout, daemon=True)
     t_err = threading.Thread(target=_drain_stderr, daemon=True)
     t_out.start()
@@ -158,8 +150,8 @@ def _subprocess_sync(
     try:
         proc.wait(timeout=timeout_sec)
     except subprocess.TimeoutExpired:
-        # Finding 4: kill the entire process group, not just the leader
-        if isinstance(proc.pid, int) and proc.pid > 1:
+        # os.killpg is POSIX-only; on Windows fall through to proc.kill().
+        if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1:
             with contextlib.suppress(ProcessLookupError, OSError):
                 os.killpg(proc.pid, signal.SIGKILL)
         else:

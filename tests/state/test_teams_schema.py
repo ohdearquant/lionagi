@@ -34,13 +34,11 @@ async def db():
 async def test_teams_table_exists_with_status_check(db: StateDB):
     """Schema CHECK accepts 'active' / 'archived' and rejects others."""
     await db.db.execute(
-        "INSERT INTO teams (id, name, created_at, updated_at, status) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO teams (id, name, created_at, updated_at, status) VALUES (?, ?, ?, ?, ?)",
         ("t1", "team-one", 1.0, 1.0, "active"),
     )
     await db.db.execute(
-        "INSERT INTO teams (id, name, created_at, updated_at, status) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO teams (id, name, created_at, updated_at, status) VALUES (?, ?, ?, ?, ?)",
         ("t2", "team-two", 1.0, 1.0, "archived"),
     )
 
@@ -48,16 +46,14 @@ async def test_teams_table_exists_with_status_check(db: StateDB):
 
     with pytest.raises(sqlite3.IntegrityError):
         await db.db.execute(
-            "INSERT INTO teams (id, name, created_at, updated_at, status) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO teams (id, name, created_at, updated_at, status) VALUES (?, ?, ?, ?, ?)",
             ("t3", "team-three", 1.0, 1.0, "frozen"),
         )
 
 
 async def test_team_messages_cascade_on_team_delete(db: StateDB):
     await db.db.execute(
-        "INSERT INTO teams (id, name, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?)",
+        "INSERT INTO teams (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
         ("t1", "team-one", 1.0, 1.0),
     )
     await db.db.execute(
@@ -84,13 +80,10 @@ async def test_team_messages_session_id_fk_to_sessions(db: StateDB):
     prog_id = str(uuid.uuid4())
     sess_id = str(uuid.uuid4())
     await db.create_progression(prog_id)
-    await db.create_session(
-        {"id": sess_id, "progression_id": prog_id, "status": "running"}
-    )
+    await db.create_session({"id": sess_id, "progression_id": prog_id, "status": "running"})
 
     await db.db.execute(
-        "INSERT INTO teams (id, name, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?)",
+        "INSERT INTO teams (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
         ("t1", "team-one", 1.0, 1.0),
     )
     await db.db.execute(
@@ -100,9 +93,7 @@ async def test_team_messages_session_id_fk_to_sessions(db: StateDB):
     )
     await db.db.commit()
 
-    cur = await db.db.execute(
-        "SELECT session_id FROM team_messages WHERE id = ?", ("m1",)
-    )
+    cur = await db.db.execute("SELECT session_id FROM team_messages WHERE id = ?", ("m1",))
     row = await cur.fetchone()
     assert row["session_id"] == sess_id
 
@@ -163,9 +154,7 @@ async def test_import_teams_loads_json_into_db(tmp_path: Path, monkeypatch):
 
     # Verify rows landed correctly.
     async with StateDB(state_db) as db:
-        cur = await db.db.execute(
-            "SELECT id, name, member_count, members, status FROM teams"
-        )
+        cur = await db.db.execute("SELECT id, name, member_count, members, status FROM teams")
         team_row = await cur.fetchone()
         assert team_row["id"] == "abc123"
         assert team_row["name"] == "review-team"
@@ -174,8 +163,7 @@ async def test_import_teams_loads_json_into_db(tmp_path: Path, monkeypatch):
         assert team_row["status"] == "active"
 
         cur = await db.db.execute(
-            "SELECT id, sender, recipient, content FROM team_messages "
-            "ORDER BY created_at"
+            "SELECT id, sender, recipient, content FROM team_messages ORDER BY created_at"
         )
         msgs = await cur.fetchall()
         assert len(msgs) == 2
@@ -193,9 +181,7 @@ async def test_import_teams_is_idempotent(tmp_path: Path, monkeypatch):
     state_db = tmp_path / "state.db"
 
     (teams_dir / "abc.json").write_text(
-        json.dumps(
-            {"id": "abc", "name": "t", "members": [], "messages": []}
-        )
+        json.dumps({"id": "abc", "name": "t", "members": [], "messages": []})
     )
 
     from lionagi.cli import state as state_mod

@@ -133,9 +133,7 @@ async def test_grep_no_matches_returns_success(tmp_path):
 
 
 async def test_grep_regex_matches_function_defs(tmp_path):
-    (tmp_path / "code.py").write_text(
-        "def foo():\n    pass\ndef bar(x):\n    return x\n"
-    )
+    (tmp_path / "code.py").write_text("def foo():\n    pass\ndef bar(x):\n    return x\n")
     tool = SearchTool()
     resp = await tool.handle_request(
         SearchRequest(
@@ -295,9 +293,7 @@ def test_to_tool_func_callable_is_async():
 async def test_to_tool_callable_executes(tmp_path):
     (tmp_path / "hi.py").write_text("hello\n")
     tool = SearchTool()
-    result = await tool.to_tool().func_callable(
-        action="grep", pattern="hello", path=str(tmp_path)
-    )
+    result = await tool.to_tool().func_callable(action="grep", pattern="hello", path=str(tmp_path))
     assert result["success"] is True
     assert result["count"] > 0
 
@@ -364,9 +360,7 @@ async def test_grep_file_not_found_returns_error(monkeypatch):
 
     monkeypatch.setattr(search_mod.subprocess, "run", raise_fnf)
     tool = SearchTool()
-    resp = await tool.handle_request(
-        SearchRequest(action=SearchAction.grep, pattern="x", path=".")
-    )
+    resp = await tool.handle_request(SearchRequest(action=SearchAction.grep, pattern="x", path="."))
     assert resp.success is False
     assert resp.count == 0
     assert "not found" in (resp.error or "")
@@ -380,9 +374,7 @@ async def test_grep_generic_exception_returns_error(monkeypatch):
 
     monkeypatch.setattr(search_mod.subprocess, "run", raise_exc)
     tool = SearchTool()
-    resp = await tool.handle_request(
-        SearchRequest(action=SearchAction.grep, pattern="x", path=".")
-    )
+    resp = await tool.handle_request(SearchRequest(action=SearchAction.grep, pattern="x", path="."))
     assert resp.success is False
     assert "grep error" in (resp.error or "")
 

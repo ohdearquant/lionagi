@@ -116,9 +116,7 @@ def test_build_session_bus_empty_list_disables_default():
 
 def test_build_session_bus_adds_handlers_for_non_default_points():
     """Profile may register handlers on points that have no default."""
-    bus = build_session_bus(
-        {"api.post_call": ["log_api_metrics"], "tool.pre": ["log_tool_use"]}
-    )
+    bus = build_session_bus({"api.post_call": ["log_api_metrics"], "tool.pre": ["log_tool_use"]})
     assert len(bus.handlers_for(HookPoint.API_POST_CALL)) == 1
     assert len(bus.handlers_for(HookPoint.TOOL_PRE)) == 1
 

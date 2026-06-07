@@ -69,8 +69,40 @@ _SENSITIVE_KEYS = frozenset(
 
 _MAX_DETAIL_LEN = 500
 
+# Query-string parameter names that carry credentials.  Any key matching one
+# of these (case-insensitive) is replaced with "***" in error output.
+_SENSITIVE_QUERY_PARAMS: frozenset[str] = frozenset(
+    {
+        "token",
+        "access_token",
+        "api_token",
+        "bearer_token",
+        "secret",
+        "api_key",
+        "apikey",
+        "api_secret",
+        "client_secret",
+        "auth",
+        "authorization",
+        "key",
+        "password",
+        "passwd",
+        "pass",
+        "sig",
+        "signature",
+        "callback",
+        "webhook",
+    }
+)
+
 
 def _redact_url(value: str) -> str:
+    """Sanitize a URL string for safe inclusion in error messages.
+
+    Redacts:
+    - The password component of ``user:password@host`` netloc credentials.
+    - Any query-string parameter whose name matches ``_SENSITIVE_QUERY_PARAMS``.
+    """
     try:
         parsed = urllib.parse.urlparse(value)
     except Exception:
@@ -78,12 +110,31 @@ def _redact_url(value: str) -> str:
     scheme = parsed.scheme.lower()
     if scheme not in _CREDENTIAL_SCHEMES:
         return value
+
+    replacements: dict[str, str] = {}
+
+    # 1. Redact netloc password (user:pass@host form)
     if parsed.password:
         userinfo = parsed.username or ""
         userinfo = f"{userinfo}:***"
         host = parsed.hostname or ""
         netloc = f"{userinfo}@{host}:{parsed.port}" if parsed.port else f"{userinfo}@{host}"
-        sanitized = parsed._replace(netloc=netloc)
+        replacements["netloc"] = netloc
+
+    # 2. Redact sensitive query parameters.
+    # Use quote_via=urllib.parse.quote with safe="*" so that the "***"
+    # placeholder is not percent-encoded in the final URL string.
+    if parsed.query:
+        params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        redacted_params = [
+            (k, "***") if k.lower() in _SENSITIVE_QUERY_PARAMS else (k, v) for k, v in params
+        ]
+        new_query = urllib.parse.urlencode(redacted_params, quote_via=urllib.parse.quote, safe="*")
+        if new_query != parsed.query:
+            replacements["query"] = new_query
+
+    if replacements:
+        sanitized = parsed._replace(**replacements)
         return urllib.parse.urlunparse(sanitized)
     return value
 

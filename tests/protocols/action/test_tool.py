@@ -101,17 +101,13 @@ def test_tool_tool_schemageneration():
     assert "y" in params["properties"]
 
     # Check parameter types
-    assert (
-        params["properties"]["x"]["type"] == "number"
-    )  # int maps to number in JSON schema
+    assert params["properties"]["x"]["type"] == "number"  # int maps to number in JSON schema
     assert params["properties"]["y"]["type"] == "string"
 
     # Check required parameters - all parameters are required in OpenAI function format
     assert "required" in params
     assert "x" in params["required"]
-    assert (
-        "y" in params["required"]
-    )  # Even parameters with defaults are marked as required
+    assert "y" in params["required"]  # Even parameters with defaults are marked as required
 
 
 def test_tool_required_fields():
@@ -138,9 +134,9 @@ def test_tool_minimum_acceptable_fields():
 
     tool = Tool(func_callable=func_mixed_args)
     # Only "x" has no default in the signature (others are either defaulted or *args/**kwargs).
-    assert tool.minimum_acceptable_fields == {
-        "x"
-    }, f"Expected only 'x' to be the minimum required, got {tool.minimum_acceptable_fields}"
+    assert tool.minimum_acceptable_fields == {"x"}, (
+        f"Expected only 'x' to be the minimum required, got {tool.minimum_acceptable_fields}"
+    )
 
 
 def test_tool_strict_func_call():
@@ -168,19 +164,15 @@ def test_tool_to_dict():
 
     # Basic checks on the serialized dict
     assert "function" in serialized, "Serialized dict should contain 'function' key."
-    assert (
-        serialized["function"] == "sample_func"
-    ), f"Expected function name 'sample_func', got {serialized['function']}"
-    assert (
-        "id" in serialized
-    ), "The base Element fields (id, etc.) should be in the dict."
-    assert (
-        "created_at" in serialized
-    ), "The base Element fields (created_at, etc.) should be in the dict."
+    assert serialized["function"] == "sample_func", (
+        f"Expected function name 'sample_func', got {serialized['function']}"
+    )
+    assert "id" in serialized, "The base Element fields (id, etc.) should be in the dict."
+    assert "created_at" in serialized, (
+        "The base Element fields (created_at, etc.) should be in the dict."
+    )
     # Make sure excluded fields are not serialized
-    assert (
-        "func_callable" not in serialized
-    ), "func_callable should be excluded from the dict."
+    assert "func_callable" not in serialized, "func_callable should be excluded from the dict."
 
 
 def test_tool_from_dict_not_implemented():

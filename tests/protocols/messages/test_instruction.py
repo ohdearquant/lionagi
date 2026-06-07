@@ -5,6 +5,16 @@ from lionagi.protocols.messages.instruction import Instruction, InstructionConte
 from lionagi.protocols.messages.message import MessageRole
 
 
+@pytest.fixture(autouse=True)
+def _allow_public_image_hosts(monkeypatch):
+    """These tests exercise rendering/structure, not live SSRF resolution.
+
+    Stub is_ssrf_safe -> True so example.com image URLs validate without a real
+    DNS lookup. Actual SSRF rejection is covered by test_instruction_url_security.
+    """
+    monkeypatch.setattr("lionagi.protocols.messages.validators.is_ssrf_safe", lambda host: True)
+
+
 class SampleRequestModel(BaseModel):
     """Model for testing Pydantic schema handling"""
 

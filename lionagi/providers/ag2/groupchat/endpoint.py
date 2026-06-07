@@ -42,9 +42,7 @@ class AG2GroupChatEndpoint(AgenticEndpoint):
         self._tool_registry: dict[str, Any] = kwargs.get("tool_registry", {})
 
     async def _call(self, payload, headers, **kwargs):
-        raise NotImplementedError(
-            "AG2 GroupChat is stream-only. Use stream() to iterate events."
-        )
+        raise NotImplementedError("AG2 GroupChat is stream-only. Use stream() to iterate events.")
 
     def create_payload(self, request: dict | BaseModel, **kwargs):
         from .models import AG2GroupChatRequest
@@ -63,9 +61,7 @@ class AG2GroupChatEndpoint(AgenticEndpoint):
             )
         }, {}
 
-    async def stream(
-        self, request: dict | BaseModel, **kwargs
-    ) -> AsyncIterator[StreamChunk]:
+    async def stream(self, request: dict | BaseModel, **kwargs) -> AsyncIterator[StreamChunk]:
         from .models import GroupChatSpec, build_group_chat, stream_group_chat
 
         if isinstance(request, dict) and "request" in request:
@@ -160,9 +156,7 @@ def _event_to_chunk(event) -> StreamChunk | None:
     inner = getattr(event, "content", None)
 
     if isinstance(event, TextEvent):
-        text = (
-            getattr(inner, "content", str(event)) if inner is not None else str(event)
-        )
+        text = getattr(inner, "content", str(event)) if inner is not None else str(event)
         sender = getattr(inner, "sender", "unknown") if inner is not None else "unknown"
         return StreamChunk(
             type="text",
@@ -170,9 +164,7 @@ def _event_to_chunk(event) -> StreamChunk | None:
             metadata={"agent": sender},
         )
     if isinstance(event, GroupChatRunChatEvent):
-        speaker = (
-            getattr(inner, "speaker", "unknown") if inner is not None else "unknown"
-        )
+        speaker = getattr(inner, "speaker", "unknown") if inner is not None else "unknown"
         return StreamChunk(
             type="system",
             content=f"Speaker: {speaker}",
@@ -192,14 +184,8 @@ def _event_to_chunk(event) -> StreamChunk | None:
     if isinstance(event, ToolCallEvent):
         tool_calls = getattr(inner, "tool_calls", []) if inner is not None else []
         first = tool_calls[0] if tool_calls else None
-        tool_name = (
-            getattr(getattr(first, "function", None), "name", None) if first else None
-        )
-        tool_args = (
-            getattr(getattr(first, "function", None), "arguments", None)
-            if first
-            else None
-        )
+        tool_name = getattr(getattr(first, "function", None), "name", None) if first else None
+        tool_args = getattr(getattr(first, "function", None), "arguments", None) if first else None
         sender = getattr(inner, "sender", "unknown") if inner is not None else "unknown"
         return StreamChunk(
             type="tool_use",
@@ -209,9 +195,7 @@ def _event_to_chunk(event) -> StreamChunk | None:
             metadata={"agent": sender},
         )
     if isinstance(event, ToolResponseEvent):
-        tool_responses = (
-            getattr(inner, "tool_responses", []) if inner is not None else []
-        )
+        tool_responses = getattr(inner, "tool_responses", []) if inner is not None else []
         first = tool_responses[0] if tool_responses else None
         tool_output = getattr(first, "content", None) if first else None
         tool_id = getattr(first, "tool_call_id", None) if first else None

@@ -32,6 +32,17 @@ from lionagi.protocols.messages import (
 from lionagi.protocols.messages.rendering import CustomParser, CustomRenderer, StructureFormat
 from lionagi.protocols.messages.validators import validate_image_url
 
+
+@pytest.fixture(autouse=True)
+def _allow_public_image_hosts(monkeypatch):
+    """Stub is_ssrf_safe -> True so example.com URLs validate without live DNS.
+
+    SSRF rejection is covered deterministically (IP literals) in
+    test_instruction_url_security; here we only test scheme/format/structure.
+    """
+    monkeypatch.setattr("lionagi.protocols.messages.validators.is_ssrf_safe", lambda host: True)
+
+
 # ---------------------------------------------------------------------------
 # StructureFormat
 # ---------------------------------------------------------------------------

@@ -9,7 +9,9 @@ import contextlib
 import inspect
 import json
 import logging
+import os
 import shutil
+import signal
 import warnings
 from collections.abc import AsyncIterator, Callable
 from functools import partial
@@ -494,7 +496,14 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     # Guard against mocked subprocesses in tests where proc.pid may not
     # be a real int: a MagicMock.pid coerces to 1 via __int__, and
     # os.killpg(1, SIGTERM) signals init/the CI runner.
-    _codex_pgid: int | None = proc.pid if isinstance(proc.pid, int) and proc.pid > 1 else None
+    # os.killpg is POSIX-only: on Windows leave _pgid None so the group-kill
+    # path is skipped and cleanup falls through to proc.terminate()/kill()
+    # instead of raising AttributeError from the finally block.
+    _codex_pgid: int | None = (
+        proc.pid
+        if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1
+        else None
+    )
 
     decoder = codecs.getincrementaldecoder("utf-8")()
     json_decoder = json.JSONDecoder()
@@ -581,9 +590,6 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
         # Terminate the whole process group (start_new_session=True
         # above made pgid == proc.pid). Captured up-front so a reap
         # before teardown doesn't make us skip the group kill.
-        import os
-        import signal
-
         pgid = _codex_pgid
         if pgid is not None:
             with contextlib.suppress(ProcessLookupError, PermissionError):
