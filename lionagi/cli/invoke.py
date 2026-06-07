@@ -42,6 +42,11 @@ async def _start_invocation(
     from lionagi.state.db import StateDB
 
     inv_id = uuid.uuid4().hex[:12]
+    # Record this process's identity so `li kill` can verify the PID before
+    # signalling (CWE-362). The skill runs in this process — getpid() is correct.
+    from lionagi.cli.kill import current_pid_markers
+
+    node_metadata = {**(metadata or {}), **current_pid_markers()}
     async with StateDB() as db:
         await db.create_invocation(
             {
@@ -51,7 +56,7 @@ async def _start_invocation(
                 "prompt": prompt,
                 "started_at": time.time(),
                 "status": "running",
-                "node_metadata": metadata,
+                "node_metadata": node_metadata,
             }
         )
     return inv_id

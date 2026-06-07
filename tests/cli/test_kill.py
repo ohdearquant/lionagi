@@ -358,6 +358,77 @@ def test_identity_create_time_mismatch_rejected(monkeypatch: pytest.MonkeyPatch)
     assert _check_pid_identity(42, "lionagi", expected_create_time=100.5) is True
 
 
+# ── current_pid_markers (launch-time recording) ───────────────────────────────
+
+
+def test_current_pid_markers_records_own_pid():
+    """Markers describe the calling process; create_time present when psutil is."""
+    import os
+
+    from lionagi.cli.kill import current_pid_markers
+
+    markers = current_pid_markers()
+    assert markers["pid"] == os.getpid()
+    # dev env has psutil; create_time must be a real float matching this process.
+    import psutil
+
+    assert markers["pid_create_time"] == pytest.approx(
+        psutil.Process(os.getpid()).create_time()
+    )
+
+
+def test_current_pid_markers_pid_only_without_psutil(monkeypatch: pytest.MonkeyPatch):
+    """Without psutil, only the pid is recorded — no create_time key."""
+    import os
+    import sys
+
+    from lionagi.cli.kill import current_pid_markers
+
+    monkeypatch.setitem(sys.modules, "psutil", None)  # type: ignore[arg-type]
+    markers = current_pid_markers()
+    assert markers == {"pid": os.getpid()}
+
+
+async def test_kill_one_skips_recycled_pid_via_create_time(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A recorded create_time that no longer matches → skip, no false cancel.
+
+    Seeds a session whose node_metadata carries a pid plus a stale
+    pid_create_time, with a live pid whose psutil create_time differs. The kill
+    must report identity_mismatch and leave the row 'running' (CWE-362).
+    """
+    async with StateDB() as db:
+        sid = str(uuid.uuid4())
+        prog = str(uuid.uuid4())
+        await db.create_progression(prog)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog,
+                "status": "running",
+                "started_at": time.time(),
+                "node_metadata": {"pid": 4242, "pid_create_time": 100.0},
+            }
+        )
+
+        # Live pid, but psutil reports a *different* create_time (recycled).
+        _mock_psutil(
+            monkeypatch,
+            cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+            create_time=999.0,
+        )
+
+        row = db._row_to_dict(
+            await (await db.db.execute("SELECT * FROM sessions WHERE id = ?", (sid,))).fetchone()
+        )
+        result = await _kill_one(db, "session", sid, row, user_reason="")
+        assert result["signal"] == "identity_mismatch"
+
+        cur = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (sid,))
+        assert (await cur.fetchone())["status"] == "running", "must not cancel a recycled PID"
+
+
 # ── _resolve_entity ────────────────────────────────────────────────────────────
 
 

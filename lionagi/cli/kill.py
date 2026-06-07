@@ -21,6 +21,7 @@ Entity types resolved from id: session, invocation, play, show.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import signal
 import time
@@ -78,6 +79,28 @@ def _read_pid_from_entity(entity: dict[str, Any]) -> int | None:
             pass
 
     return None
+
+
+def current_pid_markers() -> dict[str, Any]:
+    """Identity markers for the *current* process, for later kill verification.
+
+    Merge the result into a live session/invocation's ``node_metadata`` at
+    creation time — but only from the process that actually owns the run, never
+    from a launcher that spawns the run as a subprocess.
+
+    Always includes ``"pid"``. Includes ``"pid_create_time"`` when psutil is
+    available, which lets ``li kill`` reject a recycled PID whose start time no
+    longer matches (CWE-362). If psutil is absent the create_time gate is simply
+    inactive and identity falls back to the session-marker / cmdline checks.
+    """
+    markers: dict[str, Any] = {"pid": os.getpid()}
+    # psutil is optional and create_time can fail on some platforms; the pid
+    # alone still drives the session-marker / cmdline identity gates.
+    with contextlib.suppress(Exception):
+        import psutil
+
+        markers["pid_create_time"] = psutil.Process(os.getpid()).create_time()
+    return markers
 
 
 # ── Signal / terminate ─────────────────────────────────────────────────────────
