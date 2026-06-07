@@ -90,7 +90,9 @@ results = await session.flow(
     parallel=True,
     max_concurrent=5,
 )
-# results: dict[node_id, Any]
+# results keys: "completed_operations", "operation_results",
+#               "final_context", "skipped_operations"
+print(results["operation_results"][n1])
 ```
 
 | Param | Type | Default | Notes |
@@ -102,7 +104,9 @@ results = await session.flow(
 | `verbose` | `bool` | `False` | Print progress |
 | `default_branch` | `Branch \| ID.Ref \| None` | `None` | Branch for unassigned nodes |
 
-Returns: `dict[str, Any]` — keyed by node ID.
+Returns: `dict[str, Any]` — wrapper with keys `"completed_operations"` (list of node IDs),
+`"operation_results"` (dict mapping node ID to output), `"final_context"` (merged context dict),
+and `"skipped_operations"` (list of skipped node IDs).
 
 For building `graph`, see [flow.md](flow.md).
 
