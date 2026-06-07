@@ -221,6 +221,39 @@ class MCPConnectionPool:
     _lock: Lock | None = None
     _lock_guard: threading.Lock = threading.Lock()
     _security: MCPSecurityConfig | None = None
+    # Per-server authorized policy, keyed by a stable content signature. A
+    # trusted loader records the policy a server was loaded under here so EVERY
+    # later client (re)creation for that server — including the lazy first
+    # invocation of a tool_names-registered tool, and reconnects after a cached
+    # client is cleaned up or goes stale — re-applies the same authorization,
+    # instead of falling back to the fail-closed default and breaking the tool.
+    # Keyed per-server (not a single global) so concurrent loads of different
+    # servers cannot contaminate each other's policy.
+    _server_security: dict[str, MCPSecurityConfig] = {}
+
+    @staticmethod
+    def _policy_key(server_config: dict[str, Any]) -> str:
+        """Stable signature for the per-server policy registry.
+
+        Content-based (NOT ``id()``-based) so the key computed at registration
+        matches the one computed from the metadata-stripped config at tool
+        invocation time.
+        """
+        if "server" in server_config:
+            return f"server:{server_config['server']}"
+        return f"inline:{server_config.get('command') or server_config.get('url')}"
+
+    @classmethod
+    def remember_security(
+        cls, server_config: dict[str, Any], security: MCPSecurityConfig | None
+    ) -> None:
+        """Record the policy a server was authorized under (trusted load).
+
+        No-op when ``security`` is None, so an un-authorized server keeps the
+        fail-closed default on later client creation.
+        """
+        if security is not None:
+            cls._server_security[cls._policy_key(server_config)] = security
 
     @classmethod
     def _get_lock(cls) -> Lock:
@@ -309,8 +342,18 @@ class MCPConnectionPool:
                 created. Passed explicitly down the trusted-loader call chain
                 so concurrent loads do not race on the process-global default.
                 A cached, already-validated client is returned as-is (its
-                transport was authorized at creation time).
+                transport was authorized at creation time). When omitted (e.g.
+                the stored tool callable invoking a tool), the policy this
+                server was loaded under is recovered from ``_server_security``
+                so reconnects stay authorized instead of failing closed.
         """
+        # An explicit policy authorizes this server for future (re)creations
+        # too; absent one, recover the policy the server was loaded under.
+        if security is not None:
+            cls.remember_security(server_config, security)
+        else:
+            security = cls._server_security.get(cls._policy_key(server_config))
+
         # Generate unique key for this config
         if "server" in server_config:
             # Server reference from .mcp.json

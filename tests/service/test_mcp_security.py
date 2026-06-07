@@ -455,3 +455,105 @@ class TestLoadMcpConfigTrustedLoad:
             assert MCPConnectionPool._security is None
         finally:
             MCPConnectionPool._security = None
+
+
+class TestPerServerPolicyPersistence:
+    """Codex #1279: the authorized policy must reach the stored tool-call path,
+    not only the discovery client.
+
+    A trusted load records the per-server policy; every later client creation
+    for that server — the lazy first invocation of a tool_names-registered tool,
+    and reconnects after the cached client is cleaned up or goes stale —
+    re-applies it instead of failing closed.
+    """
+
+    def _reset(self):
+        MCPConnectionPool._security = None
+        MCPConnectionPool._server_security.clear()
+        MCPConnectionPool._clients.clear()
+
+    async def test_invocation_without_security_recovers_recorded_policy(self, monkeypatch):
+        self._reset()
+        seen = []
+
+        class _FakeClient:
+            def is_connected(self):  # force recreation every call
+                return False
+
+        async def fake_create(config, security=None):
+            seen.append(security)
+            return _FakeClient()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            policy = MCPSecurityConfig(allow_commands=True)
+            # Trusted load records the policy (no client created — tool_names path).
+            MCPConnectionPool.remember_security({"command": "echo", "args": []}, policy)
+            # Stored callable invokes get_client WITHOUT a policy, with a fresh
+            # dict of the same content — the recorded policy must be recovered.
+            await MCPConnectionPool.get_client({"command": "echo", "args": ["x"]})
+            assert seen[-1] is policy
+        finally:
+            self._reset()
+
+    async def test_reconnect_after_cleanup_recovers_policy(self, monkeypatch):
+        self._reset()
+        seen = []
+
+        class _FakeClient:
+            def is_connected(self):
+                return True
+
+        async def fake_create(config, security=None):
+            seen.append(security)
+            return _FakeClient()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            MCPConnectionPool._configs["srv"] = {"command": "echo"}
+            policy = MCPSecurityConfig(allow_commands=True)
+            # Discovery records the policy.
+            await MCPConnectionPool.get_client({"server": "srv"}, security=policy)
+            assert seen[-1] is policy
+            # Cached client cleaned up; reconnect without an explicit policy.
+            MCPConnectionPool._clients.clear()
+            await MCPConnectionPool.get_client({"server": "srv"})
+            assert seen[-1] is policy
+        finally:
+            self._reset()
+            MCPConnectionPool._configs.pop("srv", None)
+
+    async def test_unrecorded_server_stays_fail_closed(self, monkeypatch):
+        self._reset()
+        seen = []
+
+        async def fake_create(config, security=None):
+            seen.append(security)
+            return object()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            # No policy recorded for this server → creation stays fail-closed (None).
+            await MCPConnectionPool.get_client({"command": "never-loaded"})
+            assert seen[-1] is None
+        finally:
+            self._reset()
+
+    async def test_register_tool_names_records_policy(self):
+        from lionagi.protocols.action.manager import ActionManager
+
+        self._reset()
+        try:
+            mgr = ActionManager()
+            policy = MCPSecurityConfig(allow_commands=True)
+            # tool_names branch builds Tool objects without creating a client;
+            # the policy must still be recorded for first-invocation recovery.
+            await mgr.register_mcp_server(
+                {"command": "echo", "args": []},
+                tool_names=["foo"],
+                security=policy,
+            )
+            key = MCPConnectionPool._policy_key({"command": "echo", "args": []})
+            assert MCPConnectionPool._server_security[key] is policy
+        finally:
+            self._reset()
