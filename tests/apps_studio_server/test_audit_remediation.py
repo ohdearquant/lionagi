@@ -455,3 +455,57 @@ class TestFireCancellationRecorded:
             assert run is not None and run["status"] == "cancelled"
             inv = await db.get_invocation(run["invocation_id"])
             assert inv is not None and inv["status"] == "cancelled"
+
+
+class TestInvocationReasonAggregation:
+    """A session reaches "aborted" only via the SIGINT handler, so the scheduler
+    aggregating an aborted child must record CANCELLED_SIGINT — not ABORTED_USER
+    (reserved for other user aborts) — matching the agent/flow teardown."""
+
+    async def test_aborted_child_aggregates_to_cancelled_sigint(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+        from lionagi.state.db import StateDB
+        from lionagi.state.reasons import RunReasons
+        from lionagi.studio.scheduler.engine import _resolve_invocation_terminal
+
+        inv_id = "inv-sigint"
+        async with StateDB() as db:
+            await db.create_invocation(
+                {"id": inv_id, "skill": "show", "started_at": 0.0, "status": "running"}
+            )
+            await db.create_progression("prog-1")
+            await db.create_session(
+                {
+                    "id": "sess-1",
+                    "progression_id": "prog-1",
+                    "status": "aborted",
+                    "started_at": 0.0,
+                    "invocation_id": inv_id,
+                }
+            )
+            status, reason_code, _summary, _ev, _meta = await _resolve_invocation_terminal(
+                db, inv_id, fallback_status="completed"
+            )
+
+        assert status == "aborted"
+        assert reason_code == RunReasons.CANCELLED_SIGINT
+        assert reason_code != RunReasons.ABORTED_USER
+
+    async def test_fallback_aborted_is_cancelled_sigint(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+        from lionagi.state.db import StateDB
+        from lionagi.state.reasons import RunReasons
+        from lionagi.studio.scheduler.engine import _resolve_invocation_terminal
+
+        inv_id = "inv-fallback"
+        async with StateDB() as db:
+            await db.create_invocation(
+                {"id": inv_id, "skill": "show", "started_at": 0.0, "status": "running"}
+            )
+            # No child sessions → falls through to fallback_status handling.
+            status, reason_code, *_ = await _resolve_invocation_terminal(
+                db, inv_id, fallback_status="aborted"
+            )
+
+        assert status == "aborted"
+        assert reason_code == RunReasons.CANCELLED_SIGINT

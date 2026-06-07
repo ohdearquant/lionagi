@@ -57,10 +57,14 @@ async def _resolve_invocation_terminal(
                 metadata,
             )
         if any(s == "aborted" for s in child_statuses):
+            # A session reaches "aborted" only via the SIGINT (Ctrl-C) handler,
+            # so the aggregate reason is CANCELLED_SIGINT — consistent with the
+            # agent/flow teardown. ABORTED_USER is reserved for other
+            # user-initiated aborts.
             return (
                 "aborted",
-                RunReasons.ABORTED_USER,
-                "Invocation was aborted because at least one child session was aborted.",
+                RunReasons.CANCELLED_SIGINT,
+                "Invocation was interrupted (SIGINT) because at least one child session was aborted.",
                 evidence_refs,
                 metadata,
             )
@@ -98,10 +102,11 @@ async def _resolve_invocation_terminal(
             metadata,
         )
     if fallback_status == "aborted":
+        # "aborted" originates from the SIGINT (Ctrl-C) handler.
         return (
             "aborted",
-            RunReasons.ABORTED_USER,
-            "Invocation process was aborted by the user.",
+            RunReasons.CANCELLED_SIGINT,
+            "Invocation process was interrupted (SIGINT).",
             evidence_refs,
             metadata,
         )
