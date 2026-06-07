@@ -440,11 +440,16 @@ async def _setup_live_persist(
                 from lionagi.cli._project import detect_project
 
                 _proj, _proj_src = detect_project()
+            # Record this process's identity so `li kill` can verify the PID
+            # before signalling (CWE-362). This is the run process.
+            from lionagi.cli.kill import current_pid_markers
+
+            _node_meta = {**(session_dict.get("node_metadata") or {}), **current_pid_markers()}
             await db.create_session(
                 {
                     "id": session_id,
                     "created_at": session_dict["created_at"],
-                    "node_metadata": session_dict.get("node_metadata"),
+                    "node_metadata": _node_meta,
                     "name": session_dict.get("name"),
                     "user": session_dict.get("user"),
                     "progression_id": session_prog_id,
@@ -599,7 +604,8 @@ def _resolve_run_reason(
             None,
         )
     if status == "aborted":
-        return RunReasons.ABORTED_USER, "User pressed Ctrl-C.", None
+        # "aborted" is set exclusively by the KeyboardInterrupt (SIGINT) handler.
+        return RunReasons.CANCELLED_SIGINT, "User pressed Ctrl-C (SIGINT).", None
     if status == "cancelled":
         return (
             RunReasons.CANCELLED_SYSTEM,

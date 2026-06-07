@@ -760,11 +760,17 @@ async def start_live_persist(
             from lionagi.cli._project import detect_project
 
             _proj, _proj_src = detect_project()
+        # Record this process's identity so `li kill` can verify the PID before
+        # signalling (CWE-362). This is the run process — getpid() is correct.
+        from lionagi.cli.kill import current_pid_markers
+
+        _identity_markers = current_pid_markers()
+        _node_meta = {**(session_dict.get("node_metadata") or {}), **_identity_markers}
         await db.create_session(
             {
                 "id": session_id,
                 "created_at": session_dict["created_at"],
-                "node_metadata": session_dict.get("node_metadata"),
+                "node_metadata": _node_meta,
                 "name": session_dict.get("name"),
                 "user": session_dict.get("user"),
                 "progression_id": session_prog_id,
@@ -801,6 +807,10 @@ async def start_live_persist(
             "hooks": [],
             "artifacts_path": artifacts_path,
             "artifact_contract": artifact_contract,
+            # Kill-identity markers (pid/pid_create_time) — every later
+            # node_metadata write MUST merge these back in (identity last) so a
+            # DAG/segment overwrite can't blank the PID `li kill` needs (CWE-362).
+            "identity_markers": _identity_markers,
         }
         env._live_persist = ctx
 
@@ -979,7 +989,9 @@ async def stop_live_persist(
 
         extras = getattr(env, "_finalize_extras", None)
         if extras:
-            update_kwargs["node_metadata"] = json.dumps(extras)
+            # Merge identity markers last so the final write keeps pid/pid_create_time.
+            markers = ctx.get("identity_markers") or {}
+            update_kwargs["node_metadata"] = json.dumps({**extras, **markers})
 
         await db.update_session(session_id, **update_kwargs)
 

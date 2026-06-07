@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lionagi.cli.kill import (
+    _check_pid_identity,
     _do_kill,
     _do_kill_all_stale,
     _kill_one,
@@ -194,6 +195,297 @@ def test_terminate_pid_escalates_to_sigkill(monkeypatch: pytest.MonkeyPatch):
     sigs_sent = [sig for _, sig in kill_calls]
     assert _signal.SIGTERM in sigs_sent
     assert _signal.SIGKILL in sigs_sent
+
+
+# ── _terminate_pid identity checks (issue #1126) ──────────────────────────────
+
+
+def test_terminate_pid_identity_mismatch_no_signal_sent(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """If cmdline doesn't match expected_cmd, no signal is sent."""
+    import signal as _signal
+
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    # Mock psutil with a process whose cmdline does NOT contain "lionagi".
+    fake_psutil = MagicMock()
+    fake_proc = MagicMock()
+    fake_proc.cmdline.return_value = ["/usr/bin/python3", "unrelated_script.py"]
+    fake_psutil.Process.return_value = fake_proc
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+
+    result = _terminate_pid(42, grace_seconds=0.1, expected_cmd="lionagi")
+    assert result == "identity_mismatch"
+    assert kill_calls == [], "no signal must be sent on cmdline mismatch"
+
+
+def test_terminate_pid_identity_match_sends_signal(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """If cmdline contains expected_cmd, kill proceeds normally."""
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    fake_psutil = MagicMock()
+    fake_proc = MagicMock()
+    fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionagi.cli.main"]
+    fake_psutil.Process.return_value = fake_proc
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+
+    result = _terminate_pid(42, grace_seconds=0.01, expected_cmd="lionagi")
+    # SIGTERM must have been sent
+    assert any(sig == __import__("signal").SIGTERM for _, sig in kill_calls)
+    assert result in ("sigterm", "sigkill")
+
+
+def _mock_psutil(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    cmdline: list[str],
+    environ: dict[str, str] | None = None,
+    create_time: float = 100.0,
+) -> list[tuple[int, int]]:
+    """Install a fake psutil + capture os.kill calls. Returns the calls list."""
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    fake_psutil = MagicMock()
+    fake_proc = MagicMock()
+    fake_proc.cmdline.return_value = cmdline
+    fake_proc.environ.return_value = environ or {}
+    fake_proc.create_time.return_value = create_time
+    fake_psutil.Process.return_value = fake_proc
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+    return kill_calls
+
+
+def test_identity_rejects_path_substring(monkeypatch: pytest.MonkeyPatch):
+    """An unrelated process that only *mentions* lionagi in a path arg is rejected.
+
+    The reported false positive: ``vim /Users/lion/projects/lionagi/README.md``.
+    A substring match would signal this recycled PID; an exact-token match must not.
+    """
+    kill_calls = _mock_psutil(
+        monkeypatch,
+        cmdline=["/usr/bin/vim", "/Users/lion/projects/lionagi/README.md"],
+    )
+    result = _terminate_pid(42, grace_seconds=0.1, expected_cmd="lionagi")
+    assert result == "identity_mismatch"
+    assert kill_calls == [], "must not signal a process that only has lionagi in a path"
+
+
+def test_identity_accepts_dash_m_module(monkeypatch: pytest.MonkeyPatch):
+    """``python -m lionagi.cli.main`` is a genuine invocation and is accepted."""
+    _mock_psutil(monkeypatch, cmdline=["/usr/bin/python3", "-m", "lionagi.cli.main"])
+    assert _check_pid_identity(42, "lionagi") is True
+
+
+def test_identity_accepts_li_entrypoint(monkeypatch: pytest.MonkeyPatch):
+    """The ``li`` console-script entrypoint is accepted by executable basename."""
+    _mock_psutil(monkeypatch, cmdline=["/opt/venv/bin/li", "kill", "abc123"])
+    assert _check_pid_identity(42, "lionagi") is True
+
+
+def test_identity_session_marker_match(monkeypatch: pytest.MonkeyPatch):
+    """A matching LIONAGI_SESSION_ID env marker is a definitive match."""
+    _mock_psutil(
+        monkeypatch,
+        cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+        environ={"LIONAGI_SESSION_ID": "run-123"},
+    )
+    assert _check_pid_identity(42, "lionagi", expected_session_id="run-123") is True
+
+
+def test_identity_session_marker_mismatch_rejected(monkeypatch: pytest.MonkeyPatch):
+    """A *different* session marker means another lionagi run holds this PID — reject.
+
+    Even though the cmdline looks like lionagi, the recycled PID belongs to a
+    different run, so the kill must be skipped (CWE-362).
+    """
+    _mock_psutil(
+        monkeypatch,
+        cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+        environ={"LIONAGI_SESSION_ID": "other-run"},
+    )
+    assert _check_pid_identity(42, "lionagi", expected_session_id="run-123") is False
+
+
+def test_identity_absent_marker_requires_create_time_match(monkeypatch: pytest.MonkeyPatch):
+    """Session expected + no env marker: needs create_time AND lionagi cmdline.
+
+    A lionagi-looking cmdline cannot distinguish THIS run from a different
+    concurrent run that recycled the PID, and a create_time match alone could be
+    a recycled PID that started inside the tolerance. Without the env marker,
+    both must hold; otherwise skip the kill.
+    """
+    _mock_psutil(
+        monkeypatch,
+        cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+        environ={},
+        create_time=500.0,
+    )
+    # No create_time recorded → cannot prove this run → skip.
+    assert _check_pid_identity(42, "lionagi", expected_session_id="run-123") is False
+    # create_time matches AND cmdline is lionagi → positively identified.
+    assert (
+        _check_pid_identity(
+            42, "lionagi", expected_session_id="run-123", expected_create_time=500.0
+        )
+        is True
+    )
+    # create_time differs → recycled PID → skip.
+    assert (
+        _check_pid_identity(
+            42, "lionagi", expected_session_id="run-123", expected_create_time=1.0
+        )
+        is False
+    )
+
+
+def test_identity_absent_marker_rejects_nonlionagi_cmdline(monkeypatch: pytest.MonkeyPatch):
+    """No marker + matching create_time but a non-lionagi cmdline → reject.
+
+    Guards the recycled-PID case where an unrelated process started within the
+    create_time tolerance: create_time alone must not authorize the kill.
+    """
+    _mock_psutil(
+        monkeypatch,
+        cmdline=["/usr/bin/vim", "/Users/lion/projects/lionagi/README.md"],
+        environ={},
+        create_time=500.0,
+    )
+    assert (
+        _check_pid_identity(
+            42, "lionagi", expected_session_id="run-123", expected_create_time=500.0
+        )
+        is False
+    )
+
+
+async def test_do_kill_identity_mismatch_reports_failure(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """identity_mismatch must NOT report success: no 'killed' line, exit code 1.
+
+    The session stays running and `li kill` returns non-zero so callers/scripts
+    see the kill was blocked rather than silently 'successful'.
+    """
+    async with StateDB() as db:
+        sid = str(uuid.uuid4())
+        prog = str(uuid.uuid4())
+        await db.create_progression(prog)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog,
+                "status": "running",
+                "started_at": time.time(),
+                "node_metadata": {"pid": 4242, "pid_create_time": 100.0},
+            }
+        )
+
+    # Live pid but a different create_time → recycled → identity_mismatch.
+    _mock_psutil(
+        monkeypatch,
+        cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+        create_time=999.0,
+    )
+
+    rc = await _do_kill(sid)
+    assert rc == 1, "blocked kill must return non-zero"
+
+    async with StateDB() as db:
+        cur = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (sid,))
+        assert (await cur.fetchone())["status"] == "running", "must not cancel an unverified PID"
+
+
+def test_identity_create_time_mismatch_rejected(monkeypatch: pytest.MonkeyPatch):
+    """create_time is a tight fingerprint: only a sub-tolerance match is accepted.
+
+    Same host/kernel → create_time is reproducible to sub-tick precision, so the
+    tolerance is ~10ms. A 0.5s difference is a *different* process and must be
+    rejected; only a near-exact match (within tick rounding) is accepted.
+    """
+    _mock_psutil(
+        monkeypatch,
+        cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+        create_time=100.0,
+    )
+    assert _check_pid_identity(42, "lionagi", expected_create_time=999.0) is False
+    # 0.5s apart → different process → reject (was accepted under the old 2s gate).
+    assert _check_pid_identity(42, "lionagi", expected_create_time=100.5) is False
+    # within tick-rounding tolerance → accepted.
+    assert _check_pid_identity(42, "lionagi", expected_create_time=100.05) is True
+
+
+# ── current_pid_markers (launch-time recording) ───────────────────────────────
+
+
+def test_current_pid_markers_records_own_pid():
+    """Markers describe the calling process; create_time present when psutil is."""
+    import os
+
+    from lionagi.cli.kill import current_pid_markers
+
+    markers = current_pid_markers()
+    assert markers["pid"] == os.getpid()
+    # dev env has psutil; create_time must be a real float matching this process.
+    import psutil
+
+    assert markers["pid_create_time"] == pytest.approx(
+        psutil.Process(os.getpid()).create_time()
+    )
+
+
+async def test_kill_one_skips_recycled_pid_via_create_time(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A recorded create_time that no longer matches → skip, no false cancel.
+
+    Seeds a session whose node_metadata carries a pid plus a stale
+    pid_create_time, with a live pid whose psutil create_time differs. The kill
+    must report identity_mismatch and leave the row 'running' (CWE-362).
+    """
+    async with StateDB() as db:
+        sid = str(uuid.uuid4())
+        prog = str(uuid.uuid4())
+        await db.create_progression(prog)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog,
+                "status": "running",
+                "started_at": time.time(),
+                "node_metadata": {"pid": 4242, "pid_create_time": 100.0},
+            }
+        )
+
+        # Live pid, but psutil reports a *different* create_time (recycled).
+        _mock_psutil(
+            monkeypatch,
+            cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+            create_time=999.0,
+        )
+
+        row = db._row_to_dict(
+            await (await db.db.execute("SELECT * FROM sessions WHERE id = ?", (sid,))).fetchone()
+        )
+        result = await _kill_one(db, "session", sid, row, user_reason="")
+        assert result["signal"] == "identity_mismatch"
+
+        cur = await db.db.execute("SELECT status FROM sessions WHERE id = ?", (sid,))
+        assert (await cur.fetchone())["status"] == "running", "must not cancel a recycled PID"
 
 
 # ── _resolve_entity ────────────────────────────────────────────────────────────

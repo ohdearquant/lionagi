@@ -455,3 +455,93 @@ class TestFireCancellationRecorded:
             assert run is not None and run["status"] == "cancelled"
             inv = await db.get_invocation(run["invocation_id"])
             assert inv is not None and inv["status"] == "cancelled"
+
+
+class TestInvocationReasonAggregation:
+    """Aggregating an aborted child must reflect the child's ACTUAL reason:
+    CANCELLED_SIGINT when it was SIGINT'd (agent/flow teardown), but ABORTED_USER
+    when an admin transition or `li state doctor` aborted it — `aborted` is not
+    exclusively SIGINT in this codebase."""
+
+    @staticmethod
+    async def _seed_aborted_child(db, inv_id: str, sid: str, prog: str, reason_code: str) -> None:
+        await db.create_invocation(
+            {"id": inv_id, "skill": "show", "started_at": 0.0, "status": "running"}
+        )
+        await db.create_progression(prog)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog,
+                "status": "running",
+                "started_at": 0.0,
+                "invocation_id": inv_id,
+            }
+        )
+        # Transition to aborted with a concrete reason (what the SIGINT handler,
+        # admin router, or doctor would record).
+        await db.update_status(
+            "session",
+            sid,
+            new_status="aborted",
+            reason_code=reason_code,
+            reason_summary="seed",
+            source="executor",
+            actor="test",
+        )
+
+    async def test_sigint_aborted_child_aggregates_to_cancelled_sigint(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+        from lionagi.state.db import StateDB
+        from lionagi.state.reasons import RunReasons
+        from lionagi.studio.scheduler.engine import _resolve_invocation_terminal
+
+        async with StateDB() as db:
+            await self._seed_aborted_child(
+                db, "inv-sigint", "sess-1", "prog-1", RunReasons.CANCELLED_SIGINT
+            )
+            status, reason_code, *_ = await _resolve_invocation_terminal(
+                db, "inv-sigint", fallback_status="completed"
+            )
+
+        assert status == "aborted"
+        assert reason_code == RunReasons.CANCELLED_SIGINT
+
+    async def test_admin_aborted_child_keeps_aborted_user(self, monkeypatch, tmp_path):
+        """A child aborted by admin/doctor (ABORTED_USER) must NOT become SIGINT."""
+        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+        from lionagi.state.db import StateDB
+        from lionagi.state.reasons import RunReasons
+        from lionagi.studio.scheduler.engine import _resolve_invocation_terminal
+
+        async with StateDB() as db:
+            await self._seed_aborted_child(
+                db, "inv-admin", "sess-2", "prog-2", RunReasons.ABORTED_USER
+            )
+            status, reason_code, *_ = await _resolve_invocation_terminal(
+                db, "inv-admin", fallback_status="completed"
+            )
+
+        assert status == "aborted"
+        assert reason_code == RunReasons.ABORTED_USER
+        assert reason_code != RunReasons.CANCELLED_SIGINT
+
+    async def test_fallback_aborted_keeps_aborted_user(self, monkeypatch, tmp_path):
+        """No child reason to inspect → neutral ABORTED_USER, not an assumed SIGINT."""
+        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+        from lionagi.state.db import StateDB
+        from lionagi.state.reasons import RunReasons
+        from lionagi.studio.scheduler.engine import _resolve_invocation_terminal
+
+        async with StateDB() as db:
+            await db.create_invocation(
+                {"id": "inv-fallback", "skill": "show", "started_at": 0.0, "status": "running"}
+            )
+            status, reason_code, *_ = await _resolve_invocation_terminal(
+                db, "inv-fallback", fallback_status="aborted"
+            )
+
+        assert status == "aborted"
+        assert reason_code == RunReasons.ABORTED_USER

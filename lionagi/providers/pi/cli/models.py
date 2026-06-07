@@ -779,6 +779,8 @@ async def stream_pi_cli(
                             _pp_text(text, theme)
 
                 elif etype == "text_end":
+                    # Field name verified against pi_cli_events.jsonl fixture:
+                    # assistantMessageEvent.content holds the accumulated text.
                     if text := event.get("content", ""):
                         session.result = text
 
@@ -807,6 +809,8 @@ async def stream_pi_cli(
 
                 elif etype in ("toolcall_start", "toolcall_delta", "toolcall_end"):
                     if etype == "toolcall_end":
+                        # Payload structure verified against pi_cli_events.jsonl fixture:
+                        # event.toolCall.{id, name, arguments} (nested under "toolCall" key).
                         tu = _tool_call_from_event(event)
                         chunk.tool_use = tu
                         session.tool_uses.append(tu)
@@ -853,7 +857,17 @@ async def stream_pi_cli(
             elif typ == "tool_execution_update":
                 yield chunk
 
+            elif typ == "start":
+                # Top-level AssistantMessageEvent start: carries partial assistant
+                # message with initial model/usage info.
+                _remember_assistant_message(session, obj.get("partial"))
+                yield chunk
+
             elif typ == "done":
+                # Top-level done: may carry final message with model/usage.
+                # Both AgentEvent.done (end-of-stream) and a top-level
+                # AssistantMessageEvent.done use this type.
+                _remember_assistant_message(session, obj.get("message"))
                 break
 
             elif typ == "error":
