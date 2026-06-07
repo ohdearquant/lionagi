@@ -280,3 +280,109 @@ async def test_spec_coding_preset_editor_blocks_outside_workspace(tmp_path):
             "editor",
             {"action": "write", "file_path": "/etc/passwd", "content": "bad"},
         )
+
+
+# ---------------------------------------------------------------------------
+# Relative-path regression tests (guard_paths must resolve against workspace)
+# ---------------------------------------------------------------------------
+# These guard against a regression where relative paths like "src/foo.py" were
+# resolved against the process cwd instead of the configured workspace root,
+# causing valid in-workspace relative paths to be wrongly blocked.
+
+
+async def test_coding_preset_reader_allows_relative_in_workspace(tmp_path):
+    """A workspace-relative reader path ("src/foo.py") must be allowed.
+
+    The guard must resolve the relative path against the workspace root, not
+    the process cwd, so agents can use natural relative paths inside their
+    workspace.
+    """
+    config = AgentConfig.coding(cwd=str(tmp_path))
+    branch = await _make_branch(config)
+
+    result = await branch.acts.registry["reader"].preprocessor(
+        {"action": "read", "path": "src/foo.py"}
+    )
+    assert result is None or isinstance(result, dict)
+
+
+async def test_coding_preset_editor_allows_relative_in_workspace(tmp_path):
+    """A workspace-relative editor path ("output.txt") must be allowed."""
+    config = AgentConfig.coding(cwd=str(tmp_path))
+    branch = await _make_branch(config)
+
+    result = await branch.acts.registry["editor"].preprocessor(
+        {"action": "write", "file_path": "output.txt", "content": "hello"}
+    )
+    assert result is None or isinstance(result, dict)
+
+
+async def test_coding_preset_reader_blocks_relative_traversal(tmp_path):
+    """A relative traversal ("../../etc/passwd") must be blocked.
+
+    Even with a relative path, a ../ escape that lands outside the workspace
+    root must be rejected — resolving relative against the workspace root
+    must not weaken the escape check.
+    """
+    config = AgentConfig.coding(cwd=str(tmp_path))
+    branch = await _make_branch(config)
+
+    with pytest.raises(PermissionError):
+        await _invoke_pre_hooks(branch, "reader", {"action": "read", "path": "../../etc/passwd"})
+
+
+async def test_coding_preset_editor_blocks_relative_traversal(tmp_path):
+    """A relative traversal via editor ("../../etc/cron.d/evil") must be blocked."""
+    config = AgentConfig.coding(cwd=str(tmp_path))
+    branch = await _make_branch(config)
+
+    with pytest.raises(PermissionError):
+        await _invoke_pre_hooks(
+            branch,
+            "editor",
+            {"action": "write", "file_path": "../../etc/cron.d/evil", "content": "bad"},
+        )
+
+
+async def test_spec_coding_preset_reader_allows_relative_in_workspace(tmp_path):
+    """AgentSpec.coding() — workspace-relative reader path must be allowed."""
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch_from_spec(spec)
+
+    result = await branch.acts.registry["reader"].preprocessor(
+        {"action": "read", "path": "src/main.py"}
+    )
+    assert result is None or isinstance(result, dict)
+
+
+async def test_spec_coding_preset_editor_allows_relative_in_workspace(tmp_path):
+    """AgentSpec.coding() — workspace-relative editor path must be allowed."""
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch_from_spec(spec)
+
+    result = await branch.acts.registry["editor"].preprocessor(
+        {"action": "write", "file_path": "lib/util.py", "content": "# util"}
+    )
+    assert result is None or isinstance(result, dict)
+
+
+async def test_spec_coding_preset_reader_blocks_relative_traversal(tmp_path):
+    """AgentSpec.coding() — relative traversal on reader must be blocked."""
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch_from_spec(spec)
+
+    with pytest.raises(PermissionError):
+        await _invoke_pre_hooks(branch, "reader", {"action": "read", "path": "../../etc/passwd"})
+
+
+async def test_spec_coding_preset_editor_blocks_relative_traversal(tmp_path):
+    """AgentSpec.coding() — relative traversal on editor must be blocked."""
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch_from_spec(spec)
+
+    with pytest.raises(PermissionError):
+        await _invoke_pre_hooks(
+            branch,
+            "editor",
+            {"action": "write", "file_path": "../../etc/passwd", "content": "bad"},
+        )
