@@ -116,3 +116,56 @@ async def test_persist_message_legacy_progression_id_still_works():
         )
 
     mock_db.append_to_progression.assert_any_await("legacy_prog", "msg_legacy")
+
+
+# ── persist_session_start: running status must carry a reason_code ─────────────
+
+
+class TestPersistSessionStartReasonCode:
+    """Codex finding: persist_session_start writes status='running', which
+    routes through update_status() and REQUIRES a reason_code. There is no
+    canonical default for (session, running), so without an explicit code the
+    deprecation shim raises ValueError — and HookBus.emit() swallows it,
+    silently dropping every provenance field. Regression: the hook must run
+    against a real StateDB without raising and persist provenance + a reason.
+    """
+
+    async def test_persist_session_start_persists_provenance_with_reason(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+        from lionagi.hooks.builtins import persist_session_start
+        from lionagi.state.db import StateDB
+        from lionagi.state.reasons import RunReasons
+
+        sid = "sess-start-1"
+        async with StateDB() as db:
+            await db.create_progression("prog-start-1")
+            await db.create_session(
+                {
+                    "id": sid,
+                    "progression_id": "prog-start-1",
+                    "status": "running",
+                }
+            )
+
+        # Must NOT raise (the bug raised ValueError, swallowed by the bus).
+        await persist_session_start(
+            session_id=sid,
+            model="gpt-5.4-mini",
+            provider="openai",
+            effort="high",
+            agent_name="reviewer",
+        )
+
+        async with StateDB() as db:
+            row = await db.get_session(sid)
+
+        assert row is not None
+        assert row["status"] == "running"
+        # Provenance survived (it would have been dropped if the status write
+        # raised before the legacy field UPDATE).
+        assert row["model"] == "gpt-5.4-mini"
+        assert row["provider"] == "openai"
+        # A canonical "started" reason was recorded, not the deprecation default.
+        assert row["status_reason_code"] == RunReasons.STARTED_OK

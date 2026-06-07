@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -237,11 +238,24 @@ class MCPConnectionPool:
 
         Content-based (NOT ``id()``-based) so the key computed at registration
         matches the one computed from the metadata-stripped config at tool
-        invocation time.
+        invocation time. Both call sites pass the same non-underscore key set
+        (registration: the raw ``server_config``; invocation: that same dict
+        minus ``_``-prefixed metadata), so fingerprinting all non-``_`` keys
+        is stable across both.
+
+        For inline configs the key fingerprints the ENTIRE transport
+        definition (command + args + env + url + headers + …), not just the
+        command or URL. Two different inline servers that merely share an
+        executable (e.g. both ``python``) or a host would otherwise collide
+        on one key, letting an UNauthorized config recover a trusted config's
+        policy and bypass the fail-closed default.
         """
         if "server" in server_config:
             return f"server:{server_config['server']}"
-        return f"inline:{server_config.get('command') or server_config.get('url')}"
+        material = {k: v for k, v in server_config.items() if not k.startswith("_")}
+        blob = json.dumps(material, sort_keys=True, default=str)
+        digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()
+        return f"inline:{digest}"
 
     @classmethod
     def remember_security(

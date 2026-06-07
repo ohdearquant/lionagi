@@ -488,10 +488,12 @@ class TestPerServerPolicyPersistence:
         try:
             policy = MCPSecurityConfig(allow_commands=True)
             # Trusted load records the policy (no client created — tool_names path).
-            MCPConnectionPool.remember_security({"command": "echo", "args": []}, policy)
+            MCPConnectionPool.remember_security({"command": "echo", "args": ["a"]}, policy)
             # Stored callable invokes get_client WITHOUT a policy, with a fresh
-            # dict of the same content — the recorded policy must be recovered.
-            await MCPConnectionPool.get_client({"command": "echo", "args": ["x"]})
+            # dict of the SAME content (the real flow strips only `_`-prefixed
+            # metadata, so transport fields are identical) — the recorded policy
+            # must be recovered.
+            await MCPConnectionPool.get_client({"command": "echo", "args": ["a"]})
             assert seen[-1] is policy
         finally:
             self._reset()
@@ -555,5 +557,64 @@ class TestPerServerPolicyPersistence:
             )
             key = MCPConnectionPool._policy_key({"command": "echo", "args": []})
             assert MCPConnectionPool._server_security[key] is policy
+        finally:
+            self._reset()
+
+    async def test_shared_command_different_args_do_not_share_policy(self, monkeypatch):
+        """Codex follow-up: the inline policy key must fingerprint the WHOLE
+        transport, not just the command/url. A trusted
+        ``{command: python, args: [safe.py]}`` must NOT authorize a different
+        ``{command: python, args: [-c, ...]}`` that merely shares the executable.
+        """
+        self._reset()
+        seen = []
+
+        async def fake_create(config, security=None):
+            seen.append(security)
+            return object()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            policy = MCPSecurityConfig(allow_commands=True)
+            safe = {"command": "python", "args": ["safe_server.py"]}
+            evil = {"command": "python", "args": ["-c", "import os; os.system('x')"]}
+
+            # Distinct fingerprints — the leak would make these collide.
+            assert MCPConnectionPool._policy_key(safe) != MCPConnectionPool._policy_key(evil)
+
+            # Trust only the safe config.
+            MCPConnectionPool.remember_security(safe, policy)
+
+            # The evil config must NOT recover the safe policy → stays fail-closed.
+            await MCPConnectionPool.get_client(evil)
+            assert seen[-1] is None, "different args must not inherit another config's policy"
+
+            # The safe config still recovers its own policy.
+            await MCPConnectionPool.get_client(safe)
+            assert seen[-1] is policy
+        finally:
+            self._reset()
+
+    async def test_shared_url_different_headers_do_not_share_policy(self, monkeypatch):
+        """Same leak for HTTP transports keyed only on URL."""
+        self._reset()
+        seen = []
+
+        async def fake_create(config, security=None):
+            seen.append(security)
+            return object()
+
+        monkeypatch.setattr(MCPConnectionPool, "_create_client", staticmethod(fake_create))
+        try:
+            policy = MCPSecurityConfig(allow_urls=True)
+            trusted = {"url": "https://api.example.com", "headers": {"X-Tenant": "a"}}
+            other = {"url": "https://api.example.com", "headers": {"X-Tenant": "b"}}
+
+            assert MCPConnectionPool._policy_key(trusted) != MCPConnectionPool._policy_key(
+                other
+            )
+            MCPConnectionPool.remember_security(trusted, policy)
+            await MCPConnectionPool.get_client(other)
+            assert seen[-1] is None
         finally:
             self._reset()

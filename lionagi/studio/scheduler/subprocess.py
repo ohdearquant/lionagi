@@ -9,6 +9,7 @@ import contextlib
 import logging
 import os
 import re
+import signal
 
 _log = logging.getLogger(__name__)
 
@@ -89,20 +90,39 @@ async def spawn_and_wait(argv: list[str], invocation_id: str) -> tuple[int, str]
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
         env=env,
+        # `uv run li` forks the real worker (and that worker may fork
+        # further). Put the whole tree in its own session/process group so a
+        # cancel can signal the GROUP, not just the direct child — otherwise
+        # grandchildren survive scheduler shutdown as orphans.
+        start_new_session=True,
+    )
+    # Capture the pgid NOW — once the child exits and is reaped,
+    # os.getpgid(proc.pid) raises ProcessLookupError and we'd skip the group
+    # kill. start_new_session=True makes pgid == proc.pid. Guard mocked pids
+    # in tests: a MagicMock.pid coerces to 1, and killpg(1, …) hits init.
+    _pgid: int | None = (
+        proc.pid if isinstance(proc.pid, int) and proc.pid > 1 else None
     )
 
     try:
         _, stderr = await proc.communicate()
     except asyncio.CancelledError:
         # Cancellation (e.g. scheduler shutdown) must not leave the spawned
-        # `uv run li` child detached. Terminate it, give it a moment to exit,
-        # then kill, before re-raising so the caller can record the cancel.
+        # `uv run li` tree detached. SIGTERM the whole group, give it a moment
+        # to exit, then SIGKILL the group, before re-raising so the caller can
+        # record the cancel.
         _log.warning("spawn_and_wait cancelled; terminating child for %s", invocation_id)
+        if _pgid is not None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(_pgid, signal.SIGTERM)
         with contextlib.suppress(ProcessLookupError):
             proc.terminate()
         try:
             await asyncio.wait_for(proc.wait(), timeout=5)
         except (TimeoutError, asyncio.TimeoutError):
+            if _pgid is not None:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(_pgid, signal.SIGKILL)
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             with contextlib.suppress(Exception):
