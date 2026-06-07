@@ -1118,6 +1118,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         from lionagi.ln.concurrency import run_sync
 
         async with self.async_lock:
+            snapshot_ids = set(self.collections.keys())
             df = self.to_df()
 
         def _write() -> None:
@@ -1138,7 +1139,9 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
         if clear:
             async with self.async_lock:
-                self._clear()
+                self.progression.exclude(list(snapshot_ids))
+                for uid in snapshot_ids:
+                    self.collections.pop(uid, None)
 
     def filter_by_type(
         self,

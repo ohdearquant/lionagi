@@ -211,6 +211,7 @@ class DataLogger:
                 logger.debug("No logs to dump.")
                 return
             fp = persist_path or self._create_path()
+            snapshot_ids = set(self.logs.collections.keys())
             df = self.logs.to_df()
 
         do_clear = self._config.clear_after_dump if clear is None else clear
@@ -237,7 +238,9 @@ class DataLogger:
 
         if do_clear:
             async with self.logs:
-                self.logs.clear()
+                self.logs.progression.exclude(list(snapshot_ids))
+                for uid in snapshot_ids:
+                    self.logs.collections.pop(uid, None)
 
     def _create_path(self) -> Path:
         """

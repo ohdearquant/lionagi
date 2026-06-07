@@ -223,3 +223,77 @@ class TestPileAdumpWriteFailure:
 
         # Pile must be unchanged.
         assert len(p) == 4
+
+
+# ---------------------------------------------------------------------------
+# Concurrent-append survival tests
+# ---------------------------------------------------------------------------
+
+
+class TestAdumpConcurrentAppend:
+    """Items appended during the write window must survive the post-dump clear."""
+
+    @pytest.mark.asyncio
+    async def test_pile_adump_concurrent_append_survives(self, tmp_path, monkeypatch):
+        """An item added to a Pile while adump is writing must not be removed."""
+        import lionagi.protocols.generic.pile as pile_module
+
+        items = [MockElement(value=i) for i in range(3)]
+        p = Pile(collections=items)
+        late_item = MockElement(value=99)
+        appended = []
+
+        original_run_sync = pile_module.__builtins__  # not used directly
+        # Monkeypatch run_sync so that we can append *after* the snapshot but
+        # *before* the selective clear.
+        import lionagi.ln.concurrency as conc_module
+
+        original_run_sync_fn = conc_module.run_sync
+
+        async def slow_run_sync(fn):
+            result = await original_run_sync_fn(fn)
+            # Simulate a concurrent append arriving after the write finishes.
+            p.include(late_item)
+            appended.append(late_item)
+            return result
+
+        monkeypatch.setattr(conc_module, "run_sync", slow_run_sync)
+
+        fp = tmp_path / "concurrent.json"
+        await p.adump(fp, clear=True)
+
+        assert late_item in p, "Late item must survive the selective clear"
+        assert len(p) == 1, f"Only the late item should remain, got {len(p)}"
+
+    @pytest.mark.asyncio
+    async def test_datalogger_adump_concurrent_log_survives(self, tmp_path, monkeypatch):
+        """A log entry added during adump write must not be removed by the clear."""
+        import lionagi.ln.concurrency as conc_module
+
+        config = DataLoggerConfig(
+            persist_dir=str(tmp_path),
+            auto_save_on_exit=False,
+            clear_after_dump=True,
+        )
+        dl = DataLogger(_config=config)
+        for i in range(3):
+            dl.log(Element())
+
+        late_log = Log.create(Element())
+        appended = []
+
+        original_run_sync_fn = conc_module.run_sync
+
+        async def slow_run_sync(fn):
+            result = await original_run_sync_fn(fn)
+            dl.logs.include(late_log)
+            appended.append(late_log)
+            return result
+
+        monkeypatch.setattr(conc_module, "run_sync", slow_run_sync)
+
+        fp = tmp_path / "concurrent_logger.json"
+        await dl.adump(clear=True, persist_path=fp)
+
+        assert late_log in dl.logs, "Late log must survive the selective clear"
+        assert len(dl.logs) == 1, f"Only the late log should remain, got {len(dl.logs)}"
