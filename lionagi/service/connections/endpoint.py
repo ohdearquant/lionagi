@@ -152,6 +152,10 @@ class Endpoint:
 
         Call this before any direct HTTP I/O in provider _call() overrides that do
         not route through _call_aiohttp() or _stream_aiohttp().
+
+        When the endpoint config sets allow_local_network=True, loopback addresses
+        (127.0.0.0/8 and ::1) are permitted.  All other blocked ranges — including
+        link-local and metadata endpoints — remain blocked regardless.
         """
         from urllib.parse import urlparse
 
@@ -159,7 +163,8 @@ class Endpoint:
 
         parsed = urlparse(self.config.full_url)
         hostname = parsed.hostname or ""
-        if not is_ssrf_safe(hostname):
+        allow_local = getattr(self.config, "allow_local_network", False)
+        if not is_ssrf_safe(hostname, allow_local=allow_local):
             raise PermissionError(
                 f"SSRF guard: request to {hostname!r} is blocked "
                 "(hostname resolves to a private or reserved IP address)"

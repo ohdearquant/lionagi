@@ -6,6 +6,15 @@
 All outbound HTTP requests that accept caller-controlled hostnames MUST
 call :func:`is_ssrf_safe` before issuing the request.
 
+Local-address allowlist
+-----------------------
+Providers that are documented to run on the local machine (e.g. Ollama at
+``http://localhost:11434``) may set ``allow_local=True`` when calling
+:func:`is_ssrf_safe`.  This permits loopback addresses (``127.0.0.0/8`` and
+``::1``) while **still blocking** link-local and metadata addresses such as
+``169.254.169.254`` (AWS/GCP IMDS).  The allowlist covers only the loopback
+range; it does not weaken any other guard.
+
 DNS re-resolution note
 ----------------------
 This module resolves the hostname once via ``socket.getaddrinfo`` and rejects
@@ -54,8 +63,16 @@ _BLOCKED_NETS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
     ]
 ]
 
+# Loopback networks that may be permitted for explicitly-local providers.
+# Only these are exempted when allow_local=True; all other blocked networks
+# (including link-local / IMDS at 169.254.0.0/16) remain blocked.
+_LOOPBACK_NETS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+]
 
-def is_ssrf_safe(hostname: str) -> bool:
+
+def is_ssrf_safe(hostname: str, *, allow_local: bool = False) -> bool:
     """Return True if *hostname* resolves only to public, routable IPs.
 
     Resolves via ``socket.getaddrinfo`` and checks every returned address
@@ -69,6 +86,11 @@ def is_ssrf_safe(hostname: str) -> bool:
     Args:
         hostname: Hostname to validate.  Do NOT pass a full URL; extract the
             host with ``urllib.parse.urlparse(url).hostname`` first.
+        allow_local: When True, loopback addresses (``127.0.0.0/8`` and
+            ``::1``) are permitted.  All other blocked ranges — including
+            link-local and metadata endpoints such as ``169.254.169.254`` —
+            remain blocked regardless of this flag.  Use this only for
+            providers that are documented to run locally (e.g. Ollama).
 
     Returns:
         True  — all resolved IPs are in public ranges; safe to connect.
@@ -81,6 +103,10 @@ def is_ssrf_safe(hostname: str) -> bool:
         >>> is_ssrf_safe("169.254.169.254")
         False
         >>> is_ssrf_safe("localhost")
+        False
+        >>> is_ssrf_safe("localhost", allow_local=True)
+        True
+        >>> is_ssrf_safe("169.254.169.254", allow_local=True)
         False
         >>> is_ssrf_safe("::ffff:169.254.169.254")
         False
@@ -108,6 +134,12 @@ def is_ssrf_safe(hostname: str) -> bool:
             # Unrecognised format — fail closed
             return False
 
+        # Retain the original address before any unmapping so that the
+        # allow_local loopback check can consult both forms.  (::1 unmaps
+        # to 0.0.0.1 via the IPv4-compat path below, which would not match
+        # 127.0.0.0/8; we must test the original IPv6 against ::1/128.)
+        original_ip = ip
+
         # Unmap IPv4-mapped IPv6 (::ffff:a.b.c.d → a.b.c.d) so it matches
         # IPv4 blocked networks.
         if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
@@ -118,13 +150,22 @@ def is_ssrf_safe(hostname: str) -> bool:
         # marker.  Python's ipv4_mapped returns None for this form, so we must
         # detect it manually.  RFC 4291 §2.5.5.1: packed representation is
         # 10 zero bytes + 2 zero bytes + 4 IPv4 bytes.
-        # Fix for CWE-918 / issue #1125: ::169.254.169.254 reached AWS IMDS.
         if isinstance(ip, ipaddress.IPv6Address):
             b = ip.packed
             if b[:12] == b"\x00" * 12:
                 ip = ipaddress.IPv4Address(b[12:])
 
         if any(ip in net for net in _BLOCKED_NETS):
+            # If allow_local is set, loopback addresses are exempted, but only
+            # loopback — all other blocked ranges remain blocked.  Check both
+            # the unmapped and the original address so that ::1 is recognised
+            # as loopback even though it unmaps to 0.0.0.1 via the IPv4-compat
+            # path above.
+            if allow_local and (
+                any(ip in lb for lb in _LOOPBACK_NETS)
+                or any(original_ip in lb for lb in _LOOPBACK_NETS)
+            ):
+                continue
             return False
 
     return True

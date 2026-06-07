@@ -45,6 +45,7 @@ class EndpointConfig(BaseModel):
     context_window: int | None = None
     kwargs: dict = Field(default_factory=dict)
     client_kwargs: dict = Field(default_factory=dict)
+    allow_local_network: bool = False
     _api_key: str | None = PrivateAttr(None)
 
     @model_validator(mode="before")
