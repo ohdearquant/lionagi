@@ -315,7 +315,15 @@ async def _ndjson_from_cli(request: GeminiCodeRequest):
     # Guard against mocked subprocesses in tests where proc.pid may not be a
     # real int: a MagicMock.pid coerces to 1 via __int__, and
     # os.killpg(1, SIGTERM) would signal init/the CI runner.
-    _pgid: int | None = proc.pid if isinstance(proc.pid, int) and proc.pid > 1 else None
+    # ``os.killpg`` is POSIX-only: on Windows it does not exist, so leave
+    # _pgid None there — the group-kill path is skipped and cleanup falls
+    # through to proc.terminate()/proc.kill() instead of raising AttributeError
+    # from the finally block (which only suppresses ProcessLookupError).
+    _pgid: int | None = (
+        proc.pid
+        if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1
+        else None
+    )
 
     decoder = codecs.getincrementaldecoder("utf-8")()
     json_decoder = json.JSONDecoder()

@@ -578,6 +578,56 @@ class TestProcessGroupCleanup:
             "The safety guard must prevent signalling init/CI runner."
         )
 
+    @pytest.mark.asyncio
+    async def test_gemini_cleanup_no_killpg_platform(self, monkeypatch):
+        """Codex #1278: on a platform without os.killpg (Windows), cleanup must
+        fall through to proc.terminate() instead of raising AttributeError from
+        the finally block (which only suppresses ProcessLookupError)."""
+        from lionagi.providers.google.gemini_code import models
+
+        request = models.GeminiCodeRequest(prompt="test")
+        mock_proc = _make_mock_proc(pid=9101)
+
+        # Simulate Windows: os.killpg does not exist.
+        monkeypatch.delattr(models.os, "killpg", raising=False)
+
+        with (
+            patch("lionagi.providers.google.gemini_code.models.GEMINI_CLI", "gemini"),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+        ):
+            mock_exec.return_value = mock_proc
+
+            # Must complete cleanly — no AttributeError leaking from cleanup.
+            async with contextlib.aclosing(models._ndjson_from_cli(request)) as stream:
+                async for _ in stream:
+                    pass
+
+        # Group-kill skipped; direct terminate still ran.
+        mock_proc.terminate.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_pi_cleanup_no_killpg_platform(self, monkeypatch):
+        """Codex #1278: Pi cleanup must not raise AttributeError when os.killpg
+        is unavailable (Windows); it falls back to proc.terminate()."""
+        from lionagi.providers.pi.cli import models
+
+        request = models.PiCodeRequest(prompt="test")
+        mock_proc = _make_mock_proc(pid=9102)
+
+        monkeypatch.delattr(models.os, "killpg", raising=False)
+
+        with (
+            patch("lionagi.providers.pi.cli.models.PI_CLI", "pi"),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+        ):
+            mock_exec.return_value = mock_proc
+
+            async with contextlib.aclosing(models._ndjson_from_cli(request)) as stream:
+                async for _ in stream:
+                    pass
+
+        mock_proc.terminate.assert_called()
+
 
 # ---------------------------------------------------------------------------
 # 8. Gemini & Pi stderr deadlock prevention (AUDIT-004)
