@@ -201,9 +201,12 @@ class Branch(Element, Relational):
                 Whether to include timestamps in system messages (True/False)
                 or a string format for datetime.
             system_template (jinja2.Template | str, optional):
-                Optional Jinja2 template for system messages.
+                **Deprecated.** Template rendering has been removed from
+                the message system. Passing this parameter raises a
+                ``DeprecationWarning`` and has no effect; it will be
+                removed in a future release.
             system_template_context (dict, optional):
-                Context for rendering the system template.
+                **Deprecated.** See ``system_template``.
             logs (Pile[Log], optional):
                 Existing logs to seed the LogManager.
             use_lion_system_message (bool, optional):
@@ -228,13 +231,35 @@ class Branch(Element, Relational):
         # live-persist wiring registers it via hooks.route_message_persistence in
         # an async context, after which only a_add_message is used.
 
+        if system_template is not None:
+            import warnings
+
+            warnings.warn(
+                "system_template is deprecated and has no effect. "
+                "Template rendering has been removed from the message "
+                "system. This parameter will be removed in a future "
+                "release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+        if system_template_context is not None:
+            import warnings
+
+            warnings.warn(
+                "system_template_context is deprecated and has no "
+                "effect. Template rendering has been removed from the "
+                "message system. This parameter will be removed in a "
+                "future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         if any(
             bool(x)
             for x in [
                 system,
                 system_datetime,
-                system_template,
-                system_template_context,
                 use_lion_system_message,
             ]
         ):
@@ -242,8 +267,6 @@ class Branch(Element, Relational):
                 system = f"Developer Prompt: {str(system)}" if system else ""
                 system = (LION_SYSTEM_MESSAGE + "\n\n" + system).strip()
 
-            # Note: system_template and system_template_context are deprecated
-            # Template rendering has been removed from the message system
             self._message_manager.add_message(
                 system=system,
                 system_datetime=system_datetime,
