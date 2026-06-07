@@ -295,6 +295,15 @@ class ActionManager(Manager):
         """
         registered_tools = []
 
+        # Record the authorized policy for this server BEFORE building tools, so
+        # the lazily-created client at first tool invocation (the tool_names
+        # branch never calls get_client here) and any later reconnect re-apply
+        # it instead of falling back to the fail-closed default.
+        if security is not None:
+            from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+            MCPConnectionPool.remember_security(server_config, security)
+
         # Extract server name for qualified naming
         server_name = None
         if isinstance(server_config, dict) and "server" in server_config:
