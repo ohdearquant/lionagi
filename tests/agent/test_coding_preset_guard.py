@@ -151,3 +151,132 @@ async def test_spec_coding_preset_secure_false_no_guard():
     spec = AgentSpec.coding(secure=False)
     handlers = spec.hook_handlers.get("pre:bash", [])
     assert guard_destructive not in handlers
+
+
+# ---------------------------------------------------------------------------
+# Path-policy tests — the "strict path policy" claim must be functionally true
+# ---------------------------------------------------------------------------
+
+
+async def _invoke_pre_hooks(branch, tool_name: str, args: dict) -> None:
+    """Drive pre-hooks directly via the tool's preprocessor (same path as factory)."""
+    tool = branch.acts.registry[tool_name]
+    if tool.preprocessor is None:
+        raise AssertionError(f"No preprocessor wired on {tool_name!r}")
+    await tool.preprocessor(args)
+
+
+async def test_coding_preset_reader_blocks_outside_workspace(tmp_path):
+    """reader called with a path OUTSIDE the workspace root must be BLOCKED.
+
+    An agent with the default coding preset must not be able to exfiltrate
+    secrets from outside its workspace (e.g. /etc/passwd, ~/.ssh/id_rsa,
+    or a parent-directory traversal).
+    """
+    config = AgentConfig.coding(cwd=str(tmp_path))
+    branch = await _make_branch(config)
+
+    with pytest.raises(PermissionError):
+        await _invoke_pre_hooks(branch, "reader", {"action": "read", "path": "/etc/passwd"})
+
+
+async def test_coding_preset_editor_blocks_outside_workspace(tmp_path):
+    """editor called with a file_path OUTSIDE the workspace root must be BLOCKED.
+
+    Writing to arbitrary paths would let an agent corrupt system files or
+    overwrite SSH keys; the preset path guard must refuse it.
+    """
+    config = AgentConfig.coding(cwd=str(tmp_path))
+    branch = await _make_branch(config)
+
+    with pytest.raises(PermissionError):
+        await _invoke_pre_hooks(
+            branch,
+            "editor",
+            {"action": "write", "file_path": "/etc/cron.d/evil", "content": "bad"},
+        )
+
+
+async def test_coding_preset_reader_allows_inside_workspace(tmp_path):
+    """reader called with a path INSIDE the workspace root must be allowed."""
+    config = AgentConfig.coding(cwd=str(tmp_path))
+    branch = await _make_branch(config)
+
+    inside = str(tmp_path / "src" / "main.py")
+    # Must not raise — path is within the allowed root.
+    result = await branch.acts.registry["reader"].preprocessor({"action": "read", "path": inside})
+    assert result is None or isinstance(result, dict)
+
+
+async def test_coding_preset_editor_allows_inside_workspace(tmp_path):
+    """editor called with a file_path INSIDE the workspace root must be allowed."""
+    config = AgentConfig.coding(cwd=str(tmp_path))
+    branch = await _make_branch(config)
+
+    inside = str(tmp_path / "output.txt")
+    result = await branch.acts.registry["editor"].preprocessor(
+        {"action": "write", "file_path": inside, "content": "hello"}
+    )
+    assert result is None or isinstance(result, dict)
+
+
+async def test_coding_preset_parent_dir_traversal_blocked(tmp_path):
+    """A parent-directory traversal path must not escape the workspace root.
+
+    Even when an absolute path technically resolves to a parent directory,
+    the path guard must detect and block it.
+    """
+    config = AgentConfig.coding(cwd=str(tmp_path))
+    branch = await _make_branch(config)
+
+    # One level above tmp_path — clearly outside the workspace.
+    outside = str(tmp_path.parent / "secret.txt")
+    with pytest.raises(PermissionError):
+        await _invoke_pre_hooks(branch, "reader", {"action": "read", "path": outside})
+
+
+async def test_coding_preset_reader_guard_in_hook_handlers(tmp_path):
+    """guard_paths hook must appear in pre:reader hook_handlers for coding preset."""
+    config = AgentConfig.coding(cwd=str(tmp_path))
+    handlers = config.hook_handlers.get("pre:reader", [])
+    assert len(handlers) >= 1, "guard_paths must be wired into pre:reader for the coding preset"
+
+
+async def test_coding_preset_editor_guard_in_hook_handlers(tmp_path):
+    """guard_paths hook must appear in pre:editor hook_handlers for coding preset."""
+    config = AgentConfig.coding(cwd=str(tmp_path))
+    handlers = config.hook_handlers.get("pre:editor", [])
+    assert len(handlers) >= 1, "guard_paths must be wired into pre:editor for the coding preset"
+
+
+async def test_coding_preset_secure_false_no_path_guard():
+    """secure=False must not wire any path guard on reader or editor."""
+    config = AgentConfig.coding(secure=False)
+    assert not config.hook_handlers.get("pre:reader"), (
+        "secure=False must not wire any pre:reader hook"
+    )
+    assert not config.hook_handlers.get("pre:editor"), (
+        "secure=False must not wire any pre:editor hook"
+    )
+
+
+async def test_spec_coding_preset_reader_blocks_outside_workspace(tmp_path):
+    """AgentSpec.coding() — reader outside workspace must be blocked."""
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch_from_spec(spec)
+
+    with pytest.raises(PermissionError):
+        await _invoke_pre_hooks(branch, "reader", {"action": "read", "path": "/etc/passwd"})
+
+
+async def test_spec_coding_preset_editor_blocks_outside_workspace(tmp_path):
+    """AgentSpec.coding() — editor outside workspace must be blocked."""
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch_from_spec(spec)
+
+    with pytest.raises(PermissionError):
+        await _invoke_pre_hooks(
+            branch,
+            "editor",
+            {"action": "write", "file_path": "/etc/passwd", "content": "bad"},
+        )

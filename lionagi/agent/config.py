@@ -105,9 +105,15 @@ class AgentConfig:
     ) -> AgentConfig:
         """Preset for a coding agent with CodingToolkit.
 
-        By default, wires ``guard_destructive`` as a pre-hook on the ``bash``
-        tool to block dangerous shell commands (rm -rf, force-push, etc.).
-        Set ``secure=False`` to disable this default and manage hooks manually.
+        By default (``secure=True``), wires two guards:
+
+        - ``guard_destructive`` as a pre-hook on ``bash`` — blocks destructive
+          shell commands (rm -rf, force-push, etc.).
+        - ``guard_paths`` as a pre-hook on ``reader`` and ``editor`` — restricts
+          file access to the workspace root (``cwd`` if provided, else
+          ``Path.cwd()`` at call time).
+
+        Set ``secure=False`` to disable these defaults and manage hooks manually.
         """
         config = cls(
             name=name,
@@ -119,9 +125,13 @@ class AgentConfig:
             **kwargs,
         )
         if secure:
-            from lionagi.agent.hooks import guard_destructive
+            from lionagi.agent.hooks import guard_destructive, guard_paths
 
             config.pre("bash", guard_destructive)
+            workspace_root = str(Path(cwd) if cwd else Path.cwd())
+            path_guard = guard_paths(allowed_paths=[workspace_root])
+            config.pre("reader", path_guard)
+            config.pre("editor", path_guard)
         return config
 
     @classmethod
