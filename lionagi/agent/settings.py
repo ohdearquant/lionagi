@@ -46,23 +46,12 @@ __all__ = (
     "load_settings",
 )
 
+import yaml
+
 from .config import AgentConfig
 from .spec import AgentSpec
 
 logger = logging.getLogger(__name__)
-
-
-def _yaml_safe_load(stream: Any) -> Any:
-    """Lazily import yaml and parse *stream*, raising ImportError with install hint on miss."""
-    try:
-        import yaml  # noqa: PLC0415 — intentional lazy import; yaml is optional
-    except ImportError as exc:
-        raise ImportError(
-            "PyYAML is required to load .lionagi/settings.yaml. "
-            "Install it with: pip install pyyaml  (or add pyyaml to your project deps)."
-        ) from exc
-    return yaml.safe_load(stream)
-
 
 _DEFAULT_TRUSTED_HOOK_MODULES: frozenset[str] = frozenset({"lionagi.agent.hooks"})
 
@@ -84,7 +73,7 @@ def load_settings(
     global_path = Path.home() / ".lionagi" / "settings.yaml"
     if global_path.is_file():
         with open(global_path) as f:
-            global_settings = _yaml_safe_load(f) or {}
+            global_settings = yaml.safe_load(f) or {}
         _deep_merge(merged, global_settings)
 
     if not include_project:
@@ -94,7 +83,7 @@ def load_settings(
         local_path = Path(project_dir) / ".lionagi" / "settings.yaml"
         if local_path.is_file():
             with open(local_path) as f:
-                local_settings = _yaml_safe_load(f) or {}
+                local_settings = yaml.safe_load(f) or {}
             _deep_merge(merged, local_settings)
     else:
         cwd = Path.cwd()
@@ -102,7 +91,7 @@ def load_settings(
             candidate = parent / ".lionagi" / "settings.yaml"
             if candidate.is_file():
                 with open(candidate) as f:
-                    local_settings = _yaml_safe_load(f) or {}
+                    local_settings = yaml.safe_load(f) or {}
                 _deep_merge(merged, local_settings)
                 break
 

@@ -1,45 +1,28 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for lazy PyYAML import in lionagi.agent.
+"""Regression tests for the lionagi.agent public import surface.
 
-Issue: importing lionagi.agent transitively triggered a module-level ``import yaml``
-in lionagi/agent/settings.py, which raised ModuleNotFoundError on a base install
-(PyYAML is an optional dependency).
+``import lionagi.agent`` transitively imports lionagi/agent/settings.py, which
+imports PyYAML at module level. On a base install where PyYAML was only an
+optional dependency this raised ModuleNotFoundError.
 
-Fix: the ``yaml`` import is moved inside ``_yaml_safe_load()``, the private helper
-called only when a settings.yaml file is actually read.  The public package surface
-(``lionagi.agent``) must import cleanly even when PyYAML is absent.
+Fix: PyYAML is declared as a core runtime dependency, so the public package
+surface imports cleanly on a base install. These tests guard both halves: the
+import succeeds, and PyYAML stays a core (non-optional) dependency so the
+failure cannot silently return.
 """
 
 from __future__ import annotations
 
 import importlib
-import sys
+from pathlib import Path
 
-import pytest
-
-# ---------------------------------------------------------------------------
-# Trust-boundary regression: import must succeed without PyYAML
-# ---------------------------------------------------------------------------
+import toml
 
 
-def test_lionagi_agent_imports_without_pyyaml(monkeypatch):
-    """``import lionagi.agent`` succeeds even when PyYAML is not installed.
-
-    Regression guard for the module-level ``import yaml`` that was present in
-    lionagi/agent/settings.py.  The import must complete without raising
-    ModuleNotFoundError.
-    """
-    # Simulate PyYAML being absent by blocking it in sys.modules.
-    monkeypatch.setitem(sys.modules, "yaml", None)  # type: ignore[arg-type]
-
-    # Drop any cached import so we exercise the actual import machinery.
-    for key in list(sys.modules.keys()):
-        if key == "lionagi.agent" or key.startswith("lionagi.agent."):
-            monkeypatch.delitem(sys.modules, key)
-
-    # This must not raise — the import is the test.
+def test_lionagi_agent_public_surface_imports():
+    """``import lionagi.agent`` exposes its documented public surface."""
     mod = importlib.import_module("lionagi.agent")
 
     assert hasattr(mod, "AgentConfig"), "AgentConfig must be accessible after import"
@@ -47,26 +30,21 @@ def test_lionagi_agent_imports_without_pyyaml(monkeypatch):
     assert hasattr(mod, "create_agent"), "create_agent must be accessible after import"
 
 
-def test_load_settings_raises_clear_error_when_pyyaml_absent(monkeypatch, tmp_path):
-    """``load_settings()`` raises ImportError with an install hint when PyYAML is absent.
+def test_pyyaml_is_a_core_dependency():
+    """PyYAML must stay in core dependencies, not an optional extra.
 
-    The error must only surface when the yaml-loading function is actually called
-    (i.e., when a settings.yaml file exists and is read), not at import time.
+    Importing lionagi.agent requires PyYAML at module load time; if it regresses
+    to an optional extra, a base install breaks again. This pins the contract.
     """
-    # Create a real settings.yaml so load_settings actually tries to read it.
-    settings_dir = tmp_path / ".lionagi"
-    settings_dir.mkdir()
-    (settings_dir / "settings.yaml").write_text("hooks: {}\n")
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    if not pyproject.is_file():
+        import pytest
 
-    # Block PyYAML so the lazy import inside _yaml_safe_load fails.
-    # We also remove the cached yaml module so the import attempt inside
-    # _yaml_safe_load actually hits the blocked entry.
-    monkeypatch.setitem(sys.modules, "yaml", None)  # type: ignore[arg-type]
+        pytest.skip("pyproject.toml not available (installed package)")
 
-    from lionagi.agent.settings import _yaml_safe_load
+    data = toml.load(pyproject)
+    core_deps = data["project"]["dependencies"]
 
-    with pytest.raises(ImportError, match="PyYAML is required"):
-        # Open the yaml file and pass its stream to the helper — simulates
-        # exactly the path that load_settings takes when reading settings.yaml.
-        with open(settings_dir / "settings.yaml") as f:
-            _yaml_safe_load(f)
+    assert any(dep.lower().replace("_", "-").startswith("pyyaml") for dep in core_deps), (
+        f"pyyaml must be a core dependency, got: {core_deps}"
+    )
