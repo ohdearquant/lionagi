@@ -104,9 +104,7 @@ async def spawn_and_wait(argv: list[str], invocation_id: str) -> tuple[int, str]
     # path is skipped and cleanup falls through to proc.terminate()/kill()
     # instead of raising AttributeError.
     _pgid: int | None = (
-        proc.pid
-        if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1
-        else None
+        proc.pid if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1 else None
     )
 
     try:

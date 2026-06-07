@@ -500,9 +500,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     # path is skipped and cleanup falls through to proc.terminate()/kill()
     # instead of raising AttributeError from the finally block.
     _codex_pgid: int | None = (
-        proc.pid
-        if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1
-        else None
+        proc.pid if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1 else None
     )
 
     decoder = codecs.getincrementaldecoder("utf-8")()

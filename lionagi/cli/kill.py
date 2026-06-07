@@ -595,8 +595,7 @@ async def _do_kill(
                     blocked.append(r)
                 else:
                     print(
-                        f"  killed child {child_type} {child_row['id'][:12]} "
-                        f"(signal={r['signal']})"
+                        f"  killed child {child_type} {child_row['id'][:12]} (signal={r['signal']})"
                     )
 
         r = await _kill_one(

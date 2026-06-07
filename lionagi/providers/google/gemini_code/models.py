@@ -320,9 +320,7 @@ async def _ndjson_from_cli(request: GeminiCodeRequest):
     # through to proc.terminate()/proc.kill() instead of raising AttributeError
     # from the finally block (which only suppresses ProcessLookupError).
     _pgid: int | None = (
-        proc.pid
-        if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1
-        else None
+        proc.pid if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1 else None
     )
 
     decoder = codecs.getincrementaldecoder("utf-8")()
