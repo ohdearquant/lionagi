@@ -41,9 +41,7 @@ class TestiModelManagerInit:
         not_a_model = "not an iModel"
 
         with patch("lionagi.service.manager.is_same_dtype", return_value=False):
-            with pytest.raises(
-                TypeError, match="Input models are not instances of iModel"
-            ):
+            with pytest.raises(TypeError, match="Input models are not instances of iModel"):
                 iModelManager(not_a_model)
 
     def test_init_with_kwargs(self):

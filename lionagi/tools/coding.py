@@ -514,7 +514,8 @@ def _subprocess_sync(cmd, shell: bool, timeout_s: float, cwd: str | None) -> dic
     try:
         proc.wait(timeout=timeout_s)
     except subprocess.TimeoutExpired:
-        if isinstance(proc.pid, int) and proc.pid > 1:
+        # os.killpg is POSIX-only; on Windows fall through to proc.kill().
+        if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1:
             with contextlib.suppress(ProcessLookupError, OSError):
                 os.killpg(proc.pid, signal.SIGKILL)
         else:

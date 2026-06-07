@@ -158,7 +158,5 @@ def test_to_dict_performance():
     start_time = time.time()
     result = to_dict(large_dict)
     end_time = time.time()
-    assert (
-        end_time - start_time
-    ) < 0.1  # Assuming it should take less than 0.1 seconds
+    assert (end_time - start_time) < 0.1  # Assuming it should take less than 0.1 seconds
     assert result == large_dict

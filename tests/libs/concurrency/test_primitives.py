@@ -126,16 +126,12 @@ def test_module_level_track_resource_defaults():
     # Resource should be registered in the module-level tracker
     live_ids = {id(obj_id) for obj_id in []}  # not needed — check live() directly
     live_names = {info.name for info in _TRACKER.live()}
-    assert (
-        "test-y" in live_names
-    ), "Resource should appear in tracker after track_resource()"
+    assert "test-y" in live_names, "Resource should appear in tracker after track_resource()"
 
     untrack_resource(y)  # should not raise
 
     live_names_after = {info.name for info in _TRACKER.live()}
-    assert (
-        "test-y" not in live_names_after
-    ), "Resource should be removed after untrack_resource()"
+    assert "test-y" not in live_names_after, "Resource should be removed after untrack_resource()"
 
 
 @pytest.mark.anyio

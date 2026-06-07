@@ -83,9 +83,7 @@ class TestHookEventBasicBehavior:
         assert hook_event._should_exit is False  # exit=False, so should not exit
 
     @pytest.mark.anyio
-    async def test_hook_exception_with_exit_true_sets_should_exit(
-        self, patch_cancellation
-    ):
+    async def test_hook_exception_with_exit_true_sets_should_exit(self, patch_cancellation):
         """Test that hook exceptions with exit=True set should_exit=True."""
 
         async def failing_hook(ev, **kw):
@@ -114,9 +112,7 @@ class TestHookEventBasicBehavior:
         async def hook_returning_exception(ev, **kw):
             return test_exception
 
-        registry = HookRegistry(
-            hooks={HookEventTypes.PreInvocation: hook_returning_exception}
-        )
+        registry = HookRegistry(hooks={HookEventTypes.PreInvocation: hook_returning_exception})
         hook_event = HookEvent(
             registry=registry,
             hook_type=HookEventTypes.PreInvocation,
@@ -141,9 +137,7 @@ class TestHookEventBasicBehavior:
         async def hook_returning_tuple(ev, **kw):
             return ("UNDEFINED", test_exception)
 
-        registry = HookRegistry(
-            hooks={HookEventTypes.PreInvocation: hook_returning_tuple}
-        )
+        registry = HookRegistry(hooks={HookEventTypes.PreInvocation: hook_returning_tuple})
         hook_event = HookEvent(
             registry=registry,
             hook_type=HookEventTypes.PreInvocation,
@@ -229,9 +223,7 @@ class TestHookEventDispatchErrorPolicy:
 
         # Should not exit because exit=False
         assert hook_event._should_exit is False
-        assert (
-            hook_event.execution.status == EventStatus.CANCELLED
-        )  # Dispatch errors are CANCELLED
+        assert hook_event.execution.status == EventStatus.CANCELLED  # Dispatch errors are CANCELLED
         assert hook_event._exit_cause is not None
 
     @pytest.mark.anyio
@@ -252,9 +244,7 @@ class TestHookEventDispatchErrorPolicy:
 
         # Should exit because exit=True
         assert hook_event._should_exit is True
-        assert (
-            hook_event.execution.status == EventStatus.CANCELLED
-        )  # Dispatch errors are CANCELLED
+        assert hook_event.execution.status == EventStatus.CANCELLED  # Dispatch errors are CANCELLED
         assert hook_event._exit_cause is not None
 
 
@@ -367,9 +357,7 @@ class TestHookEventValidation:
             captured_params.update(kw)
             return "ok"
 
-        registry = HookRegistry(
-            hooks={HookEventTypes.PreInvocation: param_capturing_hook}
-        )
+        registry = HookRegistry(hooks={HookEventTypes.PreInvocation: param_capturing_hook})
         hook_event = HookEvent(
             registry=registry,
             hook_type=HookEventTypes.PreInvocation,
