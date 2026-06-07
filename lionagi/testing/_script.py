@@ -118,7 +118,7 @@ class ScriptModel(BaseModel):
         responses).
         """
         if isinstance(source, cls):
-            return source
+            return source.model_copy(deep=True)
         if isinstance(source, str | Path):
             p = Path(source)
             if p.suffix in {".yaml", ".yml"}:
