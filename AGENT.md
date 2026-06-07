@@ -96,23 +96,12 @@ from lionagi.agent.config import AgentConfig
 from lionagi.agent.factory import create_agent
 
 async def main():
-    config = AgentConfig.coding()          # file tools + guard hooks + strict path policy
+    config = AgentConfig.coding()          # CodingToolkit + guard hooks + workspace path policy
     agent = await create_agent(config)     # returns a wired Branch
     reply = await agent.communicate("Refactor auth.py to use async/await throughout.")
     print(reply)
 
 asyncio.run(main())
-```
-
-**Create a research agent**
-
-```python
-config = AgentConfig.research()            # web + reader tools + log-only policy
-agent = await create_agent(config)
-result = await agent.operate(
-    instruction="Summarize the latest papers on diffusion models.",
-    response_format=Summary,
-)
 ```
 
 **Register custom hooks**
@@ -122,23 +111,24 @@ from lionagi.agent.hooks import guard_paths, log_tool_use
 from lionagi.agent.config import AgentConfig
 
 config = AgentConfig.coding()
-config.hooks.append(guard_paths(allowed=["/tmp/sandbox", "./src"]))
-config.hooks.append(log_tool_use(sink="tool_calls.jsonl"))
+config.pre("reader", guard_paths(allowed_paths=["/tmp/sandbox", "./src"]))
+config.post("*", log_tool_use)
 agent = await create_agent(config)
 ```
 
 **Use Sandbox for isolated edits**
 
 ```python
-from lionagi.tools.sandbox import SandboxSession
+from lionagi.tools.sandbox import create_sandbox, sandbox_diff, sandbox_commit, sandbox_merge
 
-async with await SandboxSession.create(base_branch="main") as session:
-    # agent edits happen inside the worktree
-    agent = await create_agent(AgentConfig.coding(), cwd=session.path)
-    await agent.communicate("Add type hints to all public functions in auth.py.")
-    print(await session.diff())            # inspect changes before committing
-    await session.commit("feat: add type hints to auth module")
-    await session.merge()                  # fast-forward into main; or session.discard()
+session = await create_sandbox(repo_root="/path/to/repo", base_branch="main")
+# agent edits happen inside the worktree at session.worktree_path
+config = AgentConfig.coding(cwd=session.worktree_path)
+agent = await create_agent(config)
+await agent.communicate("Add type hints to all public functions in auth.py.")
+print(await sandbox_diff(session))         # inspect changes before committing
+await sandbox_commit(session, "feat: add type hints to auth module")
+await sandbox_merge(session)               # merge into base; or sandbox_discard(session)
 ```
 
 **Permission policies**
@@ -146,14 +136,22 @@ async with await SandboxSession.create(base_branch="main") as session:
 ```python
 from lionagi.agent.permissions import PermissionPolicy
 
-# Allowlist mode: only listed tools may run
-policy = PermissionPolicy(mode="allowlist", tools=["read_file", "list_dir"])
+# Allow-all mode: everything permitted (default for orchestrators)
+policy = PermissionPolicy(mode="allow_all")
 
-# Confirm mode: prompt before each tool execution
-policy = PermissionPolicy(mode="confirm")
+# Deny-all mode: nothing permitted (safe mode)
+policy = PermissionPolicy(mode="deny_all")
+
+# Rules mode: per-tool allow/deny/escalate patterns
+policy = PermissionPolicy(
+    mode="rules",
+    allow={"reader": ["*"], "search": ["*"]},
+    deny={"bash": ["rm *"]},
+    escalate={"bash": ["*"]},
+)
 
 config = AgentConfig.coding()
-config.permission_policy = policy
+config.permissions = {"mode": "rules", "allow": {"reader": ["*"]}, "deny": {"bash": ["rm *"]}}
 ```
 
 **Settings** — place `.lionagi/settings.yaml` in the project root to override defaults. Global settings live at `~/.lionagi/settings.yaml`; project settings win on conflict.
