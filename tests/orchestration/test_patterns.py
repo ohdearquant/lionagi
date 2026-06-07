@@ -50,6 +50,12 @@ class TestRoleNodeBuilder:
         node = nb(SpawnRequest(instruction="x"), None)
         assert node.branch_id is None
 
+    def test_unknown_assignee_raises(self):
+        session, roles = _roles("researcher")
+        nb = role_node_builder(roles)
+        with pytest.raises(ValueError, match="not a recognized role"):
+            nb(SpawnRequest(instruction="x", assignee="ghost"), None)
+
     def test_custom_operation_preserved(self):
         session, roles = _roles("researcher")
         nb = role_node_builder(roles)
