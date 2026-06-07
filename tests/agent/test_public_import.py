@@ -20,7 +20,7 @@ import sys
 import pytest
 
 # ---------------------------------------------------------------------------
-# Trust-boundary regression: import must succeed without PyYAML (AGENT-001)
+# Trust-boundary regression: import must succeed without PyYAML
 # ---------------------------------------------------------------------------
 
 
