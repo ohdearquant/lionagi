@@ -84,7 +84,7 @@ Adds a node that depends on multiple sources — useful for fan-in synthesis.
 
 ```python
 new_ids = builder.expand_from_result(
-    items=results[n1],          # list of items from a prior execution result
+    items=results["operation_results"][n1],
     source_node_id=n1,
     operation="communicate",
     strategy=ExpansionStrategy.CONCURRENT,
