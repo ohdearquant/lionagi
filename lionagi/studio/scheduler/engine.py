@@ -57,17 +57,27 @@ async def _resolve_invocation_terminal(
                 metadata,
             )
         if any(s == "aborted" for s in child_statuses):
-            # A session reaches "aborted" only via the SIGINT (Ctrl-C) handler,
-            # so the aggregate reason is CANCELLED_SIGINT — consistent with the
-            # agent/flow teardown. ABORTED_USER is reserved for other
-            # user-initiated aborts.
-            return (
-                "aborted",
-                RunReasons.CANCELLED_SIGINT,
-                "Invocation was interrupted (SIGINT) because at least one child session was aborted.",
-                evidence_refs,
-                metadata,
-            )
+            # "aborted" is not exclusively SIGINT: the agent/flow teardown
+            # records CANCELLED_SIGINT, but Studio admin transitions and
+            # `li state doctor` also abort sessions with non-SIGINT reasons.
+            # Surface SIGINT only when an aborted child actually recorded it;
+            # otherwise keep the user/admin abort reason (ABORTED_USER).
+            aborted_reasons = {
+                str(sess.get("status_reason_code") or "")
+                for sess in sessions
+                if sess.get("status") == "aborted"
+            }
+            if RunReasons.CANCELLED_SIGINT in aborted_reasons:
+                reason_code = RunReasons.CANCELLED_SIGINT
+                reason_summary = (
+                    "Invocation was interrupted (SIGINT) because a child session was."
+                )
+            else:
+                reason_code = RunReasons.ABORTED_USER
+                reason_summary = (
+                    "Invocation was aborted because at least one child session was aborted."
+                )
+            return ("aborted", reason_code, reason_summary, evidence_refs, metadata)
         if any(s == "cancelled" for s in child_statuses):
             return (
                 "cancelled",
@@ -102,11 +112,12 @@ async def _resolve_invocation_terminal(
             metadata,
         )
     if fallback_status == "aborted":
-        # "aborted" originates from the SIGINT (Ctrl-C) handler.
+        # Process-level abort with no child reason to inspect — keep the neutral
+        # user/admin abort reason rather than assume SIGINT.
         return (
             "aborted",
-            RunReasons.CANCELLED_SIGINT,
-            "Invocation process was interrupted (SIGINT).",
+            RunReasons.ABORTED_USER,
+            "Invocation process was aborted.",
             evidence_refs,
             metadata,
         )
