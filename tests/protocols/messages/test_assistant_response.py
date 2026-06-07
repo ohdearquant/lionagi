@@ -225,9 +225,7 @@ def test_parse_assistant_response_list_of_strings():
 
 def test_parse_assistant_response_empty_content():
     """Test parsing response with empty/null content"""
-    response = OpenAIChatResponse(
-        choices=[OpenAIChoice(message=OpenAIMessage(content=None))]
-    )
+    response = OpenAIChatResponse(choices=[OpenAIChoice(message=OpenAIMessage(content=None))])
 
     text, model_response = parse_assistant_response(response)
 
@@ -326,9 +324,7 @@ def test_assistant_response_initialization_with_none_content():
 
 def test_assistant_response_content_validation_invalid_type():
     """Test content validation raises TypeError for invalid types"""
-    with pytest.raises(
-        TypeError, match="content must be dict or AssistantResponseContent"
-    ):
+    with pytest.raises(TypeError, match="content must be dict or AssistantResponseContent"):
         AssistantResponse(content="invalid string")
 
 
@@ -433,9 +429,7 @@ def test_from_response_preserves_all_formats():
                 output=[
                     OpenAIOutputMessage(
                         type="message",
-                        content=[
-                            OpenAIOutputText(type="output_text", text="Responses API")
-                        ],
+                        content=[OpenAIOutputText(type="output_text", text="Responses API")],
                     )
                 ]
             ),
@@ -466,9 +460,7 @@ def test_model_response_property_access():
 
 def test_model_response_property_empty():
     """Test model_response property returns empty dict if not set"""
-    response = AssistantResponse(
-        content=AssistantResponseContent(assistant_response="Test")
-    )
+    response = AssistantResponse(content=AssistantResponseContent(assistant_response="Test"))
 
     assert response.model_response == {}
 
@@ -504,9 +496,7 @@ def test_assistant_response_complete_workflow():
     )
 
     # Create AssistantResponse
-    response = AssistantResponse.from_response(
-        api_response, sender="assistant", recipient="user"
-    )
+    response = AssistantResponse.from_response(api_response, sender="assistant", recipient="user")
 
     # Verify all properties
     assert response.role == MessageRole.ASSISTANT
@@ -549,9 +539,7 @@ def test_assistant_response_content_rendering():
 
 def test_assistant_response_role_immutable():
     """Test that role is always ASSISTANT"""
-    response = AssistantResponse(
-        content=AssistantResponseContent(assistant_response="Test")
-    )
+    response = AssistantResponse(content=AssistantResponseContent(assistant_response="Test"))
 
     assert response.role == MessageRole.ASSISTANT
     # Role should be set at class level

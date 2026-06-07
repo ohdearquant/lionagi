@@ -229,9 +229,7 @@ def test_roled_message_role_classvar():
 
 def test_roled_message_role_ignored_in_constructor():
     """Test that passing role= to constructor is silently ignored."""
-    message = _MockMessage(
-        role="user", content=_MockContent(text="test"), sender="user"
-    )
+    message = _MockMessage(role="user", content=_MockContent(text="test"), sender="user")
     assert message.role == MessageRole.UNSET
 
 
@@ -441,9 +439,7 @@ def test_roled_message_to_dict():
 
 def test_roled_message_serialization_to_dict():
     """Test serialization of RoledMessage to dict."""
-    message = _MockMessage(
-        role=MessageRole.USER, content=_MockContent(text="test"), sender="user"
-    )
+    message = _MockMessage(role=MessageRole.USER, content=_MockContent(text="test"), sender="user")
 
     serialized = message.to_dict()
     assert "role" in serialized
