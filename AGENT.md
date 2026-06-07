@@ -16,15 +16,15 @@ uv sync --all-extras                        # Install all deps (NEVER use pip)
 uv run pytest                               # Run all tests (parallel, -n auto)
 uv run pytest tests/path.py -v              # Run specific test file
 uv run pytest tests/path.py::test_func -v   # Run specific test function
-uv run pytest -m unit                       # By marker: unit, integration, slow, asyncio, performance
+uv run pytest -m unit                       # By marker; see pyproject.toml for the full marker list
 uv run pytest -n0 -s tests/path.py          # Debug: no parallelism, show stdout
 uv run pytest --cov=lionagi                 # With coverage
-uv run black . && uv run isort .            # Format
-pre-commit run -a                           # All pre-commit hooks (black, isort, pyupgrade)
+uv run ruff format . && uv run ruff check --fix .  # Format + autofix lint
+pre-commit run -a                           # All hooks (file sanity, ruff, pyupgrade, markdownlint, etc.)
 uv build                                    # Build wheel
 ```
 
-CI runs on Python 3.10, 3.11, 3.12, 3.13. Async mode is auto-detected.
+CI tests Python 3.10 and 3.14 on PRs, and 3.10-3.14 on `main`/`develop` pushes. Async mode is auto-detected.
 
 ## Repository Map
 
@@ -59,7 +59,11 @@ CLI has no dedicated unit test suite.
 
 ## Coding Standards
 
-- Line length: 79 chars (black, isort, ruff all enforce this)
+- Line length: 100 chars (`ruff format` + `ruff check`; `[tool.ruff]` in `pyproject.toml` is the source of truth). Target `py310`.
+- Ruff lint selects `E F W B I UP N S A` (incl. bugbear, isort, pyupgrade, naming, bandit).
+- New or materially changed `.py` files under `lionagi/` should keep/add the Apache-2.0 SPDX header, `from __future__ import annotations`, and an `__all__` tuple for public surface.
+- Reuse existing abstractions before creating new ones — `lionagi.ln` (`alcall`, `bcall`, `race`, `retry`, `fuzzy_json`, `json_dumps`, sentinels), `Pile`/`Progression`/`Element`, `iModel`. Don't fork near-duplicates.
+- Prefer LionAGI-native primitives over naked stdlib/third-party calls when a local helper exists. Examples: `alcall`/`bcall` over raw gather loops, `json_dumps`/`fuzzy_json` over direct `json` on model/provider payloads, `now_utc`/`to_uuid` over ad hoc time/UUID handling. Raw stdlib is fine at process boundaries when no LionAGI abstraction applies.
 - Keep code async-safe; avoid blocking calls in async execution paths.
 - Follow existing typing patterns; add type hints on new/changed public APIs.
 - Keep changes surgical: do not refactor unrelated modules in the same patch.
@@ -163,6 +167,7 @@ github = "ohdearquant/lionagi"
 ```
 
 This is separate from `settings.yaml` (which is gitignored/local). The detection cascade at session creation (`lionagi/cli/_project.py`):
+
 1. Walk up from cwd → read `.lionagi/config.toml` → `[project].name`
 2. Check `project_overrides` in `~/.lionagi/settings.yaml` (key = `org/repo` remote or absolute path prefix)
 3. Parse git remote URL → derive `org/repo` as fallback

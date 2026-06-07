@@ -12,9 +12,9 @@ from lionagi.providers.google.gemini_code.models import (
     GeminiChunk,
     GeminiCodeRequest,
     GeminiSession,
+    stream_gemini_cli,
 )
 from lionagi.providers.google.gemini_code.models import log as gemini_log
-from lionagi.providers.google.gemini_code.models import stream_gemini_cli
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.stream_chunk import StreamChunk
@@ -84,9 +84,7 @@ class GeminiCLIEndpoint(AgenticEndpoint):
 
     def _runtime_handlers(self, kwargs: dict) -> dict:
         handlers = self.gemini_handlers.copy()
-        call_handlers = {
-            k: kwargs.pop(k) for k in list(kwargs) if k in _GEMINI_HANDLER_PARAMS
-        }
+        call_handlers = {k: kwargs.pop(k) for k in list(kwargs) if k in _GEMINI_HANDLER_PARAMS}
         if call_handlers:
             _validate_handlers(call_handlers)
             handlers.update(call_handlers)
@@ -98,18 +96,14 @@ class GeminiCLIEndpoint(AgenticEndpoint):
         req_obj = GeminiCodeRequest(messages=messages, **req_dict)
         return {"request": req_obj}, {}
 
-    async def stream(
-        self, request: dict | BaseModel, **kwargs
-    ) -> AsyncIterator[StreamChunk]:
+    async def stream(self, request: dict | BaseModel, **kwargs) -> AsyncIterator[StreamChunk]:
         handlers = self._runtime_handlers(kwargs)
         if isinstance(request, dict) and "request" in request:
             request_obj = request["request"]
         else:
             payload, _ = self.create_payload(request, **kwargs)
             request_obj = payload["request"]
-        async with contextlib.aclosing(
-            stream_gemini_cli(request_obj, **handlers)
-        ) as gen:
+        async with contextlib.aclosing(stream_gemini_cli(request_obj, **handlers)) as gen:
             async for item in gen:
                 if isinstance(item, GeminiSession):
                     continue
@@ -168,18 +162,14 @@ class GeminiCLIEndpoint(AgenticEndpoint):
         session: GeminiSession = GeminiSession()
         handlers = self._runtime_handlers(kwargs)
 
-        async with contextlib.aclosing(
-            stream_gemini_cli(request, session, **handlers)
-        ) as gen:
+        async with contextlib.aclosing(stream_gemini_cli(request, session, **handlers)) as gen:
             async for chunk in gen:
                 if isinstance(chunk, dict):
                     if chunk.get("type") == "done":
                         break
                 responses.append(chunk)
 
-        gemini_log.info(
-            f"Session {session.session_id} finished with {len(responses)} chunks"
-        )
+        gemini_log.info(f"Session {session.session_id} finished with {len(responses)} chunks")
 
         # Accumulate text from chunks, concatenating delta fragments
         parts = []

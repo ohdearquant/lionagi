@@ -7,7 +7,6 @@ from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 
 from .._config import OpenRouterConfigs
-from .models import OpenRouterRequest, ReasoningConfig
 
 __all__ = ("OpenRouterEndpoint",)
 
@@ -41,9 +40,7 @@ class OpenRouterEndpoint(Endpoint):
         if config is None:
             from lionagi.config import settings
 
-            kwargs.setdefault(
-                "api_key", settings.OPENROUTER_API_KEY or "dummy-key-for-testing"
-            )
+            kwargs.setdefault("api_key", settings.OPENROUTER_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("kwargs", {"model": "google/gemini-2.5-flash"})
             kwargs.setdefault("requires_tokens", True)
         super().__init__(config=config, **kwargs)

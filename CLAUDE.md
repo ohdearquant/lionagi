@@ -105,3 +105,7 @@ Every run: `~/.lionagi/runs/{run_id}/` (`YYYYMMDDTHHMMSS-{uuid6}`).
 - **Pile + Progression**: Storage (dict) and ordering (deque) are independent. Multiple orderings over same Pile.
 - **Observable** (`protocols/contracts.py`): Structural typing — Element auto-satisfies without explicit inheritance.
 - **Serialization**: `element.to_dict(mode="python"|"json"|"db")`.
+
+## Code Conventions
+
+- **No internal references in code comments or docstrings.** Never embed internal audit IDs, review-bot mentions, PR/issue numbers, or finding labels (e.g. `AUDIT-005`, `Codex #1278`, `Finding 4`, `fixed in #887`) in committed source. These are internal tracking artifacts — describe *what the code does and why* in plain terms instead. Commit messages and PR descriptions are the place for tracking references, not the code. (Provider/product names like the Codex or Claude CLI are fine — those describe the code, not an audit.)

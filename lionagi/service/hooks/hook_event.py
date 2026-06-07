@@ -41,7 +41,7 @@ class HookEvent(Event):
                 (res, se, st), meta = await self.registry.call(
                     self.event_like,
                     hook_type=self.hook_type,
-                    exit=self.exit,
+                    should_exit=self.exit,
                     **self.params,
                 )
 

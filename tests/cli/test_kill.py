@@ -348,7 +348,7 @@ async def test_persist_cancel_inserts_status_transition(temp_db_path: Path):
         row = await cur.fetchone()
         assert row is not None
         assert row["reason_code"] == RunReasons.CANCELLED_MANUAL_KILL
-        assert row["source"] == "cli"
+        assert row["source"] == "admin"  # CLI kill is an admin action (ADR-0028)
         assert row["actor"] == "user"
         assert row["previous_status"] == "running"
         assert row["status"] == "cancelled"

@@ -8,7 +8,6 @@ from lionagi.service.connections.registry import EndpointType
 
 
 class PiConfigs(ProviderConfig, Enum):
-
     CLI = (
         "query_cli",
         ["cli", "code"],

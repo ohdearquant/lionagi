@@ -85,9 +85,7 @@ class TestBCallFunction(unittest.IsolatedAsyncioTestCase):
         inputs = [1, 2, 3]
         with patch("anyio.sleep", new_callable=AsyncMock) as mock_sleep:
             batches = []
-            async for batch in bcall(
-                inputs, async_func, batch_size=2, delay_before_start=0.5
-            ):
+            async for batch in bcall(inputs, async_func, batch_size=2, delay_before_start=0.5):
                 batches.append(batch)
             mock_sleep.assert_any_call(0.5)
             self.assertEqual(batches, [[2, 4], [6]])

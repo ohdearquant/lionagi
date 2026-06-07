@@ -115,7 +115,7 @@ class AgentSpec:
 
         p = Path(path)
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        return cls.compose(
+        spec = cls.compose(
             role=data.get("role", "implementer"),
             modes=data.get("modes"),
             model=data.get("model"),
@@ -127,6 +127,11 @@ class AgentSpec:
             cwd=data.get("cwd"),
             yolo=data.get("yolo", False),
         )
+        # Restore lion_system from YAML when explicitly set; compose() defaults
+        # to True so a saved False would be silently dropped (LIONAGI-AUDIT-005).
+        if "lion_system" in data:
+            spec.lion_system = bool(data["lion_system"])
+        return spec
 
     def build_system_message(self) -> str:
         """Compose role + modes + RolePolicy block + any extra literal prompt."""

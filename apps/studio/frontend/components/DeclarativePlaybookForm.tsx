@@ -75,7 +75,9 @@ export default function DeclarativePlaybookForm({
         </div>
 
         <div className="flex flex-col gap-1">
-          <label htmlFor="pb-description" className={FIELD_LABEL}>Description</label>
+          <label htmlFor="pb-description" className={FIELD_LABEL}>
+            Description
+          </label>
           <input
             id="pb-description"
             type="text"
@@ -87,7 +89,9 @@ export default function DeclarativePlaybookForm({
         </div>
 
         <div className="flex flex-col gap-1">
-          <label htmlFor="pb-arg-hint" className={FIELD_LABEL}>Argument hint</label>
+          <label htmlFor="pb-arg-hint" className={FIELD_LABEL}>
+            Argument hint
+          </label>
           <input
             id="pb-arg-hint"
             type="text"
@@ -111,7 +115,9 @@ export default function DeclarativePlaybookForm({
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div className="flex flex-col gap-1">
-            <label htmlFor="pb-agent" className={FIELD_LABEL}>Agent</label>
+            <label htmlFor="pb-agent" className={FIELD_LABEL}>
+              Agent
+            </label>
             <input
               id="pb-agent"
               type="text"
@@ -123,7 +129,9 @@ export default function DeclarativePlaybookForm({
           </div>
 
           <div className="flex flex-col gap-1">
-            <label htmlFor="pb-effort" className={FIELD_LABEL}>Effort</label>
+            <label htmlFor="pb-effort" className={FIELD_LABEL}>
+              Effort
+            </label>
             <select
               id="pb-effort"
               value={form.effort}
@@ -139,7 +147,9 @@ export default function DeclarativePlaybookForm({
           </div>
 
           <div className="flex flex-col gap-1">
-            <label htmlFor="pb-max-ops" className={FIELD_LABEL}>Max ops</label>
+            <label htmlFor="pb-max-ops" className={FIELD_LABEL}>
+              Max ops
+            </label>
             <input
               id="pb-max-ops"
               type="number"

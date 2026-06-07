@@ -43,10 +43,7 @@ def test_resolve_combines_provider_and_model():
 
 
 def test_resolve_passes_already_qualified_model_through():
-    assert (
-        resolve_model_spec("claude", "claude/claude-sonnet-4-6")
-        == "claude/claude-sonnet-4-6"
-    )
+    assert resolve_model_spec("claude", "claude/claude-sonnet-4-6") == "claude/claude-sonnet-4-6"
 
 
 def test_resolve_returns_only_arg_when_one_missing():
@@ -169,9 +166,7 @@ async def test_create_session_provenance_nullable(db: StateDB):
     prog_id = _uid()
     sid = _uid()
     await db.create_progression(prog_id)
-    await db.create_session(
-        {"id": sid, "progression_id": prog_id, "status": "running"}
-    )
+    await db.create_session({"id": sid, "progression_id": prog_id, "status": "running"})
     row = await db.get_session(sid)
     assert row["model"] is None
     assert row["provider"] is None
@@ -186,9 +181,7 @@ async def test_create_branch_persists_per_branch_provenance(db: StateDB):
     bid = _uid()
     await db.create_progression(prog_id)
     await db.create_progression(bprog)
-    await db.create_session(
-        {"id": sid, "progression_id": prog_id, "status": "running"}
-    )
+    await db.create_session({"id": sid, "progression_id": prog_id, "status": "running"})
     await db.create_branch(
         {
             "id": bid,
@@ -210,12 +203,8 @@ async def test_update_session_allows_provenance_columns(db: StateDB):
     prog_id = _uid()
     sid = _uid()
     await db.create_progression(prog_id)
-    await db.create_session(
-        {"id": sid, "progression_id": prog_id, "status": "running"}
-    )
-    await db.update_session(
-        sid, model="openai/gpt-4.1", provider="openai", effort="medium"
-    )
+    await db.create_session({"id": sid, "progression_id": prog_id, "status": "running"})
+    await db.update_session(sid, model="openai/gpt-4.1", provider="openai", effort="medium")
     row = await db.get_session(sid)
     assert row["model"] == "openai/gpt-4.1"
     assert row["provider"] == "openai"

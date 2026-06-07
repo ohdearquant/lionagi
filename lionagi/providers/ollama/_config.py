@@ -8,7 +8,6 @@ from lionagi.service.connections.registry import EndpointType
 
 
 class OllamaConfigs(ProviderConfig, Enum):
-
     CHAT = (
         "chat/completions",
         ["chat"],

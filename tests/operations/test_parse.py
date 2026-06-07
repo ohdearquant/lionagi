@@ -237,21 +237,6 @@ class TestAdvancedFeatures:
     """P1: Advanced features and parameters."""
 
     @pytest.mark.asyncio
-    async def test_suppress_conversion_errors_deprecation_warning(
-        self, make_mocked_branch_for_parse
-    ):
-        """Test deprecation warning for suppress_conversion_errors."""
-        branch = make_mocked_branch_for_parse()
-
-        with pytest.warns(DeprecationWarning, match="suppress_conversion_errors"):
-            await parse(
-                branch,
-                text='{"name": "Test", "age": 25}',
-                request_type=SampleModel,
-                suppress_conversion_errors=True,
-            )
-
-    @pytest.mark.asyncio
     async def test_parse_return_res_message_success(self, make_mocked_branch_for_parse):
         """Test return_res_message returns tuple on direct validation."""
         branch = make_mocked_branch_for_parse()

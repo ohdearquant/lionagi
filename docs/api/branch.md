@@ -24,7 +24,6 @@ branch = li.Branch(
 | `system` | `System \| JsonValue` | `None` | System prompt (str or dict) |
 | `chat_model` | `iModel \| dict \| str` | `None` | Primary model for chat / communicate / operate |
 | `parse_model` | `iModel \| dict \| str` | `None` | Model used for `parse()` retries |
-| `imodel` | `iModel` | `None` | Deprecated alias for `chat_model` |
 | `tools` | `FuncTool \| list[FuncTool]` | `None` | Pre-register tools on construction |
 | `messages` | `Pile[RoledMessage]` | `None` | Restore prior conversation history |
 | `logs` | `Pile[Log]` | `None` | Restore prior activity logs |

@@ -45,9 +45,7 @@ async def _make_invocation(db: StateDB, **fields) -> dict:
     return inv
 
 
-async def _make_session(
-    db: StateDB, *, invocation_id: str | None = None, **fields
-) -> dict:
+async def _make_session(db: StateDB, *, invocation_id: str | None = None, **fields) -> dict:
     prog_id = _uid()
     await db.create_progression(prog_id)
     session = {
@@ -125,13 +123,35 @@ async def test_create_session_with_invocation_bumps_count(db: StateDB):
     assert fetched["session_count"] == 2
 
 
+async def test_duplicate_create_session_does_not_inflate_session_count(db: StateDB):
+    """LIONAGI-AUDIT-003 regression: a duplicate create_session call (same id)
+    must not increment session_count a second time (INSERT OR IGNORE no-op)."""
+    inv = await _make_invocation(db)
+    session = await _make_session(db, invocation_id=inv["id"], status="running")
+
+    # Replay the exact same session dict — simulates an idempotent retry.
+    await db.create_session(session)
+
+    fetched = await db.get_invocation(inv["id"])
+    assert fetched["session_count"] == 1, (
+        "session_count must be 1 after one distinct session, even if create_session "
+        "was called twice with the same id"
+    )
+    rows = await db.list_sessions_for_invocation(inv["id"])
+    assert len(rows) == 1
+
+
 async def test_list_sessions_for_invocation_orders_by_created(db: StateDB):
     inv = await _make_invocation(db)
     s1 = await _make_session(
-        db, invocation_id=inv["id"], status="running",
+        db,
+        invocation_id=inv["id"],
+        status="running",
     )
     s2 = await _make_session(
-        db, invocation_id=inv["id"], status="completed",
+        db,
+        invocation_id=inv["id"],
+        status="completed",
     )
     rows = await db.list_sessions_for_invocation(inv["id"])
     assert [r["id"] for r in rows] == [s1["id"], s2["id"]]

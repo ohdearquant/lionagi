@@ -3,6 +3,5 @@
 
 # Re-export from agentic_endpoint for backward compatibility.
 from .agentic_endpoint import AgenticEndpoint as CLIEndpoint
-from .endpoint_config import EndpointConfig
 
 __all__ = ("CLIEndpoint",)

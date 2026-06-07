@@ -9,6 +9,7 @@
 Orchestrate multi-agent AI workflows from the command line or Python.
 
 [Docs](https://ohdearquant.github.io/lionagi/) |
+[Docs / Architecture (DeepWiki)](https://deepwiki.com/ohdearquant/lionagi) |
 [Discord](https://discord.gg/JDj9ENhUE8) |
 [PyPI](https://pypi.org/project/lionagi/) |
 [Changelog](CHANGELOG.md)
@@ -121,6 +122,36 @@ li agent claude/sonnet --timeout 300 "Audit the auth module and produce a summar
 
 Full reference → [docs/cli-reference.md](docs/cli-reference.md) · Installable
 templates → [examples/](examples/)
+
+## CLI Commands
+
+**`li agent`** — Run a single agent session against any CLI-compatible model.
+`li agent [MODEL] PROMPT [-a NAME] [-r BRANCH_ID] [-c] [--yolo] [--bypass] [--fast] [-v] [--theme {light,dark}] [--effort LEVEL] [--cwd DIR] [--timeout SECS] [--invocation ID] [--project NAME]`
+Load a saved profile with `-a`/`--agent`; resume a previous branch by ID with `-r`/`--resume`; reattach to the last branch with `-c`/`--continue-last`.
+
+**`li o flow`** — Run a multi-agent DAG flow where an orchestrator model plans and dispatches specialist agents.
+`li o flow [MODEL] [PROMPT] [-f FILE] [-p PLAYBOOK] [-a AGENT] [--with-synthesis [MODEL]] [--max-concurrent N] [--output {text,json}] [--save DIR] [--team-mode [NAME]] [--team-attach NAME] [--dry-run] [--show-graph] [--background] [--bare] [--workers M1,M2,...] [--max-ops N] [--reactive MODE]` plus shared flags (`--yolo`, `--bypass`, `--fast`, `-v`, `--theme`, `--effort`, `--cwd`, `--timeout`, `--invocation`, `--project`).
+Provide the flow spec via `-f FILE` (YAML/JSON), a named playbook via `-p PLAYBOOK`, or a free-form prompt. `--dry-run` prints the planned DAG without executing; `--background` runs detached and requires `--save`.
+
+**`li o fanout`** — Run the same prompt against multiple worker models in parallel with optional synthesis.
+`li o fanout [MODEL] PROMPT [-a AGENT] [-n N] [--workers M1,M2,...] [--max-concurrent N] [--with-synthesis [MODEL]] [--synthesis-prompt TEXT] [--output {text,json}] [--save DIR] [--team-mode [NAME]]` plus shared flags.
+Set the worker count with `-n`; specify explicit model specs with `--workers`; add a final synthesis pass with `--with-synthesis`.
+
+**`li play`** — Shortcut for `li o flow -p NAME`; runs a named playbook from `~/.lionagi/playbooks/`.
+`li play NAME [flow-flags...]` | `li play list` | `li play check NAME`
+`li play list` enumerates installed playbooks; `li play check NAME` validates artifact contracts before a run; `li play NAME --help` shows playbook-declared parameters. All `li o flow` flags except `-f`/`--file` are forwarded after `NAME`.
+
+**`li monitor` / `li mon`** — Inspect live and recent sessions, invocations, shows, and plays.
+`li monitor [ID] [-w] [--refresh SECS] [--since WINDOW] [-t {session,invocation,show,play}] [-p PROJECT]`
+Pass an ID or unique prefix for a detail view; `-w`/`--watch` enables live refresh at `--refresh` interval; `--since` accepts windows like `30m`, `1h`, `2d`.
+
+**`li kill`** — Stop a running session or invocation.
+`li kill [ID] [--reason TEXT] [--recursive] [--all-stale] [--threshold SECS] [--dry-run] [--grace SECS]`
+Target by entity ID or unique prefix; `--recursive` also kills child entities; `--all-stale` sweeps processes with dead PIDs; `--dry-run` previews without changing state.
+
+**`li studio`** — Launch the Lion Studio web UI (backend API + React frontend).
+`li studio [start] [--port PORT] [--host HOST] [--frontend-port PORT] [--no-frontend] [--dev] [--no-docker]`
+Defaults to Docker (`ghcr.io/ohdearquant/lion-studio`; auto-pulled); `--no-docker` uses a local install; `--no-frontend` starts the API server only; `--dev` enables hot-reload frontend for development.
 
 ## Python API
 

@@ -100,9 +100,7 @@ const y = 2;
 z = 3
 ```
 """
-        result = extract_code_block(
-            markdown, languages=["python", "ruby"], return_as_list=True
-        )
+        result = extract_code_block(markdown, languages=["python", "ruby"], return_as_list=True)
         assert len(result) == 2
         assert "x = 1" in result[0]
         assert "z = 3" in result[1]

@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import re
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal
 
@@ -6,6 +9,13 @@ from pydantic import BaseModel, field_validator
 from lionagi.ln.types import ModelConfig
 
 from .message import Message, MessageContent, MessageRole
+from .validators import validate_image_url
+
+# Pattern for a well-formed inline image data URI.  Only a bitmap MIME
+# allowlist is accepted and the payload must be non-empty base64.  This is
+# intentionally restrictive — active-content types (HTML, JS, and SVG, which
+# can carry scripts) are rejected, as are other data: schemes.
+_DATA_IMAGE_RE = re.compile(r"^data:image/(?:png|jpe?g|gif|webp);base64,[A-Za-z0-9+/]+=*$")
 
 _INSTRUCTION_SERIALIZE_EXCLUDE: frozenset[str] = frozenset(
     {"response_format", "structure", "_structure_instance"}
@@ -75,7 +85,7 @@ class InstructionContent(MessageContent):
 
         return DataClass.to_dict(self, exclude=frozenset(base_exclude))
 
-    def with_updates(self, **kwargs: Any) -> "InstructionContent":
+    def with_updates(self, **kwargs: Any) -> InstructionContent:
         # to_dict excludes response_format/structure for type/BaseModel refs
         # (they can't survive a JSON round-trip), so the generic with_updates —
         # which goes through to_dict → constructor — silently drops the response
@@ -104,7 +114,7 @@ class InstructionContent(MessageContent):
         return self._format_image_content(text, self.images, self.image_detail)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "InstructionContent":
+    def from_dict(cls, data: dict[str, Any]) -> InstructionContent:
         inst = cls()
 
         for k in ("instruction", "guidance", "plain_content", "image_detail"):
@@ -143,7 +153,7 @@ class InstructionContent(MessageContent):
             inst.images.extend(imgs_list)
             inst.image_detail = data.get("image_detail") or inst.image_detail or "auto"
 
-        response_format = data.get("response_format") or data.get("request_model")
+        response_format = data.get("response_format")
         structure = data.get("structure")
 
         if response_format is not None:
@@ -187,8 +197,39 @@ class InstructionContent(MessageContent):
 
     @staticmethod
     def _format_image_item(idx: str, detail: str) -> dict[str, Any]:
-        url = idx
-        if not (idx.startswith("http://") or idx.startswith("https://") or idx.startswith("data:")):
+        """Format a single image entry for a provider payload.
+
+        Validation (fail-closed):
+        - http:// and https:// URLs are passed through ``validate_image_url``,
+          which rejects null bytes, non-rooted URLs, and disallowed schemes.
+        - data: URIs are accepted only when they match the ``data:image/*``
+          base64 pattern — other data: payloads (HTML, SVG, JS) are rejected
+          to limit DoS and XSS vectors.
+        - Anything else is treated as raw base64 and wrapped into a
+          ``data:image/jpeg;base64,`` URI (pre-existing behaviour).
+
+        Raises:
+            ValueError: If the URL fails validation.
+        """
+        if idx.startswith("http://") or idx.startswith("https://"):
+            # Delegates null-byte, scheme, and missing-netloc checks.
+            validate_image_url(idx)
+            url = idx
+        elif idx.startswith("data:"):
+            # Accept only well-formed inline image data URIs.
+            if not _DATA_IMAGE_RE.match(idx):
+                raise ValueError(
+                    f"Rejected data: URI — only data:image/*;base64,… is allowed. Got: {idx[:80]!r}"
+                )
+            url = idx
+        elif "://" in idx or (idx.split(":")[0].isalpha() and ":" in idx):
+            # Looks like a URL with a non-http/https/data scheme (e.g. file://,
+            # javascript:, ftp://).  Delegate to validate_image_url which will
+            # reject all disallowed schemes with a clear error.
+            validate_image_url(idx)
+            url = idx  # unreachable if validate_image_url raises
+        else:
+            # Raw base64 payload — wrap as an inline JPEG data URI.
             url = f"data:image/jpeg;base64,{idx}"
         return {
             "type": "image_url",

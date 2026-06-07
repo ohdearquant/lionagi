@@ -17,14 +17,10 @@ interface GateVerdictCardProps {
   content: Record<string, unknown>;
 }
 
-export default function GateVerdictCard({
-  name,
-  content,
-}: GateVerdictCardProps) {
+export default function GateVerdictCard({ name, content }: GateVerdictCardProps) {
   const c = content as unknown as GateVerdictContent;
   const passed = c.gate_passed ?? c.passed ?? null;
-  const verdictLabel =
-    passed === true ? "ACCEPT" : passed === false ? "REJECT" : "PENDING";
+  const verdictLabel = passed === true ? "ACCEPT" : passed === false ? "REJECT" : "PENDING";
 
   return (
     <div className="rounded border border-edge bg-surface-raised">
@@ -40,9 +36,7 @@ export default function GateVerdictCard({
       </header>
 
       {c.summary ? (
-        <div className="px-3 py-2 text-body text-content-secondary">
-          {c.summary}
-        </div>
+        <div className="px-3 py-2 text-body text-content-secondary">{c.summary}</div>
       ) : null}
 
       {c.feedback ? (
@@ -50,20 +44,14 @@ export default function GateVerdictCard({
           <div className="mb-1 text-meta uppercase tracking-[0.06em] text-content-muted">
             Feedback
           </div>
-          <div className="text-body text-content-primary whitespace-pre-wrap">
-            {c.feedback}
-          </div>
+          <div className="text-body text-content-primary whitespace-pre-wrap">{c.feedback}</div>
         </section>
       ) : null}
 
       {c.notes ? (
         <section className="border-t border-edge px-3 py-2">
-          <div className="mb-1 text-meta uppercase tracking-[0.06em] text-content-muted">
-            Notes
-          </div>
-          <div className="text-body text-content-secondary whitespace-pre-wrap">
-            {c.notes}
-          </div>
+          <div className="mb-1 text-meta uppercase tracking-[0.06em] text-content-muted">Notes</div>
+          <div className="text-body text-content-secondary whitespace-pre-wrap">{c.notes}</div>
         </section>
       ) : null}
     </div>

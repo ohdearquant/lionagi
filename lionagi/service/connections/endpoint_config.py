@@ -109,9 +109,7 @@ class EndpointConfig(BaseModel):
                 return load_pydantic_model_from_schema(v)
         except Exception as e:
             raise ValueError("Invalid request options") from e
-        raise ValueError(
-            "Invalid request options: must be a Pydantic model or a schema dict"
-        )
+        raise ValueError("Invalid request options: must be a Pydantic model or a schema dict")
 
     @field_serializer("request_options")
     def _serialize_request_options(self, v: B | None):

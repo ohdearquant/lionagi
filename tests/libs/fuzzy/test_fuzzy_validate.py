@@ -90,9 +90,7 @@ class TestFuzzyValidatePydantic:
     def test_fuzzy_match_with_params_instance(self):
         """Test fuzzy match with FuzzyMatchKeysParams instance (lines 44-45)."""
         text = '{"nam": "Eve", "ag": 28, "emal": "eve@example.com"}'
-        params = FuzzyMatchKeysParams(
-            similarity_threshold=0.75, handle_unmatched="remove"
-        )
+        params = FuzzyMatchKeysParams(similarity_threshold=0.75, handle_unmatched="remove")
         result = fuzzy_validate_pydantic(
             text, SimpleModel, fuzzy_match=True, fuzzy_match_params=params
         )
@@ -192,9 +190,7 @@ class TestFuzzyValidateMapping:
     def test_dict_with_model_dump(self):
         """Test object with model_dump method (lines 126-129)."""
         model = SimpleModel(name="Frank", age=40, email="frank@example.com")
-        result = fuzzy_validate_mapping(
-            model, ["name", "age"], handle_unmatched="remove"
-        )
+        result = fuzzy_validate_mapping(model, ["name", "age"], handle_unmatched="remove")
         assert result["name"] == "Frank"
         assert result["age"] == 40
 
@@ -277,9 +273,7 @@ class TestFuzzyValidateMapping:
     def test_handle_unmatched_ignore(self):
         """Test handle_unmatched='ignore' keeps extra keys."""
         data = {"name": "Henry", "age": 50, "extra": "value"}
-        result = fuzzy_validate_mapping(
-            data, ["name", "age"], handle_unmatched="ignore"
-        )
+        result = fuzzy_validate_mapping(data, ["name", "age"], handle_unmatched="ignore")
         assert result["name"] == "Henry"
         assert result["age"] == 50
         assert result["extra"] == "value"
@@ -287,9 +281,7 @@ class TestFuzzyValidateMapping:
     def test_handle_unmatched_remove(self):
         """Test handle_unmatched='remove' removes extra keys."""
         data = {"name": "Iris", "age": 32, "extra": "value"}
-        result = fuzzy_validate_mapping(
-            data, ["name", "age"], handle_unmatched="remove"
-        )
+        result = fuzzy_validate_mapping(data, ["name", "age"], handle_unmatched="remove")
         assert result == {"name": "Iris", "age": 32}
         assert "extra" not in result
 
@@ -405,9 +397,7 @@ class TestFuzzyValidateEdgeCases:
 
     def test_complex_nested_json(self):
         """Test complex nested JSON structure."""
-        json_str = (
-            '{"user": {"name": "Test", "details": {"age": 30}}, "status": "active"}'
-        )
+        json_str = '{"user": {"name": "Test", "details": {"age": 30}}, "status": "active"}'
         result = fuzzy_validate_mapping(json_str, ["user", "status"])
         assert "user" in result
         assert result["status"] == "active"
@@ -574,9 +564,7 @@ class TestCoverageTargets:
 
             # Test with suppress=False (lines 134-137)
             mock_to_dict.return_value = "still_not_a_dict"
-            with pytest.raises(
-                ValueError, match="Failed to convert input to dictionary"
-            ):
+            with pytest.raises(ValueError, match="Failed to convert input to dictionary"):
                 fuzzy_validate_mapping(
                     {"test": "data"},
                     ["key1"],
@@ -600,9 +588,7 @@ class TestCoverageTargets:
             assert result == {"key1": "default", "key2": "default"}
 
             # Test with suppress=False (lines 142-143)
-            with pytest.raises(
-                ValueError, match="Failed to convert input to dictionary"
-            ):
+            with pytest.raises(ValueError, match="Failed to convert input to dictionary"):
                 fuzzy_validate_mapping(
                     {"test": "data"},
                     ["key1"],

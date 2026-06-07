@@ -312,8 +312,6 @@ def test_prepare_act_kw_defaults():
 async def test_sequential_act_single_request():
     """_sequential_act() wraps a non-list request in a list."""
     branch = _make_branch_with_tool()
-    result = await _sequential_act(
-        branch, {"function": "add", "arguments": {"a": 7, "b": 3}}
-    )
+    result = await _sequential_act(branch, {"function": "add", "arguments": {"a": 7, "b": 3}})
     assert len(result) == 1
     assert result[0].output == 10

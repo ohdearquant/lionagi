@@ -239,9 +239,7 @@ class TestPayloadCreation:
             "messages": [{"role": "user", "content": "Hello"}],
         }
 
-        payload, headers = endpoint.create_payload(
-            request, max_turns=5, auto_finish=True
-        )
+        payload, headers = endpoint.create_payload(request, max_turns=5, auto_finish=True)
 
         assert "request" in payload
         # ClaudeCodeRequest should have merged these
@@ -256,28 +254,13 @@ class TestStreamMethod:
         from lionagi.providers.anthropic.claude_code.endpoint import (
             ClaudeCodeCLIEndpoint,
         )
-        from lionagi.providers.anthropic.claude_code.models import ClaudeChunk
         from lionagi.service.types.stream_chunk import StreamChunk
 
         with patch(
             "lionagi.providers.anthropic.claude_code.endpoint.stream_claude_code_cli"
         ) as mock_stream:
-            chunk1 = ClaudeChunk(
-                raw={
-                    "type": "assistant",
-                    "message": {"content": [{"type": "text", "text": "hello"}]},
-                },
-                type="assistant",
-                text="hello",
-            )
-            chunk2 = ClaudeChunk(
-                raw={
-                    "type": "assistant",
-                    "message": {"content": [{"type": "text", "text": "world"}]},
-                },
-                type="assistant",
-                text="world",
-            )
+            chunk1 = StreamChunk(type="text", content="hello")
+            chunk2 = StreamChunk(type="text", content="world")
 
             async def async_gen(*args, **kwargs):
                 yield chunk1

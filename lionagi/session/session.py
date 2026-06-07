@@ -31,7 +31,6 @@ from .._errors import ItemNotFoundError
 from ..ln import lcall
 from ..protocols.generic import Flow
 from ..protocols.messages import Message
-from ..service.imodel import iModel
 from .branch import ActionManager, Branch, OperationManager, Tool
 from .exchange import Exchange
 
@@ -237,7 +236,6 @@ class Session(Node, Relational):
         system_datetime: bool | str = None,
         user: SenderRecipient = None,
         name: str | None = None,
-        imodel: iModel | None = None,
         messages: Pile[RoledMessage] = None,
         progress: Progression = None,
         tool_manager: ActionManager = None,

@@ -72,6 +72,35 @@ def _strip_capability_block(text: str) -> str:
     return (text[:start] + text[end + len(CAP_END) :]).strip()
 
 
+def _merge_instruct(
+    instruct: "Instruct | dict[str, Any] | None",
+    instruction=None,
+    guidance=None,
+    context=None,
+) -> dict:
+    """Normalize ``instruct`` to a dict, overlaying loose instruction fields.
+
+    Lets ``ReAct``/``ReActStream`` accept either a full ``Instruct``/dict or the
+    individual ``instruction``/``guidance``/``context`` keywords — the same shape
+    ``operate`` accepts. This is what makes a model-emitted ``SpawnRequest`` with
+    ``operation="ReAct"`` routable: the orchestration node builder passes a bare
+    ``instruction=`` parameter uniformly across every allowed operation.
+    """
+    if isinstance(instruct, Instruct):
+        merged = instruct.to_dict()
+    elif instruct:
+        merged = dict(instruct)
+    else:
+        merged = {}
+    if instruction is not None:
+        merged["instruction"] = instruction
+    if guidance is not None:
+        merged["guidance"] = guidance
+    if context is not None:
+        merged["context"] = context
+    return merged
+
+
 class Branch(Element, Relational):
     """
     Manages a conversation 'branch' with messages, tools, and iModels.
@@ -135,7 +164,6 @@ class Branch(Element, Relational):
         system_sender: "SenderRecipient" = None,
         chat_model: iModel | dict | str = None,  # iModelManager kwargs
         parse_model: iModel | dict | str = None,
-        imodel: iModel = None,  # deprecated, alias of chat_model
         tools: FuncTool | list[FuncTool] = None,  # ActionManager kwargs
         log_config: DataLoggerConfig | dict = None,  # LogManager kwargs
         system_datetime: bool | str = None,
@@ -165,8 +193,6 @@ class Branch(Element, Relational):
             parse_model (iModel, optional):
                 The "parse" iModel for structured data parsing.
                 Defaults to chat_model if not provided.
-            imodel (iModel, optional):
-                Deprecated. Alias for `chat_model`.
             tools (FuncTool | list[FuncTool], optional):
                 Tools or a list of tools for the ActionManager.
             log_config (LogManagerConfig | dict, optional):
@@ -225,7 +251,6 @@ class Branch(Element, Relational):
                 sender=system_sender or self.user or MessageRole.SYSTEM,
             )
 
-        chat_model = chat_model or imodel
         if not chat_model:
             chat_model = iModel(
                 provider=settings.LIONAGI_CHAT_PROVIDER,
@@ -944,7 +969,6 @@ class Branch(Element, Relational):
         fill_value: Any = None,
         fill_mapping: dict[str, Any] | None = None,
         strict: bool = False,
-        suppress_conversion_errors: bool = False,
         response_format: type[BaseModel] = None,
     ) -> BaseModel | dict | str | None:
         """
@@ -978,8 +1002,6 @@ class Branch(Element, Relational):
                 A mapping of specific fields to fill values.
             strict (bool):
                 If True, raises errors on ambiguous fields or data types.
-            suppress_conversion_errors (bool):
-                If True, logs or ignores conversion errors instead of raising.
 
         Returns:
             BaseModel | dict | str | None:
@@ -1109,7 +1131,6 @@ class Branch(Element, Relational):
 
         Raises:
             ValueError:
-                - If both `operative_model` and `response_format` or `request_model` are given.
                 - If the LLM's response cannot be parsed into the expected format and `handle_validation='raise'`.
         """
         _pms = {
@@ -1175,7 +1196,7 @@ class Branch(Element, Relational):
             progression (ID.IDSeq, optional):
                 Custom ordering of messages.
             response_format (type[BaseModel], optional):
-                Alias for `request_model`. If both are provided, raises ValueError.
+                A Pydantic model the response is parsed into.
             request_fields (dict|list[str], optional):
                 If you only need certain fields from the LLM's response.
             chat_model (iModel, optional):
@@ -1293,7 +1314,10 @@ class Branch(Element, Relational):
 
     async def ReAct(  # noqa: N802
         self,
-        instruct: "Instruct | dict[str, Any]",
+        instruct: "Instruct | dict[str, Any]" = None,
+        instruction: Instruction | JsonValue = None,
+        guidance: JsonValue = None,
+        context: JsonValue = None,
         interpret: bool = False,
         interpret_domain: str | None = None,
         interpret_style: str | None = None,
@@ -1328,8 +1352,16 @@ class Branch(Element, Relational):
         Args:
             branch (Branch):
                 The active branch context that orchestrates messages, models, and actions.
-            instruct (Instruct | dict[str, Any]):
+            instruct (Instruct | dict[str, Any], optional):
                 The user's instruction object or a dict with equivalent keys.
+                If omitted, the loose ``instruction``/``guidance``/``context``
+                keywords are used instead (the same shape ``operate`` accepts).
+            instruction (Instruction | JsonValue, optional):
+                The main instruction, used when ``instruct`` is not given.
+            guidance (JsonValue, optional):
+                Strategic direction, overlaid onto ``instruct`` when provided.
+            context (JsonValue, optional):
+                Background data, overlaid onto ``instruct`` when provided.
             interpret (bool, optional):
                 If `True`, first interprets (`branch.interpret`) the instructions to refine them
                 before proceeding. Defaults to `False`.
@@ -1391,6 +1423,8 @@ class Branch(Element, Relational):
         """
         from lionagi.operations.ReAct.ReAct import ReAct
 
+        instruct = _merge_instruct(instruct, instruction, guidance, context)
+
         # Remove potential duplicate parameters from kwargs
         kwargs_filtered = {
             k: v for k, v in kwargs.items() if k not in {"verbose_analysis", "verbose_action"}
@@ -1428,7 +1462,10 @@ class Branch(Element, Relational):
 
     async def ReActStream(  # noqa: N802
         self,
-        instruct: "Instruct | dict[str, Any]",
+        instruct: "Instruct | dict[str, Any]" = None,
+        instruction: Instruction | JsonValue = None,
+        guidance: JsonValue = None,
+        context: JsonValue = None,
         interpret: bool = False,
         interpret_domain: str | None = None,
         interpret_style: str | None = None,
@@ -1461,8 +1498,8 @@ class Branch(Element, Relational):
             ParseParam,
         )
 
-        # Convert Instruct to dict if needed
-        instruct_dict = instruct.to_dict() if isinstance(instruct, Instruct) else dict(instruct)
+        # Convert Instruct to dict if needed, overlaying loose instruction fields
+        instruct_dict = _merge_instruct(instruct, instruction, guidance, context)
 
         # Build InterpretContext if interpretation requested
         intp_param = None

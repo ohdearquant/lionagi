@@ -95,12 +95,6 @@ class TestStepBasicFunctionality:
 
         assert isinstance(operative, Operative)
 
-    def test_request_operative_with_inherit_base_false(self):
-        """Test request operative with inherit_base disabled."""
-        operative = Step.request_operative(inherit_base=False)
-
-        assert isinstance(operative, Operative)
-
     def test_request_operative_with_config_dict(self):
         """Test request operative with config dict."""
         config = {"extra": "forbid"}
@@ -111,12 +105,6 @@ class TestStepBasicFunctionality:
     def test_request_operative_with_doc(self):
         """Test request operative with documentation."""
         operative = Step.request_operative(doc="Test documentation")
-
-        assert isinstance(operative, Operative)
-
-    def test_request_operative_with_frozen(self):
-        """Test request operative with frozen model."""
-        operative = Step.request_operative(frozen=True)
 
         assert isinstance(operative, Operative)
 
@@ -209,9 +197,7 @@ class TestStepEdgeCases:
         """Test adding actions when already in field_models."""
         from lionagi.operations.fields import ACTION_REQUESTS_FIELD
 
-        operative = Step.request_operative(
-            field_models=[ACTION_REQUESTS_FIELD], actions=True
-        )
+        operative = Step.request_operative(field_models=[ACTION_REQUESTS_FIELD], actions=True)
 
         assert isinstance(operative, Operative)
 
