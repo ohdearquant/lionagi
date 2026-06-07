@@ -33,9 +33,7 @@ def _init_git_repo(path: Path) -> None:
         subprocess.run(cmd, cwd=str(path), capture_output=True, check=True)
     (path / "README.md").write_text("initial\n")
     subprocess.run(["git", "add", "."], cwd=str(path), capture_output=True, check=True)
-    subprocess.run(
-        ["git", "commit", "-m", "init"], cwd=str(path), capture_output=True, check=True
-    )
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(path), capture_output=True, check=True)
 
 
 @pytest.fixture
@@ -215,9 +213,7 @@ async def test_sandbox_discard_deletes_branch(git_repo):
     session = await create_sandbox(str(git_repo))
     branch_name = session.branch_name
     await sandbox_discard(session)
-    out = subprocess.run(
-        ["git", "branch"], cwd=str(git_repo), capture_output=True, text=True
-    )
+    out = subprocess.run(["git", "branch"], cwd=str(git_repo), capture_output=True, text=True)
     assert branch_name not in out.stdout
 
 

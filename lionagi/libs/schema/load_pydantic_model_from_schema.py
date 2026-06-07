@@ -157,9 +157,7 @@ def _schema_to_type(
             py_types: list[type] = []
             for variant in variants:
                 py_types.append(
-                    _schema_to_type(
-                        variant, prop_name, root_schema, models_cache, parent_name
-                    )
+                    _schema_to_type(variant, prop_name, root_schema, models_cache, parent_name)
                 )
             if len(py_types) == 1:
                 return py_types[0]
@@ -172,9 +170,7 @@ def _schema_to_type(
             if "$ref" in sub:
                 sub = _resolve_ref(sub["$ref"], root_schema)
             merged = _deep_merge(merged, sub)
-        return _schema_to_type(
-            merged, prop_name, root_schema, models_cache, parent_name
-        )
+        return _schema_to_type(merged, prop_name, root_schema, models_cache, parent_name)
 
     schema_type = prop_schema.get("type")
 
@@ -195,9 +191,7 @@ def _schema_to_type(
             if mapped is None:
                 if t == "object":
                     if "properties" in prop_schema:
-                        nested_name = (
-                            prop_schema.get("title") or f"{parent_name}_{prop_name}"
-                        )
+                        nested_name = prop_schema.get("title") or f"{parent_name}_{prop_name}"
                         py_types_list.append(
                             _build_model_from_object(
                                 prop_schema,
@@ -233,17 +227,13 @@ def _schema_to_type(
 
     # --- array ---
     if schema_type == "array":
-        return _array_type(
-            prop_schema, prop_name, root_schema, models_cache, parent_name
-        )
+        return _array_type(prop_schema, prop_name, root_schema, models_cache, parent_name)
 
     # --- object ---
     if schema_type == "object":
         if "properties" in prop_schema:
             nested_name = prop_schema.get("title") or f"{parent_name}_{prop_name}"
-            return _build_model_from_object(
-                prop_schema, nested_name, root_schema, models_cache
-            )
+            return _build_model_from_object(prop_schema, nested_name, root_schema, models_cache)
         # Generic dict if no properties defined
         additional = prop_schema.get("additionalProperties")
         if isinstance(additional, dict):
@@ -267,9 +257,7 @@ def _array_type(
     items = prop_schema.get("items")
     if items is None:
         return list  # type: ignore[return-value]
-    item_type = _schema_to_type(
-        items, f"{prop_name}_item", root_schema, models_cache, parent_name
-    )
+    item_type = _schema_to_type(items, f"{prop_name}_item", root_schema, models_cache, parent_name)
     return list[item_type]  # type: ignore[valid-type]
 
 
@@ -368,9 +356,7 @@ def _create_model_from_schema(
             for def_name, def_schema in defs.items():
                 if isinstance(def_schema, dict):
                     try:
-                        _build_model_from_object(
-                            def_schema, def_name, root_schema, models_cache
-                        )
+                        _build_model_from_object(def_schema, def_name, root_schema, models_cache)
                     except _CreateModelUnsupportedError:
                         raise
 
@@ -459,13 +445,9 @@ def _load_via_codegen(
                 ) from e
 
         try:
-            model_class.model_rebuild(
-                _types_namespace=generated_module.__dict__, force=True
-            )
+            model_class.model_rebuild(_types_namespace=generated_module.__dict__, force=True)
         except (PydanticUserError, NameError) as e:
-            raise RuntimeError(
-                f"Error during model_rebuild for {resolved_model_name}"
-            ) from e
+            raise RuntimeError(f"Error during model_rebuild for {resolved_model_name}") from e
         except Exception as e:
             raise RuntimeError(
                 f"Unexpected error during model_rebuild for {resolved_model_name}"
@@ -485,13 +467,15 @@ def load_pydantic_model_from_schema(
     /,
     pydantic_version: Any = None,
     python_version: Any = None,
+    allow_codegen: bool = False,
 ) -> type[BaseModel]:
     """Build a Pydantic model class from a JSON schema string or dict.
 
     Uses ``pydantic.create_model()`` to construct models programmatically --
     no code generation and no ``exec_module()``.  Falls back to
-    ``datamodel-code-generator`` (if installed) for schemas too complex for
-    the ``create_model`` approach.
+    ``datamodel-code-generator`` **only** when *allow_codegen=True* is
+    explicitly passed; that path writes and executes a generated Python module,
+    so it must never be reached from untrusted schema input.
 
     Args:
         schema: The JSON schema as a string or a Python dictionary.
@@ -501,6 +485,12 @@ def load_pydantic_model_from_schema(
             ``datamodel-code-generator``.
         python_version: (Fallback only) The target Python version for
             ``datamodel-code-generator``.
+        allow_codegen: When ``False`` (the default), the
+            ``datamodel-code-generator`` fallback is disabled and any schema
+            that ``create_model`` cannot handle raises ``RuntimeError`` rather
+            than falling through to code generation and ``exec_module``.  Set
+            to ``True`` only for schemas from fully trusted sources (e.g.
+            hand-written library schemas under your own version control).
 
     Returns:
         The dynamically created Pydantic ``BaseModel`` subclass.
@@ -508,7 +498,8 @@ def load_pydantic_model_from_schema(
     Raises:
         ValueError: If the schema string is not valid JSON.
         TypeError: If *schema* is neither ``str`` nor ``dict``.
-        RuntimeError: If both ``create_model`` and the codegen fallback fail.
+        RuntimeError: If ``create_model`` cannot handle the schema and
+            *allow_codegen* is ``False``, or if both paths fail.
     """
     # --- 1. Parse / validate schema input ---
     schema_dict: dict[str, Any]
@@ -532,11 +523,22 @@ def load_pydantic_model_from_schema(
     except _CreateModelUnsupportedError as exc:
         create_model_error = exc
         logger.debug(
-            "create_model could not handle schema (%s); trying codegen fallback.",
+            "create_model could not handle schema (%s); codegen fallback=%s.",
             exc,
+            allow_codegen,
         )
 
-    # --- 3. Fallback: datamodel-code-generator ---
+    # --- 3. Fallback: datamodel-code-generator (opt-in, fail-closed by default) ---
+    # Security: this path executes generated Python via exec_module.  It must
+    # never be reached from untrusted schema input.  Callers must pass
+    # allow_codegen=True explicitly to opt in.
+    if not allow_codegen:
+        raise RuntimeError(
+            f"create_model could not handle this schema ({create_model_error}). "
+            "The datamodel-code-generator fallback is disabled for untrusted input. "
+            "Pass allow_codegen=True only for schemas from fully trusted sources."
+        )
+
     if not _HAS_DATAMODEL_CODE_GENERATOR:
         raise RuntimeError(
             f"create_model could not handle this schema ({create_model_error}), and "
