@@ -91,16 +91,12 @@ def test_safe_allows_non_bash():
 
 
 def test_deny_beats_allow_when_both_match():
-    p = PermissionPolicy(
-        mode="rules", allow={"bash": ["git *"]}, deny={"bash": ["git *"]}
-    )
+    p = PermissionPolicy(mode="rules", allow={"bash": ["git *"]}, deny={"bash": ["git *"]})
     assert p.check("bash", "run", {"command": "git status"}).behavior == "deny"
 
 
 def test_allow_beats_escalate():
-    p = PermissionPolicy(
-        mode="rules", allow={"bash": ["cargo *"]}, escalate={"bash": ["*"]}
-    )
+    p = PermissionPolicy(mode="rules", allow={"bash": ["cargo *"]}, escalate={"bash": ["*"]})
     assert p.check("bash", "run", {"command": "cargo build"}).behavior == "allow"
 
 

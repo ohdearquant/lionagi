@@ -10,10 +10,16 @@ output JSON schema, so write them as agent-facing guidance.
 from __future__ import annotations
 
 import re
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.ln.types import Operable, Spec
+
+# Allowlist of branch operations that a model-emitted SpawnRequest may name.
+# Updating this set requires a deliberate review — do not expand it lightly.
+# See ADR note in orchestration/patterns.py:role_node_builder for context.
+_SPAWN_ALLOWED_OPERATIONS: frozenset[str] = frozenset({"operate", "chat", "communicate", "ReAct"})
 
 __all__ = (
     # discovery
@@ -51,11 +57,27 @@ __all__ = (
 
 
 # ---------------------------------------------------------------------------
+# Shared emission base — fail-closed on unknown model-output fields
+# ---------------------------------------------------------------------------
+
+
+class _EmissionModel(BaseModel):
+    """Private base for all emission contracts.
+
+    ``extra='forbid'`` rejects unknown keys from model output at validation
+    time, making malformed or over-broad emissions visible to tests and
+    observers rather than silently discarded.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# ---------------------------------------------------------------------------
 # Discovery — what is true / what was found
 # ---------------------------------------------------------------------------
 
 
-class Finding(BaseModel):
+class Finding(_EmissionModel):
     """A single discovered fact, issue, or observation — one per distinct point."""
 
     description: str = Field(
@@ -79,7 +101,7 @@ class Finding(BaseModel):
     )
 
 
-class Conflict(BaseModel):
+class Conflict(_EmissionModel):
     """A contradiction between two or more sources that must be surfaced, not silently resolved."""
 
     sources: list[str] = Field(
@@ -88,14 +110,14 @@ class Conflict(BaseModel):
     nature: str = Field(description="What exactly they disagree about.")
 
 
-class Gap(BaseModel):
+class Gap(_EmissionModel):
     """An identified unknown — something the work needs but does not yet have."""
 
     area: str = Field(description="The domain or topic where knowledge is missing.")
     what_is_unknown: str = Field(description="The specific question that remains unanswered.")
 
 
-class Diagnosis(BaseModel):
+class Diagnosis(_EmissionModel):
     """A causal explanation: observed symptom → root cause → remedy."""
 
     symptom: str = Field(description="The observable problem or failure as it presents.")
@@ -116,7 +138,7 @@ class Diagnosis(BaseModel):
     )
 
 
-class Synthesis(BaseModel):
+class Synthesis(_EmissionModel):
     """An integrated view across multiple inputs — names through-lines and tensions."""
 
     summary: str = Field(description="The integrated takeaway across all inputs.")
@@ -137,7 +159,7 @@ class Synthesis(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class Verdict(BaseModel):
+class Verdict(_EmissionModel):
     """A terminal judgement on an artifact or claim — issue exactly one."""
 
     verdict: str = Field(
@@ -155,7 +177,7 @@ class Verdict(BaseModel):
     )
 
 
-class ComplianceVerdict(BaseModel):
+class ComplianceVerdict(_EmissionModel):
     """A pass/fail judgement against one named control or policy."""
 
     verdict: str = Field(description="compliant | non-compliant | not-applicable.")
@@ -166,7 +188,7 @@ class ComplianceVerdict(BaseModel):
     )
 
 
-class RiskAssessment(BaseModel):
+class RiskAssessment(_EmissionModel):
     """One identified failure mode with its likelihood, impact, and mitigation."""
 
     failure_mode: str = Field(description="What could go wrong, stated concretely.")
@@ -181,7 +203,7 @@ class RiskAssessment(BaseModel):
     )
 
 
-class Objection(BaseModel):
+class Objection(_EmissionModel):
     """An adversarial challenge to a target's strongest form, not a weak version."""
 
     target: str = Field(description="The claim, proposal, or decision being challenged.")
@@ -195,7 +217,7 @@ class Objection(BaseModel):
     )
 
 
-class Recommendation(BaseModel):
+class Recommendation(_EmissionModel):
     """Advice with alternatives — non-terminal (unlike Verdict, the recipient decides)."""
 
     recommendation: str = Field(description="The recommended course of action.")
@@ -213,7 +235,7 @@ class Recommendation(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class AnalysisResult(BaseModel):
+class AnalysisResult(_EmissionModel):
     """One measured metric from an experiment or analysis — quantitative, not prose."""
 
     metric: str = Field(description="What was measured (name the metric precisely).")
@@ -226,7 +248,7 @@ class AnalysisResult(BaseModel):
     )
 
 
-class ComplexityScore(BaseModel):
+class ComplexityScore(_EmissionModel):
     """A normalized estimate of task complexity, with justification."""
 
     score: float = Field(
@@ -240,7 +262,7 @@ class ComplexityScore(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ExecutionPlan(BaseModel):
+class ExecutionPlan(_EmissionModel):
     """An ordered plan of work — what an orchestrator or planner hands down for execution."""
 
     steps: list[str] = Field(description="Ordered steps, each an actionable unit of work.")
@@ -253,7 +275,7 @@ class ExecutionPlan(BaseModel):
     )
 
 
-class TaskAssignment(BaseModel):
+class TaskAssignment(_EmissionModel):
     """A unit of work delegated to an executor — the coordination primitive."""
 
     task: str = Field(description="The unit of work, stated as a concrete objective.")
@@ -276,7 +298,7 @@ class TaskAssignment(BaseModel):
     )
 
 
-class DesignSpec(BaseModel):
+class DesignSpec(_EmissionModel):
     """A design or architecture decision — structural output before any code."""
 
     summary: str = Field(description="The design in one paragraph — what is being built and how.")
@@ -296,7 +318,7 @@ class DesignSpec(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ArtifactProduced(BaseModel):
+class ArtifactProduced(_EmissionModel):
     """A concrete build output — code, config, or compiled artifact (prose → Document)."""
 
     path: str = Field(description="Where the artifact lives (path, URL, or identifier).")
@@ -308,7 +330,7 @@ class ArtifactProduced(BaseModel):
     )
 
 
-class VerificationResult(BaseModel):
+class VerificationResult(_EmissionModel):
     """The outcome of running a test or verification suite."""
 
     suite: str = Field(description="What was run (test suite, check, or command).")
@@ -321,7 +343,7 @@ class VerificationResult(BaseModel):
     )
 
 
-class Document(BaseModel):
+class Document(_EmissionModel):
     """Authored prose — docs, summaries, translations (distinct from ArtifactProduced)."""
 
     title: str = Field(description="The document title or subject.")
@@ -334,7 +356,7 @@ class Document(BaseModel):
     )
 
 
-class OperationOutcome(BaseModel):
+class OperationOutcome(_EmissionModel):
     """The result of acting on a live system — what changed and how to undo it."""
 
     action: str = Field(description="The operation performed (deploy, migrate, restart, ...).")
@@ -353,7 +375,7 @@ class OperationOutcome(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class Proposal(BaseModel):
+class Proposal(_EmissionModel):
     """A novel idea framed for evaluation (not yet a plan)."""
 
     idea: str = Field(description="The proposal, stated concretely.")
@@ -366,7 +388,7 @@ class Proposal(BaseModel):
     )
 
 
-class Postmortem(BaseModel):
+class Postmortem(_EmissionModel):
     """A blameless retrospective — what happened and what to change."""
 
     summary: str = Field(description="What happened, in one paragraph.")
@@ -385,7 +407,7 @@ class Postmortem(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class EscalationRequest(BaseModel):
+class EscalationRequest(_EmissionModel):
     """Hand off to a human or higher authority — the universal escape hatch."""
 
     reason: str = Field(
@@ -401,7 +423,7 @@ class EscalationRequest(BaseModel):
     from_role: str | None = Field(default=None, description="The role raising the escalation.")
 
 
-class SpawnRequest(BaseModel):
+class SpawnRequest(_EmissionModel):
     """Add a new operation to the RUNNING workflow — emit when work beyond the
     current plan is discovered. Grows the live DAG without halting it (reactive
     self-expansion). The emitting node becomes the new op's upstream by default."""
@@ -414,7 +436,7 @@ class SpawnRequest(BaseModel):
         description="Role to execute it (researcher, implementer, critic, ...). "
         "Omit to reuse the emitter's own role/branch.",
     )
-    operation: str = Field(
+    operation: Literal["operate", "chat", "communicate", "ReAct"] = Field(
         default="operate",
         description="lionagi operation to run: operate | chat | communicate | ReAct. Default operate.",
     )
