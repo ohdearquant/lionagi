@@ -69,9 +69,7 @@ async def _resolve_invocation_terminal(
             }
             if RunReasons.CANCELLED_SIGINT in aborted_reasons:
                 reason_code = RunReasons.CANCELLED_SIGINT
-                reason_summary = (
-                    "Invocation was interrupted (SIGINT) because a child session was."
-                )
+                reason_summary = "Invocation was interrupted (SIGINT) because a child session was."
             else:
                 reason_code = RunReasons.ABORTED_USER
                 reason_summary = (
@@ -429,9 +427,7 @@ class SchedulerEngine:
         try:
             argv = build_argv(schedule, trigger_context)
         except Exception as exc:
-            _log.exception(
-                "Invalid schedule action for %s (run %s)", schedule.get("name"), run_id
-            )
+            _log.exception("Invalid schedule action for %s (run %s)", schedule.get("name"), run_id)
             _end_time = time.time()
             next_at = self._compute_next_fire(schedule, now)
             async with StateDB() as db:
@@ -462,10 +458,8 @@ class SchedulerEngine:
                     actor=run_id,
                     metadata={"exception_class": type(exc).__name__},
                 )
-                inv_status, inv_rc, inv_rs, inv_ev, inv_meta = (
-                    await _resolve_invocation_terminal(
-                        db, inv_id, fallback_status="failed", exception=exc
-                    )
+                inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await _resolve_invocation_terminal(
+                    db, inv_id, fallback_status="failed", exception=exc
                 )
                 await db.update_invocation(inv_id, ended_at=_end_time)
                 await db.update_status(
@@ -633,11 +627,13 @@ class SchedulerEngine:
                         evidence_refs=[{"kind": "schedule", "id": sid}],
                         reason_actor=run_id,
                     )
-                    inv_status, inv_rc, inv_rs, inv_ev, inv_meta = (
-                        await _resolve_invocation_terminal(
-                            db, inv_id, fallback_status="cancelled"
-                        )
-                    )
+                    (
+                        inv_status,
+                        inv_rc,
+                        inv_rs,
+                        inv_ev,
+                        inv_meta,
+                    ) = await _resolve_invocation_terminal(db, inv_id, fallback_status="cancelled")
                     await db.update_invocation(inv_id, ended_at=_end_time)
                     await db.update_status(
                         "invocation",
@@ -651,9 +647,7 @@ class SchedulerEngine:
                         metadata=inv_meta,
                     )
             except Exception:
-                _log.exception(
-                    "Failed to record cancellation for run %s during shutdown", run_id
-                )
+                _log.exception("Failed to record cancellation for run %s during shutdown", run_id)
             raise
         except Exception as exc:
             _log.exception("Error in schedule fire %s (run %s)", schedule.get("name"), run_id)
