@@ -95,10 +95,16 @@ class AgentSpec:
         effort: str | None = "high",
         system_prompt: str | None = None,
         cwd: str | None = None,
+        secure: bool = True,
         **kwargs: Any,
     ) -> AgentSpec:
-        """Preset for a coding agent — implementer role + coding tools."""
-        return cls.compose(
+        """Preset for a coding agent — implementer role + coding tools.
+
+        By default, wires ``guard_destructive`` as a pre-hook on the ``bash``
+        tool to block dangerous shell commands (rm -rf, force-push, etc.).
+        Set ``secure=False`` to disable this default and manage hooks manually.
+        """
+        spec = cls.compose(
             "implementer",
             model=model,
             effort=effort,
@@ -107,6 +113,11 @@ class AgentSpec:
             cwd=cwd,
             **kwargs,
         )
+        if secure:
+            from lionagi.agent.hooks import guard_destructive
+
+            spec.pre("bash", guard_destructive)
+        return spec
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> AgentSpec:

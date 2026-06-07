@@ -100,10 +100,16 @@ class AgentConfig:
         effort: str | None = "high",
         system_prompt: str | None = None,
         cwd: str | None = None,
+        secure: bool = True,
         **kwargs: Any,
     ) -> AgentConfig:
-        """Preset for a coding agent with CodingToolkit."""
-        return cls(
+        """Preset for a coding agent with CodingToolkit.
+
+        By default, wires ``guard_destructive`` as a pre-hook on the ``bash``
+        tool to block dangerous shell commands (rm -rf, force-push, etc.).
+        Set ``secure=False`` to disable this default and manage hooks manually.
+        """
+        config = cls(
             name=name,
             model=model,
             effort=effort,
@@ -112,6 +118,11 @@ class AgentConfig:
             cwd=cwd,
             **kwargs,
         )
+        if secure:
+            from lionagi.agent.hooks import guard_destructive
+
+            config.pre("bash", guard_destructive)
+        return config
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> AgentConfig:
