@@ -83,12 +83,64 @@ def _read_pid_from_entity(entity: dict[str, Any]) -> int | None:
 # ── Signal / terminate ─────────────────────────────────────────────────────────
 
 
-def _check_pid_identity(pid: int, expected_cmd: str) -> bool:
-    """Return True iff the live process at *pid* looks like a lionagi agent.
+# Tolerance (seconds) when comparing a recorded process start time against the
+# live process's create_time. Clocks and rounding differ slightly between the
+# launcher and psutil; 2s is comfortably tighter than any PID-recycle window.
+_CREATE_TIME_TOLERANCE = 2.0
+
+
+def _cmdline_is_lionagi(cmdline: list[str], expected_cmd: str) -> bool:
+    """Return True iff *cmdline* is genuinely a lionagi CLI invocation.
+
+    Exact-token match, NOT substring. A broad ``expected_cmd in part`` check
+    matches any unrelated process whose path or arguments merely *mention*
+    lionagi — e.g. ``vim /Users/lion/projects/lionagi/README.md`` — which would
+    let ``li kill`` signal a recycled, unrelated PID (CWE-362).
+
+    A process counts as lionagi only when:
+      * its executable basename is the console entrypoint (``li``) or
+        ``expected_cmd`` itself, or
+      * it is run as ``python -m lionagi`` / ``python -m lionagi.<submodule>``.
+
+    A path component (``.../lionagi/README.md``) is deliberately not a match.
+    """
+    if not cmdline:
+        return False
+    exe = os.path.basename(cmdline[0])
+    if exe in ("li", expected_cmd):
+        return True
+    for flag, mod in zip(cmdline, cmdline[1:], strict=False):
+        if flag == "-m" and (mod == expected_cmd or mod.startswith(expected_cmd + ".")):
+            return True
+    return False
+
+
+def _check_pid_identity(
+    pid: int,
+    expected_cmd: str,
+    *,
+    expected_session_id: str | None = None,
+    expected_create_time: float | None = None,
+) -> bool:
+    """Return True iff the live process at *pid* is the lionagi run we recorded.
 
     Uses psutil when available.  If psutil is not installed, logs a warning
     and returns False so the caller skips the kill rather than risk signalling
     a recycled PID (CWE-362).
+
+    Identity is established in order of decreasing certainty:
+
+    1. ``create_time`` — when *expected_create_time* was recorded at launch, a
+       mismatch means the PID was recycled to a different process; reject
+       outright. This is the decisive defense against PID reuse.
+    2. ``LIONAGI_SESSION_ID`` env marker — a lionagi run started by the CLI
+       carries its session id in the environment (see the orchestrate
+       background launcher). When *expected_session_id* is given and the live
+       process exposes a matching marker, that is a definitive match; a
+       *different* marker means another lionagi run now holds this PID — reject.
+       An absent marker is inconclusive, so fall through.
+    3. cmdline — exact-token match that the process really is a lionagi CLI
+       invocation (see ``_cmdline_is_lionagi``).
     """
     try:
         import psutil  # optional dependency
@@ -103,32 +155,53 @@ def _check_pid_identity(pid: int, expected_cmd: str) -> bool:
         return False
 
     try:
-        cmdline = psutil.Process(pid).cmdline()
+        proc = psutil.Process(pid)
+        # create_time gate — recycled PID has a different start time.
+        if expected_create_time is not None:
+            if abs(proc.create_time() - expected_create_time) > _CREATE_TIME_TOLERANCE:
+                return False
+        # session-marker gate — exact per-run identity when accessible.
+        if expected_session_id is not None:
+            try:
+                marker = proc.environ().get("LIONAGI_SESSION_ID")
+            except (psutil.AccessDenied, NotImplementedError):
+                marker = None  # can't read env; fall through to cmdline
+            if marker is not None:
+                return marker == expected_session_id
+        cmdline = proc.cmdline()
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False
 
-    return any(expected_cmd in part for part in cmdline)
+    return _cmdline_is_lionagi(cmdline, expected_cmd)
 
 
 def _terminate_pid(
     pid: int,
     grace_seconds: float = 5.0,
     expected_cmd: str | None = None,
+    *,
+    expected_session_id: str | None = None,
+    expected_create_time: float | None = None,
 ) -> str:
     """SIGTERM → wait → SIGKILL.  Returns "sigterm", "sigkill", "already_dead", or "identity_mismatch".
 
     If the process doesn't exist at all, returns "already_dead".
-    If *expected_cmd* is given, verifies the process cmdline contains that
-    substring before signalling; returns "identity_mismatch" (and skips the
-    kill) if the check fails or psutil is unavailable — prevents PID-reuse
-    races (CWE-362).
+    If *expected_cmd* is given, verifies the live process is the lionagi run we
+    recorded (see ``_check_pid_identity``) before signalling; returns
+    "identity_mismatch" (and skips the kill) if the check fails or psutil is
+    unavailable — prevents PID-reuse races (CWE-362).
     If SIGTERM is enough, returns "sigterm".  If the grace period expires
     and the process is still alive, escalates to SIGKILL and returns "sigkill".
     """
     if not _pid_alive(pid):
         return "already_dead"
 
-    if expected_cmd is not None and not _check_pid_identity(pid, expected_cmd):
+    if expected_cmd is not None and not _check_pid_identity(
+        pid,
+        expected_cmd,
+        expected_session_id=expected_session_id,
+        expected_create_time=expected_create_time,
+    ):
         return "identity_mismatch"
 
     # Phase 1: SIGTERM
@@ -372,13 +445,25 @@ async def _kill_one(
     signal_used = "no_pid"
 
     if pid is not None:
+        # Strong identity markers recorded at launch (when available). A session
+        # carries its own id as the LIONAGI_SESSION_ID env marker on the running
+        # process; node_metadata may also carry the process start time.
+        meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
+        expected_session_id = entity_id if entity_type == "session" else None
+        raw_ct = meta.get("pid_create_time")
+        try:
+            expected_create_time = float(raw_ct) if raw_ct is not None else None
+        except (TypeError, ValueError):
+            expected_create_time = None
         try:
             signal_used = _terminate_pid(
                 pid,
                 grace_seconds=grace_seconds,
-                # Verify the process is a lionagi agent before signalling to
-                # prevent PID-reuse races (CWE-362, issue #1126).
+                # Verify the live process is the lionagi run we recorded before
+                # signalling, to prevent PID-reuse races (CWE-362).
                 expected_cmd="lionagi",
+                expected_session_id=expected_session_id,
+                expected_create_time=expected_create_time,
             )
         except RuntimeError as exc:
             warn(str(exc))
