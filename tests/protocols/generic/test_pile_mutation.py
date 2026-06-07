@@ -186,7 +186,7 @@ class TestInPlaceSetOps:
 
 
 # ---------------------------------------------------------------------------
-# 3. Non-in-place set ops (__or__, __and__, __xor__) — fixed (#1291)
+# 3. Non-in-place set ops (__or__, __and__, __xor__)
 # ---------------------------------------------------------------------------
 
 
@@ -194,7 +194,7 @@ class TestNonInPlaceSetOps:
     """__or__, __and__, __xor__ previously passed 'items=' instead of
     'collections=' to Pile.__init__, causing ValidationError on every call.
     These tests assert the corrected behaviour: set ops return a new Pile
-    with the expected membership. See GitHub issue #1291."""
+    with the expected membership."""
 
     def setup_method(self):
         self.a0, self.a1, self.a2 = Item(value=0), Item(value=1), Item(value=2)
@@ -317,7 +317,7 @@ class TestNonInPlaceSetOps:
 
 class TestMultiItemPop:
     """_pop with a slice returning >1 item previously used 'items=' kwarg,
-    causing the same ValidationError as the set-op bug. See issue #1291."""
+    causing the same ValidationError as the set-op bug."""
 
     def setup_method(self):
         self.items = [Item(value=i) for i in range(5)]

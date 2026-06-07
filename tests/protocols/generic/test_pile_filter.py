@@ -66,7 +66,7 @@ class TestIsHomogenous:
     """is_homogenous previously iterated over dict_values directly, causing
     TypeError in is_same_dtype which requires a list or Mapping, not
     dict_values. Fixed by materialising list(self.collections.values())
-    before the call. See issue #1291."""
+    before the call."""
 
     def test_empty_is_homogenous(self):
         p = Pile()
