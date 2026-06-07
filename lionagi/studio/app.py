@@ -30,10 +30,10 @@ from .services import stats as stats_svc
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 # API route prefixes whose GET responses contain agent-produced content that
-# must be protected when a bearer token is configured.  The /api/admin/* and
-# /api/artifacts/* surfaces are the two concrete cases identified in
-# LIONAGI-AUDIT-001 (studio-standards 2026-06-06).
-_PROTECTED_GET_PREFIXES = ("/api/admin/", "/api/artifacts")
+# must be protected when a bearer token is configured.  Admin, artifacts,
+# invocations, and sessions all return sensitive run data and must be gated
+# the same way as mutating routes when a token is present.
+_PROTECTED_GET_PREFIXES = ("/api/admin/", "/api/artifacts", "/api/invocations", "/api/sessions")
 
 
 @asynccontextmanager
