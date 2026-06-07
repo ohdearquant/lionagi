@@ -63,9 +63,7 @@ class APICalling(HookedEvent):
         # Add token usage information to the last message if requested
         if self.include_token_usage_to_model and self.endpoint.config.requires_tokens:
             # Handle both messages format (chat completions) and input format (responses API)
-            if "messages" in self.payload and isinstance(
-                self.payload["messages"][-1], dict
-            ):
+            if "messages" in self.payload and isinstance(self.payload["messages"][-1], dict):
                 required_tokens = self.required_tokens
                 content = self.payload["messages"][-1]["content"]
                 # Model token limit mapping

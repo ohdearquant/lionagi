@@ -98,9 +98,7 @@ class Graph(Element, Relational, Generic[T]):
     def add_node(self, node: Relational) -> None:
         """Add a node to the graph."""
         if not isinstance(node, Relational):
-            raise RelationError(
-                "Failed to add node: Invalid node type: not a <Relational> entity."
-            )
+            raise RelationError("Failed to add node: Invalid node type: not a <Relational> entity.")
         _id = ID.get_id(node)
         try:
             self.internal_nodes.insert(len(self.internal_nodes), node)
@@ -530,9 +528,7 @@ class Graph(Element, Relational, Generic[T]):
         for edge_id, tail_id in out_edges:
             old_edge = self.internal_edges[edge_id]
             extra_properties = {
-                k: v
-                for k, v in old_edge.properties.items()
-                if k not in {"condition", "label"}
+                k: v for k, v in old_edge.properties.items() if k not in {"condition", "label"}
             }
 
             replacement = Edge(
