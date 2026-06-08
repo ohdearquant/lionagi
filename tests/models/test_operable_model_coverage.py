@@ -195,10 +195,10 @@ class TestNewModel:
             def model_rebuild(cls, *a, **kw):
                 raise RuntimeError("forward ref broken")
 
-        # Patch ModelParams.create_new_model to return our Boom class.
+        # Patch the model builder to return our Boom class.
         from lionagi.models import operable_model as om
 
-        monkeypatch.setattr(om.ModelParams, "create_new_model", lambda self: _Boom)
+        monkeypatch.setattr(om, "build_model_type", lambda **kw: _Boom)
         # Should NOT raise.
         cls = m.new_model(use_fields={"base"}, update_forward_refs=True)
         assert cls is _Boom

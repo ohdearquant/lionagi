@@ -54,7 +54,7 @@ class PydanticSpecAdapter(SpecAdapter):
         doc: str | None = None,
     ) -> type[BaseModel]:
         """Generate Pydantic BaseModel from Operable."""
-        from lionagi.models.model_params import ModelParams
+        from lionagi.models._build_model import build_model_type
 
         use_specs = op.get_specs(include=include, exclude=exclude)
         use_fields = {i.name: cls.create_field(i) for i in use_specs if i.name}
@@ -67,20 +67,14 @@ class PydanticSpecAdapter(SpecAdapter):
                 if v:
                     validators.update(v)
 
-        params = ModelParams(
+        model_cls = build_model_type(
             name=model_name,
             parameter_fields=use_fields,
             base_type=base_type,
             inherit_base=True,
             doc=doc,
+            validators=validators,
         )
-        # Inject spec validators into ModelParams before model creation
-        if validators:
-            existing = dict(params._validators) if params._validators else {}
-            existing.update(validators)
-            object.__setattr__(params, "_validators", existing)
-
-        model_cls = params.create_new_model()
 
         model_cls.model_rebuild()
         return model_cls
