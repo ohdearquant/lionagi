@@ -8,10 +8,11 @@ Backs the /api/invocations endpoints. Reads from state.db's
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+
+from ._io import parse_json_col as _parse_json_col
 
 
 async def list_invocations(
@@ -27,12 +28,7 @@ async def list_invocations(
         rows = await db.list_invocations(skill=skill, status=status, limit=limit, offset=offset)
     out: list[dict[str, Any]] = []
     for r in rows:
-        node_meta = r.get("node_metadata")
-        if isinstance(node_meta, str):
-            try:
-                node_meta = json.loads(node_meta)
-            except json.JSONDecodeError:
-                node_meta = None
+        node_meta = _parse_json_col(r.get("node_metadata"))
         out.append(
             {
                 "id": r["id"],
@@ -62,12 +58,7 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
         row = await db.get_invocation(invocation_id)
         if row is None:
             return None
-        node_meta = row.get("node_metadata")
-        if isinstance(node_meta, str):
-            try:
-                node_meta = json.loads(node_meta)
-            except json.JSONDecodeError:
-                node_meta = None
+        node_meta = _parse_json_col(row.get("node_metadata"))
         sessions = await db.list_sessions_for_invocation(invocation_id)
         # ADR-0021: surface structured outcomes alongside child sessions
         # so the invocation detail page can render verdict / CI / gate
@@ -116,12 +107,13 @@ def _serialize_artifact(row: dict[str, Any]) -> dict[str, Any]:
     SQLite returns JSON columns as strings; decode here so the frontend
     gets a real object instead of a doubly-encoded string.
     """
-    content = row.get("content")
-    if isinstance(content, str):
-        try:
-            content = json.loads(content)
-        except json.JSONDecodeError:
-            content = None
+    raw_content = row.get("content")
+    if isinstance(raw_content, str):
+        parsed = _parse_json_col(raw_content)
+        # If still a string, parse failed — surface None rather than a doubly-encoded string
+        content = parsed if not isinstance(parsed, str) else None
+    else:
+        content = raw_content
     return {
         "id": row["id"],
         "invocation_id": row.get("invocation_id"),

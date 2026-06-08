@@ -3,16 +3,16 @@
 
 from __future__ import annotations
 
-import subprocess
 from enum import Enum
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from lionagi.libs.path_safety import contain_path_in_root
+from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
 
+from .._subprocess import _subprocess_sync
 from ..base import LionTool
 
 __all__ = (
@@ -93,15 +93,7 @@ class SearchResponse(BaseModel):
 def _validate_search_path(path: str, workspace_root: str | None) -> tuple[str, str | None]:
     if workspace_root is not None:
         root = Path(workspace_root).resolve()
-        requested = Path(path)
-        resolved = (requested if requested.is_absolute() else root / requested).resolve()
-        try:
-            contain_path_in_root(resolved, root, "search path")
-        except ValueError as exc:
-            raise PermissionError(
-                f"Search path {path!r} resolves to {resolved} which is outside "
-                f"workspace root {root}. Refusing to search."
-            ) from exc
+        resolved = _resolve_workspace_path(path, root)
     else:
         resolved = Path(path).resolve()
     return str(resolved), None
@@ -122,25 +114,16 @@ def _grep_sync(
     if include:
         cmd += ["--include", include]
 
-    try:
-        result = subprocess.run(  # noqa: S603  # argv fixed: [grep, -rn, -E, <pattern>, <validated-path>]; shell=False
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired:
+    result = _subprocess_sync(cmd, False, 30.0, None)  # noqa: S603  # argv fixed: [grep, -rn, -E, <pattern>, <validated-path>]; shell=False
+
+    if result.get("timed_out"):
         return SearchResponse(success=False, error="grep timed out", count=0)
-    except FileNotFoundError:
-        return SearchResponse(success=False, error="grep not found on this system", count=0)
-    except Exception as e:
-        return SearchResponse(success=False, error=f"grep error: {e}", count=0)
 
     # exit code 1 = no matches (not an error), 2 = real error
-    if result.returncode == 2:
-        return SearchResponse(success=False, error=result.stderr.strip(), count=0)
+    if result["returncode"] == 2:
+        return SearchResponse(success=False, error=result["stderr"].strip(), count=0)
 
-    lines = [line for line in result.stdout.splitlines() if line][:max_results]
+    lines = [line for line in result["stdout"].splitlines() if line][:max_results]
     return SearchResponse(
         success=True,
         content="\n".join(lines),
@@ -160,24 +143,15 @@ def _find_sync(
 
     cmd = ["find", resolved_path, "-name", pattern]
 
-    try:
-        result = subprocess.run(  # noqa: S603  # argv fixed: [find, <validated-path>, -name, <glob>]; shell=False
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired:
+    result = _subprocess_sync(cmd, False, 30.0, None)  # noqa: S603  # argv fixed: [find, <validated-path>, -name, <glob>]; shell=False
+
+    if result.get("timed_out"):
         return SearchResponse(success=False, error="find timed out", count=0)
-    except FileNotFoundError:
-        return SearchResponse(success=False, error="find not found on this system", count=0)
-    except Exception as e:
-        return SearchResponse(success=False, error=f"find error: {e}", count=0)
 
-    if result.returncode != 0 and result.stderr.strip():
-        return SearchResponse(success=False, error=result.stderr.strip(), count=0)
+    if result["returncode"] != 0 and result["stderr"].strip():
+        return SearchResponse(success=False, error=result["stderr"].strip(), count=0)
 
-    lines = [line for line in result.stdout.splitlines() if line][:max_results]
+    lines = [line for line in result["stdout"].splitlines() if line][:max_results]
     return SearchResponse(
         success=True,
         content="\n".join(lines),
