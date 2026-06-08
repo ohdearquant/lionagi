@@ -55,19 +55,10 @@ async def interpret(
     if intp_param.sample_writing:
         guidance += f" Sample writing: {intp_param.sample_writing}"
 
-    # Build ChatParam
-    chat_param = ChatParam(
+    chat_param = ChatParam.from_branch(
+        branch,
         guidance=guidance,
         context=[f"User input: {text}"],
-        sender=branch.user or "user",
-        recipient=branch.id,
-        response_format=None,
-        progression=None,
-        tool_schemas=[],
-        images=[],
-        image_detail="auto",
-        plain_content="",
-        include_token_usage_to_model=False,
         imodel=intp_param.imodel,
         imodel_kw={
             **intp_param.imodel_kw,

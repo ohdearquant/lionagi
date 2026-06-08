@@ -17,14 +17,12 @@ from lionagi.ln.fuzzy import FuzzyMatchKeysParams
 from lionagi.protocols.structure.base import Structure
 from lionagi.protocols.types import AssistantResponse
 
+from .._defaults import get_default_parse_call as get_default_call
 from ..types import HandleValidation, ParseParam
 
 if TYPE_CHECKING:
     from lionagi.ln.types import Operable
     from lionagi.session.branch import Branch
-
-
-_CALL = None  # type: ignore
 
 
 def prepare_parse_kws(
@@ -225,16 +223,3 @@ def _validate_dict_or_model(
 
     except Exception as e:
         raise ValueError(f"Failed to parse text: {e}") from e
-
-
-def get_default_call() -> AlcallParams:
-    global _CALL
-    if _CALL is None:
-        _CALL = AlcallParams(
-            retry_initial_delay=1,
-            retry_backoff=1.85,
-            retry_attempts=3,
-            max_concurrent=1,
-            throttle_period=1,
-        )
-    return _CALL

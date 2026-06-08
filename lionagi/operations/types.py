@@ -65,6 +65,20 @@ class ChatParam(MorphParam):
     imodel: iModel = None
     imodel_kw: dict = None
 
+    @classmethod
+    def from_branch(cls, branch: "Branch", **overrides) -> "ChatParam":
+        defaults = dict(
+            sender=branch.user or "user",
+            recipient=branch.id,
+            images=[],
+            image_detail="auto",
+            plain_content="",
+            imodel=branch.chat_model,
+            imodel_kw={},
+        )
+        defaults.update(overrides)
+        return cls(**defaults)
+
 
 @dataclass(slots=True, frozen=True, init=False)
 class RunParam(ChatParam):

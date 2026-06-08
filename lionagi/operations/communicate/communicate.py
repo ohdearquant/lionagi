@@ -10,6 +10,7 @@ from lionagi.ln.fuzzy import FuzzyMatchKeysParams
 from lionagi.ln.fuzzy._fuzzy_validate import fuzzy_validate_mapping
 from lionagi.ln.types import Undefined
 
+from .._defaults import STANDARD_REMOVED_KWARGS
 from ..types import ChatParam, ParseParam
 
 if TYPE_CHECKING:
@@ -42,15 +43,7 @@ def prepare_communicate_kw(
 ):
     from .._guards import reject_removed_kwargs
 
-    reject_removed_kwargs(
-        kwargs,
-        {
-            "request_model": "response_format=",
-            "operative_model": "response_format=",
-            "imodel": "chat_model=",
-        },
-        where="communicate",
-    )
+    reject_removed_kwargs(kwargs, STANDARD_REMOVED_KWARGS, where="communicate")
 
     imodel = chat_model or branch.chat_model
     parse_model = parse_model or branch.parse_model
