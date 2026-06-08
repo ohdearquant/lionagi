@@ -9,30 +9,11 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
 
 from ..base import LionTool
-
-_DENIED_NAMES: frozenset[str] = frozenset(
-    {".env", ".netrc", "id_rsa", "id_ed25519", "id_ecdsa", ".htpasswd"}
-)
-
-
-def _resolve_workspace_path(path: str, workspace_root: Path) -> Path:
-    raw = Path(path).expanduser()
-    candidate = raw if raw.is_absolute() else workspace_root / raw
-    # GAP B: check symlink on candidate BEFORE resolve() follows it
-    if candidate.is_symlink():
-        raise PermissionError(f"Refusing to access symlink: {path!r}")
-    resolved = candidate.resolve(strict=False)
-    try:
-        resolved.relative_to(workspace_root)
-    except ValueError as e:
-        raise PermissionError(f"Path escapes workspace root: {path!r}") from e
-    if resolved.name in _DENIED_NAMES:
-        raise PermissionError(f"Refusing to access protected path: {resolved.name!r}")
-    return resolved
 
 
 def _resolve_existing_workspace_file(path: str, workspace_root: Path) -> Path:
