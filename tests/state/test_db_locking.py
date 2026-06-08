@@ -209,3 +209,88 @@ async def test_concurrent_save_definition_different_keys_parallel(
         assert sorted(versions) == [1, 1, 1]
     finally:
         await db.close()
+
+
+# ── Additional edge cases ─────────────────────────────────────────────────────
+
+
+async def test_concurrent_create_session_same_id_idempotent(db_path: Path):
+    """Concurrent create_session calls with the same id are idempotent —
+    INSERT OR IGNORE means exactly one row is created, no errors raised."""
+    db = StateDB(db_path)
+    await db.open()
+    try:
+        prog_id = str(uuid.uuid4())
+        await db.create_progression(prog_id)
+        sid = str(uuid.uuid4())
+
+        session = {"id": sid, "progression_id": prog_id, "status": "running"}
+
+        await asyncio.gather(
+            db.create_session(session),
+            db.create_session(session),
+            db.create_session(session),
+        )
+
+        # Exactly one row must exist.
+        cur = await db.db.execute("SELECT COUNT(*) AS n FROM sessions WHERE id = ?", (sid,))
+        n = (await cur.fetchone())["n"]
+        assert n == 1
+    finally:
+        await db.close()
+
+
+async def test_concurrent_update_session_same_session_last_writer_wins(db_path: Path):
+    """Concurrent update_session calls on the same session serialize and the
+    last writer's value wins (BEGIN IMMEDIATE ensures atomicity)."""
+    db = StateDB(db_path)
+    await db.open()
+    try:
+        prog_id = str(uuid.uuid4())
+        await db.create_progression(prog_id)
+        sid = str(uuid.uuid4())
+        await db.create_session({"id": sid, "progression_id": prog_id, "status": "running"})
+
+        from lionagi.state.reasons import RunReasons
+
+        async def update_name(name: str) -> None:
+            await db.update_session(sid, name=name)
+
+        await asyncio.gather(
+            update_name("name-a"),
+            update_name("name-b"),
+            update_name("name-c"),
+        )
+
+        # One of the names must be set — no corruption.
+        row = await db.get_session(sid)
+        assert row is not None
+        assert row["name"] in ("name-a", "name-b", "name-c")
+    finally:
+        await db.close()
+
+
+async def test_connection_pool_recovery_after_many_opens(tmp_path: Path):
+    """Opening many StateDB instances on the same path doesn't leave
+    dangling connections — each can be opened and closed cleanly."""
+    db_path = tmp_path / "many_opens.db"
+
+    # Initialise the schema via the first connection.
+    first = StateDB(db_path)
+    await first.open()
+    await first.close()
+
+    # Open and close N additional instances — should not raise.
+    N = 20
+    dbs = [StateDB(db_path) for _ in range(N)]
+    await asyncio.gather(*(d.open() for d in dbs))
+    await asyncio.gather(*(d.close() for d in dbs))
+
+    # DB is still readable after mass open/close.
+    check = StateDB(db_path)
+    await check.open()
+    try:
+        version = await check.schema_version()
+        assert version == "1"
+    finally:
+        await check.close()

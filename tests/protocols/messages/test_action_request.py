@@ -12,7 +12,6 @@ from lionagi.protocols.types import MessageRole
 
 
 def test_action_request_content_initialization():
-    """Test basic initialization of ActionRequestContent"""
     function = "test_function"
     arguments = {"arg1": "value1", "arg2": "value2"}
 
@@ -27,7 +26,6 @@ def test_action_request_content_initialization():
 
 
 def test_action_request_initialization():
-    """Test basic initialization of ActionRequest"""
     function = "test_function"
     arguments = {"arg1": "value1", "arg2": "value2"}
 
@@ -50,7 +48,6 @@ def test_action_request_initialization():
 
 
 def test_action_request_from_dict_with_callable():
-    """Test ActionRequestContent.from_dict() with a callable function"""
 
     def test_func():
         pass
@@ -69,7 +66,6 @@ def test_action_request_from_dict_with_callable():
 
 
 def test_action_request_from_dict_nested_format():
-    """Test ActionRequestContent.from_dict() with nested action_request key (backward compatibility)"""
     data = {
         "action_request": {
             "function": "test_function",
@@ -86,7 +82,6 @@ def test_action_request_from_dict_nested_format():
 
 
 def test_action_request_from_dict_flat_format():
-    """Test ActionRequestContent.from_dict() with flat format"""
     data = {
         "function": "test_function",
         "arguments": {"arg1": "value1"},
@@ -101,7 +96,6 @@ def test_action_request_from_dict_flat_format():
 
 
 def test_action_request_from_dict_with_callable_object():
-    """Test ActionRequestContent.from_dict() with callable object that has function attribute"""
 
     class CallableWithFunction:
         def __init__(self):
@@ -124,7 +118,6 @@ def test_action_request_from_dict_with_callable_object():
 
 
 def test_action_request_from_dict_invalid_function():
-    """Test ActionRequestContent.from_dict() with invalid function type"""
     data = {
         "function": 123,  # Not a string or callable
         "arguments": {},
@@ -135,7 +128,6 @@ def test_action_request_from_dict_invalid_function():
 
 
 def test_action_request_from_dict_invalid_arguments():
-    """Test ActionRequestContent.from_dict() with invalid arguments type"""
     data = {
         "function": "test",
         "arguments": "invalid_string",  # Not a dict
@@ -146,7 +138,6 @@ def test_action_request_from_dict_invalid_arguments():
 
 
 def test_action_request_validator_with_dict():
-    """Test ActionRequest content validator with dict input"""
     data = {
         "function": "test_function",
         "arguments": {"arg1": "value1"},
@@ -164,7 +155,6 @@ def test_action_request_validator_with_dict():
 
 
 def test_action_request_validator_with_none():
-    """Test ActionRequest content validator with None input"""
     request = ActionRequest(
         content=None,
         sender="user",
@@ -177,7 +167,6 @@ def test_action_request_validator_with_none():
 
 
 def test_action_request_response_tracking():
-    """Test tracking of action response"""
     content = ActionRequestContent(
         function="test",
         arguments={},
@@ -198,7 +187,6 @@ def test_action_request_response_tracking():
 
 
 def test_action_request_rendered_property():
-    """Test the rendered property using minimal_yaml"""
     content = ActionRequestContent(
         function="test_function",
         arguments={"arg1": "value1", "arg2": 42, "arg3": True},
@@ -215,7 +203,6 @@ def test_action_request_rendered_property():
 
 
 def test_action_request_rendered_empty_arguments():
-    """Test the rendered property with empty arguments"""
     content = ActionRequestContent(
         function="test_function",
         arguments={},
@@ -232,7 +219,6 @@ def test_action_request_rendered_empty_arguments():
 
 
 def test_action_request_rendered_nested_arguments():
-    """Test the rendered property with nested arguments"""
     content = ActionRequestContent(
         function="complex_function",
         arguments={
@@ -251,7 +237,6 @@ def test_action_request_rendered_nested_arguments():
 
 
 def test_action_request_content_format():
-    """Test the format of action request content in chat message"""
     content = ActionRequestContent(
         function="test_function",
         arguments={"arg1": "value1"},
@@ -272,7 +257,6 @@ def test_action_request_content_format():
 
 
 def test_action_request_str_representation():
-    """Test string representation of ActionRequest"""
     content = ActionRequestContent(
         function="test_function",
         arguments={"arg1": "value1"},
@@ -291,7 +275,6 @@ def test_action_request_str_representation():
 
 
 def test_action_request_from_dict_default_values():
-    """Test ActionRequestContent.from_dict() with missing fields uses defaults"""
     data = {
         "function": "test",
     }
@@ -304,7 +287,6 @@ def test_action_request_from_dict_default_values():
 
 
 def test_action_request_from_dict_with_empty_nested():
-    """Test ActionRequestContent.from_dict() with empty nested action_request"""
     data = {
         "action_request": {},
     }
@@ -316,7 +298,6 @@ def test_action_request_from_dict_with_empty_nested():
 
 
 def test_action_request_immutable_arguments():
-    """Test that arguments are properly copied and isolated"""
     original_args = {"key": "value"}
     content = ActionRequestContent(
         function="test",

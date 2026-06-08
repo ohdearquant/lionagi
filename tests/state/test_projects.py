@@ -257,3 +257,78 @@ async def test_create_session_missing_project_source_defaults_to_git_remote(db: 
     project = await db.get_project("my/proj")
     assert project is not None
     assert project["source"] == "git_remote"
+
+
+# ── Additional edge cases ─────────────────────────────────────────────────────
+
+
+async def test_register_project_with_special_characters_in_name(db: StateDB):
+    """Project names with slashes, dots, and unicode are stored and retrieved."""
+    special_name = "org/repo-with-dashes.and.dots"
+    await db.register_project(special_name, "git_remote")
+    project = await db.get_project(special_name)
+    assert project is not None
+    assert project["name"] == special_name
+
+
+async def test_register_project_with_unicode_name(db: StateDB):
+    """Unicode project names round-trip without mangling."""
+    unicode_name = "org/projet-français-中文"
+    await db.register_project(unicode_name, "git_remote")
+    project = await db.get_project(unicode_name)
+    assert project is not None
+    assert project["name"] == unicode_name
+
+
+async def test_list_projects_ordering_most_recent_first(db: StateDB):
+    """list_projects orders by COALESCE(last_seen_at, updated_at) DESC."""
+    import asyncio
+
+    # Insert three projects with controlled timestamps by writing directly.
+    now = 1_000_000.0
+    for i, name in enumerate(["proj-old", "proj-mid", "proj-new"]):
+        await db.db.execute(
+            "INSERT INTO projects (name, source, created_at, updated_at, last_seen_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (name, "git_remote", now + i, now + i, now + i),
+        )
+    await db.db.commit()
+
+    result = await db.list_projects()
+    names = [r["name"] for r in result]
+    # proj-new has the highest last_seen_at so it comes first.
+    assert names[0] == "proj-new"
+    assert names[-1] == "proj-old"
+
+
+async def test_delete_project_does_not_cascade_to_sessions(db: StateDB):
+    """Deleting a studio project should NOT delete associated sessions
+    (projects.name is a plain string FK on sessions, not enforced by ON DELETE CASCADE)."""
+    await db.create_project("studio-proj")
+    s = await _make_session(db, project="studio-proj", project_source="git_remote")
+    ok = await db.delete_project("studio-proj")
+    assert ok is True
+    # Session must still exist.
+    prog_id = uid()
+    await db.create_progression(prog_id)
+    cur = await db.db.execute("SELECT id FROM sessions WHERE id = ?", (s["id"],))
+    row = await cur.fetchone()
+    assert row is not None, "Session must survive project deletion"
+
+
+async def test_create_project_very_long_name(db: StateDB):
+    """Very long project names are stored without truncation."""
+    long_name = "a" * 1024
+    await db.create_project(long_name, description="long-name test")
+    project = await db.get_project(long_name)
+    assert project is not None
+    assert project["name"] == long_name
+
+
+async def test_create_project_very_long_description(db: StateDB):
+    """Very long description is stored and retrieved intact."""
+    long_desc = "d" * 8192
+    await db.create_project("desc-test-proj", description=long_desc)
+    project = await db.get_project("desc-test-proj")
+    assert project is not None
+    assert project["description"] == long_desc

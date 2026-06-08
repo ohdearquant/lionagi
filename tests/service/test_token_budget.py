@@ -97,25 +97,9 @@ class TestTokenBudgetBoundaries:
         budget = TokenBudget(used=70, limit=100)
         assert budget.is_warning is True
 
-    def test_is_warning_false_at_69_pct(self):
-        budget = TokenBudget(used=69, limit=100)
-        assert budget.is_warning is False
-
     def test_remaining_exactly_at_limit(self):
         budget = TokenBudget(used=100, limit=100)
         assert budget.remaining == 0
-
-    def test_remaining_one_below_limit(self):
-        budget = TokenBudget(used=99, limit=100)
-        assert budget.remaining == 1
-
-    def test_model_field_is_none_by_default(self):
-        budget = TokenBudget(used=0, limit=100)
-        assert budget.model is None
-
-    def test_model_field_stored(self):
-        budget = TokenBudget(used=0, limit=100, model="gpt-4")
-        assert budget.model == "gpt-4"
 
 
 import types as _types

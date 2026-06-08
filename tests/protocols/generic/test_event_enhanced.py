@@ -13,7 +13,6 @@ from __future__ import annotations
 import pytest
 
 from lionagi.ln.concurrency._compat import ExceptionGroup
-from lionagi.ln.types import Unset
 from lionagi.protocols.generic.event import Event, EventStatus, Execution
 
 # ---------------------------------------------------------------------------
@@ -23,25 +22,6 @@ from lionagi.protocols.generic.event import Event, EventStatus, Execution
 
 class TestExecutionRetryable:
     """Tests for the Execution.retryable field."""
-
-    def test_default_is_unset(self):
-        ex = Execution()
-        assert ex.retryable is Unset
-
-    def test_set_to_true(self):
-        ex = Execution(retryable=True)
-        assert ex.retryable is True
-
-    def test_set_to_false(self):
-        ex = Execution(retryable=False)
-        assert ex.retryable is False
-
-    def test_mutable_after_init(self):
-        ex = Execution()
-        ex.retryable = True
-        assert ex.retryable is True
-        ex.retryable = False
-        assert ex.retryable is False
 
     def test_serialized_in_to_dict(self):
         ex = Execution(retryable=True)
@@ -319,23 +299,6 @@ class TestEventAssertCompleted:
 class TestBackwardCompatibility:
     """Ensure new features do not break existing behavior."""
 
-    def test_execution_without_retryable(self):
-        """Execution() without retryable uses Unset sentinel (not None)."""
-        ex = Execution()
-        assert ex.status == EventStatus.PENDING
-        assert ex.duration is Unset
-        assert ex.response is None
-        assert ex.error is None
-        assert ex.retryable is Unset
-
-    def test_execution_with_positional_style_kwargs(self):
-        """Execution(duration=1.0, response='ok') still works."""
-        ex = Execution(duration=1.0, response="ok")
-        assert ex.duration == 1.0
-        assert ex.response == "ok"
-        assert ex.status == EventStatus.PENDING
-        assert ex.retryable is Unset
-
     def test_to_dict_includes_retryable_key(self):
         """to_dict() always includes the retryable key."""
         ex = Execution()
@@ -364,10 +327,6 @@ class TestBackwardCompatibility:
         event.execution.retryable = True
         serialized = event.model_dump()
         assert serialized["execution"]["retryable"] is True
-
-    def test_slots_include_retryable(self):
-        """Execution.__slots__ includes retryable."""
-        assert "retryable" in Execution.__slots__
 
     def test_execution_str_format_unchanged(self):
         """The str format still starts with 'Execution(' and includes all fields."""

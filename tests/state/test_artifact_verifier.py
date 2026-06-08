@@ -424,3 +424,161 @@ def test_safe_join_dotdot_rejects(tmp_path):
 def test_safe_join_glob_rejects(tmp_path):
     with pytest.raises(ArtifactPathError, match="glob characters"):
         _safe_join(str(tmp_path), "*.md")
+
+
+# ── Additional edge cases ─────────────────────────────────────────────────────
+
+
+class TestWarnUnknownArtifactKeys:
+    def test_none_contract_returns_empty(self):
+        from lionagi.state.artifact_verifier import warn_unknown_artifact_keys
+
+        result = warn_unknown_artifact_keys(None)
+        assert result == []
+
+    def test_empty_expected_list_returns_empty(self):
+        from lionagi.state.artifact_verifier import warn_unknown_artifact_keys
+
+        result = warn_unknown_artifact_keys({"expected": []})
+        assert result == []
+
+    def test_known_keys_only_no_warnings(self):
+        from lionagi.state.artifact_verifier import warn_unknown_artifact_keys
+
+        contract = {
+            "expected": [
+                {
+                    "id": "report",
+                    "path": "report.md",
+                    "required": True,
+                    "description": "d",
+                    "source": "s",
+                }
+            ]
+        }
+        emitted: list[str] = []
+        result = warn_unknown_artifact_keys(contract, emit=emitted.append)
+        assert result == []
+        assert emitted == []
+
+    def test_unknown_key_emits_warning(self):
+        from lionagi.state.artifact_verifier import warn_unknown_artifact_keys
+
+        contract = {"expected": [{"id": "report", "path": "report.md", "kind": "json"}]}
+        emitted: list[str] = []
+        result = warn_unknown_artifact_keys(contract, emit=emitted.append)
+        assert len(result) == 1
+        assert "kind" in result[0]
+        assert len(emitted) == 1
+
+    def test_multiple_unknown_keys_in_one_entry(self):
+        from lionagi.state.artifact_verifier import warn_unknown_artifact_keys
+
+        contract = {
+            "expected": [{"id": "x", "path": "x.md", "min_size": 100, "mime_type": "text/plain"}]
+        }
+        emitted: list[str] = []
+        result = warn_unknown_artifact_keys(contract, emit=emitted.append)
+        assert len(result) == 1
+        assert "min_size" in result[0] or "mime_type" in result[0]
+
+    def test_non_dict_entry_skipped(self):
+        from lionagi.state.artifact_verifier import warn_unknown_artifact_keys
+
+        contract = {"expected": ["not-a-dict"]}
+        result = warn_unknown_artifact_keys(contract)
+        assert result == []
+
+    def test_custom_source_appears_in_warning(self):
+        from lionagi.state.artifact_verifier import warn_unknown_artifact_keys
+
+        contract = {"expected": [{"id": "x", "path": "x.md", "min_size": 10}]}
+        emitted: list[str] = []
+        warn_unknown_artifact_keys(contract, source="agent_profile", emit=emitted.append)
+        assert len(emitted) == 1
+        assert "agent_profile" in emitted[0]
+
+    def test_expected_not_list_returns_empty(self):
+        from lionagi.state.artifact_verifier import warn_unknown_artifact_keys
+
+        contract = {"expected": "not-a-list"}
+        result = warn_unknown_artifact_keys(contract)
+        assert result == []
+
+
+class TestSafeJoinSymlinkEscape:
+    def test_symlink_pointing_outside_root_is_rejected(self, tmp_path):
+        """A symlink whose target resolves outside artifacts_root must be caught
+        by the realpath comparison in _safe_join."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        root = tmp_path / "root"
+        root.mkdir()
+        link = root / "escape_link"
+        link.symlink_to(str(outside))
+        # Joining root + "escape_link" resolves to `outside` via realpath —
+        # which is still under tmp_path but the point is realpath expansion.
+        # To truly escape we need the symlink to point completely outside root.
+        import os
+
+        # Symlink pointing to /tmp itself is outside `root`.
+        real_root = os.path.realpath(str(root))
+        real_target = os.path.realpath(str(outside))
+        # Only trigger the assertion if they really differ at commonpath level.
+        if not real_target.startswith(real_root + os.sep) and real_target != real_root:
+            with pytest.raises(ArtifactPathError, match="escapes"):
+                _safe_join(str(root), "escape_link")
+        else:
+            # Target is still inside root — _safe_join succeeds; test is vacuous.
+            result = _safe_join(str(root), "escape_link")
+            assert result.startswith(real_root)
+
+
+class TestValidateArtifactContractNonStringPath:
+    def test_int_path_raises(self):
+        with pytest.raises(ArtifactPathError):
+            validate_artifact_contract({"expected": [{"id": "x", "path": 42}]})
+
+    def test_none_path_raises(self):
+        with pytest.raises(ArtifactPathError):
+            validate_artifact_contract({"expected": [{"id": "x", "path": None}]})
+
+    def test_empty_string_path_raises(self):
+        with pytest.raises(ArtifactPathError):
+            validate_artifact_contract({"expected": [{"id": "x", "path": ""}]})
+
+
+class TestVerifyArtifactContractDirectory:
+    def test_directory_at_expected_path_is_not_present(self, tmp_path):
+        """A directory at the expected path does NOT satisfy the contract —
+        os.path.isfile() returns False for directories."""
+        subdir = tmp_path / "subdir"
+        subdir.mkdir()
+        contract = {"expected": [{"id": "subdir", "path": "subdir", "required": True}]}
+        result = verify_artifact_contract(contract, artifacts_root=str(tmp_path))
+        assert result is not None
+        assert result["status"] == "failed"
+        assert len(result["missing_required"]) == 1
+
+
+class TestResolveArtifactContractInvalidStructure:
+    def test_non_dict_entry_in_expected_raises(self):
+        with pytest.raises(ArtifactPathError):
+            resolve_artifact_contract(
+                playbook_artifacts={"expected": ["not-a-dict"]},
+                agent_defaults=None,
+            )
+
+    def test_non_dict_contract_raises(self):
+        with pytest.raises(ArtifactPathError):
+            resolve_artifact_contract(
+                playbook_artifacts="not-a-dict",
+                agent_defaults=None,
+            )
+
+    def test_non_list_expected_raises(self):
+        with pytest.raises(ArtifactPathError):
+            resolve_artifact_contract(
+                playbook_artifacts={"expected": "not-a-list"},
+                agent_defaults=None,
+            )

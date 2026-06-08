@@ -393,3 +393,82 @@ async def test_operate_with_field_models_builds_operative():
         middle=fake_middle,
     )
     assert result == {"label": "test_value"}
+
+
+# ---------------------------------------------------------------------------
+# Concurrent operate() calls on the same branch (message accumulation safety)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_operate_concurrent_calls_on_same_branch():
+    """Multiple concurrent operate() calls on the same branch each get a response."""
+    import asyncio
+
+    call_count = 0
+
+    branch = Branch()
+
+    async def fake_middle(b, ins, cctx, pctx, clear, **kw):
+        nonlocal call_count
+        call_count += 1
+        await asyncio.sleep(0)  # yield to let other tasks run
+        return f"response_{call_count}"
+
+    chat_param = ChatParam(imodel=branch.chat_model)
+
+    results = await asyncio.gather(
+        operate(
+            branch, "q1", chat_param, skip_validation=True, invoke_actions=False, middle=fake_middle
+        ),
+        operate(
+            branch, "q2", chat_param, skip_validation=True, invoke_actions=False, middle=fake_middle
+        ),
+    )
+
+    # Both calls should have returned (non-None strings)
+    assert all(isinstance(r, str) for r in results)
+    assert call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# operate() where middle callable raises CancelledError
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_operate_middle_raises_cancelled_error_propagates():
+    """operate() must not swallow CancelledError from the middle callable."""
+    import asyncio
+
+    branch = Branch()
+
+    async def cancelling_middle(b, ins, cctx, pctx, clear, **kw):
+        raise asyncio.CancelledError("test cancel")
+
+    chat_param = ChatParam(imodel=branch.chat_model)
+
+    with pytest.raises((asyncio.CancelledError, BaseException)):
+        await operate(
+            branch,
+            "test",
+            chat_param,
+            skip_validation=True,
+            invoke_actions=False,
+            middle=cancelling_middle,
+        )
+
+
+# ---------------------------------------------------------------------------
+# prepare_operate_kw: imodel_kw extra kwargs forwarded
+# ---------------------------------------------------------------------------
+
+
+def test_prepare_operate_kw_extra_kwargs_forwarded_to_imodel_kw():
+    """Extra **kwargs passed to prepare_operate_kw end up in chat_param.imodel_kw."""
+    branch = Branch()
+    result = prepare_operate_kw(branch, timeout=30, repo="/tmp/test")
+    chat_param = result["chat_param"]
+    # The extra kwargs become imodel_kw in ChatParam
+    assert chat_param.imodel_kw.get("timeout") == 30
+    assert chat_param.imodel_kw.get("repo") == "/tmp/test"

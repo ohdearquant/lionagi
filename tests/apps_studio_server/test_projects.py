@@ -178,3 +178,67 @@ def test_delete_non_studio_project_returns_403(tmp_path, monkeypatch):
     client = _make_client(tmp_path, monkeypatch)
     r = client.delete("/api/projects/auto-detected")
     assert r.status_code == 403
+
+
+# ── Edge cases ────────────────────────────────────────────────────────────────
+
+
+def test_update_project_with_sql_injection_in_description(tmp_path, monkeypatch):
+    client = _make_client(tmp_path, monkeypatch)
+    client.post("/api/projects/", json={"name": "injection-target"})
+    injection = "'); DROP TABLE projects; --"
+    r = client.put("/api/projects/injection-target", json={"description": injection})
+    assert r.status_code == 200
+
+    r2 = client.get("/api/projects/injection-target")
+    assert r2.status_code == 200
+    assert r2.json()["description"] == injection
+
+
+def test_create_project_with_unicode_name(tmp_path, monkeypatch):
+    client = _make_client(tmp_path, monkeypatch)
+    unicode_name = "project-alpha-プロジェクト"
+    r = client.post("/api/projects/", json={"name": unicode_name})
+    assert r.status_code == 201
+
+    r2 = client.get(f"/api/projects/{unicode_name}")
+    assert r2.status_code == 200
+    assert r2.json()["name"] == unicode_name
+
+
+def test_delete_project_with_running_sessions_returns_ok(tmp_path, monkeypatch):
+    import asyncio
+    import time
+
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.projects as projects_mod
+    from lionagi.state.db import StateDB
+
+    fake_db = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(projects_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(projects_mod, "_DB", str(fake_db))
+
+    async def _seed():
+        async with StateDB(fake_db) as _:
+            pass
+        async with StateDB(fake_db) as db:
+            prog_id = "prog-del-test"
+            await db.create_progression(prog_id)
+            await db.create_session(
+                {
+                    "id": "sess-del-test",
+                    "progression_id": prog_id,
+                    "name": "session-for-delete",
+                    "status": "running",
+                    "started_at": time.time(),
+                }
+            )
+
+    asyncio.run(_seed())
+
+    client = _make_client(tmp_path, monkeypatch)
+    client.post("/api/projects/", json={"name": "delete-with-sessions"})
+    r = client.delete("/api/projects/delete-with-sessions")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True

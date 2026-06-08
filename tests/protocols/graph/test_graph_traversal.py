@@ -69,17 +69,13 @@ def cyclic_graph():
 
 
 class TestGraphTraversal:
-    """Test graph traversal operations"""
-
     def test_get_heads(self, traversal_graph):
-        """Test getting head nodes"""
         graph, nodes, _ = traversal_graph
         heads = graph.get_heads()
         assert len(heads) == 1
         assert nodes[0].id in heads
 
     def test_get_predecessors(self, traversal_graph):
-        """Test getting predecessor nodes"""
         graph, nodes, _ = traversal_graph
         # Node 3 has two predecessors (1 and 2)
         predecessors = graph.get_predecessors(nodes[3])
@@ -89,7 +85,6 @@ class TestGraphTraversal:
         assert nodes[2].id in pred_ids
 
     def test_get_successors(self, traversal_graph):
-        """Test getting successor nodes"""
         graph, nodes, _ = traversal_graph
         # Node 3 has two successors (4 and 5)
         successors = graph.get_successors(nodes[3])
@@ -99,14 +94,12 @@ class TestGraphTraversal:
         assert nodes[5].id in succ_ids
 
     def test_find_node_edge_both(self, traversal_graph):
-        """Test finding edges in both directions"""
         graph, nodes, _ = traversal_graph
         # Node 3 has 2 incoming and 2 outgoing edges
         edges = graph.find_node_edge(nodes[3], direction="both")
         assert len(edges) == 4
 
     def test_find_node_edge_in(self, traversal_graph):
-        """Test finding incoming edges"""
         graph, nodes, _ = traversal_graph
         # Node 3 has 2 incoming edges
         edges = graph.find_node_edge(nodes[3], direction="in")
@@ -115,7 +108,6 @@ class TestGraphTraversal:
             assert edge.tail == nodes[3].id
 
     def test_find_node_edge_out(self, traversal_graph):
-        """Test finding outgoing edges"""
         graph, nodes, _ = traversal_graph
         # Node 3 has 2 outgoing edges
         edges = graph.find_node_edge(nodes[3], direction="out")
@@ -124,37 +116,30 @@ class TestGraphTraversal:
             assert edge.head == nodes[3].id
 
     def test_find_node_edge_invalid_direction(self, traversal_graph):
-        """Test finding edges with invalid direction"""
         graph, nodes, _ = traversal_graph
         with pytest.raises(ValueError):
             graph.find_node_edge(nodes[0], direction="invalid")
 
 
 class TestGraphCyclicProperties:
-    """Test cyclic graph properties"""
-
     def test_cyclic_graph_heads(self, cyclic_graph):
-        """Test getting heads in cyclic graph"""
         graph, _, _ = cyclic_graph
         heads = graph.get_heads()
         assert len(heads) == 0  # No heads in a cycle
 
     def test_cyclic_graph_predecessors(self, cyclic_graph):
-        """Test getting predecessors in cyclic graph"""
         graph, nodes, _ = cyclic_graph
         for node in nodes:
             predecessors = graph.get_predecessors(node)
             assert len(predecessors) == 1  # Each node has one predecessor
 
     def test_cyclic_graph_successors(self, cyclic_graph):
-        """Test getting successors in cyclic graph"""
         graph, nodes, _ = cyclic_graph
         for node in nodes:
             successors = graph.get_successors(node)
             assert len(successors) == 1  # Each node has one successor
 
     def test_is_acyclic(self, traversal_graph, cyclic_graph):
-        """Test acyclic detection"""
         acyclic_graph, _, _ = traversal_graph
         cyclic, _, _ = cyclic_graph
 
@@ -163,10 +148,7 @@ class TestGraphCyclicProperties:
 
 
 class TestGraphTraversalEdgeCases:
-    """Test graph traversal edge cases"""
-
     def test_isolated_node_traversal(self):
-        """Test traversal with isolated node"""
         graph = Graph()
         node = create_test_node("Isolated")
         graph.add_node(node)
@@ -176,7 +158,6 @@ class TestGraphTraversalEdgeCases:
         assert len(graph.find_node_edge(node)) == 0
 
     def test_disconnected_components_traversal(self):
-        """Test traversal with disconnected components"""
         graph = Graph()
 
         # Create two disconnected components
@@ -207,7 +188,6 @@ class TestGraphTraversalEdgeCases:
         assert node3.id in head_ids
 
     def test_bidirectional_edge_traversal(self):
-        """Test traversal with bidirectional edges"""
         graph = Graph()
         node1 = create_test_node("BiNode1")
         node2 = create_test_node("BiNode2")
@@ -233,7 +213,6 @@ class TestGraphTraversalEdgeCases:
         assert len(graph.get_successors(node2)) == 1
 
     def test_multi_edge_traversal(self):
-        """Test traversal with multiple edges between same nodes"""
         graph = Graph()
         node1 = create_test_node("MultiNode1")
         node2 = create_test_node("MultiNode2")

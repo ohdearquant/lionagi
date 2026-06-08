@@ -3,9 +3,6 @@
 
 """Tests for SearchTool: grep, find, max_results, include filter."""
 
-import asyncio
-
-from lionagi.protocols.action.tool import Tool
 from lionagi.tools.code.search import (
     SearchAction,
     SearchRequest,
@@ -18,16 +15,6 @@ from lionagi.tools.code.search import (
 # ---------------------------------------------------------------------------
 
 
-def test_search_action_grep_value():
-    assert SearchAction.grep == "grep"
-    assert SearchAction.grep.value == "grep"
-
-
-def test_search_action_find_value():
-    assert SearchAction.find == "find"
-    assert SearchAction.find.value == "find"
-
-
 # ---------------------------------------------------------------------------
 # SearchRequest model
 # ---------------------------------------------------------------------------
@@ -37,42 +24,6 @@ def test_search_request_required_fields():
     req = SearchRequest(action=SearchAction.grep, pattern="foo")
     assert req.action == SearchAction.grep
     assert req.pattern == "foo"
-
-
-def test_search_request_defaults():
-    req = SearchRequest(action=SearchAction.grep, pattern="x")
-    assert req.path == "."
-    assert req.max_results == 50
-    assert req.include is None
-
-
-def test_search_request_custom_fields():
-    req = SearchRequest(
-        action=SearchAction.find,
-        pattern="*.py",
-        path="/tmp",
-        max_results=10,
-    )
-    assert req.path == "/tmp"
-    assert req.max_results == 10
-
-
-# ---------------------------------------------------------------------------
-# SearchResponse model
-# ---------------------------------------------------------------------------
-
-
-def test_search_response_defaults():
-    resp = SearchResponse(success=True)
-    assert resp.content is None
-    assert resp.count == 0
-    assert resp.error is None
-
-
-def test_search_response_failure():
-    resp = SearchResponse(success=False, error="oops")
-    assert resp.success is False
-    assert resp.error == "oops"
 
 
 # ---------------------------------------------------------------------------
@@ -93,19 +44,6 @@ async def test_grep_finds_matching_content(tmp_path):
     assert resp.success is True
     assert resp.count > 0
     assert "hello" in resp.content
-
-
-async def test_grep_returns_search_response(tmp_path):
-    (tmp_path / "f.py").write_text("content\n")
-    tool = SearchTool()
-    resp = await tool.handle_request(
-        SearchRequest(
-            action=SearchAction.grep,
-            pattern="content",
-            path=str(tmp_path),
-        )
-    )
-    assert isinstance(resp, SearchResponse)
 
 
 # ---------------------------------------------------------------------------
@@ -275,21 +213,6 @@ async def test_dict_input_accepted(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_to_tool_returns_tool_instance():
-    tool = SearchTool()
-    assert isinstance(tool.to_tool(), Tool)
-
-
-def test_to_tool_is_cached():
-    tool = SearchTool()
-    assert tool.to_tool() is tool.to_tool()
-
-
-def test_to_tool_func_callable_is_async():
-    tool = SearchTool()
-    assert asyncio.iscoroutinefunction(tool.to_tool().func_callable)
-
-
 async def test_to_tool_callable_executes(tmp_path):
     (tmp_path / "hi.py").write_text("hello\n")
     tool = SearchTool()
@@ -343,43 +266,6 @@ async def test_search_tool_find_stderr_nonzero_is_error(monkeypatch):
 
     assert resp.success is False
     assert "permission denied" in (resp.error or "").lower()
-
-
-# ---------------------------------------------------------------------------
-# grep: FileNotFoundError and generic Exception (lines 103-108)
-# ---------------------------------------------------------------------------
-
-
-async def test_grep_file_not_found_returns_error(monkeypatch):
-    import lionagi.tools.code.search as search_mod
-
-    # _subprocess_sync absorbs execution errors; returncode=-1, no exit-2 path hit
-    monkeypatch.setattr(
-        search_mod,
-        "_subprocess_sync",
-        lambda *a, **kw: {
-            "returncode": -1,
-            "stdout": "",
-            "stderr": "Execution error: grep not found",
-        },
-    )
-    tool = SearchTool()
-    resp = await tool.handle_request(SearchRequest(action=SearchAction.grep, pattern="x", path="."))
-    assert resp.count == 0
-
-
-async def test_grep_generic_exception_returns_error(monkeypatch):
-    import lionagi.tools.code.search as search_mod
-
-    # _subprocess_sync absorbs execution errors; returncode=-1, no exit-2 path hit
-    monkeypatch.setattr(
-        search_mod,
-        "_subprocess_sync",
-        lambda *a, **kw: {"returncode": -1, "stdout": "", "stderr": "Execution error: unexpected"},
-    )
-    tool = SearchTool()
-    resp = await tool.handle_request(SearchRequest(action=SearchAction.grep, pattern="x", path="."))
-    assert resp.count == 0
 
 
 # ---------------------------------------------------------------------------

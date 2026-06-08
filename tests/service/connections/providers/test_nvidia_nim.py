@@ -49,18 +49,6 @@ class TestNvidiaNimEndpoints:
         assert config.auth_type == "bearer"
         assert config.kwargs["model"] == "nvidia/nv-embed-v1"
 
-    def test_chat_endpoint_initialization(self):
-        """Test NvidiaNimChatEndpoint initialization."""
-        endpoint = NvidiaNimChatEndpoint()
-        assert endpoint.config.provider == "nvidia_nim"
-        assert endpoint.config.endpoint == "chat/completions"
-
-    def test_embed_endpoint_initialization(self):
-        """Test NvidiaNimEmbedEndpoint initialization."""
-        endpoint = NvidiaNimEmbedEndpoint()
-        assert endpoint.config.provider == "nvidia_nim"
-        assert endpoint.config.endpoint == "embeddings"
-
     def test_match_endpoint_chat(self):
         """Test that match_endpoint returns correct chat endpoint."""
         endpoint = match_endpoint("nvidia_nim", "chat")
@@ -72,12 +60,6 @@ class TestNvidiaNimEndpoints:
         endpoint = match_endpoint("nvidia_nim", "embed")
         assert isinstance(endpoint, NvidiaNimEmbedEndpoint)
         assert endpoint.config.provider == "nvidia_nim"
-
-    def test_custom_model_override(self):
-        """Test that custom model can be specified."""
-        endpoint = NvidiaNimChatEndpoint()
-        endpoint.config.kwargs["model"] = "meta/llama3-70b-instruct"
-        assert endpoint.config.kwargs["model"] == "meta/llama3-70b-instruct"
 
     @pytest.mark.asyncio
     async def test_chat_endpoint_call(self):

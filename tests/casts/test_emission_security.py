@@ -108,3 +108,43 @@ class TestEmissionModelExtraForbid:
         f = Finding(description="real finding", confidence=0.9)
         assert f.description == "real finding"
         assert f.confidence == 0.9
+
+
+class TestSpawnRequestEdgeCases:
+    def test_very_long_instruction_accepted(self):
+        long_instruction = "A" * 100_000
+        req = SpawnRequest(instruction=long_instruction)
+        assert len(req.instruction) == 100_000
+
+    def test_model_validate_with_extra_keys_at_nested_level_raises(self):
+        with pytest.raises(ValidationError):
+            SpawnRequest.model_validate(
+                {
+                    "instruction": "x",
+                    "operation": "operate",
+                    "injected_at_top": "bad",
+                }
+            )
+
+    def test_concurrent_spawn_request_validation_from_multiple_threads(self):
+        import threading
+
+        results: list[SpawnRequest] = []
+        errors: list[Exception] = []
+
+        def validate():
+            try:
+                req = SpawnRequest.model_validate({"instruction": "work", "operation": "operate"})
+                results.append(req)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=validate) for _ in range(50)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0
+        assert len(results) == 50
+        assert all(r.operation == "operate" for r in results)

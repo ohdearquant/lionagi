@@ -125,19 +125,16 @@ class IterableObject:
 
 
 def test_is_na_with_none():
-    """Test _is_na with None"""
     assert _is_na(None) is True
 
 
 def test_is_na_with_pydantic_undefined():
-    """Test _is_na with Pydantic undefined sentinels"""
     obj = PydanticUndefined()
     # The function checks typename, not isinstance
     assert _is_na(obj) in (True, False)  # Depends on typename
 
 
 def test_is_na_with_regular_object():
-    """Test _is_na with regular objects"""
     assert _is_na("string") is False
     assert _is_na(42) is False
     assert _is_na([]) is False
@@ -149,13 +146,11 @@ def test_is_na_with_regular_object():
 
 
 def test_enum_class_to_dict_with_values():
-    """Test enum conversion with use_enum_values=True (lines 31-32)"""
     result = _enum_class_to_dict(Color, use_enum_values=True)
     assert result == {"RED": 1, "GREEN": 2, "BLUE": 3}
 
 
 def test_enum_class_to_dict_without_values():
-    """Test enum conversion with use_enum_values=False (line 33)"""
     result = _enum_class_to_dict(Color, use_enum_values=False)
     assert result == {
         "RED": Color.RED,
@@ -165,7 +160,6 @@ def test_enum_class_to_dict_without_values():
 
 
 def test_enum_class_to_dict_string_values():
-    """Test enum with string values"""
     result = _enum_class_to_dict(Status, use_enum_values=True)
     assert result == {
         "ACTIVE": "active",
@@ -180,7 +174,6 @@ def test_enum_class_to_dict_string_values():
 
 
 def test_parse_str_with_custom_parser():
-    """Test custom parser"""
 
     def custom_parser(s, **kwargs):
         return {"custom": s}
@@ -190,7 +183,6 @@ def test_parse_str_with_custom_parser():
 
 
 def test_parse_str_xml():
-    """Test XML parsing (lines 50-52)"""
     pytest.importorskip("xmltodict")
     xml_string = '<?xml version="1.0"?><root><child>value</child></root>'
     result = _parse_str(xml_string, fuzzy_parse=False, str_type="xml", parser=None)
@@ -199,13 +191,11 @@ def test_parse_str_xml():
 
 
 def test_parse_str_json():
-    """Test JSON parsing"""
     result = _parse_str('{"a": 1}', fuzzy_parse=False, str_type="json", parser=None)
     assert result == {"a": 1}
 
 
 def test_parse_str_fuzzy():
-    """Test fuzzy JSON parsing"""
     # Fuzzy parse should handle single quotes
     result = _parse_str("{'a': 1}", fuzzy_parse=True, str_type="json", parser=None)
     assert result == {"a": 1}
@@ -217,28 +207,24 @@ def test_parse_str_fuzzy():
 
 
 def test_object_to_mapping_like_pydantic():
-    """Test Pydantic model conversion"""
     obj = PydanticLike()
     result = _object_to_mapping_like(obj, prioritize_model_dump=True)
     assert result == {"name": "pydantic", "value": 42}
 
 
 def test_object_to_mapping_like_to_dict():
-    """Test object with to_dict method"""
     obj = ObjectWithToDict()
     result = _object_to_mapping_like(obj, prioritize_model_dump=False)
     assert result == {"method": "to_dict", "data": "value"}
 
 
 def test_object_to_mapping_like_dict():
-    """Test object with dict method"""
     obj = ObjectWithDict()
     result = _object_to_mapping_like(obj, prioritize_model_dump=False)
     assert result == {"method": "dict", "data": "value"}
 
 
 def test_object_to_mapping_like_json():
-    """Test object with json method (returns string, needs parsing)"""
     obj = ObjectWithJson()
     result = _object_to_mapping_like(obj, prioritize_model_dump=False)
     # Returns string, will be parsed by caller
@@ -246,7 +232,6 @@ def test_object_to_mapping_like_json():
 
 
 def test_object_to_mapping_like_dataclass():
-    """Test dataclass conversion (line 91)"""
     person = Person(name="John", age=30)
     result = _object_to_mapping_like(person, prioritize_model_dump=False)
     assert result == {
@@ -257,7 +242,6 @@ def test_object_to_mapping_like_dataclass():
 
 
 def test_object_to_mapping_like_dunder_dict():
-    """Test object with __dict__"""
     obj = ObjectWithDunderDict()
     result = _object_to_mapping_like(obj, prioritize_model_dump=False)
     assert result == {"a": 1, "b": 2}
@@ -269,7 +253,6 @@ def test_object_to_mapping_like_dunder_dict():
 
 
 def test_preprocess_recursive_max_depth():
-    """Test max_depth limit (line 127)"""
     nested = {"a": {"b": {"c": {"d": {"e": "deep"}}}}}
     result = _preprocess_recursive(
         nested,
@@ -288,7 +271,6 @@ def test_preprocess_recursive_max_depth():
 
 
 def test_preprocess_recursive_at_max_depth():
-    """Test when already at max_depth (line 127)"""
     obj = {"test": "value"}
     result = _preprocess_recursive(
         obj,
@@ -307,7 +289,6 @@ def test_preprocess_recursive_at_max_depth():
 
 
 def test_preprocess_recursive_string_parsing():
-    """Test string parsing in recursion (lines 134-138)"""
     json_str = '{"nested": "value"}'
     result = _preprocess_recursive(
         json_str,
@@ -325,7 +306,6 @@ def test_preprocess_recursive_string_parsing():
 
 
 def test_preprocess_recursive_string_parse_error():
-    """Test string parsing error handling (lines 136-137)"""
     invalid_json = "{invalid"
     result = _preprocess_recursive(
         invalid_json,
@@ -344,7 +324,6 @@ def test_preprocess_recursive_string_parse_error():
 
 
 def test_preprocess_recursive_list():
-    """Test list processing (lines 164-176)"""
     data = [1, "test", {"three": 3}]
     result = _preprocess_recursive(
         data,
@@ -363,7 +342,6 @@ def test_preprocess_recursive_list():
 
 
 def test_preprocess_recursive_tuple():
-    """Test tuple processing (lines 177-178)"""
     data = (1, 2, 3)
     result = _preprocess_recursive(
         data,
@@ -382,7 +360,6 @@ def test_preprocess_recursive_tuple():
 
 
 def test_preprocess_recursive_set():
-    """Test set processing (lines 179-180)"""
     data = {1, 2, 3}
     result = _preprocess_recursive(
         data,
@@ -401,7 +378,6 @@ def test_preprocess_recursive_set():
 
 
 def test_preprocess_recursive_frozenset():
-    """Test frozenset processing (lines 181-182)"""
     data = frozenset([1, 2, 3])
     result = _preprocess_recursive(
         data,
@@ -420,7 +396,6 @@ def test_preprocess_recursive_frozenset():
 
 
 def test_preprocess_recursive_enum_class():
-    """Test enum class processing in recursion (lines 186-200)"""
     result = _preprocess_recursive(
         Color,
         depth=0,
@@ -439,7 +414,6 @@ def test_preprocess_recursive_enum_class():
 
 
 def test_preprocess_recursive_enum_class_error():
-    """Test enum class error handling (line 199-200)"""
 
     # Create a mock that looks like enum but fails
     class FakeEnum:
@@ -462,7 +436,6 @@ def test_preprocess_recursive_enum_class_error():
 
 
 def test_preprocess_recursive_custom_object():
-    """Test custom object processing (line 208)"""
     obj = ObjectWithToDict()
     result = _preprocess_recursive(
         obj,
@@ -481,7 +454,6 @@ def test_preprocess_recursive_custom_object():
 
 
 def test_preprocess_recursive_dict():
-    """Test dict processing with nested values"""
     data = {"a": 1, "b": '{"nested": true}', "c": [1, 2, 3]}
     result = _preprocess_recursive(
         data,
@@ -506,7 +478,6 @@ def test_preprocess_recursive_dict():
 
 
 def test_convert_top_level_set():
-    """Test set conversion"""
     result = _convert_top_level_to_dict(
         {1, 2, 3},
         fuzzy_parse=False,
@@ -519,7 +490,6 @@ def test_convert_top_level_set():
 
 
 def test_convert_top_level_enum_class():
-    """Test enum class conversion (line 245)"""
     result = _convert_top_level_to_dict(
         Color,
         fuzzy_parse=False,
@@ -532,7 +502,6 @@ def test_convert_top_level_enum_class():
 
 
 def test_convert_top_level_mapping():
-    """Test mapping conversion"""
     result = _convert_top_level_to_dict(
         OrderedDict([("a", 1), ("b", 2)]),
         fuzzy_parse=False,
@@ -545,7 +514,6 @@ def test_convert_top_level_mapping():
 
 
 def test_convert_top_level_none():
-    """Test None conversion"""
     result = _convert_top_level_to_dict(
         None,
         fuzzy_parse=False,
@@ -558,7 +526,6 @@ def test_convert_top_level_none():
 
 
 def test_convert_top_level_string():
-    """Test string conversion"""
     result = _convert_top_level_to_dict(
         '{"key": "value"}',
         fuzzy_parse=False,
@@ -571,7 +538,6 @@ def test_convert_top_level_string():
 
 
 def test_convert_top_level_object_to_string():
-    """Test object that converts to string (lines 275-276)"""
     obj = ObjectWithJson()
     result = _convert_top_level_to_dict(
         obj,
@@ -585,7 +551,6 @@ def test_convert_top_level_object_to_string():
 
 
 def test_convert_top_level_object_to_iterable():
-    """Test object that converts to iterable (lines 285-288)"""
 
     class ObjToList:
         def to_dict(self):
@@ -605,7 +570,6 @@ def test_convert_top_level_object_to_iterable():
 
 
 def test_convert_top_level_iterable():
-    """Test iterable conversion"""
     result = _convert_top_level_to_dict(
         [1, 2, 3],
         fuzzy_parse=False,
@@ -618,7 +582,6 @@ def test_convert_top_level_iterable():
 
 
 def test_convert_top_level_dataclass():
-    """Test dataclass conversion fallback (line 305)"""
     person = Person(name="Alice", age=25)
     result = _convert_top_level_to_dict(
         person,
@@ -634,3 +597,146 @@ def test_convert_top_level_dataclass():
 
 # ============================================================================
 # Test to_dict (Main Function)
+# ============================================================================
+
+
+from lionagi.ln.fuzzy._to_dict import to_dict
+
+
+def test_to_dict_basic():
+    result = to_dict({"key": "value"})
+    assert result == {"key": "value"}
+
+
+def test_to_dict_from_string():
+    result = to_dict('{"a": 1}')
+    assert result == {"a": 1}
+
+
+def test_to_dict_suppress_on_failure():
+    result = to_dict("{bad json}", suppress=True)
+    assert result == {}
+
+
+def test_to_dict_suppress_true_with_all_paths_failing():
+    """suppress=True with an object that exhausts every conversion path must
+    return {} rather than propagating."""
+
+    class Unconvertible:
+        def model_dump(self):
+            raise RuntimeError("model_dump broken")
+
+        def to_dict(self):
+            raise RuntimeError("to_dict broken")
+
+        def dict(self):
+            raise RuntimeError("dict broken")
+
+        def json(self):
+            raise RuntimeError("json broken")
+
+        def to_json(self):
+            raise RuntimeError("to_json broken")
+
+        @property
+        def __dict__(self):
+            raise RuntimeError("__dict__ broken")
+
+    obj = Unconvertible()
+    result = to_dict(obj, suppress=True)
+    assert result == {}
+
+
+def test_to_dict_model_dump_raises_falls_back_to_dunder_dict():
+    """When model_dump raises but __dict__ is available, fall back gracefully."""
+
+    class PartiallyBroken:
+        def __init__(self):
+            self.x = 10
+            self.y = 20
+
+        def model_dump(self, **kwargs):
+            raise ValueError("model_dump broken")
+
+    obj = PartiallyBroken()
+    # prioritize_model_dump=True tries model_dump first; it raises; then falls
+    # through to __dict__ via _object_to_mapping_like
+    result = to_dict(obj, prioritize_model_dump=True, suppress=True)
+    # Should not crash; may return {} if all strategies fail, or {"x": 10, "y": 20}
+    assert isinstance(result, dict)
+
+
+def test_to_dict_recursive_with_xml_str_type_non_top_level():
+    """str_type='xml' at non-top-level should be forwarded through recursion."""
+    pytest.importorskip("xmltodict")
+    xml = '<?xml version="1.0"?><root><item>val</item></root>'
+    data = {"wrapper": xml}
+    result = to_dict(data, recursive=True, str_type="xml")
+    # "wrapper" key should have been recursively converted from xml string
+    assert isinstance(result, dict)
+    assert "wrapper" in result
+
+
+def test_to_dict_suppress_true_with_circular_reference_like_object():
+    """An object whose dict() conversion raises should be handled with suppress=True."""
+
+    class CircularLike:
+        def dict(self):
+            raise RecursionError("circular")
+
+    obj = CircularLike()
+    result = to_dict(obj, suppress=True)
+    assert isinstance(result, dict)
+
+
+def test_to_dict_recursive_max_depth_validation():
+    """max_recursive_depth must be a non-negative int <= 10."""
+    import pytest
+
+    with pytest.raises(ValueError):
+        to_dict({"a": 1}, recursive=True, max_recursive_depth=-1)
+
+    with pytest.raises(ValueError):
+        to_dict({"a": 1}, recursive=True, max_recursive_depth=11)
+
+
+# ============================================================================
+# Edge cases: spec group "libs"
+# ============================================================================
+
+
+def test_to_dict_suppress_true_all_conversion_paths_exhausted():
+    """suppress=True must return {} when literally every strategy raises, including
+    the fallback dict(obj) call at the end of _convert_top_level_to_dict."""
+
+    class AlwaysExplodes:
+        def __iter__(self):
+            raise RuntimeError("iter broken")
+
+    obj = AlwaysExplodes()
+    result = to_dict(obj, suppress=True)
+    assert result == {}
+
+
+def test_preprocess_recursive_str_type_xml_at_non_top_level():
+    """str_type='xml' threaded into recursion should be used when converting
+    an XML string nested inside a dict value."""
+    pytest.importorskip("xmltodict")
+    xml = '<?xml version="1.0"?><root><child>hello</child></root>'
+    data = {"nested": xml}
+    result = _preprocess_recursive(
+        data,
+        depth=0,
+        max_depth=5,
+        recursive_custom_types=False,
+        str_parse_opts={
+            "fuzzy_parse": False,
+            "str_type": "xml",
+            "parser": None,
+        },
+        prioritize_model_dump=True,
+    )
+    assert isinstance(result, dict)
+    # "nested" value should have been parsed from XML
+    assert "nested" in result
+    assert isinstance(result["nested"], dict)

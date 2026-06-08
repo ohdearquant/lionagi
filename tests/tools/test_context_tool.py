@@ -159,3 +159,72 @@ async def test_compact_all_mode_collapses_more_than_tool_io():
         _build_branch(), action="compact", start=1, end=7, summary="s", mode="all"
     )
     assert res_all["compacted"] > res_io["compacted"]
+
+
+# -- edge cases ---------------------------------------------------------------
+
+
+async def test_compact_start_greater_than_total_messages_returns_error():
+    b = _build_branch()
+    total = len(b.msgs.messages)
+    res = await _call(b, action="compact", start=total + 100, summary="s")
+    assert res["success"] is False
+    assert "error" in res
+
+
+async def test_compact_no_action_results_in_span_returns_error():
+    b = Branch(system="sys")
+    for i in range(5):
+        b.msgs.add_message(instruction=f"step {i}")
+        b.msgs.add_message(assistant_response=f"answer {i}")
+    # Range contains only user/assistant messages, no ActionRequest/ActionResponse
+    res = await _call(b, action="compact", start=1, end=4, summary="summary", mode="tool_io")
+    assert res["success"] is False
+    assert "Nothing to compact" in res["error"]
+
+
+async def test_get_messages_active_scope_when_all_evicted():
+    b = _build_branch()
+    total_active = len(b.msgs.progression)
+    # Evict everything except system (index 0)
+    await _call(b, action="evict", start=1, end=total_active)
+    res = await _call(b, action="get_messages", scope="active")
+    assert res["success"] is True
+    # Only system message remains (index 0 cannot be evicted)
+    assert len(res["messages"]) <= 1
+
+
+async def test_restore_indices_overlap_with_still_active_messages():
+    b = _build_branch()
+    # Evict a range
+    await _call(b, action="evict", start=2, end=5)
+    active_before = len(b.progression)
+    # Restore the same range — messages at 3 and 4 were evicted, 2 was already active
+    # (evict start=2 clamped to max(1,2)=2, so msg at index 2 is evicted)
+    res = await _call(b, action="restore", start=2, end=5)
+    assert res["success"] is True
+    # Already-active items are skipped; restored count ≤ 3
+    assert res["restored"] <= 3
+    assert len(b.progression) >= active_before
+
+
+async def test_evict_and_restore_concurrently_does_not_corrupt_progression():
+    import asyncio
+
+    b = _build_branch()
+    total = len(b.msgs.messages)
+
+    async def do_evict():
+        return await _call(b, action="evict", start=2, end=5)
+
+    async def do_restore():
+        return await _call(b, action="restore", start=2, end=5)
+
+    results = await asyncio.gather(do_evict(), do_restore(), return_exceptions=True)
+    for r in results:
+        if isinstance(r, Exception):
+            raise r
+        assert r["success"] is True
+
+    # Durable pile must never be shrunk
+    assert len(b.msgs.messages) == total

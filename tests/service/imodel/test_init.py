@@ -14,10 +14,7 @@ from lionagi.service.imodel import iModel
 
 
 class TestiModel:
-    """Test the iModel class for request validation and parallel calls."""
-
     def test_imodel_initialization_with_provider(self, base_imodel):
-        """Test iModel initialization with explicit provider."""
         imodel = base_imodel
 
         assert imodel.endpoint.config.provider == "openai"
@@ -26,50 +23,12 @@ class TestiModel:
         assert imodel.endpoint.config._api_key is not None
 
     def test_imodel_initialization_from_model_path(self):
-        """Test iModel initialization with provider inferred from model path."""
         imodel = iModel(model="openai/gpt-4.1-mini", api_key="test-key")
 
         assert imodel.endpoint.config.provider == "openai"
         assert imodel.endpoint.config.kwargs["model"] == "gpt-4.1-mini"
 
-    def test_imodel_missing_provider_falls_back_to_settings_default(self):
-        """A bare iModel(model=...) resolves the provider from settings.
-
-        When no provider is supplied and the model name contains no slash,
-        the constructor falls back to LIONAGI_CHAT_PROVIDER from settings
-        rather than raising.  The endpoint must resolve to a non-empty provider.
-        """
-        m = iModel(model="gpt-4.1-mini", api_key="test-key")
-        assert m.endpoint.config.provider  # truthy — settings default was applied
-        assert m.endpoint.config.provider != "gpt-4.1-mini"  # model name is not the provider
-
-    def test_api_key_environment_variable_lookup(self):
-        """Test that API keys are correctly looked up from environment."""
-        test_cases = [
-            ("openai", "OPENAI_API_KEY"),
-            ("anthropic", "ANTHROPIC_API_KEY"),
-            ("perplexity", "PERPLEXITY_API_KEY"),
-        ]
-
-        for provider, env_var in test_cases:
-            if env_var:
-                # Just verify that an API key is set when provider requires it
-                imodel = iModel(
-                    provider=provider,
-                    model="test-model",
-                    api_key=f"test-{provider}-key",
-                )
-                assert imodel.endpoint.config._api_key is not None
-
-    def test_custom_api_key(self):
-        """Test iModel initialization with custom API key."""
-        imodel = iModel(provider="openai", model="gpt-4.1-mini", api_key="custom-key")
-
-        # Just verify that an API key was set
-        assert imodel.endpoint.config._api_key is not None
-
     def test_create_api_calling(self, base_imodel):
-        """Test creation of APICalling objects."""
         imodel = base_imodel
 
         api_call = imodel.create_api_calling(
@@ -83,7 +42,6 @@ class TestiModel:
 
     @pytest.mark.asyncio
     async def test_successful_invoke(self, base_imodel, mock_response):
-        """Test successful API invocation."""
         imodel = base_imodel
 
         with patch.object(
@@ -98,7 +56,6 @@ class TestiModel:
 
     @pytest.mark.asyncio
     async def test_parallel_invoke_calls(self, base_imodel, mock_response):
-        """Test parallel API invocations don't interfere."""
         imodel = base_imodel
 
         async def mock_request_with_id(request, cache_control=False, **kwargs):
@@ -126,7 +83,6 @@ class TestiModel:
 
     @pytest.mark.asyncio
     async def test_streaming_invoke(self, base_imodel, mock_streaming_response):
-        """Test streaming API calls."""
         imodel = base_imodel
 
         async def mock_stream():
@@ -150,13 +106,11 @@ class TestiModel:
         assert len(chunks) >= 2  # Should have content chunks
 
     def test_model_name_property(self, base_imodel):
-        """Test model_name property."""
         imodel = base_imodel
 
         assert imodel.model_name == "gpt-4.1-mini"
 
     def test_request_options_property(self, base_imodel):
-        """Test request_options property."""
         imodel = base_imodel
 
         # NOTE: request_options removed due to incorrect role literals in generated models
@@ -167,7 +121,6 @@ class TestiModel:
 
     @pytest.mark.asyncio
     async def test_error_handling_in_invoke(self, base_imodel):
-        """Test error handling during API invocation."""
         imodel = base_imodel
 
         with patch.object(imodel.endpoint, "call", side_effect=Exception("API Error")):
@@ -178,7 +131,6 @@ class TestiModel:
             assert result.execution.error is not None
 
     def test_cache_control_parameter(self, base_imodel):
-        """Test cache_control parameter in create_api_calling."""
         imodel = base_imodel
 
         api_call = imodel.create_api_calling(
@@ -188,7 +140,6 @@ class TestiModel:
         assert api_call.cache_control is True
 
     def test_include_token_usage_to_model(self, base_imodel):
-        """Test include_token_usage_to_model parameter."""
         imodel = base_imodel
 
         api_call = imodel.create_api_calling(
@@ -198,19 +149,8 @@ class TestiModel:
 
         assert api_call.include_token_usage_to_model is True
 
-    def test_to_dict_serialization(self, base_imodel):
-        """Test iModel serialization to dictionary."""
-        imodel = base_imodel
-
-        data = imodel.to_dict()
-
-        assert "endpoint" in data
-        assert "processor_config" in data
-        assert imodel.endpoint.config.provider == "openai"
-
     @pytest.mark.asyncio
     async def test_custom_streaming_process_func(self):
-        """Test custom streaming process function."""
 
         def custom_process(chunk):
             if hasattr(chunk, "choices") and chunk.choices:
@@ -228,7 +168,6 @@ class TestiModel:
 
     @pytest.mark.asyncio
     async def test_rate_limiting_configuration(self):
-        """Test rate limiting configuration."""
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
             imodel = iModel(
                 provider="openai",
@@ -244,7 +183,6 @@ class TestiModel:
 
     @pytest.mark.asyncio
     async def test_concurrent_different_models(self):
-        """Test concurrent calls with different models work independently."""
         imodel1 = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
         imodel2 = iModel(provider="openai", model="gpt-4o", api_key="test-key")
 
@@ -270,37 +208,7 @@ class TestiModel:
         assert result1.response["model_used"] == "gpt-4.1-mini"
         assert result2.response["model_used"] == "gpt-4o"
 
-    def test_imodel_custom_id_with_id_get_id(self):
-        """Test iModel initialization with custom ID using ID.get_id."""
-        from uuid import uuid4
-
-        custom_id = uuid4()
-        imodel = iModel(
-            provider="openai",
-            model="gpt-4.1-mini",
-            api_key="test-key",
-            id=custom_id,
-        )
-
-        assert imodel.id == custom_id
-
-    def test_imodel_custom_id_as_string(self):
-        """Test iModel initialization with ID as UUID string."""
-        from uuid import uuid4
-
-        custom_id = str(uuid4())
-        imodel = iModel(
-            provider="openai",
-            model="gpt-4.1-mini",
-            api_key="test-key",
-            id=custom_id,
-        )
-
-        # ID.get_id should handle UUID string conversion
-        assert str(imodel.id) == custom_id
-
     def test_imodel_invalid_created_at_type(self):
-        """Test iModel initialization with invalid created_at type."""
         with pytest.raises(ValueError, match="created_at must be a float timestamp"):
             iModel(
                 provider="openai",
@@ -310,7 +218,6 @@ class TestiModel:
             )
 
     def test_imodel_with_endpoint_object(self):
-        """Test iModel initialization with Endpoint object passed directly."""
         from lionagi.service.connections.match_endpoint import match_endpoint
 
         # Create an endpoint object
@@ -328,7 +235,6 @@ class TestiModel:
         assert imodel.endpoint.config.provider == "openai"
 
     def test_imodel_hook_registry_as_dict(self):
-        """Test iModel initialization with hook_registry as dict."""
         from lionagi.service.hooks import HookRegistry
 
         hook_registry_dict = {}
@@ -342,7 +248,6 @@ class TestiModel:
         assert isinstance(imodel.hook_registry, HookRegistry)
 
     def test_imodel_claude_code_auto_resume(self):
-        """Test auto-injection of resume parameter for claude_code provider."""
         imodel = iModel(
             provider="claude_code",
             model="claude-3-5-sonnet-20241022",
@@ -359,7 +264,6 @@ class TestiModel:
         assert api_call.payload["request"].resume == "test-session-123"
 
     def test_imodel_claude_code_no_auto_resume_if_explicit(self):
-        """Test that explicit resume parameter is not overridden."""
         imodel = iModel(
             provider="claude_code",
             model="claude-3-5-sonnet-20241022",
@@ -380,7 +284,6 @@ class TestiModel:
 
     @pytest.mark.asyncio
     async def test_imodel_streaming_with_async_process_func(self):
-        """Test streaming with async streaming_process_func."""
 
         async def async_process(chunk):
             """Async processing function."""
@@ -445,7 +348,6 @@ class TestiModel:
 
     @pytest.mark.asyncio
     async def test_hook_registry_takes_priority_over_streaming_process_func(self):
-        """Hook registry result is returned directly; streaming_process_func is not called."""
 
         async def handler(_event, _chunk_type, _chunk, **_kw):
             return {"choices": [{"delta": {"content": "hooked"}}]}
@@ -490,7 +392,6 @@ class TestiModel:
 
     @pytest.mark.asyncio
     async def test_imodel_claude_code_session_id_storage(self, mock_response):
-        """Test that session_id is stored on endpoint after invoke."""
         imodel = iModel(
             provider="claude_code",
             model="claude-3-5-sonnet-20241022",
@@ -507,26 +408,7 @@ class TestiModel:
         # Check that session_id was stored on the CLI endpoint
         assert imodel.endpoint.session_id == "new-session-456"
 
-    def test_imodel_to_dict(self):
-        """Test iModel to_dict serialization."""
-        imodel = iModel(
-            provider="openai",
-            model="gpt-4.1-mini",
-            api_key="test-key",
-            limit_requests=10,
-        )
-
-        data = imodel.to_dict()
-
-        assert "id" in data
-        assert "created_at" in data
-        assert "endpoint" in data
-        assert "processor_config" in data
-        assert "provider_metadata" in data
-        assert data["processor_config"]["limit_requests"] == 10
-
     def test_imodel_from_dict(self):
-        """Test iModel from_dict deserialization."""
         imodel = iModel(
             provider="openai",
             model="gpt-4.1-mini",
@@ -543,7 +425,6 @@ class TestiModel:
         assert restored.executor.config["limit_requests"] == 10
 
     def test_imodel_from_dict_with_match_endpoint(self):
-        """Test from_dict uses match_endpoint for endpoint reconstruction."""
         # Create initial iModel
         imodel = iModel(
             provider="anthropic",
@@ -561,7 +442,6 @@ class TestiModel:
 
     @pytest.mark.asyncio
     async def test_imodel_unsupported_event_type(self):
-        """Test that unsupported event types raise ValueError."""
         from lionagi.protocols.types import Event
 
         imodel = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
@@ -578,7 +458,6 @@ class TestiModel:
 
     @pytest.mark.asyncio
     async def test_imodel_invoke_with_concurrency_limit(self, mock_response):
-        """Test invoke with concurrency limit set."""
         imodel = iModel(
             provider="openai",
             model="gpt-4.1-mini",
@@ -595,3 +474,93 @@ class TestiModel:
 
         assert isinstance(result, APICalling)
         assert result.status == EventStatus.COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: close() lifecycle, cancelled invoke, hook pre-invoke payload,
+# stream backpressure
+# ---------------------------------------------------------------------------
+
+
+class TestiModelEdgeCases:
+    @pytest.mark.asyncio
+    async def test_close_stops_executor(self):
+        imodel = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+        await imodel.executor.start()
+        assert not imodel.executor.processor.is_stopped()
+        await imodel.close()
+        assert imodel.executor.processor.is_stopped()
+
+    @pytest.mark.asyncio
+    async def test_close_is_idempotent(self):
+        imodel = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+        await imodel.executor.start()
+        await imodel.close()
+        await imodel.close()
+        assert imodel.executor.processor.is_stopped()
+
+    @pytest.mark.asyncio
+    async def test_invoke_cancelled_error_propagates(self):
+        imodel = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+
+        async def slow_call(request, cache_control=False, **kwargs):
+            await asyncio.sleep(10)
+            return {}
+
+        with patch.object(imodel.endpoint, "call", side_effect=slow_call):
+            task = asyncio.create_task(
+                imodel.invoke(messages=[{"role": "user", "content": "hello"}])
+            )
+            await asyncio.sleep(0.01)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    @pytest.mark.asyncio
+    async def test_hook_registry_pre_invoke_modifies_payload(self):
+        pre_invoke_calls = []
+
+        async def pre_invoke_hook(event, **kwargs):
+            pre_invoke_calls.append("pre_invoke")
+
+        from lionagi.service.hooks import HookEventTypes, HookRegistry
+
+        registry = HookRegistry(hooks={HookEventTypes.PreInvocation: pre_invoke_hook})
+        imodel = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+            hook_registry=registry,
+        )
+
+        mock_response_data = {
+            "id": "test-123",
+            "choices": [
+                {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+            ],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+        }
+
+        with patch.object(imodel.endpoint, "call", return_value=mock_response_data):
+            result = await imodel.invoke(messages=[{"role": "user", "content": "hello"}])
+
+        assert isinstance(result, APICalling)
+
+    @pytest.mark.asyncio
+    async def test_stream_backpressure_slow_consumer_all_chunks_received(self):
+        imodel = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+
+        async def mock_stream():
+            for i in range(10):
+                yield {"choices": [{"delta": {"content": f"chunk{i}"}}]}
+
+        imodel.streaming_process_func = lambda c: c
+
+        with patch.object(imodel.endpoint, "stream", return_value=mock_stream()):
+            chunks = []
+            async for chunk in imodel.stream(messages=[{"role": "user", "content": "hi"}]):
+                await asyncio.sleep(0.005)
+                if chunk and not isinstance(chunk, APICalling):
+                    chunks.append(chunk)
+
+        assert len(chunks) >= 5

@@ -1,5 +1,3 @@
-"""Tests for SchemaModel class."""
-
 from typing import Any
 
 import pytest
@@ -10,22 +8,7 @@ from lionagi.utils import UNDEFINED
 
 
 class TestSchemaModel:
-    """Test suite for SchemaModel class."""
-
-    def test_schema_model_basic(self):
-        """Test basic SchemaModel functionality."""
-
-        class TestSchema(SchemaModel):
-            field1: str = "test"
-            field2: int = 123
-
-        model = TestSchema()
-        assert model.field1 == "test"
-        assert model.field2 == 123
-
     def test_forbid_extra_fields(self):
-        """Test that extra fields are forbidden."""
-
         class TestSchema(SchemaModel):
             field1: str
 
@@ -38,8 +21,6 @@ class TestSchemaModel:
         assert model.field1 == "test"
 
     def test_keys_method(self):
-        """Test keys() method returns correct field names."""
-
         class TestSchema(SchemaModel):
             field1: str = "test"
             field2: int = 123
@@ -52,8 +33,6 @@ class TestSchemaModel:
         assert set(keys) == {"field1", "field2", "field3"}
 
     def test_inheritance_behavior(self):
-        """Test inheritance behavior from BaseAutoModel."""
-
         class TestSchema(SchemaModel):
             field1: str
             field2: str | Any = Field(default=UNDEFINED)
@@ -65,8 +44,6 @@ class TestSchemaModel:
         assert "field2" not in result  # UNDEFINED fields should be excluded
 
     def test_nested_schema_models(self):
-        """Test nested SchemaModel behavior."""
-
         class NestedSchema(SchemaModel):
             nested_field: str = "nested"
 
@@ -86,8 +63,6 @@ class TestSchemaModel:
         assert result["nested"]["nested_field"] == "nested"
 
     def test_validation_behavior(self):
-        """Test validation behavior specific to SchemaModel."""
-
         class TestSchema(SchemaModel):
             age: int = Field(gt=0, lt=150)
             name: str = Field(min_length=2)
@@ -105,19 +80,7 @@ class TestSchemaModel:
         with pytest.raises(ValueError):
             TestSchema(age=25, name="J")
 
-    def test_default_validation_disabled(self):
-        """Test that default validation is disabled."""
-
-        class TestSchema(SchemaModel):
-            field1: str = "default"
-
-        # Should not validate default values
-        model = TestSchema()
-        assert model.field1 == "default"
-
     def test_from_dict_validation(self):
-        """Test from_dict with validation."""
-
         class TestSchema(SchemaModel):
             field1: str
             field2: int = Field(gt=0)
@@ -134,8 +97,6 @@ class TestSchemaModel:
             TestSchema.from_dict(invalid_data)
 
     def test_complex_validation_rules(self):
-        """Test complex validation rules in SchemaModel."""
-
         class TestSchema(SchemaModel):
             values: list[int] = Field(min_length=1, max_length=5)
             mapping: dict[str, str] = Field(min_length=1)
@@ -158,8 +119,6 @@ class TestSchemaModel:
             TestSchema(values=[1], mapping={})
 
     def test_nested_validation(self):
-        """Test validation with nested SchemaModel instances."""
-
         class NestedSchema(SchemaModel):
             value: int = Field(gt=0)
 
@@ -174,26 +133,7 @@ class TestSchemaModel:
         with pytest.raises(ValueError):
             TestSchema(nested=NestedSchema(value=-1))
 
-    def test_optional_fields(self):
-        """Test handling of optional fields."""
-
-        class TestSchema(SchemaModel):
-            required: str
-            optional: str | None = None
-
-        # Test with only required field
-        model = TestSchema(required="test")
-        assert model.required == "test"
-        assert model.optional is None
-
-        # Test with both fields
-        model = TestSchema(required="test", optional="value")
-        assert model.required == "test"
-        assert model.optional == "value"
-
     def test_field_exclusion(self):
-        """Test field exclusion from serialization."""
-
         class TestSchema(SchemaModel):
             public: str = "public"
             private: str = Field("private", exclude=True)

@@ -36,9 +36,6 @@ from lionagi.state.db import StateDB
 
 @pytest.fixture
 def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Per-test temp file DB. ``li state`` commands open StateDB() without
-    arguments — they read DEFAULT_DB_PATH, so we patch that.
-    """
     db_path = tmp_path / "state.db"
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
     return db_path
@@ -208,9 +205,6 @@ async def test_stats_reports_no_db_message_when_missing(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture,
 ):
-    """When state.db does not yet exist, stats prints a helpful hint
-    instead of crashing.
-    """
     db_path = tmp_path / "never_created.db"
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
     await _print_stats()
@@ -292,7 +286,6 @@ async def test_vacuum_runs_without_error(temp_db_path: Path):
 
 
 async def test_prune_dry_run_does_not_delete(temp_db_path: Path):
-    """Dry-run returns counts but leaves rows in place."""
     now = time.time()
     old_ts = now - (60 * 86400)  # 60 days ago
     async with StateDB() as db:
@@ -607,3 +600,95 @@ async def test_doctor_with_failed_new_status(temp_db_path: Path):
     async with StateDB() as db:
         s = await db.get_session(sid)
     assert s["status"] == "failed"
+
+
+# ── Edge cases ────────────────────────────────────────────────────────────────
+
+
+async def test_prune_concurrent_writes_do_not_corrupt_data(temp_db_path: Path):
+    import asyncio
+
+    now = time.time()
+    old_ts = now - (60 * 86400)
+    async with StateDB() as db:
+        old_sid, _ = await _seed_session_with_messages(db, n_messages=2, updated_at=old_ts)
+        new_sid, _ = await _seed_session_with_messages(db, n_messages=1, updated_at=now)
+
+    async def _prune_task():
+        return await _prune(keep_days=30, keep_n=1, dry_run=False)
+
+    async def _write_task():
+        async with StateDB() as db:
+            for _ in range(5):
+                await _seed_session(db, status="running", updated_at=time.time())
+
+    prune_result, _ = await asyncio.gather(_prune_task(), _write_task())
+
+    assert prune_result["sessions"] >= 1
+    async with StateDB() as db:
+        assert (await db.get_session(old_sid)) is None
+        assert (await db.get_session(new_sid)) is not None
+
+
+async def test_doctor_with_null_node_metadata_sessions(temp_db_path: Path):
+    now = time.time()
+    old = now - (48 * 3600)
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running")
+        await db.db.execute(
+            "UPDATE sessions SET started_at = ?, node_metadata = NULL WHERE id = ?",
+            (old, sid),
+        )
+        await db.db.commit()
+
+    result = await _doctor(stale_hours=24, dry_run=False)
+    assert result["swept"] >= 1
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    assert s["status"] == "aborted"
+
+
+async def test_checkpoint_when_no_wal_data(temp_db_path: Path):
+    async with StateDB():
+        pass
+
+    result = await _checkpoint("PASSIVE")
+    assert "busy=" in result
+
+
+async def test_list_sessions_with_null_name_and_status(
+    temp_db_path: Path,
+    capsys: pytest.CaptureFixture,
+):
+    async with StateDB() as db:
+        sid = str(uuid.uuid4())
+        pid = str(uuid.uuid4())
+        await db.create_progression(pid)
+        await db.db.execute(
+            "INSERT INTO sessions (id, progression_id, status, started_at, created_at, updated_at) "
+            "VALUES (?, ?, NULL, ?, ?, ?)",
+            (sid, pid, time.time(), time.time(), time.time()),
+        )
+        await db.db.commit()
+
+    await _list_sessions(limit=50, status=None)
+    out = capsys.readouterr().out
+    assert sid in out
+
+
+async def test_vacuum_after_prune_reclaims_space(temp_db_path: Path):
+    now = time.time()
+    old_ts = now - (60 * 86400)
+    async with StateDB() as db:
+        for _ in range(5):
+            await _seed_session_with_messages(db, n_messages=3, updated_at=old_ts)
+        await _seed_session_with_messages(db, n_messages=1, updated_at=now)
+
+    await _prune(keep_days=30, keep_n=1, dry_run=False)
+    await _vacuum()
+
+    async with StateDB() as db:
+        cur = await db.db.execute("SELECT COUNT(*) AS n FROM sessions")
+        n = (await cur.fetchone())["n"]
+    assert n >= 1

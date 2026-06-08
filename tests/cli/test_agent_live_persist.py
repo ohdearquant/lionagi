@@ -61,9 +61,6 @@ def _aiosqlite_thread_count() -> int:
 async def test_setup_creates_session_branch_progression_rows(
     temp_db_path: Path,
 ):
-    """A fresh setup creates session, branch, and two progression rows
-    and registers the message hook on the branch.
-    """
     branch = Branch(name="b1")
 
     ctx = await _setup_live_persist(branch, agent_name="reviewer")
@@ -102,9 +99,6 @@ async def test_setup_creates_session_branch_progression_rows(
 async def test_setup_persists_system_message_when_branch_has_one(
     temp_db_path: Path,
 ):
-    """If the Branch has a system message, setup must insert it and
-    point ``branches.system_msg_id`` at it.
-    """
     branch = Branch(name="b1", system="you are a unit test")
     assert branch.system is not None
     sys_id = str(branch.system.id)
@@ -129,9 +123,6 @@ async def test_setup_db_open_failure_disables_persist_no_thread_leak(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """If ``db.open()`` itself raises, setup returns ``None`` and no
-    aiosqlite worker thread is left dangling.
-    """
     # Point the default DB at a path inside a file (not a directory) so
     # ``mkdir(parents=True, exist_ok=True)`` succeeds on the parent but
     # downstream connect could still work — instead, patch ``open`` to
@@ -161,13 +152,6 @@ async def test_setup_create_session_failure_closes_db(
     temp_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """If ``create_session`` fails mid-setup, the DB is closed and the
-    aiosqlite worker thread is reclaimed.
-
-    This is the failure mode the hang fix targets: prior to the fix,
-    a setup exception left the connection open and the non-daemon
-    worker prevented interpreter shutdown.
-    """
     original_create = StateDB.create_session
 
     async def fail(self, session: dict):
@@ -205,10 +189,6 @@ async def test_setup_create_session_failure_closes_db(
 async def test_setup_resume_loads_existing_session_and_progression(
     temp_db_path: Path,
 ):
-    """If the branch already exists in the DB (resume case), setup
-    reuses its session_id / progression_id and seeds existing_msg_ids
-    from the prior progression so the hook can dedupe re-fires.
-    """
     branch = Branch(name="b1")
     ctx1 = await _setup_live_persist(branch)
     session_id_1 = ctx1["session_id"]
@@ -241,9 +221,6 @@ async def test_setup_resume_loads_existing_session_and_progression(
 async def test_hook_dedupes_existing_messages_on_resume(
     temp_db_path: Path,
 ):
-    """On resume, the hook must NOT re-append already-persisted message
-    IDs to the progression — that would silently double-count history.
-    """
     from lionagi.protocols.messages.manager import MessageManager
 
     branch = Branch(name="b1")
@@ -272,9 +249,6 @@ async def test_hook_swallows_db_write_failure(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ):
-    """A DB write blip MUST NOT abort the user-facing turn. The hook
-    logs and continues — the in-memory message is still valid.
-    """
     import logging
 
     from lionagi.protocols.messages.manager import MessageManager
@@ -308,10 +282,6 @@ async def test_hook_swallows_db_write_failure(
 async def test_hook_updates_system_msg_id_when_system_replaced(
     temp_db_path: Path,
 ):
-    """If the runtime replaces the system message mid-run, the hook
-    must update ``branches.system_msg_id`` so Studio's O(1) lookup
-    returns the current system, not the stale one.
-    """
     branch = Branch(name="b1", system="initial")
     ctx = await _setup_live_persist(branch)
     original_sys_id = str(branch.system.id)
@@ -369,10 +339,6 @@ async def test_teardown_updates_session_bookmarks_and_status(
 async def test_teardown_detaches_persistence_from_bus(
     temp_db_path: Path,
 ):
-    """Teardown detaches the persistence handler from the session hook bus and
-    the emit hook (_persist_via_bus) from the branch (ADR-0023b), so a closed-DB
-    handler cannot survive teardown and fire on later messages.
-    """
     from lionagi.hooks.bus import HookPoint
 
     branch = Branch(name="b1")
@@ -391,10 +357,6 @@ async def test_teardown_closes_db_even_if_bookmark_update_fails(
     temp_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The hang fix invariant: db.close() lives in its own ``finally``.
-    If update_session raises, close STILL runs and the aiosqlite worker
-    is reclaimed.
-    """
     branch = Branch(name="b1")
     ctx = await _setup_live_persist(branch)
     db = ctx["db"]
@@ -419,7 +381,6 @@ async def test_teardown_closes_db_even_if_bookmark_update_fails(
 
 
 async def test_teardown_with_none_context_is_noop(temp_db_path: Path):
-    """If setup returned None (failed), teardown(None) must be safe."""
     await _teardown_live_persist(None, status="completed")  # MUST NOT raise
 
 
@@ -429,10 +390,6 @@ async def test_teardown_with_none_context_is_noop(temp_db_path: Path):
 async def test_setup_teardown_does_not_leak_aiosqlite_thread(
     temp_db_path: Path,
 ):
-    """Run setup+teardown several times and verify the aiosqlite worker
-    count returns to baseline each time. This is the root-cause check
-    for the original "li agent claude 'hi' hangs after exit" bug.
-    """
     from lionagi.protocols.messages.manager import MessageManager
 
     branch = Branch(name="b1")
@@ -522,14 +479,6 @@ async def _legacy_db_with_nullable_progression(
 async def test_setup_resume_repairs_null_branch_progression_id(
     temp_db_path: Path,
 ):
-    """A legacy branch row with progression_id NULL must be repaired on
-    resume: setup creates a fresh progression, points the row at it,
-    and seeds existing_msg_ids from the (now non-empty) progression
-    so future hook calls dedupe correctly.
-
-    Without repair, append_to_progression(None, msg_id) is a no-op and
-    branch history is silently lost (R5-A HIGH-2).
-    """
     import uuid
 
     from lionagi.protocols.messages.manager import MessageManager
@@ -675,10 +624,6 @@ async def test_repair_session_progression_returns_existing_id_under_race(
 async def test_setup_resume_repairs_null_session_progression_id(
     temp_db_path: Path,
 ):
-    """Same as above but for the session-level progression — a legacy
-    session row with NULL progression_id must be repaired so the
-    session-wide message timeline isn't lost.
-    """
     import uuid
 
     from lionagi.protocols.messages.manager import MessageManager
@@ -729,7 +674,6 @@ async def test_setup_resume_repairs_null_session_progression_id(
 
 
 async def test_setup_persists_artifact_contract(temp_db_path: Path):
-    """artifact_contract passed to setup is stored in the session row."""
     branch = Branch(name="b1")
     contract = {"expected": [{"id": "report", "path": "report.md"}]}
 
@@ -753,7 +697,6 @@ async def test_setup_persists_artifact_contract(temp_db_path: Path):
 async def test_teardown_verification_passes_when_artifact_present(
     temp_db_path: Path, tmp_path: Path
 ):
-    """Clean completion with required artifact present → status passed, session completed."""
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
     (artifacts_dir / "report.md").write_text("report content")
@@ -780,7 +723,6 @@ async def test_teardown_verification_passes_when_artifact_present(
 
 
 async def test_teardown_verification_fails_flips_status(temp_db_path: Path, tmp_path: Path):
-    """Clean completion with missing required artifact → status flipped to failed."""
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
     # deliberately NOT creating report.md
@@ -817,7 +759,6 @@ async def test_teardown_verification_fails_flips_status(temp_db_path: Path, tmp_
 async def test_teardown_verification_preserves_non_completed_reason(
     temp_db_path: Path, tmp_path: Path
 ):
-    """Missing artifact on a failed (non-completed) run keeps original reason."""
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
     # deliberately NOT creating report.md
@@ -845,3 +786,85 @@ async def test_teardown_verification_preserves_non_completed_reason(
     v = s["artifact_verification_json"]
     assert isinstance(v, dict)
     assert v["status"] == "failed"
+
+
+# ── Edge cases ────────────────────────────────────────────────────────────────
+
+
+async def test_concurrent_hooks_fire_simultaneously(temp_db_path: Path):
+    from lionagi.protocols.messages.manager import MessageManager
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+    assert ctx is not None
+
+    msgs = [
+        MessageManager.create_instruction(
+            instruction=f"concurrent-{i}",
+            sender="user",
+            recipient=str(branch.id),
+        )
+        for i in range(10)
+    ]
+
+    await asyncio.gather(*[ctx["hook"](m) for m in msgs])
+
+    async with StateDB() as db:
+        prog = await db.get_progression(ctx["branch_prog_id"])
+
+    msg_ids = {str(m.id) for m in msgs}
+    persisted = set(prog)
+    assert msg_ids <= persisted, "all concurrent messages must be persisted"
+
+    await _teardown_live_persist(ctx, status="completed")
+
+
+async def test_setup_resume_with_many_existing_messages(temp_db_path: Path):
+    from lionagi.protocols.messages.manager import MessageManager
+
+    branch = Branch(name="b1")
+    ctx1 = await _setup_live_persist(branch)
+    assert ctx1 is not None
+
+    for i in range(100):
+        msg = MessageManager.create_instruction(
+            instruction=f"msg-{i}",
+            sender="user",
+            recipient=str(branch.id),
+        )
+        await ctx1["hook"](msg)
+
+    await _teardown_live_persist(ctx1, status="completed")
+
+    ctx2 = await _setup_live_persist(branch)
+    assert ctx2 is not None
+    assert len(ctx2["existing_msg_ids"]) == 100
+
+    await _teardown_live_persist(ctx2, status="completed")
+
+
+async def test_teardown_long_progression_writes_bookmarks(temp_db_path: Path):
+    from lionagi.protocols.messages.manager import MessageManager
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+    assert ctx is not None
+
+    msgs = []
+    for i in range(200):
+        msg = MessageManager.create_instruction(
+            instruction=f"msg-{i}",
+            sender="user",
+            recipient=str(branch.id),
+        )
+        await ctx["hook"](msg)
+        msgs.append(msg)
+
+    await _teardown_live_persist(ctx, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+
+    assert s["first_msg_id"] == str(msgs[0].id)
+    assert s["last_msg_id"] == str(msgs[-1].id)
+    assert s["status"] == "completed"

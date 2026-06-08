@@ -481,3 +481,98 @@ async def test_retry_deadline_expired_immediately(anyio_backend):
 
     # Verify we made at least one attempt
     assert calls["n"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: spec group "libs"
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_bounded_map_multiple_failures_raises_exception(anyio_backend):
+    """bounded_map with return_exceptions=False and multiple simultaneous failures
+    should raise rather than silently swallow exceptions."""
+
+    async def flaky(x):
+        await anyio.sleep(0.005)
+        if x % 2 == 0:
+            raise ValueError(f"fail-{x}")
+        return x
+
+    with pytest.raises((ValueError, BaseException)):
+        await bounded_map(flaky, range(6), limit=6, return_exceptions=False)
+
+
+@pytest.mark.anyio
+async def test_race_all_succeed_returns_one_valid_result(anyio_backend):
+    """race() with all tasks completing nearly simultaneously returns exactly one result."""
+
+    async def fast(v):
+        await anyio.sleep(0.001)
+        return v
+
+    result = await race(fast(1), fast(2), fast(3), fast(4), fast(5))
+    assert result in {1, 2, 3, 4, 5}
+
+
+@pytest.mark.anyio
+async def test_retry_max_delay_capping(anyio_backend):
+    """retry with base_delay > max_delay should cap the sleep to max_delay."""
+    calls = {"n": 0}
+    import time
+
+    timings = []
+
+    async def track():
+        calls["n"] += 1
+        timings.append(time.monotonic())
+        if calls["n"] < 4:
+            raise TimeoutError("retry me")
+        return "done"
+
+    result = await retry(
+        track,
+        attempts=4,
+        base_delay=0.05,
+        max_delay=0.01,  # cap below base_delay forces max_delay path
+        retry_on=(TimeoutError,),
+        jitter=0.0,
+    )
+    assert result == "done"
+    assert calls["n"] == 4
+    for i in range(1, len(timings)):
+        gap = timings[i] - timings[i - 1]
+        assert gap < 0.5, f"gap {gap:.3f}s — max_delay cap not working"
+
+
+@pytest.mark.anyio
+async def test_completion_stream_large_task_count_cleanup(anyio_backend):
+    """CompletionStream with many tasks completes cleanly without resource leaks."""
+    from lionagi.ln.concurrency.patterns import CompletionStream
+
+    N = 100
+
+    async def task(i):
+        await anyio.sleep(0.001)
+        return i
+
+    collected = {}
+    async with CompletionStream([task(i) for i in range(N)]) as stream:
+        async for idx, val in stream:
+            collected[idx] = val
+
+    assert len(collected) == N
+    assert set(collected.values()) == set(range(N))
+
+
+@pytest.mark.anyio
+async def test_gather_order_preserved_with_mixed_completion_times(anyio_backend):
+    """gather preserves input order even when tasks complete out-of-order."""
+
+    async def task(i):
+        await anyio.sleep(0.005 * (5 - i))
+        return i * 10
+
+    results = await gather(*[task(i) for i in range(5)], return_exceptions=True)
+
+    assert results == [0, 10, 20, 30, 40]

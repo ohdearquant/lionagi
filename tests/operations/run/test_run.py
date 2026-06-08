@@ -18,6 +18,7 @@ from lionagi.protocols.messages import (
     ActionResponse,
     AssistantResponse,
     AssistantResponseContent,
+    Instruction,
 )
 from lionagi.service.imodel import iModel
 from lionagi.service.types.stream_chunk import StreamChunk
@@ -541,6 +542,129 @@ async def test_branch_operate_forwards_extra_kwargs_to_run(monkeypatch):
 # ---------------------------------------------------------------------------
 # Regression: iModel.stream() must not yield in finally (swallows cancellation)
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Empty stream — no chunks at all
+# ---------------------------------------------------------------------------
+
+
+async def test_run_empty_stream_yields_only_instruction():
+    """A stream with no chunks at all yields just the Instruction message."""
+    model, _ = _make_fake_cli_model([])
+    branch = Branch()
+    branch.chat_model = model
+
+    results = await _collect(run(branch, "nothing", RunParam()))
+
+    assert len(results) == 1
+    assert isinstance(results[0], Instruction)
+
+
+# ---------------------------------------------------------------------------
+# Tool_use chunk arrives before any text chunk
+# ---------------------------------------------------------------------------
+
+
+async def test_run_tool_use_before_text():
+    """tool_use chunk before any text: no prior AssistantResponse to flush."""
+    model, _ = _make_fake_cli_model(
+        [
+            StreamChunk(
+                type="tool_use",
+                tool_name="fn",
+                tool_id="call-first",
+                tool_input={"x": 1},
+            ),
+            StreamChunk(
+                type="tool_result",
+                tool_id="call-first",
+                tool_output={"v": 42},
+            ),
+        ]
+    )
+    branch = Branch()
+    branch.chat_model = model
+
+    results = await _collect(run(branch, "go", RunParam()))
+
+    type_seq = [type(r).__name__ for r in results]
+    # Instruction + ActionRequest + ActionResponse — no AssistantResponse (no text)
+    assert "Instruction" in type_seq
+    assert "ActionRequest" in type_seq
+    assert "ActionResponse" in type_seq
+    # No orphan AssistantResponse with empty text
+    assistant_responses = [r for r in results if isinstance(r, AssistantResponse)]
+    assert all(r.response for r in assistant_responses), "Empty-text AssistantResponse emitted"
+
+
+# ---------------------------------------------------------------------------
+# Duplicate tool_ids across tool_use chunks — second one gets a new slot
+# ---------------------------------------------------------------------------
+
+
+async def test_run_duplicate_tool_ids_are_handled():
+    """Two tool_use chunks with same tool_id: second does not overwrite first."""
+    model, _ = _make_fake_cli_model(
+        [
+            StreamChunk(type="tool_use", tool_name="fn", tool_id="dup-1", tool_input={"a": 1}),
+            StreamChunk(type="tool_use", tool_name="fn", tool_id="dup-1", tool_input={"a": 2}),
+            StreamChunk(type="tool_result", tool_id="dup-1", tool_output={"v": 1}),
+        ]
+    )
+    branch = Branch()
+    branch.chat_model = model
+
+    # Should not raise; we just care it finishes cleanly
+    results = await _collect(run(branch, "go", RunParam()))
+    action_requests = [r for r in results if isinstance(r, ActionRequest)]
+    # At least one request was recorded
+    assert len(action_requests) >= 1
+
+
+# ---------------------------------------------------------------------------
+# run_and_collect with parse failure after successful stream collection
+# ---------------------------------------------------------------------------
+
+
+async def test_run_and_collect_parse_failure_propagates(monkeypatch):
+    """When parse raises after stream collection, the exception propagates."""
+    from pydantic import BaseModel
+
+    from lionagi.operations.types import ParseParam
+
+    class Strict(BaseModel):
+        must_have: str
+
+    branch = Branch()
+
+    def make_ar(text: str) -> AssistantResponse:
+        return AssistantResponse(
+            content=AssistantResponseContent(assistant_response=text),
+            sender=branch.id,
+            recipient="user",
+        )
+
+    async def fake_run(b, ins, param):
+        yield make_ar("totally unparseable garbage 123")
+
+    async def fake_parse(b, text, pp):
+        raise ValueError("parse failed on purpose")
+
+    monkeypatch.setattr("lionagi.operations.run.run.run", fake_run)
+    monkeypatch.setattr("lionagi.operations.parse.parse.parse", fake_parse)
+
+    from lionagi.operations.parse.parse import get_default_call
+
+    pp = ParseParam(
+        response_format=Strict,
+        imodel=branch.chat_model,
+        imodel_kw={},
+        alcall_params=get_default_call(),
+    )
+
+    with pytest.raises(ValueError, match="parse failed on purpose"):
+        await run_and_collect(branch, "test", ChatParam(), parse_param=pp)
 
 
 async def test_imodel_stream_propagates_cancellation():

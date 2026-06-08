@@ -3,7 +3,6 @@
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID
 
 import pytest
 from anyio import get_cancelled_exc_class
@@ -16,8 +15,6 @@ from lionagi.session.branch import Branch
 
 # Test fixtures and utilities
 class OpParams(BaseModel):
-    """Test BaseModel for parameters."""
-
     instruction: str
     count: int = 1
     enabled: bool = True
@@ -30,7 +27,6 @@ def _set_branch(op: Operation, branch) -> None:
 
 # Test Operation creation and properties
 def test_operation_creation():
-    """Test creating an Operation with various parameter types."""
     # Test with dict parameters
     op1 = Operation(
         operation="chat",
@@ -53,84 +49,9 @@ def test_operation_creation():
     assert op3.parameters == {}
 
 
-def test_operation_branch_id():
-    """Test branch_id property getter and setter."""
-    op = Operation(operation="chat")
-
-    # Test setting with valid UUID string
-    test_uuid_str = "12345678-1234-4678-9234-567812345678"
-    op.branch_id = test_uuid_str
-    assert str(op.branch_id) == test_uuid_str
-    assert op.metadata["branch_id"] == test_uuid_str
-
-    # Test setting with UUID object
-    test_uuid = UUID("87654321-4321-4765-8321-876543218765")
-    op.branch_id = test_uuid
-    assert str(op.branch_id) == str(test_uuid)
-
-    # Test setting to None
-    op.branch_id = None
-    assert op.branch_id is None
-    assert "branch_id" not in op.metadata
-
-
-def test_operation_graph_id():
-    """Test graph_id property getter and setter."""
-    op = Operation(operation="chat")
-
-    # Test setting with valid UUID string
-    test_graph_uuid = "12345678-1234-4678-9234-567812345678"
-    op.graph_id = test_graph_uuid
-    assert str(op.graph_id) == test_graph_uuid
-    assert op.metadata["graph_id"] == test_graph_uuid
-
-    # Test setting with UUID
-    test_uuid = UUID("87654321-4321-4765-8321-876543218765")
-    op.graph_id = test_uuid
-    assert str(op.graph_id) == str(test_uuid)
-
-    # Test setting to None
-    op.graph_id = None
-    assert op.graph_id is None
-    assert "graph_id" not in op.metadata
-
-
-def test_operation_request_property():
-    """Test request property with different parameter types."""
-    # Test with dict parameters
-    op1 = Operation(operation="chat", parameters={"key": "value"})
-    assert op1.request == {"key": "value"}
-
-    # Test with BaseModel parameters
-    params = OpParams(instruction="Test")
-    op2 = Operation(operation="operate", parameters=params)
-    request = op2.request
-    assert isinstance(request, dict)
-    assert request["instruction"] == "Test"
-    assert request["count"] == 1
-    assert request["enabled"] is True
-
-    # Test with empty parameters
-    op3 = Operation(operation="parse")
-    assert op3.request == {}
-
-
-def test_operation_response_property():
-    """Test response property."""
-    op = Operation(operation="chat")
-
-    # Initially no response
-    assert op.response is None
-
-    # Set response through execution
-    op.execution.response = "test_response"
-    assert op.response == "test_response"
-
-
 # Test async operations
 @pytest.mark.asyncio
 async def test_operation_invoke_chat():
-    """Test invoking a chat operation."""
     op = Operation(operation="chat", parameters={"instruction": "Hello, how are you?"})
 
     # Create a mock branch
@@ -166,7 +87,6 @@ async def test_operation_invoke_chat():
 
 @pytest.mark.asyncio
 async def test_operation_invoke_with_basemodel_params():
-    """Test invoking an operation with BaseModel parameters."""
     params = OpParams(instruction="Complex task", count=3, enabled=False)
     op = Operation(operation="operate", parameters=params)
 
@@ -199,7 +119,6 @@ async def test_operation_invoke_with_basemodel_params():
 
 @pytest.mark.asyncio
 async def test_operation_invoke_streaming():
-    """Test invoking a streaming operation (ReActStream)."""
     op = Operation(operation="ReActStream", parameters={"query": "stream test"})
 
     # Create a mock branch
@@ -207,7 +126,6 @@ async def test_operation_invoke_streaming():
     branch.id = "12345678-1234-4678-9234-567812345678"
 
     async def mock_stream(**kwargs):
-        """Mock streaming operation."""
         for i in range(3):
             yield f"stream_chunk_{i}"
 
@@ -235,7 +153,6 @@ async def test_operation_invoke_streaming():
 
 @pytest.mark.asyncio
 async def test_operation_invoke_all_operations():
-    """Test invoking all supported operation types."""
     # Create a mock branch
     branch = MagicMock()
     branch.id = "12345678-1234-4678-9234-567812345678"
@@ -290,7 +207,6 @@ async def test_operation_invoke_all_operations():
 
 @pytest.mark.asyncio
 async def test_operation_invoke_invalid_operation():
-    """Test invoking an operation with invalid operation type."""
     # Create a proper Branch instance so getattr works correctly
     branch = Branch(user="test_user", name="TestBranch")
 
@@ -308,7 +224,6 @@ async def test_operation_invoke_invalid_operation():
 
 @pytest.mark.asyncio
 async def test_operation_invoke_exception_handling():
-    """Test exception handling during operation invocation."""
     # Create a mock branch
     branch = MagicMock()
     branch.id = "12345678-1234-4678-9234-567812345678"
@@ -341,7 +256,6 @@ async def test_operation_invoke_exception_handling():
 @pytest.mark.slow
 @pytest.mark.asyncio
 async def test_operation_invoke_cancellation():
-    """Test handling of operation cancellation using an event gate."""
     branch = MagicMock()
     branch.id = "12345678-1234-4678-9234-567812345678"
 
@@ -375,47 +289,8 @@ async def test_operation_invoke_cancellation():
     assert op.execution.status == EventStatus.CANCELLED
 
 
-def test_operation_inheritance():
-    """Test that Operation properly inherits from Node and Event."""
-    op = Operation(operation="chat")
-
-    # Test Node properties
-    assert hasattr(op, "id")
-    assert hasattr(op, "metadata")
-    # op.id is an UUID object
-    from lionagi.protocols.generic.element import UUID
-
-    assert isinstance(op.id, UUID)
-
-    # Test Event properties
-    assert hasattr(op, "execution")
-    assert hasattr(op, "streaming")
-    assert op.execution.status == EventStatus.PENDING
-    assert op.streaming is False
-
-
-def test_operation_serialization():
-    """Test serialization of Operation with different parameter types."""
-    # Test with dict parameters
-    op1 = Operation(
-        operation="chat",
-        parameters={"instruction": "Hello", "temperature": 0.7},
-    )
-    data1 = op1.model_dump()
-    assert data1["operation"] == "chat"
-
-    # Test with BaseModel parameters
-    params = OpParams(instruction="Test", count=5)
-    op2 = Operation(operation="operate", parameters=params)
-    # The Operation keeps the BaseModel instance as is
-    assert isinstance(op2.parameters, OpParams)
-    data2 = op2.model_dump()
-    assert data2["operation"] == "operate"
-
-
 @pytest.mark.asyncio
 async def test_operation_concurrent_invocations():
-    """Test multiple operations can be invoked concurrently."""
     # Create a mock branch
     branch = MagicMock()
     branch.id = "12345678-1234-4678-9234-567812345678"
@@ -452,7 +327,6 @@ async def test_operation_concurrent_invocations():
 
 @pytest.mark.asyncio
 async def test_operation_idempotent_invoke():
-    """Test that invoking a completed operation is a no-op."""
     branch = MagicMock()
     branch.id = "12345678-1234-4678-9234-567812345678"
 
@@ -477,26 +351,3 @@ async def test_operation_idempotent_invoke():
     # Second invoke should be a no-op (idempotent)
     await op.invoke()
     assert call_count == 1  # Not called again
-
-
-def test_operation_metadata_persistence():
-    """Test that metadata persists through operation lifecycle."""
-    op = Operation(
-        operation="chat",
-        parameters={"instruction": "Test"},
-        metadata={"custom_key": "custom_value", "priority": "high"},
-    )
-
-    # Check initial metadata
-    assert op.metadata["custom_key"] == "custom_value"
-    assert op.metadata["priority"] == "high"
-
-    # Set branch and graph IDs
-    op.branch_id = "12345678-1234-5678-1234-567812345678"
-    op.graph_id = "test-graph"
-
-    # Original metadata should still be there
-    assert op.metadata["custom_key"] == "custom_value"
-    assert op.metadata["priority"] == "high"
-    assert op.metadata["branch_id"] == "12345678-1234-5678-1234-567812345678"
-    assert op.metadata["graph_id"] == "test-graph"

@@ -375,3 +375,83 @@ class TestProcessorJoin:
         await asyncio.wait_for(p.join(), timeout=2.0)
         assert p.queue.empty()
         assert event.status == EventStatus.COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# Edge case: Executor with strict_event_type=True rejecting wrong event types
+# ---------------------------------------------------------------------------
+
+
+from lionagi.protocols.generic.processor import Executor
+
+
+class _StrictProc(Processor):
+    event_type = _OkEvent
+
+
+class _StrictExecutor(Executor):
+    processor_type = _StrictProc
+
+
+class TestExecutorStrictEventType:
+    async def test_strict_mode_rejects_wrong_event_type(self):
+        executor = _StrictExecutor(
+            processor_config={
+                "queue_capacity": 5,
+                "capacity_refresh_time": 0.01,
+                "concurrency_limit": 1,
+            },
+            strict_event_type=True,
+        )
+        wrong_type = _FailEvent()
+        with pytest.raises(Exception):
+            await executor.append(wrong_type)
+
+    async def test_strict_mode_accepts_correct_event_type(self):
+        executor = _StrictExecutor(
+            processor_config={
+                "queue_capacity": 5,
+                "capacity_refresh_time": 0.01,
+                "concurrency_limit": 1,
+            },
+            strict_event_type=True,
+        )
+        event = _OkEvent()
+        await executor.append(event)
+        assert event in executor
+
+
+# ---------------------------------------------------------------------------
+# Edge case: Processor capacity refresh -- process resets capacity after work
+# ---------------------------------------------------------------------------
+
+
+class TestProcessorCapacityRefresh:
+    async def test_capacity_reset_after_processing_events(self):
+        p = _proc(queue_capacity=3, concurrency_limit=5)
+        events = [_OkEvent() for _ in range(3)]
+        for e in events:
+            await p.enqueue(e)
+        await asyncio.wait_for(p.process(), timeout=2.0)
+        assert p.available_capacity == 3  # restored to queue_capacity
+
+    async def test_capacity_not_reset_when_queue_was_empty(self):
+        p = _proc(queue_capacity=5)
+        initial = p.available_capacity
+        await asyncio.wait_for(p.process(), timeout=1.0)
+        assert p.available_capacity == initial
+
+
+# ---------------------------------------------------------------------------
+# Edge case: process() with queue full of large (slow) events
+# ---------------------------------------------------------------------------
+
+
+class TestProcessorLargeEventQueue:
+    async def test_many_events_processed_via_join(self):
+        p = _proc(queue_capacity=5, concurrency_limit=5)
+        events = [_OkEvent() for _ in range(20)]
+        for e in events:
+            await p.enqueue(e)
+        await asyncio.wait_for(p.join(), timeout=5.0)
+        assert all(e.status == EventStatus.COMPLETED for e in events)

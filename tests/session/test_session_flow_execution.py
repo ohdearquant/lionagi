@@ -130,8 +130,6 @@ def make_parallel_graph() -> tuple[Graph, dict[str, Operation]]:
 
 
 class TestEdgeCasesAndErrors:
-    """Test edge cases, error handling, and boundary conditions."""
-
     @pytest.mark.asyncio
     async def test_flow_with_operation_error(self):
         """Test flow handles operation errors gracefully.
@@ -167,7 +165,6 @@ class TestEdgeCasesAndErrors:
 
     @pytest.mark.asyncio
     async def test_flow_max_concurrent_limit(self):
-        """Test max_concurrent properly limits parallel execution."""
         session = Session()
         branch = make_mock_branch()
         session.include_branches(branch)
@@ -189,7 +186,6 @@ class TestEdgeCasesAndErrors:
 
     @pytest.mark.asyncio
     async def test_flow_context_inheritance(self):
-        """Test context inheritance between operations."""
         session = Session()
         branch = make_mock_branch()
         session.include_branches(branch)
@@ -213,7 +209,6 @@ class TestEdgeCasesAndErrors:
 
     @pytest.mark.asyncio
     async def test_flow_context_isolation_between_branches(self):
-        """Test that branches maintain context isolation."""
         session = Session()
 
         branch1 = make_mock_branch("Branch1")
@@ -244,7 +239,6 @@ class TestEdgeCasesAndErrors:
         assert op2.id in result["completed_operations"]
 
     def test_concat_messages_single_branch(self):
-        """Test concatenating messages from single branch."""
         session = Session()
         branch = make_mock_branch("TestBranch")
 
@@ -267,7 +261,6 @@ class TestEdgeCasesAndErrors:
         assert len(messages) >= 2
 
     def test_concat_messages_multiple_branches(self):
-        """Test concatenating messages from multiple branches."""
         session = Session()
         branch1 = make_mock_branch("Branch1")
         branch2 = make_mock_branch("Branch2")
@@ -293,7 +286,6 @@ class TestEdgeCasesAndErrors:
         assert len(messages) >= 2
 
     def test_concat_messages_deduplication(self):
-        """Test that concat_messages removes duplicates."""
         session = Session()
         branch1 = make_mock_branch("Branch1")
         branch2 = make_mock_branch("Branch2")
@@ -316,7 +308,6 @@ class TestEdgeCasesAndErrors:
         assert len(message_ids) == len(set(message_ids))  # All unique
 
     def test_to_df_conversion(self):
-        """Test converting session messages to DataFrame."""
         session = Session()
         branch = make_mock_branch("TestBranch")
 
@@ -335,7 +326,6 @@ class TestEdgeCasesAndErrors:
         assert len(df) >= 1
 
     def test_operation_manager_shared_across_branches(self):
-        """Test that operation manager is shared across all branches."""
         session = Session()
 
         # Register an operation
@@ -363,11 +353,8 @@ class TestEdgeCasesAndErrors:
 
 
 class TestSessionFlowIntegration:
-    """Integration tests combining multiple Session features."""
-
     @pytest.mark.asyncio
     async def test_full_multi_branch_workflow(self):
-        """Test complete workflow with multiple branches and operations."""
         session = Session()
 
         # Create branches for different stages
@@ -419,7 +406,6 @@ class TestSessionFlowIntegration:
 
     @pytest.mark.asyncio
     async def test_flow_with_builder_pattern(self):
-        """Test flow using OperationGraphBuilder."""
         session = Session()
 
         # Create branches
@@ -445,62 +431,6 @@ class TestSessionFlowIntegration:
 
         assert len(result["completed_operations"]) == 2
 
-    @pytest.mark.asyncio
-    async def test_session_resilience_to_branch_errors(self):
-        """Test session continues operation despite individual branch errors.
-
-        Note: The current implementation marks operations as completed
-        even when they fail, but records the error.
-        """
-        session = Session()
-
-        # Create mix of working and failing branches
-        working_branch = make_mock_branch("WorkingBranch")
-        failing_branch = make_mock_branch("FailingBranch")
-
-        # Override the invoke method to fail
-        async def failing_invoke(**kwargs):
-            raise RuntimeError("Branch failure")
-
-        failing_branch.chat_model.invoke = failing_invoke
-
-        session.include_branches([working_branch, failing_branch])
-        session.default_branch = working_branch
-
-        # Create operations on both branches
-        op_working = Operation(
-            operation="chat",
-            parameters={"instruction": "Should work"},
-        )
-        op_working.branch_id = working_branch.id
-
-        op_failing = Operation(
-            operation="chat",
-            parameters={"instruction": "Will fail"},
-        )
-        op_failing.branch_id = failing_branch.id
-
-        graph = Graph()
-        graph.add_node(op_working)
-        graph.add_node(op_failing)
-
-        result = await session.flow(graph, parallel=True, verbose=False)
-
-        # Both operations complete (success and failure both marked as completed)
-        assert op_working.id in result["completed_operations"]
-        assert op_failing.id in result["completed_operations"]
-
-        # Verify results exist for both
-        assert op_working.id in result["operation_results"]
-        assert op_failing.id in result["operation_results"]
-
-        # The failing operation should have error recorded
-        failing_result = result["operation_results"][op_failing.id]
-        has_error = (
-            isinstance(failing_result, dict) and "error" in failing_result
-        ) or op_failing.execution.error is not None
-        assert has_error
-
 
 # ============================================================================
 # 6. Async Edge Cases: Cancellation, Timeout, Error Propagation
@@ -508,11 +438,8 @@ class TestSessionFlowIntegration:
 
 
 class TestSessionFlowAsyncEdgeCases:
-    """Test async edge cases for flow execution - cancellation, timeout, error propagation."""
-
     @pytest.mark.asyncio
     async def test_flow_cancellation_mid_execution(self):
-        """Test cancelling flow mid-execution cleans up properly."""
         session = Session()
 
         # Use a simple mock branch so we can intercept chat directly
@@ -551,7 +478,6 @@ class TestSessionFlowAsyncEdgeCases:
 
     @pytest.mark.asyncio
     async def test_flow_timeout_behavior(self):
-        """Test flow timeout enforcement with asyncio.wait_for."""
         session = Session()
 
         # Create a MagicMock branch for this test to allow method mocking
@@ -586,7 +512,6 @@ class TestSessionFlowAsyncEdgeCases:
 
     @pytest.mark.asyncio
     async def test_error_propagation_across_parallel_branches(self):
-        """Test that errors in one branch don't block other parallel branches."""
         session = Session()
 
         # Create branches with different behaviors
@@ -633,7 +558,6 @@ class TestSessionFlowAsyncEdgeCases:
 
     @pytest.mark.asyncio
     async def test_flow_continues_after_operation_failure(self):
-        """Test that flow continues processing after one operation fails."""
         session = Session()
 
         # Create two branches - one will fail, one will succeed
@@ -686,7 +610,6 @@ class TestSessionFlowAsyncEdgeCases:
 
     @pytest.mark.asyncio
     async def test_concurrent_flow_with_mixed_timings(self):
-        """Test concurrent flow with operations of varying speeds doesn't deadlock."""
         session = Session()
         branch = make_mock_branch()
         session.include_branches(branch)

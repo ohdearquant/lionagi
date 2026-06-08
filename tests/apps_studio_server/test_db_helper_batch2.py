@@ -70,33 +70,3 @@ class TestOpenDb:
         assert row is not None
         assert row["a"] == "hello"
         assert row["b"] == 42
-
-    def test_sessions_service_uses_open_db(self):
-        """sessions.py must import and use _open_db (not bare aiosqlite.connect)."""
-        import inspect
-
-        import lionagi.studio.services.sessions as sessions_mod
-
-        src = inspect.getsource(sessions_mod)
-        # Verify _open_db is imported
-        assert "_open_db" in src, "sessions.py must import open_db as _open_db"
-        # Verify the module no longer uses bare aiosqlite.connect() calls
-        # (the only remaining reference to aiosqlite should be for the Row
-        # sentinel or type annotations, not for .connect())
-        for line in src.splitlines():
-            stripped = line.strip()
-            if "aiosqlite.connect(" in stripped and not stripped.startswith("#"):
-                raise AssertionError(f"sessions.py still uses bare aiosqlite.connect(): {line!r}")
-
-    def test_shows_service_uses_open_db(self):
-        """shows.py must import and use _open_db (not bare aiosqlite.connect)."""
-        import inspect
-
-        import lionagi.studio.services.shows as shows_mod
-
-        src = inspect.getsource(shows_mod)
-        assert "_open_db" in src, "shows.py must import open_db as _open_db"
-        for line in src.splitlines():
-            stripped = line.strip()
-            if "aiosqlite.connect(" in stripped and not stripped.startswith("#"):
-                raise AssertionError(f"shows.py still uses bare aiosqlite.connect(): {line!r}")

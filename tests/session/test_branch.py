@@ -58,10 +58,6 @@ def branch_with_mock_imodel() -> Branch:
 
 
 def test_branch_init_basic():
-    """
-    Ensures Branch can be created with typed user, name,
-    and internal managers default to an empty state.
-    """
     branch = Branch(user="tester", name="MyBranch")
     assert branch.user == "tester"
     assert branch.name == "MyBranch"
@@ -72,10 +68,6 @@ def test_branch_init_basic():
 
 
 def test_branch_init_system_message():
-    """
-    If we pass system=some_string,
-    a system message is automatically added to the message manager.
-    """
     branch = Branch(system="System online!")
     assert branch.system is not None
     assert "System online!" in branch.system.rendered
@@ -85,10 +77,6 @@ def test_branch_init_system_message():
 
 @pytest.mark.asyncio
 async def test_invoke_chat_basic(branch_with_mock_imodel: Branch):
-    """
-    Checks that the mock iModel returns 'mocked_response' with no errors
-    and doesn't automatically store any messages.
-    """
     ins, res = await branch_with_mock_imodel.chat(
         instruction="Hello model!", return_ins_res_message=True
     )
@@ -101,10 +89,6 @@ async def test_invoke_chat_basic(branch_with_mock_imodel: Branch):
 
 @pytest.mark.asyncio
 async def test_communicate_no_validation(branch_with_mock_imodel: Branch):
-    """
-    If skip_validation=True, returns raw 'mocked_response' from the model
-    and DOES store user+assistant messages in Branch.messages.
-    """
     result = await branch_with_mock_imodel.communicate(
         instruction="Hello from user", skip_validation=True
     )
@@ -117,11 +101,6 @@ async def test_communicate_no_validation(branch_with_mock_imodel: Branch):
 
 @pytest.mark.asyncio
 async def test_communicate_with_response_format(branch_with_mock_imodel: Branch):
-    """
-    If response_format is provided,
-    branch tries to parse the final response => we can mock `branch.parse` to simulate success.
-    """
-
     class MyModel(BaseModel):
         foo: str = "bar"
 
@@ -139,11 +118,6 @@ async def test_communicate_with_response_format(branch_with_mock_imodel: Branch)
 
 @pytest.mark.asyncio
 async def test_operate_basic_flow_no_actions(branch_with_mock_imodel: Branch):
-    """
-    With invoke_actions=False and skip_validation=True =>
-    operate returns the raw 'mocked_response'
-    and stores user+assistant messages.
-    """
     final = await branch_with_mock_imodel.operate(
         instruction="No tools needed",
         invoke_actions=False,
@@ -156,11 +130,6 @@ async def test_operate_basic_flow_no_actions(branch_with_mock_imodel: Branch):
 
 @pytest.mark.asyncio
 async def test_operate_with_validation(branch_with_mock_imodel: Branch):
-    """
-    If skip_validation=False, we call parse(...) to produce a typed result.
-    We'll override parse with a stub.
-    """
-
     class SomeResp(BaseModel):
         bar: int = 123
 
@@ -176,29 +145,9 @@ async def test_operate_with_validation(branch_with_mock_imodel: Branch):
 
 
 @pytest.mark.asyncio
-async def test_operate_return_operative(branch_with_mock_imodel: Branch):
-    """
-    The operate function returns the result directly (not the Operative object).
-    The return_operative parameter is not supported in the current implementation.
-    """
-    final = await branch_with_mock_imodel.operate(
-        instruction="Testing return value",
-        invoke_actions=False,
-        skip_validation=True,
-    )
-    # Should return the raw response string since skip_validation=True
-    assert final == """{"foo": "mocked_response", "bar": 123}"""
-    # user + assistant stored
-    assert len(branch_with_mock_imodel.messages) == 2
-
-
-@pytest.mark.asyncio
 async def test_parse_exceeds_retries_returns_value(
     branch_with_mock_imodel: Branch,
 ):
-    """
-    If parse never yields a BaseModel within max_retries, handle_validation='return_value' => we return 'mocked_response'.
-    """
     from pydantic import BaseModel
 
     class BasicModel(BaseModel):
@@ -217,10 +166,6 @@ async def test_parse_exceeds_retries_returns_value(
 
 @pytest.mark.asyncio
 async def test_invoke_action_no_tools(branch_with_mock_imodel: Branch):
-    """
-    If we pass an ActionRequest referencing an unregistered tool,
-    we expect an error ActionResponseModel + a Log error about 'not registered'.
-    """
     req = ActionRequest(content={"function": "unregistered_tool", "arguments": {"x": 1}})
     resp = await branch_with_mock_imodel.act(req)
 
@@ -238,10 +183,6 @@ async def test_invoke_action_no_tools(branch_with_mock_imodel: Branch):
 
 @pytest.mark.asyncio
 async def test_invoke_action_ok(branch_with_mock_imodel: Branch):
-    """
-    Register a valid tool => call invoke_action => expect ActionResponseModel with correct output.
-    """
-
     def echo_tool(text: str) -> str:
         return f"ECHO: {text}"
 
@@ -260,10 +201,6 @@ async def test_invoke_action_ok(branch_with_mock_imodel: Branch):
 
 @pytest.mark.asyncio
 async def test_invoke_action_suppress_errors(branch_with_mock_imodel: Branch):
-    """
-    If the tool raises an error but suppress_errors=True => we log it => return None.
-    """
-
     def fail_tool(**kwargs):
         raise RuntimeError("Tool error")
 
@@ -278,11 +215,6 @@ async def test_invoke_action_suppress_errors(branch_with_mock_imodel: Branch):
 
 
 def test_clone_with_id_sender(branch_with_mock_imodel: Branch):
-    """
-    If clone requires an ID for 'sender', pass an actual ID.
-    All messages in the clone have new 'sender' and the clone's id as 'recipient'.
-    """
-
     # add an instruction message
     msg = Instruction(
         content={"instruction": "Hello original"},
@@ -301,10 +233,6 @@ def test_clone_with_id_sender(branch_with_mock_imodel: Branch):
 
 @pytest.mark.asyncio
 async def test_aclone(branch_with_mock_imodel: Branch):
-    """
-    aclone(...) => same as clone, but async context lock on messages.
-    """
-
     msg = Instruction(
         content={"instruction": "Async test"},
         sender=branch_with_mock_imodel.user,
@@ -319,9 +247,6 @@ async def test_aclone(branch_with_mock_imodel: Branch):
 
 
 def test_to_dict_from_dict(branch_with_mock_imodel: Branch):
-    """
-    Round-trip with to_dict, from_dict => confirm logs, messages, models are restored.
-    """
     msg = Instruction(
         content={"instruction": "hello user"},
         sender=branch_with_mock_imodel.user,
@@ -346,7 +271,6 @@ def test_to_dict_from_dict(branch_with_mock_imodel: Branch):
 
 
 def test_branch_connect_rejects_duplicate_tool_name_without_update():
-    """connect() raises ValueError when the same name is registered twice."""
     from lionagi.service.imodel import iModel
 
     branch = Branch()
@@ -376,7 +300,6 @@ async def _drain(gen) -> list:
 
 
 async def test_branch_run_yields_messages_from_inner_run(monkeypatch):
-    """branch.run() wraps the operations.run.run generator and yields its messages."""
     from lionagi.protocols.messages import AssistantResponse, AssistantResponseContent
 
     branch = Branch()
@@ -630,3 +553,229 @@ def test_branch_round_trips_without_duplicate_system_message():
 
     assert len(restored.msgs.messages) == original_msg_count
     assert restored_system_count == original_system_count
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: Branch.__init__ with chat_model as string / parse_model as dict
+# ---------------------------------------------------------------------------
+
+
+def test_branch_init_chat_model_as_string():
+    branch = Branch(chat_model="gpt-4.1-mini")
+    assert branch.chat_model is not None
+    assert branch.chat_model.endpoint is not None
+
+
+def test_branch_init_parse_model_as_dict():
+    from lionagi.service.imodel import iModel
+
+    m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
+    d = m.to_dict()
+    branch = Branch(parse_model=d)
+    assert branch.parse_model is not None
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: Branch.to_dict() with flag combinations
+# ---------------------------------------------------------------------------
+
+
+def test_to_dict_include_logs_false_omits_logs():
+    from lionagi.protocols.generic import Log
+
+    branch = Branch()
+    branch._log_manager.log(Log(content={"x": 1}))
+    d = branch.to_dict(include_logs=False)
+    assert "logs" not in d
+
+
+def test_to_dict_include_log_config_true_present():
+    branch = Branch()
+    d = branch.to_dict(include_log_config=True)
+    assert "log_config" in d
+    assert isinstance(d["log_config"], dict)
+
+
+def test_to_dict_include_processor_config_true_present():
+    branch = Branch()
+    d = branch.to_dict(include_processor_config=True)
+    assert "chat_model" in d
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: Branch.from_dict() with missing / malformed keys
+# ---------------------------------------------------------------------------
+
+
+def test_from_dict_minimal_empty_dict():
+    branch = Branch.from_dict({})
+    assert branch is not None
+    assert branch.msgs is not None
+
+
+def test_from_dict_malformed_messages_field():
+    branch = Branch.from_dict({"messages": {"collections": [], "progression": {"order": []}}})
+    assert len(branch.messages) == 0
+
+
+def test_from_dict_nested_dict_with_id_key_expands():
+    branch = Branch.from_dict({"user": "someone"})
+    assert branch is not None
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: Branch.progression metadata['current_progression'] override
+# ---------------------------------------------------------------------------
+
+
+def test_progression_metadata_current_progression_overrides_default():
+    from lionagi.protocols.generic import Progression
+
+    branch = Branch()
+    custom = Progression()
+    branch.metadata["current_progression"] = custom
+    assert branch.progression is custom
+
+
+def test_progression_metadata_none_falls_back_to_default():
+    branch = Branch()
+    assert branch.progression is branch._message_manager.progression
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: Branch context manager (__aenter__ / __aexit__)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_context_manager_returns_branch():
+    branch = Branch()
+    async with branch as b:
+        assert b is branch
+
+
+@pytest.mark.asyncio
+async def test_context_manager_aexit_calls_adump_logs(monkeypatch):
+    branch = Branch()
+    dumped = []
+
+    async def fake_adump(**kwargs):
+        dumped.append(kwargs)
+
+    monkeypatch.setattr(branch._log_manager, "adump", fake_adump)
+    async with branch:
+        pass
+    assert len(dumped) == 1
+    assert dumped[0].get("clear") is True
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: Branch._observed_run exception propagation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_observed_run_without_observer_propagates_exception():
+    branch = Branch()
+
+    async def failing_coro():
+        raise ValueError("test error")
+
+    with pytest.raises(ValueError, match="test error"):
+        await branch._observed_run(failing_coro())
+
+
+@pytest.mark.asyncio
+async def test_observed_run_with_observer_emits_run_failed_on_exception():
+    from lionagi.session.session import Session
+    from lionagi.session.signal import RunFailed
+
+    s = Session()
+    branch = s.default_branch
+    failures = []
+
+    @s.observe(RunFailed)
+    def on_fail(event, session):
+        failures.append(event)
+
+    async def failing_coro():
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        await branch._observed_run(failing_coro())
+
+    assert len(failures) == 1
+    assert isinstance(failures[0].data, RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_observed_run_base_exception_also_emits_run_failed():
+    from lionagi.session.session import Session
+    from lionagi.session.signal import RunFailed
+
+    s = Session()
+    branch = s.default_branch
+    failures = []
+
+    @s.observe(RunFailed)
+    def on_fail(event, session):
+        failures.append(event)
+
+    async def base_exc_coro():
+        raise KeyboardInterrupt("hard stop")
+
+    with pytest.raises(KeyboardInterrupt):
+        await branch._observed_run(base_exc_coro())
+
+    assert len(failures) == 1
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: Branch.clone() when chat_model.is_cli is True vs False
+# ---------------------------------------------------------------------------
+
+
+def test_clone_chat_model_not_cli_shares_model_reference():
+    branch = Branch(chat_model="gpt-4.1-mini")
+    assert not branch.chat_model.is_cli
+    cloned = branch.clone()
+    assert cloned.chat_model is branch.chat_model
+
+
+def test_clone_with_tools_copies_tools():
+    def my_tool(x: int) -> int:
+        return x
+
+    branch = Branch(tools=[my_tool])
+    cloned = branch.clone()
+    assert "my_tool" in cloned.tools
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: Concurrent access to branch.messages
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_aclone_and_message_include():
+    import asyncio
+
+    from lionagi.protocols.messages import Instruction
+
+    branch = Branch(user="tester")
+
+    async def add_messages():
+        for i in range(5):
+            msg = Instruction(
+                content={"instruction": f"msg {i}"},
+                sender=branch.user,
+                recipient=branch.id,
+            )
+            branch.messages.include(msg)
+
+    async def clone_branch():
+        return await branch.aclone()
+
+    results = await asyncio.gather(add_messages(), clone_branch(), return_exceptions=True)
+    for r in results:
+        assert not isinstance(r, Exception)

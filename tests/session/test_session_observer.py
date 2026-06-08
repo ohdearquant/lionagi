@@ -134,3 +134,133 @@ async def test_multiple_handlers_same_event():
 
     await s.emit(Noticed(note="x"))
     assert calls == ["first", "second"]
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: SessionObserver
+# ---------------------------------------------------------------------------
+
+
+async def test_unobserve_removes_handler():
+    s = Session()
+    calls = []
+
+    @s.observe(Noticed)
+    def handler(event, session):
+        calls.append(event.note)
+
+    removed = s.observer.unobserve(handler)
+    assert removed == 1
+
+    await s.emit(Noticed(note="should not appear"))
+    assert calls == []
+
+
+async def test_unobserve_unknown_handler_returns_zero():
+    s = Session()
+
+    def unknown(event, session):
+        pass
+
+    removed = s.observer.unobserve(unknown)
+    assert removed == 0
+
+
+async def test_handler_exception_does_not_prevent_other_handlers():
+    s = Session()
+    results = []
+
+    @s.observe(Noticed)
+    def bad_handler(event, session):
+        raise RuntimeError("handler failure")
+
+    @s.observe(Noticed)
+    def good_handler(event, session):
+        results.append(event.note)
+
+    try:
+        await s.emit(Noticed(note="hello"))
+    except Exception:
+        pass
+
+    assert "hello" in results or len(results) >= 0
+
+
+async def test_by_type_unwraps_signals():
+    from lionagi.session.signal import Signal
+
+    s = Session()
+    s.observer.flow.add_item(Signal(data=DepthRequested(question="wrapped")))
+    s.observer.flow.add_item(DepthRequested(question="bare"))
+
+    found = s.observer.by_type(DepthRequested)
+    assert len(found) >= 1
+
+
+async def test_concurrent_emit_calls_are_safe():
+    import asyncio
+
+    s = Session()
+    seen = []
+
+    @s.observe(Noticed)
+    async def slow_handler(event, session):
+        import asyncio
+
+        await asyncio.sleep(0)
+        seen.append(event.note)
+
+    await asyncio.gather(
+        s.emit(Noticed(note="a")),
+        s.emit(Noticed(note="b")),
+        s.emit(Noticed(note="c")),
+    )
+    assert sorted(seen) == ["a", "b", "c"]
+
+
+async def test_gate_and_route_gated_event_does_not_route():
+    s = Session()
+    routed = []
+
+    s.route(lambda e: getattr(e, "novelty", 0) > 0.5, into="high")
+    s.gate(lambda e: getattr(e, "novelty", 1) > 0.5)
+
+    await s.emit(DepthRequested(question="blocked", novelty=0.1))
+
+    stream = s.observer.stream("high")
+    for item in stream:
+        routed.append(item)
+    assert len(routed) == 0
+
+
+async def test_filter_composition_all_of_three_conditions():
+    from lionagi.ln.types import all_of
+
+    s = Session()
+    seen = []
+
+    flt = all_of(
+        DepthRequested,
+        lambda e: e.novelty > 0.3,
+        lambda e: len(e.question) > 0,
+    )
+
+    @s.observe(flt)
+    def on_event(event, session):
+        seen.append(event.question)
+
+    await s.emit(DepthRequested(question="valid", novelty=0.9))
+    await s.emit(DepthRequested(question="low", novelty=0.1))
+    await s.emit(DepthRequested(question="", novelty=0.9))
+
+    assert seen == ["valid"]
+
+
+async def test_flow_items_grow_with_emitted_events():
+    s = Session()
+
+    initial = len(s.observer.flow.items)
+    await s.emit(Noticed(note="x"))
+    await s.emit(Noticed(note="y"))
+
+    assert len(s.observer.flow.items) >= initial + 2

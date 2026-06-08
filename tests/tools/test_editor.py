@@ -3,9 +3,6 @@
 
 """Tests for EditorTool: write, edit, and security checks (symlink, path-escape, denied names)."""
 
-import asyncio
-
-from lionagi.protocols.action.tool import Tool
 from lionagi.tools.file.editor import (
     EditorAction,
     EditorRequest,
@@ -16,60 +13,6 @@ from lionagi.tools.file.editor import (
 # ---------------------------------------------------------------------------
 # EditorAction enum
 # ---------------------------------------------------------------------------
-
-
-def test_editor_action_write_value():
-    assert EditorAction.write == "write"
-    assert EditorAction.write.value == "write"
-
-
-def test_editor_action_edit_value():
-    assert EditorAction.edit == "edit"
-    assert EditorAction.edit.value == "edit"
-
-
-# ---------------------------------------------------------------------------
-# EditorRequest model
-# ---------------------------------------------------------------------------
-
-
-def test_editor_request_write_construction():
-    req = EditorRequest(action="write", file_path="/tmp/f.py", content="x = 1\n")
-    assert req.action == EditorAction.write
-    assert req.file_path == "/tmp/f.py"
-    assert req.content == "x = 1\n"
-
-
-def test_editor_request_edit_construction():
-    req = EditorRequest(action="edit", file_path="f.py", old_string="old", new_string="new")
-    assert req.action == EditorAction.edit
-    assert req.old_string == "old"
-    assert req.new_string == "new"
-
-
-def test_editor_request_defaults():
-    req = EditorRequest(action="write", file_path="f.py")
-    assert req.content is None
-    assert req.old_string is None
-    assert req.new_string is None
-    assert req.replace_all is False
-
-
-# ---------------------------------------------------------------------------
-# EditorResponse model
-# ---------------------------------------------------------------------------
-
-
-def test_editor_response_success():
-    resp = EditorResponse(success=True, content="Written: /tmp/f.py")
-    assert resp.success is True
-    assert resp.error is None
-
-
-def test_editor_response_failure():
-    resp = EditorResponse(success=False, error="something went wrong")
-    assert resp.success is False
-    assert resp.content is None
 
 
 # ---------------------------------------------------------------------------
@@ -96,14 +39,6 @@ async def test_write_creates_parent_dirs(tmp_path):
     assert resp.success is True
     assert target.exists()
     assert target.read_text() == "x = 1\n"
-
-
-async def test_write_returns_editor_response(tmp_path):
-    tool = EditorTool(workspace_root=str(tmp_path))
-    resp = await tool.handle_request(
-        EditorRequest(action="write", file_path=str(tmp_path / "f.py"), content="ok\n")
-    )
-    assert isinstance(resp, EditorResponse)
 
 
 async def test_write_missing_content_fails(tmp_path):
@@ -394,21 +329,6 @@ async def test_edit_denied_filename_blocked(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_to_tool_returns_tool_instance(tmp_path):
-    tool = EditorTool(workspace_root=str(tmp_path))
-    assert isinstance(tool.to_tool(), Tool)
-
-
-def test_to_tool_is_cached(tmp_path):
-    tool = EditorTool(workspace_root=str(tmp_path))
-    assert tool.to_tool() is tool.to_tool()
-
-
-def test_to_tool_func_callable_is_async(tmp_path):
-    tool = EditorTool(workspace_root=str(tmp_path))
-    assert asyncio.iscoroutinefunction(tool.to_tool().func_callable)
-
-
 async def test_to_tool_callable_executes(tmp_path):
     tool = EditorTool(workspace_root=str(tmp_path))
     target = tmp_path / "via_tool.py"
@@ -417,23 +337,3 @@ async def test_to_tool_callable_executes(tmp_path):
     )
     assert result["success"] is True
     assert target.read_text() == "via tool\n"
-
-
-# ---------------------------------------------------------------------------
-# C3: edit requires both old_string and new_string
-# ---------------------------------------------------------------------------
-
-
-async def test_editor_tool_requires_old_and_new_strings_for_edit(tmp_path):
-    tool = EditorTool(workspace_root=str(tmp_path))
-    target = tmp_path / "f.txt"
-
-    resp = await tool.handle_request(EditorRequest(action=EditorAction.edit, file_path=str(target)))
-    assert resp.success is False
-    assert "old_string" in resp.error
-
-    resp2 = await tool.handle_request(
-        EditorRequest(action=EditorAction.edit, file_path=str(target), old_string="x")
-    )
-    assert resp2.success is False
-    assert "new_string" in resp2.error

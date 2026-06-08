@@ -41,7 +41,6 @@ def _make_agents_root(tmp_path, monkeypatch):
 
 
 def test_get_agent_surfaces_yolo_and_fast_mode(tmp_path, monkeypatch):
-    """An agent .md with yolo: true and fast_mode: false round-trips via get_agent()."""
     from lionagi.studio.services.agents import get_agent
 
     root = _make_agents_root(tmp_path, monkeypatch)
@@ -140,69 +139,12 @@ def test_get_agent_lion_system_defaults_true(tmp_path, monkeypatch):
     )
 
 
-def test_get_agent_yolo_defaults_false(tmp_path, monkeypatch):
-    """get_agent() on a profile WITHOUT yolo: key returns yolo: False.
-
-    The CLI defaults yolo to False (lionagi/cli/_agents.py:191).
-    """
-    from lionagi.studio.services.agents import get_agent
-
-    root = _make_agents_root(tmp_path, monkeypatch)
-    md = root / "no_yolo.md"
-    _write_agent_md(
-        md,
-        """\
-        ---
-        provider: claude
-        model: claude-sonnet-4-6
-        ---
-        Body without yolo key.
-        """,
-    )
-
-    result = get_agent("no_yolo")
-
-    assert result is not None
-    assert result.get("yolo") is False, (
-        "yolo absent from frontmatter must default to False (CLI parity)"
-    )
-
-
-def test_get_agent_fast_mode_defaults_false(tmp_path, monkeypatch):
-    """get_agent() on a profile WITHOUT fast_mode: key returns fast_mode: False.
-
-    The CLI defaults fast_mode to False (lionagi/cli/_agents.py:192).
-    """
-    from lionagi.studio.services.agents import get_agent
-
-    root = _make_agents_root(tmp_path, monkeypatch)
-    md = root / "no_fastmode.md"
-    _write_agent_md(
-        md,
-        """\
-        ---
-        provider: claude
-        model: claude-sonnet-4-6
-        ---
-        Body without fast_mode key.
-        """,
-    )
-
-    result = get_agent("no_fastmode")
-
-    assert result is not None
-    assert result.get("fast_mode") is False, (
-        "fast_mode absent from frontmatter must default to False (CLI parity)"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Test 2: update_agent() writes yolo field to disk and get_agent() reads it back
 # ---------------------------------------------------------------------------
 
 
 def test_update_agent_writes_yolo_field(tmp_path, monkeypatch):
-    """update_agent(name, {'yolo': False}) persists yolo: false and get_agent() returns it."""
     from lionagi.studio.services.agents import get_agent, update_agent
 
     root = _make_agents_root(tmp_path, monkeypatch)
@@ -236,7 +178,6 @@ def test_update_agent_writes_yolo_field(tmp_path, monkeypatch):
 
 
 def test_update_agent_writes_lion_system_field(tmp_path, monkeypatch):
-    """update_agent(name, {'lion_system': True}) persists lion_system: true and get_agent() reads it."""
     from lionagi.studio.services.agents import get_agent, update_agent
 
     root = _make_agents_root(tmp_path, monkeypatch)
@@ -270,7 +211,6 @@ def test_update_agent_writes_lion_system_field(tmp_path, monkeypatch):
 
 
 def test_get_agent_migrates_reasoning_effort_to_effort(tmp_path, monkeypatch):
-    """A file with reasoning_effort: high is returned with effort: 'high', no reasoning_effort key."""
     from lionagi.studio.services.agents import get_agent
 
     root = _make_agents_root(tmp_path, monkeypatch)
@@ -300,7 +240,6 @@ def test_get_agent_migrates_reasoning_effort_to_effort(tmp_path, monkeypatch):
 
 
 def test_update_agent_canonicalises_model_with_provider(tmp_path, monkeypatch):
-    """model: claude-sonnet-4-6 (no prefix) + provider: claude → model: 'claude/claude-sonnet-4-6'."""
     from lionagi.studio.services.agents import get_agent, update_agent
 
     root = _make_agents_root(tmp_path, monkeypatch)

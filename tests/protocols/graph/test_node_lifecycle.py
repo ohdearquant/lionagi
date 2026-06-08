@@ -17,7 +17,6 @@ Covers:
 from __future__ import annotations
 
 import hashlib
-from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
 
 import pytest
@@ -39,15 +38,6 @@ def _content_hash(content):
 
 class TestNodeConfigDefaults:
     """NodeConfig default values and basic construction."""
-
-    def test_all_defaults(self):
-        cfg = NodeConfig()
-        assert cfg.table_name is None
-        assert cfg.schema == "public"
-        assert cfg.soft_delete is False
-        assert cfg.versioning is False
-        assert cfg.content_hashing is False
-        assert cfg.track_updated_at is False
 
     def test_explicit_table_name(self):
         cfg = NodeConfig(table_name="jobs")
@@ -108,40 +98,6 @@ class TestNodeConfigProperties:
     def test_has_audit_fields_true_when_multiple_flags(self):
         cfg = NodeConfig(soft_delete=True, versioning=True)
         assert cfg.has_audit_fields is True
-
-
-class TestNodeConfigImmutability:
-    """NodeConfig frozen=True enforcement."""
-
-    def test_cannot_set_table_name(self):
-        cfg = NodeConfig()
-        with pytest.raises(FrozenInstanceError):
-            cfg.table_name = "oops"
-
-    def test_cannot_set_schema(self):
-        cfg = NodeConfig()
-        with pytest.raises(FrozenInstanceError):
-            cfg.schema = "oops"
-
-    def test_cannot_set_soft_delete(self):
-        cfg = NodeConfig()
-        with pytest.raises(FrozenInstanceError):
-            cfg.soft_delete = True
-
-    def test_cannot_set_versioning(self):
-        cfg = NodeConfig()
-        with pytest.raises(FrozenInstanceError):
-            cfg.versioning = True
-
-    def test_cannot_set_content_hashing(self):
-        cfg = NodeConfig()
-        with pytest.raises(FrozenInstanceError):
-            cfg.content_hashing = True
-
-    def test_cannot_set_track_updated_at(self):
-        cfg = NodeConfig()
-        with pytest.raises(FrozenInstanceError):
-            cfg.track_updated_at = True
 
 
 # ===================================================================

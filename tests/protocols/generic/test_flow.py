@@ -362,3 +362,101 @@ class TestReferentialIntegrityOnInit:
                 items={"collections": []},
                 progressions={"collections": [prog]},
             )
+
+
+# ---------------------------------------------------------------------------
+# Edge case: many progressions sharing overlapping items -- remove_item cleans all
+# ---------------------------------------------------------------------------
+
+
+class TestFlowRemoveItemManyProgressions:
+    def test_remove_item_clears_from_many_progressions(self):
+        flow = Flow()
+        shared_node = Node(content="shared")
+        flow.add_item(shared_node)
+
+        n_progs = 50
+        for i in range(n_progs):
+            other_node = Node(content=f"other-{i}")
+            flow.add_item(other_node)
+            prog = Progression(order=[shared_node.id, other_node.id], name=f"prog-{i}")
+            flow.add_progression(prog)
+
+        assert len(flow.progressions) == n_progs
+        flow.remove_item(shared_node)
+        assert shared_node.id not in flow.items
+        for prog in flow.progressions:
+            assert shared_node.id not in prog
+
+
+# ---------------------------------------------------------------------------
+# Edge case: from_dict with progressions referencing nonexistent items
+# ---------------------------------------------------------------------------
+
+
+class TestFlowFromDictCorruptData:
+    def test_from_dict_with_orphan_progression_raises(self):
+        flow, nodes = _flow_with_items(2)
+        prog = _make_progression(nodes, name="ok")
+        flow.add_progression(prog)
+        d = flow.to_dict()
+
+        # Corrupt: inject a UUID that doesn't exist in items
+        orphan = str(uuid4())
+        d["progressions"]["collections"][0]["order"].append(orphan)
+        with pytest.raises(ItemNotFoundError):
+            Flow.from_dict(d)
+
+
+# ---------------------------------------------------------------------------
+# Edge case: adding the same item to a progression multiple times
+# ---------------------------------------------------------------------------
+
+
+class TestFlowAddItemToProgressionMultipleTimes:
+    def test_add_same_item_twice_appends_to_progression_but_not_items(self):
+        flow, nodes = _flow_with_items(1)
+        prog = _make_progression(nodes, name="p")
+        flow.add_progression(prog)
+        new_node = Node(content="x")
+        flow.add_item(new_node, progressions="p")
+        initial_item_count = len(flow)
+        initial_prog_len = len(list(flow.get_progression("p")))
+
+        # add_item is silent when item already in pile -- progression grows but items stays same
+        flow.add_item(new_node, progressions="p")
+        assert len(flow) == initial_item_count  # items pile unchanged
+        # Progression appended the item again (Progression.append allows dupes)
+        assert len(list(flow.get_progression("p"))) == initial_prog_len + 1
+
+
+# ---------------------------------------------------------------------------
+# Edge case: _progression_names index consistency after multiple add/remove cycles
+# ---------------------------------------------------------------------------
+
+
+class TestFlowProgressionNamesIndexConsistency:
+    def test_names_index_consistent_after_add_remove_cycles(self):
+        flow, nodes = _flow_with_items(3)
+        for cycle in range(5):
+            name = f"cycle-{cycle}"
+            prog = _make_progression(nodes[:1], name=name)
+            flow.add_progression(prog)
+            assert name in flow._progression_names
+            flow.remove_progression(name)
+            assert name not in flow._progression_names
+
+        assert len(flow._progression_names) == 0
+        assert len(flow.progressions) == 0
+
+    def test_names_index_preserves_unnamed_progressions(self):
+        flow, nodes = _flow_with_items(2)
+        named = _make_progression(nodes[:1], name="named")
+        unnamed = _make_progression(nodes[1:], name=None)
+        flow.add_progression(named)
+        flow.add_progression(unnamed)
+        assert "named" in flow._progression_names
+        assert len(flow._progression_names) == 1  # unnamed not in index
+        flow.remove_progression("named")
+        assert len(flow._progression_names) == 0
+        assert len(flow.progressions) == 1  # unnamed still present

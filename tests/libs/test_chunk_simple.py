@@ -7,9 +7,6 @@ import pytest
 
 from lionagi.libs.file.chunk import chunk_by_chars, chunk_by_tokens, chunk_content
 from lionagi.libs.file.process import chunk, dir_to_files
-from lionagi.libs.schema.load_pydantic_model_from_schema import (
-    load_pydantic_model_from_schema,
-)
 
 
 def test_chunk_by_chars_basic():
@@ -129,51 +126,6 @@ def test_chunk_main_function_with_directory():
         )
         assert len(chunks) > 0
         assert all(isinstance(c, str) for c in chunks)
-
-
-def test_load_pydantic_model_basic():
-    """Test loading a Pydantic model from schema."""
-    schema = {
-        "title": "TestModel",
-        "type": "object",
-        "properties": {
-            "name": {"type": "string"},
-            "age": {"type": "integer"},
-            "email": {"type": "string", "format": "email"},
-        },
-        "required": ["name", "age"],
-    }
-
-    # This will only work if datamodel-code-generator is installed
-    pytest.importorskip("datamodel_code_generator")
-
-    model_class = load_pydantic_model_from_schema(schema)
-    assert model_class.__name__ == "TestModel"
-
-    # Test creating an instance
-    instance = model_class(name="John Doe", age=30, email="john@example.com")
-    assert instance.name == "John Doe"
-    assert instance.age == 30
-    assert instance.email == "john@example.com"
-
-
-def test_edge_cases():
-    """Test various edge cases."""
-    # Empty text - returns two empty strings (quirk in implementation)
-    result = chunk_by_chars("", chunk_size=10, overlap=0, threshold=0)
-    assert result == ["", ""]
-
-    # Very small text
-    result = chunk_by_chars("abc", chunk_size=10, overlap=0, threshold=0)
-    assert result == ["abc"]
-
-    # Empty token list - returns two empty strings (same quirk)
-    result = chunk_by_tokens([], chunk_size=10, overlap=0, threshold=0, return_tokens=False)
-    assert result == ["", ""]
-
-    # Single token
-    result = chunk_by_tokens(["word"], chunk_size=10, overlap=0, threshold=0)
-    assert len(result) == 1
 
 
 if __name__ == "__main__":

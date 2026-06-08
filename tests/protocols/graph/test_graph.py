@@ -272,3 +272,168 @@ class TestGraphContainment:
         graph, _, _, edge = simple_graph
         assert edge in graph
         assert Edge(head=Node(), tail=Node()) not in graph
+
+
+# ---------------------------------------------------------------------------
+# Edge case: Graph with cycles -- add_edge creating a cycle, is_acyclic detects it
+# ---------------------------------------------------------------------------
+
+
+class TestGraphCycleDetection:
+    def test_add_cycle_edge_and_detect(self):
+        graph = Graph()
+        n1, n2, n3 = Node(), Node(), Node()
+        for n in (n1, n2, n3):
+            graph.add_node(n)
+        graph.add_edge(Edge(head=n1, tail=n2))
+        graph.add_edge(Edge(head=n2, tail=n3))
+        graph.add_edge(Edge(head=n3, tail=n1))
+        assert not graph.is_acyclic()
+
+    def test_self_loop_is_cycle(self):
+        graph = Graph()
+        n = Node()
+        graph.add_node(n)
+        graph.add_edge(Edge(head=n, tail=n))
+        assert not graph.is_acyclic()
+
+
+# ---------------------------------------------------------------------------
+# Edge case: Graph.remove_node with many edges (correctness)
+# ---------------------------------------------------------------------------
+
+
+class TestGraphRemoveNodeManyEdges:
+    def test_remove_hub_node_cleans_all_edges(self):
+        n = 50
+        graph = Graph()
+        hub = Node(content="hub")
+        graph.add_node(hub)
+        spokes = [Node(content=f"spoke-{i}") for i in range(n)]
+        for spoke in spokes:
+            graph.add_node(spoke)
+            graph.add_edge(Edge(head=hub, tail=spoke))
+            graph.add_edge(Edge(head=spoke, tail=hub))
+
+        assert len(graph.internal_edges) == 2 * n
+        graph.remove_node(hub)
+        assert hub.id not in graph.internal_nodes
+        assert hub.id not in graph.node_edge_mapping
+        assert len(graph.internal_edges) == 0
+
+        for spoke in spokes:
+            assert len(graph.node_edge_mapping[spoke.id]["in"]) == 0
+            assert len(graph.node_edge_mapping[spoke.id]["out"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Edge case: Graph serialization round-trip (to_dict / from_dict)
+# ---------------------------------------------------------------------------
+
+
+class TestGraphSerialization:
+    def test_to_dict_produces_serializable_dict(self):
+        g = Graph()
+        n1, n2 = Node(content="a"), Node(content="b")
+        g.add_node(n1)
+        g.add_node(n2)
+        e = Edge(head=n1, tail=n2)
+        g.add_edge(e)
+        d = g.to_dict()
+        assert isinstance(d, dict)
+        assert "internal_nodes" in d
+        assert "internal_edges" in d
+
+    def test_round_trip_via_model_dump_raises_known_validation_error(self):
+        # Graph.from_dict uses model_validate which cannot reconstruct Pile fields
+        # due to Metadata class mismatch -- this is a known limitation.
+        g = Graph()
+        d = g.model_dump()
+        with pytest.raises(Exception):
+            Graph.model_validate(d)
+
+
+# ---------------------------------------------------------------------------
+# Edge case: Graph.replace_node preserves edge connectivity
+# ---------------------------------------------------------------------------
+
+
+class TestGraphReplaceNode:
+    def test_replace_node_rewires_edges(self):
+        g = Graph()
+        n1, n2, n3 = Node(content=1), Node(content=2), Node(content=3)
+        for n in (n1, n2, n3):
+            g.add_node(n)
+        e1 = Edge(head=n1, tail=n2)
+        e2 = Edge(head=n2, tail=n3)
+        g.add_edge(e1)
+        g.add_edge(e2)
+
+        replacement = Node(content=99)
+        g.replace_node(n2, replacement)
+
+        assert n2.id not in g.internal_nodes
+        assert replacement.id in g.internal_nodes
+        assert g.node_edge_mapping[n1.id]["out"][e1.id] == replacement.id
+        assert g.node_edge_mapping[n3.id]["in"][e2.id] == replacement.id
+
+    def test_replace_node_with_existing_uuid_raises(self):
+        from lionagi._errors import RelationError
+
+        g = Graph()
+        n1, n2 = Node(), Node()
+        g.add_node(n1)
+        g.add_node(n2)
+        with pytest.raises(RelationError):
+            g.replace_node(n1, n2)
+
+
+# ---------------------------------------------------------------------------
+# Edge case: Edge condition evaluation during find_path
+# ---------------------------------------------------------------------------
+
+
+class TestGraphEdgeConditionDuringTraversal:
+    @pytest.mark.asyncio
+    async def test_find_path_skips_blocked_edge_when_check_conditions(self):
+        from lionagi.protocols.types import EdgeCondition
+
+        class BlockCondition(EdgeCondition):
+            async def apply(self, *args, **kwargs):
+                return False
+
+        g = Graph()
+        n1, n2, n3 = Node(content=1), Node(content=2), Node(content=3)
+        for n in (n1, n2, n3):
+            g.add_node(n)
+        # Direct blocked path: n1 -> n2
+        blocked = Edge(head=n1, tail=n2, condition=BlockCondition())
+        g.add_edge(blocked)
+        # Alternative path: n1 -> n3 -> n2
+        e2 = Edge(head=n1, tail=n3)
+        e3 = Edge(head=n3, tail=n2)
+        g.add_edge(e2)
+        g.add_edge(e3)
+
+        path = await g.find_path(n1, n2, check_conditions=True)
+        assert path is not None
+        edge_ids = [e.id for e in path]
+        assert blocked.id not in edge_ids
+
+    @pytest.mark.asyncio
+    async def test_find_path_no_path_when_all_blocked(self):
+        from lionagi.protocols.types import EdgeCondition
+
+        class BlockCondition(EdgeCondition):
+            async def apply(self, *args, **kwargs):
+                return False
+
+        g = Graph()
+        n1, n2 = Node(), Node()
+        g.add_node(n1)
+        g.add_node(n2)
+        blocked = Edge(head=n1, tail=n2, condition=BlockCondition())
+        g.add_edge(blocked)
+
+        path = await g.find_path(n1, n2, check_conditions=True)
+        assert path is None

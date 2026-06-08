@@ -175,7 +175,6 @@ def test_admin_transition_marks_running_session_failed(tmp_path, monkeypatch):
 
 
 def test_admin_transition_rejects_invalid_target(tmp_path, monkeypatch):
-    """ADR-0025: admin operators cannot mark sessions completed or timed_out."""
     db_path = tmp_path / "state.db"
     client = _make_client(tmp_path, monkeypatch, db_path)
     r = client.post(
@@ -480,7 +479,6 @@ def test_admin_transition_phantom_classifier_override(
 
 
 def test_admin_transition_invalid_reason_code_returns_400(tmp_path, monkeypatch):
-    """An unrecognised reason_code returns HTTP 400 before touching the DB."""
     db_path = tmp_path / "state.db"
     client = _make_client(tmp_path, monkeypatch, db_path)
 
@@ -494,6 +492,104 @@ def test_admin_transition_invalid_reason_code_returns_400(tmp_path, monkeypatch)
     )
     assert r.status_code == 400
     assert "reason_code" in r.json()["detail"].lower() or "invalid" in r.json()["detail"].lower()
+
+
+def test_admin_transition_skips_aborted_terminal_session(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    _run(_seed_running_session(db_path, sid))
+
+    async def _make_aborted():
+        async with StateDB(db_path) as db:
+            await db.update_session(sid, status="aborted")
+
+    _run(_make_aborted())
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.post(
+        "/api/admin/transition",
+        json={"session_ids": [sid], "target_status": "failed", "reason": "cleanup"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["transitioned"] == []
+    assert len(body["skipped"]) == 1
+    assert "aborted" in body["skipped"][0]["reason"]
+
+
+def test_admin_transition_skips_timed_out_terminal_session(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    _run(_seed_running_session(db_path, sid))
+
+    async def _make_timed_out():
+        async with StateDB(db_path) as db:
+            await db.update_session(sid, status="timed_out")
+
+    _run(_make_timed_out())
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.post(
+        "/api/admin/transition",
+        json={"session_ids": [sid], "target_status": "failed", "reason": "cleanup"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["transitioned"] == []
+    assert len(body["skipped"]) == 1
+    assert "timed_out" in body["skipped"][0]["reason"]
+
+
+def test_find_pid_file_non_numeric_content_returns_none(tmp_path):
+    from lionagi.studio.services.admin import _find_pid_file
+
+    pid_file = tmp_path / "session.pid"
+    pid_file.write_text("not-a-number")
+    result = _find_pid_file(tmp_path)
+    assert result is None
+
+
+def test_find_pid_file_empty_content_returns_none(tmp_path):
+    from lionagi.studio.services.admin import _find_pid_file
+
+    pid_file = tmp_path / "session.pid"
+    pid_file.write_text("")
+    result = _find_pid_file(tmp_path)
+    assert result is None
+
+
+def test_find_pid_file_glob_pattern_non_numeric_returns_none(tmp_path):
+    from lionagi.studio.services.admin import _find_pid_file
+
+    pid_file = tmp_path / "custom.pid"
+    pid_file.write_text("  garbage  ")
+    result = _find_pid_file(tmp_path)
+    assert result is None
+
+
+def test_admin_prune_large_session_list(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    session_ids = [str(uuid.uuid4()) for _ in range(50)]
+    for sid in session_ids:
+        _run(_seed_running_session(db_path, sid))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.post("/api/admin/prune", json={"session_ids": session_ids})
+    assert r.status_code == 200
+    assert r.json()["pruned"] == 50
+
+
+def test_db_health_no_wal_file(tmp_path, monkeypatch):
+    import lionagi.studio.services.admin as admin_mod
+
+    fake_db = tmp_path / "test.db"
+    fake_db.write_bytes(b"x" * 4096)
+    monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", fake_db)
+
+    result = admin_mod.db_health()
+    assert result["size_bytes"] == 4096
+    assert result["wal_bytes"] == 0
+    assert result["wal_pending"] == 0
 
 
 def test_admin_transition_legacy_reason_backwards_compat(tmp_path, monkeypatch):

@@ -88,7 +88,6 @@ class ClaudeCodeResponse(BaseModel):
 
 
 def test_parse_assistant_response_anthropic_format():
-    """Test parsing Anthropic format with content field"""
     response = AnthropicResponse(
         content=[
             AnthropicTextContent(type="text", text="Hello "),
@@ -104,7 +103,6 @@ def test_parse_assistant_response_anthropic_format():
 
 
 def test_parse_assistant_response_anthropic_dict():
-    """Test parsing Anthropic format as dictionary"""
     response = {
         "content": [
             {"type": "text", "text": "First part "},
@@ -119,7 +117,6 @@ def test_parse_assistant_response_anthropic_dict():
 
 
 def test_parse_assistant_response_anthropic_string_content():
-    """Test parsing Anthropic format with string content"""
     response = {"content": "Simple string content"}
 
     text, model_response = parse_assistant_response(response)
@@ -128,7 +125,6 @@ def test_parse_assistant_response_anthropic_string_content():
 
 
 def test_parse_assistant_response_openai_chat_format():
-    """Test parsing OpenAI chat completion format with choices"""
     response = OpenAIChatResponse(
         choices=[
             OpenAIChoice(message=OpenAIMessage(content="Response 1")),
@@ -144,7 +140,6 @@ def test_parse_assistant_response_openai_chat_format():
 
 
 def test_parse_assistant_response_openai_streaming():
-    """Test parsing OpenAI streaming format with delta"""
     response = OpenAIChatResponse(
         choices=[
             OpenAIChoice(delta=OpenAIDelta(content="Hello ")),
@@ -157,7 +152,6 @@ def test_parse_assistant_response_openai_streaming():
 
 
 def test_parse_assistant_response_openai_responses_api():
-    """Test parsing OpenAI responses API format with output field"""
     response = OpenAIResponsesAPIResponse(
         output=[
             OpenAIOutputMessage(
@@ -178,7 +172,6 @@ def test_parse_assistant_response_openai_responses_api():
 
 
 def test_parse_assistant_response_claude_code_format():
-    """Test parsing Claude Code format with result field"""
     response = ClaudeCodeResponse(result="Claude Code response")
 
     text, model_response = parse_assistant_response(response)
@@ -189,7 +182,6 @@ def test_parse_assistant_response_claude_code_format():
 
 
 def test_parse_assistant_response_raw_string():
-    """Test parsing raw string input"""
     response = "Simple text response"
 
     text, model_response = parse_assistant_response(response)
@@ -199,7 +191,6 @@ def test_parse_assistant_response_raw_string():
 
 
 def test_parse_assistant_response_list_of_responses():
-    """Test parsing list of multiple responses"""
     responses = [
         {"content": [{"type": "text", "text": "First"}]},
         {"content": [{"type": "text", "text": " Second"}]},
@@ -213,7 +204,6 @@ def test_parse_assistant_response_list_of_responses():
 
 
 def test_parse_assistant_response_list_of_strings():
-    """Test parsing list of strings"""
     responses = ["Hello ", "world", "!"]
 
     text, model_response = parse_assistant_response(responses)
@@ -224,7 +214,6 @@ def test_parse_assistant_response_list_of_strings():
 
 
 def test_parse_assistant_response_empty_content():
-    """Test parsing response with empty/null content"""
     response = OpenAIChatResponse(choices=[OpenAIChoice(message=OpenAIMessage(content=None))])
 
     text, model_response = parse_assistant_response(response)
@@ -233,7 +222,6 @@ def test_parse_assistant_response_empty_content():
 
 
 def test_parse_assistant_response_mixed_content_types():
-    """Test parsing response with mixed content types"""
     response = {
         "content": [
             {"type": "text", "text": "Text block"},
@@ -253,7 +241,6 @@ def test_parse_assistant_response_mixed_content_types():
 
 
 def test_assistant_response_content_initialization():
-    """Test basic initialization of AssistantResponseContent"""
     content = AssistantResponseContent(assistant_response="Test content")
 
     assert content.assistant_response == "Test content"
@@ -261,21 +248,18 @@ def test_assistant_response_content_initialization():
 
 
 def test_assistant_response_content_default():
-    """Test default empty string initialization"""
     content = AssistantResponseContent()
 
     assert content.assistant_response == ""
 
 
 def test_assistant_response_content_rendered_property():
-    """Test rendered property returns plain text"""
     content = AssistantResponseContent(assistant_response="Rendered text")
 
     assert content.rendered == "Rendered text"
 
 
 def test_assistant_response_content_from_dict():
-    """Test from_dict classmethod"""
     data = {"assistant_response": "From dict"}
     content = AssistantResponseContent.from_dict(data)
 
@@ -284,7 +268,6 @@ def test_assistant_response_content_from_dict():
 
 
 def test_assistant_response_content_from_dict_empty():
-    """Test from_dict with missing field"""
     data = {}
     content = AssistantResponseContent.from_dict(data)
 
@@ -297,7 +280,6 @@ def test_assistant_response_content_from_dict_empty():
 
 
 def test_assistant_response_initialization():
-    """Test basic initialization of AssistantResponse"""
     content = AssistantResponseContent(assistant_response="Test response")
     response = AssistantResponse(content=content)
 
@@ -307,7 +289,6 @@ def test_assistant_response_initialization():
 
 
 def test_assistant_response_initialization_with_dict_content():
-    """Test initialization with dictionary content"""
     response = AssistantResponse(content={"assistant_response": "Dict content"})
 
     assert isinstance(response.content, AssistantResponseContent)
@@ -315,7 +296,6 @@ def test_assistant_response_initialization_with_dict_content():
 
 
 def test_assistant_response_initialization_with_none_content():
-    """Test initialization with None content creates empty content"""
     response = AssistantResponse(content=None)
 
     assert isinstance(response.content, AssistantResponseContent)
@@ -323,13 +303,11 @@ def test_assistant_response_initialization_with_none_content():
 
 
 def test_assistant_response_content_validation_invalid_type():
-    """Test content validation raises TypeError for invalid types"""
     with pytest.raises(TypeError, match="content must be dict or AssistantResponseContent"):
         AssistantResponse(content="invalid string")
 
 
 def test_assistant_response_sender_recipient():
-    """Test custom sender and recipient"""
     content = AssistantResponseContent(assistant_response="Test")
     response = AssistantResponse(
         content=content,
@@ -347,7 +325,6 @@ def test_assistant_response_sender_recipient():
 
 
 def test_from_response_anthropic():
-    """Test from_response with Anthropic format"""
     response = AnthropicResponse(
         content=[AnthropicTextContent(type="text", text="Anthropic response")]
     )
@@ -360,7 +337,6 @@ def test_from_response_anthropic():
 
 
 def test_from_response_openai_chat():
-    """Test from_response with OpenAI chat format"""
     response = OpenAIChatResponse(
         choices=[OpenAIChoice(message=OpenAIMessage(content="OpenAI response"))]
     )
@@ -377,7 +353,6 @@ def test_from_response_openai_chat():
 
 
 def test_from_response_raw_string():
-    """Test from_response with raw string"""
     assistant_response = AssistantResponse.from_response("Plain text response")
 
     assert assistant_response.content.assistant_response == "Plain text response"
@@ -385,7 +360,6 @@ def test_from_response_raw_string():
 
 
 def test_from_response_list_of_responses():
-    """Test from_response with list of responses"""
     responses = [
         {"content": [{"type": "text", "text": "First "}]},
         {"content": [{"type": "text", "text": "Second"}]},
@@ -398,7 +372,6 @@ def test_from_response_list_of_responses():
 
 
 def test_from_response_default_recipient():
-    """Test from_response sets default recipient to USER"""
     response = "Test"
     assistant_response = AssistantResponse.from_response(response)
 
@@ -406,7 +379,6 @@ def test_from_response_default_recipient():
 
 
 def test_from_response_custom_recipient():
-    """Test from_response with custom recipient"""
     response = "Test"
     assistant_response = AssistantResponse.from_response(response, recipient="system")
 
@@ -414,7 +386,6 @@ def test_from_response_custom_recipient():
 
 
 def test_from_response_preserves_all_formats():
-    """Test from_response with various formats"""
     test_cases = [
         (
             ClaudeCodeResponse(result="Claude response"),
@@ -448,7 +419,6 @@ def test_from_response_preserves_all_formats():
 
 
 def test_model_response_property_access():
-    """Test model_response property accesses metadata"""
     model_data = {"choices": [{"message": {"content": "Test"}}]}
     response = AssistantResponse(
         content=AssistantResponseContent(assistant_response="Test"),
@@ -459,14 +429,12 @@ def test_model_response_property_access():
 
 
 def test_model_response_property_empty():
-    """Test model_response property returns empty dict if not set"""
     response = AssistantResponse(content=AssistantResponseContent(assistant_response="Test"))
 
     assert response.model_response == {}
 
 
 def test_model_response_property_from_response():
-    """Test model_response is populated by from_response"""
     original_response = OpenAIChatResponse(
         choices=[OpenAIChoice(message=OpenAIMessage(content="Test"))],
         model="gpt-4",
@@ -486,7 +454,6 @@ def test_model_response_property_from_response():
 
 
 def test_assistant_response_complete_workflow():
-    """Test complete workflow from raw response to message"""
     # Simulate real API response
     api_response = AnthropicResponse(
         content=[
@@ -507,7 +474,6 @@ def test_assistant_response_complete_workflow():
 
 
 def test_assistant_response_streaming_simulation():
-    """Test handling streaming-like responses"""
     # Simulate stream chunks
     chunks = [
         OpenAIChatResponse(choices=[OpenAIChoice(delta=OpenAIDelta(content="Hello"))]),
@@ -523,7 +489,6 @@ def test_assistant_response_streaming_simulation():
 
 
 def test_assistant_response_empty_response():
-    """Test handling completely empty response"""
     response = AssistantResponse.from_response("")
 
     assert response.content.assistant_response == ""
@@ -531,14 +496,12 @@ def test_assistant_response_empty_response():
 
 
 def test_assistant_response_content_rendering():
-    """Test content rendering through rendered property"""
     response = AssistantResponse.from_response("Test content for rendering")
 
     assert response.content.rendered == "Test content for rendering"
 
 
 def test_assistant_response_role_immutable():
-    """Test that role is always ASSISTANT"""
     response = AssistantResponse(content=AssistantResponseContent(assistant_response="Test"))
 
     assert response.role == MessageRole.ASSISTANT
@@ -546,7 +509,6 @@ def test_assistant_response_role_immutable():
 
 
 def test_parse_assistant_response_none_values():
-    """Test parsing response with None values doesn't crash"""
     response = {"content": None}
 
     text, model_response = parse_assistant_response(response)
@@ -556,7 +518,6 @@ def test_parse_assistant_response_none_values():
 
 
 def test_parse_assistant_response_malformed_structure():
-    """Test parsing with unexpected structure"""
     response = {"unexpected_field": "value"}
 
     text, model_response = parse_assistant_response(response)
@@ -567,7 +528,6 @@ def test_parse_assistant_response_malformed_structure():
 
 
 def test_assistant_response_dataclass_slots():
-    """Test that AssistantResponseContent uses slots"""
     content = AssistantResponseContent(assistant_response="Test")
 
     # Verify slots behavior - should not be able to add arbitrary attributes
@@ -576,7 +536,6 @@ def test_assistant_response_dataclass_slots():
 
 
 def test_from_response_with_complex_nested_structure():
-    """Test from_response handles complex nested structures"""
     complex_response = {
         "content": [
             {"type": "text", "text": "Part 1"},
@@ -594,7 +553,6 @@ def test_from_response_with_complex_nested_structure():
 
 
 def test_model_response_is_readonly_through_property():
-    """Test that model_response property provides read access to metadata"""
     response = AssistantResponse.from_response("Test")
 
     model_response = response.model_response

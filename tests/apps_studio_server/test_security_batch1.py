@@ -33,7 +33,6 @@ def _make_fake_home(tmp_path: Path) -> Path:
 
 class TestPublicPath:
     def test_repo_relative_path(self, tmp_path):
-        """public_path() with a path under the repo root returns relative posix."""
         # Simulate a path under the repo root (parents[4] from _path_safety.py)
         import lionagi.studio.services._path_safety as mod
         from lionagi.studio.services._path_safety import public_path
@@ -45,7 +44,6 @@ class TestPublicPath:
         assert "lionagi/studio/dummy.md" in result
 
     def test_home_relative_path(self, tmp_path):
-        """public_path() with a path under home returns home-relative posix."""
         from lionagi.studio.services._path_safety import public_path
 
         target = Path.home() / ".lionagi" / "agents" / "test.md"
@@ -54,7 +52,6 @@ class TestPublicPath:
         assert ".lionagi/agents/test.md" in result
 
     def test_unknown_path_returns_filename(self, tmp_path):
-        """public_path() with an unrelated path returns just the filename."""
         from lionagi.studio.services._path_safety import public_path
 
         # Use a path that is definitely outside repo and home
@@ -109,7 +106,6 @@ class TestDefinitionsDiskPath:
 
 class TestPluginsPathSanitization:
     def test_plugin_summary_path_not_absolute(self, tmp_path, monkeypatch):
-        """_plugin_summary() must return a relative path for the 'path' field."""
         import lionagi.studio.services.plugins as plugins_mod
 
         # Build a minimal marketplace plugin under tmp_path
@@ -130,7 +126,6 @@ class TestPluginsPathSanitization:
         assert not path_val.startswith("/"), f"path must not be absolute: {path_val!r}"
 
     def test_get_plugin_skill_uses_real_dir(self, tmp_path, monkeypatch):
-        """get_plugin_skill() must not reconstruct path from sanitized response."""
         import lionagi.studio.services.plugins as plugins_mod
 
         repo_root = tmp_path / "repo"
@@ -179,7 +174,6 @@ class TestPluginsPathSanitization:
 
 class TestMarketplaceSourcePaths:
     def test_valid_relative_source_accepted(self, tmp_path, monkeypatch):
-        """A source path like './marketplace/X' that stays under repo root is accepted."""
         import lionagi.studio.services.plugins as plugins_mod
 
         repo_root = tmp_path / "repo"
@@ -193,7 +187,6 @@ class TestMarketplaceSourcePaths:
         assert result.resolve() == valid_dir.resolve()
 
     def test_absolute_source_rejected(self, tmp_path, monkeypatch):
-        """An absolute path in marketplace source must be rejected."""
         import lionagi.studio.services.plugins as plugins_mod
 
         monkeypatch.setattr(plugins_mod, "_REPO_ROOT", tmp_path / "repo")
@@ -202,7 +195,6 @@ class TestMarketplaceSourcePaths:
         assert result is None
 
     def test_parent_traversal_rejected(self, tmp_path, monkeypatch):
-        """A '../escape' source must be rejected."""
         import lionagi.studio.services.plugins as plugins_mod
 
         monkeypatch.setattr(plugins_mod, "_REPO_ROOT", tmp_path / "repo")
@@ -211,7 +203,6 @@ class TestMarketplaceSourcePaths:
         assert result is None
 
     def test_symlink_escape_rejected(self, tmp_path, monkeypatch):
-        """A source that resolves via symlink outside repo root must be rejected."""
         import lionagi.studio.services.plugins as plugins_mod
 
         repo_root = tmp_path / "repo"
@@ -227,7 +218,6 @@ class TestMarketplaceSourcePaths:
         assert result is None
 
     def test_marketplace_manifest_with_escape_ignored(self, tmp_path, monkeypatch):
-        """_iter_marketplace_plugins() drops entries with escape paths."""
         import lionagi.studio.services.plugins as plugins_mod
 
         repo_root = tmp_path / "repo"
@@ -285,7 +275,6 @@ class TestBearerTokenAuth:
         return TestClient(app_mod.app, raise_server_exceptions=False)
 
     def test_mutating_route_requires_bearer_when_token_set(self, monkeypatch):
-        """POST to /api/* must return 401 when token is set and auth is missing/wrong."""
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
         client = self._get_client(monkeypatch)
 
@@ -298,7 +287,6 @@ class TestBearerTokenAuth:
         assert resp.status_code == 401
 
     def test_mutating_route_allowed_with_correct_bearer(self, monkeypatch):
-        """POST with correct Bearer token must not return 401."""
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
         client = self._get_client(monkeypatch)
 
@@ -307,7 +295,6 @@ class TestBearerTokenAuth:
         assert resp.status_code != 401
 
     def test_health_endpoint_open_when_token_set(self, monkeypatch):
-        """GET /health must remain accessible when auth token is set."""
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
         client = self._get_client(monkeypatch)
 
@@ -315,7 +302,6 @@ class TestBearerTokenAuth:
         assert resp.status_code == 200
 
     def test_readonly_api_open_when_token_set(self, monkeypatch, tmp_path):
-        """GET /api/stats requires auth when a token is configured."""
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
         fake_db = tmp_path / "state.db"
         client = self._get_client(monkeypatch, fake_db=fake_db)
@@ -324,7 +310,6 @@ class TestBearerTokenAuth:
         assert resp.status_code == 401
 
     def test_no_auth_when_token_unset(self, monkeypatch):
-        """When LIONAGI_STUDIO_AUTH_TOKEN is not set, all routes are open."""
         monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
         client = self._get_client(monkeypatch)
 

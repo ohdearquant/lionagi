@@ -39,10 +39,7 @@ def edge_test_graph():
 
 
 class TestEdgeBasics:
-    """Test basic edge functionality"""
-
     def test_edge_creation(self, edge_test_graph):
-        """Test creating edges with different configurations"""
         graph, node1, node2, _ = edge_test_graph
 
         # Basic edge
@@ -62,7 +59,6 @@ class TestEdgeBasics:
         assert edge_with_props.properties.get("custom_prop") == "test"
 
     def test_edge_properties(self, edge_test_graph):
-        """Test edge property management"""
         graph, node1, node2, _ = edge_test_graph
 
         edge = Edge(head=node1, tail=node2)
@@ -81,7 +77,6 @@ class TestEdgeBasics:
         assert edge.properties.get("weight", None) is None
 
     def test_edge_validation(self, edge_test_graph):
-        """Test edge validation"""
         graph, node1, node2, _ = edge_test_graph
 
         # Test with invalid head/tail
@@ -103,7 +98,6 @@ class TestEdgeConditions:
     """Test edge conditions"""
 
     async def test_edge_condition_true(self, edge_test_graph):
-        """Test edge condition that evaluates to True"""
         graph, node1, node2, _ = edge_test_graph
 
         condition = CustomEdgeCondition(value=True)
@@ -113,7 +107,6 @@ class TestEdgeConditions:
         assert await edge.check_condition()
 
     async def test_edge_condition_false(self, edge_test_graph):
-        """Test edge condition that evaluates to False"""
         graph, node1, node2, _ = edge_test_graph
 
         condition = CustomEdgeCondition(value=False)
@@ -123,7 +116,6 @@ class TestEdgeConditions:
         assert not await edge.check_condition()
 
     async def test_edge_no_condition(self, edge_test_graph):
-        """Test edge with no condition"""
         graph, node1, node2, _ = edge_test_graph
 
         edge = Edge(head=node1, tail=node2)
@@ -132,7 +124,6 @@ class TestEdgeConditions:
         assert await edge.check_condition()
 
     async def test_custom_condition(self, edge_test_graph):
-        """Test edge with custom condition class"""
         graph, node1, node2, _ = edge_test_graph
 
         class WeightCondition(EdgeCondition):
@@ -154,10 +145,7 @@ class TestEdgeConditions:
 
 
 class TestEdgeTypes:
-    """Test different edge types and configurations"""
-
     def test_multi_label_edge(self, edge_test_graph):
-        """Test edge with multiple labels"""
         graph, node1, node2, _ = edge_test_graph
 
         edge = Edge(head=node1, tail=node2, label=["label1", "label2", "label3"])
@@ -168,7 +156,6 @@ class TestEdgeTypes:
         assert "label1" in edge.properties.get("label")
 
     def test_weighted_edge(self, edge_test_graph):
-        """Test edge with weight property"""
         graph, node1, node2, _ = edge_test_graph
 
         edge = Edge(head=node1, tail=node2)
@@ -178,7 +165,6 @@ class TestEdgeTypes:
         assert edge.properties.get("weight") == 5.5
 
     def test_custom_edge_type(self, edge_test_graph):
-        """Test custom edge type"""
         graph, node1, node2, _ = edge_test_graph
 
         class WeightedEdge(Edge):
@@ -206,7 +192,6 @@ class TestEdgeOperations:
     """Test edge operations in graph context"""
 
     def test_parallel_edges(self, edge_test_graph):
-        """Test parallel edges between same nodes"""
         graph, node1, node2, _ = edge_test_graph
 
         edge1 = Edge(head=node1, tail=node2)
@@ -223,7 +208,6 @@ class TestEdgeOperations:
         assert any(e.properties.get("type") == "type2" for e in edges)
 
     def test_bidirectional_edges(self, edge_test_graph):
-        """Test bidirectional edges"""
         graph, node1, node2, _ = edge_test_graph
 
         edge1 = Edge(head=node1, tail=node2)
@@ -236,7 +220,6 @@ class TestEdgeOperations:
         assert len(graph.find_node_edge(node2)) == 2
 
     def test_self_loop_edge(self, edge_test_graph):
-        """Test self-loop edge"""
         graph, node1, _, _ = edge_test_graph
 
         edge = Edge(head=node1, tail=node1)
@@ -246,7 +229,6 @@ class TestEdgeOperations:
         assert edge.id in graph.node_edge_mapping[node1.id]["out"]
 
     def test_edge_removal_cleanup(self, edge_test_graph):
-        """Test proper cleanup after edge removal"""
         graph, node1, node2, _ = edge_test_graph
 
         edge = Edge(head=node1, tail=node2)
@@ -273,19 +255,16 @@ class TestEdgeLabelInitCoverage:
     """Edge.__init__ label-handling paths (lines 97, 101)."""
 
     def test_string_label_wraps_in_list(self):
-        """Line 97: label='str' → kwargs['label'] = ['str']."""
         h, t = _make_nodes()
         e = Edge(h, t, label="important")
         assert e.label == ["important"]
 
     def test_invalid_label_raises(self):
-        """Line 101: label=[1, 2] → ValueError."""
         h, t = _make_nodes()
         with pytest.raises(ValueError, match="Label must be a string or a list of strings"):
             Edge(h, t, label=[1, 2])
 
     def test_invalid_label_dict_raises(self):
-        """Line 101: label=dict → ValueError."""
         h, t = _make_nodes()
         with pytest.raises(ValueError, match="Label must be a string or a list of strings"):
             Edge(h, t, label={"a": 1})
@@ -295,7 +274,6 @@ class TestEdgeSerializerCoverage:
     """Edge._serialize_id field_serializer (line 107)."""
 
     def test_model_dump_json_mode_serializes_uuid_as_string(self):
-        """Line 107: field_serializer converts head/tail UUID → str."""
         h, t = _make_nodes()
         e = Edge(h, t)
         data = e.model_dump(mode="json")
@@ -309,42 +287,36 @@ class TestEdgeLabelSetterCoverage:
     """Edge.label setter paths (lines 132-141)."""
 
     def test_set_none_clears_label(self):
-        """Lines 132-134: label=None → properties['label'] = []."""
         h, t = _make_nodes()
         e = Edge(h, t, label=["old"])
         e.label = None
         assert e.properties["label"] == []
 
     def test_set_empty_list_clears_label(self):
-        """Lines 132-134: empty list (falsy) → properties['label'] = []."""
         h, t = _make_nodes()
         e = Edge(h, t, label=["old"])
         e.label = []
         assert e.properties["label"] == []
 
     def test_set_string_label_wraps(self):
-        """Lines 135-137: str → properties['label'] = [str]."""
         h, t = _make_nodes()
         e = Edge(h, t)
         e.label = "newtag"
         assert e.properties["label"] == ["newtag"]
 
     def test_set_list_of_strings(self):
-        """Lines 138-140: list[str] stored directly."""
         h, t = _make_nodes()
         e = Edge(h, t)
         e.label = ["a", "b"]
         assert e.properties["label"] == ["a", "b"]
 
     def test_set_invalid_label_raises(self):
-        """Line 141: non-string list → ValueError."""
         h, t = _make_nodes()
         e = Edge(h, t)
         with pytest.raises(ValueError, match="Label must be a string or a list of strings"):
             e.label = [1, 2]
 
     def test_set_mixed_type_list_raises(self):
-        """Line 141: mixed-type list → ValueError."""
         h, t = _make_nodes()
         e = Edge(h, t)
         with pytest.raises(ValueError, match="Label must be a string or a list of strings"):
@@ -355,13 +327,11 @@ class TestEdgeConditionInitCoverage:
     """Edge.__init__ condition validation (lines 90-93)."""
 
     def test_invalid_condition_raises(self):
-        """Lines 90-92: condition not a Condition subclass → ValueError."""
         h, t = _make_nodes()
         with pytest.raises(ValueError, match="condition must be a Condition subclass"):
             Edge(h, t, condition="not_a_condition")
 
     def test_invalid_condition_dict_raises(self):
-        """Lines 90-92: dict condition → ValueError."""
         h, t = _make_nodes()
         with pytest.raises(ValueError, match="condition must be a Condition subclass"):
             Edge(h, t, condition={"apply": "something"})
@@ -371,7 +341,6 @@ class TestEdgeConditionSetterCoverage:
     """Edge.condition setter (lines 123-128)."""
 
     def test_set_valid_condition(self):
-        """Lines 123-128: valid Condition → stored in properties."""
         h, t = _make_nodes()
         e = Edge(h, t)
         cond = CustomEdgeCondition(source="test")
@@ -379,14 +348,12 @@ class TestEdgeConditionSetterCoverage:
         assert e.condition is cond
 
     def test_set_none_condition(self):
-        """Lines 123-128: None → properties['condition'] = None."""
         h, t = _make_nodes()
         e = Edge(h, t)
         e.condition = None
         assert e.properties["condition"] is None
 
     def test_set_invalid_condition_raises(self):
-        """Lines 123-124: non-Condition value → ValueError."""
         h, t = _make_nodes()
         e = Edge(h, t)
         with pytest.raises(ValueError, match="condition must be a Condition subclass"):

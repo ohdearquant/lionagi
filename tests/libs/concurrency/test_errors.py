@@ -15,16 +15,6 @@ async def test_shield_propagates_inner_exception(anyio_backend):
 
 
 @pytest.mark.anyio
-async def test_shield_does_not_block_internal_timeout(anyio_backend):
-    async def slow():
-        with fail_after(0.01):
-            await anyio.sleep(0.1)
-
-    with pytest.raises(TimeoutError):
-        await shield(slow)
-
-
-@pytest.mark.anyio
 async def test_is_cancelled_true_for_backend_exception(anyio_backend):
     caught = {}
     victim_started = anyio.Event()

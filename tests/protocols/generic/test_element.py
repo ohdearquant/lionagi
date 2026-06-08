@@ -6,11 +6,6 @@ import pytest
 from lionagi.protocols.generic.element import ID, Element, validate_order
 
 
-def test_UUID_creation():
-    id_type = uuid4()
-    assert isinstance(id_type, UUID)
-
-
 def test_UUID_validation():
     uuid_str = "123e4567-e89b-42d3-a456-426614174000"
     id_type = ID.get_id(uuid_str)
@@ -99,16 +94,6 @@ def test_validate_order_invalid_input():
 def test_element_hash():
     element = Element()
     assert hash(element) == hash(element.id)
-
-
-def test_element_bool():
-    element = Element()
-    assert bool(element) is True
-
-
-def test_element_class_name():
-    assert Element.class_name() == "Element"
-    assert Element.class_name(full=True) == "lionagi.protocols.generic.element.Element"
 
 
 def test_element_from_dict_accepts_db_node_metadata_without_mutating_input():

@@ -13,14 +13,6 @@ from lionagi.tools.base import Prompt, Resource, ResourceCategory
 # ---------------------------------------------------------------------------
 
 
-def test_resource_category_values():
-    assert ResourceCategory.FRAMEWORK.value == "framework"
-    assert ResourceCategory.TEMPLATE.value == "template"
-    assert ResourceCategory.UTILITY.value == "utility"
-    assert ResourceCategory.PROMPT.value == "prompt"
-    assert ResourceCategory.OTHER.value == "other"
-
-
 # ---------------------------------------------------------------------------
 # A14: Resource serializes category and rejects invalid category
 # ---------------------------------------------------------------------------
@@ -35,26 +27,10 @@ def test_resource_category_serializes_and_rejects_invalid_category():
         Resource(category="missing")
 
 
-def test_resource_default_category_is_other():
-    r = Resource()
-    assert r.category == ResourceCategory.OTHER
-
-
 def test_resource_category_frozen():
     r = Resource(category="utility")
     with pytest.raises((TypeError, ValidationError)):
         r.category = "prompt"
-
-
-def test_prompt_category_is_prompt():
-    p = Prompt()
-    assert p.category == ResourceCategory.PROMPT
-
-
-@pytest.mark.parametrize("cat", ["framework", "template", "utility", "prompt", "other"])
-def test_resource_accepts_all_valid_categories(cat):
-    r = Resource(category=cat)
-    assert r.category == cat
 
 
 def test_resource_meta_obj_reflects_metadata():

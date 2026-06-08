@@ -156,3 +156,80 @@ def test_module_invariant_sets_are_disjoint():
         f"Provider(s) {overlap!r} appear in both PROVIDERS_NO_EFFORT and "
         f"PROVIDER_EFFORT_KWARG — this is a classification conflict"
     )
+
+
+# ── Edge cases ────────────────────────────────────────────────────────────────
+
+
+def test_parse_model_spec_no_slash_returns_alias_or_bare():
+    from lionagi.cli._providers import BACKENDS, parse_model_spec
+
+    result = parse_model_spec("codex")
+    assert result.model == BACKENDS["codex"]
+    assert result.effort is None
+
+
+def test_parse_model_spec_multiple_slashes_uses_first_segment_as_provider():
+    from lionagi.cli._providers import parse_model_spec
+
+    result = parse_model_spec("codex/gpt-5.4/variant")
+    assert result.model.startswith("codex/")
+
+
+def test_parse_model_spec_empty_effort_segment_treated_as_no_effort():
+    from lionagi.cli._providers import parse_model_spec
+
+    result = parse_model_spec("codex/gpt-5.4")
+    assert result.effort is None
+
+
+def test_build_chat_model_no_flags_returns_spec_string():
+    from lionagi.cli._providers import build_chat_model
+
+    result = build_chat_model("claude_code", "sonnet", False, False, None, None, False)
+    assert isinstance(result, str)
+    assert "claude_code" in result or "sonnet" in result
+
+
+def test_build_chat_model_with_yolo_returns_imodel():
+    import lionagi.cli._providers as pmod
+    from lionagi.testing import IModelKwargCaptor
+
+    captor = IModelKwargCaptor.fresh()
+    pmod_iModel_orig = pmod.iModel
+    pmod.iModel = captor
+    try:
+        result = pmod.build_chat_model("claude_code", "sonnet", True, False, None, None, False)
+        assert len(captor.captures) == 1
+        assert captor.captures[0].get("permission_mode") == "bypassPermissions"
+    finally:
+        pmod.iModel = pmod_iModel_orig
+
+
+def test_provider_yolo_kwargs_for_codex_sets_full_auto():
+    from lionagi.cli._providers import PROVIDER_YOLO_KWARGS
+
+    kwargs = PROVIDER_YOLO_KWARGS.get("codex", {})
+    assert kwargs.get("full_auto") is True
+    assert kwargs.get("skip_git_repo_check") is True
+
+
+def test_provider_yolo_kwargs_for_claude_sets_permission_mode():
+    from lionagi.cli._providers import PROVIDER_YOLO_KWARGS
+
+    for provider_key in ("claude_code", "claude"):
+        kwargs = PROVIDER_YOLO_KWARGS.get(provider_key, {})
+        assert kwargs.get("permission_mode") == "bypassPermissions"
+
+
+def test_build_imodel_from_spec_with_claude_alias_uses_dummy_key(monkeypatch):
+    import lionagi.cli._providers as pmod
+    from lionagi.testing import IModelKwargCaptor
+
+    captor = IModelKwargCaptor.fresh()
+    monkeypatch.setattr(pmod, "iModel", captor)
+
+    build_imodel_from_spec("claude", yolo=False)
+
+    assert len(captor.captures) == 1
+    assert captor.captures[0].get("api_key") == "dummy"

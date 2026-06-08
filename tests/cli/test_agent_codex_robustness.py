@@ -26,7 +26,6 @@ from lionagi.cli._providers import (
 
 
 def test_build_chat_model_bypass_applies_bypass_kwargs(monkeypatch):
-    """build_chat_model with bypass=True injects PROVIDER_BYPASS_KWARGS for codex."""
     import lionagi.cli._providers as pmod
     from lionagi.testing import IModelKwargCaptor
 
@@ -45,7 +44,6 @@ def test_build_chat_model_bypass_applies_bypass_kwargs(monkeypatch):
 
 
 def test_build_chat_model_bypass_takes_precedence_over_yolo(monkeypatch):
-    """When both bypass and yolo are True, bypass wins (bypass_approvals, not full_auto)."""
     import lionagi.cli._providers as pmod
     from lionagi.testing import IModelKwargCaptor
 
@@ -64,14 +62,12 @@ def test_build_chat_model_bypass_takes_precedence_over_yolo(monkeypatch):
 
 
 def test_build_chat_model_no_bypass_no_yolo_returns_str_for_codex():
-    """Without any flags, build_chat_model returns a plain spec string (no iModel)."""
     result = build_chat_model("codex", "gpt-5.3-codex-spark", yolo=False, verbose=False, theme=None)
     assert isinstance(result, str)
     assert result == "codex/gpt-5.3-codex-spark"
 
 
 def test_build_chat_model_bypass_claude_applies_permission_mode(monkeypatch):
-    """bypass for claude provider injects permission_mode=bypassPermissions."""
     import lionagi.cli._providers as pmod
     from lionagi.testing import IModelKwargCaptor
 
@@ -144,7 +140,6 @@ def _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured_kwargs: list):
 
 @pytest.mark.asyncio
 async def test_run_agent_threads_bypass_to_build_chat_model(monkeypatch, tmp_path):
-    """_run_agent passes bypass=True to build_chat_model when called with bypass=True."""
     captured: list = []
     _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
 
@@ -162,7 +157,6 @@ async def test_run_agent_threads_bypass_to_build_chat_model(monkeypatch, tmp_pat
 
 @pytest.mark.asyncio
 async def test_run_agent_codex_no_bypass_emits_warning(monkeypatch, tmp_path, capsys):
-    """Naked codex without --bypass or --yolo emits a visible warning."""
     captured: list = []
     _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
 
@@ -193,7 +187,6 @@ async def test_run_agent_codex_no_bypass_emits_warning(monkeypatch, tmp_path, ca
 
 @pytest.mark.asyncio
 async def test_run_agent_codex_with_bypass_no_warning(monkeypatch, tmp_path):
-    """Codex with --bypass does not emit the bypass warning."""
     captured: list = []
     _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
 
@@ -216,7 +209,6 @@ async def test_run_agent_codex_with_bypass_no_warning(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_run_agent_codex_with_yolo_no_warning(monkeypatch, tmp_path):
-    """Codex with --yolo does not emit the bypass warning."""
     captured: list = []
     _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured)
 
@@ -244,7 +236,6 @@ async def test_run_agent_codex_with_yolo_no_warning(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_run_agent_timeout_preserves_partial_output(monkeypatch, tmp_path):
-    """On timeout, _run_agent returns partial output from the branch instead of ''."""
 
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch
@@ -319,7 +310,6 @@ async def test_run_agent_timeout_preserves_partial_output(monkeypatch, tmp_path)
 
 @pytest.mark.asyncio
 async def test_run_agent_timeout_empty_partial_returns_empty_string(monkeypatch, tmp_path):
-    """On timeout with no partial output, result is empty string (not None)."""
 
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch
@@ -388,7 +378,6 @@ async def test_run_agent_timeout_empty_partial_returns_empty_string(monkeypatch,
 
 @pytest.mark.asyncio
 async def test_run_agent_heartbeat_started_when_timeout_set(monkeypatch, tmp_path):
-    """When timeout is set, a heartbeat asyncio task is created."""
 
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch
@@ -453,7 +442,6 @@ async def test_run_agent_heartbeat_started_when_timeout_set(monkeypatch, tmp_pat
 
 @pytest.mark.asyncio
 async def test_run_agent_no_heartbeat_when_timeout_none(monkeypatch, tmp_path):
-    """When timeout is None, no heartbeat task is created."""
 
     import lionagi.cli.agent as agent_mod
     from lionagi import Branch

@@ -27,7 +27,6 @@ from lionagi.session.session import Session
 
 @pytest.mark.asyncio
 async def test_flow_true_parallelism():
-    """Test that operations truly run in parallel without locking."""
     N = 5
     started_count = 0
     start_order: list[str] = []
@@ -81,11 +80,9 @@ async def test_flow_true_parallelism():
 
 @pytest.mark.asyncio
 async def test_flow_incremental_execution():
-    """Test that flows can be expanded and re-run without re-executing completed operations."""
     execution_count = {}
 
     async def counting_operation(**kwargs):
-        """Count how many times each operation is executed."""
         op_name = kwargs.get("name", "unknown")
         execution_count[op_name] = execution_count.get(op_name, 0) + 1
         return f"Result from {op_name}"
@@ -173,10 +170,8 @@ async def test_flow_incremental_execution():
 
 @pytest.mark.asyncio
 async def test_flow_context_type_handling():
-    """Test that context handles both string and dict types correctly."""
 
     async def context_checker(**kwargs):
-        """Verify context is properly formatted."""
         context = kwargs.get("context")
         if isinstance(context, str):
             return {"context_was": "string", "value": context}
@@ -248,11 +243,9 @@ async def test_flow_context_type_handling():
 
 @pytest.mark.asyncio
 async def test_flow_dynamic_branch_allocation():
-    """Test that branches are pre-allocated correctly for all operations."""
     branch_creation_count = 0
 
     def counting_clone(sender=None):
-        """Count branch clones."""
         nonlocal branch_creation_count
         branch_creation_count += 1
 
@@ -319,10 +312,8 @@ async def test_flow_dynamic_branch_allocation():
 
 @pytest.mark.asyncio
 async def test_flow_aggregation_pattern():
-    """Test the aggregation pattern with dynamic fan-out."""
 
     async def list_generator(**kwargs):
-        """Generate a list of sub-tasks."""
         # Create a mock result that has instruct_model attribute
         result = MagicMock()
         result.instruct_model = [
@@ -333,12 +324,10 @@ async def test_flow_aggregation_pattern():
         return result
 
     async def researcher(**kwargs):
-        """Simulate research operation."""
         instruction = kwargs.get("instruction", "")
         return f"Research results for: {instruction}"
 
     async def synthesizer(**kwargs):
-        """Synthesize results from multiple sources."""
         sources = kwargs.get("aggregation_sources", [])
         # In real implementation, this would access results from sources
         return f"Synthesized {len(sources)} research results"
@@ -438,7 +427,6 @@ async def test_flow_aggregation_pattern():
 
 @pytest.mark.asyncio
 async def test_flow_lock_contention_measurement():
-    """Test that operations run concurrently — max_concurrent_observed > 1 proves no serialization."""
     concurrent_count = 0
     max_concurrent_observed = 0
 
@@ -484,10 +472,8 @@ async def test_flow_lock_contention_measurement():
 
 @pytest.mark.asyncio
 async def test_flow_error_recovery_with_parallelism():
-    """Test that errors in parallel operations don't break the flow."""
 
     async def flaky_operation(**kwargs):
-        """Operation that fails for specific inputs."""
         op_id = kwargs.get("op_id")
         if "fail" in op_id:
             raise ValueError(f"Simulated failure in {op_id}")

@@ -94,9 +94,6 @@ async def test_start_creates_session_and_registers_hook_on_orc_branch(
     temp_db_path: Path,
     tmp_path: Path,
 ):
-    """start_live_persist must persist the session and register a hook
-    on every branch already in session.branches (the orchestrator).
-    """
     env = _minimal_env()
     artifacts = str(tmp_path / "artifacts")
     await start_live_persist(
@@ -135,14 +132,6 @@ async def test_start_create_session_failure_closes_db(
     temp_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """If create_session fails during start, the DB is closed, the
-    env._live_persist is set to None, and the aiosqlite worker is
-    reclaimed.
-
-    The orchestration hang would otherwise mirror agent.py's: a failed
-    start leaves the connection open, the non-daemon worker prevents
-    interpreter shutdown.
-    """
 
     async def fail(self, session: dict):
         await self.db.execute("SELECT 1")
@@ -178,10 +167,6 @@ async def test_start_create_session_failure_closes_db(
 async def test_register_branch_hook_creates_row_on_first_message(
     temp_db_path: Path,
 ):
-    """The branch row + progression are created lazily on the FIRST
-    message — not eagerly when the hook is registered. This matches the
-    build_worker_branch path which runs from a sync context.
-    """
     from lionagi.protocols.messages.manager import MessageManager
 
     env = _minimal_env()
@@ -223,10 +208,6 @@ async def test_register_branch_hook_creates_row_on_first_message(
 async def test_register_branch_hook_ensure_branch_row_idempotent(
     temp_db_path: Path,
 ):
-    """Multiple messages on the same branch must NOT re-create the row
-    or re-insert the system message — ``_ensure_branch_row`` is gated
-    by the ``initialized`` flag.
-    """
     from lionagi.protocols.messages.manager import MessageManager
 
     env = _minimal_env()
@@ -276,10 +257,6 @@ async def test_register_branch_hook_ensure_branch_row_idempotent(
 async def test_multiple_branches_share_session_progression(
     temp_db_path: Path,
 ):
-    """Each worker has its OWN branch_prog, but ALL messages from ALL
-    workers land in the SAME session_prog. This is how Studio renders
-    a multi-branch flow as a single ordered timeline.
-    """
     from lionagi.protocols.messages.manager import MessageManager
 
     env = _minimal_env()
@@ -326,10 +303,6 @@ async def test_hook_swallows_db_write_failure(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ):
-    """A failed DB write inside the hook must NOT abort the
-    orchestration — it logs at WARNING and the in-memory message
-    continues to flow through the user-facing turn.
-    """
     import logging
 
     from lionagi.protocols.messages.manager import MessageManager
@@ -363,9 +336,6 @@ async def test_hook_swallows_db_write_failure(
 async def test_hook_updates_system_msg_id_when_system_replaced(
     temp_db_path: Path,
 ):
-    """If a worker's system message is replaced mid-run, the hook
-    updates ``branches.system_msg_id`` to point at the new system.
-    """
     from lionagi.protocols.messages import System
     from lionagi.protocols.messages.manager import MessageManager
 
@@ -463,9 +433,6 @@ async def test_stop_closes_db_even_if_bookmark_update_fails(
     temp_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """If update_session raises during stop, the DB STILL closes
-    (the close lives in its own ``finally``). Hang-fix invariant.
-    """
     env = _minimal_env()
     await start_live_persist(env)
     db = env._live_persist["db"]
@@ -488,7 +455,6 @@ async def test_stop_closes_db_even_if_bookmark_update_fails(
 
 
 async def test_stop_with_none_context_is_noop(temp_db_path: Path):
-    """If start failed, env._live_persist is None and stop is a no-op."""
     env = _minimal_env()
     # No start_live_persist call.
     assert env._live_persist is None
@@ -499,10 +465,6 @@ async def test_stop_with_none_context_is_noop(temp_db_path: Path):
 
 
 async def test_start_stop_does_not_leak_aiosqlite_thread(temp_db_path: Path):
-    """Run start + multi-branch + stop several times; aiosqlite worker
-    count returns to baseline each cycle. Root-cause guard for the
-    orchestration variant of the hang bug.
-    """
     from lionagi.protocols.messages.manager import MessageManager
 
     baseline = _aiosqlite_thread_count()
@@ -980,7 +942,6 @@ async def test_start_persists_artifact_contract(
     temp_db_path: Path,
     tmp_path: Path,
 ):
-    """artifact_contract passed to start_live_persist is stored in session."""
     env = _minimal_env()
     contract = {"expected": [{"id": "brief", "path": "brief.md"}]}
     await start_live_persist(
@@ -1026,7 +987,6 @@ async def test_stop_verification_fails_flips_status(
     temp_db_path: Path,
     tmp_path: Path,
 ):
-    """Clean completion with missing required artifact → status flipped to failed."""
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
     # deliberately NOT creating brief.md
@@ -1058,7 +1018,6 @@ async def test_stop_verification_preserves_non_completed_reason(
     temp_db_path: Path,
     tmp_path: Path,
 ):
-    """Missing artifact on a failed run keeps the original exception reason."""
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
     # deliberately NOT creating brief.md

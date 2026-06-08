@@ -14,7 +14,6 @@ from lionagi.session.session import Session
 
 @pytest.mark.asyncio
 async def test_operation_decorator_basic():
-    """Test basic operation decorator functionality."""
     session = Session()
 
     # Register operation using decorator
@@ -33,7 +32,6 @@ async def test_operation_decorator_basic():
 
 @pytest.mark.asyncio
 async def test_operation_decorator_custom_name():
-    """Test operation decorator with custom name."""
     session = Session()
 
     @session.operation("custom_operation")
@@ -48,7 +46,6 @@ async def test_operation_decorator_custom_name():
 
 @pytest.mark.asyncio
 async def test_operation_decorator_with_branches():
-    """Test that decorator works with branch syncing."""
     session = Session()
 
     # Create and include branches to sync operation manager
@@ -74,7 +71,6 @@ async def test_operation_decorator_with_branches():
 
 @pytest.mark.asyncio
 async def test_operation_decorator_in_flow():
-    """Test using decorated operations in a flow."""
     session = Session()
 
     # Create branches
@@ -122,7 +118,6 @@ async def test_operation_decorator_in_flow():
 
 @pytest.mark.asyncio
 async def test_operation_decorator_update_flag():
-    """Test operation decorator with update flag."""
     session = Session()
 
     # Register first operation
@@ -152,7 +147,6 @@ async def test_operation_decorator_update_flag():
 
 
 def test_operation_decorator_preserves_function():
-    """Test that decorator preserves original function."""
     session = Session()
 
     @session.operation()

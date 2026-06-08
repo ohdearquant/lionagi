@@ -22,7 +22,6 @@ from lionagi.testing import oai_chat_endpoint_config
 @pytest.mark.slow
 @pytest.mark.asyncio
 async def test_operation_cancelled_status():
-    """Test that cancelled operations have EventStatus.CANCELLED."""
     branch = MagicMock()
     branch.id = "test-branch-id"
 
@@ -53,7 +52,6 @@ async def test_operation_cancelled_status():
 @pytest.mark.slow
 @pytest.mark.asyncio
 async def test_api_call_cancelled_status():
-    """Test that cancelled API calls have EventStatus.CANCELLED."""
     # Create an API call
     config = oai_chat_endpoint_config(
         name="oai_chat",
@@ -90,7 +88,6 @@ async def test_api_call_cancelled_status():
 @pytest.mark.slow
 @pytest.mark.asyncio
 async def test_cancelled_vs_failed_status():
-    """Test that cancelled operations are distinct from failed operations."""
     # Test failed operation
     branch = MagicMock()
     branch.id = "test-branch-id"

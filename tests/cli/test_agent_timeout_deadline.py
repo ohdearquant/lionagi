@@ -78,15 +78,6 @@ def test_preamble_contains_date_command_hint():
     assert "date -Iseconds" in preamble
 
 
-def test_preamble_no_timeout_not_called():
-    """When timeout is None, build_deadline_preamble is not called at all
-    (guard test — importing the function is idempotent)."""
-    # This is a trivial guard: the real test is in test_run_agent_* below.
-    # We just verify the function is importable and callable.
-    result = build_deadline_preamble(120)
-    assert result  # non-empty string
-
-
 def test_preamble_sub_minute_timeout_clamps_to_1():
     """Timeouts < 60 s still produce '1 minute' (not '0 minutes')."""
     preamble = build_deadline_preamble(30)

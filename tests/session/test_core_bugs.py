@@ -25,7 +25,6 @@ from lionagi.session.signal import Signal, StructuredOutput
 
 class TestResponseFormatSerialization:
     def test_dict_response_format_survives_round_trip(self):
-        """A plain dict response_format must be present after to_dict → from_dict."""
         fmt = {"name": "str", "score": "float"}
         content = InstructionContent(instruction="test", response_format=fmt)
         serialized = content.to_dict()
@@ -36,7 +35,6 @@ class TestResponseFormatSerialization:
         assert restored.response_format == fmt
 
     def test_nested_dict_response_format_survives(self):
-        """Nested dict values in response_format survive serialization."""
         fmt = {"result": {"value": "float", "label": "str"}, "confidence": "float"}
         content = InstructionContent(instruction="test", response_format=fmt)
         serialized = content.to_dict()
@@ -62,7 +60,6 @@ class TestResponseFormatSerialization:
         assert "response_format" not in serialized
 
     def test_non_response_format_fields_still_serialized(self):
-        """Other fields like instruction and guidance are still serialized correctly."""
         fmt = {"answer": "str"}
         content = InstructionContent(instruction="hello", guidance="be brief", response_format=fmt)
         serialized = content.to_dict()
@@ -159,7 +156,6 @@ class TestConcurrentObserverDispatch:
         assert "sync_result" in results
 
     async def test_ordering_preserved_in_flow(self):
-        """Events are recorded in the Flow in emission order."""
         from lionagi.protocols.generic.event import Event
 
         class Ordered(Event):

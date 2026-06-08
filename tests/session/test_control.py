@@ -29,9 +29,6 @@ class TestControlTypes:
         assert LoopDirective.CANCEL.value == "cancel"
         assert LoopDirective.BREAK.value == "break"
 
-    def test_loop_directive_members(self):
-        assert set(LoopDirective.__members__) == {"CONTINUE", "CANCEL", "BREAK"}
-
     def test_loop_control_frozen(self):
         lc = LoopControl(directive=LoopDirective.CANCEL)
         with pytest.raises((AttributeError, TypeError)):
@@ -53,9 +50,6 @@ class TestControlTypes:
     def test_loop_break_no_reason(self):
         exc = LoopBreak()
         assert exc.reason is None
-
-    def test_loop_break_is_exception(self):
-        assert issubclass(LoopBreak, Exception)
 
 
 # ---------------------------------------------------------------------------
@@ -96,18 +90,6 @@ class TestBranchControlOneShot:
         b.control(LoopDirective.CONTINUE)
         ctrl = b.poll_control()
         assert ctrl.directive is LoopDirective.CONTINUE
-
-    def test_returns_loop_control_instance(self):
-        b = Branch()
-        b.control(LoopDirective.BREAK)
-        ctrl = b.poll_control()
-        assert isinstance(ctrl, LoopControl)
-
-    def test_control_without_reason(self):
-        b = Branch()
-        b.control(LoopDirective.BREAK)
-        ctrl = b.poll_control()
-        assert ctrl.reason is None
 
 
 # ---------------------------------------------------------------------------
@@ -328,3 +310,62 @@ class TestRunLoopControlIntegration:
         assert loop_break_reason == "hard stop"
 
         assert model.streaming_process_func is sentinel
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: ToolInvocation dataclass + concurrent control/poll_control
+# ---------------------------------------------------------------------------
+
+
+class TestToolInvocationDataclass:
+    def test_tool_invocation_default_branch_id_none(self):
+        from lionagi.session.control import ToolInvocation
+
+        ti = ToolInvocation(function="my_func", arguments={"x": 1})
+        assert ti.branch_id is None
+
+    def test_tool_invocation_with_branch_id(self):
+        from lionagi.session.control import ToolInvocation
+
+        ti = ToolInvocation(function="my_func", arguments={}, branch_id="branch-abc")
+        assert ti.branch_id == "branch-abc"
+
+    def test_tool_invocation_is_frozen(self):
+        from lionagi.session.control import ToolInvocation
+
+        ti = ToolInvocation(function="fn", arguments={})
+        with pytest.raises((AttributeError, TypeError)):
+            ti.function = "other"
+
+
+class TestConcurrentControlPollControl:
+    async def test_concurrent_control_and_poll_control(self):
+        import asyncio
+
+        branch = Branch()
+        directives_seen = []
+
+        async def writer(directive, delay):
+            await asyncio.sleep(delay)
+            branch.control(directive)
+
+        async def reader(delay):
+            await asyncio.sleep(delay)
+            result = branch.poll_control()
+            if result is not None:
+                directives_seen.append(result.directive)
+
+        await asyncio.gather(
+            writer(LoopDirective.CANCEL, 0.0),
+            reader(0.01),
+            writer(LoopDirective.BREAK, 0.02),
+            reader(0.03),
+        )
+
+        assert all(d in (LoopDirective.CANCEL, LoopDirective.BREAK) for d in directives_seen)
+
+    async def test_loop_break_is_exception_subclass(self):
+        assert issubclass(LoopBreak, Exception)
+        lb = LoopBreak("reason")
+        assert isinstance(lb, Exception)
+        assert lb.reason == "reason"

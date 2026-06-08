@@ -373,3 +373,75 @@ async def test_parse_propagates_cancelled_error_without_retry(
 
     # Must not have retried — cancellation should propagate immediately
     assert call_count <= 1
+
+
+# ---------------------------------------------------------------------------
+# Adversarial / deeply nested JSON
+# ---------------------------------------------------------------------------
+
+
+class TestAdversarialInputs:
+    @pytest.mark.asyncio
+    async def test_parse_deeply_nested_json_direct_validation_fails_gracefully(
+        self, make_mocked_branch_for_parse
+    ):
+        branch = make_mocked_branch_for_parse()
+        # Deeply nested JSON that doesn't match SampleModel
+        deeply_nested = '{"a": {"b": {"c": {"d": {"e": "deep"}}}}}'
+        # Should fall back to LLM path (mock returns valid SampleModel JSON)
+        result = await parse(branch, text=deeply_nested, request_type=OutputModel)
+        assert isinstance(result, OutputModel)
+
+    @pytest.mark.asyncio
+    async def test_parse_large_array_json_does_not_match_model(self, make_mocked_branch_for_parse):
+        branch = make_mocked_branch_for_parse()
+        # Large array — definitely not a SampleModel
+        large_array = "[" + ",".join(str(i) for i in range(100)) + "]"
+        # Fallback to LLM
+        result = await parse(branch, text=large_array, request_type=OutputModel)
+        assert isinstance(result, OutputModel)
+
+    def test_validate_dict_or_model_with_mismatched_value_types(self):
+        """JSON with wrong types for dict keys → ValueError from _validate_dict_or_model."""
+        from lionagi.operations.parse.parse import _validate_dict_or_model
+
+        # age should be int but JSON has a non-coercible string
+        text = '{"name": "Alice", "age": "not_an_int"}'
+        response_format = SampleModel
+
+        # _validate_dict_or_model raises ValueError when Pydantic validation fails
+        with pytest.raises(ValueError, match="Failed to parse text"):
+            _validate_dict_or_model(text, response_format, None)
+
+    @pytest.mark.asyncio
+    async def test_parse_valid_json_failing_pydantic_validation_uses_llm(
+        self, make_mocked_branch_for_parse
+    ):
+        branch = make_mocked_branch_for_parse()
+        # Valid JSON but wrong shape — name is int, not str
+        bad_types = '{"name": 42, "age": "not_int"}'
+        # Should trigger LLM fallback; mock returns {"summary": "Mocked summary"}
+        result = await parse(branch, text=bad_types, request_type=OutputModel)
+        assert isinstance(result, OutputModel)
+
+
+# ---------------------------------------------------------------------------
+# Concurrent parse calls share no mutable state
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_parse_concurrent_calls_independent(make_mocked_branch_for_parse):
+    """Concurrent parse() calls on the same branch each get independent results."""
+    import asyncio
+
+    branch = make_mocked_branch_for_parse()
+
+    async def do_parse(text):
+        return await parse(branch, text=text, request_type=OutputModel)
+
+    results = await asyncio.gather(
+        do_parse('{"summary": "one"}'),
+        do_parse('{"summary": "two"}'),
+    )
+    assert all(isinstance(r, OutputModel) for r in results)

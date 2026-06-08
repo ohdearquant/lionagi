@@ -157,3 +157,95 @@ async def test_communicate_plain_returns_raw_response():
     branch = make_mocked_branch_for_communicate()
     result = await branch.communicate(instruction="hello")
     assert result == '{"data":"mocked_response_string"}'
+
+
+# ---------------------------------------------------------------------------
+# communicate() with both response_format AND request_fields
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_communicate_response_format_takes_priority_over_request_fields():
+    """When both response_format and request_fields are provided, response_format
+    wins because communicate checks parse_param before request_fields."""
+    branch = make_mocked_branch_for_communicate()
+
+    result = await branch.communicate(
+        instruction="give me both",
+        response_format=SomeModel,
+        request_fields={"extra_key": str},
+    )
+    # response_format path runs parse → returns SomeModel instance
+    assert isinstance(result, SomeModel)
+
+
+# ---------------------------------------------------------------------------
+# communicate() where num_parse_retries=0 and parse fails on first attempt
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_communicate_zero_retries_parse_failure_raises():
+    from unittest.mock import AsyncMock, patch
+
+    branch = make_mocked_branch_for_communicate()
+
+    with patch(
+        "lionagi.operations.parse.parse.parse",
+        new=AsyncMock(side_effect=ValueError("parse failed immediately")),
+    ):
+        with pytest.raises(ValueError):
+            await branch.communicate(
+                instruction="fail fast",
+                response_format=SomeModel,
+                num_parse_retries=0,
+            )
+
+
+# ---------------------------------------------------------------------------
+# communicate() where the mocked LLM returns an empty string
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_communicate_empty_llm_response_skip_validation_returns_empty():
+    """When LLM returns empty string and skip_validation=True, result is ''."""
+    from lionagi.testing import LionAGIMockFactory
+
+    branch = LionAGIMockFactory.create_mocked_branch(
+        name="EmptyResponseBranch",
+        user="tester",
+        response="",
+        model="gpt-4.1-mini",
+    )
+    result = await branch.communicate(instruction="say nothing", skip_validation=True)
+    assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# communicate() clear_messages with multiple prior messages
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_communicate_clear_messages_removes_all_prior():
+    """clear_messages=True removes ALL prior messages before the new turn."""
+    branch = make_mocked_branch_for_communicate()
+
+    # Add several prior messages
+    for i in range(5):
+        branch.msgs.add_message(
+            instruction=f"prior_{i}",
+            sender=branch.user or "user",
+            recipient=branch.id,
+        )
+    assert len(branch.messages) == 5
+
+    await branch.communicate(
+        instruction="fresh start",
+        clear_messages=True,
+        skip_validation=True,
+    )
+
+    # Exactly 2 messages: instruction + assistant_response from this turn
+    assert len(branch.messages) == 2

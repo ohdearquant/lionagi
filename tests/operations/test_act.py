@@ -315,3 +315,108 @@ async def test_sequential_act_single_request():
     result = await _sequential_act(branch, {"function": "add", "arguments": {"a": 7, "b": 3}})
     assert len(result) == 1
     assert result[0].output == 10
+
+
+# ---------------------------------------------------------------------------
+# Tool return values: None vs empty dict vs empty string
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_act_tool_returns_none():
+    branch = Branch()
+
+    def returns_none() -> None:
+        """Returns nothing."""
+        return None
+
+    branch.register_tools([returns_none])
+    result = await _act(branch, {"function": "returns_none", "arguments": {}})
+    assert isinstance(result, ActionResponseModel)
+    assert result.output is None
+
+
+@pytest.mark.asyncio
+async def test_act_tool_returns_empty_dict():
+    branch = Branch()
+
+    def returns_empty() -> dict:
+        """Returns empty dict."""
+        return {}
+
+    branch.register_tools([returns_empty])
+    result = await _act(branch, {"function": "returns_empty", "arguments": {}})
+    assert isinstance(result, ActionResponseModel)
+    assert result.output == {}
+
+
+@pytest.mark.asyncio
+async def test_act_tool_returns_empty_string():
+    branch = Branch()
+
+    def returns_empty_str() -> str:
+        """Returns empty string."""
+        return ""
+
+    branch.register_tools([returns_empty_str])
+    result = await _act(branch, {"function": "returns_empty_str", "arguments": {}})
+    assert isinstance(result, ActionResponseModel)
+    assert result.output == ""
+
+
+# ---------------------------------------------------------------------------
+# action_request with extra/unexpected keys beyond function/arguments
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_act_dict_request_extra_keys_ignored():
+    """Dict requests with extra keys beyond function/arguments still work."""
+    branch = _make_branch_with_tool()
+    req = {
+        "function": "add",
+        "arguments": {"a": 1, "b": 2},
+        "extra_key": "should_be_ignored",
+        "another_extra": 42,
+    }
+    result = await _act(branch, req)
+    assert isinstance(result, ActionResponseModel)
+    assert result.output == 3
+
+
+# ---------------------------------------------------------------------------
+# sequential strategy where early tool modifies state that later tool sees
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_act_sequential_state_accumulation():
+    """Sequential act: each call sees prior messages in branch.messages."""
+    branch = Branch()
+    call_order = []
+
+    def first_call(x: int) -> int:
+        """First tool."""
+        call_order.append("first")
+        return x * 2
+
+    def second_call(x: int) -> int:
+        """Second tool uses result of first (via shared call_order)."""
+        call_order.append("second")
+        return x + 1
+
+    branch.register_tools([first_call, second_call])
+
+    requests = [
+        {"function": "first_call", "arguments": {"x": 3}},
+        {"function": "second_call", "arguments": {"x": 7}},
+    ]
+    action_param = ActionParam(
+        action_call_params=_get_default_call_params(),
+        tools=None,
+        strategy="sequential",
+    )
+    results = await act(branch, requests, action_param)
+    assert call_order == ["first_call" if "first_call" in call_order[0] else "first", "second"]
+    assert results[0].output == 6
+    assert results[1].output == 8

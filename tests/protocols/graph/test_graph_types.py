@@ -6,28 +6,20 @@ from .helpers import GraphNode
 
 
 class TypeANode(GraphNode):
-    """Test node type A"""
-
     value: int
 
 
 class TypeBNode(GraphNode):
-    """Test node type B"""
-
     name: str
 
 
 class WeightedEdge(Edge):
-    """Test weighted edge type"""
-
     @property
     def weight(self) -> float:
         return self.properties.get("weight")
 
 
 class LabeledEdge(Edge):
-    """Test labeled edge type"""
-
     @property
     def labels(self) -> list[str]:
         return self.properties.get("labels")
@@ -73,10 +65,7 @@ def mixed_type_graph():
 
 
 class TestNodeTypes:
-    """Test different node types in graph"""
-
     def test_type_a_nodes(self, mixed_type_graph):
-        """Test TypeA nodes"""
         graph, nodes, _ = mixed_type_graph
 
         # Verify TypeA nodes
@@ -89,7 +78,6 @@ class TestNodeTypes:
         assert node_a2.value == 20
 
     def test_type_b_nodes(self, mixed_type_graph):
-        """Test TypeB nodes"""
         graph, nodes, _ = mixed_type_graph
 
         # Verify TypeB nodes
@@ -102,7 +90,6 @@ class TestNodeTypes:
         assert node_b2.name == "B2"
 
     def test_node_type_fields(self, mixed_type_graph):
-        """Test node type specific fields"""
         graph, nodes, _ = mixed_type_graph
 
         # Test TypeA specific field
@@ -117,10 +104,7 @@ class TestNodeTypes:
 
 
 class TestEdgeTypes:
-    """Test different edge types in graph"""
-
     def test_weighted_edges(self, mixed_type_graph):
-        """Test WeightedEdge type"""
         graph, _, edges = mixed_type_graph
         edge1 = edges["edge1"]
 
@@ -132,7 +116,6 @@ class TestEdgeTypes:
         assert graph.internal_edges[edge1.id].weight == 7.5
 
     def test_labeled_edges(self, mixed_type_graph):
-        """Test LabeledEdge type"""
         graph, _, edges = mixed_type_graph
         edge2 = edges["edge2"]
 
@@ -147,10 +130,7 @@ class TestEdgeTypes:
 
 
 class TestMixedTypeOperations:
-    """Test operations with mixed node and edge types"""
-
     def test_mixed_type_traversal(self, mixed_type_graph):
-        """Test traversal with mixed types"""
         graph, nodes, _ = mixed_type_graph
 
         # Get successors of TypeA nodes
@@ -166,7 +146,6 @@ class TestMixedTypeOperations:
         assert isinstance(predecessors[0], TypeANode)
 
     def test_mixed_edge_finding(self, mixed_type_graph):
-        """Test finding different edge types"""
         graph, nodes, _ = mixed_type_graph
 
         # Find edges from node_a1
