@@ -3,23 +3,16 @@
 
 from __future__ import annotations
 
-import contextlib
-import os
-import re
 import shlex
-import signal
-import subprocess
-import threading
 
 from pydantic import BaseModel, Field
 
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
 
+from .._subprocess import _SHELL_CONTROL
+from .._subprocess import _subprocess_sync as _subprocess_sync_inner
 from ..base import LionTool
-
-_SHELL_CONTROL = re.compile(r"(;|&&|\|\||\||`|\$\(|[<>]|\n)")
-_MAX_OUTPUT_BYTES = 100_000
 
 
 class BashRequest(BaseModel):
@@ -86,32 +79,6 @@ def _command_for_subprocess(request: BashRequest) -> tuple[str | list[str], bool
         raise PermissionError(f"Malformed command: {e}") from e
 
 
-def _drain(stream, buf: bytearray) -> bool:
-    """Continues reading after the cap is reached to prevent pipe-buffer deadlock."""
-    truncated = False
-    while True:
-        try:
-            chunk = stream.read(8192)
-        except Exception:
-            break
-        if not chunk:
-            break
-        remaining = _MAX_OUTPUT_BYTES - len(buf)
-        if remaining > 0:
-            buf.extend(chunk[:remaining])
-            if len(buf) >= _MAX_OUTPUT_BYTES:
-                truncated = True
-        # keep draining even after cap to avoid deadlocking the child process
-    return truncated
-
-
-def _decode_output(buf: bytearray, truncated: bool) -> str:
-    text = bytes(buf).decode("utf-8", errors="replace")
-    if truncated:
-        text += f"\n\n[... output truncated at {_MAX_OUTPUT_BYTES} bytes ...]\n"
-    return text
-
-
 def _subprocess_sync(
     cmd: str | list[str],
     shell: bool,
@@ -119,61 +86,12 @@ def _subprocess_sync(
     timeout_ms: int,
     cwd: str | None,
 ) -> BashResponse:
-    try:
-        proc = subprocess.Popen(  # noqa: S603  # cmd validated by _command_for_subprocess: shlex-split argv or trusted shell mode
-            cmd,
-            shell=shell,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=cwd,
-            start_new_session=True,
-        )
-    except Exception as e:
-        return BashResponse(stdout="", stderr=f"Execution error: {e}", return_code=-1)
-
-    stdout_buf = bytearray()
-    stderr_buf = bytearray()
-    stdout_truncated = [False]
-    stderr_truncated = [False]
-
-    def _drain_stdout():
-        stdout_truncated[0] = _drain(proc.stdout, stdout_buf)
-
-    def _drain_stderr():
-        stderr_truncated[0] = _drain(proc.stderr, stderr_buf)
-
-    t_out = threading.Thread(target=_drain_stdout, daemon=True)
-    t_err = threading.Thread(target=_drain_stderr, daemon=True)
-    t_out.start()
-    t_err.start()
-
-    try:
-        proc.wait(timeout=timeout_sec)
-    except subprocess.TimeoutExpired:
-        # os.killpg is POSIX-only; on Windows fall through to proc.kill().
-        if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1:
-            with contextlib.suppress(ProcessLookupError, OSError):
-                os.killpg(proc.pid, signal.SIGKILL)
-        else:
-            proc.kill()
-        proc.wait()
-        t_out.join(timeout=1)
-        t_err.join(timeout=1)
-        return BashResponse(
-            stdout=_decode_output(stdout_buf, True),
-            stderr=f"Command timed out after {timeout_ms} ms",
-            return_code=-1,
-            timed_out=True,
-        )
-
-    t_out.join()
-    t_err.join()
-
+    raw = _subprocess_sync_inner(cmd, shell, timeout_sec, cwd, timeout_ms=timeout_ms)
     return BashResponse(
-        stdout=_decode_output(stdout_buf, stdout_truncated[0]),
-        stderr=_decode_output(stderr_buf, stderr_truncated[0]),
-        return_code=proc.returncode,
-        timed_out=False,
+        stdout=raw["stdout"],
+        stderr=raw["stderr"],
+        return_code=raw["returncode"],
+        timed_out=raw.get("timed_out", False),
     )
 
 

@@ -45,10 +45,11 @@ from __future__ import annotations
 
 import fnmatch
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+from lionagi.tools._subprocess import _SHELL_CONTROL
 
 __all__ = (
     "PermissionDecision",
@@ -56,8 +57,6 @@ __all__ = (
 )
 
 logger = logging.getLogger(__name__)
-
-_SHELL_CONTROL = re.compile(r"(;|&&|\|\||\||`|\$\(|[<>]|\n)")
 
 _TOOL_ALIASES = {
     "bash_tool": "bash",
