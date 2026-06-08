@@ -3,7 +3,6 @@
 
 import threading
 from collections import deque
-from functools import wraps
 from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import (
@@ -16,6 +15,7 @@ from pydantic import (
 from typing_extensions import Self
 
 from lionagi._errors import ItemExistsError, RelationError
+from lionagi.ln._utils import synchronized as _graph_synchronized
 
 from .._concepts import Relational
 from ..generic.element import ID, Element
@@ -28,16 +28,6 @@ T = TypeVar("T", bound=Node)
 _NETWORKX_AVAILABLE = None
 _MATPLIB_AVAILABLE = None
 __all__ = ("Graph",)
-
-
-def _graph_synchronized(func):
-
-    @wraps(func)
-    def wrapper(self, *args, **kwargs):
-        with self._lock:
-            return func(self, *args, **kwargs)
-
-    return wrapper
 
 
 class Graph(Element, Relational, Generic[T]):
