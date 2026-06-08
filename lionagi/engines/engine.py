@@ -151,12 +151,11 @@ class EngineRun:
         if task_errors:
             for exc in task_errors:
                 logger.error("engine spawned task failed: %s", exc)
-            import sys
+            from lionagi.ln.concurrency._compat import ExceptionGroup as _ExceptionGroup
 
-            if sys.version_info >= (3, 11):
-                raise ExceptionGroup("engine spawned task(s) failed", task_errors)  # type: ignore[name-defined]  # noqa: F821
-            else:
+            if len(task_errors) == 1:
                 raise task_errors[0] from None
+            raise _ExceptionGroup("engine spawned task(s) failed", task_errors)
 
     async def run_team(
         self,

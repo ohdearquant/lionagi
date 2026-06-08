@@ -610,9 +610,7 @@ class TestPerServerPolicyPersistence:
             trusted = {"url": "https://api.example.com", "headers": {"X-Tenant": "a"}}
             other = {"url": "https://api.example.com", "headers": {"X-Tenant": "b"}}
 
-            assert MCPConnectionPool._policy_key(trusted) != MCPConnectionPool._policy_key(
-                other
-            )
+            assert MCPConnectionPool._policy_key(trusted) != MCPConnectionPool._policy_key(other)
             MCPConnectionPool.remember_security(trusted, policy)
             await MCPConnectionPool.get_client(other)
             assert seen[-1] is None

@@ -19,6 +19,7 @@ T = TypeVar("T")
 
 __all__ = (
     "is_coro_func",
+    "maybe_await",
     "run_sync",
     "run_async",
     "sleep",
@@ -112,6 +113,12 @@ def run_async(coro: Awaitable[T]) -> T:
     if not result_container:  # pragma: no cover
         raise RuntimeError("Coroutine did not produce a result")
     return result_container[0]
+
+
+async def maybe_await(result: Any) -> Any:
+    if inspect.isawaitable(result):
+        return await result
+    return result
 
 
 async def sleep(seconds: float) -> None:

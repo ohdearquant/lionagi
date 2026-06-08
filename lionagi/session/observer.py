@@ -9,6 +9,7 @@ import inspect
 from collections.abc import Callable
 from typing import Any
 
+from lionagi.ln.concurrency import maybe_await
 from lionagi.ln.types import Filter, RoleFilter, TypeFilter, all_of
 from lionagi.protocols._concepts import Observable, Observer
 
@@ -107,10 +108,7 @@ class SessionObserver(Observer):
         if self._gate is None:
             return True
         try:
-            verdict = self._gate(action)
-            if inspect.isawaitable(verdict):
-                verdict = await verdict
-            allowed = bool(verdict)
+            allowed = bool(await maybe_await(self._gate(action)))
         except Exception:
             allowed = False
         if not allowed:
@@ -128,10 +126,7 @@ class SessionObserver(Observer):
         allowed = True
         if self._gate is not None:
             try:
-                verdict = self._gate(payload)
-                if inspect.isawaitable(verdict):
-                    verdict = await verdict
-                allowed = bool(verdict)
+                allowed = bool(await maybe_await(self._gate(payload)))
             except Exception:
                 allowed = False
 
