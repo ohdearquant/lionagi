@@ -264,24 +264,44 @@ async def retry_with_backoff(
     jitter_factor: float = 0.2,
     **kwargs: Any,
 ) -> T:
-    # Build the effective retry set: retry_exceptions minus any excluded subtypes.
-    # This lets _canonical_retry handle the loop without a separate exclusion guard.
-    if exclude_exceptions:
-        effective_retry = tuple(
-            t for t in retry_exceptions if not any(issubclass(t, e) for e in exclude_exceptions)
-        )
-    else:
-        effective_retry = retry_exceptions
-
     async def _fn() -> T:
         return await func(*args, **kwargs)
+
+    if exclude_exceptions:
+        # Runtime dispatch: exclude_exceptions must be checked per-instance,
+        # not per-type, to correctly handle subclass hierarchies (e.g.
+        # retry_on=(OSError,), exclude=(ConnectionError,) — ConnectionError
+        # IS-A OSError but must not be retried).
+        class _Excluded(BaseException):
+            def __init__(self, inner: Exception):
+                self.inner = inner
+
+        _inner = _fn
+
+        async def _fn_guarded() -> T:
+            try:
+                return await _inner()
+            except exclude_exceptions as exc:
+                raise _Excluded(exc) from exc
+
+        try:
+            return await _canonical_retry(
+                _fn_guarded,
+                attempts=max_retries + 1,
+                base_delay=base_delay,
+                max_delay=max_delay,
+                retry_on=retry_exceptions,
+                jitter=jitter_factor if jitter else 0.0,
+            )
+        except _Excluded as wrapper:
+            raise wrapper.inner from wrapper.__cause__
 
     return await _canonical_retry(
         _fn,
         attempts=max_retries + 1,
         base_delay=base_delay,
         max_delay=max_delay,
-        retry_on=effective_retry,
+        retry_on=retry_exceptions,
         jitter=jitter_factor if jitter else 0.0,
     )
 

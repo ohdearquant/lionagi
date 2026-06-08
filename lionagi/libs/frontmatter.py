@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import yaml
 
+_FM_SPLIT = re.compile(r"^---\s*$", re.MULTILINE)
+
 
 def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    text = text.strip()
     if not text.startswith("---"):
         return {}, text
-    parts = text.split("---", 2)
+    parts = _FM_SPLIT.split(text, maxsplit=2)
     if len(parts) < 3:
         return {}, text
     try:

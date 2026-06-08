@@ -79,9 +79,12 @@ def list_skill_names() -> list[str]:
 
 
 def strip_frontmatter(text: str) -> str:
+    text = text.lstrip()
     if not text.startswith("---"):
         return text
-    parts = text.split("---", 2)
+    from lionagi.libs.frontmatter import _FM_SPLIT
+
+    parts = _FM_SPLIT.split(text, maxsplit=2)
     if len(parts) < 3:
         return text
     return parts[2].lstrip("\n")

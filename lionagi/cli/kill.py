@@ -13,6 +13,7 @@ from typing import Any
 import psutil
 
 from ._logging import log_error, warn
+from ._process import _TABLE_TO_ENTITY_TYPE
 from ._process import pid_alive as _pid_alive
 from ._process import resolve_entity as _resolve_entity
 
@@ -155,13 +156,6 @@ _STALE_SWEEP_ORDER = ("sessions", "invocations")
 _PLAY_ACTIVE_STATUSES = frozenset(
     {"pending", "prepared", "running", "running_complete", "gated", "redoing"}
 )
-
-_TABLE_TO_ENTITY_TYPE = {
-    "sessions": "session",
-    "invocations": "invocation",
-    "plays": "play",
-    "shows": "show",
-}
 
 
 async def _list_child_invocations(db: Any, session_id: str) -> list[dict[str, Any]]:

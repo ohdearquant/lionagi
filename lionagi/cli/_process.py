@@ -18,6 +18,8 @@ def pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+    except OSError:
+        return False
 
 
 _SEARCH_ORDER = ("sessions", "invocations", "plays", "shows")

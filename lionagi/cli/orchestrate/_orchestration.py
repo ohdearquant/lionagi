@@ -24,11 +24,6 @@ from .._persist import _resolve_project, teardown_persist
 from .._providers import build_imodel_from_spec, resolve_persisted_effort
 from .._runs import RunDir, allocate_run, save_last_branch_pointer
 
-
-def _resolve_session_model(provider: str | None, model: str | None) -> str | None:
-    return _provenance.resolve_model_spec(provider, model)
-
-
 __all__ = (
     "OrchestrationEnv",
     "resolve_worker_spec",
@@ -511,7 +506,6 @@ async def setup_orchestration_persist(
     project: str | None = None,
     branches: list[Any] | None = None,
 ) -> dict | None:
-    from lionagi.state import provenance as _provenance
     from lionagi.state.db import StateDB
 
     db = None
