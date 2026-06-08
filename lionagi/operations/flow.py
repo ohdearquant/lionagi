@@ -15,10 +15,14 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import anyio
-from anyio import get_cancelled_exc_class
 
 from lionagi.ln import AlcallParams
-from lionagi.ln.concurrency import CapacityLimiter, ConcurrencyEvent, create_task_group
+from lionagi.ln.concurrency import (
+    CapacityLimiter,
+    ConcurrencyEvent,
+    create_task_group,
+    get_cancelled_exc_class,
+)
 from lionagi.models.note import Note
 from lionagi.operations.node import Operation, create_operation
 from lionagi.protocols.generic.event import Event
