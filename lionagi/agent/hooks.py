@@ -18,8 +18,6 @@ import logging
 import re
 from pathlib import Path
 
-from lionagi.libs.path_safety import GLOB_CHARS
-
 __all__ = (
     "auto_format_python",
     "guard_destructive",
@@ -110,7 +108,8 @@ def guard_paths(
                     #    documented examples like ".env" still block ".env.local".
                     import fnmatch
 
-                    if any(c in denied for c in GLOB_CHARS):
+                    _glob_chars = frozenset("*?[")
+                    if any(c in denied for c in _glob_chars):
                         # Glob mode: match against each resolved path component.
                         parts = resolved.parts
                         if any(fnmatch.fnmatch(part, denied) for part in parts):

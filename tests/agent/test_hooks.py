@@ -126,3 +126,41 @@ async def test_guard_paths_glob_deny_blocks_dotenv(tmp_path):
     hook = guard_paths(denied_paths=[".env"])
     with pytest.raises(PermissionError, match="deny rule"):
         await hook("reader", "read", {"path": str(tmp_path / ".env")})
+
+
+# ---------------------------------------------------------------------------
+# Regression: GLOB_CHARS security (Finding 1)
+# The broad GLOB_CHARS = frozenset("*?[]{}~") was used to decide glob mode,
+# making "secret~" trigger fnmatch which does NOT match "mysecret~backup"
+# (fnmatch "secret~" only matches a literal string ending in ~, not substring).
+# Fix: hook uses narrow frozenset("*?[") so "secret~" stays in substring mode
+# and correctly denies "/tmp/mysecret~backup".
+# ---------------------------------------------------------------------------
+
+
+async def test_guard_paths_tilde_deny_uses_substring_mode(tmp_path):
+    """'secret~' must be treated as a substring pattern, not fnmatch glob.
+
+    With the broad GLOB_CHARS = frozenset("*?[]{}~"), a deny string like
+    'secret~' triggers fnmatch mode. fnmatch('mysecret~backup', 'secret~')
+    is False (no wildcard expansion), so the path is wrongly ALLOWED.
+    The fix restores the narrow frozenset("*?[") so '~' stays in substring
+    mode: 'secret~' in 'mysecret~backup' is True -> correctly DENIED.
+    """
+    hook = guard_paths(denied_paths=["secret~"])
+    with pytest.raises(PermissionError, match="deny rule"):
+        await hook("reader", "read", {"path": str(tmp_path / "mysecret~backup")})
+
+
+async def test_guard_paths_brace_deny_uses_substring_mode(tmp_path):
+    """'{secret}' in a deny rule must block paths containing that literal substring."""
+    hook = guard_paths(denied_paths=["{secret}"])
+    with pytest.raises(PermissionError, match="deny rule"):
+        await hook("reader", "read", {"path": str(tmp_path / "my{secret}file")})
+
+
+async def test_guard_paths_tilde_deny_allows_unrelated(tmp_path):
+    """'secret~' deny must not block a path that does not contain 'secret~'."""
+    hook = guard_paths(denied_paths=["secret~"])
+    result = await hook("reader", "read", {"path": str(tmp_path / "config.py")})
+    assert result is None

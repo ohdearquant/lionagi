@@ -119,9 +119,12 @@ def _grep_sync(
     if result.get("timed_out"):
         return SearchResponse(success=False, error="grep timed out", count=0)
 
-    # exit code 1 = no matches (not an error), 2 = real error
-    if result["returncode"] == 2:
-        return SearchResponse(success=False, error=result["stderr"].strip(), count=0)
+    rc = result["returncode"]
+    # exit code 0 = matches found, 1 = no matches (not an error); anything else is a real error
+    if rc not in (0, 1):
+        return SearchResponse(
+            success=False, error=result["stderr"].strip() or f"grep exited with code {rc}", count=0
+        )
 
     lines = [line for line in result["stdout"].splitlines() if line][:max_results]
     return SearchResponse(

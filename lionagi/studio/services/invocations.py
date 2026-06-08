@@ -8,6 +8,7 @@ Backs the /api/invocations endpoints. Reads from state.db's
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
@@ -28,7 +29,12 @@ async def list_invocations(
         rows = await db.list_invocations(skill=skill, status=status, limit=limit, offset=offset)
     out: list[dict[str, Any]] = []
     for r in rows:
-        node_meta = _parse_json_col(r.get("node_metadata"))
+        node_meta = r.get("node_metadata")
+        if isinstance(node_meta, str):
+            try:
+                node_meta = json.loads(node_meta)
+            except json.JSONDecodeError:
+                node_meta = None
         out.append(
             {
                 "id": r["id"],
@@ -58,7 +64,12 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
         row = await db.get_invocation(invocation_id)
         if row is None:
             return None
-        node_meta = _parse_json_col(row.get("node_metadata"))
+        node_meta = row.get("node_metadata")
+        if isinstance(node_meta, str):
+            try:
+                node_meta = json.loads(node_meta)
+            except json.JSONDecodeError:
+                node_meta = None
         sessions = await db.list_sessions_for_invocation(invocation_id)
         # ADR-0021: surface structured outcomes alongside child sessions
         # so the invocation detail page can render verdict / CI / gate

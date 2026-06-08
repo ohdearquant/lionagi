@@ -490,3 +490,44 @@ def test_to_tool_custom_system_tool_name():
     tool = CustomSearchTool()
     t = tool.to_tool()
     assert t.func_callable.__name__ == "my_search"
+
+
+# ---------------------------------------------------------------------------
+# Regression: rc=-1 (subprocess launch failure) must be success=False
+# (Finding 2: _subprocess_sync returns rc=-1 on launch error, old code
+# only checked rc==2, so rc==-1 fell through to success=True)
+# ---------------------------------------------------------------------------
+
+
+async def test_grep_rc_minus1_is_failure_not_success(monkeypatch):
+    """rc=-1 from _subprocess_sync (launch failure) must yield success=False."""
+    import lionagi.tools.code.search as search_mod
+
+    monkeypatch.setattr(
+        search_mod,
+        "_subprocess_sync",
+        lambda *a, **kw: {
+            "returncode": -1,
+            "stdout": "",
+            "stderr": "Execution error: grep not found",
+        },
+    )
+    tool = SearchTool()
+    resp = await tool.handle_request(SearchRequest(action=SearchAction.grep, pattern="x", path="."))
+    assert resp.success is False, "rc=-1 must be a failure, not a silent empty success"
+    assert resp.count == 0
+
+
+async def test_grep_rc_127_is_failure(monkeypatch):
+    """Any rc not in {0, 1} must be success=False (e.g. rc=127 = command not found)."""
+    import lionagi.tools.code.search as search_mod
+
+    monkeypatch.setattr(
+        search_mod,
+        "_subprocess_sync",
+        lambda *a, **kw: {"returncode": 127, "stdout": "", "stderr": "grep: command not found"},
+    )
+    tool = SearchTool()
+    resp = await tool.handle_request(SearchRequest(action=SearchAction.grep, pattern="x", path="."))
+    assert resp.success is False
+    assert resp.count == 0

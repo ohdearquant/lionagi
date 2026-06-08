@@ -13,7 +13,6 @@ from . import skills as skills_svc
 from ._db import get_active_connection_count
 from ._db import open_db as _open_db
 from ._path_safety import public_path
-from .admin import db_health as _db_health
 
 _DB = str(DEFAULT_DB_PATH)
 
@@ -69,9 +68,9 @@ async def _pragmas(db: Any) -> dict[str, Any]:
 
 async def get_db_stats() -> dict[str, Any]:
     db_path = DEFAULT_DB_PATH
-    _sizes = _db_health()
-    size_bytes = _sizes["size_bytes"]
-    wal_bytes = _sizes["wal_bytes"]
+    size_bytes = db_path.stat().st_size if db_path.exists() else 0
+    wal_path = db_path.parent / (db_path.name + "-wal")
+    wal_bytes = wal_path.stat().st_size if wal_path.exists() else 0
     connections_active = get_active_connection_count()
     path_str = public_path(db_path)
 
