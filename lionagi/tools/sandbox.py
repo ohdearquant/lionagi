@@ -15,12 +15,13 @@ Why worktrees over tempdir:
 
 from __future__ import annotations
 
-import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from lionagi.ln.concurrency import run_sync
+
+from ._subprocess import _subprocess_sync
 
 
 @dataclass
@@ -33,14 +34,8 @@ class SandboxSession:
 
 
 def _run_git(args: list[str], cwd: str | None = None) -> tuple[str, str, int]:
-    result = subprocess.run(  # noqa: S603  # argv is always ["git"] + validated git sub-commands; no shell interpolation
-        ["git"] + args,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        cwd=cwd,
-    )
-    return result.stdout.strip(), result.stderr.strip(), result.returncode
+    result = _subprocess_sync(["git"] + args, False, 30.0, cwd)  # noqa: S603  # argv is always ["git"] + validated git sub-commands; no shell interpolation
+    return result["stdout"].strip(), result["stderr"].strip(), result["returncode"]
 
 
 def _create_worktree_sync(repo_root: str, branch_name: str, base_branch: str) -> SandboxSession:

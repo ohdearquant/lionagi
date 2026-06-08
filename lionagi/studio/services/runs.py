@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 import time
 from pathlib import Path
@@ -9,6 +8,7 @@ from typing import Any
 from lionagi.cli._runs import RUNS_ROOT
 
 from . import sessions as _sessions_svc
+from ._io import read_json_file as _read_json_file
 from ._path_safety import public_path, safe_path_join
 
 _STATUS_ALIASES: dict[str, set[str]] = {
@@ -579,13 +579,12 @@ def get_run(run_id: str) -> dict[str, Any] | None:
     artifact_root = state_root / "artifacts"
     manifest: dict[str, Any] = {}
     if manifest_path.exists():
-        try:
-            manifest = json.loads(manifest_path.read_text())
+        loaded = _read_json_file(manifest_path)
+        if loaded is not None:
+            manifest = loaded
             art = manifest.get("artifact_root")
             if art:
                 artifact_root = Path(art)
-        except (OSError, json.JSONDecodeError):
-            pass
 
     branches: list[dict[str, Any]] = []
     branches_dir = state_root / "branches"
@@ -595,9 +594,8 @@ def get_run(run_id: str) -> dict[str, Any] | None:
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         ):
-            try:
-                branches.append(json.loads(bf.read_text()))
-            except (OSError, json.JSONDecodeError):
-                pass
+            loaded = _read_json_file(bf)
+            if loaded is not None:
+                branches.append(loaded)
 
     return _adapt_detail(run_id, state_root, artifact_root, manifest, branches)
