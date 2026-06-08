@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from ._lifecycle import EXIT_CODE_BY_STATUS
 from ._runs import RUNS_ROOT
 
 
@@ -101,13 +102,7 @@ _STATUS_MAP = {
     "timeout": "timed_out",
 }
 
-_EXIT_CODE_STATUS_MAP = {
-    0: "completed",
-    1: "failed",
-    124: "timed_out",
-    130: "aborted",
-    143: "cancelled",
-}
+_EXIT_CODE_STATUS_MAP = {v: k for k, v in EXIT_CODE_BY_STATUS.items()}
 
 
 def _derive_import_status(manifest: dict[str, Any]) -> str:

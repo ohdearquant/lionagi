@@ -188,67 +188,22 @@ class FieldModel(Params):
         return new_instance
 
     def with_description(self, description: str) -> Self:
-        current_metadata = () if self._is_sentinel(self.metadata) else self.metadata
-        filtered_metadata = tuple(m for m in current_metadata if m.key != "description")
-        new_metadata = (
-            *filtered_metadata,
-            Meta("description", description),
-        )
-        new_instance = object.__new__(type(self))
-        object.__setattr__(new_instance, "base_type", self.base_type)
-        object.__setattr__(new_instance, "metadata", new_metadata)
-        new_instance._validate()
-        return new_instance
+        return self.with_metadata("description", description)
 
     def with_default(self, default: Any) -> Self:
-        current_metadata = () if self._is_sentinel(self.metadata) else self.metadata
-        filtered_metadata = tuple(m for m in current_metadata if m.key != "default")
-        new_metadata = (*filtered_metadata, Meta("default", default))
-        new_instance = object.__new__(type(self))
-        object.__setattr__(new_instance, "base_type", self.base_type)
-        object.__setattr__(new_instance, "metadata", new_metadata)
-        new_instance._validate()
-        return new_instance
+        return self.with_metadata("default", default)
 
     def with_frozen(self, frozen: bool = True) -> Self:
-        current_metadata = () if self._is_sentinel(self.metadata) else self.metadata
-        filtered_metadata = tuple(m for m in current_metadata if m.key != "frozen")
-        new_metadata = (*filtered_metadata, Meta("frozen", frozen))
-        new_instance = object.__new__(type(self))
-        object.__setattr__(new_instance, "base_type", self.base_type)
-        object.__setattr__(new_instance, "metadata", new_metadata)
-        new_instance._validate()
-        return new_instance
+        return self.with_metadata("frozen", frozen)
 
     def with_alias(self, alias: str) -> Self:
-        current_metadata = () if self._is_sentinel(self.metadata) else self.metadata
-        filtered_metadata = tuple(m for m in current_metadata if m.key != "alias")
-        new_metadata = (*filtered_metadata, Meta("alias", alias))
-        new_instance = object.__new__(type(self))
-        object.__setattr__(new_instance, "base_type", self.base_type)
-        object.__setattr__(new_instance, "metadata", new_metadata)
-        new_instance._validate()
-        return new_instance
+        return self.with_metadata("alias", alias)
 
     def with_title(self, title: str) -> Self:
-        current_metadata = () if self._is_sentinel(self.metadata) else self.metadata
-        filtered_metadata = tuple(m for m in current_metadata if m.key != "title")
-        new_metadata = (*filtered_metadata, Meta("title", title))
-        new_instance = object.__new__(type(self))
-        object.__setattr__(new_instance, "base_type", self.base_type)
-        object.__setattr__(new_instance, "metadata", new_metadata)
-        new_instance._validate()
-        return new_instance
+        return self.with_metadata("title", title)
 
     def with_exclude(self, exclude: bool = True) -> Self:
-        current_metadata = () if self._is_sentinel(self.metadata) else self.metadata
-        filtered_metadata = tuple(m for m in current_metadata if m.key != "exclude")
-        new_metadata = (*filtered_metadata, Meta("exclude", exclude))
-        new_instance = object.__new__(type(self))
-        object.__setattr__(new_instance, "base_type", self.base_type)
-        object.__setattr__(new_instance, "metadata", new_metadata)
-        new_instance._validate()
-        return new_instance
+        return self.with_metadata("exclude", exclude)
 
     def with_metadata(self, key: str, value: Any) -> Self:
         current_metadata = () if self._is_sentinel(self.metadata) else self.metadata

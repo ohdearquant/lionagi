@@ -13,6 +13,8 @@ from typing import Any
 
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
+from ._io import parse_json_col as _parse_json_col
+
 
 async def list_invocations(
     *,
@@ -116,12 +118,13 @@ def _serialize_artifact(row: dict[str, Any]) -> dict[str, Any]:
     SQLite returns JSON columns as strings; decode here so the frontend
     gets a real object instead of a doubly-encoded string.
     """
-    content = row.get("content")
-    if isinstance(content, str):
-        try:
-            content = json.loads(content)
-        except json.JSONDecodeError:
-            content = None
+    raw_content = row.get("content")
+    if isinstance(raw_content, str):
+        parsed = _parse_json_col(raw_content)
+        # If still a string, parse failed — surface None rather than a doubly-encoded string
+        content = parsed if not isinstance(parsed, str) else None
+    else:
+        content = raw_content
     return {
         "id": row["id"],
         "invocation_id": row.get("invocation_id"),

@@ -21,7 +21,7 @@ from lionagi.state import provenance as _provenance
 from .._agents import AgentProfile, list_agents, load_agent_profile
 from .._logging import hint
 from .._persist import _resolve_project, teardown_persist
-from .._providers import build_imodel_from_spec, resolve_persisted_effort
+from .._providers import build_imodel_from_spec, parse_model_spec, resolve_persisted_effort
 from .._runs import RunDir, allocate_run, save_last_branch_pointer
 
 __all__ = (
@@ -42,7 +42,17 @@ __all__ = (
     "casts_role_system",
     "role_config",
     "resolve_modes",
+    "parse_orchestrator_provider",
 )
+
+
+def parse_orchestrator_provider(model_spec: str) -> tuple[str | None, str | None]:
+    """Parse model_spec into (model, provider) for session-row provenance."""
+    ms = parse_model_spec(model_spec) if model_spec else None
+    if ms is None:
+        return None, None
+    provider = ms.model.split("/", 1)[0] if "/" in ms.model else None
+    return ms.model, provider
 
 
 def available_roles() -> list[str]:

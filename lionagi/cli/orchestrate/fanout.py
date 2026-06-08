@@ -7,7 +7,7 @@ from __future__ import annotations
 import time
 
 from lionagi._errors import TimeoutError as LionTimeoutError
-from lionagi.ln.concurrency import move_on_after
+from lionagi.ln.concurrency import CancelScope, move_on_after
 from lionagi.orchestration import plan
 from lionagi.orchestration.prompts import SYNTHESIS_INSTRUCTION
 
@@ -25,6 +25,7 @@ from ._orchestration import (
     available_roles,
     build_worker_branch,
     finalize_orchestration,
+    parse_orchestrator_provider,
     role_roster,
     setup_orchestration,
     start_live_persist,
@@ -81,12 +82,7 @@ async def _run_fanout(
 
     # ADR-0022: orchestrator default model + effort on the session row.
     # Per-worker model is written branch-side when build_worker_branch runs.
-    from .._providers import parse_model_spec as _parse_model_spec
-
-    _orc_ms = _parse_model_spec(env.default_model_spec) if env.default_model_spec else None
-    _orc_provider = None
-    if _orc_ms and "/" in _orc_ms.model:
-        _orc_provider = _orc_ms.model.split("/", 1)[0]
+    _orc_model, _orc_provider = parse_orchestrator_provider(env.default_model_spec)
     await start_live_persist(
         env,
         invocation_kind="fanout",
@@ -94,7 +90,7 @@ async def _run_fanout(
         agent_name=agent_name,
         artifacts_path=str(env.run.artifact_root),
         invocation_id=invocation_id,
-        model=_orc_ms.model if _orc_ms else None,
+        model=_orc_model,
         provider=_orc_provider,
         effort=env.effort,
         project=project,
@@ -133,9 +129,7 @@ async def _run_fanout(
         _terminal_status = classify_exception(exc)
         raise
     finally:
-        import anyio
-
-        with anyio.CancelScope(shield=True):
+        with CancelScope(shield=True):
             await stop_live_persist(env, status=_terminal_status)
             for _br in env.session.branches:
                 await _br.mdls.shutdown()

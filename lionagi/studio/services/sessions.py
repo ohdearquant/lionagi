@@ -18,11 +18,8 @@ SESSION_DONE_STABLE_SECS = 60.0
 def _parse_metadata(raw: str | None) -> dict[str, Any] | None:
     if not raw:
         return None
-    try:
-        meta = json.loads(raw) if isinstance(raw, str) else raw
-        return meta if isinstance(meta, dict) else None
-    except (json.JSONDecodeError, TypeError):
-        return None
+    meta = _parse_json_col(raw)
+    return meta if isinstance(meta, dict) else None
 
 
 def _graph_from_metadata(raw: str | None) -> dict[str, Any] | None:
