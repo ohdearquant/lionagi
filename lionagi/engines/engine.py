@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.casts.emission import build_emission_operable
+from lionagi.ln.concurrency import Semaphore, gather
 from lionagi.session.session import Session
 from lionagi.session.signal import NodeCompleted, NodeFailed, NodeStarted
 
@@ -53,7 +54,7 @@ class EngineRun:
         self.engine = engine
         self.session = session if session is not None else Session()
         self.on_event = on_event
-        self._sem = asyncio.Semaphore(engine.max_concurrent)
+        self._sem = Semaphore(engine.max_concurrent)
         self._active: set[asyncio.Task] = set()
         self._pending: deque = deque()
         self._seen: set[str] = set()
@@ -134,7 +135,7 @@ class EngineRun:
             return
         for t in list(self._active):
             t.cancel()
-        await asyncio.gather(*list(self._active), return_exceptions=True)
+        await gather(*list(self._active), return_exceptions=True)
         # Callbacks remove tasks from _active as they settle.
         self._active.clear()
 
@@ -142,7 +143,7 @@ class EngineRun:
         """Block until no spawned task remains; re-raise accumulated failures."""
         task_errors: list[BaseException] = []
         while self._active:
-            results = await asyncio.gather(*list(self._active), return_exceptions=True)
+            results = await gather(*list(self._active), return_exceptions=True)
             task_errors.extend(
                 r
                 for r in results
@@ -228,7 +229,7 @@ class EngineRun:
             on_progress=_on_progress,
         )
         if emits:
-            await asyncio.gather(*emits, return_exceptions=True)
+            await gather(*emits, return_exceptions=True)
         return result
 
 
