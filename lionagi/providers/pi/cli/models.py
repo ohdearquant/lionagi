@@ -95,11 +95,7 @@ def _cli(
 
 
 class PiCodeRequest(BaseModel):
-    """Configuration + prompt for a Pi coding agent CLI invocation.
-
-    Fields annotated with ``_cli(...)`` metadata are automatically
-    assembled into CLI arguments by :meth:`as_cmd_args`, sorted by order.
-    """
+    """Configuration + prompt for a Pi coding agent CLI invocation."""
 
     # ── prompt (always required) ──────────────────────────────────
     prompt: str = Field(description="The prompt for Pi CLI")
@@ -213,22 +209,11 @@ class PiCodeRequest(BaseModel):
     @field_validator("file_args", mode="before")
     @classmethod
     def _validate_file_args(cls, v: list) -> list:
-        """Reject absolute paths and directory-traversal sequences in file_args.
-
-        Pi forwards each entry as ``@<path>`` to the CLI. Without validation an
-        untrusted payload could read arbitrary files (e.g. /etc/passwd or
-        ../../secrets.txt). Validation is fail-closed: any invalid entry raises
-        ValueError before the subprocess is constructed.
-
-        Relative paths that stay inside the repo are permitted; callers that
-        need an absolute path should pre-validate and use an explicit allowlist.
-        """
         return check_paths_safe(list(v), "file_args", strip_at=True)
 
     @field_validator("extension", "skill", mode="before")
     @classmethod
     def _validate_path_fields(cls, v):
-        """Reject absolute paths and traversal sequences in extension/skill lists."""
         if v is None:
             return v
         items = [v] if isinstance(v, str) else list(v)
@@ -236,14 +221,6 @@ class PiCodeRequest(BaseModel):
 
     @model_validator(mode="after")
     def _contain_file_args_in_repo(self) -> PiCodeRequest:
-        """Fail-closed: every file_args entry must resolve inside ``repo``.
-
-        The lexical field validator rejects absolute paths and ``..``, but a
-        repo-local symlink (``repo/link -> /outside``) is lexically clean yet
-        lets Pi read outside the repo. ``resolve()`` follows symlinks, so this
-        rejects any entry whose real location escapes ``repo`` before the
-        subprocess is constructed.
-        """
         repo_root = self.repo.resolve()
         contain_paths_in_repo(self.file_args, repo_root, "file_args", strip_at=True)
         if self.extension:
@@ -255,13 +232,6 @@ class PiCodeRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _infer_provider_from_model(cls, data):
-        """Infer pi's --provider from model name when not explicitly set.
-
-        Pi CLI needs both --provider and --model. When lionagi passes
-        model="deepseek-chat", we detect the provider prefix so pi
-        routes to the correct API. For OpenRouter, the prefix is also
-        stripped from the model name (openrouter/vendor/id → vendor/id).
-        """
         if data.get("provider"):
             return data
         model = data.get("model") or ""
@@ -276,7 +246,6 @@ class PiCodeRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _validate_message_prompt(cls, data):
-        """Convert messages format to prompt if needed."""
         if data.get("prompt"):
             return data
 
@@ -341,7 +310,6 @@ class PiCodeRequest(BaseModel):
         return {key: self.api_key}
 
     def _build_declarative_args(self) -> list[str]:
-        """Collect fields with ``_cli()`` metadata and emit flags."""
         flagged: list[tuple[int, dict, Any]] = []
         for field_name, field_info in type(self).model_fields.items():
             extra = field_info.json_schema_extra
@@ -380,8 +348,6 @@ class PiCodeRequest(BaseModel):
 
 @dataclass
 class PiChunk:
-    """Low-level wrapper around every JSON object from Pi CLI."""
-
     raw: dict[str, Any]
     type: str
     text: str | None = None
@@ -392,8 +358,6 @@ class PiChunk:
 
 @dataclass
 class PiSession:
-    """Aggregated view of a whole Pi CLI conversation."""
-
     session_id: str | None = None
     model: str | None = None
     chunks: list[PiChunk] = datafield(default_factory=list)
@@ -412,7 +376,6 @@ class PiSession:
 
 
 def _extract_summary(session: PiSession) -> dict[str, Any]:
-    """Extract summary from session data."""
     tool_counts: dict[str, int] = {}
     key_actions: list[str] = []
     file_operations: dict[str, list[str]] = {
@@ -469,7 +432,6 @@ def _extract_summary(session: PiSession) -> dict[str, Any]:
 
 # TODO(#1043 Phase 2): migrate create_subprocess_exec + wait_for to anyio
 async def _ndjson_from_cli(request: PiCodeRequest):
-    """Yields each JSON object emitted by Pi CLI (JSONL mode)."""
     if PI_CLI is None:
         raise RuntimeError("Pi CLI not found. Install with: npm i -g @mariozechner/pi-coding-agent")
 

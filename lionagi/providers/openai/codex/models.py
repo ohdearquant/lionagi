@@ -99,17 +99,7 @@ def _cli(
 
 # --------------------------------------------------------------------------- request model
 class CodexCodeRequest(BaseModel):
-    """Configuration + prompt for an OpenAI Codex CLI invocation.
-
-    Fields annotated with ``_cli(...)`` metadata are automatically
-    assembled into CLI arguments by :meth:`as_cmd_args`, sorted by
-    ``order``.  Special cases (``bypass_approvals``, ``full_auto``,
-    ``sandbox``, ``config_overrides``, ``images``) are handled
-    explicitly after the declarative pass.
-
-    Adding a new CLI flag is one line: declare the field with ``_cli()``
-    metadata and the builder picks it up automatically.
-    """
+    """Configuration + prompt for an OpenAI Codex CLI invocation."""
 
     # ── prompt (always required) ──────────────────────────────────
     prompt: str = Field(description="The prompt for Codex CLI")
@@ -290,15 +280,6 @@ class CodexCodeRequest(BaseModel):
     @field_validator("add_dir", mode="after")
     @classmethod
     def _validate_add_dir(cls, v):
-        """Reject traversal sequences in add_dir entries.
-
-        Absolute paths are permitted — add_dir is a read-only grant that the
-        spawned CLI uses to determine which directories it may read.  The
-        orchestration layer sets repo to a per-agent artifact directory and
-        add_dir to the project root, which legitimately lies outside the repo.
-        Traversal sequences (``..``) are still rejected because they indicate
-        an unintended escape rather than a deliberate grant.
-        """
         if v is None:
             return v
         return check_add_dir_entries_safe(v, "add_dir")
@@ -306,13 +287,11 @@ class CodexCodeRequest(BaseModel):
     @field_validator("images", mode="after")
     @classmethod
     def _validate_images(cls, v):
-        """Reject absolute paths and traversal sequences in image paths."""
         return check_paths_safe(v, "images")
 
     @field_validator("output_schema", "output_last_message", mode="before")
     @classmethod
     def _validate_output_paths(cls, v):
-        """Reject absolute paths and traversal sequences in output path fields."""
         if v is None:
             return v
         check_path_safe(str(v), "output_schema/output_last_message")
@@ -320,12 +299,6 @@ class CodexCodeRequest(BaseModel):
 
     @model_validator(mode="after")
     def _contain_path_fields_in_repo(self):
-        """Resolve write-target path fields and reject any that escape the repo root.
-
-        ``add_dir`` is a read-only grant and is excluded from this check — it
-        is validated separately by ``_validate_add_dir``, which allows absolute
-        paths (deliberate grants) while still rejecting traversal sequences.
-        """
         repo_root = self.repo.resolve()
         if self.images:
             contain_paths_in_repo(self.images, repo_root, "images")
@@ -338,7 +311,6 @@ class CodexCodeRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _validate_message_prompt(cls, data):
-        """Convert messages format to prompt if needed."""
         if data.get("prompt"):
             return data
 
@@ -361,7 +333,6 @@ class CodexCodeRequest(BaseModel):
 
     @model_validator(mode="after")
     def _warn_dangerous_settings(self):
-        """Emit security warnings for dangerous CLI settings."""
         if self.bypass_approvals:
             warnings.warn(
                 "CodexCodeRequest: bypass_approvals=True skips ALL approval "
@@ -375,7 +346,6 @@ class CodexCodeRequest(BaseModel):
     # ── workspace path ────────────────────────────────────────────
 
     def cwd(self) -> Path:
-        """Get working directory, validating workspace path."""
         if not self.ws:
             return self.repo
 
@@ -403,23 +373,10 @@ class CodexCodeRequest(BaseModel):
     # ── CLI command builder ───────────────────────────────────────
 
     def as_cmd_args(self) -> list[str]:
-        """Build argument list for ``codex exec`` subcommand.
-
-        Flags are assembled in two passes:
-
-        1. **Declarative** – fields with ``_cli()`` metadata, sorted by
-           ``order``.
-        2. **Special cases** – approval/sandbox (mutual exclusivity),
-           images (``-i`` repeat), config overrides (``-c key=val``).
-
-        Structure: ``exec --json [flags] -C <cwd> -- <prompt>``
-        """
+        """Build argument list for ``codex exec`` subcommand."""
         args: list[str] = ["exec", "--json"]
 
-        # ── pass 1: declarative flags ──
         args.extend(self._build_declarative_args())
-
-        # ── pass 2: special cases ──
 
         # Approval & sandbox: mutually exclusive hierarchy
         if self.bypass_approvals:
@@ -477,7 +434,6 @@ class CodexCodeRequest(BaseModel):
         return args
 
     def _build_declarative_args(self) -> list[str]:
-        """Collect fields with ``_cli()`` metadata and emit flags."""
         flagged: list[tuple[int, dict, Any]] = []
         for field_name, field_info in type(self).model_fields.items():
             extra = field_info.json_schema_extra
@@ -521,17 +477,7 @@ CodexSession = CLISession
 
 # TODO(#1043 Phase 2): migrate create_subprocess_exec + wait_for to anyio
 async def _ndjson_from_cli(request: CodexCodeRequest):
-    """
-    Yields each JSON object emitted by the Codex CLI (JSONL mode).
-
-    Robust against UTF-8 splits and uses json.JSONDecoder.raw_decode.
-    Drains stderr concurrently into a bounded buffer so the subprocess
-    cannot deadlock when it produces large stderr volumes before any
-    stdout output. The codex CLI launches with ``start_new_session=True``,
-    so cancellation terminates the whole process group rather than just
-    the direct child — needed for cleanup when shells, ssh, etc. are
-    spawned beneath the CLI itself.
-    """
+    """Yield each JSON object from the Codex CLI NDJSON stream."""
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
 
