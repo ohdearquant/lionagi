@@ -3,15 +3,10 @@
 
 from __future__ import annotations
 
-import asyncio
-import codecs
 import contextlib
-import inspect
 import json
 import logging
-import os
 import shutil
-import signal
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timezone
 from functools import partial
@@ -32,6 +27,18 @@ from lionagi.libs.path_safety import (
     contain_paths_in_root as contain_paths_in_repo,
 )
 from lionagi.libs.schema.as_readable import as_readable
+from lionagi.ln.concurrency.utils import maybe_await
+from lionagi.providers._cli_subprocess import build_declarative_cli_args, ndjson_from_cli
+
+try:
+    from json_repair import repair_json as _repair_json
+
+    def _claude_tail_repair(buf: str) -> dict | None:
+        fixed = _repair_json(buf)
+        return json.loads(fixed) if fixed else None
+
+except ImportError:
+    _claude_tail_repair = None
 from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 
@@ -507,53 +514,7 @@ class ClaudeCodeRequest(BaseModel):
         return args
 
     def _build_declarative_args(self) -> list[str]:
-        flagged: list[tuple[int, dict, Any]] = []
-        for field_name, field_info in type(self).model_fields.items():
-            extra = field_info.json_schema_extra
-            if not extra or "cli_flag" not in extra:
-                continue
-            val = getattr(self, field_name)
-            if val is None:
-                continue
-            if isinstance(val, list) and not val:
-                continue
-            if val is False and extra.get("cli_kind") != "bool_pair":
-                continue
-            flagged.append((extra["cli_order"], extra, val))
-
-        flagged.sort(key=lambda x: x[0])
-
-        args: list[str] = []
-        for _, extra, val in flagged:
-            flag = extra["cli_flag"]
-            kind = extra.get("cli_kind", "value")
-
-            if kind == "bool":
-                if val:
-                    args.append(flag)
-
-            elif kind == "bool_pair":
-                if val is True:
-                    args.append(flag)
-                elif val is False and extra.get("cli_neg_flag"):
-                    args.append(extra["cli_neg_flag"])
-
-            elif kind == "list_args":
-                args.append(flag)
-                args.extend(str(v) for v in val)
-
-            elif kind == "json_value":
-                serialized = json.dumps(val) if isinstance(val, dict | list) else str(val)
-                args.extend([flag, serialized])
-
-            elif kind == "repeat":
-                for v in val:
-                    args.extend([flag, str(v)])
-
-            else:  # "value"
-                args.extend([flag, str(val)])
-
-        return args
+        return build_declarative_cli_args(self)
 
 
 # --------------------------------------------------------------------------- chunks & session
@@ -567,141 +528,16 @@ ClaudeSession = CLISession
 
 # TODO(#1043 Phase 2): migrate create_subprocess_exec + wait_for to anyio
 async def _ndjson_from_cli(request: ClaudeCodeRequest):
-    """Yield each JSON object from the Claude Code CLI NDJSON stream."""
-    from json_repair import repair_json
-
     workspace = request.cwd()
     workspace.mkdir(parents=True, exist_ok=True)
-
-    proc = await asyncio.create_subprocess_exec(
-        CLAUDE_CLI,
-        *request.as_cmd_args(),
-        cwd=str(workspace),
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,  # isolate from parent's SIGINT
-    )
-    # Capture PGID immediately — same pattern as Codex (see
-    # lionagi/providers/openai/codex/models.py for the full rationale).
-    # Guard against mocked subprocesses in tests where proc.pid may not
-    # be a real int: a MagicMock.pid coerces to 1 via __int__, and
-    # os.killpg(1, SIGTERM) signals init/the CI runner.
-    # os.killpg is POSIX-only: on Windows leave _pgid None so the group-kill
-    # path is skipped and cleanup falls through to proc.terminate()/kill()
-    # instead of raising AttributeError from the finally block.
-    _claude_pgid: int | None = (
-        proc.pid if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1 else None
-    )
-
-    decoder = codecs.getincrementaldecoder("utf-8")()
-    json_decoder = json.JSONDecoder()
-    buffer: str = ""  # text buffer that may hold >1 JSON objects
-
-    # Bounded stderr drain — without this a stderr-heavy Claude session
-    # deadlocks when the OS pipe buffer fills before stdout EOF.
-    stderr_cap = 256 * 1024
-    stderr_chunks: list[bytes] = []
-    stderr_total = 0
-
-    async def _drain_stderr() -> None:
-        nonlocal stderr_total
-        if proc.stderr is None:
-            return
-        try:
-            while True:
-                chunk = await proc.stderr.read(4096)
-                if not chunk:
-                    break
-                remaining = stderr_cap - stderr_total
-                if remaining > 0:
-                    take = chunk[:remaining]
-                    stderr_chunks.append(take)
-                    stderr_total += len(take)
-        except Exception as exc:
-            log.debug("claude stderr drain ended: %s", exc)
-
-    stderr_task = asyncio.create_task(_drain_stderr())
-
-    try:
-        while True:
-            chunk = await proc.stdout.read(4096)
-            if not chunk:
-                break
-
-            # 1) decode *incrementally* so we never split multibyte chars
-            buffer += decoder.decode(chunk)
-
-            # 2) try to peel off as many complete JSON objs as possible
-            while buffer:
-                buffer = buffer.lstrip()  # remove leading spaces/newlines
-                if not buffer:
-                    break
-                try:
-                    obj, idx = json_decoder.raw_decode(buffer)
-                    yield obj
-                    buffer = buffer[idx:]  # keep remainder for next round
-                except json.JSONDecodeError:
-                    # incomplete → need more bytes
-                    break
-
-        # 3) flush any tail bytes in the incremental decoder
-        buffer += decoder.decode(b"", final=True)
-        buffer = buffer.strip()
-        if buffer:
-            try:
-                obj, idx = json_decoder.raw_decode(buffer)
-                yield obj
-            except json.JSONDecodeError:
-                try:
-                    fixed = repair_json(buffer)
-                    yield json.loads(fixed)
-                    log.warning("Repaired malformed JSON fragment at stream end")
-                except Exception:
-                    log.error("Skipped unrecoverable JSON tail: %.120s…", buffer)
-
-        # 4) propagate non-zero exit code, using the drained stderr buffer.
-        if await proc.wait() != 0:
-            drain_truncated = False
-            try:
-                await asyncio.wait_for(asyncio.shield(stderr_task), timeout=2.0)
-            except asyncio.TimeoutError:
-                drain_truncated = True
-            except asyncio.CancelledError:
-                raise
-            err = b"".join(stderr_chunks).decode(errors="replace").strip()
-            if drain_truncated:
-                err = (err or "") + " [stderr drain timed out]"
-            raise RuntimeError(err or "CLI exited non-zero")
-
-    finally:
-        # Terminate the whole process group (start_new_session=True
-        # above made pgid == proc.pid). Captured up-front so a reap
-        # before teardown doesn't make us skip the group kill.
-        pgid = _claude_pgid
-        if pgid is not None:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(pgid, signal.SIGTERM)
-        with contextlib.suppress(ProcessLookupError):
-            proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            if pgid is not None:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(pgid, signal.SIGKILL)
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
-
-        # Reap the stderr drain task — explicit CancelledError catch
-        # because contextlib.suppress(Exception) doesn't catch it.
-        stderr_task.cancel()
-        try:
-            await stderr_task
-        except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001
-            pass
+    cmd = [CLAUDE_CLI, *request.as_cmd_args()]
+    # Pass the repair callback so a malformed-but-repairable final JSON object
+    # is recovered rather than silently dropped (matches pre-refactor behaviour).
+    async with contextlib.aclosing(
+        ndjson_from_cli(cmd, cwd=workspace, tail_repair=_claude_tail_repair)
+    ) as stream:
+        async for obj in stream:
+            yield obj
 
 
 # --------------------------------------------------------------------------- SSE route
@@ -771,16 +607,6 @@ def _pp_final(sess: CLISession, theme) -> None:
     print_readable(txt, theme=theme)
 
 
-# --------------------------------------------------------------------------- internal utils
-
-
-async def _maybe_await(func, *args, **kw):
-    """Call func which may be sync or async."""
-    res = func(*args, **kw) if func else None
-    if inspect.iscoroutine(res):
-        await res
-
-
 # --------------------------------------------------------------------------- main parser
 async def stream_claude_code_cli(  # noqa: C901
     request: ClaudeCodeRequest,
@@ -809,7 +635,8 @@ async def stream_claude_code_cli(  # noqa: C901
             if typ == "system":
                 session.session_id = obj.get("session_id", session.session_id)
                 session.model = obj.get("model", session.model)
-                await _maybe_await(on_system, obj)
+                if on_system:
+                    await maybe_await(on_system(obj))
                 if request.verbose_output:
                     sid = str(obj.get("session_id", ""))
                     if obj.get("model") and sid not in seen_system_ids:
@@ -836,7 +663,8 @@ async def stream_claude_code_cli(  # noqa: C901
                     if btype == "thinking":
                         thought = blk.get("thinking", "").strip()
                         session.thinking_log.append(thought)
-                        await _maybe_await(on_thinking, thought)
+                        if on_thinking:
+                            await maybe_await(on_thinking(thought))
                         if request.verbose_output:
                             _pp_thinking(thought, theme)
                         sc = StreamChunk(type="thinking", content=thought, metadata=obj)
@@ -845,7 +673,8 @@ async def stream_claude_code_cli(  # noqa: C901
 
                     elif btype == "text":
                         text = blk.get("text", "")
-                        await _maybe_await(on_text, text)
+                        if on_text:
+                            await maybe_await(on_text(text))
                         if request.verbose_output:
                             _pp_assistant_text(text, theme)
                         sc = StreamChunk(type="text", content=text, metadata=obj)
@@ -855,7 +684,8 @@ async def stream_claude_code_cli(  # noqa: C901
                     elif btype == "tool_use":
                         tu = {"id": blk["id"], "name": blk["name"], "input": blk["input"]}
                         session.tool_uses.append(tu)
-                        await _maybe_await(on_tool_use, tu)
+                        if on_tool_use:
+                            await maybe_await(on_tool_use(tu))
                         if request.verbose_output:
                             _pp_tool_use(tu, theme)
                         sc = StreamChunk(
@@ -875,7 +705,8 @@ async def stream_claude_code_cli(  # noqa: C901
                             "is_error": blk.get("is_error", False),
                         }
                         session.tool_results.append(tr)
-                        await _maybe_await(on_tool_result, tr)
+                        if on_tool_result:
+                            await maybe_await(on_tool_result(tr))
                         if request.verbose_output:
                             _pp_tool_result(tr, theme)
                         sc = StreamChunk(
@@ -900,7 +731,8 @@ async def stream_claude_code_cli(  # noqa: C901
                             "is_error": blk.get("is_error", False),
                         }
                         session.tool_results.append(tr)
-                        await _maybe_await(on_tool_result, tr)
+                        if on_tool_result:
+                            await maybe_await(on_tool_result(tr))
                         if request.verbose_output:
                             _pp_tool_result(tr, theme)
                         sc = StreamChunk(
@@ -929,7 +761,8 @@ async def stream_claude_code_cli(  # noqa: C901
     finally:
         await stream.aclose()
 
-    await _maybe_await(on_final, session)
+    if on_final:
+        await maybe_await(on_final(session))
     if request.verbose_output:
         _pp_final(session, theme)
 

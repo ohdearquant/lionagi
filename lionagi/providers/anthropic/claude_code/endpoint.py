@@ -38,16 +38,6 @@ _CLAUDE_HANDLER_PARAMS = (
 )
 
 
-def _validate_handlers(handlers, /):
-    if not isinstance(handlers, dict):
-        raise ValueError("Handlers must be a dictionary")
-    for k, v in handlers.items():
-        if k not in _CLAUDE_HANDLER_PARAMS:
-            raise ValueError(f"Invalid handler key: {k}")
-        if not (v is None or callable(v)):
-            raise ValueError(f"Handler value must be callable or None, got {type(v)}")
-
-
 @ClaudeCodeConfigs.CLI.register
 class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     transport_arg_keys = _CLAUDE_HANDLER_PARAMS

@@ -49,9 +49,9 @@ class TestHandlerValidation:
     """Test handler validation logic."""
 
     def test_validate_handlers_valid_dict(self):
-        """Test _validate_handlers accepts valid handler dictionary."""
-        from lionagi.providers.anthropic.claude_code.endpoint import _validate_handlers
+        from lionagi.providers.anthropic.claude_code.endpoint import ClaudeCodeCLIEndpoint
 
+        endpoint = ClaudeCodeCLIEndpoint()
         handlers = {
             "on_thinking": lambda x: None,
             "on_text": lambda x: None,
@@ -59,45 +59,45 @@ class TestHandlerValidation:
             "on_final": lambda x: None,
         }
 
-        result = _validate_handlers(handlers)
+        result = endpoint._validate_handlers(handlers)
         assert result is None
 
     def test_validate_handlers_invalid_type(self):
-        """Test _validate_handlers rejects non-dict input."""
-        from lionagi.providers.anthropic.claude_code.endpoint import _validate_handlers
+        from lionagi.providers.anthropic.claude_code.endpoint import ClaudeCodeCLIEndpoint
 
+        endpoint = ClaudeCodeCLIEndpoint()
         with pytest.raises(ValueError, match="Handlers must be a dictionary"):
-            _validate_handlers("not a dict")
+            endpoint._validate_handlers("not a dict")
 
     def test_validate_handlers_invalid_key(self):
-        """Test _validate_handlers rejects invalid handler keys."""
-        from lionagi.providers.anthropic.claude_code.endpoint import _validate_handlers
+        from lionagi.providers.anthropic.claude_code.endpoint import ClaudeCodeCLIEndpoint
 
+        endpoint = ClaudeCodeCLIEndpoint()
         handlers = {"invalid_handler": lambda x: None}
 
         with pytest.raises(ValueError, match="Invalid handler key"):
-            _validate_handlers(handlers)
+            endpoint._validate_handlers(handlers)
 
     def test_validate_handlers_invalid_value(self):
-        """Test _validate_handlers rejects non-callable values."""
-        from lionagi.providers.anthropic.claude_code.endpoint import _validate_handlers
+        from lionagi.providers.anthropic.claude_code.endpoint import ClaudeCodeCLIEndpoint
 
+        endpoint = ClaudeCodeCLIEndpoint()
         handlers = {"on_thinking": "not callable"}
 
         with pytest.raises(ValueError, match="Handler value must be callable"):
-            _validate_handlers(handlers)
+            endpoint._validate_handlers(handlers)
 
     def test_validate_handlers_allows_none(self):
-        """Test _validate_handlers allows None values."""
-        from lionagi.providers.anthropic.claude_code.endpoint import _validate_handlers
+        from lionagi.providers.anthropic.claude_code.endpoint import ClaudeCodeCLIEndpoint
 
+        endpoint = ClaudeCodeCLIEndpoint()
         handlers = {
             "on_thinking": None,
             "on_text": None,
             "on_tool_use": None,
         }
 
-        result = _validate_handlers(handlers)
+        result = endpoint._validate_handlers(handlers)
         assert result is None
 
 

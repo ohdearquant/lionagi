@@ -4,14 +4,9 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import contextlib
-import inspect
-import json
 import logging
-import os
 import shutil
-import signal
 import warnings
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -27,6 +22,8 @@ from lionagi import ln
 from lionagi.libs.path_safety import check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
 from lionagi.libs.schema.as_readable import as_readable
+from lionagi.ln.concurrency.utils import maybe_await
+from lionagi.providers._cli_subprocess import _INHERIT_STDIN, ndjson_from_cli
 
 HAS_GEMINI_CLI = False
 GEMINI_CLI = None
@@ -299,131 +296,15 @@ def _extract_summary(session: GeminiSession) -> dict[str, Any]:
 async def _ndjson_from_cli(request: GeminiCodeRequest):
     if GEMINI_CLI is None:
         raise RuntimeError("Gemini CLI not found. Please install the gemini CLI tool.")
-
     workspace = request.cwd()
     workspace.mkdir(parents=True, exist_ok=True)
-
-    proc = await asyncio.create_subprocess_exec(
-        GEMINI_CLI,
-        *request.as_cmd_args(),
-        cwd=str(workspace),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,  # isolate from parent's SIGINT
-    )
-    # Capture PGID immediately — same pattern as Claude/Codex.
-    # Guard against mocked subprocesses in tests where proc.pid may not be a
-    # real int: a MagicMock.pid coerces to 1 via __int__, and
-    # os.killpg(1, SIGTERM) would signal init/the CI runner.
-    # ``os.killpg`` is POSIX-only: on Windows it does not exist, so leave
-    # _pgid None there — the group-kill path is skipped and cleanup falls
-    # through to proc.terminate()/proc.kill() instead of raising AttributeError
-    # from the finally block (which only suppresses ProcessLookupError).
-    _pgid: int | None = (
-        proc.pid if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1 else None
-    )
-
-    decoder = codecs.getincrementaldecoder("utf-8")()
-    json_decoder = json.JSONDecoder()
-    buffer: str = ""
-
-    if proc.stdout is None:
-        raise RuntimeError("Failed to capture stdout from Gemini CLI")
-
-    # Bounded stderr drain — without this, a stderr-heavy Gemini session can
-    # deadlock when the OS pipe buffer fills before stdout EOF.
-    stderr_cap = 256 * 1024
-    stderr_chunks: list[bytes] = []
-    stderr_total = 0
-
-    async def _drain_stderr() -> None:
-        nonlocal stderr_total
-        if proc.stderr is None:
-            return
-        try:
-            while True:
-                chunk = await proc.stderr.read(4096)
-                if not chunk:
-                    break
-                remaining = stderr_cap - stderr_total
-                if remaining > 0:
-                    take = chunk[:remaining]
-                    stderr_chunks.append(take)
-                    stderr_total += len(take)
-        except Exception as exc:
-            log.debug("gemini stderr drain ended: %s", exc)
-
-    stderr_task = asyncio.create_task(_drain_stderr())
-
-    try:
-        while True:
-            chunk = await proc.stdout.read(4096)
-            if not chunk:
-                break
-
-            buffer += decoder.decode(chunk)
-
-            while buffer:
-                buffer = buffer.lstrip()
-                if not buffer:
-                    break
-                try:
-                    obj, idx = json_decoder.raw_decode(buffer)
-                    yield obj
-                    buffer = buffer[idx:]
-                except json.JSONDecodeError:
-                    break
-
-        buffer += decoder.decode(b"", final=True)
-        buffer = buffer.strip()
-        if buffer:
-            try:
-                obj, idx = json_decoder.raw_decode(buffer)
-                yield obj
-            except json.JSONDecodeError:
-                log.error("Skipped unrecoverable JSON tail: %.120s...", buffer)
-
-        if await proc.wait() != 0:
-            drain_truncated = False
-            try:
-                await asyncio.wait_for(asyncio.shield(stderr_task), timeout=2.0)
-            except asyncio.TimeoutError:
-                drain_truncated = True
-            except asyncio.CancelledError:
-                raise
-            err = b"".join(stderr_chunks).decode(errors="replace").strip()
-            if drain_truncated:
-                err = (err or "") + " [stderr drain timed out]"
-            raise RuntimeError(err or "Gemini CLI exited non-zero")
-
-    finally:
-        # Terminate the whole process group (start_new_session=True above made
-        # pgid == proc.pid). Kill the group so descendant subprocesses started
-        # by the Gemini CLI are also cleaned up — direct proc.terminate() only
-        # reaches the CLI process itself, leaving children behind.
-        pgid = _pgid
-        if pgid is not None:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(pgid, signal.SIGTERM)
-        with contextlib.suppress(ProcessLookupError):
-            proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            if pgid is not None:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(pgid, signal.SIGKILL)
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
-
-        # Reap the stderr drain task.
-        stderr_task.cancel()
-        try:
-            await stderr_task
-        except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001
-            pass
+    cmd = [GEMINI_CLI, *request.as_cmd_args()]
+    # Old Gemini subprocess did not set stdin; pass _INHERIT_STDIN to preserve that.
+    async with contextlib.aclosing(
+        ndjson_from_cli(cmd, cwd=workspace, stdin=_INHERIT_STDIN)
+    ) as stream:
+        async for obj in stream:
+            yield obj
 
 
 async def stream_gemini_cli_events(request: GeminiCodeRequest):
@@ -434,13 +315,6 @@ async def stream_gemini_cli_events(request: GeminiCodeRequest):
         async for obj in stream:
             yield obj
     yield {"type": "done"}
-
-
-async def _maybe_await(func, *args, **kw):
-    """Call func which may be sync or async."""
-    res = func(*args, **kw) if func else None
-    if inspect.iscoroutine(res):
-        await res
 
 
 print_readable = partial(as_readable, md=True, display_str=True)
@@ -516,7 +390,8 @@ async def stream_gemini_cli(
                 content = msg.get("content", "")
                 if isinstance(content, str):
                     chunk.text = content
-                    await _maybe_await(on_text, content)
+                    if on_text:
+                        await maybe_await(on_text(content))
                     if request.verbose_output:
                         _pp_text(content, theme)
                 elif isinstance(content, list):
@@ -526,7 +401,8 @@ async def stream_gemini_cli(
                             if btype == "text":
                                 text = blk.get("text", "")
                                 chunk.text = text
-                                await _maybe_await(on_text, text)
+                                if on_text:
+                                    await maybe_await(on_text(text))
                                 if request.verbose_output:
                                     _pp_text(text, theme)
                             elif btype == "tool_use":
@@ -537,7 +413,8 @@ async def stream_gemini_cli(
                                 }
                                 chunk.tool_use = tu
                                 session.tool_uses.append(tu)
-                                await _maybe_await(on_tool_use, tu)
+                                if on_tool_use:
+                                    await maybe_await(on_tool_use(tu))
                                 if request.verbose_output:
                                     _pp_tool_use(tu, theme)
                 yield chunk
@@ -550,7 +427,8 @@ async def stream_gemini_cli(
                 }
                 chunk.tool_use = tu
                 session.tool_uses.append(tu)
-                await _maybe_await(on_tool_use, tu)
+                if on_tool_use:
+                    await maybe_await(on_tool_use(tu))
                 if request.verbose_output:
                     _pp_tool_use(tu, theme)
                 yield chunk
@@ -563,7 +441,8 @@ async def stream_gemini_cli(
                 }
                 chunk.tool_result = tr
                 session.tool_results.append(tr)
-                await _maybe_await(on_tool_result, tr)
+                if on_tool_result:
+                    await maybe_await(on_tool_result(tr))
                 if request.verbose_output:
                     _pp_tool_result(tr, theme)
                 yield chunk
@@ -619,7 +498,8 @@ async def stream_gemini_cli(
     if session.duration_ms is None:
         session.duration_ms = int((asyncio.get_running_loop().time() - _start_monotonic) * 1000)
 
-    await _maybe_await(on_final, session)
+    if on_final:
+        await maybe_await(on_final(session))
     if request.verbose_output:
         _pp_final(session, theme)
 

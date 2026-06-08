@@ -498,7 +498,7 @@ class TestProcessGroupCleanup:
             patch("lionagi.providers.google.gemini_code.models.GEMINI_CLI", "gemini"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
             patch(
-                "lionagi.providers.google.gemini_code.models.os.killpg",
+                "lionagi.providers._cli_subprocess.os.killpg",
                 side_effect=lambda pgid, sig: killpg_calls.append((pgid, sig)),
             ),
         ):
@@ -527,7 +527,7 @@ class TestProcessGroupCleanup:
             patch("lionagi.providers.pi.cli.models.PI_CLI", "pi"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
             patch(
-                "lionagi.providers.pi.cli.models.os.killpg",
+                "lionagi.providers._cli_subprocess.os.killpg",
                 side_effect=lambda pgid, sig: killpg_calls.append((pgid, sig)),
             ),
         ):
@@ -562,7 +562,7 @@ class TestProcessGroupCleanup:
             patch("lionagi.providers.google.gemini_code.models.GEMINI_CLI", "gemini"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
             patch(
-                "lionagi.providers.google.gemini_code.models.os.killpg",
+                "lionagi.providers._cli_subprocess.os.killpg",
                 side_effect=lambda pgid, sig: killpg_calls.append((pgid, sig)),
             ),
         ):
@@ -583,13 +583,14 @@ class TestProcessGroupCleanup:
         """On a platform without os.killpg (Windows), cleanup must
         fall through to proc.terminate() instead of raising AttributeError from
         the finally block (which only suppresses ProcessLookupError)."""
+        import lionagi.providers._cli_subprocess as cli_sub
         from lionagi.providers.google.gemini_code import models
 
         request = models.GeminiCodeRequest(prompt="test")
         mock_proc = _make_mock_proc(pid=9101)
 
         # Simulate Windows: os.killpg does not exist.
-        monkeypatch.delattr(models.os, "killpg", raising=False)
+        monkeypatch.delattr(cli_sub.os, "killpg", raising=False)
 
         with (
             patch("lionagi.providers.google.gemini_code.models.GEMINI_CLI", "gemini"),
@@ -609,12 +610,13 @@ class TestProcessGroupCleanup:
     async def test_pi_cleanup_no_killpg_platform(self, monkeypatch):
         """Pi cleanup must not raise AttributeError when os.killpg
         is unavailable (Windows); it falls back to proc.terminate()."""
+        import lionagi.providers._cli_subprocess as cli_sub
         from lionagi.providers.pi.cli import models
 
         request = models.PiCodeRequest(prompt="test")
         mock_proc = _make_mock_proc(pid=9102)
 
-        monkeypatch.delattr(models.os, "killpg", raising=False)
+        monkeypatch.delattr(cli_sub.os, "killpg", raising=False)
 
         with (
             patch("lionagi.providers.pi.cli.models.PI_CLI", "pi"),
@@ -637,11 +639,12 @@ class TestKillpgUnavailablePlatform:
 
     @pytest.mark.asyncio
     async def test_claude_cleanup_no_killpg_platform(self, monkeypatch):
+        import lionagi.providers._cli_subprocess as cli_sub
         from lionagi.providers.anthropic.claude_code import models
 
         request = models.ClaudeCodeRequest(prompt="test")
         mock_proc = _make_mock_proc(pid=9201)
-        monkeypatch.delattr(models.os, "killpg", raising=False)
+        monkeypatch.delattr(cli_sub.os, "killpg", raising=False)
 
         with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
             mock_exec.return_value = mock_proc
@@ -653,11 +656,12 @@ class TestKillpgUnavailablePlatform:
 
     @pytest.mark.asyncio
     async def test_codex_cleanup_no_killpg_platform(self, monkeypatch):
+        import lionagi.providers._cli_subprocess as cli_sub
         from lionagi.providers.openai.codex import models
 
         request = models.CodexCodeRequest(prompt="test")
         mock_proc = _make_mock_proc(pid=9202)
-        monkeypatch.delattr(models.os, "killpg", raising=False)
+        monkeypatch.delattr(cli_sub.os, "killpg", raising=False)
 
         with (
             patch("lionagi.providers.openai.codex.models.CODEX_CLI", "codex"),
@@ -721,7 +725,7 @@ class TestStderrDeadlockPrevention:
         with (
             patch("lionagi.providers.google.gemini_code.models.GEMINI_CLI", "gemini"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
-            patch("lionagi.providers.google.gemini_code.models.os.killpg"),
+            patch("lionagi.providers._cli_subprocess.os.killpg"),
         ):
             mock_exec.return_value = mock_proc
 
@@ -765,7 +769,7 @@ class TestStderrDeadlockPrevention:
         with (
             patch("lionagi.providers.pi.cli.models.PI_CLI", "pi"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
-            patch("lionagi.providers.pi.cli.models.os.killpg"),
+            patch("lionagi.providers._cli_subprocess.os.killpg"),
         ):
             mock_exec.return_value = mock_proc
 
