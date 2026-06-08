@@ -32,9 +32,11 @@ import pytest
 from lionagi import Branch, Session
 from lionagi.cli.orchestrate._orchestration import (
     OrchestrationEnv,
-    _register_branch_hook,
     start_live_persist,
     stop_live_persist,
+)
+from lionagi.cli.orchestrate._orchestration import (
+    register_branch_hook as _register_branch_hook,
 )
 from lionagi.state.db import StateDB
 
