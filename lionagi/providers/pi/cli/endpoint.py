@@ -4,10 +4,9 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 
-from pydantic import BaseModel
-
+from lionagi.providers._agentic_handlers import AgenticHandlersMixin
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.stream_chunk import StreamChunk
@@ -29,67 +28,27 @@ _PI_HANDLER_PARAMS = (
 )
 
 
-def _validate_handlers(handlers: dict[str, Callable | None], /) -> None:
-    if not isinstance(handlers, dict):
-        raise ValueError("Handlers must be a dictionary")
-    for k, v in handlers.items():
-        if k not in _PI_HANDLER_PARAMS:
-            raise ValueError(f"Invalid handler key: {k}")
-        if not (v is None or callable(v)):
-            raise ValueError(f"Handler value must be callable or None, got {type(v)}")
-
-
 @PiConfigs.CLI.register
-class PiCLIEndpoint(AgenticEndpoint):
+class PiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     transport_arg_keys = _PI_HANDLER_PARAMS
+    _handler_params = _PI_HANDLER_PARAMS
+    _handler_kwarg = "pi_handlers"
+    _request_model = PiCodeRequest
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         handlers = kwargs.pop("pi_handlers", None)
         super().__init__(config=config, **kwargs)
-        config_handlers = self.config.kwargs.pop("pi_handlers", None)
-        self._pi_handlers = {k: None for k in _PI_HANDLER_PARAMS}
-        if config_handlers is not None:
-            _validate_handlers(config_handlers)
-            self._pi_handlers.update(config_handlers)
-        if handlers is not None:
-            _validate_handlers(handlers)
-            self._pi_handlers.update(handlers)
+        self._init_handlers(handlers)
 
     @property
     def pi_handlers(self):
-        return self._pi_handlers
+        return self._handlers
 
     @pi_handlers.setter
     def pi_handlers(self, value: dict):
-        _validate_handlers(value)
-        self._pi_handlers = {k: None for k in _PI_HANDLER_PARAMS}
-        self._pi_handlers.update(value)
+        self._set_handlers(value)
 
-    def update_handlers(self, **kwargs):
-        _validate_handlers(kwargs)
-        handlers = {**self.pi_handlers, **kwargs}
-        self.pi_handlers = handlers
-
-    def copy_runtime_state_to(self, other):
-        if isinstance(other, PiCLIEndpoint):
-            other.pi_handlers = self.pi_handlers.copy()
-
-    def _runtime_handlers(self, kwargs: dict) -> dict:
-        handlers = self.pi_handlers.copy()
-        call_handlers = {k: kwargs.pop(k) for k in list(kwargs) if k in _PI_HANDLER_PARAMS}
-        if call_handlers:
-            _validate_handlers(call_handlers)
-            handlers.update(call_handlers)
-        return {k: v for k, v in handlers.items() if v is not None}
-
-    def create_payload(self, request: dict | BaseModel, **kwargs):
-        req_dict = {**self.config.kwargs, **to_dict(request), **kwargs}
-        messages = req_dict.pop("messages", [])
-        req_dict = {k: v for k, v in req_dict.items() if k in PiCodeRequest.model_fields}
-        req_obj = PiCodeRequest(messages=messages, **req_dict)
-        return {"request": req_obj}, {}
-
-    async def stream(self, request: dict | BaseModel, **kwargs) -> AsyncIterator[StreamChunk]:
+    async def stream(self, request, **kwargs) -> AsyncIterator[StreamChunk]:
         handlers = self._runtime_handlers(kwargs)
         if isinstance(request, dict) and "request" in request:
             request_obj = request["request"]
