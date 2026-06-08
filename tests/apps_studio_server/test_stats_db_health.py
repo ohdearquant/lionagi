@@ -188,7 +188,7 @@ def test_invocation_list_bad_metadata_becomes_none(tmp_path, monkeypatch):
     client = TestClient(app)
     r = client.get("/api/invocations")
     assert r.status_code == 200
-    invocations = r.json()
+    invocations = r.json()["invocations"]
     matching = [i for i in invocations if i["id"] == inv_id]
     assert len(matching) == 1
     assert matching[0]["node_metadata"] is None, (
