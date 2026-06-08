@@ -10,11 +10,15 @@ import json
 import logging
 import os
 import signal
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+# Sentinel that means "do not pass stdin to create_subprocess_exec at all"
+# (inherits the parent process stdin, matching the old Gemini/Pi behaviour).
+_INHERIT_STDIN = object()
 
 
 async def ndjson_from_cli(
@@ -22,16 +26,35 @@ async def ndjson_from_cli(
     *,
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
+    stdin: Any = asyncio.subprocess.DEVNULL,
+    tail_repair: Callable[[str], dict | None] | None = None,
 ) -> AsyncIterator[dict]:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
+    """Yield dicts from an NDJSON-emitting CLI subprocess.
+
+    Args:
+        cmd: Command and arguments to execute.
+        cwd: Working directory for the subprocess.
+        env: Environment for the subprocess.
+        stdin: Passed to ``create_subprocess_exec`` unless it is the
+            ``_INHERIT_STDIN`` sentinel, in which case ``stdin`` is omitted so
+            the child inherits the parent's stdin.  Default is DEVNULL (matches
+            old Claude/Codex behaviour).
+        tail_repair: Optional callable invoked on the final buffer when
+            ``raw_decode`` fails.  If it returns a dict that dict is yielded;
+            if it returns ``None`` the tail is logged and dropped.  Only Claude
+            passes a repair callback; all other providers leave this ``None``
+            and get the old drop-on-failure behaviour.
+    """
+    kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
         env=env,
-        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
+    if stdin is not _INHERIT_STDIN:
+        kwargs["stdin"] = stdin
+    proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)
     # Capture PGID immediately — if we wait until teardown, the child may have
     # exited and been reaped, and os.getpgid(proc.pid) would raise
     # ProcessLookupError. start_new_session=True makes pgid == proc.pid.
@@ -102,7 +125,18 @@ async def ndjson_from_cli(
                 obj, idx = json_decoder.raw_decode(buffer)
                 yield obj
             except json.JSONDecodeError:
-                log.error("Skipped unrecoverable JSON tail: %.120s...", buffer)
+                if tail_repair is not None:
+                    try:
+                        repaired = tail_repair(buffer)
+                        if repaired is not None:
+                            yield repaired
+                            log.warning("Repaired malformed JSON fragment at stream end")
+                        else:
+                            log.error("Skipped unrecoverable JSON tail: %.120s...", buffer)
+                    except Exception:  # noqa: BLE001
+                        log.error("Skipped unrecoverable JSON tail: %.120s...", buffer)
+                else:
+                    log.error("Skipped unrecoverable JSON tail: %.120s...", buffer)
 
         rc = await proc.wait()
         if rc != 0:

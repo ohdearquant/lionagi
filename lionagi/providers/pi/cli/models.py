@@ -29,7 +29,11 @@ from lionagi.libs.path_safety import (
 )
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln.concurrency.utils import maybe_await
-from lionagi.providers._cli_subprocess import build_declarative_cli_args, ndjson_from_cli
+from lionagi.providers._cli_subprocess import (
+    _INHERIT_STDIN,
+    build_declarative_cli_args,
+    ndjson_from_cli,
+)
 
 HAS_PI_CLI = False
 PI_CLI = None
@@ -408,7 +412,10 @@ async def _ndjson_from_cli(request: PiCodeRequest):
         raise RuntimeError("Pi CLI not found. Install with: npm i -g @mariozechner/pi-coding-agent")
     env = {**os.environ, **request.env()} if request.env() else None
     cmd = [PI_CLI, *request.as_cmd_args()]
-    async with contextlib.aclosing(ndjson_from_cli(cmd, cwd=request.repo, env=env)) as stream:
+    # Old Pi subprocess did not set stdin; pass _INHERIT_STDIN to preserve that.
+    async with contextlib.aclosing(
+        ndjson_from_cli(cmd, cwd=request.repo, env=env, stdin=_INHERIT_STDIN)
+    ) as stream:
         async for obj in stream:
             yield obj
 

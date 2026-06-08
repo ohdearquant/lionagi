@@ -450,7 +450,10 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
     cmd = [CODEX_CLI, *request.as_cmd_args()]
-    async with contextlib.aclosing(ndjson_from_cli(cmd, cwd=request.cwd())) as stream:
+    # Do NOT pass cwd here: Codex CLI already receives the workspace via the
+    # '-C <repo>' argument emitted by as_cmd_args().  Setting cwd= would cause
+    # the CLI to resolve '-C repo' from inside 'repo', producing 'repo/repo'.
+    async with contextlib.aclosing(ndjson_from_cli(cmd)) as stream:
         async for obj in stream:
             yield obj
 

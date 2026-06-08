@@ -23,7 +23,7 @@ from lionagi.libs.path_safety import check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln.concurrency.utils import maybe_await
-from lionagi.providers._cli_subprocess import ndjson_from_cli
+from lionagi.providers._cli_subprocess import _INHERIT_STDIN, ndjson_from_cli
 
 HAS_GEMINI_CLI = False
 GEMINI_CLI = None
@@ -299,7 +299,10 @@ async def _ndjson_from_cli(request: GeminiCodeRequest):
     workspace = request.cwd()
     workspace.mkdir(parents=True, exist_ok=True)
     cmd = [GEMINI_CLI, *request.as_cmd_args()]
-    async with contextlib.aclosing(ndjson_from_cli(cmd, cwd=workspace)) as stream:
+    # Old Gemini subprocess did not set stdin; pass _INHERIT_STDIN to preserve that.
+    async with contextlib.aclosing(
+        ndjson_from_cli(cmd, cwd=workspace, stdin=_INHERIT_STDIN)
+    ) as stream:
         async for obj in stream:
             yield obj
 

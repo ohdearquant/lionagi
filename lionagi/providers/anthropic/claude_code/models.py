@@ -29,6 +29,16 @@ from lionagi.libs.path_safety import (
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._cli_subprocess import build_declarative_cli_args, ndjson_from_cli
+
+try:
+    from json_repair import repair_json as _repair_json
+
+    def _claude_tail_repair(buf: str) -> dict | None:
+        fixed = _repair_json(buf)
+        return json.loads(fixed) if fixed else None
+
+except ImportError:
+    _claude_tail_repair = None
 from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 
@@ -521,7 +531,11 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
     workspace = request.cwd()
     workspace.mkdir(parents=True, exist_ok=True)
     cmd = [CLAUDE_CLI, *request.as_cmd_args()]
-    async with contextlib.aclosing(ndjson_from_cli(cmd, cwd=workspace)) as stream:
+    # Pass the repair callback so a malformed-but-repairable final JSON object
+    # is recovered rather than silently dropped (matches pre-refactor behaviour).
+    async with contextlib.aclosing(
+        ndjson_from_cli(cmd, cwd=workspace, tail_repair=_claude_tail_repair)
+    ) as stream:
         async for obj in stream:
             yield obj
 
