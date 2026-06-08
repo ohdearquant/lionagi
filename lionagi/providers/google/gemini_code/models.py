@@ -24,8 +24,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
+from lionagi.libs.path_safety import check_paths_safe
+from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
 from lionagi.libs.schema.as_readable import as_readable
-from lionagi.providers._cli_paths import check_paths_safe, contain_paths_in_repo
 
 HAS_GEMINI_CLI = False
 GEMINI_CLI = None

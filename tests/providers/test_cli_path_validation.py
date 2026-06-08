@@ -29,30 +29,30 @@ class TestCliPathsHelper:
     """Direct unit tests for the shared helper functions."""
 
     def test_check_path_safe_rejects_absolute(self):
-        from lionagi.providers._cli_paths import check_path_safe
+        from lionagi.libs.path_safety import check_path_safe
 
         with pytest.raises(ValueError, match="absolute path"):
             check_path_safe("/etc/passwd", "field")
 
     def test_check_path_safe_rejects_traversal(self):
-        from lionagi.providers._cli_paths import check_path_safe
+        from lionagi.libs.path_safety import check_path_safe
 
         with pytest.raises(ValueError, match="traversal"):
             check_path_safe("../../etc/passwd", "field")
 
     def test_check_path_safe_accepts_relative(self):
-        from lionagi.providers._cli_paths import check_path_safe
+        from lionagi.libs.path_safety import check_path_safe
 
         assert check_path_safe("src/main.py", "field") == "src/main.py"
 
     def test_check_paths_safe_rejects_on_first_bad(self):
-        from lionagi.providers._cli_paths import check_paths_safe
+        from lionagi.libs.path_safety import check_paths_safe
 
         with pytest.raises(ValueError):
             check_paths_safe(["ok.txt", "/etc/passwd", "also_ok.txt"], "field")
 
     def test_contain_path_in_repo_rejects_symlink_escape(self, tmp_path):
-        from lionagi.providers._cli_paths import contain_path_in_repo
+        from lionagi.libs.path_safety import contain_path_in_root as contain_path_in_repo
 
         outside = tmp_path / "outside"
         outside.mkdir()
@@ -66,7 +66,7 @@ class TestCliPathsHelper:
             contain_path_in_repo("link/secret.txt", repo_root, "field")
 
     def test_contain_path_in_repo_accepts_valid(self, tmp_path):
-        from lionagi.providers._cli_paths import contain_path_in_repo
+        from lionagi.libs.path_safety import contain_path_in_root as contain_path_in_repo
 
         repo = tmp_path / "repo"
         (repo / "src").mkdir(parents=True)
@@ -77,7 +77,7 @@ class TestCliPathsHelper:
 
     def test_check_add_dir_entry_safe_allows_absolute(self):
         """Absolute paths are legitimate read grants and must not be rejected."""
-        from lionagi.providers._cli_paths import check_add_dir_entry_safe
+        from lionagi.libs.path_safety import check_add_dir_safe as check_add_dir_entry_safe
 
         # Must not raise — this is the core of the orchestration regression fix
         result = check_add_dir_entry_safe("/home/user/projects/myproject", "add_dir")
@@ -85,19 +85,19 @@ class TestCliPathsHelper:
 
     def test_check_add_dir_entry_safe_rejects_traversal(self):
         """Traversal sequences are still rejected even in read-grant fields."""
-        from lionagi.providers._cli_paths import check_add_dir_entry_safe
+        from lionagi.libs.path_safety import check_add_dir_safe as check_add_dir_entry_safe
 
         with pytest.raises(ValueError, match="traversal"):
             check_add_dir_entry_safe("../../etc", "add_dir")
 
     def test_check_add_dir_entry_safe_accepts_relative(self):
-        from lionagi.providers._cli_paths import check_add_dir_entry_safe
+        from lionagi.libs.path_safety import check_add_dir_safe as check_add_dir_entry_safe
 
         result = check_add_dir_entry_safe("subdir/work", "add_dir")
         assert result == "subdir/work"
 
     def test_check_add_dir_entries_safe_rejects_traversal_in_list(self):
-        from lionagi.providers._cli_paths import check_add_dir_entries_safe
+        from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
 
         with pytest.raises(ValueError, match="traversal"):
             check_add_dir_entries_safe(["ok", "../../bad", "/abs/ok"], "add_dir")

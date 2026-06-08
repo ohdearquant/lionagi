@@ -22,13 +22,17 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
-from lionagi.libs.schema.as_readable import as_readable
-from lionagi.providers._cli_paths import (
-    check_add_dir_entries_safe,
+from lionagi.libs.path_safety import (
+    check_add_dirs_safe as check_add_dir_entries_safe,
+)
+from lionagi.libs.path_safety import (
     check_path_safe,
     check_paths_safe,
-    contain_paths_in_repo,
 )
+from lionagi.libs.path_safety import (
+    contain_paths_in_root as contain_paths_in_repo,
+)
+from lionagi.libs.schema.as_readable import as_readable
 from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 
