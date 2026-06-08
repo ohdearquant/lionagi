@@ -14,7 +14,7 @@ import threading
 from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -566,6 +566,8 @@ class CodingToolkit(LionTool):
         return self
 
     def _build_preprocessor(self, tool_name: str) -> Callable | None:
+        from lionagi.agent.factory import _chain_pre_hooks
+
         security_hooks = [
             *self._security_pre_hooks.get("*", []),
             *self._security_pre_hooks.get(tool_name, []),
@@ -574,40 +576,16 @@ class CodingToolkit(LionTool):
             *self._pre_hooks.get(tool_name, []),
             *self._pre_hooks.get("*", []),
         ]
-        hooks = [*security_hooks, *user_hooks]
-        if user_hooks:
-            # User pre-hooks may rewrite args; validate the final args too.
-            hooks.extend(security_hooks)
-        if not hooks:
-            return None
-
-        async def chained_pre(args: dict, **_kw) -> dict:
-            for handler in hooks:
-                result = await handler(tool_name, args.get("action", ""), args)
-                if isinstance(result, dict):
-                    args = result
-            return args
-
-        return chained_pre
+        return _chain_pre_hooks(tool_name, security_hooks, user_hooks)
 
     def _build_postprocessor(self, tool_name: str) -> Callable | None:
+        from lionagi.agent.factory import _chain_post_hooks
+
         hooks = [
             *self._post_hooks.get(tool_name, []),
             *self._post_hooks.get("*", []),
         ]
-        if not hooks:
-            return None
-
-        async def chained_post(result: Any, **_kw) -> Any:
-            if not isinstance(result, dict):
-                return result
-            for handler in hooks:
-                modified = await handler(tool_name, "", {}, result)
-                if isinstance(modified, dict):
-                    result = modified
-            return result
-
-        return chained_post
+        return _chain_post_hooks(tool_name, hooks)
 
     def __init__(
         self,

@@ -13,7 +13,7 @@ from .spec import AgentSpec
 if TYPE_CHECKING:
     from .config import AgentConfig
 
-__all__ = ("create_agent",)
+__all__ = ("create_agent", "_chain_pre_hooks", "_chain_post_hooks")
 
 
 async def create_agent(
