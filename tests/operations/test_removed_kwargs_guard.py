@@ -25,9 +25,7 @@ class _M(BaseModel):
 
 
 def _branch():
-    return li.Branch(
-        chat_model=li.iModel(provider="openai", model="gpt-4o-mini", api_key="dummy")
-    )
+    return li.Branch(chat_model=li.iModel(provider="openai", model="gpt-4o-mini", api_key="dummy"))
 
 
 def test_reject_removed_kwargs_helper():

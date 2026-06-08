@@ -5,15 +5,13 @@
 
 import functools
 import logging
-import random
 import time
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from typing import Any, TypeVar
 
-import anyio
-
 from lionagi.ln.concurrency import Lock
+from lionagi.ln.concurrency import retry as _canonical_retry
 
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
@@ -266,38 +264,26 @@ async def retry_with_backoff(
     jitter_factor: float = 0.2,
     **kwargs: Any,
 ) -> T:
-    """Retry an async function with exponential backoff."""
-    retries = 0
-    delay = base_delay
+    # Build the effective retry set: retry_exceptions minus any excluded subtypes.
+    # This lets _canonical_retry handle the loop without a separate exclusion guard.
+    if exclude_exceptions:
+        effective_retry = tuple(
+            t for t in retry_exceptions if not any(issubclass(t, e) for e in exclude_exceptions)
+        )
+    else:
+        effective_retry = retry_exceptions
 
-    while True:
-        try:
-            return await func(*args, **kwargs)
-        except exclude_exceptions:
-            # Don't retry these exceptions
-            logger.debug(f"Not retrying {func.__name__} for excluded exception type")
-            raise
-        except retry_exceptions as e:
-            retries += 1
-            if retries > max_retries:
-                logger.warning(f"Maximum retries ({max_retries}) reached for {func.__name__}")
-                raise
+    async def _fn() -> T:
+        return await func(*args, **kwargs)
 
-            if jitter:
-                jitter_amount = random.uniform(  # noqa: S311  # non-crypto jitter
-                    1.0 - jitter_factor, 1.0 + jitter_factor
-                )
-                current_delay = min(delay * jitter_amount, max_delay)
-            else:
-                current_delay = min(delay, max_delay)
-
-            logger.info(
-                f"Retry {retries}/{max_retries} for {func.__name__} "
-                f"after {current_delay:.2f}s delay. Error: {e!s}"
-            )
-
-            delay = delay * backoff_factor
-            await anyio.sleep(current_delay)
+    return await _canonical_retry(
+        _fn,
+        attempts=max_retries + 1,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=effective_retry,
+        jitter=jitter_factor if jitter else 0.0,
+    )
 
 
 def circuit_breaker(
