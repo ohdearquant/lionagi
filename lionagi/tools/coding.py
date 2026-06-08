@@ -36,7 +36,6 @@ _DENIED_NAMES: frozenset[str] = frozenset(
 def _resolve_workspace_path(path: str, workspace_root: Path) -> Path:
     raw = Path(path).expanduser()
     candidate = raw if raw.is_absolute() else workspace_root / raw
-    # GAP B: check symlink on candidate BEFORE resolve() follows it
     if candidate.is_symlink():
         raise PermissionError(f"Refusing to access symlink: {path!r}")
     resolved = candidate.resolve(strict=False)
@@ -412,9 +411,6 @@ def _edit_file_sync(
     count = original.count(old_string)
     if count == 0:
         hint = ""
-        # Most common cause on a fresh read: the model copied the reader's
-        # `<number>\t` line-number prefix into old_string. If stripping a
-        # leading "<digits><tab>" from each line WOULD match, say so.
         stripped = re.sub(r"(?m)^\s*\d+\t", "", old_string)
         if stripped != old_string and stripped in original:
             hint = (
@@ -455,14 +451,12 @@ def _edit_file_sync(
     }
 
 
-# GAP A: shell control operators — same pattern as bash.py
 _SHELL_CONTROL = re.compile(r"(;|&&|\|\||\||`|\$\(|[<>]|\n)")
 
 _MAX_OUTPUT_BYTES = 100_000
 
 
 def _drain_stream(stream, buf: bytearray) -> bool:
-    """Continues reading even after cap to prevent pipe-buffer deadlock."""
     truncated = False
     while True:
         try:
@@ -555,7 +549,6 @@ def _subprocess_sync(cmd, shell: bool, timeout_s: float, cwd: str | None) -> dic
 # ---------------------------------------------------------------------------
 
 
-#: Every tool the coding toolkit can build.
 ALL_CODING_TOOLS: tuple[str, ...] = (
     "reader",
     "editor",
@@ -566,48 +559,11 @@ ALL_CODING_TOOLS: tuple[str, ...] = (
     "subagent",
 )
 
-#: Tools registered by default — the proven, in-use core. ``context`` (manual
-#: context eviction), ``sandbox`` (git-worktree sessions), and ``subagent``
-#: (delegation) are opt-in: they add capability surface the agent rarely uses,
-#: and delegation in particular shouldn't be advertised before a single agent is
-#: solid. Enable extras explicitly via ``CodingToolkit(tools=[...])``.
 DEFAULT_CODING_TOOLS: tuple[str, ...] = ("reader", "editor", "bash", "search")
 
 
 class CodingToolkit(LionTool):
-    """Coding tools bound to a Branch with shared file state and hooks.
-
-    Usage::
-
-        toolkit = CodingToolkit()
-
-        # Register hooks before binding
-        async def guard_destructive(tool_name, action, args):
-            cmd = args.get("command", "")
-            if "rm -rf" in cmd:
-                raise PermissionError(f"Blocked: {cmd}")
-
-        async def auto_format(tool_name, action, args, result):
-            if result.get("success") and args.get("file_path", "").endswith(".py"):
-                # run formatter...
-                pass
-            return result
-
-        toolkit.pre("bash", guard_destructive)
-        toolkit.post("editor", auto_format)
-
-        tools = toolkit.bind(branch)
-        branch.register_tools(tools)
-
-    Hook signatures:
-        pre:  async def handler(tool_name: str, action: str, args: dict) -> dict | None
-              - Return modified args dict to override, or None to pass through.
-              - Raise to abort the tool call (exception propagates as error result).
-        post: async def handler(tool_name: str, action: str, args: dict, result: dict) -> dict | None
-              - Return modified result dict to override, or None to pass through.
-        on_error: async def handler(tool_name: str, action: str, args: dict, error: Exception) -> dict | None
-              - Return a result dict to suppress the error, or None to propagate.
-    """
+    """Coding tools (reader, editor, bash, search, etc.) bound to a Branch."""
 
     is_lion_system_tool = True
     system_tool_name = "coding_toolkit"
@@ -629,7 +585,6 @@ class CodingToolkit(LionTool):
         return self
 
     def _build_preprocessor(self, tool_name: str) -> Callable | None:
-        """Build a chained preprocessor from registered hooks for this tool."""
         security_hooks = [
             *self._security_pre_hooks.get("*", []),
             *self._security_pre_hooks.get(tool_name, []),
@@ -655,7 +610,6 @@ class CodingToolkit(LionTool):
         return chained_pre
 
     def _build_postprocessor(self, tool_name: str) -> Callable | None:
-        """Build a chained postprocessor from registered post-hooks for this tool."""
         hooks = [
             *self._post_hooks.get(tool_name, []),
             *self._post_hooks.get("*", []),
@@ -690,8 +644,6 @@ class CodingToolkit(LionTool):
         self.notify_threshold = notify_threshold
         self.notify_max_tokens = notify_max_tokens
         self.workspace_root = Path(workspace_root or Path.cwd()).expanduser().resolve()
-        # Which tools to register. None -> the lean default core; pass an explicit
-        # list to opt into context/sandbox/subagent.
         selected = tuple(tools) if tools is not None else DEFAULT_CODING_TOOLS
         unknown = [t for t in selected if t not in ALL_CODING_TOOLS]
         if unknown:
@@ -767,8 +719,6 @@ class CodingToolkit(LionTool):
             if resolved and mtime is not None:
                 file_state[resolved] = mtime
 
-        # -- Reader ----------------------------------------------------------
-
         async def reader(
             action: str,
             path: str,
@@ -793,8 +743,6 @@ class CodingToolkit(LionTool):
                     _list_dir_sync, path, bool(recursive), file_types, workspace_root
                 )
             return {"success": False, "error": f"Unknown action: {action}"}
-
-        # -- Editor ----------------------------------------------------------
 
         async def editor(
             action: str,
@@ -845,8 +793,6 @@ class CodingToolkit(LionTool):
                 return result
             return {"success": False, "error": f"Unknown action: {action}"}
 
-        # -- Bash ------------------------------------------------------------
-
         async def bash(
             command: str,
             timeout: int = None,
@@ -862,7 +808,6 @@ class CodingToolkit(LionTool):
             timeout_ms = max(1, min(timeout or 30000, 300000))
             timeout_s = timeout_ms / 1000.0
 
-            # GAP A: reject shell control operators (same filter as standalone BashTool)
             if _SHELL_CONTROL.search(command):
                 return {
                     "stdout": "",
@@ -885,8 +830,6 @@ class CodingToolkit(LionTool):
             result.setdefault("timed_out", False)
             result["return_code"] = result.pop("returncode", -1)
             return result
-
-        # -- Search ----------------------------------------------------------
 
         async def search(
             action: str,
@@ -940,10 +883,7 @@ class CodingToolkit(LionTool):
                 }
             return {"success": False, "error": f"Unknown action: {action}"}
 
-        # -- Context ---------------------------------------------------------
-
         def _ensure_current_progression():
-            """Lazily copy full progression into metadata on first evict."""
             if "current_progression" not in branch.metadata:
                 from lionagi.protocols.generic.progression import Progression
 
@@ -1058,8 +998,6 @@ class CodingToolkit(LionTool):
 
             return {"success": False, "error": f"Unknown action: {action}"}
 
-        # -- System notification as built-in post-hook -----------------------
-
         async def _notify_post(
             tool_name: str, action: str, args: dict, result: dict
         ) -> dict | None:
@@ -1071,9 +1009,7 @@ class CodingToolkit(LionTool):
         if notify:
             self.post("*", _notify_post)
 
-        # -- Sandbox ---------------------------------------------------------
-
-        _sandbox_session = [None]  # mutable ref for closure
+        _sandbox_session = [None]
 
         async def sandbox(
             action: str,
@@ -1141,8 +1077,6 @@ class CodingToolkit(LionTool):
                 return {"success": True, **result}
 
             return {"success": False, "error": f"Unknown action: {action}"}
-
-        # -- Subagent --------------------------------------------------------
 
         async def subagent(
             instruction: str,
@@ -1212,8 +1146,6 @@ class CodingToolkit(LionTool):
                 }
             except Exception as e:
                 return {"success": False, "error": str(e)}
-
-        # -- Assemble (hooks wired via Tool's native pre/postprocessor) ------
 
         tool_defs = [
             ("reader", reader, ReaderRequest),
