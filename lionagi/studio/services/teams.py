@@ -1,21 +1,13 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
 from lionagi.utils import LIONAGI_HOME
 
+from ._io import read_json_file as _read_json
 from ._path_safety import safe_path_join
 
 _TEAMS_ROOT = LIONAGI_HOME / "teams"
-
-
-def _read_json(path: Path) -> dict[str, Any] | None:
-    try:
-        return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError, ValueError):
-        return None
 
 
 def list_teams() -> list[dict[str, Any]]:

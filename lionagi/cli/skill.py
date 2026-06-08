@@ -78,21 +78,12 @@ def list_skill_names() -> list[str]:
 
 
 def strip_frontmatter(text: str) -> str:
-    """Return content after YAML frontmatter, or the input unchanged.
-
-    Frontmatter convention: file starts with a line of exactly ``---``,
-    followed by YAML, followed by another ``---`` on its own line. If
-    the file does not open with ``---``, returns the input unchanged.
-    """
-    lines = text.splitlines(keepends=True)
-    if not lines or lines[0].rstrip("\r\n") != "---":
+    if not text.startswith("---"):
         return text
-    # Find the closing --- delimiter
-    for i in range(1, len(lines)):
-        if lines[i].rstrip("\r\n") == "---":
-            return "".join(lines[i + 1 :]).lstrip("\n")
-    # Unterminated frontmatter: return input unchanged to avoid silent drop
-    return text
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return text
+    return parts[2].lstrip("\n")
 
 
 def read_skill_body(name: str) -> tuple[str | None, str | None]:

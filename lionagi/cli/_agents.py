@@ -39,6 +39,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
+
 # Bare-name pattern: one or more ASCII letters, digits, underscores, or hyphens.
 # Rejects empty, path separators, '.', '..', leading dots, and other traversal.
 _BARE_NAME_RE = _re.compile(r"^[A-Za-z0-9_-]+$")
@@ -219,22 +221,7 @@ def load_agent_profile(name: str) -> AgentProfile:
 
 
 def _parse_profile(name: str, text: str) -> AgentProfile:
-    """Parse YAML frontmatter + markdown body."""
-    frontmatter = {}
-    body = text
-
-    if text.startswith("---"):
-        parts = text.split("---", 2)
-        if len(parts) >= 3:
-            fm_text = parts[1].strip()
-            body = parts[2].strip()
-            if fm_text:
-                import yaml
-
-                loaded = yaml.safe_load(fm_text) or {}
-                if not isinstance(loaded, dict):
-                    loaded = {}
-                frontmatter = loaded
+    frontmatter, body = _parse_frontmatter(text)
 
     lion_system = bool(frontmatter.get("lion_system", True))
     if lion_system:

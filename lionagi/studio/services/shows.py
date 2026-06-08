@@ -13,18 +13,12 @@ from lionagi.state.db import DEFAULT_DB_PATH
 
 from ..config import SHOWS_ROOT
 from ._db import open_db as _open_db
+from ._io import read_json_file as _read_json
 from ._path_safety import public_path, safe_path_join
 
 _log = __import__("logging").getLogger(__name__)
 
 _DB = str(DEFAULT_DB_PATH)
-
-
-def _read_json(path: Path) -> dict[str, Any] | None:
-    try:
-        return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
 
 
 def _read_text(path: Path) -> str | None:
