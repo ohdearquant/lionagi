@@ -200,12 +200,7 @@ async def _run_fanout_inner(
     pool = [s.strip() for s in workers_str.split(",")] if workers_str else []
 
     # Deduplicated names by assignee role (researcher, researcher-2, ...).
-    worker_names: list[str] = []
-    name_counts: dict[str, int] = {}
-    for ta in assignments:
-        name_counts[ta.assignee] = name_counts.get(ta.assignee, 0) + 1
-        n = name_counts[ta.assignee]
-        worker_names.append(f"{ta.assignee}-{n}" if n > 1 else ta.assignee)
+    worker_names: list[str] = [env.assign_name(ta.assignee) for ta in assignments]
 
     if team_name:
         env.team_data = _create_fanout_team(team_name, worker_names)

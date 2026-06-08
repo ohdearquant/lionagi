@@ -35,9 +35,10 @@ Frontmatter fields (all optional, CLI flags override):
 from __future__ import annotations
 
 import re as _re
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from ._project import _find_git_root
 
 # Bare-name pattern: one or more ASCII letters, digits, underscores, or hyphens.
 # Rejects empty, path separators, '.', '..', leading dots, and other traversal.
@@ -117,19 +118,11 @@ def _find_lionagi_dirs() -> list[Path]:
     dirs: list[Path] = []
 
     # 1. Git root
-    try:
-        root = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],  # noqa: S607 — git is expected on $PATH
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if root.returncode == 0:
-            candidate = Path(root.stdout.strip()) / ".lionagi"
-            if candidate.is_dir():
-                dirs.append(candidate)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    git_root = _find_git_root(Path.cwd())
+    if git_root is not None:
+        candidate = git_root / ".lionagi"
+        if candidate.is_dir():
+            dirs.append(candidate)
 
     # 2. Walk up from cwd
     cwd = Path.cwd()
