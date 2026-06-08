@@ -29,6 +29,9 @@ class MessageContent(DataClass):
         """Render the content as a string."""
         raise NotImplementedError("Subclasses must implement rendered property.")
 
+    def render(self, *_args: Any, **_kwargs: Any) -> str:
+        return self.rendered
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MessageContent":
         """Create an instance from a dictionary."""
