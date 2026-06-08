@@ -8,6 +8,7 @@ import argparse
 import sys
 
 from lionagi._errors import TimeoutError as LionTimeoutError
+from lionagi.libs.path_safety import validate_path_component
 from lionagi.ln.concurrency import run_async
 
 from .._logging import hint, log_error
@@ -375,7 +376,9 @@ def _resolve_playbook_path(name: str) -> tuple[object, str | None]:
 
     if not name or not isinstance(name, str):
         return None, "playbook name must be a non-empty string"
-    if "/" in name or "\\" in name or name.startswith("."):
+    try:
+        validate_path_component(name, label="playbook NAME")
+    except ValueError:
         return (
             None,
             f"playbook NAME must be a bare identifier, got {name!r}. "

@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from lionagi.libs.path_safety import validate_path_component
 from lionagi.utils import LIONAGI_HOME
 
 __all__ = (
@@ -110,15 +111,10 @@ class RunDir:
         roster-validated role names, but any caller constructing a RunDir path
         from an untrusted identifier picks up the same safety guarantee.
         """
-        if (
-            not agent_id
-            or not isinstance(agent_id, str)
-            or "/" in agent_id
-            or "\\" in agent_id
-            or agent_id in (".", "..")
-            or agent_id.startswith(".")
-        ):
-            raise ValueError(f"agent_id {agent_id!r} is not a safe path component")
+        try:
+            validate_path_component(agent_id, label="agent_id")
+        except ValueError as exc:
+            raise ValueError(f"agent_id {agent_id!r} is not a safe path component") from exc
         candidate = (self.artifact_root / agent_id).resolve()
         root = self.artifact_root.resolve()
         try:

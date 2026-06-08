@@ -34,32 +34,15 @@ Frontmatter fields (all optional, CLI flags override):
 
 from __future__ import annotations
 
-import re as _re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Bare-name pattern: one or more ASCII letters, digits, underscores, or hyphens.
-# Rejects empty, path separators, '.', '..', leading dots, and other traversal.
-_BARE_NAME_RE = _re.compile(r"^[A-Za-z0-9_-]+$")
+from lionagi.libs.path_safety import validate_bare_name
 
 
 def _validate_bare_name(name: str) -> None:
-    """Reject agent profile names that are not safe bare identifiers.
-
-    A valid name contains only ASCII letters, digits, underscores, or hyphens.
-    Path separators, '.', '..', leading dots, and control characters are all
-    rejected to prevent path traversal in profile resolution.
-
-    Raises:
-        ValueError: The name contains unsafe characters or components.
-    """
-    if not name or not _BARE_NAME_RE.match(name):
-        raise ValueError(
-            f"Invalid agent profile name {name!r}: must be a bare identifier "
-            "(ASCII letters, digits, underscores, hyphens only — no path "
-            "separators, '.', '..', or leading dots)."
-        )
+    validate_bare_name(name, label="agent profile name")
 
 
 def build_deadline_preamble(timeout_seconds: int) -> str:
