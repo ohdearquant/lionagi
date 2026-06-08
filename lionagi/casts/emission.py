@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Emission contracts — the typed payloads a role PRODUCES (behavior, not authority).
-
-Composed by union, no security semantics. Field descriptions flow into the
-output JSON schema, so write them as agent-facing guidance.
-"""
+"""Emission contracts — typed payloads a role produces."""
 
 from __future__ import annotations
 
@@ -16,9 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.ln.types import Operable, Spec
 
-# Allowlist of branch operations that a model-emitted SpawnRequest may name.
-# Updating this set requires a deliberate review — do not expand it lightly.
-# See ADR note in orchestration/patterns.py:role_node_builder for context.
 _SPAWN_ALLOWED_OPERATIONS: frozenset[str] = frozenset({"operate", "chat", "communicate", "ReAct"})
 
 __all__ = (
@@ -62,12 +55,7 @@ __all__ = (
 
 
 class _EmissionModel(BaseModel):
-    """Private base for all emission contracts.
-
-    ``extra='forbid'`` rejects unknown keys from model output at validation
-    time, making malformed or over-broad emissions visible to tests and
-    observers rather than silently discarded.
-    """
+    """Private base for all emission contracts; extra='forbid'."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -424,9 +412,7 @@ class EscalationRequest(_EmissionModel):
 
 
 class SpawnRequest(_EmissionModel):
-    """Add a new operation to the RUNNING workflow — emit when work beyond the
-    current plan is discovered. Grows the live DAG without halting it (reactive
-    self-expansion). The emitting node becomes the new op's upstream by default."""
+    """Request to add a new operation to the running workflow."""
 
     instruction: str = Field(
         description="The new unit of work, stated as a concrete, self-contained objective."
@@ -459,19 +445,13 @@ _CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 
 def _field_name(model: type[BaseModel]) -> str:
-    """CamelCase model class name -> snake_case Spec name."""
     return _CAMEL_RE.sub("_", model.__name__).lower()
 
 
 def build_emission_operable(
     emits: tuple[type[BaseModel], ...], /, *, name: str = "emissions"
 ) -> Operable | None:
-    """Build an :class:`Operable` from an emission tuple.
-
-    Returns ``None`` when *emits* is empty (the role declares no structured
-    emission contract). For a non-empty contract, ``EscalationRequest`` is
-    always appended — any role that emits anything may also escalate.
-    """
+    """Build an Operable from an emission tuple; returns None if empty."""
     models = tuple(emits)
     if not models:
         return None

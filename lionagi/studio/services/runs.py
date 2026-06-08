@@ -13,8 +13,6 @@ from ._path_safety import public_path, safe_path_join
 
 _STATUS_ALIASES: dict[str, set[str]] = {
     "done": {"done", "completed", "success", "finished"},
-    # ADR-0025: cancelled (system/orchestrator) and aborted (Ctrl-C) are
-    # operationally distinct; only collapse the US/UK spelling.
     "cancelled": {"cancelled", "canceled"},
     "canceled": {"cancelled", "canceled"},
     "aborted": {"aborted", "aborted_after_finish"},
@@ -43,7 +41,6 @@ def _normalize_status_filter(status: str | list[str] | None) -> set[str] | None:
 def _adapt_summary(
     manifest: dict[str, Any], run_id: str, state_root: Path, artifact_root: Path
 ) -> dict[str, Any]:
-    """Return a RunSummary-shaped dict from a manifest and run paths."""
     branches_dir = state_root / "branches"
     step_count = 0
     if branches_dir.exists():
@@ -105,7 +102,6 @@ def _adapt_summary(
 
 
 def _build_graph(manifest: dict[str, Any]) -> dict[str, Any]:
-    """Build a graph from manifest data — tries graph, then agents+operations."""
     graph_raw = manifest.get("graph")
     if graph_raw and (graph_raw.get("nodes") or graph_raw.get("edges")):
         return {
@@ -172,11 +168,8 @@ def _build_graph(manifest: dict[str, Any]) -> dict[str, Any]:
 
 
 def _summarize_args(fn: str, args: dict[str, Any]) -> str:
-    """Return a one-line readable summary of tool call arguments."""
     if not isinstance(args, dict):
         return str(args)[:200]
-    # Common argument key precedence — codex uses `cmd`, claude_code uses
-    # `command`, file tools use `file_path`, edit/write also have `content`.
     for key in ("cmd", "command", "file_path", "pattern", "url", "query"):
         val = args.get(key)
         if val:
@@ -184,7 +177,6 @@ def _summarize_args(fn: str, args: dict[str, Any]) -> str:
     if fn in ("apply_patch", "Edit", "Write"):
         path = args.get("path") or args.get("file_path") or ""
         return str(path) if path else "(patch)"
-    # Fallback: show first non-trivial arg.
     for k, v in args.items():
         if isinstance(v, str | int | float) and v:
             return f"{k}={v}"
@@ -192,7 +184,6 @@ def _summarize_args(fn: str, args: dict[str, Any]) -> str:
 
 
 def _detect_status(output: str, function: str) -> tuple[str, int | None]:
-    """Heuristic: extract status (ok|error) and exit code from tool output."""
     if not output:
         return ("ok", None)
     lower = output.lower()
@@ -219,12 +210,6 @@ def _detect_status(output: str, function: str) -> tuple[str, int | None]:
 
 
 def _extract_messages(branch: dict[str, Any]) -> list[dict[str, Any]]:
-    """Extract readable messages from a branch's Pile-serialized messages.
-
-    Pairs ActionRequest + ActionResponse by `action_response_id` /
-    `action_request_id` so each tool invocation becomes a single rich entry
-    with command, output, status, and exit code.
-    """
     msgs_raw = branch.get("messages", {})
     if isinstance(msgs_raw, list):
         collections = msgs_raw
@@ -233,7 +218,6 @@ def _extract_messages(branch: dict[str, Any]) -> list[dict[str, Any]]:
     else:
         return []
 
-    # First pass: build response_id -> ActionResponse map for pairing.
     response_by_id: dict[str, dict[str, Any]] = {}
     for item in collections:
         if not isinstance(item, dict):
@@ -270,7 +254,6 @@ def _extract_messages(branch: dict[str, Any]) -> list[dict[str, Any]]:
             ):
                 continue
 
-        # Render System
         if role == "system":
             text = content.get("system_message", "") if isinstance(content, dict) else str(content)
             if text:
@@ -284,7 +267,6 @@ def _extract_messages(branch: dict[str, Any]) -> list[dict[str, Any]]:
                 )
             continue
 
-        # Render User (Instruction)
         if role == "user":
             if isinstance(content, dict):
                 text = content.get("instruction") or ""
@@ -306,7 +288,6 @@ def _extract_messages(branch: dict[str, Any]) -> list[dict[str, Any]]:
                 )
             continue
 
-        # Render Assistant
         if role == "assistant":
             text = (
                 content.get("assistant_response", "") if isinstance(content, dict) else str(content)
@@ -322,7 +303,6 @@ def _extract_messages(branch: dict[str, Any]) -> list[dict[str, Any]]:
                 )
             continue
 
-        # Render Action (tool call) — pair request with its response
         if role == "action" and cls == "ActionRequest":
             args = content.get("arguments", {}) if isinstance(content, dict) else {}
             fn = content.get("function", "") if isinstance(content, dict) else ""
@@ -355,7 +335,6 @@ def _extract_messages(branch: dict[str, Any]) -> list[dict[str, Any]]:
             )
             continue
 
-        # Orphan action_response (shouldn't normally happen)
         if role == "action":
             args = content.get("arguments", {}) if isinstance(content, dict) else {}
             fn = content.get("function", "") if isinstance(content, dict) else ""
@@ -381,7 +360,6 @@ def _extract_messages(branch: dict[str, Any]) -> list[dict[str, Any]]:
 def _build_steps(
     manifest: dict[str, Any], branches: list[dict[str, Any]]
 ) -> list[dict[str, Any]] | None:
-    """Build step results from operations + branches when steps aren't explicit."""
     operations = manifest.get("operations") or []
     agents = manifest.get("agents") or []
 
@@ -473,7 +451,6 @@ def _adapt_detail(
     manifest: dict[str, Any],
     branches: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Return a RunDetail-shaped dict."""
     summary = _adapt_summary(manifest, run_id, state_root, artifact_root)
     graph = _build_graph(manifest)
     steps = manifest.get("steps")
@@ -505,27 +482,10 @@ async def list_runs(
     status: str | list[str] | None = None,
     project: str | None = None,
 ) -> list[dict[str, Any]]:
-    """List runs from SQLite sessions table (F-A1-1, ADR-0004 rewire).
-
-    Each session row is mapped to a RunSummary-shaped dict so routers and
-    app.py see a consistent shape. The ``playbook`` filter is a
-    case-insensitive contains match; ``status`` supports multiple values with
-    alias normalization (e.g. "done" matches "completed").
-
-    Decision (F-A1-3): stream_run_events() was removed entirely because the
-    ``stream/*.buffer.jsonl`` files it read are explicitly forbidden as a
-    Studio query source by ADR-0004 ("Studio query routes MUST NOT read
-    them"), and the ``lineage`` / messages rows in SQLite are the correct
-    alternative via the sessions SSE endpoint already implemented in
-    routers/sessions.py.  The /api/runs/{id}/events route in routers/runs.py
-    is removed in the same commit.
-    """
     from lionagi.state.health import SessionHealth, classify_session_health
 
     sessions = await _sessions_svc.list_sessions()
     status_set = _normalize_status_filter(status)
-    # One shared "now" so two adjacent sessions can't disagree about
-    # whether the same elapsed time crossed the threshold.
     now = time.time()
     out = []
     for s in sessions:
@@ -535,13 +495,6 @@ async def list_runs(
             continue
         if status_set and s.get("status") not in status_set:
             continue
-        # ADR-0024: process liveness + artifact / lock signals would be
-        # checked here for full classification. Studio reads come from
-        # SQLite only — process/FS checks happen in admin endpoints
-        # where they're explicitly opted into. For the runs list we
-        # assume process_alive=True (we'd have heard otherwise via the
-        # CLI teardown), and fall back to the activity-only signal that
-        # gives stale / unresponsive / idle / healthy + zombie.
         health = classify_session_health(
             s,
             now=now,
@@ -549,11 +502,7 @@ async def list_runs(
             has_artifacts=bool(s.get("artifacts_path")),
             has_stale_locks=False,
         )
-        # UNRESPONSIVE and STALE both mean "past activity threshold, needs
-        # operator attention". The runs list assumes process_alive=True so
-        # it never emits STALE naturally; the dashboard frontend counts
-        # effective_health === 'stale'. Map UNRESPONSIVE → 'stale' so the
-        # dashboard counter stays correct without requiring a frontend change.
+        # Map UNRESPONSIVE -> 'stale' for dashboard consistency.
         effective_health = (
             SessionHealth.STALE.value if health == SessionHealth.UNRESPONSIVE else health.value
         )
@@ -568,12 +517,9 @@ async def list_runs(
                 "show_topic": s.get("show_topic"),
                 "show_play_name": s.get("show_play_name"),
                 "source_kind": s.get("source_kind", "live"),
-                # ADR-0029: expected artifact contract and teardown verification.
                 "artifact_contract_json": s.get("artifact_contract_json"),
                 "artifact_verification_json": s.get("artifact_verification_json"),
-                # ADR-0020: parent skill orchestration; null when standalone.
                 "invocation_id": s.get("invocation_id"),
-                # ADR-0022: provenance disclosure.
                 "model": s.get("model"),
                 "provider": s.get("provider"),
                 "effort": s.get("effort"),
@@ -583,12 +529,10 @@ async def list_runs(
                 "ended_at": s.get("ended_at"),
                 "created_at": s.get("created_at"),
                 "updated_at": s.get("updated_at"),
-                # ADR-0019/0024: activity marker + derived health label.
                 "last_message_at": s.get("last_message_at"),
                 "effective_health": effective_health,
                 "branch_count": s.get("branch_count", 0),
                 "message_count": s.get("message_count", 0),
-                # ADR-0026: project detection.
                 "project": s.get("project"),
                 "project_source": s.get("project_source"),
             }
@@ -602,7 +546,6 @@ def paginate_runs(
     page: int,
     per_page: int,
 ) -> dict[str, Any]:
-    """Slice *runs* into a page and return pagination metadata."""
     total = len(runs)
     total_pages = math.ceil(total / per_page) if total else 0
     start = (page - 1) * per_page
@@ -622,8 +565,7 @@ def get_run(run_id: str) -> dict[str, Any] | None:
     if not RUNS_ROOT.exists():
         return None
 
-    # Validate + resolve the run_id path component
-    safe_path_join(RUNS_ROOT, run_id)  # raises 404 if unsafe
+    safe_path_join(RUNS_ROOT, run_id)
 
     state_root = RUNS_ROOT / run_id
     if not state_root.is_dir():
@@ -659,11 +601,3 @@ def get_run(run_id: str) -> dict[str, Any] | None:
                 pass
 
     return _adapt_detail(run_id, state_root, artifact_root, manifest, branches)
-
-
-# stream_run_events() was removed (F-A1-3 / ADR-0004).
-# ADR-0004 §"Run persistence: SQLite only" explicitly forbids Studio from
-# reading stream/*.buffer.jsonl files.  Live monitoring of a run uses the
-# /api/sessions/{id}/stream SSE endpoint (routers/sessions.py) which reads
-# from SQLite messages rows.  The /api/runs/{id}/events route in
-# routers/runs.py has been removed in the same commit.

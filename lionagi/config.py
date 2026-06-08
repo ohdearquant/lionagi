@@ -8,8 +8,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class CacheConfig(BaseModel):
-    """Configuration for aiocache."""
-
     ttl: int = 300
     key: str | None = None
     namespace: str | None = None
@@ -21,12 +19,7 @@ class CacheConfig(BaseModel):
     noself: Any = lambda _: False
 
     def as_kwargs(self) -> dict[str, Any]:
-        """Convert config to kwargs dict for @cached decorator.
-
-        Removes unserialisable callables that aiocache can't pickle.
-        """
         raw = self.model_dump(exclude_none=True)
-        # Remove all unserialisable callables
         unserialisable_keys = (
             "key_builder",
             "skip_cache_func",
@@ -40,8 +33,6 @@ class CacheConfig(BaseModel):
 
 
 class AppSettings(BaseSettings, frozen=True):
-    """Application settings with environment variable support."""
-
     model_config = SettingsConfigDict(
         env_file=(".env", ".env.local", ".secrets.env"),
         env_file_encoding="utf-8",
@@ -53,7 +44,6 @@ class AppSettings(BaseSettings, frozen=True):
         default_factory=CacheConfig, description="Cache settings for aiocache"
     )
 
-    # secrets
     OPENAI_API_KEY: SecretStr | None = None
     OPENROUTER_API_KEY: SecretStr | None = None
     OLLAMA_API_KEY: SecretStr | None = None
@@ -69,24 +59,20 @@ class AppSettings(BaseSettings, frozen=True):
 
     OPENAI_DEFAULT_MODEL: str = "gpt-4.1-mini"
 
-    # defaults models
     LIONAGI_EMBEDDING_PROVIDER: str = "openai"
     LIONAGI_EMBEDDING_MODEL: str = "text-embedding-3-small"
 
     LIONAGI_CHAT_PROVIDER: str = "openai"
     LIONAGI_CHAT_MODEL: str = "gpt-4.1-mini"
 
-    # default storage
     LIONAGI_AUTO_STORE_EVENT: bool = False
     LIONAGI_STORAGE_PROVIDER: str = "async_qdrant"
 
     LIONAGI_AUTO_EMBED_LOG: bool = False
 
-    # specific storage
     LIONAGI_QDRANT_URL: str = "http://localhost:6333"
     LIONAGI_DEFAULT_QDRANT_COLLECTION: str = "event_logs"
 
-    # Log configuration
     LOG_PERSIST_DIR: str = "./data/logs"
     LOG_SUBFOLDER: str | None = None
     LOG_CAPACITY: int = 50
@@ -97,23 +83,9 @@ class AppSettings(BaseSettings, frozen=True):
     LOG_AUTO_SAVE_ON_EXIT: bool = True
     LOG_CLEAR_AFTER_DUMP: bool = True
 
-    # Class variable to store the singleton instance
     _instance: ClassVar[Any] = None
 
     def get_secret(self, key_name: str) -> str:
-        """
-        Get the secret value for a given key name.
-
-        Args:
-            key_name: The name of the secret key (e.g., "OPENAI_API_KEY")
-
-        Returns:
-            The secret value as a string
-
-        Raises:
-            AttributeError: If the key doesn't exist
-            ValueError: If the key exists but is None
-        """
         if not hasattr(self, key_name):
             if "ollama" in key_name.lower():
                 return "ollama"
@@ -121,7 +93,6 @@ class AppSettings(BaseSettings, frozen=True):
 
         secret = getattr(self, key_name)
         if secret is None:
-            # Special case for Ollama - return "ollama" even if key exists but is None
             if "ollama" in key_name.lower():
                 return "ollama"
             raise ValueError(f"Secret key '{key_name}' is not set")
@@ -133,7 +104,6 @@ class AppSettings(BaseSettings, frozen=True):
 
     @property
     def LOG_CONFIG(self) -> dict[str, Any]:
-        """Get LOG configuration dict compatible with old Settings.Config.LOG format."""
         return {
             "persist_dir": self.LOG_PERSIST_DIR,
             "subfolder": self.LOG_SUBFOLDER,
@@ -147,7 +117,5 @@ class AppSettings(BaseSettings, frozen=True):
         }
 
 
-# Create a singleton instance
 settings = AppSettings()
-# Store the instance in the class variable for singleton pattern
 AppSettings._instance = settings
