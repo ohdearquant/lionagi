@@ -242,117 +242,6 @@ async def test_run_agent_codex_with_yolo_no_warning(monkeypatch, tmp_path):
 # ── #1152: partial output preserved on timeout ────────────────────────────────
 
 
-def test_extract_partial_output_returns_last_assistant_message():
-    """_extract_partial_output returns the last assistant message text."""
-    from unittest.mock import MagicMock
-
-    from lionagi.cli.agent import _extract_partial_output
-
-    # Build a fake branch with one assistant message
-    content = MagicMock()
-    content.rendered = "partial review text accumulated before timeout"
-
-    msg = MagicMock()
-    msg.role = "assistant"
-    msg.content = content
-
-    msg_id = "msg-1"
-    messages = {msg_id: msg}
-
-    class _FakeMessages:
-        def get(self, k, default=None):
-            return messages.get(k, default)
-
-        def __contains__(self, k):
-            return k in messages
-
-        def __getitem__(self, k):
-            return messages[k]
-
-    class _FakeMsgManager:
-        progression = [msg_id]
-        messages = _FakeMessages()
-
-    branch = MagicMock()
-    branch.msgs = _FakeMsgManager()
-
-    result = _extract_partial_output(branch)
-    assert result == "partial review text accumulated before timeout"
-
-
-def test_extract_partial_output_skips_non_assistant_messages():
-    """_extract_partial_output ignores user/system messages."""
-    from lionagi.cli.agent import _extract_partial_output
-
-    user_msg = MagicMock()
-    user_msg.role = "user"
-    user_msg.content = MagicMock()
-    user_msg.content.rendered = "user prompt"
-
-    assistant_msg = MagicMock()
-    assistant_msg.role = "assistant"
-    assistant_msg.content = MagicMock()
-    assistant_msg.content.rendered = "assistant partial"
-
-    messages = {"u1": user_msg, "a1": assistant_msg}
-
-    class _FakeMessages:
-        def get(self, k, default=None):
-            return messages.get(k, default)
-
-        def __contains__(self, k):
-            return k in messages
-
-        def __getitem__(self, k):
-            return messages[k]
-
-    class _FakeMsgManager:
-        progression = ["u1", "a1"]
-        messages = _FakeMessages()
-
-    branch = MagicMock()
-    branch.msgs = _FakeMsgManager()
-
-    result = _extract_partial_output(branch)
-    assert result == "assistant partial"
-
-
-def test_extract_partial_output_returns_empty_when_no_messages():
-    """_extract_partial_output returns empty string when branch has no messages."""
-    from lionagi.cli.agent import _extract_partial_output
-
-    class _FakeMessages:
-        def get(self, k, default=None):
-            return None
-
-        def __contains__(self, k):
-            return False
-
-        def __getitem__(self, k):
-            raise KeyError(k)
-
-    class _FakeMsgManager:
-        progression = []
-        messages = _FakeMessages()
-
-    branch = MagicMock()
-    branch.msgs = _FakeMsgManager()
-
-    result = _extract_partial_output(branch)
-    assert result == ""
-
-
-def test_extract_partial_output_returns_empty_on_exception():
-    """_extract_partial_output returns empty string when an exception occurs."""
-    from lionagi.cli.agent import _extract_partial_output
-
-    branch = MagicMock()
-    branch.msgs = None  # accessing .progression will raise AttributeError
-
-    result = _extract_partial_output(branch)
-    assert result == ""
-
-
 @pytest.mark.asyncio
 async def test_run_agent_timeout_preserves_partial_output(monkeypatch, tmp_path):
     """On timeout, _run_agent returns partial output from the branch instead of ''."""
@@ -404,8 +293,14 @@ async def test_run_agent_timeout_preserves_partial_output(monkeypatch, tmp_path)
     )
     monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
 
-    # Patch _extract_partial_output to return our fake partial text
-    monkeypatch.setattr(agent_mod, "_extract_partial_output", lambda branch: _partial_text)
+    # Make the branch's last_response yield our fake partial text
+    from lionagi.protocols.messages.manager import MessageManager
+
+    monkeypatch.setattr(
+        MessageManager,
+        "last_response",
+        property(lambda self: SimpleNamespace(response=_partial_text)),
+    )
 
     from lionagi.cli.agent import _run_agent
 
@@ -471,7 +366,9 @@ async def test_run_agent_timeout_empty_partial_returns_empty_string(monkeypatch,
         ),
     )
     # No partial output
-    monkeypatch.setattr(agent_mod, "_extract_partial_output", lambda branch: "")
+    from lionagi.protocols.messages.manager import MessageManager
+
+    monkeypatch.setattr(MessageManager, "last_response", property(lambda self: None))
 
     from lionagi.cli.agent import _run_agent
 

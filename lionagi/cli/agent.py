@@ -35,34 +35,6 @@ from ._providers import (
 from ._runs import allocate_run, find_branch, load_last_branch, save_last_branch_pointer
 
 
-def _extract_partial_output(branch) -> str:
-    """Return the last assistant message text accumulated before a timeout."""
-    try:
-        progression = branch.msgs.progression
-        messages = branch.msgs.messages
-        for msg_id in reversed(list(progression)):
-            msg = (
-                messages.get(msg_id)
-                if hasattr(messages, "get")
-                else (messages[msg_id] if msg_id in messages else None)
-            )
-            if msg is None:
-                continue
-            role = getattr(msg, "role", None)
-            if str(role).lower() != "assistant":
-                continue
-            content = getattr(msg, "content", None)
-            if content is None:
-                continue
-            rendered = getattr(content, "rendered", None)
-            if rendered:
-                return str(rendered)
-            return str(content) if str(content) else ""
-    except Exception:  # noqa: S110
-        pass
-    return ""
-
-
 async def _run_agent(
     model_str: str | None,
     prompt: str,
@@ -234,7 +206,8 @@ async def _run_agent(
         from lionagi.cli._logging import warn
 
         warn(f"agent timed out after {timeout}s")
-        res = _extract_partial_output(branch) or None
+        last = branch.msgs.last_response
+        res = (last.response if last else "") or None
     except BaseException as exc:
         _terminal_status = classify_exception(exc)
         _terminal_exc = exc
