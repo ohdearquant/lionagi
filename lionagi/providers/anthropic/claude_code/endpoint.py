@@ -4,10 +4,9 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 
-from pydantic import BaseModel
-
+from lionagi.providers._agentic_handlers import AgenticHandlersMixin
 from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest, stream_claude_code_cli
 from lionagi.providers.anthropic.claude_code.models import log as cc_log
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
@@ -39,7 +38,7 @@ _CLAUDE_HANDLER_PARAMS = (
 )
 
 
-def _validate_handlers(handlers: dict[str, Callable | None], /) -> None:
+def _validate_handlers(handlers, /):
     if not isinstance(handlers, dict):
         raise ValueError("Handlers must be a dictionary")
     for k, v in handlers.items():
@@ -50,56 +49,26 @@ def _validate_handlers(handlers: dict[str, Callable | None], /) -> None:
 
 
 @ClaudeCodeConfigs.CLI.register
-class ClaudeCodeCLIEndpoint(AgenticEndpoint):
+class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     transport_arg_keys = _CLAUDE_HANDLER_PARAMS
+    _handler_params = _CLAUDE_HANDLER_PARAMS
+    _handler_kwarg = "claude_handlers"
+    _request_model = ClaudeCodeRequest
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         handlers = kwargs.pop("claude_handlers", None)
         super().__init__(config=config, **kwargs)
-        config_handlers = self.config.kwargs.pop("claude_handlers", None)
-        self._claude_handlers = {k: None for k in _CLAUDE_HANDLER_PARAMS}
-        if config_handlers is not None:
-            _validate_handlers(config_handlers)
-            self._claude_handlers.update(config_handlers)
-        if handlers is not None:
-            _validate_handlers(handlers)
-            self._claude_handlers.update(handlers)
+        self._init_handlers(handlers)
 
     @property
     def claude_handlers(self):
-        return self._claude_handlers
+        return self._handlers
 
     @claude_handlers.setter
     def claude_handlers(self, value: dict):
-        _validate_handlers(value)
-        self._claude_handlers = {k: None for k in _CLAUDE_HANDLER_PARAMS}
-        self._claude_handlers.update(value)
+        self._set_handlers(value)
 
-    def update_handlers(self, **kwargs):
-        _validate_handlers(kwargs)
-        handlers = {**self.claude_handlers, **kwargs}
-        self.claude_handlers = handlers
-
-    def copy_runtime_state_to(self, other):
-        if isinstance(other, ClaudeCodeCLIEndpoint):
-            other.claude_handlers = self.claude_handlers.copy()
-
-    def _runtime_handlers(self, kwargs: dict) -> dict:
-        handlers = self.claude_handlers.copy()
-        call_handlers = {k: kwargs.pop(k) for k in list(kwargs) if k in _CLAUDE_HANDLER_PARAMS}
-        if call_handlers:
-            _validate_handlers(call_handlers)
-            handlers.update(call_handlers)
-        return {k: v for k, v in handlers.items() if v is not None}
-
-    def create_payload(self, request: dict | BaseModel, **kwargs):
-        req_dict = {**self.config.kwargs, **to_dict(request), **kwargs}
-        messages = req_dict.pop("messages", [])
-        req_dict = {k: v for k, v in req_dict.items() if k in ClaudeCodeRequest.model_fields}
-        req_obj = ClaudeCodeRequest(messages=messages, **req_dict)
-        return {"request": req_obj}, {}
-
-    async def stream(self, request: dict | BaseModel, **kwargs) -> AsyncIterator[StreamChunk]:
+    async def stream(self, request, **kwargs) -> AsyncIterator[StreamChunk]:
         handlers = self._runtime_handlers(kwargs)
         if isinstance(request, dict) and "request" in request:
             request_obj = request["request"]
@@ -161,8 +130,6 @@ class ClaudeCodeCLIEndpoint(AgenticEndpoint):
             if sc.type == "text" and sc.content is not None:
                 texts.append(sc.content)
 
-        # Guard against IndexError when no text chunks arrived (early cancel,
-        # tool-only sessions, empty responses under auto_finish).
         if session.result and (not texts or session.result.strip() != texts[-1].strip()):
             texts.append(session.result)
 
