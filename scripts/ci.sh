@@ -37,11 +37,15 @@ fmt-python() {
   uv run ruff check --fix "${@:-.}" 2>/dev/null || true
 }
 
+# Wall-clock perf/scaling tests are unreliable under CI load + coverage; they
+# are gated behind the `performance` marker and validated by benchmarks.yml.
+# Override with PYTEST_MARKEXPR=performance (or "") to run them locally.
 test-python() {
   echo "==> pytest"
   uv run pytest \
     --asyncio-mode=auto \
     --maxfail="${MAXFAIL:-3}" \
+    -m "${PYTEST_MARKEXPR:-not performance}" \
     --disable-warnings \
     "${@:-tests/}"
 }
@@ -51,6 +55,7 @@ test-python-cov() {
   uv run pytest \
     --asyncio-mode=auto \
     --maxfail="${MAXFAIL:-1}" \
+    -m "${PYTEST_MARKEXPR:-not performance}" \
     --disable-warnings \
     --cov=lionagi --cov-report=xml --cov-report=term \
     "${@:-tests/}"
