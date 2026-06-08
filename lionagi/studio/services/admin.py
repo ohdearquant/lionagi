@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
 from lionagi.state.db import DEFAULT_DB_PATH
 from lionagi.state.reasons import SessionReasons
 
@@ -244,8 +245,6 @@ async def health_report() -> dict[str, Any]:
         "diagnostic_run_at": datetime.now(timezone.utc).isoformat(),
     }
 
-
-_ADMIN_TRANSITION_TARGETS: frozenset[str] = frozenset({"failed", "aborted", "cancelled"})
 
 _PHANTOM_REASON_CODES: dict[str, str] = {
     "process_dead": SessionReasons.HEALTH_PHANTOM_PROCESS_DEAD,

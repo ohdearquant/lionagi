@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
-import yaml
+from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 
+from ._io import read_json_file as _read_json
 from ._path_safety import public_path, safe_path_join
 
 # ---------------------------------------------------------------------------
@@ -40,28 +40,6 @@ THIRDPARTY_DIR = Path.home() / ".claude" / "plugins" / "cache"
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
-
-
-def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    """Parse YAML frontmatter + markdown body. Returns (frontmatter_dict, body_text)."""
-    if not text.startswith("---"):
-        return {}, text
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return {}, text
-    try:
-        fm = yaml.safe_load(parts[1]) or {}
-    except yaml.YAMLError:
-        fm = {}
-    return fm if isinstance(fm, dict) else {}, parts[2].strip()
-
-
-def _read_json(path: Path) -> dict[str, Any] | None:
-    """Read and parse a JSON file, returning None on any error."""
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return None
 
 
 def _scan_skills(plugin_dir: Path) -> list[dict[str, Any]]:

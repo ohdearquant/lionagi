@@ -5,13 +5,13 @@ from typing import Any
 
 import aiosqlite
 
-from lionagi.state.db import DEFAULT_DB_PATH
+from lionagi.state.db import DEFAULT_DB_PATH, SESSION_TERMINAL_STATUSES
 
 from ._db import open_db as _open_db
+from ._io import parse_json_col as _parse_json_col
 
 _DB = str(DEFAULT_DB_PATH)
 
-SESSION_TERMINAL_STATUSES = frozenset({"completed", "failed", "timed_out", "aborted", "cancelled"})
 SESSION_DONE_STABLE_SECS = 60.0
 
 
@@ -72,15 +72,6 @@ def _graph_from_metadata(raw: str | None) -> dict[str, Any] | None:
                 }
             )
     return {"nodes": nodes, "edges": edges} if nodes else None
-
-
-def _parse_json_col(value: Any) -> Any:
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except (json.JSONDecodeError, TypeError):
-            return value
-    return value
 
 
 def _format_message(row: aiosqlite.Row) -> dict[str, Any]:
