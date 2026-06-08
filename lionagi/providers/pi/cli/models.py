@@ -5,13 +5,11 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import contextlib
 import json
 import logging
 import os
 import shutil
-import signal
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from dataclasses import field as datafield
@@ -30,6 +28,8 @@ from lionagi.libs.path_safety import (
     contain_paths_in_root as contain_paths_in_repo,
 )
 from lionagi.libs.schema.as_readable import as_readable
+from lionagi.ln.concurrency.utils import maybe_await
+from lionagi.providers._cli_subprocess import build_declarative_cli_args, ndjson_from_cli
 
 HAS_PI_CLI = False
 PI_CLI = None
@@ -312,37 +312,7 @@ class PiCodeRequest(BaseModel):
         return {key: self.api_key}
 
     def _build_declarative_args(self) -> list[str]:
-        flagged: list[tuple[int, dict, Any]] = []
-        for field_name, field_info in type(self).model_fields.items():
-            extra = field_info.json_schema_extra
-            if not extra or "cli_flag" not in extra:
-                continue
-            val = getattr(self, field_name)
-            if val is None:
-                continue
-            if isinstance(val, list) and not val:
-                continue
-            if val is False:
-                continue
-            flagged.append((extra["cli_order"], extra, val))
-
-        flagged.sort(key=lambda x: x[0])
-
-        args: list[str] = []
-        for _, extra, val in flagged:
-            flag = extra["cli_flag"]
-            kind = extra.get("cli_kind", "value")
-
-            if kind == "bool":
-                if val:
-                    args.append(flag)
-            elif kind == "repeat":
-                for v in val:
-                    args.extend([flag, str(v)])
-            else:
-                args.extend([flag, str(val)])
-
-        return args
+        return build_declarative_cli_args(self)
 
 
 # --------------------------------------------------------------------------- chunks & session
@@ -436,134 +406,11 @@ def _extract_summary(session: PiSession) -> dict[str, Any]:
 async def _ndjson_from_cli(request: PiCodeRequest):
     if PI_CLI is None:
         raise RuntimeError("Pi CLI not found. Install with: npm i -g @mariozechner/pi-coding-agent")
-
-    env = None
-    if request.env():
-        env = {**os.environ, **request.env()}
-
-    proc = await asyncio.create_subprocess_exec(
-        PI_CLI,
-        *request.as_cmd_args(),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=str(request.repo),
-        env=env,
-        start_new_session=True,
-    )
-    # Capture PGID immediately — same pattern as Claude/Codex.
-    # Guard against mocked subprocesses in tests where proc.pid may not be a
-    # real int: a MagicMock.pid coerces to 1 via __int__, and
-    # os.killpg(1, SIGTERM) would signal init/the CI runner.
-    # ``os.killpg`` is POSIX-only: on Windows it does not exist, so leave
-    # _pgid None there — the group-kill path is skipped and cleanup falls
-    # through to proc.terminate()/proc.kill() instead of raising AttributeError
-    # from the finally block (which only suppresses ProcessLookupError).
-    _pgid: int | None = (
-        proc.pid if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1 else None
-    )
-
-    decoder = codecs.getincrementaldecoder("utf-8")()
-    json_decoder = json.JSONDecoder()
-    buffer: str = ""
-
-    if proc.stdout is None:
-        raise RuntimeError("Failed to capture stdout from Pi CLI")
-
-    # Bounded stderr drain — without this, a stderr-heavy Pi session can
-    # deadlock when the OS pipe buffer fills before stdout EOF.
-    stderr_cap = 256 * 1024
-    stderr_chunks: list[bytes] = []
-    stderr_total = 0
-
-    async def _drain_stderr() -> None:
-        nonlocal stderr_total
-        if proc.stderr is None:
-            return
-        try:
-            while True:
-                chunk = await proc.stderr.read(4096)
-                if not chunk:
-                    break
-                remaining = stderr_cap - stderr_total
-                if remaining > 0:
-                    take = chunk[:remaining]
-                    stderr_chunks.append(take)
-                    stderr_total += len(take)
-        except Exception as exc:
-            log.debug("pi stderr drain ended: %s", exc)
-
-    stderr_task = asyncio.create_task(_drain_stderr())
-
-    try:
-        while True:
-            chunk = await proc.stdout.read(4096)
-            if not chunk:
-                break
-
-            buffer += decoder.decode(chunk)
-
-            while buffer:
-                buffer = buffer.lstrip()
-                if not buffer:
-                    break
-                try:
-                    obj, idx = json_decoder.raw_decode(buffer)
-                    yield obj
-                    buffer = buffer[idx:]
-                except json.JSONDecodeError:
-                    break
-
-        buffer += decoder.decode(b"", final=True)
-        buffer = buffer.strip()
-        if buffer:
-            try:
-                obj, idx = json_decoder.raw_decode(buffer)
-                yield obj
-            except json.JSONDecodeError:
-                log.error("Skipped unrecoverable JSON tail: %.120s...", buffer)
-
-        rc = await proc.wait()
-        if rc != 0:
-            drain_truncated = False
-            try:
-                await asyncio.wait_for(asyncio.shield(stderr_task), timeout=2.0)
-            except asyncio.TimeoutError:
-                drain_truncated = True
-            except asyncio.CancelledError:
-                raise
-            err = b"".join(stderr_chunks).decode(errors="replace").strip()
-            if drain_truncated:
-                err = (err or "") + " [stderr drain timed out]"
-            raise RuntimeError(err or f"Pi CLI exited with code {rc}")
-
-    finally:
-        # Terminate the whole process group (start_new_session=True above made
-        # pgid == proc.pid). Kill the group so descendant subprocesses started
-        # by the Pi CLI are also cleaned up — direct proc.terminate() only
-        # reaches the CLI process itself, leaving children behind.
-        pgid = _pgid
-        if pgid is not None:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(pgid, signal.SIGTERM)
-        with contextlib.suppress(ProcessLookupError):
-            proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            if pgid is not None:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(pgid, signal.SIGKILL)
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
-
-        # Reap the stderr drain task.
-        stderr_task.cancel()
-        try:
-            await stderr_task
-        except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001
-            pass
+    env = {**os.environ, **request.env()} if request.env() else None
+    cmd = [PI_CLI, *request.as_cmd_args()]
+    async with contextlib.aclosing(ndjson_from_cli(cmd, cwd=request.repo, env=env)) as stream:
+        async for obj in stream:
+            yield obj
 
 
 async def stream_pi_cli_events(request: PiCodeRequest):
@@ -726,7 +573,7 @@ async def stream_pi_cli(
                     if text:
                         chunk.text = text
                         if on_text:
-                            await _maybe_await(on_text, text)
+                            await maybe_await(on_text(text))
                         if request.verbose_output:
                             _pp_text(text, theme)
 
@@ -767,7 +614,7 @@ async def stream_pi_cli(
                         chunk.tool_use = tu
                         session.tool_uses.append(tu)
                         if on_tool_use:
-                            await _maybe_await(on_tool_use, tu)
+                            await maybe_await(on_tool_use(tu))
                         if request.verbose_output:
                             _pp_tool_use(tu, theme)
 
@@ -801,7 +648,7 @@ async def stream_pi_cli(
                 chunk.tool_result = tr
                 session.tool_results.append(tr)
                 if on_tool_result:
-                    await _maybe_await(on_tool_result, tr)
+                    await maybe_await(on_tool_result(tr))
                 if request.verbose_output:
                     _pp_tool_result(tr, theme)
                 yield chunk
@@ -843,15 +690,6 @@ async def stream_pi_cli(
         session.duration_ms = int((asyncio.get_running_loop().time() - _start) * 1000)
 
     if on_final:
-        await _maybe_await(on_final, session)
+        await maybe_await(on_final(session))
 
     yield session
-
-
-async def _maybe_await(func, *args):
-    """Call func which may be sync or async."""
-    import inspect
-
-    res = func(*args) if func else None
-    if inspect.iscoroutine(res):
-        await res

@@ -9,6 +9,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from lionagi.ln.concurrency.utils import maybe_await
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -323,7 +325,7 @@ async def stream_group_chat(
             if isinstance(event, TextEvent) and on_text:
                 text = getattr(inner, "content", "") if inner is not None else ""
                 sender = getattr(inner, "sender", "unknown") if inner is not None else "unknown"
-                await _maybe_await(on_text, text, sender)
+                await maybe_await(on_text(text, sender))
             elif isinstance(event, ToolCallEvent) and on_tool_use:
                 tool_calls = getattr(inner, "tool_calls", []) if inner is not None else []
                 first = tool_calls[0] if tool_calls else None
@@ -332,35 +334,24 @@ async def stream_group_chat(
                     getattr(getattr(first, "function", None), "arguments", None) if first else None
                 )
                 sender = getattr(inner, "sender", "unknown") if inner is not None else "unknown"
-                await _maybe_await(on_tool_use, tool_name, sender, tool_args)
+                await maybe_await(on_tool_use(tool_name, sender, tool_args))
             elif isinstance(event, ToolResponseEvent) and on_tool_result:
                 tool_responses = getattr(inner, "tool_responses", []) if inner is not None else []
                 first = tool_responses[0] if tool_responses else None
                 tool_output = getattr(first, "content", None) if first else None
                 sender = getattr(inner, "sender", "unknown") if inner is not None else "unknown"
-                await _maybe_await(on_tool_result, sender, tool_output)
+                await maybe_await(on_tool_result(sender, tool_output))
             elif isinstance(event, GroupChatRunChatEvent) and on_speaker:
                 speaker = getattr(inner, "speaker", "unknown") if inner is not None else "unknown"
-                await _maybe_await(on_speaker, speaker)
+                await maybe_await(on_speaker(speaker))
             elif isinstance(event, SelectSpeakerEvent) and on_speaker:
                 agents = getattr(inner, "agents", []) if inner is not None else []
                 first_name = getattr(agents[0], "name", str(agents[0])) if agents else "unknown"
-                await _maybe_await(on_speaker, first_name)
+                await maybe_await(on_speaker(first_name))
             yield event
     except Exception:
         logger.exception("AG2 GroupChat streaming failed")
         raise
 
     if on_complete:
-        await _maybe_await(on_complete, None)
-
-
-async def _maybe_await(fn: Callable, *args: Any) -> Any:
-    from lionagi.ln.concurrency.utils import is_coro_func
-
-    # Check fn BEFORE calling it. Checking the result (a coroutine object)
-    # with is_coro_func() would always return False — coroutine objects are
-    # not coroutine functions.
-    if is_coro_func(fn):
-        return await fn(*args)
-    return fn(*args)
+        await maybe_await(on_complete(None))

@@ -4,14 +4,10 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import contextlib
-import inspect
 import json
 import logging
-import os
 import shutil
-import signal
 import warnings
 from collections.abc import AsyncIterator, Callable
 from functools import partial
@@ -33,6 +29,8 @@ from lionagi.libs.path_safety import (
     contain_paths_in_root as contain_paths_in_repo,
 )
 from lionagi.libs.schema.as_readable import as_readable
+from lionagi.ln.concurrency.utils import maybe_await
+from lionagi.providers._cli_subprocess import build_declarative_cli_args, ndjson_from_cli
 from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 
@@ -438,39 +436,7 @@ class CodexCodeRequest(BaseModel):
         return args
 
     def _build_declarative_args(self) -> list[str]:
-        flagged: list[tuple[int, dict, Any]] = []
-        for field_name, field_info in type(self).model_fields.items():
-            extra = field_info.json_schema_extra
-            if not extra or "cli_flag" not in extra:
-                continue
-            val = getattr(self, field_name)
-            if val is None:
-                continue
-            if isinstance(val, list) and not val:
-                continue
-            if val is False:
-                continue
-            flagged.append((extra["cli_order"], extra, val))
-
-        flagged.sort(key=lambda x: x[0])
-
-        args: list[str] = []
-        for _, extra, val in flagged:
-            flag = extra["cli_flag"]
-            kind = extra.get("cli_kind", "value")
-
-            if kind == "bool":
-                if val:
-                    args.append(flag)
-
-            elif kind == "repeat":
-                for v in val:
-                    args.extend([flag, str(v)])
-
-            else:  # "value"
-                args.extend([flag, str(val)])
-
-        return args
+        return build_declarative_cli_args(self)
 
 
 CodexSession = CLISession
@@ -481,146 +447,12 @@ CodexSession = CLISession
 
 # TODO(#1043 Phase 2): migrate create_subprocess_exec + wait_for to anyio
 async def _ndjson_from_cli(request: CodexCodeRequest):
-    """Yield each JSON object from the Codex CLI NDJSON stream."""
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
-
-    proc = await asyncio.create_subprocess_exec(
-        CODEX_CLI,
-        *request.as_cmd_args(),
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,  # isolate from parent's SIGINT
-    )
-    # Capture PGID NOW — if we wait until teardown, the child may have
-    # exited and been reaped, ``os.getpgid(proc.pid)`` would raise
-    # ProcessLookupError, and we'd skip the group kill entirely.
-    # ``start_new_session=True`` makes pgid == proc.pid.
-    # Guard against mocked subprocesses in tests where proc.pid may not
-    # be a real int: a MagicMock.pid coerces to 1 via __int__, and
-    # os.killpg(1, SIGTERM) signals init/the CI runner.
-    # os.killpg is POSIX-only: on Windows leave _pgid None so the group-kill
-    # path is skipped and cleanup falls through to proc.terminate()/kill()
-    # instead of raising AttributeError from the finally block.
-    _codex_pgid: int | None = (
-        proc.pid if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1 else None
-    )
-
-    decoder = codecs.getincrementaldecoder("utf-8")()
-    json_decoder = json.JSONDecoder()
-    buffer: str = ""
-
-    if proc.stdout is None:
-        raise RuntimeError("Failed to capture stdout from Codex CLI")
-
-    # Bounded stderr capture (256 KiB) — enough for a useful error tail,
-    # bounded so a runaway logger can't consume unlimited memory.
-    stderr_cap = 256 * 1024
-    stderr_chunks: list[bytes] = []
-    stderr_total = 0
-
-    async def _drain_stderr() -> None:
-        nonlocal stderr_total
-        if proc.stderr is None:
-            return
-        try:
-            while True:
-                chunk = await proc.stderr.read(4096)
-                if not chunk:
-                    break
-                remaining = stderr_cap - stderr_total
-                if remaining > 0:
-                    take = chunk[:remaining]
-                    stderr_chunks.append(take)
-                    stderr_total += len(take)
-                # Beyond the cap we keep draining the pipe (so the
-                # subprocess never blocks on a full pipe buffer) but
-                # discard the bytes.
-        except Exception as exc:
-            log.debug("stderr drain ended: %s", exc)
-
-    stderr_task = asyncio.create_task(_drain_stderr())
-
-    try:
-        while True:
-            chunk = await proc.stdout.read(4096)
-            if not chunk:
-                break
-
-            buffer += decoder.decode(chunk)
-
-            while buffer:
-                buffer = buffer.lstrip()
-                if not buffer:
-                    break
-                try:
-                    obj, idx = json_decoder.raw_decode(buffer)
-                    yield obj
-                    buffer = buffer[idx:]
-                except json.JSONDecodeError:
-                    break
-
-        buffer += decoder.decode(b"", final=True)
-        buffer = buffer.strip()
-        if buffer:
-            try:
-                obj, idx = json_decoder.raw_decode(buffer)
-                yield obj
-            except json.JSONDecodeError:
-                log.error("Skipped unrecoverable JSON tail: %.120s...", buffer)
-
-        if await proc.wait() != 0:
-            # Drain task should be done now (stdout EOF + proc exit ⇒
-            # stderr EOF). ``shield`` so wait_for's timeout doesn't
-            # cancel the drain on slow systems — if we hit the timeout
-            # we report what we have and mark it truncated.
-            drain_truncated = False
-            try:
-                await asyncio.wait_for(asyncio.shield(stderr_task), timeout=2.0)
-            except asyncio.TimeoutError:
-                drain_truncated = True
-            except asyncio.CancelledError:
-                # If WE are cancelled, propagate.
-                raise
-            err = b"".join(stderr_chunks).decode(errors="replace").strip()
-            if drain_truncated:
-                err = (err or "") + " [stderr drain timed out]"
-            raise RuntimeError(err or "Codex CLI exited non-zero")
-
-    finally:
-        # Terminate the whole process group (start_new_session=True
-        # above made pgid == proc.pid). Captured up-front so a reap
-        # before teardown doesn't make us skip the group kill.
-        pgid = _codex_pgid
-        if pgid is not None:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(pgid, signal.SIGTERM)
-        with contextlib.suppress(ProcessLookupError):
-            proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            if pgid is not None:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(pgid, signal.SIGKILL)
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
-
-        # Reap the stderr drain task. ``contextlib.suppress(Exception)``
-        # does NOT catch CancelledError (BaseException) — we have to
-        # suppress it explicitly so the intentional cancel here doesn't
-        # mask the actual generator outcome.
-        stderr_task.cancel()
-        try:
-            await stderr_task
-        except (  # noqa: S110, BLE001
-            asyncio.CancelledError,
-            Exception,
-        ):
-            pass
+    cmd = [CODEX_CLI, *request.as_cmd_args()]
+    async with contextlib.aclosing(ndjson_from_cli(cmd, cwd=request.cwd())) as stream:
+        async for obj in stream:
+            yield obj
 
 
 # --------------------------------------------------------------------------- event stream
@@ -634,13 +466,6 @@ async def stream_codex_cli_events(request: CodexCodeRequest):
         async for obj in stream:
             yield obj
     yield {"type": "done"}
-
-
-async def _maybe_await(func, *args, **kw):
-    """Call func which may be sync or async."""
-    res = func(*args, **kw) if func else None
-    if inspect.iscoroutine(res):
-        await res
 
 
 print_readable = partial(as_readable, md=True, display_str=True)
@@ -728,7 +553,8 @@ async def stream_codex_cli(
                 if item_type == "agent_message":
                     text = item.get("text", "")
                     session.messages.append(item)
-                    await _maybe_await(on_text, text)
+                    if on_text:
+                        await maybe_await(on_text(text))
                     if request.verbose_output:
                         _pp_text(text, theme)
                     sc = StreamChunk(type="text", content=text, metadata=obj)
@@ -745,7 +571,8 @@ async def stream_codex_cli(
                         ),
                     }
                     session.tool_uses.append(tu)
-                    await _maybe_await(on_tool_use, tu)
+                    if on_tool_use:
+                        await maybe_await(on_tool_use(tu))
                     if request.verbose_output:
                         _pp_tool_use(tu, theme)
                     sc = StreamChunk(
@@ -768,7 +595,8 @@ async def stream_codex_cli(
 
                     tu = {"id": item_id, "name": "Bash", "input": {"command": command}}
                     session.tool_uses.append(tu)
-                    await _maybe_await(on_tool_use, tu)
+                    if on_tool_use:
+                        await maybe_await(on_tool_use(tu))
                     if request.verbose_output:
                         _pp_tool_use(tu, theme)
                     sc = StreamChunk(
@@ -783,7 +611,8 @@ async def stream_codex_cli(
 
                     tr = {"tool_use_id": item_id, "content": output, "is_error": is_error}
                     session.tool_results.append(tr)
-                    await _maybe_await(on_tool_result, tr)
+                    if on_tool_result:
+                        await maybe_await(on_tool_result(tr))
                     if request.verbose_output:
                         _pp_tool_result(tr, theme)
                     sc = StreamChunk(
@@ -804,7 +633,8 @@ async def stream_codex_cli(
 
                     tu = {"id": item_id, "name": "Edit", "input": {"changes": changes}}
                     session.tool_uses.append(tu)
-                    await _maybe_await(on_tool_use, tu)
+                    if on_tool_use:
+                        await maybe_await(on_tool_use(tu))
                     if request.verbose_output:
                         _pp_tool_use(tu, theme)
                     sc = StreamChunk(
@@ -828,7 +658,8 @@ async def stream_codex_cli(
                         "is_error": is_error,
                     }
                     session.tool_results.append(tr)
-                    await _maybe_await(on_tool_result, tr)
+                    if on_tool_result:
+                        await maybe_await(on_tool_result(tr))
                     if request.verbose_output:
                         _pp_tool_result(tr, theme)
                     sc = StreamChunk(
@@ -848,7 +679,8 @@ async def stream_codex_cli(
                         "is_error": item.get("is_error", False),
                     }
                     session.tool_results.append(tr)
-                    await _maybe_await(on_tool_result, tr)
+                    if on_tool_result:
+                        await maybe_await(on_tool_result(tr))
                     if request.verbose_output:
                         _pp_tool_result(tr, theme)
                     sc = StreamChunk(
@@ -894,7 +726,8 @@ async def stream_codex_cli(
 
                 content = msg.get("content", "")
                 if isinstance(content, str):
-                    await _maybe_await(on_text, content)
+                    if on_text:
+                        await maybe_await(on_text(content))
                     if request.verbose_output:
                         _pp_text(content, theme)
                     sc = StreamChunk(type="text", content=content, metadata=obj)
@@ -907,7 +740,8 @@ async def stream_codex_cli(
                         btype = blk.get("type")
                         if btype == "text":
                             text = blk.get("text", "")
-                            await _maybe_await(on_text, text)
+                            if on_text:
+                                await maybe_await(on_text(text))
                             if request.verbose_output:
                                 _pp_text(text, theme)
                             sc = StreamChunk(type="text", content=text, metadata=obj)
@@ -920,7 +754,8 @@ async def stream_codex_cli(
                                 "input": blk.get("input", blk.get("arguments", {})),
                             }
                             session.tool_uses.append(tu)
-                            await _maybe_await(on_tool_use, tu)
+                            if on_tool_use:
+                                await maybe_await(on_tool_use(tu))
                             if request.verbose_output:
                                 _pp_tool_use(tu, theme)
                             sc = StreamChunk(
@@ -958,7 +793,8 @@ async def stream_codex_cli(
     if session.duration_ms is None:
         session.duration_ms = int((asyncio.get_running_loop().time() - _start_monotonic) * 1000)
 
-    await _maybe_await(on_final, session)
+    if on_final:
+        await maybe_await(on_final(session))
     if request.verbose_output:
         _pp_final(session, theme)
 
