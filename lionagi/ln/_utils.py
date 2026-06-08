@@ -47,44 +47,18 @@ async def acreate_path(
     random_hash_digits: int = 0,
     timeout: float | None = None,
 ) -> AsyncPath:
-    """Generate file path asynchronously with optional timeout.
-
-    Args:
-        directory: Base directory path.
-        filename: Target filename (may contain subdirectory with /).
-        extension: File extension (if filename doesn't have one).
-        timestamp: Add timestamp to filename.
-        dir_exist_ok: Allow existing directories.
-        file_exist_ok: Allow existing files.
-        time_prefix: Put timestamp before filename instead of after.
-        timestamp_format: Custom strftime format for timestamp.
-        random_hash_digits: Add random hash suffix (0 = disabled).
-        timeout: Maximum time in seconds for async I/O operations
-            (None = no timeout).
-
-    Returns:
-        AsyncPath to the created/validated file path.
-
-    Raises:
-        ValueError: If filename contains backslash.
-        FileExistsError: If file exists and file_exist_ok is False.
-        TimeoutError: If timeout is exceeded.
-    """
     from .concurrency import move_on_after
 
     async def _impl() -> AsyncPath:
         nonlocal directory, filename
 
-        # Capture the ORIGINAL base root (symlinks resolved) BEFORE `filename`
-        # can redirect `directory` into a subdirectory. All containment checks
-        # validate against this fixed root, so a symlinked subdirectory pointing
-        # outside the base cannot be used to escape.
+        # Resolve BEFORE filename can redirect directory into a subdirectory;
+        # all containment checks validate against this fixed root.
         base_root = StdPath(str(directory)).resolve()
 
         if "/" in filename:
             parts = filename.split("/")
-            # Fail-closed: reject any path component that is '.' or '..' to
-            # prevent directory traversal before any filesystem side effect.
+            # Reject '.' or '..' to prevent directory traversal
             for component in parts:
                 if component in (".", ".."):
                     raise ValueError(
@@ -103,12 +77,7 @@ async def acreate_path(
         if filename in (".", ".."):
             raise ValueError(f"Filename must not be '.' or '..'; got {filename!r}.")
 
-        # Verify the (possibly redirected) directory AND the final candidate
-        # both resolve to a location within the original base root. Both are
-        # fully resolve()-d so symlinks are followed — a symlinked subdir OR a
-        # symlinked final component (e.g. base/link.txt -> /outside) escaping
-        # the root is rejected before any filesystem side effect. resolve() on a
-        # not-yet-existing final component simply normalizes it under the dir.
+        # Both dir and candidate must resolve within base_root (symlink-safe)
         dir_resolved = StdPath(str(directory)).resolve()
         candidate_resolved = (dir_resolved / filename).resolve()
         for escapee in (dir_resolved, candidate_resolved):
@@ -156,15 +125,7 @@ async def acreate_path(
 
 
 def get_bins(input_: list[str], upper: int) -> list[list[int]]:
-    """Organizes indices of strings into bins based on a cumulative upper limit.
-
-    Args:
-        input_ (List[str]): The list of strings to be binned.
-        upper (int): The cumulative length upper limit for each bin.
-
-    Returns:
-        List[List[int]]: A list of bins, each bin is a list of indices from the input list.
-    """
+    """Bin string indices by cumulative length limit."""
     current = 0
     bins = []
     current_bin = []
@@ -186,18 +147,6 @@ def import_module(
     module_name: str = None,
     import_name: str | list = None,
 ) -> Any:
-    """
-    Import a module by its path.
-
-    Args:
-        module_path: The path of the module to import.
-
-    Returns:
-        The imported module.
-
-    Raises:
-        ImportError: If the module cannot be imported.
-    """
     try:
         full_import_path = f"{package_name}.{module_name}" if module_name else package_name
 
@@ -218,15 +167,6 @@ def import_module(
 
 
 def is_import_installed(package_name: str) -> bool:
-    """
-    Check if a package is installed.
-
-    Args:
-        package_name: The name of the package to check.
-
-    Returns:
-        bool: True if the package is installed, False otherwise.
-    """
     return importlib.util.find_spec(package_name) is not None
 
 
@@ -241,36 +181,14 @@ _ALLOWED_MODULE_PREFIXES: set[str] = set(_DEFAULT_ALLOWED_PREFIXES)
 
 
 def register_type_prefix(prefix: str) -> None:
-    """Register module prefix for dynamic type loading allowlist.
-
-    Security: Only register prefixes for modules you control.
-
-    Args:
-        prefix: Module prefix to allow (e.g., "myapp.models.").
-            Must end with "." to prevent prefix attacks.
-
-    Raises:
-        ValueError: If prefix doesn't end with ".".
-    """
+    """Register module prefix for dynamic type loading allowlist."""
     if not prefix.endswith("."):
         raise ValueError(f"Prefix must end with '.': {prefix}")
     _ALLOWED_MODULE_PREFIXES.add(prefix)
 
 
 def load_type_from_string(type_str: str) -> type:
-    """Load type from fully qualified path (e.g., 'lionagi.core.Node').
-
-    Security: Only allowlisted module prefixes can be loaded.
-
-    Args:
-        type_str: Fully qualified type path.
-
-    Returns:
-        The loaded type class.
-
-    Raises:
-        ValueError: If path invalid, not allowlisted, or type not found.
-    """
+    """Load type from fully qualified path; only allowlisted prefixes."""
     if type_str in _TYPE_CACHE:
         return _TYPE_CACHE[type_str]
 
@@ -308,17 +226,7 @@ def load_type_from_string(type_str: str) -> type:
 
 
 def extract_types(item_type: Any) -> set[type]:
-    """Extract concrete types from type annotations.
-
-    Handles Union, list, set, and single types recursively.
-
-    Args:
-        item_type: Type annotation (Union[X, Y], list[type],
-            set[type], or type).
-
-    Returns:
-        Set of concrete types extracted from the annotation.
-    """
+    """Extract concrete types from type annotations (Union, list, set)."""
 
     def is_union(t: Any) -> bool:
         origin = get_origin(t)
@@ -354,17 +262,6 @@ def extract_types(item_type: Any) -> set[type]:
 
 
 def to_uuid(value: Any) -> UUID:
-    """Convert value to UUID instance.
-
-    Args:
-        value: UUID, UUID string, or object with ``.id`` attribute.
-
-    Returns:
-        UUID instance.
-
-    Raises:
-        ValueError: If value cannot be converted to UUID.
-    """
     if isinstance(value, UUID):
         return value
     if isinstance(value, str):
@@ -379,19 +276,7 @@ def to_uuid(value: Any) -> UUID:
 
 
 def coerce_created_at(v: Any) -> datetime:
-    """Coerce value to UTC-aware datetime.
-
-    Supports datetime, Unix timestamp (int/float), or ISO string.
-
-    Args:
-        v: datetime, Unix timestamp (int/float), or ISO string.
-
-    Returns:
-        UTC-aware datetime instance.
-
-    Raises:
-        ValueError: If value cannot be parsed as datetime.
-    """
+    """Coerce value to UTC-aware datetime (datetime, timestamp, or ISO string)."""
     if isinstance(v, datetime):
         return v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v
 
@@ -414,11 +299,7 @@ def coerce_created_at(v: Any) -> datetime:
 
 
 def synchronized(func: Callable[P, R]) -> Callable[P, R]:
-    """Decorator for thread-safe method execution.
-
-    Requires decorated method's instance to have ``self._lock``
-    (``threading.Lock``).
-    """
+    """Thread-safe method decorator; requires ``self._lock``."""
 
     @wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
@@ -432,11 +313,7 @@ def synchronized(func: Callable[P, R]) -> Callable[P, R]:
 def async_synchronized(
     func: Callable[P, Awaitable[R]],
 ) -> Callable[P, Awaitable[R]]:
-    """Decorator for async-safe method execution.
-
-    Requires decorated method's instance to have ``self._async_lock``
-    (``anyio.Lock``).
-    """
+    """Async-safe method decorator; requires ``self._async_lock``."""
 
     @wraps(func)
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
