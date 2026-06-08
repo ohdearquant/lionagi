@@ -647,39 +647,19 @@ class StateDB:
                 adr="ADR-0012",
             )
 
-        status_value = fields.pop("status", None)
-        if status_value is not None:
-            _validate_session_status(status_value)
-            if reason_code is None:
-                from warnings import warn
-
-                resolved = _default_reason_code_for_entity_status("session", status_value)
-                if resolved is None:
-                    raise ValueError(
-                        f"update_session() called with status={status_value!r} but "
-                        f"no canonical default reason_code exists for "
-                        f"(session, {status_value!r}). Pass reason_code "
-                        f"explicitly from lionagi/state/reasons.py."
-                    )
-                reason_code = resolved
-                warn(
-                    f"update_session({session_id!r}, status={status_value!r}) "
-                    "called without reason_code; defaulting to "
-                    f"{reason_code!r}. Pass reason_code explicitly "
-                    "(ADR-0028 Phase 2 deprecation).",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-            await self.update_status(
-                "session",
-                session_id,
-                new_status=status_value,
-                reason_code=reason_code,
-                reason_summary=reason_summary,
-                evidence_refs=evidence_refs,
-                source=reason_source,
-                actor=reason_actor,
-            )
+        if "status" in fields:
+            _validate_session_status(fields["status"])
+        await self._route_status_change(
+            "session",
+            session_id,
+            "update_session",
+            fields,
+            reason_code=reason_code,
+            reason_summary=reason_summary,
+            evidence_refs=evidence_refs,
+            reason_source=reason_source,
+            reason_actor=reason_actor,
+        )
 
         if fields:
             fields["updated_at"] = time.time()
@@ -703,6 +683,53 @@ class StateDB:
         await self.db.commit()
 
     # ── Status reason model ───────────────────────────────────────────
+
+    async def _route_status_change(
+        self,
+        entity_type: str,
+        entity_id: str,
+        caller_name: str,
+        fields: dict[str, Any],
+        *,
+        reason_code: str | None,
+        reason_summary: str,
+        evidence_refs: list[dict[str, Any]] | None,
+        reason_source: str,
+        reason_actor: str | None,
+    ) -> None:
+        status_value = fields.pop("status", None)
+        if status_value is None:
+            return
+        if reason_code is None:
+            from warnings import warn
+
+            resolved = _default_reason_code_for_entity_status(entity_type, status_value)
+            if resolved is None:
+                raise ValueError(
+                    f"{caller_name}() called with status={status_value!r} but "
+                    f"no canonical default reason_code exists for "
+                    f"({entity_type}, {status_value!r}). Pass reason_code "
+                    f"explicitly from lionagi/state/reasons.py."
+                )
+            reason_code = resolved
+            warn(
+                f"{caller_name}({entity_id!r}, status={status_value!r}) "
+                "called without reason_code; defaulting to "
+                f"{reason_code!r}. Pass reason_code explicitly "
+                "(ADR-0028 Phase 2 deprecation).",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+        await self.update_status(
+            entity_type,
+            entity_id,
+            new_status=status_value,
+            reason_code=reason_code,
+            reason_summary=reason_summary,
+            evidence_refs=evidence_refs,
+            source=reason_source,
+            actor=reason_actor,
+        )
 
     async def update_status(
         self,
@@ -1096,38 +1123,17 @@ class StateDB:
         if bad:
             raise ValueError(f"Invalid schedule_run field(s): {bad}")
 
-        status_value = fields.pop("status", None)
-        if status_value is not None:
-            if reason_code is None:
-                from warnings import warn
-
-                resolved = _default_reason_code_for_entity_status("schedule_run", status_value)
-                if resolved is None:
-                    raise ValueError(
-                        f"update_schedule_run() called with status={status_value!r} but "
-                        f"no canonical default reason_code exists for "
-                        f"(schedule_run, {status_value!r}). Pass reason_code "
-                        f"explicitly from lionagi/state/reasons.py."
-                    )
-                reason_code = resolved
-                warn(
-                    f"update_schedule_run({run_id!r}, status={status_value!r}) "
-                    "called without reason_code; defaulting to "
-                    f"{reason_code!r}. Pass reason_code explicitly "
-                    "(ADR-0028 Phase 2 deprecation).",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-            await self.update_status(
-                "schedule_run",
-                run_id,
-                new_status=status_value,
-                reason_code=reason_code,
-                reason_summary=reason_summary,
-                evidence_refs=evidence_refs,
-                source=reason_source,
-                actor=reason_actor,
-            )
+        await self._route_status_change(
+            "schedule_run",
+            run_id,
+            "update_schedule_run",
+            fields,
+            reason_code=reason_code,
+            reason_summary=reason_summary,
+            evidence_refs=evidence_refs,
+            reason_source=reason_source,
+            reason_actor=reason_actor,
+        )
 
         if fields:
             sets = ", ".join(f"{k} = ?" for k in fields)
@@ -1227,38 +1233,17 @@ class StateDB:
         if "node_metadata" in fields:
             fields["node_metadata"] = _to_json_column(fields["node_metadata"])
 
-        status_value = fields.pop("status", None)
-        if status_value is not None:
-            if reason_code is None:
-                from warnings import warn
-
-                resolved = _default_reason_code_for_entity_status("invocation", status_value)
-                if resolved is None:
-                    raise ValueError(
-                        f"update_invocation() called with status={status_value!r} but "
-                        f"no canonical default reason_code exists for "
-                        f"(invocation, {status_value!r}). Pass reason_code "
-                        f"explicitly from lionagi/state/reasons.py."
-                    )
-                reason_code = resolved
-                warn(
-                    f"update_invocation({invocation_id!r}, status={status_value!r}) "
-                    "called without reason_code; defaulting to "
-                    f"{reason_code!r}. Pass reason_code explicitly "
-                    "(ADR-0028 Phase 2 deprecation).",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-            await self.update_status(
-                "invocation",
-                invocation_id,
-                new_status=status_value,
-                reason_code=reason_code,
-                reason_summary=reason_summary,
-                evidence_refs=evidence_refs,
-                source=reason_source,
-                actor=reason_actor,
-            )
+        await self._route_status_change(
+            "invocation",
+            invocation_id,
+            "update_invocation",
+            fields,
+            reason_code=reason_code,
+            reason_summary=reason_summary,
+            evidence_refs=evidence_refs,
+            reason_source=reason_source,
+            reason_actor=reason_actor,
+        )
 
         if fields:
             fields["updated_at"] = time.time()
@@ -1647,38 +1632,17 @@ class StateDB:
                 nullable=False,
             )
 
-        status_value = fields.pop("status", None)
-        if status_value is not None:
-            if reason_code is None:
-                from warnings import warn
-
-                resolved = _default_reason_code_for_entity_status("show", status_value)
-                if resolved is None:
-                    raise ValueError(
-                        f"update_show() called with status={status_value!r} but "
-                        f"no canonical default reason_code exists for "
-                        f"(show, {status_value!r}). Pass reason_code "
-                        f"explicitly from lionagi/state/reasons.py."
-                    )
-                reason_code = resolved
-                warn(
-                    f"update_show({show_id!r}, status={status_value!r}) "
-                    "called without reason_code; defaulting to "
-                    f"{reason_code!r}. Pass reason_code explicitly "
-                    "(ADR-0028 Phase 2 deprecation).",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-            await self.update_status(
-                "show",
-                show_id,
-                new_status=status_value,
-                reason_code=reason_code,
-                reason_summary=reason_summary,
-                evidence_refs=evidence_refs,
-                source=reason_source,
-                actor=reason_actor,
-            )
+        await self._route_status_change(
+            "show",
+            show_id,
+            "update_show",
+            fields,
+            reason_code=reason_code,
+            reason_summary=reason_summary,
+            evidence_refs=evidence_refs,
+            reason_source=reason_source,
+            reason_actor=reason_actor,
+        )
 
         if fields:
             fields["updated_at"] = time.time()
@@ -1768,38 +1732,17 @@ class StateDB:
                 nullable=False,
             )
 
-        status_value = fields.pop("status", None)
-        if status_value is not None:
-            if reason_code is None:
-                from warnings import warn
-
-                resolved = _default_reason_code_for_entity_status("play", status_value)
-                if resolved is None:
-                    raise ValueError(
-                        f"update_play() called with status={status_value!r} but "
-                        f"no canonical default reason_code exists for "
-                        f"(play, {status_value!r}). Pass reason_code "
-                        f"explicitly from lionagi/state/reasons.py."
-                    )
-                reason_code = resolved
-                warn(
-                    f"update_play({play_id!r}, status={status_value!r}) "
-                    "called without reason_code; defaulting to "
-                    f"{reason_code!r}. Pass reason_code explicitly "
-                    "(ADR-0028 Phase 2 deprecation).",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-            await self.update_status(
-                "play",
-                play_id,
-                new_status=status_value,
-                reason_code=reason_code,
-                reason_summary=reason_summary,
-                evidence_refs=evidence_refs,
-                source=reason_source,
-                actor=reason_actor,
-            )
+        await self._route_status_change(
+            "play",
+            play_id,
+            "update_play",
+            fields,
+            reason_code=reason_code,
+            reason_summary=reason_summary,
+            evidence_refs=evidence_refs,
+            reason_source=reason_source,
+            reason_actor=reason_actor,
+        )
 
         if fields:
             fields["updated_at"] = time.time()
