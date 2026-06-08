@@ -9,6 +9,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from lionagi.libs.path_safety import contain_path_in_root
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
 
@@ -90,27 +91,12 @@ class SearchResponse(BaseModel):
 
 
 def _validate_search_path(path: str, workspace_root: str | None) -> tuple[str, str | None]:
-    """Resolve and optionally contain a search path within workspace_root.
-
-    Args:
-        path: The requested search path (may be relative or absolute).
-        workspace_root: If set, the resolved path must be at or below this root.
-
-    Returns:
-        (resolved_path_str, None) on success.
-
-    Raises:
-        PermissionError: If the resolved path escapes workspace_root.
-    """
     if workspace_root is not None:
         root = Path(workspace_root).resolve()
-        # Resolve relative paths against the workspace root (NOT the process
-        # cwd) so e.g. path="." targets the agent's workspace, then verify
-        # containment. resolve() follows symlinks, blocking symlinked escapes.
         requested = Path(path)
         resolved = (requested if requested.is_absolute() else root / requested).resolve()
         try:
-            resolved.relative_to(root)
+            contain_path_in_root(resolved, root, "search path")
         except ValueError as exc:
             raise PermissionError(
                 f"Search path {path!r} resolves to {resolved} which is outside "

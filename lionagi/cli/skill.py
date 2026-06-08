@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from lionagi.libs.path_safety import validate_path_component
+
 from ._logging import log_error
 
 
@@ -36,11 +38,10 @@ def resolve_skill_path(name: str) -> tuple[Path | None, str | None]:
     """
     if not name or not isinstance(name, str):
         return None, "skill name must be a non-empty string"
-    if "/" in name or "\\" in name or name.startswith("."):
-        return (
-            None,
-            f"skill NAME must be a bare identifier, got {name!r}.",
-        )
+    try:
+        validate_path_component(name, label="skill NAME")
+    except ValueError:
+        return None, f"skill NAME must be a bare identifier, got {name!r}."
     candidate = _skills_root() / name / "SKILL.md"
     if not candidate.is_file():
         suggestions = list_skill_names()

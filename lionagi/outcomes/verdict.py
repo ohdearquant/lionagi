@@ -12,6 +12,7 @@ from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
+from lionagi.libs.path_safety import check_path_safe
 from lionagi.models import HashableModel
 
 from ._base import SkillOutcome
@@ -53,21 +54,9 @@ class Finding(HashableModel):
     @field_validator("file", mode="before")
     @classmethod
     def _validate_file(cls, v: object) -> object:
-        """Reject absolute paths and parent-traversal components."""
-        if v is None:
+        if v is None or not isinstance(v, str):
             return v
-        if not isinstance(v, str):
-            return v
-        # Reject absolute paths (Unix and Windows).
-        if v.startswith("/") or (len(v) >= 2 and v[1] == ":"):
-            raise ValueError(f"Finding.file must be a repo-relative path, not absolute: {v!r}")
-        # Reject any component that is '..' (traversal).
-        parts = v.replace("\\", "/").split("/")
-        if any(p == ".." for p in parts):
-            raise ValueError(f"Finding.file must not contain parent-traversal components: {v!r}")
-        # Reject NUL bytes (path injection).
-        if "\x00" in v:
-            raise ValueError("Finding.file must not contain NUL bytes.")
+        check_path_safe(v, "Finding.file", reject_absolute=True)
         return v
 
 
