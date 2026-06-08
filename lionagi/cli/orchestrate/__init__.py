@@ -19,12 +19,6 @@ from .flow import FlowPlanError, _run_flow
 def add_orchestrate_subparser(
     subparsers: argparse._SubParsersAction,
 ) -> dict[str, argparse.ArgumentParser]:
-    """Register `li orchestrate` (alias `li o`) with its sub-commands.
-
-    Returns a mapping of sub-command name → ArgumentParser so callers that
-    need to post-hoc extend a sub-parser (e.g. to inject playbook-declared
-    flags) can do so without re-navigating argparse internals.
-    """
     orch = subparsers.add_parser(
         "orchestrate",
         aliases=["o"],
@@ -126,7 +120,6 @@ def add_orchestrate_subparser(
 
     add_common_cli_args(fo)
 
-    # ── flow sub-command ─────────────────────────────────────────────
     fl = orch_sub.add_parser(
         "flow",
         help="Auto-DAG pipeline: orchestrator plans DAG, engine executes.",
@@ -290,7 +283,6 @@ def add_orchestrate_subparser(
 
 
 def _scan_argv_for_playbook_name(argv: list[str]) -> str | None:
-    """Scan argv for -p NAME / --playbook NAME / --playbook=NAME."""
     i = 0
     while i < len(argv):
         tok = argv[i]
@@ -305,11 +297,6 @@ def _scan_argv_for_playbook_name(argv: list[str]) -> str | None:
 
 
 def _derive_args_schema_from_spec(spec: dict) -> dict:
-    """Extract args schema from a loaded spec dict.
-
-    Priority: explicit args: block > argument-hint: fallback.
-    Returns {} on malformed input (caller validates separately).
-    """
     if isinstance(spec.get("args"), dict):
         schema: dict = {}
         for name, field in spec["args"].items():
@@ -329,16 +316,7 @@ def _derive_args_schema_from_spec(spec: dict) -> dict:
 def inject_playbook_schema_into_parser(
     flow_parser: argparse.ArgumentParser, argv: list[str]
 ) -> dict:
-    """Pre-scan argv for -p/--playbook; if found, load the playbook and
-    add its declared args as flags on the flow sub-parser.
-
-    Must be called BEFORE parser.parse_args so argparse can recognize
-    playbook-declared flags and consume their values correctly. No-op if
-    argv doesn't reference a playbook, or if resolution/loading fails
-    (errors surface at dispatch time via run_orchestrate).
-
-    Returns the extracted args schema (empty dict if none).
-    """
+    """Pre-scan argv for playbook; inject declared args as parser flags."""
     name = _scan_argv_for_playbook_name(argv)
     if not name:
         return {}
@@ -351,15 +329,10 @@ def inject_playbook_schema_into_parser(
     schema = _derive_args_schema_from_spec(spec)
     if not schema:
         return {}
-    # Collect reserved option strings already defined on the flow parser.
-    # Playbook flags that collide are skipped with a warning — the base
-    # parser's flag wins, and the playbook author should rename.
     reserved: set[str] = set()
     for action in flow_parser._actions:
         for opt in getattr(action, "option_strings", ()):
             reserved.add(opt)
-    # Add each schema-declared flag to the flow parser. Use default=None so
-    # we can distinguish "user didn't pass" from "user passed false".
     resolved_schema: dict = {}
     for arg_name, field in schema.items():
         cli_flag = "--" + arg_name.replace("_", "-")
@@ -392,23 +365,16 @@ def inject_playbook_schema_into_parser(
                 metavar=type_str.upper(),
             )
         resolved_schema[arg_name] = field
-    # Stash the collision-filtered schema on the parser as a default so
-    # run_orchestrate can interpolate against the exact same set of args
-    # (without re-deriving and re-introducing collisions).
     flow_parser.set_defaults(_playbook_args_schema=resolved_schema)
     return resolved_schema
 
 
 def _resolve_playbook_path(name: str) -> tuple[object, str | None]:
-    """Resolve a playbook NAME to its file path.
-
-    Returns (Path, None) on success, or (None, error_message) on failure.
-    """
+    """Resolve a playbook NAME to (Path, None) or (None, error_message)."""
     from pathlib import Path
 
     if not name or not isinstance(name, str):
         return None, "playbook name must be a non-empty string"
-    # Reject path separators — NAME is a bare identifier.
     if "/" in name or "\\" in name or name.startswith("."):
         return (
             None,
@@ -429,10 +395,6 @@ def _resolve_playbook_path(name: str) -> tuple[object, str | None]:
             else " No playbooks found in ~/.lionagi/playbooks/"
         )
         return None, f"playbook not found: {candidate}.{hint_text}"
-    # Symlink containment — the playbooks root may itself be a symlink
-    # (users can point `~/.lionagi/playbooks/` at any directory they
-    # manage); comparing resolved paths accepts that while rejecting a
-    # malicious per-playbook symlink pointing at an arbitrary file on disk.
     try:
         resolved_root = root.resolve(strict=True)
         resolved_candidate = candidate.resolve(strict=True)
@@ -446,20 +408,10 @@ def _resolve_playbook_path(name: str) -> tuple[object, str | None]:
 
 
 def _parse_argument_hint(hint: str) -> dict:
-    """Parse CC-style argument-hint string into an args schema.
-
-    Examples:
-        '[--tabs N]'     → {"tabs": {"type": "str", "default": None}}
-        '[--poll]'       → {"poll": {"type": "bool", "default": False}}
-        '[--tabs N] [--poll]' → combination of both
-
-    Unparseable tokens are skipped silently. For strict typing, use args: block.
-    """
+    """Parse CC-style argument-hint string into an args schema."""
     import re
 
     schema: dict = {}
-    # Match [--flag] or [--flag VALUE] or [--flag N] etc.
-    # Group 1 = flag name, Group 2 = optional value placeholder
     pattern = re.compile(r"\[--([a-zA-Z][a-zA-Z0-9_-]*)(?:\s+([A-Z_][A-Z0-9_]*))?\]")
     for match in pattern.finditer(hint or ""):
         flag_name = match.group(1).replace("-", "_")
@@ -472,7 +424,6 @@ def _parse_argument_hint(hint: str) -> dict:
 
 
 def _validate_args_schema(args_schema) -> str | None:
-    """Validate the args: block. Returns error message or None."""
     if not isinstance(args_schema, dict):
         return f"spec field 'args' must be a dict, got {type(args_schema).__name__}"
     valid_types = {"str", "int", "float", "bool"}
@@ -488,14 +439,9 @@ def _validate_args_schema(args_schema) -> str | None:
 
 
 def _coerce_arg_value(name: str, value, type_str: str):
-    """Coerce a raw string/bool from argparse into the schema-declared type.
-
-    Returns (coerced_value, None) on success or (None, error_message).
-    """
     if value is None:
         return None, None
     if type_str == "bool":
-        # argparse store_true gives us a bool directly
         return bool(value), None
     if type_str == "str":
         return str(value), None
@@ -513,11 +459,6 @@ def _coerce_arg_value(name: str, value, type_str: str):
 
 
 def _load_flow_spec(path: str) -> dict | None:
-    """Load a YAML or JSON flow spec file.
-
-    Returns a dict on success, or None after logging a CLI-facing error.
-    Empty specs are treated as an empty object.
-    """
     from pathlib import Path
 
     p = Path(path).expanduser()
@@ -551,10 +492,6 @@ def _load_flow_spec(path: str) -> dict | None:
     if not isinstance(data, dict):
         log_error("spec file must contain a YAML/JSON object")
         return None
-    # Normalize top-level keys: accept both dashed (`max-agents`) and
-    # underscored (`max_agents`) forms so authors can mirror CLI flag names.
-    # `argument-hint` stays dashed (CC convention, parsed specially). `args`
-    # holds user-defined arg names; don't touch its children.
     preserve_dashed = {"argument-hint"}
     normalized: dict = {}
     for key, value in data.items():
@@ -566,12 +503,6 @@ def _load_flow_spec(path: str) -> dict | None:
 
 
 def _validate_spec_fields(spec: dict) -> str | None:
-    """Validate spec field types and ranges. Returns an error message or None.
-
-    Uses ``in`` checks (not ``.get()``) so that YAML ``null`` (Python ``None``)
-    is treated as an invalid present value for all fields except ``effort``,
-    which explicitly allows ``None`` (meaning "use the profile default effort").
-    """
     if "workers" in spec:
         workers = spec["workers"]
         if not isinstance(workers, int) or isinstance(workers, bool):
@@ -579,23 +510,15 @@ def _validate_spec_fields(spec: dict) -> str | None:
         if not (1 <= workers <= 32):
             return f"spec field 'workers' must be in [1, 32], got {workers}"
 
-    # `max_ops` is canonical; `max_agents` is a deprecated alias. Validate
-    # whichever key is present (rejecting a present-None value) and preserve
-    # the user-supplied key name in error messages for discoverability.
     for key in ("max_ops", "max_agents"):
         if key not in spec:
             continue
         value = spec[key]
         if not isinstance(value, int) or isinstance(value, bool):
             return f"spec field {key!r} must be an integer, got {type(value).__name__}"
-        # CLI docs `--max-ops`/`--max-agents` as "0 = unlimited" (default).
-        # Mirror that in spec: accept 0 (means unlimited) and 1-50 as a cap.
         if not (0 <= value <= 50):
             return f"spec field {key!r} must be in [0, 50] (0 = unlimited), got {value}"
 
-    # effort: None is explicitly allowed (means "use profile default").
-    # Allowed values mirror provider EFFORT_LEVELS in cli/_providers.py so
-    # the spec validator can't reject values the CLI itself accepts.
     effort = spec.get("effort")
     if effort is not None:
         from .._providers import EFFORT_LEVELS
@@ -606,9 +529,6 @@ def _validate_spec_fields(spec: dict) -> str | None:
             allowed = sorted(EFFORT_LEVELS)
             return f"spec field 'effort' must be one of {allowed}, got {effort!r}"
 
-    # with_synthesis mirrors the CLI `--with-synthesis [MODEL]` surface:
-    #   bool  → use orchestrator model (bare flag)
-    #   str   → synthesis model spec (flag with explicit value)
     if "with_synthesis" in spec:
         val = spec["with_synthesis"]
         if not isinstance(val, bool | str):
@@ -652,11 +572,6 @@ def _validate_spec_fields(spec: dict) -> str | None:
             )
 
             validate_artifact_contract(artifacts)
-            # ADR-0029 §2: unknown subfields are reserved for v1.1.
-            # Warn at runtime as well as in `li play check` so contract
-            # files don't silently drift into v1.1-looking shapes the
-            # v1 executor ignores. Route through the standard logger
-            # so the warning lands in structured logs, not stdout.
             import logging as _logging
 
             _cli_log = _logging.getLogger("lionagi.cli")
@@ -672,30 +587,20 @@ def _validate_spec_fields(spec: dict) -> str | None:
 
 
 def _interpolate_prompt(template: str, positional: str | None, playbook_args: dict) -> str:
-    """Interpolate {input} + all playbook args into the prompt template.
-
-    - {input} substitution uses the positional prompt if present
-    - {arg_name} substitutions use playbook_args (CLI-overridden values + defaults)
-    - If no placeholders present AND a positional prompt exists, append the
-      positional to the template (CC-skill-style)
-    """
+    """Interpolate {input} + playbook args into the prompt template."""
     if not template:
         return positional or ""
 
-    # Build substitution context: {input} + all named args
     ctx: dict = dict(playbook_args)
     if positional is not None:
         ctx["input"] = positional
 
-    # Detect any placeholder using format-style {name} tokens
     import re
 
     placeholders = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", template))
     if not placeholders and positional is not None:
-        # No placeholders — append positional like a CC skill
         return template + "\n\n" + positional
 
-    # Render: missing keys remain as literal {name} tokens
     def _sub(match: re.Match[str]) -> str:
         key = match.group(1)
         if key in ctx:
@@ -706,7 +611,6 @@ def _interpolate_prompt(template: str, positional: str | None, playbook_args: di
 
 
 def run_orchestrate(args: argparse.Namespace) -> int:
-    """Dispatch orchestrate sub-commands."""
     if args.orch_command == "fanout":
         has_model = args.model is not None or args.agent is not None
         if not has_model:
@@ -761,7 +665,6 @@ def run_orchestrate(args: argparse.Namespace) -> int:
         return 0
 
     if args.orch_command == "flow":
-        # ── Resolve -p/--playbook NAME into a concrete file path ─────
         playbook_name = getattr(args, "playbook", None)
         playbook_artifacts: dict | None = None
         file_spec = getattr(args, "file", None)
@@ -775,7 +678,6 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 return 1
             file_spec = str(resolved_path)
 
-        # ── Load spec file if -f/--file or -p/--playbook was given ──
         if file_spec:
             spec = _load_flow_spec(file_spec)
             if spec is None:
@@ -787,24 +689,15 @@ def run_orchestrate(args: argparse.Namespace) -> int:
 
             playbook_artifacts = spec.get("artifacts")
 
-            # ── Derive args schema: explicit args: block OR argument-hint fallback
             if "args" in spec:
                 schema_err = _validate_args_schema(spec["args"])
                 if schema_err is not None:
                     log_error(schema_err)
                     return 1
-            # Prefer the collision-filtered schema stashed by
-            # inject_playbook_schema_into_parser — guarantees we don't
-            # interpolate against args whose flags were shadowed by base CLI.
-            # Use `is None` (not truthiness) so an empty filtered schema —
-            # e.g. every declared arg collided — still wins over re-derivation.
             args_schema = getattr(args, "_playbook_args_schema", None)
             if args_schema is None:
                 args_schema = _derive_args_schema_from_spec(spec)
 
-            # Playbook-declared flags were injected into the argparse parser
-            # before parse_args ran (see inject_playbook_schema_into_parser).
-            # Read the parsed values straight off the namespace.
             playbook_ctx: dict = {}
             for name, field in args_schema.items():
                 if field.get("default") is not None:
@@ -818,12 +711,9 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     return 1
                 playbook_ctx[name] = coerced
 
-            # If the file supplies the model/agent, argparse's lone positional
-            # is a prompt override, not a model override.
             if args.model and args.prompt is None and (spec.get("model") or spec.get("agent")):
                 args.prompt = args.model
                 args.model = None
-            # File values are defaults; CLI flags override.
             if args.model is None and "model" in spec:
                 args.model = spec["model"]
             if args.agent is None and spec.get("agent"):
@@ -840,7 +730,6 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 args.team_mode = spec["team_mode"]
             if getattr(args, "team_attach", None) is None and spec.get("team_attach"):
                 args.team_attach = spec["team_attach"]
-            # Prefer max_ops; fall back to deprecated max_agents spec field.
             if args.max_ops == 0:
                 spec_cap = spec.get("max_ops") or spec.get("max_agents")
                 if spec_cap:
@@ -858,9 +747,6 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             if spec.get("critic_model"):
                 pass  # reserved for future use
 
-        # Argparse assigns a lone positional to `model`, leaving prompt
-        # None. When --agent supplies the model and the user passed a
-        # single positional, that positional is actually the prompt.
         if args.model and not args.prompt and args.agent:
             args.prompt = args.model
             args.model = None
@@ -908,8 +794,6 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             import uuid as _uuid
             from pathlib import Path as _Path
 
-            # Pre-generate the session ID so the parent can print a monitor handle
-            # before the subprocess starts. The subprocess picks it up via env var.
             bg_session_id = str(_uuid.uuid4())
             bg_args = [a for a in sys.argv[1:] if a != "--background"]
             log_root = _Path(args.save).expanduser()
@@ -984,8 +868,6 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             raise
         if not args.verbose:
             print(output)
-        # ADR-0029 §7: terminal_status reflects the verification override.
-        # Map to the same exit codes used by `li agent` (see ADR-0025).
         from lionagi.cli.agent import _EXIT_CODE_BY_TERMINAL_STATUS
 
         return _EXIT_CODE_BY_TERMINAL_STATUS.get(terminal_status, 0)

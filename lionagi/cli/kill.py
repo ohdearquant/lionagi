@@ -1,22 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""`li kill` — terminate in-progress lionagi runs/sessions/plays/shows.
-
-When an agent, play, or orchestrated flow is killed externally (Ctrl-C in
-the wrong terminal, ``kill PID``, OS restart), the state DB is left with
-``status=running`` rows whose underlying processes are dead.  Studio shows
-them forever as "still running".  ``li kill`` is the operator-explicit
-recovery path.
-
-Usage:
-    li kill <id>                    # one entity by id (prefix or full UUID)
-    li kill <id> --reason "text"    # with a custom reason message
-    li kill <id> --recursive        # kill entity + every child invocation
-    li kill --all-stale             # sweep all running rows with dead PIDs
-    li kill --all-stale --threshold 3600   # stale = started > 1h ago
-
-Entity types resolved from id: session, invocation, play, show.
-"""
+"""`li kill` — terminate in-progress lionagi runs/sessions/plays/shows."""
 
 from __future__ import annotations
 
@@ -30,18 +14,9 @@ import psutil
 
 from ._logging import log_error, warn
 
-# ── PID probing ────────────────────────────────────────────────────────────────
-
 
 def _pid_alive(pid: int) -> bool:
-    """Return True iff *pid* is a live OS process.
-
-    Uses ``os.kill(pid, 0)`` — sends no actual signal; raises
-    ``ProcessLookupError`` (no such process) or ``PermissionError``
-    (process exists but not ours to signal).  Both mean the pid is
-    either dead or owned by another user; callers treat ``PermissionError``
-    as "alive" because the process IS running, just not killable by us.
-    """
+    """Return True iff *pid* is a live OS process."""
     if pid <= 0:
         return False
     try:
@@ -50,16 +25,11 @@ def _pid_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        # Process exists; we can't signal it, but it is alive.
         return True
 
 
 def _read_pid_from_entity(entity: dict[str, Any]) -> int | None:
-    """Extract the OS PID from an entity row.
-
-    Check ``node_metadata.pid`` (written by the CLI executor at session-open
-    time) and the artifact dir ``.pid`` file (written by some play runners).
-    """
+    """Extract the OS PID from an entity row."""
     meta = entity.get("node_metadata") or {}
     if isinstance(meta, dict):
         raw_pid = meta.get("pid")
@@ -69,7 +39,6 @@ def _read_pid_from_entity(entity: dict[str, Any]) -> int | None:
             except (TypeError, ValueError):
                 pass
 
-    # Fall back to the artifacts-dir .pid file.
     artifacts_path = entity.get("artifacts_path")
     if artifacts_path:
         pid_file = os.path.join(artifacts_path, ".pid")
@@ -83,49 +52,19 @@ def _read_pid_from_entity(entity: dict[str, Any]) -> int | None:
 
 
 def current_pid_markers() -> dict[str, Any]:
-    """Identity markers for the *current* process, for later kill verification.
-
-    Merge the result into a live session/invocation's ``node_metadata`` at
-    creation time — but only from the process that actually owns the run, never
-    from a launcher that spawns the run as a subprocess.
-
-    Includes the process start time so ``li kill`` can reject a recycled PID
-    whose start time no longer matches (CWE-362).
-    """
+    """PID + create_time for the current process, for kill verification (CWE-362)."""
     return {
         "pid": os.getpid(),
         "pid_create_time": psutil.Process(os.getpid()).create_time(),
     }
 
 
-# ── Signal / terminate ─────────────────────────────────────────────────────────
-
-
-# Tolerance (seconds) when comparing a recorded process start time against the
-# live process's create_time. Launcher and killer read the SAME kernel data on
-# the SAME host, so the value is reproducible to sub-tick precision (verified:
-# repeated psutil.create_time() calls return an identical float, and it survives
-# JSON round-trip losslessly). The only legitimate drift is clock-tick rounding
-# (~10ms on Linux, CLK_TCK=100), so the window is kept tight — a recycled PID
-# must have started within this window AND be a lionagi process to slip through.
+# Clock-tick rounding tolerance for process start time comparison (CWE-362).
 _CREATE_TIME_TOLERANCE = 0.1
 
 
 def _cmdline_is_lionagi(cmdline: list[str], expected_cmd: str) -> bool:
-    """Return True iff *cmdline* is genuinely a lionagi CLI invocation.
-
-    Exact-token match, NOT substring. A broad ``expected_cmd in part`` check
-    matches any unrelated process whose path or arguments merely *mention*
-    lionagi — e.g. ``vim /Users/lion/projects/lionagi/README.md`` — which would
-    let ``li kill`` signal a recycled, unrelated PID (CWE-362).
-
-    A process counts as lionagi only when:
-      * its executable basename is the console entrypoint (``li``) or
-        ``expected_cmd`` itself, or
-      * it is run as ``python -m lionagi`` / ``python -m lionagi.<submodule>``.
-
-    A path component (``.../lionagi/README.md``) is deliberately not a match.
-    """
+    """Exact-token match: is this cmdline a lionagi CLI invocation?"""
     if not cmdline:
         return False
     exe = os.path.basename(cmdline[0])
@@ -144,54 +83,25 @@ def _check_pid_identity(
     expected_session_id: str | None = None,
     expected_create_time: float | None = None,
 ) -> bool:
-    """Return True iff the live process at *pid* is the lionagi run we recorded.
-
-    Identity is established in order of decreasing certainty:
-
-    1. ``create_time`` — when *expected_create_time* was recorded at launch, a
-       mismatch means the PID was recycled to a different process; reject
-       outright. This is the decisive defense against PID reuse.
-    2. ``LIONAGI_SESSION_ID`` env marker — a lionagi run started by the CLI
-       carries its session id in the environment (see the orchestrate
-       background launcher). When *expected_session_id* is given and the live
-       process exposes a matching marker, that is a definitive match; a
-       *different* marker means another lionagi run now holds this PID — reject.
-    3. cmdline — exact-token match that the process really is a lionagi CLI
-       invocation (see ``_cmdline_is_lionagi``).
-
-    When a session id is expected, identity must be *positively* proven: the
-    cmdline gate only shows the process is *some* lionagi run, which cannot
-    distinguish this run from a different concurrent run that recycled the PID.
-    So if the env marker is absent/unreadable, we require a matching
-    ``create_time`` AND a lionagi cmdline together — neither alone is enough
-    (a recycled PID could start inside the create_time tolerance, or be an
-    unrelated lionagi process). The cmdline gate is the sole signal only when no
-    session id is expected (e.g. invocations, which carry no env marker).
-    """
+    """Return True iff the live process at *pid* is the lionagi run we recorded."""
     try:
         proc = psutil.Process(pid)
-        # create_time gate — recycled PID has a different start time.
-        # Tri-state: None = not recorded, True/False = checked against the live process.
         create_time_ok: bool | None = None
         if expected_create_time is not None:
             create_time_ok = (
                 abs(proc.create_time() - expected_create_time) <= _CREATE_TIME_TOLERANCE
             )
             if not create_time_ok:
-                return False  # PID recycled to a different process
+                return False
 
-        # session-marker gate — exact per-run identity.
         if expected_session_id is not None:
             try:
                 marker = proc.environ().get("LIONAGI_SESSION_ID")
             except (psutil.AccessDenied, NotImplementedError):
-                marker = None  # env unreadable
+                marker = None
             if marker is not None:
                 return marker == expected_session_id
-            # Marker absent/unreadable: cmdline alone can't prove THIS run, so
-            # require BOTH a positive create_time match AND a lionagi cmdline.
-            # Either alone is insufficient — a recycled PID could start within
-            # the create_time tolerance, or be an unrelated lionagi process.
+            # Without env marker, require BOTH create_time match AND lionagi cmdline.
             return create_time_ok is True and _cmdline_is_lionagi(proc.cmdline(), expected_cmd)
 
         cmdline = proc.cmdline()
@@ -209,16 +119,7 @@ def _terminate_pid(
     expected_session_id: str | None = None,
     expected_create_time: float | None = None,
 ) -> str:
-    """SIGTERM → wait → SIGKILL.  Returns "sigterm", "sigkill", "already_dead", or "identity_mismatch".
-
-    If the process doesn't exist at all, returns "already_dead".
-    If *expected_cmd* is given, verifies the live process is the lionagi run we
-    recorded (see ``_check_pid_identity``) before signalling; returns
-    "identity_mismatch" (and skips the kill) if the check fails — prevents
-    PID-reuse races (CWE-362).
-    If SIGTERM is enough, returns "sigterm".  If the grace period expires
-    and the process is still alive, escalates to SIGKILL and returns "sigkill".
-    """
+    """SIGTERM then SIGKILL. Returns "sigterm"/"sigkill"/"already_dead"/"identity_mismatch"."""
     if not _pid_alive(pid):
         return "already_dead"
 
@@ -230,7 +131,6 @@ def _terminate_pid(
     ):
         return "identity_mismatch"
 
-    # Phase 1: SIGTERM
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -241,7 +141,6 @@ def _terminate_pid(
             "Try again as root, or mark the entity cancelled manually."
         ) from exc
 
-    # Wait up to grace_seconds for graceful exit.
     deadline = time.monotonic() + grace_seconds
     interval = 0.1
     while time.monotonic() < deadline:
@@ -253,33 +152,23 @@ def _terminate_pid(
     if not _pid_alive(pid):
         return "sigterm"
 
-    # Phase 2: SIGKILL
     try:
         os.kill(pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
-        # Died in the gap between the last check and the SIGKILL.
         pass
 
     return "sigkill"
 
 
-# ── DB entity resolution ───────────────────────────────────────────────────────
-
 _SEARCH_ORDER = ("sessions", "invocations", "plays", "shows")
 
-# Only sessions and invocations carry direct PID semantics. Plays and
-# shows are orchestrators that spawn child sessions/invocations — they
-# don't carry their own PID. Sweeping them by PID-absence would abort
-# legitimate long-running orchestrations whose child processes are still
-# alive. Use `li kill <play_or_show_id> --recursive` for explicit cleanup.
+# Only sessions/invocations carry PIDs; plays/shows are orchestrators.
 _STALE_SWEEP_ORDER = ("sessions", "invocations")
 
-# Play statuses that are NOT terminal — the play is still in-progress.
 _PLAY_ACTIVE_STATUSES = frozenset(
     {"pending", "prepared", "running", "running_complete", "gated", "redoing"}
 )
 
-# Map DB table name → canonical entity type for update_status().
 _TABLE_TO_ENTITY_TYPE = {
     "sessions": "session",
     "invocations": "invocation",
@@ -289,15 +178,7 @@ _TABLE_TO_ENTITY_TYPE = {
 
 
 async def _resolve_entity(db: Any, id_or_short: str) -> tuple[str, str, dict[str, Any]] | None:
-    """Resolve an id (full UUID or prefix) to (table, entity_type, row).
-
-    Searches sessions, invocations, plays, shows in that order.  Accepts
-    prefix matches (at least 6 characters) so operators can use short IDs.
-    Returns None if nothing matches.
-
-    Uses ``db._row_to_dict`` so JSON columns (e.g. node_metadata) are
-    already decoded in the returned dict.
-    """
+    """Resolve an id (full UUID or prefix) to (table, entity_type, row)."""
     id_or_short = id_or_short.strip()
     is_prefix = len(id_or_short) < 36
 
@@ -321,15 +202,11 @@ async def _resolve_entity(db: Any, id_or_short: str) -> tuple[str, str, dict[str
 
 
 async def _list_child_invocations(db: Any, session_id: str) -> list[dict[str, Any]]:
-    """Return invocations linked to *session_id* that are still running."""
     cur = await db.db.execute("SELECT * FROM invocations WHERE status = 'running'")
     rows = await cur.fetchall()
     result = []
     for row in rows:
         d = dict(row)
-        # invocations reference sessions via sessions.invocation_id FK
-        # (a session may reference the invocation that spawned it).
-        # We look at sessions that claim this invocation as their parent.
         child_cur = await db.db.execute(
             "SELECT 1 FROM sessions WHERE invocation_id = ? LIMIT 1",
             (d["id"],),
@@ -344,13 +221,6 @@ async def _list_child_invocations(db: Any, session_id: str) -> list[dict[str, An
 async def _list_running_children(
     db: Any, entity_type: str, entity_id: str
 ) -> list[tuple[str, str, dict[str, Any]]]:
-    """Return list of (table, entity_type, row) for running children.
-
-    For shows: running plays.
-    For sessions: the invocation that spawned this session (linked via
-    sessions.invocation_id) if it is still running.
-    For invocations: sessions spawned by this invocation.
-    """
     children: list[tuple[str, str, dict[str, Any]]] = []
 
     if entity_type == "show":
@@ -362,7 +232,6 @@ async def _list_running_children(
             children.append(("plays", "play", db._row_to_dict(row)))
 
     if entity_type == "session":
-        # The session may be linked to a parent invocation.
         cur = await db.db.execute(
             "SELECT * FROM invocations "
             "WHERE status = 'running' AND id IN ("
@@ -375,7 +244,6 @@ async def _list_running_children(
             children.append(("invocations", "invocation", db._row_to_dict(row)))
 
     if entity_type == "invocation":
-        # sessions spawned by this invocation
         cur = await db.db.execute(
             "SELECT * FROM sessions WHERE invocation_id = ? AND status = 'running'",
             (entity_id,),
@@ -384,9 +252,6 @@ async def _list_running_children(
             children.append(("sessions", "session", db._row_to_dict(row)))
 
     return children
-
-
-# ── DB status write ────────────────────────────────────────────────────────────
 
 
 async def _persist_cancel(
@@ -398,10 +263,7 @@ async def _persist_cancel(
     reason_summary: str,
     evidence: dict[str, Any],
 ) -> None:
-    """Write cancelled status + status_transition row via update_status()."""
-    # Determine valid target status for this entity type.
-    # Sessions/invocations accept "cancelled"; plays and shows have their
-    # own terminal vocabularies.
+    """Write cancelled status + status_transition row."""
     play_terminal = {"merged", "escalated", "gate_failed", "blocked", "aborted_after_finish"}
     if entity_type == "play":
         cur = await db.db.execute("SELECT status FROM plays WHERE id = ?", (entity_id,))
@@ -409,8 +271,8 @@ async def _persist_cancel(
         if row is None:
             return
         if row["status"] in play_terminal:
-            return  # already terminal
-        target_status = "blocked"  # plays don't have "cancelled"
+            return
+        target_status = "blocked"
     elif entity_type == "show":
         cur = await db.db.execute("SELECT status FROM shows WHERE id = ?", (entity_id,))
         row = await cur.fetchone()
@@ -420,7 +282,6 @@ async def _persist_cancel(
             return
         target_status = "aborted"
     else:
-        # session / invocation
         table = {
             "session": "sessions",
             "invocation": "invocations",
@@ -433,7 +294,7 @@ async def _persist_cancel(
         if row is None:
             return
         if row["status"] != "running":
-            return  # already terminal
+            return
         target_status = "cancelled"
 
     await db.update_status(
@@ -443,12 +304,9 @@ async def _persist_cancel(
         reason_code=reason_code,
         reason_summary=reason_summary,
         evidence_refs=[evidence],
-        source="admin",  # CLI kill is an operator/admin action (ADR-0028 source vocabulary)
+        source="admin",
         actor="user",
     )
-
-
-# ── Core kill logic ────────────────────────────────────────────────────────────
 
 
 async def _kill_one(
@@ -461,19 +319,13 @@ async def _kill_one(
     grace_seconds: float = 5.0,
     verbose: bool = False,
 ) -> dict[str, Any]:
-    """Kill one entity: terminate process, persist cancellation.
-
-    Returns a result dict: {entity_type, entity_id, signal, status_written}.
-    """
+    """Kill one entity: terminate process, persist cancellation."""
     from lionagi.state.reasons import RunReasons
 
     pid = _read_pid_from_entity(row)
     signal_used = "no_pid"
 
     if pid is not None:
-        # Strong identity markers recorded at launch (when available). A session
-        # carries its own id as the LIONAGI_SESSION_ID env marker on the running
-        # process; node_metadata may also carry the process start time.
         meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
         expected_session_id = entity_id if entity_type == "session" else None
         raw_ct = meta.get("pid_create_time")
@@ -485,8 +337,6 @@ async def _kill_one(
             signal_used = _terminate_pid(
                 pid,
                 grace_seconds=grace_seconds,
-                # Verify the live process is the lionagi run we recorded before
-                # signalling, to prevent PID-reuse races (CWE-362).
                 expected_cmd="lionagi",
                 expected_session_id=expected_session_id,
                 expected_create_time=expected_create_time,
@@ -498,13 +348,10 @@ async def _kill_one(
         if verbose:
             warn(f"  {entity_type} {entity_id[:12]}: no PID found — skipping OS signal")
 
-    # Decide reason code from signal result.
     if signal_used == "sigkill":
         reason_code = RunReasons.CANCELLED_FORCE_KILL
         reason_summary = f"Force-killed (SIGKILL after grace period). {user_reason}".strip()
     elif signal_used == "identity_mismatch":
-        # PID belongs to a different process — log and skip state update to
-        # avoid recording a false cancellation (CWE-362, issue #1126).
         warn(
             f"  {entity_type} {entity_id[:12]}: pid {pid} did not match "
             "expected lionagi process — kill skipped"
@@ -553,7 +400,7 @@ async def _do_kill(
     grace_seconds: float = 5.0,
     verbose: bool = False,
 ) -> int:
-    """Resolve entity, kill process, persist cancellation.  Returns exit code."""
+    """Resolve entity, kill process, persist cancellation."""
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
@@ -573,9 +420,6 @@ async def _do_kill(
             return 1
 
         results = []
-        # Identity-mismatch results are NOT kills — the PID failed verification
-        # and was left running. _kill_one already warned with details; here we
-        # just suppress the misleading "killed" line and fail the exit code.
         blocked = []
 
         if recursive:
@@ -617,12 +461,7 @@ async def _do_kill(
 
 
 async def _play_child_stale(db: Any, play_row: dict[str, Any]) -> bool:
-    """Return True if a play's linked session has terminated (child-derived staleness).
-
-    A play is child-stale only when ``session_id`` is set and the linked
-    session is no longer running. Plays with no session_id are not yet
-    started and must not be swept.
-    """
+    """True if the play's linked session has terminated."""
     session_id = play_row.get("session_id")
     if not session_id:
         return False
@@ -634,10 +473,7 @@ async def _play_child_stale(db: Any, play_row: dict[str, Any]) -> bool:
 
 
 async def _show_children_all_terminal(db: Any, show_id: str) -> bool:
-    """Return True if a show has >= 1 child play and all are in terminal states.
-
-    A show with no plays is not yet active and must not be swept.
-    """
+    """True if the show has >= 1 child play and all are terminal."""
     cur = await db.db.execute("SELECT status FROM plays WHERE show_id = ?", (show_id,))
     rows = await cur.fetchall()
     if not rows:
@@ -653,18 +489,7 @@ async def _do_kill_all_stale(
     dry_run: bool = False,
     verbose: bool = False,
 ) -> int:
-    """Sweep stale sessions and invocations whose PIDs are dead.
-
-    ``threshold_seconds`` is the minimum age (since started_at or updated_at)
-    required before a running row is considered stale.  Rows newer than this
-    threshold may be legitimately in-progress and are skipped.
-
-    Plays and shows are NOT swept.  They are orchestrators with no direct
-    PID — their child sessions/invocations carry the actual OS process.
-    Sweeping them by PID-absence would silently abort legitimate long-running
-    orchestrations.  Use ``li kill <play_or_show_id> --recursive`` for
-    explicit play/show cleanup.
-    """
+    """Sweep stale sessions/invocations whose PIDs are dead."""
     from lionagi.state.db import StateDB
     from lionagi.state.reasons import RunReasons
 
@@ -692,7 +517,6 @@ async def _do_kill_all_stale(
                 row_dict = db._row_to_dict(row)
                 entity_id = row_dict["id"]
 
-                # Age check: skip entities started/updated recently.
                 started = (
                     row_dict.get("started_at")
                     or row_dict.get("updated_at")
@@ -717,7 +541,6 @@ async def _do_kill_all_stale(
                         )
                     continue
 
-                # Stale: process is dead or no PID recorded.
                 if dry_run:
                     print(
                         f"  (dry-run) would cancel {entity_type} {entity_id[:12]} "
@@ -749,10 +572,6 @@ async def _do_kill_all_stale(
                 killed += 1
                 print(f"  cancelled stale {entity_type} {entity_id[:12]} (pid={pid})")
 
-        # ── Child-derived staleness sweep for plays (#1144) ───────────
-        # A play is child-stale when its linked session has terminated.
-        # This is separate from the PID sweep above: plays never carry a
-        # direct PID, so they can't be detected by process absence alone.
         play_cur = await db.db.execute("SELECT * FROM plays WHERE status = 'running'")
         play_rows = await play_cur.fetchall()
         for row in play_rows:
@@ -799,8 +618,6 @@ async def _do_kill_all_stale(
             killed += 1
             print(f"  cancelled stale play {play_id[:12]} (child-derived)")
 
-        # ── Child-derived staleness sweep for shows (#1144) ───────────
-        # A show is child-stale when all child plays have terminated.
         show_cur = await db.db.execute("SELECT * FROM shows WHERE status = 'active'")
         show_rows = await show_cur.fetchall()
         for row in show_rows:
@@ -860,11 +677,7 @@ async def _do_kill_all_stale(
     return 0
 
 
-# ── CLI wiring ─────────────────────────────────────────────────────────────────
-
-
 def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
-    """Register `li kill` subcommand."""
     kill = subparsers.add_parser(
         "kill",
         help="Terminate a running entity (run/session/play/show).",
@@ -934,7 +747,6 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run_kill(args: argparse.Namespace) -> int:
-    """Dispatch `li kill` subcommand."""
     from lionagi.ln.concurrency import run_async
 
     verbose = getattr(args, "verbose", False)

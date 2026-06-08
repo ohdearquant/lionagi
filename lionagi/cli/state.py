@@ -1,11 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""`li state` — inspect and migrate lionagi state.db.
-
-Subcommands:
-    li state import   Import all runs from ~/.lionagi/runs/ into state.db.
-    li state ls       List sessions in state.db.
-"""
+"""`li state` — inspect and migrate lionagi state.db."""
 
 from __future__ import annotations
 
@@ -16,8 +11,6 @@ from pathlib import Path
 from typing import Any
 
 from ._runs import RUNS_ROOT
-
-# ── helpers ──────────────────────────────────────────────────────────────────
 
 
 def _mtime_as_float(path: Path) -> float:
@@ -30,15 +23,11 @@ def _mtime_as_float(path: Path) -> float:
 
 
 def _msg_from_collection_entry(raw: dict[str, Any]) -> dict[str, Any]:
-    """Convert a branch-collection message dict to the DB insert shape.
-
-    branch JSON uses ``metadata`` for the node metadata dict; the DB layer
-    expects the key ``node_metadata``.  Everything else passes through.
-    """
+    """Convert a branch-collection message dict to the DB insert shape."""
     return {
         "id": raw["id"],
         "created_at": raw["created_at"],
-        "node_metadata": raw.get("metadata"),  # rename metadata → node_metadata
+        "node_metadata": raw.get("metadata"),
         "content": raw.get("content", {}),
         "embedding": raw.get("embedding"),
         "sender": raw.get("sender"),
@@ -48,14 +37,8 @@ def _msg_from_collection_entry(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# ── async import logic ────────────────────────────────────────────────────────
-
-
 async def _import_runs() -> dict[str, int]:
-    """Scan RUNS_ROOT and import every run that has a run.json manifest.
-
-    Returns counts: {sessions, branches, messages}.
-    """
+    """Scan RUNS_ROOT and import every run with a run.json manifest."""
     from lionagi.state.db import StateDB
 
     counts = {"sessions": 0, "branches": 0, "messages": 0, "skipped": 0, "errors": 0}
@@ -84,7 +67,6 @@ async def _import_runs() -> dict[str, int]:
 
             run_id = manifest.get("run_id") or run_dir.name
 
-            # Idempotent: skip runs already in the DB.
             existing = await db.get_session(run_id)
             if existing is not None:
                 counts["skipped"] += 1
@@ -114,7 +96,6 @@ _STATUS_MAP = {
     "timed_out": "timed_out",
     "cancelled": "cancelled",
     "canceled": "cancelled",
-    # common aliases that may appear in run.json
     "success": "completed",
     "error": "failed",
     "timeout": "timed_out",
@@ -130,12 +111,7 @@ _EXIT_CODE_STATUS_MAP = {
 
 
 def _derive_import_status(manifest: dict[str, Any]) -> str:
-    """Derive session status from run.json per ADR-0025.
-
-    1. If manifest has "status" field → map to session vocabulary.
-    2. If manifest has "exit_code" → map via ADR-0025 exit code table.
-    3. Otherwise → completed (conservative default).
-    """
+    """Derive session status from run.json fields."""
     raw_status = manifest.get("status")
     if raw_status is not None:
         return _STATUS_MAP.get(str(raw_status).lower(), "completed")
@@ -151,10 +127,7 @@ def _derive_timestamps(
     manifest: dict[str, Any],
     run_dir: Path,
 ) -> tuple[float, float]:
-    """Return (started_at, ended_at) as floats.
-
-    Prefer manifest fields; fall back to filesystem ctime / mtime.
-    """
+    """Return (started_at, ended_at) as floats; falls back to fs timestamps."""
     import time as _time
 
     started_at = manifest.get("started_at")
@@ -174,7 +147,6 @@ def _derive_timestamps(
     if ended_at is None:
         ended_at = fs_mtime
 
-    # If the values came from manifest they may be ISO strings; coerce to float.
     if isinstance(started_at, str):
         import datetime
 
@@ -199,23 +171,15 @@ async def _import_one_run(
     run_dir: Path,
     manifest: dict[str, Any],
 ) -> tuple[int, int, int]:
-    """Import a single run into the DB.  Returns (sessions, branches, messages) imported."""
     created_at = _mtime_as_float(run_dir)
     session_name = manifest.get("kind") or "agent"
 
     status = _derive_import_status(manifest)
     started_at, ended_at = _derive_timestamps(manifest, run_dir)
 
-    # Create session-level progression (empty for now; updated after branches).
     session_prog_id = str(uuid.uuid4())
     await db.create_progression(session_prog_id)
 
-    # Provenance enrichment (ADR-0012 §52-54): derive invocation_kind
-    # from manifest "kind" so imported runs are filterable by the same
-    # vocabulary live runs write. Map "agent" / "play" / "flow" /
-    # "fanout" literally; pre-show legacy kinds map to "agent" as the
-    # safest default. Unrecognized kinds → NULL (won't pass the
-    # invocation_kind enum check otherwise).
     raw_kind = (manifest.get("kind") or "").lower()
     legacy_kind_map = {
         "agent": "agent",
@@ -225,15 +189,12 @@ async def _import_one_run(
     }
     invocation_kind = legacy_kind_map.get(raw_kind)
 
-    # artifacts_path: prefer manifest field, fall back to run_dir/artifacts
-    # if present on disk. None if neither.
     artifacts_path = manifest.get("artifact_root") or manifest.get("artifacts_path")
     if artifacts_path is None:
         candidate = run_dir / "artifacts"
         if candidate.exists():
             artifacts_path = str(candidate)
 
-    # Session must exist before branches can reference it via FK.
     await db.create_session(
         {
             "id": run_id,
@@ -277,27 +238,23 @@ async def _import_one_run(
         branch_id = branch_data.get("id") or branch_file.stem
         branch_created_at = branch_data.get("created_at") or _mtime_as_float(branch_file)
 
-        # Extract messages and ordering from Pile format.
         messages_pile = branch_data.get("messages", {})
         raw_collection: list[dict] = messages_pile.get("collections", [])
         progression_info = messages_pile.get("progression", {})
         order: list[str] = progression_info.get("order", [])
 
-        # Build an id→raw map, fall back to collection order if no explicit order.
         by_id: dict[str, dict] = {m["id"]: m for m in raw_collection if "id" in m}
         if order:
             ordered_msgs = [by_id[mid] for mid in order if mid in by_id]
         else:
             ordered_msgs = raw_collection
 
-        # Detect system message (first message with role == "system").
         system_msg_id: str | None = None
         for raw_msg in ordered_msgs:
             if raw_msg.get("role") == "system":
                 system_msg_id = raw_msg["id"]
                 break
 
-        # Insert all messages.
         branch_msg_ids: list[str] = []
         for raw_msg in ordered_msgs:
             msg = _msg_from_collection_entry(raw_msg)
@@ -309,7 +266,6 @@ async def _import_one_run(
         branch_prog_id = str(uuid.uuid4())
         await db.create_progression(branch_prog_id, branch_msg_ids)
 
-        # Derive branch metadata from manifest branches list.
         manifest_branch_meta = {}
         for mb in manifest.get("branches", []):
             if mb.get("id") == branch_id:
@@ -341,7 +297,6 @@ async def _import_one_run(
         session_msg_ids.extend(branch_msg_ids)
         total_branches += 1
 
-    # Back-fill session progression with all message IDs collected from branches.
     if session_msg_ids:
         await db.db.execute(
             "UPDATE progressions SET collection = ? WHERE id = ?",
@@ -358,16 +313,8 @@ async def _import_one_run(
     return 1, total_branches, total_messages
 
 
-# ── teams import (ADR-0019) ─────────────────────────────────────────────────
-
-
 async def _import_teams() -> dict[str, int]:
-    """Backfill ~/.lionagi/teams/*.json into the teams + team_messages tables.
-
-    Idempotent: teams already present in ``teams`` (by id) are skipped along
-    with their messages. JSON files remain the runtime's primary write path
-    until the dual-write layer ships.
-    """
+    """Backfill ~/.lionagi/teams/*.json into the teams + team_messages tables."""
     from lionagi.state.db import StateDB
 
     teams_dir = (RUNS_ROOT.parent / "teams").resolve()
@@ -391,7 +338,6 @@ async def _import_teams() -> dict[str, int]:
                 counts["errors"] += 1
                 continue
 
-            # Idempotency: check before inserting.
             cur = await db.db.execute("SELECT 1 FROM teams WHERE id = ? LIMIT 1", (team_id,))
             if await cur.fetchone() is not None:
                 counts["skipped_teams"] += 1
@@ -424,9 +370,6 @@ async def _import_teams() -> dict[str, int]:
                     recipient = "all" if to == ["*"] else ",".join(to) or "all"
                 content = msg.get("content") or ""
                 ts_raw = msg.get("timestamp")
-                # JSON stores ISO timestamps; the DB stores REAL epoch
-                # seconds. Best-effort parse; fall back to file mtime so
-                # ordering is at least monotonic per file.
                 try:
                     from datetime import datetime
 
@@ -452,8 +395,6 @@ async def _import_teams() -> dict[str, int]:
                         msg.get("from") or "_unknown",
                         recipient,
                         content,
-                        # Only set summary for long content; leave NULL otherwise
-                        # so the Studio teams page knows to show raw inline.
                         (content[:200] + "…") if len(content) > 200 else None,
                         json.dumps(read_by_arr),
                         None,
@@ -466,11 +407,7 @@ async def _import_teams() -> dict[str, int]:
     return counts
 
 
-# ── async ls logic ────────────────────────────────────────────────────────────
-
-
 async def _list_sessions(*, limit: int = 50, status: str | None = None) -> None:
-    """Print a simple table of sessions in state.db, paginated."""
     import time
 
     from lionagi.state.db import StateDB
@@ -526,11 +463,7 @@ async def _list_sessions(*, limit: int = 50, status: str | None = None) -> None:
             print(f"{sid:<36}  {name:<16}  {sstat:<10}  {bc:>8}  {msg_count:>8}  {updated_str:<20}")
 
 
-# ── Maintenance commands: stats / checkpoint / vacuum / prune ───────────────
-
-
 async def _print_stats() -> None:
-    """Print DB/WAL size, row counts, and SQLite pragma settings."""
     from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
     db_path = DEFAULT_DB_PATH
@@ -548,7 +481,6 @@ async def _print_stats() -> None:
         return
 
     async with StateDB() as db:
-        # Row counts per table.
         print("Row counts:")
         for table in (
             "messages",
@@ -566,7 +498,6 @@ async def _print_stats() -> None:
             print(f"  {table:<14} {row['n']:>10}")
         print()
 
-        # Session status distribution.
         cur = await db.db.execute(
             "SELECT COALESCE(status, '(null)') AS s, COUNT(*) AS n "
             "FROM sessions GROUP BY status ORDER BY n DESC"
@@ -576,7 +507,6 @@ async def _print_stats() -> None:
             print(f"  {row['s']:<14} {row['n']:>10}")
         print()
 
-        # PRAGMAs that affect operational behavior.
         print("PRAGMAs:")
         for pragma in (
             "journal_mode",
@@ -592,7 +522,6 @@ async def _print_stats() -> None:
 
 
 async def _checkpoint(mode: str) -> str:
-    """Run wal_checkpoint and return a summary string."""
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
@@ -600,12 +529,10 @@ async def _checkpoint(mode: str) -> str:
         row = await cur.fetchone()
         if not row:
             return "(no result)"
-        # SQLite returns (busy, log_pages, checkpointed_pages)
         return f"busy={row[0]}, log_pages={row[1]}, checkpointed={row[2]}"
 
 
 async def _vacuum() -> None:
-    """Run VACUUM. Holds exclusive lock for the duration."""
     from lionagi.state.db import StateDB
 
     async with StateDB() as db:
@@ -619,9 +546,6 @@ async def _prune(
     keep_n: int,
     dry_run: bool,
 ) -> dict[str, int]:
-    """Delete sessions older than ``keep_days``, preserving the most
-    recent ``keep_n``. Returns counts of what was (or would be) deleted.
-    """
     import time as _time
 
     from lionagi.state.db import StateDB
@@ -629,7 +553,6 @@ async def _prune(
     cutoff = _time.time() - (keep_days * 86400)
 
     async with StateDB() as db:
-        # Sessions to keep: top N most recent OR newer than cutoff.
         cur = await db.db.execute(
             """SELECT id FROM sessions
                WHERE id NOT IN (
@@ -645,7 +568,6 @@ async def _prune(
         if not victim_ids:
             return {"sessions": 0, "branches": 0, "messages": 0}
 
-        # Count cascaded branches up front.
         placeholders = ",".join("?" * len(victim_ids))
         cur = await db.db.execute(
             f"SELECT COUNT(*) AS n FROM branches "  # noqa: S608
@@ -654,8 +576,6 @@ async def _prune(
         )
         branch_count = (await cur.fetchone())["n"]
 
-        # Orphan messages: ones whose id isn't in any surviving progression.
-        # Cheap estimate via message count delta — not exact, but useful.
         cur = await db.db.execute("SELECT COUNT(*) AS n FROM messages")
         msgs_before = (await cur.fetchone())["n"]
 
@@ -666,16 +586,12 @@ async def _prune(
                 "messages": 0,  # can't preview without doing the delete
             }
 
-        # Delete sessions — branches cascade via FK ON DELETE CASCADE.
-        # Messages are NOT cascaded (they're referenced by progression
-        # JSON arrays, not FK columns), so we sweep orphans below.
         await db.db.execute(
             f"DELETE FROM sessions WHERE id IN ({placeholders})",  # noqa: S608
             victim_ids,
         )
         await db.db.commit()
 
-        # Sweep messages no longer referenced by any progression.
         await db.db.execute(
             """DELETE FROM messages
                WHERE id NOT IN (
@@ -700,26 +616,7 @@ async def _doctor(
     dry_run: bool,
     new_status: str = "aborted",
 ) -> dict[str, int]:
-    """Sweep sessions stuck at ``status='running'`` whose ``started_at``
-    is older than ``stale_hours``.
-
-    A SIGKILL or process death between session-open and teardown leaves
-    the session row at ``status='running'`` forever — the next
-    ``StateDB.open()`` only applies pragmas/schema; it does not sweep.
-    This command is the operator-explicit recovery path.
-
-    Conservative: we only touch sessions whose ``status = 'running'``
-    AND ``(started_at IS NULL OR started_at < cutoff)`` — and the same
-    predicate is folded into the UPDATE so a session that completes
-    after victim selection but before the UPDATE is NOT overwritten
-    (R6 select-then-update race). ``swept`` returns the rowcount of
-    the UPDATE, not the count of pre-selected victims.
-
-    Returns ``{"running": N, "swept": M, "skipped": K}``:
-    - running: total sessions currently at status='running'
-    - swept: rows actually updated (post-race-check)
-    - skipped: running sessions younger than threshold at select time
-    """
+    """Sweep sessions stuck at status='running' older than stale_hours."""
     import time as _time
 
     from lionagi.state.db import StateDB
@@ -734,8 +631,6 @@ async def _doctor(
         skipped = 0
         for row in rows:
             started = row["started_at"]
-            # No started_at on a 'running' row is itself a corruption
-            # signal — treat as stale.
             if started is None or started < cutoff:
                 victims.append(row["id"])
             else:
@@ -745,9 +640,8 @@ async def _doctor(
         if dry_run:
             swept_count = len(victims)
         elif victims:
-            # Race-safe: re-assert status='running' AND stale predicate
-            # in the UPDATE itself so a session that finished between
-            # select and update is NOT overwritten.
+            # Re-assert status='running' in the UPDATE to avoid race with
+            # sessions that finish between select and update.
             placeholders = ",".join("?" * len(victims))
             params = [new_status, _time.time(), cutoff, *victims]
             cur = await db.db.execute(
@@ -771,11 +665,7 @@ def _format_bytes(n: int) -> str:
     return f"{n:.1f} TiB"
 
 
-# ── CLI wiring ────────────────────────────────────────────────────────────────
-
-
 def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
-    """Register `li state` with its subcommands."""
     state = subparsers.add_parser(
         "state",
         help="Inspect and migrate lionagi state.db.",
@@ -928,7 +818,6 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run_state(args: argparse.Namespace) -> int:
-    """Dispatch `li state` subcommands."""
     from lionagi.ln.concurrency import run_async
 
     if args.state_command == "import":

@@ -1,19 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Reactive DAG flow: orchestrator plans TaskAssignments → self-expanding execution.
-
-Clean-break design (no bespoke plan models):
-
-- **Plan** = a ``list[TaskAssignment]`` (casts coordination emission) the
-  orchestrator emits — ``assignee`` names a role, ``depends_on`` (1-based step
-  indices) forms the DAG. No ``FlowPlan``/``FlowAgent``/``FlowOp``.
-- **Workers** are casts roles (``_orchestration.casts_role_system``) granted the
-  ``SpawnRequest`` capability.
-- **Execution** is ``session.flow(reactive=True)``: a worker that finds work
-  beyond its assignment emits a ``SpawnRequest`` and a new op is injected into
-  the *live* DAG — replacing the old halt → critic-verdict → re-plan → re-run
-  loop with continuous self-expansion.
-"""
+"""Reactive DAG flow: orchestrator plans TaskAssignments, self-expanding execution."""
 
 from __future__ import annotations
 
@@ -53,15 +40,10 @@ logger = logging.getLogger(__name__)
 
 
 class FlowPlanError(LionError):
-    """Orchestrator failed to produce a usable plan (a non-empty TaskAssignment list).
-
-    Surfaced as a non-zero CLI exit with the raw orchestrator response attached,
-    instead of a silent ``return`` that exited 0 with no work done (#1236).
-    """
+    """Orchestrator failed to produce a usable plan."""
 
 
 def _raw_response_snippet(res, limit: int = 800) -> str:
-    """Truncated repr of whatever the planner returned, for diagnostics."""
     text = (str(res).strip() if res is not None else "") or "(empty response)"
     if len(text) > limit:
         text = f"{text[:limit]}… [+{len(text) - limit} chars truncated]"
@@ -69,23 +51,12 @@ def _raw_response_snippet(res, limit: int = 800) -> str:
 
 
 async def _persist_session_phase(env, phase: str) -> None:
-    """Best-effort write of the live execution phase to the session row.
-
-    Surfaced as the PHASE column in ``li monitor`` (#1235). Failures here must
-    never interrupt flow execution — the phase marker is observability.
-    """
+    """Best-effort write of the live execution phase to the session row."""
     ctx = getattr(env, "_live_persist", None)
     if ctx and ctx.get("db"):
         with contextlib.suppress(Exception):
             await ctx["db"].update_session(ctx["session_id"], current_phase=phase)
 
-
-# ── Budget preamble template ──────────────────────────────────────────────
-#
-# Injected at the START of each op's instruction when the orchestrator runs with
-# a total timeout (--timeout / playbook timeout:). Workers see their share of
-# the budget so they can pace reasoning and switch from research to writing
-# before time runs out.
 
 _BUDGET_PREAMBLE_TEMPLATE = """\
 [BUDGET]
@@ -107,7 +78,6 @@ def _format_budget_preamble(
     op_budget_seconds: int,
     deadline_epoch: float,
 ) -> str:
-    """Format the BUDGET preamble for a single op."""
     import datetime
 
     deadline_dt = datetime.datetime.fromtimestamp(deadline_epoch, tz=datetime.timezone.utc)
@@ -125,7 +95,6 @@ async def _resolve_invocation_terminal_flow(
     *,
     fallback_status: str,
 ) -> tuple[str, str, str, list[dict], dict]:
-    """Aggregate child session statuses into a flow invocation terminal reason."""
     from lionagi.state.db import StateDB
     from lionagi.state.reasons import RunReasons
 
@@ -213,15 +182,7 @@ async def _resolve_invocation_terminal_flow(
         return "failed", RunReasons.FAILED_EXCEPTION, "Flow failed.", evidence_refs, metadata
 
 
-# ── depends_on parsing ────────────────────────────────────────────────────
-#
-# TaskAssignment.depends_on carries 1-based step numbers (the orchestrator
-# numbers assignments by list position). Only *earlier* steps can be wired as
-# graph predecessors at build time; forward/invalid refs are dropped.
-
-
 def _earlier_dep_indices(depends_on: list[str] | None, position: int) -> list[int]:
-    """0-based indices of earlier assignments referenced by ``depends_on``."""
     out: list[int] = []
     for ref in depends_on or []:
         try:
@@ -236,15 +197,7 @@ def _earlier_dep_indices(depends_on: list[str] | None, position: int) -> list[in
 
 
 def _parse_reactive(spec: str | None) -> tuple[bool, set[str] | None]:
-    """Parse ``--reactive`` into ``(reactive, spawn_roles)``.
-
-    - ``off`` / ``none`` / ``false``     → ``(False, set())`` — flat batch DAG,
-      no worker may spawn (cheapest, fully deterministic).
-    - ``all`` / ``on`` / ``""`` / None   → ``(True, None)`` — every worker may
-      grow the live DAG (maximally reactive; the default).
-    - ``critic,evaluator`` (role list)   → ``(True, {roles})`` — only those
-      roles are granted the SpawnRequest capability.
-    """
+    """Parse --reactive into (reactive, spawn_roles)."""
     s = (spec or "all").strip().lower()
     if s in ("off", "none", "false", "no", "0"):
         return False, set()
@@ -313,15 +266,7 @@ async def _run_flow(
     project: str | None = None,
     **legacy_kwargs,
 ) -> tuple[str, str]:
-    """Reactive DAG flow: orchestrator plans TaskAssignments → self-expanding execution.
-
-    Returns ``(output, terminal_status)`` — ADR-0029 §7 lets the artifact
-    contract verifier flip a clean ``completed`` into ``failed`` at teardown, so
-    callers MUST use the returned status for the process exit code.
-
-    ``max_ops`` caps total ops: the initial plan plus reactive spawns share one
-    budget. ``max_agents`` is accepted as a deprecated alias.
-    """
+    """Returns (output, terminal_status)."""
     if "max_agents" in legacy_kwargs and max_ops == 0:
         max_ops = legacy_kwargs.pop("max_agents")
     elif "max_agents" in legacy_kwargs:
@@ -349,14 +294,11 @@ async def _run_flow(
         total_budget=timeout,
     )
 
-    # ADR-0012/0022: playbook run → `play`, ad-hoc → `flow`. Surface the
-    # orchestrator's default model + effort on the session row.
     _orc_ms = parse_model_spec(env.default_model_spec) if env.default_model_spec else None
     _orc_provider = None
     if _orc_ms and "/" in _orc_ms.model:
         _orc_provider = _orc_ms.model.split("/", 1)[0]
 
-    # ADR-0029 §4-5: resolve the artifact contract (playbook overrides agent).
     artifact_contract = None
     if playbook_artifacts is not None or (
         agent_name is not None and getattr(env.orc_profile, "artifact_defaults", None) is not None
@@ -399,7 +341,6 @@ async def _run_flow(
         show_graph=show_graph,
         reactive_spec=reactive_spec,
     )
-    # ADR-0025: distinguish timed_out / aborted / cancelled / failed.
     _terminal_status = "completed"
     result: str = ""
     try:
@@ -426,8 +367,6 @@ async def _run_flow(
             _terminal_status = "failed"
         raise
     finally:
-        # Shield teardown from outer cancellation so iModel executors are always
-        # closed; see lionagi/cli/agent.py for the full rationale.
         import anyio
 
         with anyio.CancelScope(shield=True):
@@ -491,7 +430,7 @@ async def _run_flow_inner(
     show_graph: bool = False,
     reactive_spec: str = "all",
 ) -> str:
-    """Inner flow logic (no timeout wrapper)."""
+    """Inner flow logic without timeout wrapper."""
     t0 = time.monotonic()
     run = env.run
     session = env.session
