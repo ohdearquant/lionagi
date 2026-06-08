@@ -1,15 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Inlined adapter protocol stack (previously sourced from pydapter).
-
-This module provides the Adaptable/AsyncAdaptable mixins and their supporting
-registry/error infrastructure, eliminating the pydapter runtime dependency for
-the core lionagi install.
-
-Faithful port of pydapter 1.3.x core.py / async_core.py / exceptions.py / types.py.
-"""
+"""Adapter protocol stack: Adaptable/AsyncAdaptable mixins and registry."""
 
 from __future__ import annotations
 
@@ -97,23 +89,16 @@ _SENSITIVE_QUERY_PARAMS: frozenset[str] = frozenset(
 
 
 def _redact_url(value: str) -> str:
-    """Sanitize a URL string for safe inclusion in error messages.
-
-    Redacts for ALL URL schemes (not just a known whitelist):
-    - The password component of ``user:password@host`` netloc credentials.
-    - Any query-string parameter whose name matches ``_SENSITIVE_QUERY_PARAMS``.
-    """
+    """Redact credentials from a URL for safe inclusion in error messages."""
     try:
         parsed = urllib.parse.urlparse(value)
     except Exception:
         return value
-    # Require a scheme so plain strings are not mis-parsed as URLs.
     if not parsed.scheme:
         return value
 
     replacements: dict[str, str] = {}
 
-    # 1. Redact netloc password (user:pass@host form)
     if parsed.password:
         userinfo = parsed.username or ""
         userinfo = f"{userinfo}:***"
@@ -121,9 +106,6 @@ def _redact_url(value: str) -> str:
         netloc = f"{userinfo}@{host}:{parsed.port}" if parsed.port else f"{userinfo}@{host}"
         replacements["netloc"] = netloc
 
-    # 2. Redact sensitive query parameters.
-    # Use quote_via=urllib.parse.quote with safe="*" so that the "***"
-    # placeholder is not percent-encoded in the final URL string.
     if parsed.query:
         params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
         redacted_params = [
@@ -164,7 +146,6 @@ def _redact_value(key: str, value: Any) -> Any:
 
 
 def _redact_details(details: dict[str, Any]) -> dict[str, Any]:
-    """Recursively redact sensitive keys and URL credentials from a details dict."""
     redacted: dict[str, Any] = {}
     for k, v in details.items():
         v = _redact_value(k, v)
@@ -391,7 +372,7 @@ class Adapter(Protocol[T]):
 
 
 class AdapterBase:
-    """Base class providing _handle_error() for consistent exception wrapping."""
+    """Base class with _handle_error() for consistent exception wrapping."""
 
     adapter_key: str = "base"
 
@@ -441,8 +422,6 @@ class AdapterBase:
 
 
 class AdapterRegistry:
-    """Registry for managing data format adapters."""
-
     def __init__(self) -> None:
         self._reg: dict[str, type[Adapter]] = {}
 
@@ -507,7 +486,7 @@ class AdapterRegistry:
 
 
 class Adaptable:
-    """Mixin adding synchronous adapter functionality to Python classes."""
+    """Mixin adding synchronous adapt-from/adapt-to to any class."""
 
     @classmethod
     def _registry(cls) -> AdapterRegistry:
@@ -644,7 +623,7 @@ class AsyncAdapterRegistry:
 
 
 class AsyncAdaptable:
-    """Mixin that endows any Pydantic model with async adapt-from / adapt-to."""
+    """Mixin adding async adapt-from/adapt-to to any class."""
 
     _async_registry: ClassVar[AsyncAdapterRegistry | None] = None
 

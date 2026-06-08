@@ -55,36 +55,7 @@ __all__ = (
 
 @dataclass(frozen=True)
 class MCPSecurityConfig:
-    """Security configuration for MCP connection pool.
-
-    Controls which commands can be executed, which environment variables
-    are passed, and connection limits.
-
-    Transport security (fail-closed by default):
-        By default both command and URL transports require an explicit
-        opt-in to allow ANY connection.  Set ``allow_commands=True`` to
-        permit command-based transports (optionally restricted further
-        with ``command_allowlist``).  Set ``allow_urls=True`` to permit
-        URL-based transports (optionally restricted further with
-        ``url_allowlist``).
-
-    Attributes:
-        allow_commands: Must be True to permit any command (stdio) transport.
-            Default False — fail closed.
-        command_allowlist: If set, only these bare command names are permitted
-            (checked after allow_commands=True). None means all bare commands
-            allowed when allow_commands=True.
-        allow_urls: Must be True to permit any URL transport. Default False —
-            fail closed.
-        url_allowlist: If set, only these exact host values are permitted
-            (checked after allow_urls=True). None means all HTTPS hosts
-            allowed when allow_urls=True (non-HTTPS always blocked).
-        env_denylist_patterns: Substrings to filter from environment
-            variables passed to MCP servers (case-insensitive match).
-        filter_sensitive_env: If True, filters known sensitive env vars
-            (API keys, tokens, passwords) from MCP server environments.
-        max_connections_per_server: Max pooled connections per server name.
-    """
+    """Fail-closed security config for MCP connection pool."""
 
     allow_commands: bool = False
     command_allowlist: frozenset[str] | None = None
@@ -96,18 +67,7 @@ class MCPSecurityConfig:
 
 
 def _filter_env(env: dict[str, str], config: MCPSecurityConfig) -> dict[str, str]:
-    """Filter environment variables based on security config.
-
-    Removes entries whose keys contain any deny-listed substring
-    (case-insensitive).
-
-    Args:
-        env: Raw environment dict.
-        config: Security configuration.
-
-    Returns:
-        Filtered environment dict.
-    """
+    """Remove env vars matching deny-listed substrings (case-insensitive)."""
     if not config.filter_sensitive_env:
         return env
 
@@ -123,20 +83,7 @@ def _filter_env(env: dict[str, str], config: MCPSecurityConfig) -> dict[str, str
 
 
 def _validate_command(command: str, config: MCPSecurityConfig) -> None:
-    """Validate command against security config.
-
-    Fails closed: commands are denied unless ``config.allow_commands`` is True.
-    When an allowlist is active, only bare command names in the allowlist pass.
-
-    Args:
-        command: Command to validate.
-        config: Security configuration.
-
-    Raises:
-        PermissionError: If command transports are not explicitly allowed.
-        ValueError: If command is not in allowlist or contains
-            path separators when an allowlist is active.
-    """
+    """Fail-closed: deny unless allow_commands=True and passes allowlist."""
     if not config.allow_commands:
         raise PermissionError(
             f"MCP command transport is disabled (allow_commands=False). "
@@ -148,7 +95,6 @@ def _validate_command(command: str, config: MCPSecurityConfig) -> None:
         # allow_commands=True and no allowlist: any bare or path command is permitted.
         return
 
-    # When allowlist is active, reject path separators and check bare name
     if "/" in command or "\\" in command:
         bare = os.path.basename(command)
         if bare in config.command_allowlist:
@@ -167,20 +113,7 @@ def _validate_command(command: str, config: MCPSecurityConfig) -> None:
 
 
 def _validate_url(url: str, config: MCPSecurityConfig) -> None:
-    """Validate URL against security config.
-
-    Fails closed: URL transports are denied unless ``config.allow_urls`` is
-    True AND the scheme is ``https``.  Optionally further restricted to
-    ``config.url_allowlist`` hosts.
-
-    Args:
-        url: URL to validate.
-        config: Security configuration.
-
-    Raises:
-        PermissionError: If URL transports are not explicitly allowed.
-        ValueError: If URL scheme is not https or host is not in allowlist.
-    """
+    """Fail-closed: deny unless allow_urls=True and scheme is https/wss."""
     if not config.allow_urls:
         raise PermissionError(
             f"MCP URL transport is disabled (allow_urls=False). "
@@ -203,53 +136,20 @@ def _validate_url(url: str, config: MCPSecurityConfig) -> None:
 
 
 class MCPConnectionPool:
-    """Simple connection pool for MCP clients.
-
-    Security Model:
-    This class trusts user-provided MCP server configurations, similar to how
-    development tools trust configured language servers or extensions. Users are
-    responsible for vetting the MCP servers they choose to run.
-
-    For enhanced security in production:
-    - Run MCP servers in sandboxed environments (containers, VMs)
-    - Use process isolation and resource limits
-    - Monitor server behavior and resource usage
-    - Validate server outputs before use
-    """
+    """Connection pool for MCP clients with fail-closed security."""
 
     _clients: dict[str, Any] = {}
     _configs: dict[str, dict] = {}
     _lock: Lock | None = None
     _lock_guard: threading.Lock = threading.Lock()
     _security: MCPSecurityConfig | None = None
-    # Per-server authorized policy, keyed by a stable content signature. A
-    # trusted loader records the policy a server was loaded under here so EVERY
-    # later client (re)creation for that server — including the lazy first
-    # invocation of a tool_names-registered tool, and reconnects after a cached
-    # client is cleaned up or goes stale — re-applies the same authorization,
-    # instead of falling back to the fail-closed default and breaking the tool.
-    # Keyed per-server (not a single global) so concurrent loads of different
-    # servers cannot contaminate each other's policy.
+    # Per-server policy keyed by content signature so reconnects
+    # re-apply the same authorization instead of falling back to fail-closed.
     _server_security: dict[str, MCPSecurityConfig] = {}
 
     @staticmethod
     def _policy_key(server_config: dict[str, Any]) -> str:
-        """Stable signature for the per-server policy registry.
-
-        Content-based (NOT ``id()``-based) so the key computed at registration
-        matches the one computed from the metadata-stripped config at tool
-        invocation time. Both call sites pass the same non-underscore key set
-        (registration: the raw ``server_config``; invocation: that same dict
-        minus ``_``-prefixed metadata), so fingerprinting all non-``_`` keys
-        is stable across both.
-
-        For inline configs the key fingerprints the ENTIRE transport
-        definition (command + args + env + url + headers + …), not just the
-        command or URL. Two different inline servers that merely share an
-        executable (e.g. both ``python``) or a host would otherwise collide
-        on one key, letting an UNauthorized config recover a trusted config's
-        policy and bypass the fail-closed default.
-        """
+        """Content-based key for per-server policy registry."""
         if "server" in server_config:
             return f"server:{server_config['server']}"
         material = {k: v for k, v in server_config.items() if not k.startswith("_")}
@@ -261,23 +161,13 @@ class MCPConnectionPool:
     def remember_security(
         cls, server_config: dict[str, Any], security: MCPSecurityConfig | None
     ) -> None:
-        """Record the policy a server was authorized under (trusted load).
-
-        No-op when ``security`` is None, so an un-authorized server keeps the
-        fail-closed default on later client creation.
-        """
+        """Record the policy a server was authorized under. No-op if None."""
         if security is not None:
             cls._server_security[cls._policy_key(server_config)] = security
 
     @classmethod
     def _get_lock(cls) -> Lock:
-        """Lazily create the Lock on first use.
-
-        This avoids binding the lock to an event loop at import time,
-        which would fail if the module is imported before any event loop
-        is running (Python 3.10-3.11). The threading.Lock guard prevents
-        a TOCTOU race if two threads call this concurrently.
-        """
+        # Lazy creation avoids binding to an event loop at import time (3.10-3.11).
         if cls._lock is None:
             with cls._lock_guard:
                 if cls._lock is None:
@@ -286,41 +176,18 @@ class MCPConnectionPool:
 
     @classmethod
     def set_security_config(cls, config: MCPSecurityConfig) -> None:
-        """Set security configuration for the connection pool.
-
-        When set, all new connections will be validated against the
-        security config. Existing connections are unaffected.
-
-        Args:
-            config: Security configuration to apply.
-        """
+        """Set security config for new connections. Existing ones unaffected."""
         cls._security = config
 
     async def __aenter__(self):
-        """Context manager entry."""
         return self
 
     async def __aexit__(self, *_):
-        """Context manager exit - cleanup connections."""
         await self.cleanup()
 
     @classmethod
     def load_config(cls, path: str = ".mcp.json") -> None:
-        """Load MCP server configurations from file.
-
-        Thread-safety: this method mutates ``_configs`` which is also read
-        by :meth:`get_client` under the async lock. When called from
-        ``get_client`` the lock is already held.  When called standalone
-        (e.g. at startup), there is no concurrent async access yet.
-
-        Args:
-            path: Path to .mcp.json configuration file
-
-        Raises:
-            FileNotFoundError: If config file doesn't exist
-            json.JSONDecodeError: If config file has invalid JSON
-            ValueError: If config structure is invalid
-        """
+        """Load MCP server configurations from a .mcp.json file."""
         config_path = Path(path)
         if not config_path.exists():
             raise FileNotFoundError(f"MCP config file not found: {path}")
@@ -348,55 +215,35 @@ class MCPConnectionPool:
         server_config: dict[str, Any],
         security: MCPSecurityConfig | None = None,
     ) -> Any:
-        """Get or create a pooled MCP client.
-
-        Args:
-            server_config: Server reference or inline transport config.
-            security: Per-call security policy applied when a NEW client is
-                created. Passed explicitly down the trusted-loader call chain
-                so concurrent loads do not race on the process-global default.
-                A cached, already-validated client is returned as-is (its
-                transport was authorized at creation time). When omitted (e.g.
-                the stored tool callable invoking a tool), the policy this
-                server was loaded under is recovered from ``_server_security``
-                so reconnects stay authorized instead of failing closed.
-        """
-        # An explicit policy authorizes this server for future (re)creations
-        # too; absent one, recover the policy the server was loaded under.
+        """Get or create a pooled MCP client."""
+        # Explicit policy authorizes this server for future reconnects;
+        # absent one, recover the policy the server was loaded under.
         if security is not None:
             cls.remember_security(server_config, security)
         else:
             security = cls._server_security.get(cls._policy_key(server_config))
 
-        # Generate unique key for this config
         if "server" in server_config:
-            # Server reference from .mcp.json
             server_name = server_config["server"]
             if server_name not in cls._configs:
-                # Try loading config
                 cls.load_config()
-                if server_name not in cls._configs:
-                    raise ValueError(f"Unknown MCP server: {server_name}")
+            if server_name not in cls._configs:
+                raise ValueError(f"Unknown MCP server: {server_name}")
 
             config = cls._configs[server_name]
             cache_key = f"server:{server_name}"
         else:
-            # Inline config - use command as key
             config = server_config
             cache_key = f"inline:{config.get('command')}:{id(config)}"
 
-        # Check if client exists and is connected
         async with cls._get_lock():
             if cache_key in cls._clients:
                 client = cls._clients[cache_key]
-                # Simple connectivity check
                 if hasattr(client, "is_connected") and client.is_connected():
                     return client
                 else:
-                    # Remove stale client
                     del cls._clients[cache_key]
 
-            # Create new client
             client = await cls._create_client(config, security=security)
             cls._clients[cache_key] = client
             return client
@@ -407,43 +254,14 @@ class MCPConnectionPool:
         config: dict[str, Any],
         security: MCPSecurityConfig | None = None,
     ) -> Any:
-        """Create a new MCP client from config.
-
-        Fail-closed security model: both URL and command transports are
-        rejected by default unless an explicit opt-in is present in the
-        security config (``allow_urls=True`` or ``allow_commands=True``).
-        When a security config is set via ``set_security_config()`` with
-        the appropriate allow flag, the URL or command is validated before
-        any transport object is constructed.
-
-        Without a security config, ALL transports are denied — callers must
-        set a security config with the relevant allow flag to proceed.
-
-        Args:
-            config: Server configuration with 'url' or 'command' + optional 'args' and 'env'
-            security: Explicit per-call policy. Takes precedence over the
-                process-global ``cls._security`` so a trusted loader can
-                authorize THIS client's transport without mutating shared
-                state (which races across concurrent loads). When None, falls
-                back to the global default, then to fail-closed.
-
-        Raises:
-            PermissionError: If the transport type is not explicitly allowed by the
-                security config (fail-closed default).
-            ValueError: If config format is invalid or command/URL not in allowlist.
-        """
-        # Validate config structure
+        """Create a new MCP client from config (fail-closed)."""
         if not isinstance(config, dict):
             raise ValueError("Config must be a dictionary")
 
         if not any(k in config for k in ["url", "command"]):
             raise ValueError("Config must have either 'url' or 'command' key")
 
-        # Resolve effective security config. Precedence: explicit per-call
-        # policy > process-global default > fail-closed default (deny all).
-        # Threading the policy through the call avoids bracketing awaits by
-        # mutating the shared class var, which lets concurrent loads observe
-        # each other's policy.
+        # Precedence: explicit > process-global > fail-closed default.
         if security is not None:
             effective_security = security
         elif cls._security is not None:
@@ -451,8 +269,7 @@ class MCPConnectionPool:
         else:
             effective_security = MCPSecurityConfig()
 
-        # Security validation BEFORE any import or transport construction.
-        # Fail closed: raises PermissionError before FastMCP is even imported.
+        # Validate BEFORE any import or transport construction.
         if "url" in config:
             _validate_url(config["url"], effective_security)
         elif "command" in config:
@@ -463,39 +280,27 @@ class MCPConnectionPool:
         except ImportError:
             raise ImportError("FastMCP not installed. Run: pip install fastmcp") from None
 
-        # Handle different config formats
         if "url" in config:
             client = FastMCPClient(config["url"])
         elif "command" in config:
-            # Command-based connection
             command = config["command"]
-
-            # (Validation already done above before fastmcp import)
-
-            # Validate args if provided
             args = config.get("args", [])
             if not isinstance(args, list):
                 raise ValueError("Config 'args' must be a list")
 
-            # Merge environment variables - user config takes precedence
             env = os.environ.copy()
             env.update(config.get("env", {}))
 
-            # Security: always filter known sensitive environment variables.
             env = _filter_env(env, effective_security)
 
-            # Suppress server logging unless debug mode is enabled
             if not (
                 config.get("debug", False) or os.environ.get("MCP_DEBUG", "").lower() == "true"
             ):
-                # Common environment variables to suppress logging
                 env.setdefault("LOG_LEVEL", "ERROR")
                 env.setdefault("PYTHONWARNINGS", "ignore")
-                # Suppress FastMCP server logs
                 env.setdefault("FASTMCP_QUIET", "true")
                 env.setdefault("MCP_QUIET", "true")
 
-            # Create client with command
             from fastmcp.client.transports import StdioTransport
 
             transport = StdioTransport(
@@ -507,50 +312,33 @@ class MCPConnectionPool:
         else:
             raise ValueError("Config must have 'url' or 'command'")
 
-        # Initialize connection
         await client.__aenter__()
         return client
 
     @classmethod
     async def cleanup(cls):
-        """Clean up all pooled connections."""
         async with cls._get_lock():
             for cache_key, client in cls._clients.items():
                 try:
                     await client.__aexit__(None, None, None)
                 except Exception as e:
-                    # Log cleanup errors for debugging while continuing cleanup
                     logging.debug(f"Error cleaning up MCP client {cache_key}: {e}")
             cls._clients.clear()
 
 
 def create_mcp_tool(mcp_config: dict[str, Any], tool_name: str) -> Any:
-    """Create a callable that wraps MCP tool execution.
-
-    Args:
-        mcp_config: MCP server configuration (server reference or inline)
-        tool_name: Name of the tool (can be qualified like "server_toolname")
-
-    Returns:
-        Async callable that executes the MCP tool
-    """
+    """Create an async callable wrapping MCP tool execution."""
 
     async def mcp_callable(**kwargs):
-        """Execute MCP tool with connection pooling."""
-        # Extract the original tool name if it was stored in metadata
         actual_tool_name = mcp_config.get("_original_tool_name", tool_name)
 
-        # Remove metadata before getting client
         config_for_client = {k: v for k, v in mcp_config.items() if not k.startswith("_")}
 
         client = await MCPConnectionPool.get_client(config_for_client)
 
-        # Call the tool with the original name
         result = await client.call_tool(actual_tool_name, kwargs)
 
-        # Handle different result types
         if hasattr(result, "content"):
-            # CallToolResult object - extract content
             content = result.content
             if isinstance(content, list) and len(content) == 1:
                 item = content[0]
@@ -566,7 +354,6 @@ def create_mcp_tool(mcp_config: dict[str, Any], tool_name: str) -> Any:
 
         return result
 
-    # Set function metadata for Tool introspection
     mcp_callable.__name__ = tool_name
     mcp_callable.__doc__ = f"MCP tool: {tool_name}"
 

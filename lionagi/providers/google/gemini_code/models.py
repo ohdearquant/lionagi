@@ -46,7 +46,7 @@ __all__ = (
 
 
 class GeminiCodeRequest(BaseModel):
-    """Request model for Gemini CLI execution."""
+    """Configuration + prompt for a Gemini CLI invocation."""
 
     # -- conversational bits -------------------------------------------------
     prompt: str = Field(description="The prompt for Gemini CLI")
@@ -84,7 +84,6 @@ class GeminiCodeRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _validate_message_prompt(cls, data):
-        """Convert messages format to prompt if needed."""
         if data.get("prompt"):
             return data
 
@@ -108,12 +107,10 @@ class GeminiCodeRequest(BaseModel):
     @field_validator("include_directories", mode="after")
     @classmethod
     def _validate_include_directories(cls, v):
-        """Reject absolute paths and traversal sequences in include_directories."""
         return check_paths_safe(v, "include_directories")
 
     @model_validator(mode="after")
     def _contain_directories_in_repo(self):
-        """Resolve include_directories and reject entries that escape the repo root."""
         if self.include_directories:
             repo_root = self.repo.resolve()
             contain_paths_in_repo(self.include_directories, repo_root, "include_directories")
@@ -121,7 +118,6 @@ class GeminiCodeRequest(BaseModel):
 
     @model_validator(mode="after")
     def _warn_dangerous_settings(self):
-        """Emit security warnings for dangerous CLI settings."""
         if self.yolo:
             warnings.warn(
                 "GeminiCodeRequest: yolo=True enables auto-approval of ALL actions "
@@ -145,7 +141,6 @@ class GeminiCodeRequest(BaseModel):
         return self
 
     def cwd(self) -> Path:
-        """Get working directory, validating workspace path."""
         if not self.ws:
             return self.repo
 
@@ -171,7 +166,6 @@ class GeminiCodeRequest(BaseModel):
         return result
 
     def as_cmd_args(self) -> list[str]:
-        """Build argument list for the Gemini CLI."""
         args: list[str] = ["-p", self.prompt, "--output-format", "stream-json"]
 
         if self.model:
@@ -197,8 +191,6 @@ class GeminiCodeRequest(BaseModel):
 
 @dataclass
 class GeminiChunk:
-    """Low-level wrapper around every JSON object from the CLI."""
-
     raw: dict[str, Any]
     type: str
     # convenience views
@@ -210,8 +202,6 @@ class GeminiChunk:
 
 @dataclass
 class GeminiSession:
-    """Aggregated view of a whole CLI conversation."""
-
     session_id: str | None = None
     model: str | None = None
 
@@ -237,7 +227,6 @@ class GeminiSession:
 
 
 def _extract_summary(session: GeminiSession) -> dict[str, Any]:
-    """Extract summary from session data."""
     tool_counts: dict[str, int] = {}
     tool_details: list[dict[str, Any]] = []
     file_operations: dict[str, list[str]] = {
@@ -307,11 +296,6 @@ def _extract_summary(session: GeminiSession) -> dict[str, Any]:
 
 # TODO(#1043 Phase 2): migrate create_subprocess_exec + wait_for to anyio
 async def _ndjson_from_cli(request: GeminiCodeRequest):
-    """
-    Yields each JSON object emitted by the Gemini CLI.
-
-    Robust against UTF-8 splits and uses json.JSONDecoder.raw_decode.
-    """
     if GEMINI_CLI is None:
         raise RuntimeError("Gemini CLI not found. Please install the gemini CLI tool.")
 

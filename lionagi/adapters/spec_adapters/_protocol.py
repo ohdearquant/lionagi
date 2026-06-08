@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Abstract base class for Spec adapters.
-
-Adapters convert framework-agnostic Spec objects to framework-specific
-field and model definitions (Pydantic, msgspec, attrs, dataclasses).
-"""
+"""Abstract base class for Spec adapters."""
 
 from __future__ import annotations
 
@@ -19,34 +15,12 @@ __all__ = ("SpecAdapter",)
 
 
 class SpecAdapter(ABC):
-    """Base adapter for converting Spec to framework-specific formats.
-
-    Abstract Methods (must implement):
-        - create_field: Spec → framework field
-        - create_model: Operable → framework model class
-        - validate_model: dict → validated model instance
-        - dump_model: model instance → dict
-
-    Concrete Methods (shared):
-        - parse_json: Extract JSON from text
-        - fuzzy_match_fields: Match dict keys to model fields
-        - validate_response: Full validation pipeline
-        - update_model: Update model instance (uses dump_model + validate_model)
-    """
-
-    # ---- Abstract Methods ----
+    """Base adapter for converting Spec to framework-specific formats."""
 
     @classmethod
     @abstractmethod
     def create_field(cls, spec: Spec) -> Any:
-        """Convert Spec to framework-specific field definition.
-
-        Args:
-            spec: Spec object
-
-        Returns:
-            Framework-specific field (FieldInfo, Attribute, Field, etc.)
-        """
+        """Convert Spec to framework-specific field definition."""
         ...
 
     @classmethod
@@ -59,86 +33,29 @@ class SpecAdapter(ABC):
         exclude: set[str] | None = None,
         **kwargs: Any,
     ) -> type:
-        """Generate model class from Operable.
-
-        Args:
-            operable: Operable containing specs
-            model_name: Name for generated model
-            include: Only include these field names
-            exclude: Exclude these field names
-            **kwargs: Framework-specific options
-
-        Returns:
-            Generated model class
-        """
+        """Generate model class from Operable."""
         ...
 
     @classmethod
     @abstractmethod
     def validate_model(cls, model_cls: type, data: dict) -> Any:
-        """Validate dict data into model instance.
-
-        Framework-agnostic validation hook. Each adapter implements
-        the appropriate validation mechanism:
-            - Pydantic: model_cls.model_validate(data)
-            - msgspec: msgspec.convert(data, type=model_cls)
-            - attrs: model_cls(**data)
-            - dataclasses: model_cls(**data)
-
-        Args:
-            model_cls: Model class
-            data: Dictionary data to validate
-
-        Returns:
-            Validated model instance
-        """
+        """Validate dict data into model instance."""
         ...
 
     @classmethod
     @abstractmethod
     def dump_model(cls, instance: Any) -> dict:
-        """Dump model instance to dictionary.
-
-        Framework-agnostic serialization hook. Each adapter implements
-        the appropriate serialization mechanism:
-            - Pydantic: instance.model_dump()
-            - msgspec: msgspec.to_builtins(instance)
-            - attrs: attr.asdict(instance)
-            - dataclasses: dataclasses.asdict(instance)
-
-        Args:
-            instance: Model instance
-
-        Returns:
-            Dictionary representation
-        """
+        """Dump model instance to dictionary."""
         ...
 
     @classmethod
     def create_validator(cls, spec: Spec) -> Any:
-        """Generate framework-specific validators from Spec metadata.
-
-        Args:
-            spec: Spec with validator metadata
-
-        Returns:
-            Framework-specific validator, or None if not supported
-        """
+        """Generate framework-specific validators from Spec metadata."""
         return None
-
-    # ---- Concrete Methods (Shared) ----
 
     @classmethod
     def parse_json(cls, text: str, fuzzy: bool = True) -> dict | list | Any:
-        """Extract and parse JSON from text.
-
-        Args:
-            text: Raw text potentially containing JSON
-            fuzzy: Use fuzzy parsing (markdown extraction)
-
-        Returns:
-            Parsed JSON object
-        """
+        """Extract and parse JSON from text."""
         from lionagi.ln import extract_json
 
         data = extract_json(text, fuzzy_parse=fuzzy)
@@ -152,19 +69,7 @@ class SpecAdapter(ABC):
     @classmethod
     @abstractmethod
     def fuzzy_match_fields(cls, data: dict, model_cls: type, strict: bool = False) -> dict:
-        """Match data keys to model fields with fuzzy matching.
-
-        Framework-specific method - each adapter must implement based on how
-        their framework exposes field definitions.
-
-        Args:
-            data: Raw data dictionary
-            model_cls: Target model class
-            strict: If True, raise on unmatched; if False, force coercion
-
-        Returns:
-            Dictionary with keys matched to model fields
-        """
+        """Match data keys to model fields with fuzzy matching."""
         ...
 
     @classmethod
@@ -175,19 +80,7 @@ class SpecAdapter(ABC):
         strict: bool = False,
         fuzzy_parse: bool = True,
     ) -> Any | None:
-        """Validate and parse response text into model instance.
-
-        Pipeline: parse_json → fuzzy_match_fields → validate_model
-
-        Args:
-            text: Raw response text
-            model_cls: Target model class
-            strict: If True, raise on errors; if False, return None
-            fuzzy_parse: Use fuzzy JSON parsing
-
-        Returns:
-            Validated model instance, or None if validation fails (strict=False)
-        """
+        """Parse response text into validated model instance."""
         try:
             # Step 1: Parse JSON
             data = cls.parse_json(text, fuzzy=fuzzy_parse)
@@ -201,11 +94,6 @@ class SpecAdapter(ABC):
             return instance
 
         except (ValueError, TypeError, KeyError, AttributeError):
-            # Catch validation-related exceptions only
-            # ValueError: JSON/parsing errors, validation failures
-            # TypeError: Type mismatches during validation
-            # KeyError: Missing required fields
-            # AttributeError: Field access errors
             if strict:
                 raise
             return None
@@ -217,16 +105,7 @@ class SpecAdapter(ABC):
         updates: dict,
         model_cls: type | None = None,
     ) -> Any:
-        """Update existing model instance with new data.
-
-        Args:
-            instance: Existing model instance
-            updates: Dictionary of updates
-            model_cls: Optional model class (defaults to instance's class)
-
-        Returns:
-            New validated model instance with updates applied
-        """
+        """Update existing model instance with new data."""
         model_cls = model_cls or type(instance)
 
         # Merge existing data with updates

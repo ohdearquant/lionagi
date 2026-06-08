@@ -98,17 +98,7 @@ def _cli(
 
 # --------------------------------------------------------------------------- request model
 class ClaudeCodeRequest(BaseModel):
-    """Configuration + prompt for a Claude Code CLI invocation.
-
-    Every field annotated with ``_cli(...)`` metadata is automatically
-    assembled into CLI arguments by :meth:`as_cmd_args`, sorted by its
-    ``order`` value.  A handful of special cases (``permission_mode``,
-    ``max_turns``, ``worktree``, ``debug``, legacy ``mcp_servers``) are
-    handled with explicit logic after the declarative pass.
-
-    Adding a new CLI flag is one line: declare the field with ``_cli()``
-    metadata and the builder picks it up automatically.
-    """
+    """Configuration + prompt for a Claude Code CLI invocation."""
 
     # ── prompt (always required) ──────────────────────────────────
     prompt: str = Field(description="The prompt for Claude Code")
@@ -310,15 +300,6 @@ class ClaudeCodeRequest(BaseModel):
     @field_validator("add_dir", mode="after")
     @classmethod
     def _validate_add_dir(cls, v):
-        """Reject traversal sequences in add_dir entries.
-
-        Absolute paths are permitted — add_dir is a read-only grant that the
-        spawned CLI uses to determine which directories it may read.  The
-        orchestration layer sets repo to a per-agent artifact directory and
-        add_dir to the project root, which legitimately lies outside the repo.
-        Traversal sequences (``..``) are still rejected because they indicate
-        an unintended escape rather than a deliberate grant.
-        """
         if v is None:
             return v
         return check_add_dir_entries_safe(v, "add_dir")
@@ -332,7 +313,6 @@ class ClaudeCodeRequest(BaseModel):
     )
     @classmethod
     def _validate_path_fields(cls, v):
-        """Reject absolute paths and traversal sequences in file path fields."""
         if v is None:
             return v
         check_path_safe(str(v), "system_prompt_file/append_system_prompt_file/mcp_config/settings")
@@ -470,19 +450,7 @@ class ClaudeCodeRequest(BaseModel):
     # ── CLI command builder ───────────────────────────────────────
 
     def as_cmd_args(self) -> list[str]:
-        """Build argument list for the Claude Code CLI.
-
-        Flags are assembled in two passes:
-
-        1. **Declarative** – fields carrying ``_cli()`` metadata are
-           collected, sorted by ``order``, and emitted by ``kind``.
-        2. **Special cases** – ``permission_mode``, ``max_turns``,
-           ``worktree``, ``debug``, and legacy ``mcp_servers`` need
-           non-mechanical logic and are handled explicitly.
-
-        The prompt (``-p``) and ``--output-format`` always come first;
-        ``--verbose`` is always appended last.
-        """
+        """Build argument list for the Claude Code CLI."""
         args: list[str] = [
             "-p",
             self.prompt,
@@ -490,10 +458,7 @@ class ClaudeCodeRequest(BaseModel):
             self.output_format,
         ]
 
-        # ── pass 1: declarative flags ──
         args.extend(self._build_declarative_args())
-
-        # ── pass 2: special cases ──
 
         # permission_mode → --dangerously-skip-permissions OR --permission-mode
         if self.permission_mode:
@@ -538,7 +503,6 @@ class ClaudeCodeRequest(BaseModel):
         return args
 
     def _build_declarative_args(self) -> list[str]:
-        """Collect fields with ``_cli()`` metadata and emit flags."""
         flagged: list[tuple[int, dict, Any]] = []
         for field_name, field_info in type(self).model_fields.items():
             extra = field_info.json_schema_extra
@@ -599,13 +563,7 @@ ClaudeSession = CLISession
 
 # TODO(#1043 Phase 2): migrate create_subprocess_exec + wait_for to anyio
 async def _ndjson_from_cli(request: ClaudeCodeRequest):
-    """
-    Yields each JSON object emitted by the *claude-code* CLI.
-
-    • Robust against UTF-8 splits across chunks (incremental decoder).
-    • Robust against braces inside strings (uses json.JSONDecoder.raw_decode)
-    • Falls back to `json_repair.repair_json` when necessary.
-    """
+    """Yield each JSON object from the Claude Code CLI NDJSON stream."""
     from json_repair import repair_json
 
     workspace = request.cwd()

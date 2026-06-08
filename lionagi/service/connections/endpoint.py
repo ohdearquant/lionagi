@@ -60,7 +60,6 @@ class Endpoint:
         )
 
     def _create_http_session(self):
-        """Create a new HTTP session (not thread-safe, create new for each request)."""
         import aiohttp
 
         return aiohttp.ClientSession(
@@ -69,7 +68,7 @@ class Endpoint:
         )
 
     def copy_runtime_state_to(self, other: Endpoint) -> None:
-        """Copy non-serialized runtime state to a same-type endpoint clone."""
+        pass
 
     @property
     def request_options(self):
@@ -85,7 +84,6 @@ class Endpoint:
         extra_headers: dict | None = None,
         **kwargs,
     ):
-        # First, create headers
         headers = HeaderFactory.get_header(
             auth_type=self.config.auth_type,
             content_type=self.config.content_type,
@@ -95,28 +93,17 @@ class Endpoint:
         if extra_headers:
             headers.update(extra_headers)
 
-        # Convert request to dict if it's a BaseModel
         request = request if isinstance(request, dict) else request.model_dump(exclude_none=True)
 
-        # Start with config defaults
         payload = self.config.kwargs.copy()
-
-        # Update with request data
         payload.update(request)
 
-        # Update with additional kwargs
         if kwargs:
             payload.update(kwargs)
 
-        # If we have request_options, use the model's fields to filter valid params
         if self.config.request_options is not None:
-            # Get valid field names from the model
             valid_fields = set(self.config.request_options.model_fields.keys())
-
-            # Filter payload to only include valid fields
             filtered_payload = {k: v for k, v in payload.items() if k in valid_fields}
-
-            # Validate the filtered payload
             payload = self.config.validate_payload(filtered_payload)
         else:
             non_api_params = {
@@ -150,15 +137,7 @@ class Endpoint:
         return (payload, headers)
 
     def _assert_ssrf_safe_url(self) -> None:
-        """Raise PermissionError if self.config.full_url resolves to a blocked address.
-
-        Call this before any direct HTTP I/O in provider _call() overrides that do
-        not route through _call_aiohttp() or _stream_aiohttp().
-
-        When the endpoint config sets allow_local_network=True, loopback addresses
-        (127.0.0.0/8 and ::1) are permitted.  All other blocked ranges — including
-        link-local and metadata endpoints — remain blocked regardless.
-        """
+        """Raise PermissionError if full_url resolves to a blocked address."""
         from urllib.parse import urlparse
 
         from lionagi.ln._ssrf import is_ssrf_safe
@@ -182,19 +161,6 @@ class Endpoint:
         skip_payload_creation: bool = False,
         **kwargs,
     ):
-        """
-        Make a call to the endpoint.
-
-        Args:
-            request: The request parameters or model.
-            cache_control: Whether to use cache control.
-            skip_payload_creation: Whether to skip create_payload and treat request as ready payload.
-            **kwargs: Additional keyword arguments for the request.
-
-        Returns:
-            The response from the endpoint.
-        """
-        # Extract extra_headers before passing to create_payload
         extra_headers = kwargs.pop("extra_headers", None)
 
         payload, headers = None, None
@@ -205,10 +171,8 @@ class Endpoint:
         else:
             payload, headers = self.create_payload(request, extra_headers=extra_headers, **kwargs)
 
-        # Apply resilience patterns if configured
         call_func = self._call
 
-        # Apply retry if configured
         if self.retry_config:
 
             async def call_func(p, h, **kw):
@@ -216,20 +180,16 @@ class Endpoint:
                     self._call, p, h, **kw, **self.retry_config.as_kwargs()
                 )
 
-        # Apply circuit breaker if configured
         if self.circuit_breaker:
             if self.retry_config:
-                # If both are configured, apply circuit breaker to the retry-wrapped function
                 if not cache_control:
                     return await self.circuit_breaker.execute(call_func, payload, headers, **kwargs)
             else:
-                # If only circuit breaker is configured, apply it directly
                 if not cache_control:
                     return await self.circuit_breaker.execute(
                         self._call, payload, headers, **kwargs
                     )
 
-        # Handle caching if requested
         if cache_control:
             from aiocache import cached
 
@@ -237,7 +197,6 @@ class Endpoint:
 
             @cached(**settings.aiocache_config.as_kwargs())
             async def _cached_call(payload: dict, headers: dict, **kwargs):
-                # Apply resilience patterns to cached call if configured
                 if self.circuit_breaker and self.retry_config:
                     return await self.circuit_breaker.execute(call_func, payload, headers, **kwargs)
                 if self.circuit_breaker:
@@ -251,31 +210,18 @@ class Endpoint:
 
             return await _cached_call(payload, headers, **kwargs)
 
-        # No caching, apply resilience patterns directly
         if self.retry_config:
             return await call_func(payload, headers, **kwargs)
 
         return await self._call(payload, headers, **kwargs)
 
     async def _call_aiohttp(self, payload: dict, headers: dict, **kwargs):
-        """
-        Make a call using aiohttp with a fresh session for each request.
-
-        Args:
-            payload: The request payload.
-            headers: The request headers.
-            **kwargs: Additional keyword arguments for the request.
-
-        Returns:
-            The response from the endpoint.
-        """
         self._assert_ssrf_safe_url()
 
         import aiohttp
         import backoff
 
         async def _make_request_with_backoff():
-            # Create a new session for this request
             async with self._create_http_session() as session:
                 response = None
                 try:
@@ -287,11 +233,9 @@ class Endpoint:
                         **kwargs,
                     )
 
-                    # Check for rate limit or server errors that should be retried
                     if response.status == 429 or response.status >= 500:
                         response.raise_for_status()  # This will be caught by backoff
                     elif response.status != 200:
-                        # Try to get error details from response body
                         try:
                             error_body = await response.json()
                             error_message = (
@@ -308,7 +252,6 @@ class Endpoint:
                             headers=response.headers,
                         )
 
-                    # Extract and return the JSON response
                     return await response.json()
                 finally:
                     # Ensure response is properly released if coroutine is cancelled between retries.
@@ -316,15 +259,12 @@ class Endpoint:
                     if response is not None and not response.closed:
                         response.release()
 
-        # Define a giveup function for backoff
         def giveup_on_client_error(e):
-            # Don't retry on 4xx errors except 429 (rate limit)
+            # Don't retry on 4xx except 429 (rate limit)
             if isinstance(e, aiohttp.ClientResponseError):
                 return 400 <= e.status < 500 and e.status != 429
             return False
 
-        # Use backoff for retries with exponential backoff and jitter
-        # Moved inside the method to reference runtime config
         backoff_handler = backoff.on_exception(
             backoff.expo,
             (aiohttp.ClientError, asyncio.TimeoutError),
@@ -333,7 +273,6 @@ class Endpoint:
             jitter=backoff.full_jitter,
         )
 
-        # Apply the decorator at runtime
         return await backoff_handler(_make_request_with_backoff)()
 
     async def stream(
@@ -342,41 +281,16 @@ class Endpoint:
         extra_headers: dict | None = None,
         **kwargs,
     ):
-        """
-        Stream responses from the endpoint.
-
-        Args:
-            request: The request parameters or model.
-            extra_headers: Additional headers for the request.
-            **kwargs: Additional keyword arguments for the request.
-
-        Yields:
-            Streaming chunks from the API.
-        """
         payload, headers = self.create_payload(request, extra_headers, **kwargs)
 
-        # Direct streaming without context manager
         async for chunk in self._stream_aiohttp(payload=payload, headers=headers, **kwargs):
             yield chunk
 
     async def _stream_aiohttp(self, payload: dict, headers: dict, **kwargs):
-        """
-        Stream responses using aiohttp with a fresh session.
-
-        Args:
-            payload: The request payload.
-            headers: The request headers.
-            **kwargs: Additional keyword arguments for the request.
-
-        Yields:
-            Streaming chunks from the API.
-        """
         self._assert_ssrf_safe_url()
 
-        # Ensure stream is enabled
         payload["stream"] = True
 
-        # Create a new session for streaming
         async with self._create_http_session() as session:
             async with session.request(
                 method=self.config.method,

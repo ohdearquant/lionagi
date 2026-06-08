@@ -1,46 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Shared path-containment helpers for agentic-CLI provider models.
-
-Agentic-CLI providers (Codex, Claude Code, Gemini, Pi) accept path-grant
-fields (directories, config files, image paths, etc.) that are forwarded
-verbatim to subprocess argv.  Without validation an untrusted value such as
-``../../etc/passwd`` or ``/etc/shadow`` would let the spawned CLI read
-arbitrary host files.
-
-These helpers implement fail-closed containment: every path is validated
-*before* argv is constructed.
-
-Two-layer model (mirrors Pi's original design):
-  1. ``check_path_safe`` — lexical check (no absolute paths, no ``..``
-     components).  Fast, no filesystem access.  Apply in field validators.
-  2. ``contain_path_in_repo`` — resolves symlinks against a repo root and
-     rejects any path whose real location escapes the root.  Apply in model
-     validators after the repo root is known.
-
-Read-grant vs. write-target distinction
----------------------------------------
-``add_dir`` / ``include_directories`` are *read grants* — the spawned CLI is
-told it may read from these directories, but it does not write there.  The
-orchestration layer legitimately sets ``repo`` to a per-agent artifact
-directory and ``add_dir`` to the project root (which is outside the artifact
-dir) so workers can read source files while writing only to their sandbox.
-
-Because of this, ``add_dir`` entries are validated with a looser rule:
-
-* Traversal sequences (``..`` components) are always rejected — they imply
-  an *unintended* escape rather than an explicit grant.
-* Absolute paths are **allowed** when they are genuine directory grants.
-  The spawned CLI interprets them as explicit access grants, which is the
-  intended semantics.
-
-Use :func:`check_add_dir_entry_safe` (and its list variant) for these fields
-instead of the stricter :func:`check_path_safe`.
-
-Write-target fields (``output_schema``, ``output_last_message``,
-``system_prompt_file``, ``mcp_config``, ``settings``) still use the strict
-two-layer check — they must remain inside the repo root.
-"""
+"""Fail-closed path-containment helpers for agentic-CLI provider models."""
 
 from __future__ import annotations
 
@@ -48,28 +8,7 @@ from pathlib import Path
 
 
 def check_path_safe(value: str, field_name: str, *, strip_at: bool = False) -> str:
-    """Lexically reject absolute paths and directory-traversal sequences.
-
-    Parameters
-    ----------
-    value:
-        The raw path string to validate.
-    field_name:
-        Name of the originating field, used in error messages.
-    strip_at:
-        When True, strip a leading ``@`` before analysing the path (Pi-style
-        file references).  The original string is returned unchanged.
-
-    Returns
-    -------
-    str
-        The original *value* if it passes validation.
-
-    Raises
-    ------
-    ValueError
-        If the path is absolute or contains ``..`` components.
-    """
+    """Reject absolute paths and directory-traversal sequences."""
     entry = value.lstrip("@") if strip_at else value
     p = Path(entry)
 
@@ -88,31 +27,7 @@ def check_path_safe(value: str, field_name: str, *, strip_at: bool = False) -> s
 
 
 def check_add_dir_entry_safe(value: str, field_name: str) -> str:
-    """Validate a read-grant directory path.
-
-    Unlike :func:`check_path_safe`, absolute paths are permitted because they
-    represent explicit directory grants to the spawned CLI (e.g. granting
-    access to the project root when ``repo`` is set to a narrower artifact
-    directory).  Traversal sequences are still rejected because they indicate
-    an unintended escape rather than a deliberate grant.
-
-    Parameters
-    ----------
-    value:
-        The raw path string to validate.
-    field_name:
-        Name of the originating field, used in error messages.
-
-    Returns
-    -------
-    str
-        The original *value* if it passes validation.
-
-    Raises
-    ------
-    ValueError
-        If the path contains ``..`` traversal components.
-    """
+    """Validate a read-grant dir path. Allows absolute, rejects traversal."""
     p = Path(value)
     if ".." in p.parts:
         raise ValueError(
@@ -124,25 +39,7 @@ def check_add_dir_entry_safe(value: str, field_name: str) -> str:
 
 
 def check_add_dir_entries_safe(values: list[str], field_name: str) -> list[str]:
-    """Apply :func:`check_add_dir_entry_safe` to every item in a list.
-
-    Parameters
-    ----------
-    values:
-        List of raw path strings.
-    field_name:
-        Name of the originating field, used in error messages.
-
-    Returns
-    -------
-    list[str]
-        The original list if all entries pass.
-
-    Raises
-    ------
-    ValueError
-        On the first entry that fails.
-    """
+    """Apply check_add_dir_entry_safe to every item."""
     for v in values:
         check_add_dir_entry_safe(v, field_name)
     return values
@@ -154,27 +51,7 @@ def check_paths_safe(
     *,
     strip_at: bool = False,
 ) -> list[str]:
-    """Apply :func:`check_path_safe` to every item in a list.
-
-    Parameters
-    ----------
-    values:
-        List of raw path strings.
-    field_name:
-        Name of the originating field, used in error messages.
-    strip_at:
-        Forwarded to :func:`check_path_safe`.
-
-    Returns
-    -------
-    list[str]
-        The original list if all entries pass.
-
-    Raises
-    ------
-    ValueError
-        On the first entry that fails.
-    """
+    """Apply check_path_safe to every item."""
     for v in values:
         check_path_safe(v, field_name, strip_at=strip_at)
     return values
@@ -187,30 +64,7 @@ def contain_path_in_repo(
     *,
     strip_at: bool = False,
 ) -> None:
-    """Resolve a path against *repo* and reject symlink-escape attempts.
-
-    The lexical validator (:func:`check_path_safe`) rejects absolute paths
-    and ``..`` components, but a repo-local symlink (``repo/link -> /outside``)
-    is lexically clean yet lets the CLI read outside the repo.  Resolving
-    against the real filesystem catches these cases.
-
-    Parameters
-    ----------
-    value:
-        The raw path string.  May contain a leading ``@`` (stripped when
-        *strip_at* is True).
-    repo:
-        Resolved repository root (call ``repo.resolve()`` before passing).
-    field_name:
-        Name of the originating field, used in error messages.
-    strip_at:
-        Strip a leading ``@`` before resolving the path.
-
-    Raises
-    ------
-    ValueError
-        If the resolved path falls outside *repo*.
-    """
+    """Resolve against repo and reject symlink-escape attempts."""
     entry = str(value).lstrip("@") if strip_at else str(value)
     resolved = (repo / entry).resolve()
     try:
@@ -230,23 +84,6 @@ def contain_paths_in_repo(
     *,
     strip_at: bool = False,
 ) -> None:
-    """Apply :func:`contain_path_in_repo` to every item in a list.
-
-    Parameters
-    ----------
-    values:
-        List of raw path strings.
-    repo:
-        Resolved repository root.
-    field_name:
-        Name of the originating field.
-    strip_at:
-        Forwarded to :func:`contain_path_in_repo`.
-
-    Raises
-    ------
-    ValueError
-        On the first entry that fails.
-    """
+    """Apply contain_path_in_repo to every item."""
     for v in values:
         contain_path_in_repo(v, repo, field_name, strip_at=strip_at)
