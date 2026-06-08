@@ -10,9 +10,6 @@ Pydantic models with explicit behavior and aggressive caching for performance.
 from __future__ import annotations
 
 import inspect
-import os
-import threading
-from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field as dc_field
@@ -21,6 +18,8 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, create_model
 from pydantic.fields import FieldInfo
 
+from lionagi.ln._cache import BoundedLRUCache
+from lionagi.ln._hash import hash_obj
 from lionagi.ln.types import ModelConfig, Params
 from lionagi.utils import copy
 
@@ -28,10 +27,9 @@ from .field_model import FieldModel
 
 __all__ = ("ModelParams",)
 
-# Global cache configuration
-_MODEL_CACHE_SIZE = int(os.environ.get("LIONAGI_MODEL_CACHE_SIZE", "1000"))
-_model_cache: OrderedDict[int, type[BaseModel]] = OrderedDict()
-_model_cache_lock = threading.RLock()
+_model_cache: BoundedLRUCache[int, type[BaseModel]] = BoundedLRUCache(
+    "LIONAGI_MODEL_CACHE_SIZE", 1000
+)
 
 
 @dataclass(slots=True, frozen=True, init=False)
@@ -221,24 +219,7 @@ class ModelParams(Params):
         return set(self._final_fields.keys())
 
     def _get_cache_key(self) -> int:
-        """Create a hashable cache key from object state.
-
-        Converts unhashable types to hashable representations for caching.
-        """
-        state = self.to_dict()
-
-        def make_hashable(obj):
-            if isinstance(obj, dict):
-                return tuple(sorted((k, make_hashable(v)) for k, v in obj.items()))
-            elif isinstance(obj, list):
-                return tuple(make_hashable(x) for x in obj)
-            elif isinstance(obj, set):
-                return tuple(sorted(make_hashable(x) for x in obj))
-            else:
-                return obj
-
-        hashable_state = make_hashable(state)
-        return hash(hashable_state)
+        return hash_obj(self.to_dict())
 
     def create_new_model(self) -> type[BaseModel]:
         """Create new Pydantic model with specified configuration.
@@ -250,14 +231,11 @@ class ModelParams(Params):
         Returns:
             Newly created or cached Pydantic model class
         """
-        # Create stable cache key from hashable representation
         cache_key = self._get_cache_key()
 
-        # Check cache first
-        with _model_cache_lock:
-            if cache_key in _model_cache:
-                _model_cache.move_to_end(cache_key)
-                return _model_cache[cache_key]
+        cached = _model_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
         # Determine model name
         model_name = self.name
@@ -299,16 +277,5 @@ class ModelParams(Params):
         if not self._is_sentinel(self.frozen) and self.frozen:
             model.model_config["frozen"] = True
 
-        # Cache the result
-        with _model_cache_lock:
-            _model_cache[cache_key] = model
-
-            # LRU eviction
-            while len(_model_cache) > _MODEL_CACHE_SIZE:
-                try:
-                    _model_cache.popitem(last=False)  # Remove oldest
-                except KeyError:
-                    # Handle race condition
-                    break
-
+        _model_cache.put(cache_key, model)
         return model

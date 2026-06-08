@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import functools
 from typing import TYPE_CHECKING
 
 from lionagi.ln.types import is_sentinel
@@ -21,72 +20,16 @@ if TYPE_CHECKING:
     from lionagi.ln.types import Operable, Spec
 
 
-@functools.lru_cache(maxsize=1)
-def _get_pydantic_field_params() -> set[str]:
-    """Get valid Pydantic Field parameters (cached, thread-safe)."""
-    import inspect
-
-    from pydantic import Field as PydanticField
-
-    params = set(inspect.signature(PydanticField).parameters.keys())
-    params.discard("kwargs")
-    return params
-
-
 class PydanticSpecAdapter(SpecAdapter):
     """Pydantic implementation of SpecAdapter."""
 
     @classmethod
     def create_field(cls, spec: Spec) -> FieldInfo:
         """Create a Pydantic FieldInfo object from Spec."""
-        from pydantic import Field as PydanticField
+        from lionagi.models.field_model import FieldModel
 
-        # Get valid Pydantic Field parameters (cached)
-        pydantic_field_params = _get_pydantic_field_params()
-
-        # Extract metadata for FieldInfo
-        field_kwargs = {}
-
-        if not is_sentinel(spec.metadata, none_as_sentinel=True):
-            for meta in spec.metadata:
-                if meta.key == "default":
-                    # Handle callable defaults as default_factory
-                    if callable(meta.value):
-                        field_kwargs["default_factory"] = meta.value
-                    else:
-                        field_kwargs["default"] = meta.value
-                elif meta.key == "validator":
-                    # Validators are handled separately in create_model
-                    continue
-                elif meta.key in pydantic_field_params:
-                    # Pass through standard Pydantic field attributes
-                    field_kwargs[meta.key] = meta.value
-                elif meta.key in {"nullable", "listable"}:
-                    # These are FieldTemplate markers, don't pass to FieldInfo
-                    pass
-                else:
-                    # Filter out unserializable objects from json_schema_extra
-                    if isinstance(meta.value, type):
-                        # Skip type objects - can't be serialized
-                        continue
-
-                    # Any other metadata goes in json_schema_extra
-                    if "json_schema_extra" not in field_kwargs:
-                        field_kwargs["json_schema_extra"] = {}
-                    field_kwargs["json_schema_extra"][meta.key] = meta.value
-
-        # Handle nullable case - ensure default is set if not already
-        if (
-            spec.is_nullable
-            and "default" not in field_kwargs
-            and "default_factory" not in field_kwargs
-        ):
-            field_kwargs["default"] = None
-
-        field_info = PydanticField(**field_kwargs)
-        field_info.annotation = spec.annotation
-
-        return field_info
+        fm = FieldModel(spec.base_type, metadata=spec.metadata)
+        return fm.create_field()
 
     @classmethod
     def create_validator(cls, spec: Spec) -> dict | None:
