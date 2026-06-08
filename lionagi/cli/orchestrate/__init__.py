@@ -9,8 +9,9 @@ import sys
 
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.libs.path_safety import validate_path_component
-from lionagi.ln.concurrency import run_async
+from lionagi.ln.concurrency import is_cancelled, run_async
 
+from .._lifecycle import EXIT_CODE_BY_STATUS
 from .._logging import hint, log_error
 from .._providers import add_common_cli_args
 from .fanout import _run_fanout
@@ -654,14 +655,12 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             )
         except (TimeoutError, LionTimeoutError) as e:
             log_error(str(e))
-            return 124  # ADR-0025: timed_out exits with GNU `timeout` code
+            return EXIT_CODE_BY_STATUS["timed_out"]
         except KeyboardInterrupt:
-            return 130  # ADR-0025: aborted (SIGINT)
+            return EXIT_CODE_BY_STATUS["aborted"]
         except BaseException as exc:
-            from lionagi.ln.concurrency.errors import cancelled_exc_classes
-
-            if isinstance(exc, cancelled_exc_classes()):
-                return 143  # ADR-0025: cancelled (SIGTERM)
+            if is_cancelled(exc):
+                return EXIT_CODE_BY_STATUS["cancelled"]
             raise
         if not args.verbose:
             print(output)
@@ -855,24 +854,19 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             )
         except (TimeoutError, LionTimeoutError) as e:
             log_error(str(e))
-            return 124  # ADR-0025: timed_out exits with GNU `timeout` code
+            return EXIT_CODE_BY_STATUS["timed_out"]
         except KeyboardInterrupt:
-            return 130  # ADR-0025: aborted (SIGINT)
+            return EXIT_CODE_BY_STATUS["aborted"]
         except FlowPlanError as e:
-            # #1236: planning produced no usable DAG. Fail loud with the
-            # actionable message + raw response instead of exiting 0.
+            # planning produced no usable DAG — fail loud with actionable message
             log_error(str(e))
-            return 1
+            return EXIT_CODE_BY_STATUS["failed"]
         except BaseException as exc:
-            from lionagi.ln.concurrency.errors import cancelled_exc_classes
-
-            if isinstance(exc, cancelled_exc_classes()):
-                return 143  # ADR-0025: cancelled (SIGTERM)
+            if is_cancelled(exc):
+                return EXIT_CODE_BY_STATUS["cancelled"]
             raise
         if not args.verbose:
             print(output)
-        from lionagi.cli._lifecycle import EXIT_CODE_BY_STATUS
-
         return EXIT_CODE_BY_STATUS.get(terminal_status, 0)
 
     log_error(f"Unknown orchestrate command: {args.orch_command}")
