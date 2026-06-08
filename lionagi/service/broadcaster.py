@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import weakref
 from typing import TYPE_CHECKING, Any, ClassVar
-
-from lionagi.ln.concurrency import maybe_await
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -129,7 +128,9 @@ class Broadcaster:
             callbacks = cls._cleanup_dead_refs()
         for callback in callbacks:
             try:
-                await maybe_await(callback(event))
+                result = callback(event)
+                if asyncio.iscoroutine(result):
+                    await result
             except Exception as e:
                 logger.error(f"Error in subscriber callback: {e}", exc_info=True)
 

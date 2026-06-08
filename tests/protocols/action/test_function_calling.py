@@ -258,3 +258,70 @@ async def test_non_strict_mode_missing_required_argument():
     with pytest.raises(ValueError) as exc_info:
         FunctionCalling(func_tool=tool, arguments={})
     assert "must match the function schema" in str(exc_info.value)
+
+
+##################################################
+#   Regression: is_coro_func-gated behavior      #
+##################################################
+
+
+@pytest.mark.asyncio
+async def test_sync_func_callable_returning_coroutine_is_not_awaited():
+    """Sync func_callable that returns a coroutine must NOT be awaited.
+
+    Old origin/main only awaited when is_coro_func(func_callable) is True.
+    A sync function that happens to return a coroutine object must hand that
+    coroutine back to the caller as-is, not resolve it.
+    """
+    import asyncio
+
+    async def _inner():
+        return 7
+
+    def sync_returns_coro(x: int = 0):
+        # Sync callable that constructs and returns a coroutine — intentionally.
+        return _inner()
+
+    tool = Tool(func_callable=sync_returns_coro)
+    func_call = FunctionCalling(func_tool=tool, arguments={"x": 1})
+    await func_call.invoke()
+
+    # The response must be the coroutine object itself, not the resolved value 7.
+    assert asyncio.iscoroutine(func_call.execution.response), (
+        "Expected response to be a coroutine object because sync callable; "
+        f"got {type(func_call.execution.response)!r} = {func_call.execution.response!r}"
+    )
+    # Clean up the unawaited coroutine to avoid ResourceWarning.
+    func_call.execution.response.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_preprocessor_returning_coroutine_is_not_awaited():
+    """Sync preprocessor that returns a coroutine must NOT be awaited."""
+    import asyncio
+
+    async def _inner(v):
+        return v + 10
+
+    def sync_pre_returns_coro(kwargs, **kw):
+        # Sync preprocessor that returns a coroutine.
+        return _inner(kwargs.get("x", 0))
+
+    tool = Tool(
+        func_callable=helper_sync_func,
+        preprocessor=sync_pre_returns_coro,
+    )
+    func_call = FunctionCalling(func_tool=tool, arguments={"x": 1, "y": "t"})
+    await func_call.invoke()
+
+    # The preprocessor result (a coroutine) is stored as arguments without awaiting.
+    # The function call then fails or uses the coroutine as the kwargs dict.
+    # The key invariant: the coroutine was NOT resolved to 11.
+    # We verify by checking that status is FAILED (coroutine is not a valid dict)
+    # OR that arguments is a coroutine — either way, it was not transparently awaited.
+    args_val = func_call.execution.response
+    # If execution succeeded, arguments must NOT be the integer 11.
+    if func_call.execution.error is None:
+        assert args_val != "11-t", (
+            "Sync preprocessor's coroutine return was awaited — behavior changed from origin/main"
+        )

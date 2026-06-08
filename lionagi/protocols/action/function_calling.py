@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing_extensions import Self
 
-from lionagi.ln.concurrency import maybe_await
+from lionagi.ln.concurrency import is_coro_func
 
 from ..generic.event import Event
 from .tool import Tool
@@ -64,16 +64,29 @@ class FunctionCalling(Event):
         """
 
         if self.func_tool.preprocessor:
-            self.arguments = await maybe_await(
-                self.func_tool.preprocessor(self.arguments, **self.func_tool.preprocessor_kwargs)
-            )
+            if is_coro_func(self.func_tool.preprocessor):
+                self.arguments = await self.func_tool.preprocessor(
+                    self.arguments, **self.func_tool.preprocessor_kwargs
+                )
+            else:
+                self.arguments = self.func_tool.preprocessor(
+                    self.arguments, **self.func_tool.preprocessor_kwargs
+                )
 
-        response = await maybe_await(self.func_tool.func_callable(**self.arguments))
+        if is_coro_func(self.func_tool.func_callable):
+            response = await self.func_tool.func_callable(**self.arguments)
+        else:
+            response = self.func_tool.func_callable(**self.arguments)
 
         if self.func_tool.postprocessor:
-            response = await maybe_await(
-                self.func_tool.postprocessor(response, **self.func_tool.postprocessor_kwargs)
-            )
+            if is_coro_func(self.func_tool.postprocessor):
+                response = await self.func_tool.postprocessor(
+                    response, **self.func_tool.postprocessor_kwargs
+                )
+            else:
+                response = self.func_tool.postprocessor(
+                    response, **self.func_tool.postprocessor_kwargs
+                )
         return response
 
     def to_dict(self, *args, **kw) -> dict[str, Any]:
