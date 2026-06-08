@@ -73,18 +73,11 @@ async def ReAct(  # noqa: N802  # public name is the ReAct acronym
             imodel_kw=interpret_kwargs or {},
         )
 
-    # Build ChatParam
-    chat_param = ChatParam(
+    chat_param = ChatParam.from_branch(
+        branch,
         guidance=instruct_dict.get("guidance"),
         context=instruct_dict.get("context"),
-        sender=branch.user or "user",
-        recipient=branch.id,
-        response_format=None,  # Will be set in operate calls
-        progression=None,
         tool_schemas=tool_schemas or [],
-        images=[],
-        image_detail="auto",
-        plain_content="",
         include_token_usage_to_model=include_token_usage_to_model,
         imodel=analysis_model or branch.chat_model,
         imodel_kw=kwargs,

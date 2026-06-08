@@ -50,9 +50,6 @@ if TYPE_CHECKING:
 __all__ = ("Branch",)
 
 
-_DEFAULT_ALCALL_PARAMS = None
-
-
 def _strip_capability_block(text: str) -> str:
     """Remove a previously-injected capability block (between its markers)."""
     if not text:
@@ -896,17 +893,11 @@ class Branch(Element, Relational):
                 imodel_kw=interpret_kwargs or {},
             )
 
-        chat_param = ChatParam(
+        chat_param = ChatParam.from_branch(
+            self,
             guidance=instruct_dict.get("guidance"),
             context=instruct_dict.get("context"),
-            sender=self.user or "user",
-            recipient=self.id,
-            response_format=None,
-            progression=None,
             tool_schemas=tool_schemas or [],
-            images=[],
-            image_detail="auto",
-            plain_content="",
             include_token_usage_to_model=include_token_usage_to_model,
             imodel=analysis_model or self.chat_model,
             imodel_kw=kwargs,
