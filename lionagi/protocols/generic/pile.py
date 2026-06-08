@@ -6,16 +6,16 @@ from __future__ import annotations
 import threading
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Generator, Iterator, Sequence
-from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar
+from typing import Any, ClassVar, Generic, Literal, TypeVar
 from uuid import UUID
 
-from pydantic import Field, field_serializer
+from pydantic import Field, PrivateAttr, field_serializer
 from typing_extensions import Self, override
 
 from lionagi._errors import ItemExistsError, ItemNotFoundError, ValidationError
 from lionagi.adapters._base import Adaptable, AsyncAdaptable
+from lionagi.ln._utils import async_synchronized, synchronized
 from lionagi.ln.concurrency import Lock as ConcurrencyLock
 from lionagi.ln.concurrency import sleep as _concurrency_sleep
 from lionagi.utils import (
@@ -30,32 +30,10 @@ from .._concepts import Observable
 from .element import ID, Collective, E, Element, validate_order
 from .progression import Progression
 
-if TYPE_CHECKING:
-    from pydantic.fields import FieldInfo
-
-
 D = TypeVar("D")
 T = TypeVar("T", bound=E)
 
 _ADAPTER_REGISTERED = False
-
-
-def synchronized(func: Callable):
-    @wraps(func)
-    def wrapper(self: Pile, *args, **kwargs):
-        with self.lock:
-            return func(self, *args, **kwargs)
-
-    return wrapper
-
-
-def async_synchronized(func: Callable):
-    @wraps(func)
-    async def wrapper(self: Pile, *args, **kwargs):
-        async with self.async_lock:
-            return await func(self, *args, **kwargs)
-
-    return wrapper
 
 
 def _validate_item_type(value, /) -> set[type[T]] | None:
@@ -189,14 +167,8 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         "strict_type",
     }
 
-    def __pydantic_extra__(self) -> dict[str, FieldInfo]:
-        return {
-            "_lock": Field(default_factory=threading.RLock),
-            "_async": Field(default_factory=ConcurrencyLock),
-        }
-
-    def __pydantic_private__(self) -> dict[str, FieldInfo]:
-        return self.__pydantic_extra__()
+    _lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
+    _async_lock: ConcurrencyLock = PrivateAttr(default_factory=ConcurrencyLock)
 
     @classmethod
     def _validate_before(cls, data: dict[str, Any]) -> dict[str, Any]:
@@ -485,25 +457,44 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
     def __getstate__(self):
         state = self.__dict__.copy()
-        state["_lock"] = None
-        state["_async_lock"] = None
+        state.pop("_lock", None)
+        state.pop("_async_lock", None)
         return state
 
     def __setstate__(self, state):
         self.__dict__.update(state)
-        self._lock = threading.RLock()
-        self._async_lock = ConcurrencyLock()
+        try:
+            priv = object.__getattribute__(self, "__pydantic_private__")
+        except AttributeError:
+            priv = {}
+            object.__setattr__(self, "__pydantic_private__", priv)
+        priv["_lock"] = threading.RLock()
+        priv["_async_lock"] = ConcurrencyLock()
+
+    def __deepcopy__(self, memo):
+        import copy
+
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            object.__setattr__(result, k, copy.deepcopy(v, memo))
+        priv = {}
+        for k, v in (self.__pydantic_private__ or {}).items():
+            if k in ("_lock", "_async_lock"):
+                continue
+            priv[k] = copy.deepcopy(v, memo)
+        priv["_lock"] = threading.RLock()
+        priv["_async_lock"] = ConcurrencyLock()
+        object.__setattr__(result, "__pydantic_private__", priv)
+        return result
 
     @property
     def lock(self):
-        if not hasattr(self, "_lock") or self._lock is None:
-            self._lock = threading.RLock()
         return self._lock
 
     @property
     def async_lock(self):
-        if not hasattr(self, "_async_lock") or self._async_lock is None:
-            self._async_lock = ConcurrencyLock()
         return self._async_lock
 
     @async_synchronized
