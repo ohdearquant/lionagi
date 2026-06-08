@@ -6,55 +6,33 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from lionagi.libs.path_safety import (
+    check_add_dir_safe,
+    check_add_dirs_safe,
+    check_path_safe,
+    check_paths_safe,
+    contain_path_in_root,
+    contain_paths_in_root,
+)
 
-def check_path_safe(value: str, field_name: str, *, strip_at: bool = False) -> str:
-    """Reject absolute paths and directory-traversal sequences."""
-    entry = value.lstrip("@") if strip_at else value
-    p = Path(entry)
-
-    if p.is_absolute():
-        raise ValueError(
-            f"{field_name} entry {value!r} is an absolute path — "
-            "only relative paths inside the repository are allowed. "
-            "Absolute paths can grant CLI access to arbitrary files."
-        )
-    if ".." in p.parts:
-        raise ValueError(
-            f"{field_name} entry {value!r} contains directory traversal ('..') — "
-            "only paths that remain inside the repository are allowed."
-        )
-    return value
+__all__ = [
+    "check_path_safe",
+    "check_paths_safe",
+    "check_add_dir_entry_safe",
+    "check_add_dir_entries_safe",
+    "contain_path_in_repo",
+    "contain_paths_in_repo",
+]
 
 
 def check_add_dir_entry_safe(value: str, field_name: str) -> str:
     """Validate a read-grant dir path. Allows absolute, rejects traversal."""
-    p = Path(value)
-    if ".." in p.parts:
-        raise ValueError(
-            f"{field_name} entry {value!r} contains directory traversal ('..') — "
-            "use an explicit absolute path to grant access to directories outside "
-            "the repository instead of relative traversal sequences."
-        )
-    return value
+    return check_add_dir_safe(value, field_name)
 
 
 def check_add_dir_entries_safe(values: list[str], field_name: str) -> list[str]:
     """Apply check_add_dir_entry_safe to every item."""
-    for v in values:
-        check_add_dir_entry_safe(v, field_name)
-    return values
-
-
-def check_paths_safe(
-    values: list[str],
-    field_name: str,
-    *,
-    strip_at: bool = False,
-) -> list[str]:
-    """Apply check_path_safe to every item."""
-    for v in values:
-        check_path_safe(v, field_name, strip_at=strip_at)
-    return values
+    return check_add_dirs_safe(values, field_name)
 
 
 def contain_path_in_repo(
@@ -65,16 +43,7 @@ def contain_path_in_repo(
     strip_at: bool = False,
 ) -> None:
     """Resolve against repo and reject symlink-escape attempts."""
-    entry = str(value).lstrip("@") if strip_at else str(value)
-    resolved = (repo / entry).resolve()
-    try:
-        resolved.relative_to(repo)
-    except ValueError as exc:
-        raise ValueError(
-            f"{field_name} entry {value!r} resolves to {resolved} which is "
-            f"outside the repository root {repo} (possible symlink escape). "
-            "Only paths that remain inside the repository are allowed."
-        ) from exc
+    contain_path_in_root(value, repo, field_name, strip_at=strip_at)
 
 
 def contain_paths_in_repo(
@@ -85,5 +54,4 @@ def contain_paths_in_repo(
     strip_at: bool = False,
 ) -> None:
     """Apply contain_path_in_repo to every item."""
-    for v in values:
-        contain_path_in_repo(v, repo, field_name, strip_at=strip_at)
+    contain_paths_in_root(values, repo, field_name, strip_at=strip_at)

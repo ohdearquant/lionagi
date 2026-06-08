@@ -17,10 +17,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-_DANGEROUS_CHARS = frozenset("/\\\x00")
-# Characters that have special meaning in glob patterns — reject them in
-# definition names so they cannot be weaponised via Path.glob().
-_GLOB_METACHARACTERS = frozenset("*?[]{}~")
+from lionagi.libs.path_safety import safe_join, validate_name
 
 
 def safe_path_join(root: Path, component: str) -> Path:
@@ -34,21 +31,10 @@ def safe_path_join(root: Path, component: str) -> Path:
     - resolves to a path outside *root* (covers symlink-based escapes and any
       multi-segment smuggling that slips past the simpler character checks)
     """
-    if not component or component.strip() == "":
-        raise HTTPException(status_code=404, detail="invalid path component")
-    if component in {".", ".."}:
-        raise HTTPException(status_code=404, detail="invalid path component")
-    if any(c in component for c in _DANGEROUS_CHARS):
-        raise HTTPException(status_code=404, detail="invalid path component")
-
-    candidate = (root / component).resolve()
-    root_resolved = root.resolve()
     try:
-        candidate.relative_to(root_resolved)
+        return safe_join(root, component)
     except ValueError:
-        raise HTTPException(status_code=404, detail="path outside root") from None
-
-    return candidate
+        raise HTTPException(status_code=404, detail="invalid path component") from None
 
 
 def public_path(path: Path, *, fallback_name: bool = True) -> str:
@@ -81,13 +67,24 @@ def validate_name_component(value: str, label: str = "name") -> None:
     Raises:
         HTTPException(422): for any unsafe value.
     """
-    if not value or value.strip() == "":
-        raise HTTPException(status_code=422, detail=f"invalid {label}: empty or whitespace")
-    if value in {".", ".."}:
-        raise HTTPException(status_code=422, detail=f"invalid {label}: reserved component")
-    if any(c in value for c in _DANGEROUS_CHARS):
-        raise HTTPException(
-            status_code=422, detail=f"invalid {label}: contains path separator or NUL"
-        )
-    if any(c in value for c in _GLOB_METACHARACTERS):
-        raise HTTPException(status_code=422, detail=f"invalid {label}: contains glob metacharacter")
+    try:
+        validate_name(value, label)
+    except ValueError as exc:
+        detail = str(exc)
+        if "empty" in detail or "whitespace" in detail:
+            raise HTTPException(
+                status_code=422, detail=f"invalid {label}: empty or whitespace"
+            ) from exc
+        if "reserved" in detail:
+            raise HTTPException(
+                status_code=422, detail=f"invalid {label}: reserved component"
+            ) from exc
+        if "separator" in detail or "NUL" in detail:
+            raise HTTPException(
+                status_code=422, detail=f"invalid {label}: contains path separator or NUL"
+            ) from exc
+        if "glob" in detail:
+            raise HTTPException(
+                status_code=422, detail=f"invalid {label}: contains glob metacharacter"
+            ) from exc
+        raise HTTPException(status_code=422, detail=detail) from exc
