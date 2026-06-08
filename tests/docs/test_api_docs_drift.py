@@ -156,6 +156,7 @@ class TestFlowReturnType:
             pytest.skip("flow.md not found")
         content = flow_md.read_text()
         assert 'results["operation_results"]' in content or "operation_results" in content
+        assert "items=results[n1]" not in content
 
     def test_session_doc_flow_return_description(self):
         """session.md should describe the wrapper dict keys, not 'keyed by node ID'."""
