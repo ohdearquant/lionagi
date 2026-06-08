@@ -151,4 +151,8 @@ async def test_grant_then_emit_observed():
     branch.grant_capabilities(_grant())
 
     await _emit_message_signal(branch, _assistant('{"finding": {"claim": "wired"}}'))
+    # Observer callbacks may be dispatched asynchronously; yield to let them run.
+    import asyncio
+
+    await asyncio.sleep(0.05)
     assert seen == ["wired"]
