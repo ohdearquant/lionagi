@@ -16,15 +16,12 @@ from lionagi.ln.concurrency import (
 )
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
-from lionagi.state.artifact_verifier import (
-    missing_artifact_evidence,
-    missing_artifact_summary,
-    resolve_artifact_contract,
-    verify_artifact_contract,
-)
+from lionagi.state.artifact_verifier import resolve_artifact_contract
 
 from ._agents import build_deadline_preamble, load_agent_profile
+from ._lifecycle import EXIT_CODE_BY_STATUS, classify_exception
 from ._logging import hint, log_error
+from ._persist import setup_agent_persist, teardown_agent_persist
 from ._providers import (
     PROVIDER_BYPASS_KWARGS,
     PROVIDER_EFFORT_KWARG,
@@ -187,7 +184,7 @@ async def _run_agent(
         playbook_artifacts=None,
         agent_defaults=profile.artifact_defaults if profile else None,
     )
-    live = await _setup_live_persist(
+    live = await setup_agent_persist(
         branch,
         agent_name=agent_name,
         artifacts_path=str(run.artifact_root),
@@ -231,10 +228,6 @@ async def _run_agent(
             timeout=timeout,
             **({"repo": cwd} if cwd else {}),
         )
-    except KeyboardInterrupt as exc:
-        _terminal_status = "aborted"
-        _terminal_exc = exc
-        raise
     except (TimeoutError, LionTimeoutError) as exc:
         _terminal_status = "timed_out"
         _terminal_exc = exc
@@ -243,12 +236,7 @@ async def _run_agent(
         warn(f"agent timed out after {timeout}s")
         res = _extract_partial_output(branch) or None
     except BaseException as exc:
-        from lionagi.ln.concurrency import get_cancelled_exc_class
-
-        if isinstance(exc, get_cancelled_exc_class()):
-            _terminal_status = "cancelled"
-        else:
-            _terminal_status = "failed"
+        _terminal_status = classify_exception(exc)
         _terminal_exc = exc
         raise
     finally:
@@ -265,7 +253,7 @@ async def _run_agent(
         import anyio
 
         with anyio.CancelScope(shield=True):
-            effective_status = await _teardown_live_persist(
+            effective_status = await teardown_agent_persist(
                 live,
                 status=_terminal_status,
                 exception=_terminal_exc,
@@ -277,327 +265,6 @@ async def _run_agent(
     save_last_branch_pointer(run.run_id, branch_id)
 
     return res or "", provider, branch_id, _terminal_status
-
-
-_EXIT_CODE_BY_TERMINAL_STATUS: dict[str, int] = {
-    "completed": 0,
-    "failed": 1,
-    "timed_out": 124,
-    "aborted": 130,
-    "cancelled": 143,
-}
-
-
-async def _setup_live_persist(
-    branch: Branch,
-    *,
-    agent_name: str | None = None,
-    artifacts_path: str | None = None,
-    artifact_contract: dict | None = None,
-    invocation_id: str | None = None,
-    model: str | None = None,
-    provider: str | None = None,
-    effort: str | None = None,
-    project: str | None = None,
-) -> dict | None:
-    """Open DB, create session/branch rows, register live message hook."""
-    import logging
-
-    from lionagi.session.session import Session
-    from lionagi.state.db import StateDB
-
-    db: StateDB | None = None
-    try:
-        db = StateDB()
-        await db.open()
-
-        session = Session(name="agent", default_branch=branch)
-        session_id = str(session.id)
-        branch_id = str(branch.id)
-
-        existing_branch = await db.get_branch(branch_id)
-        if existing_branch:
-            import uuid as _uuid
-
-            session_id = existing_branch["session_id"]
-            existing_session = await db.get_session(session_id)
-            session_prog_id = existing_session["progression_id"]
-            branch_prog_id = existing_branch["progression_id"]
-
-            # Repair NULL progression_id from legacy rows to avoid silent
-            # no-ops in append_to_progression.
-            if session_prog_id is None:
-                candidate = str(_uuid.uuid4())
-                await db.create_progression(candidate)
-                effective = await db.repair_session_progression(
-                    session_id,
-                    candidate,
-                )
-                session_prog_id = effective or candidate
-            if branch_prog_id is None:
-                candidate = str(_uuid.uuid4())
-                await db.create_progression(candidate)
-                effective = await db.repair_branch_progression(
-                    branch_id,
-                    candidate,
-                )
-                branch_prog_id = effective or candidate
-
-            existing_msg_ids = set(await db.get_progression(branch_prog_id))
-        else:
-            import time
-            import uuid
-
-            session_prog_id = str(uuid.uuid4())
-            branch_prog_id = str(uuid.uuid4())
-            existing_msg_ids = set()
-
-            await db.create_progression(session_prog_id)
-            await db.create_progression(branch_prog_id)
-
-            session_dict = session.to_dict(mode="db")
-            if project:
-                _proj, _proj_src = project, "explicit"
-            else:
-                from lionagi.cli._project import detect_project
-
-                _proj, _proj_src = detect_project()
-            from lionagi.cli.kill import current_pid_markers
-
-            _node_meta = {**(session_dict.get("node_metadata") or {}), **current_pid_markers()}
-            await db.create_session(
-                {
-                    "id": session_id,
-                    "created_at": session_dict["created_at"],
-                    "node_metadata": _node_meta,
-                    "name": session_dict.get("name"),
-                    "user": session_dict.get("user"),
-                    "progression_id": session_prog_id,
-                    "first_msg_id": None,
-                    "last_msg_id": None,
-                    "invocation_kind": "agent",
-                    "agent_name": agent_name,
-                    "artifacts_path": artifacts_path,
-                    "artifact_contract_json": artifact_contract,
-                    "status": "running",
-                    "started_at": time.time(),
-                    "invocation_id": invocation_id,
-                    "model": model,
-                    "provider": provider,
-                    "effort": effort,
-                    "agent_hash": _provenance.agent_definition_hash(agent_name),
-                    "project": _proj,
-                    "project_source": _proj_src,
-                }
-            )
-
-            system_msg_id = None
-            if branch.system:
-                sys_dict = branch.system.to_dict(mode="db")
-                system_msg_id = sys_dict["id"]
-                await db.insert_message(sys_dict)
-
-            branch_dict = branch.to_dict(mode="db")
-            node_meta = branch_dict.get("node_metadata") or {}
-            if isinstance(node_meta, str):
-                node_meta = json.loads(node_meta)
-            if "chat_model" in branch_dict:
-                node_meta["chat_model"] = branch_dict["chat_model"]
-
-            await db.create_branch(
-                {
-                    "id": branch_id,
-                    "created_at": branch_dict["created_at"],
-                    "node_metadata": node_meta,
-                    "user": branch_dict.get("user"),
-                    "name": branch_dict.get("name"),
-                    "session_id": session_id,
-                    "progression_id": branch_prog_id,
-                    "system_msg_id": system_msg_id,
-                    "model": model,
-                    "provider": provider,
-                    "agent_name": agent_name,
-                }
-            )
-
-        ctx = {
-            "db": db,
-            "branch": branch,
-            "session_id": session_id,
-            "session_prog_id": session_prog_id,
-            "branch_prog_id": branch_prog_id,
-            "existing_msg_ids": existing_msg_ids,
-            "new_msg_ids": [],
-            "artifacts_path": artifacts_path,
-            "artifact_contract": artifact_contract,
-        }
-
-        async def _on_message(msg):
-            try:
-                msg_dict = msg.to_dict(mode="db")
-                msg_id = msg_dict["id"]
-                await db.insert_message(msg_dict)
-                if msg_id not in ctx["existing_msg_ids"]:
-                    await db.append_to_progression(branch_prog_id, msg_id)
-                    await db.append_to_progression(session_prog_id, msg_id)
-                    ctx["new_msg_ids"].append(msg_id)
-                await db.touch_session_activity(session_id, at=msg_dict.get("created_at"))
-                if msg_dict.get("role") == "system":
-                    await db.update_branch(branch_id, system_msg_id=msg_id)
-            except Exception as exc:
-                import logging
-
-                logging.getLogger("lionagi.cli").warning(
-                    "live persist write failed for branch %s: %s",
-                    branch_id,
-                    exc,
-                    exc_info=True,
-                )
-
-        from lionagi.hooks import route_message_persistence
-
-        ctx["hook"] = route_message_persistence(session, branch, _on_message)
-        return ctx
-    except Exception as exc:
-        logging.getLogger("lionagi.cli").warning(
-            "live persist setup failed (%s) — disabling persistence for this run",
-            exc,
-            exc_info=True,
-        )
-        if db is not None:
-            try:
-                await db.close()
-            except Exception as close_exc:  # noqa: BLE001
-                logging.getLogger("lionagi.cli").warning(
-                    "fallback db.close after setup failure also failed: %s",
-                    close_exc,
-                )
-        return None
-
-
-def _resolve_run_reason(
-    *,
-    status: str,
-    exception: BaseException | None,
-) -> tuple[str, str, list[dict] | None]:
-    """Map terminal status + exception to (reason_code, summary, evidence)."""
-    from lionagi.state.reasons import RunReasons
-
-    if status == "completed":
-        return RunReasons.COMPLETED_OK, "Run completed successfully.", None
-    if status == "timed_out":
-        return (
-            RunReasons.TIMED_OUT_DEADLINE,
-            "Run exceeded the configured timeout.",
-            None,
-        )
-    if status == "aborted":
-        return RunReasons.CANCELLED_SIGINT, "User pressed Ctrl-C (SIGINT).", None
-    if status == "cancelled":
-        return (
-            RunReasons.CANCELLED_SYSTEM,
-            "Task cancelled by the runtime (anyio CancelledError).",
-            None,
-        )
-    # status == "failed"
-    if exception is not None:
-        return (
-            RunReasons.FAILED_EXCEPTION,
-            f"{type(exception).__name__}: {exception}",
-            None,
-        )
-    return RunReasons.FAILED_EXCEPTION, "Run failed.", None
-
-
-async def _teardown_live_persist(
-    ctx: dict | None,
-    *,
-    status: str = "completed",
-    exception: BaseException | None = None,
-) -> str:
-    """Update session bookmarks, lifecycle columns, close DB; returns effective status."""
-    if ctx is None:
-        return status
-    import logging
-
-    log = logging.getLogger("lionagi.cli")
-    db = ctx["db"]
-    try:
-        import time as _time
-
-        session_id = ctx["session_id"]
-        session_prog_id = ctx["session_prog_id"]
-
-        all_msgs = await db.get_progression(session_prog_id)
-        bookmark_kwargs: dict = {"ended_at": _time.time()}
-        if all_msgs:
-            bookmark_kwargs["first_msg_id"] = all_msgs[0]
-            bookmark_kwargs["last_msg_id"] = all_msgs[-1]
-        await db.update_session(session_id, **bookmark_kwargs)
-
-        reason_code, reason_summary, evidence_refs = _resolve_run_reason(
-            status=status,
-            exception=exception,
-        )
-        metadata: dict | None = None
-        if exception is not None:
-            metadata = {"exception_class": type(exception).__name__}
-
-        session_row = await db.get_session(session_id) or {}
-        contract = session_row.get("artifact_contract_json")
-        artifacts_root = session_row.get("artifacts_path")
-        verification = verify_artifact_contract(
-            contract,
-            artifacts_root=artifacts_root,
-        )
-        await db.update_artifact_verification(session_id, verification)
-
-        final_status = status
-        final_reason_code = reason_code
-        final_reason_summary = reason_summary
-        final_evidence_refs = evidence_refs
-        if verification and verification["status"] == "failed":
-            missing = verification["missing_required"]
-            if status == "completed":
-                from lionagi.state.reasons import RunReasons
-
-                final_status = "failed"
-                final_reason_code = RunReasons.FAILED_MISSING_ARTIFACT
-                final_reason_summary = missing_artifact_summary(missing)
-                final_evidence_refs = missing_artifact_evidence(missing)
-            else:
-                metadata = dict(metadata or {})
-                metadata["artifact_verification_status"] = verification["status"]
-                metadata["missing_required_artifact_ids"] = [
-                    str(entry.get("id", "")) for entry in missing
-                ]
-
-        await db.update_status(
-            "session",
-            session_id,
-            new_status=final_status,
-            reason_code=final_reason_code,
-            reason_summary=final_reason_summary,
-            evidence_refs=final_evidence_refs,
-            source="executor",
-            actor=session_id,
-            metadata=metadata,
-        )
-
-        from lionagi.hooks import unroute_message_persistence
-
-        unroute_message_persistence(ctx["branch"], ctx["hook"])
-    except Exception as exc:
-        log.warning("live persist teardown failed: %s", exc, exc_info=True)
-        # Surface the original status on best-effort failure so the
-        # caller's exit code reflects what we tried to commit.
-        return status
-    finally:
-        try:
-            await db.close()
-        except Exception as exc:
-            log.warning("live persist db.close failed: %s", exc, exc_info=True)
-    return final_status
 
 
 def add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -680,14 +347,14 @@ def run_agent(args: argparse.Namespace) -> int:
             )
         )
     except KeyboardInterrupt:
-        return _EXIT_CODE_BY_TERMINAL_STATUS["aborted"]
+        return EXIT_CODE_BY_STATUS["aborted"]
     except BaseException as exc:
         if isinstance(exc, cancelled_exc_classes()):
-            return _EXIT_CODE_BY_TERMINAL_STATUS["cancelled"]
+            return EXIT_CODE_BY_STATUS["cancelled"]
         raise
 
     if not args.verbose:
         print(f"\n{result}" if result is not None else "", flush=True)
 
     hint(f'\n[to resume] li agent -r {branch_id} "..."')
-    return _EXIT_CODE_BY_TERMINAL_STATUS.get(terminal_status, 1)
+    return EXIT_CODE_BY_STATUS.get(terminal_status, 1)

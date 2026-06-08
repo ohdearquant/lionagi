@@ -6,25 +6,24 @@ from __future__ import annotations
 
 import json
 import os
-import time
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from lionagi import Branch, Session
-from lionagi.ln.concurrency import Lock
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
-from lionagi.state.artifact_verifier import (
-    missing_artifact_evidence,
-    missing_artifact_summary,
-    verify_artifact_contract,
-)
 
 from .._agents import AgentProfile, list_agents, load_agent_profile
 from .._logging import hint
+from .._persist import (
+    register_branch_hook as _register_branch_hook,
+)
+from .._persist import (
+    setup_orchestration_persist,
+    teardown_orchestration_persist,
+)
 from .._providers import build_imodel_from_spec, resolve_persisted_effort
 from .._runs import RunDir, allocate_run, save_last_branch_pointer
 
@@ -516,183 +515,21 @@ async def start_live_persist(
     effort: str | None = None,
     project: str | None = None,
 ) -> None:
-    """Open state.db, create session row, register hooks on existing branches."""
-    import logging
-
-    from lionagi.state.db import StateDB
-
-    db: StateDB | None = None
-    try:
-        db = StateDB()
-        await db.open()
-
-        session = env.session
-        session_id = str(session.id)
-        session_dict = session.to_dict(mode="db")
-
-        session_prog_id = str(uuid.uuid4())
-        await db.create_progression(session_prog_id)
-        if project:
-            _proj, _proj_src = project, "explicit"
-        else:
-            from lionagi.cli._project import detect_project
-
-            _proj, _proj_src = detect_project()
-        from lionagi.cli.kill import current_pid_markers
-
-        _identity_markers = current_pid_markers()
-        _node_meta = {**(session_dict.get("node_metadata") or {}), **_identity_markers}
-        await db.create_session(
-            {
-                "id": session_id,
-                "created_at": session_dict["created_at"],
-                "node_metadata": _node_meta,
-                "name": session_dict.get("name"),
-                "user": session_dict.get("user"),
-                "progression_id": session_prog_id,
-                "first_msg_id": None,
-                "last_msg_id": None,
-                "invocation_kind": invocation_kind,
-                "playbook_name": playbook_name,
-                "agent_name": agent_name,
-                "artifacts_path": artifacts_path,
-                "artifact_contract_json": artifact_contract,
-                "status": "running",
-                "started_at": time.time(),
-                "invocation_id": invocation_id,
-                "model": _resolve_session_model(provider, model),
-                "provider": provider,
-                "effort": effort,
-                "agent_hash": _provenance.agent_definition_hash(agent_name),
-                "project": _proj,
-                "project_source": _proj_src,
-            }
-        )
-
-        ctx: dict[str, Any] = {
-            "db": db,
-            "session": session,
-            "session_id": session_id,
-            "session_prog_id": session_prog_id,
-            "branch_prog_ids": {},
-            "hooks": [],
-            "artifacts_path": artifacts_path,
-            "artifact_contract": artifact_contract,
-            "identity_markers": _identity_markers,
-        }
-        env._live_persist = ctx
-
-        for branch in session.branches:
-            _register_branch_hook(ctx, branch)
-    except Exception as exc:
-        logging.getLogger("lionagi.cli").warning(
-            "live persist setup failed (%s) — disabling persistence for this run",
-            exc,
-            exc_info=True,
-        )
-        env._live_persist = None
-        if db is not None:
-            try:
-                await db.close()
-            except Exception as close_exc:  # noqa: BLE001
-                logging.getLogger("lionagi.cli").warning(
-                    "fallback db.close after setup failure also failed: %s",
-                    close_exc,
-                )
-
-
-def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
-    """Register async message hook; branch row created lazily on first message."""
-    db = ctx["db"]
-    session_id = ctx["session_id"]
-    session_prog_id = ctx["session_prog_id"]
-    branch_id = str(branch.id)
-
-    branch_prog_id = str(uuid.uuid4())
-    ctx["branch_prog_ids"][branch_id] = branch_prog_id
-    initialized = {"done": False}
-    init_lock = Lock()
-
-    async def _ensure_branch_row():
-        if initialized["done"]:
-            return
-        async with init_lock:
-            if initialized["done"]:
-                return
-
-            await db.create_progression(branch_prog_id)
-
-            branch_dict = branch.to_dict(mode="db")
-            node_meta = branch_dict.get("node_metadata") or {}
-            if isinstance(node_meta, str):
-                node_meta = json.loads(node_meta)
-            if "chat_model" in branch_dict:
-                node_meta["chat_model"] = branch_dict["chat_model"]
-            node_meta = json.loads(json.dumps(node_meta, default=str))
-
-            system_msg_id = None
-            if branch.system:
-                sys_dict = branch.system.to_dict(mode="db")
-                system_msg_id = sys_dict["id"]
-                await db.insert_message(sys_dict)
-
-            br_model: str | None = None
-            br_provider: str | None = None
-            try:
-                ep_cfg = branch.chat_model.endpoint.config
-                br_provider = getattr(ep_cfg, "provider", None)
-                br_model_raw = (ep_cfg.kwargs or {}).get("model")
-                br_model = _provenance.resolve_model_spec(br_provider, br_model_raw)
-            except Exception as _provenance_exc:  # noqa: BLE001
-                import logging
-
-                logging.getLogger("lionagi.cli").debug(
-                    "branch provenance lookup failed for %s: %s",
-                    branch_id,
-                    _provenance_exc,
-                )
-            await db.create_branch(
-                {
-                    "id": branch_id,
-                    "created_at": branch_dict["created_at"],
-                    "node_metadata": node_meta,
-                    "user": branch_dict.get("user"),
-                    "name": branch_dict.get("name"),
-                    "session_id": session_id,
-                    "progression_id": branch_prog_id,
-                    "system_msg_id": system_msg_id,
-                    "model": br_model,
-                    "provider": br_provider,
-                    "agent_name": branch_dict.get("name"),
-                }
-            )
-            initialized["done"] = True
-
-    async def _on_message(msg):
-        try:
-            await _ensure_branch_row()
-            msg_dict = msg.to_dict(mode="db")
-            msg_id = msg_dict["id"]
-            await db.insert_message(msg_dict)
-            await db.append_to_progression(branch_prog_id, msg_id)
-            await db.append_to_progression(session_prog_id, msg_id)
-            await db.touch_session_activity(session_id, at=msg_dict.get("created_at"))
-            if msg_dict.get("role") == "system":
-                await db.update_branch(branch_id, system_msg_id=msg_id)
-        except Exception as exc:
-            import logging
-
-            logging.getLogger("lionagi.cli").warning(
-                "live persist write failed for branch %s: %s",
-                branch_id,
-                exc,
-                exc_info=True,
-            )
-
-    from lionagi.hooks import route_message_persistence
-
-    handler = route_message_persistence(ctx["session"], branch, _on_message)
-    ctx["hooks"].append((branch, handler))
+    ctx = await setup_orchestration_persist(
+        env.session,
+        invocation_kind=invocation_kind,
+        playbook_name=playbook_name,
+        agent_name=agent_name,
+        artifacts_path=artifacts_path,
+        artifact_contract=artifact_contract,
+        invocation_id=invocation_id,
+        model=model,
+        provider=provider,
+        effort=effort,
+        project=project,
+        branches=list(env.session.branches),
+    )
+    env._live_persist = ctx
 
 
 async def stop_live_persist(
@@ -701,93 +538,13 @@ async def stop_live_persist(
     status: str = "completed",
     exception: BaseException | None = None,
 ) -> str:
-    """Update session bookmarks, lifecycle columns, close DB; returns effective status."""
-    import logging
-
     ctx = env._live_persist
-    if ctx is None:
-        return status
-    log = logging.getLogger("lionagi.cli")
-    db = ctx["db"]
-    try:
-        session_prog_id = ctx["session_prog_id"]
-        session_id = ctx["session_id"]
-
-        all_msgs = await db.get_progression(session_prog_id)
-        update_kwargs: dict[str, Any] = {
-            "ended_at": time.time(),
-        }
-        if all_msgs:
-            update_kwargs["first_msg_id"] = all_msgs[0]
-            update_kwargs["last_msg_id"] = all_msgs[-1]
-
-        extras = getattr(env, "_finalize_extras", None)
-        if extras:
-            markers = ctx.get("identity_markers") or {}
-            update_kwargs["node_metadata"] = json.dumps({**extras, **markers})
-
-        await db.update_session(session_id, **update_kwargs)
-
-        from lionagi.cli.agent import _resolve_run_reason
-
-        reason_code, reason_summary, evidence_refs = _resolve_run_reason(
-            status=status,
-            exception=exception,
-        )
-        metadata: dict[str, Any] | None = None
-        if exception is not None:
-            metadata = {"exception_class": type(exception).__name__}
-
-        session_row = await db.get_session(session_id) or {}
-        verification = verify_artifact_contract(
-            session_row.get("artifact_contract_json"),
-            artifacts_root=session_row.get("artifacts_path"),
-        )
-        await db.update_artifact_verification(session_id, verification)
-
-        final_status = status
-        final_reason_code = reason_code
-        final_reason_summary = reason_summary
-        final_evidence_refs = evidence_refs
-        if verification and verification["status"] == "failed":
-            missing = verification["missing_required"]
-            if status == "completed":
-                from lionagi.state.reasons import RunReasons
-
-                final_status = "failed"
-                final_reason_code = RunReasons.FAILED_MISSING_ARTIFACT
-                final_reason_summary = missing_artifact_summary(missing)
-                final_evidence_refs = missing_artifact_evidence(missing)
-            else:
-                metadata = dict(metadata or {})
-                metadata["artifact_verification_status"] = verification["status"]
-                metadata["missing_required_artifact_ids"] = [
-                    str(entry.get("id", "")) for entry in missing
-                ]
-
-        await db.update_status(
-            "session",
-            session_id,
-            new_status=final_status,
-            reason_code=final_reason_code,
-            reason_summary=final_reason_summary,
-            evidence_refs=final_evidence_refs,
-            source="executor",
-            actor=session_id,
-            metadata=metadata,
-        )
-
-        from lionagi.hooks import unroute_message_persistence
-
-        for branch, hook in ctx["hooks"]:
-            unroute_message_persistence(branch, hook)
-    except Exception as exc:
-        log.warning("live persist teardown failed: %s", exc, exc_info=True)
-        return status
-    finally:
-        try:
-            await db.close()
-        except Exception as exc:
-            log.warning("live persist db.close failed: %s", exc, exc_info=True)
-        env._live_persist = None
+    extras = getattr(env, "_finalize_extras", None)
+    final_status = await teardown_orchestration_persist(
+        ctx,
+        status=status,
+        exception=exception,
+        extras=extras,
+    )
+    env._live_persist = None
     return final_status

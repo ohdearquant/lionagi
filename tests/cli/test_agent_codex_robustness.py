@@ -120,8 +120,8 @@ def _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured_kwargs: list):
     async def fake_teardown(ctx, *, status="completed", exception=None):
         return status
 
-    monkeypatch.setattr(agent_mod, "_setup_live_persist", fake_setup)
-    monkeypatch.setattr(agent_mod, "_teardown_live_persist", fake_teardown)
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
     monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
 
     fake_run = SimpleNamespace(
@@ -383,8 +383,8 @@ async def test_run_agent_timeout_preserves_partial_output(monkeypatch, tmp_path)
     async def fake_teardown(ctx, *, status="completed", exception=None):
         return status
 
-    monkeypatch.setattr(agent_mod, "_setup_live_persist", fake_setup)
-    monkeypatch.setattr(agent_mod, "_teardown_live_persist", fake_teardown)
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
     monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
 
     fake_run = SimpleNamespace(
@@ -448,8 +448,8 @@ async def test_run_agent_timeout_empty_partial_returns_empty_string(monkeypatch,
     async def fake_teardown(ctx, *, status="completed", exception=None):
         return status
 
-    monkeypatch.setattr(agent_mod, "_setup_live_persist", fake_setup)
-    monkeypatch.setattr(agent_mod, "_teardown_live_persist", fake_teardown)
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
     monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
     monkeypatch.setattr(
         agent_mod,
@@ -523,8 +523,8 @@ async def test_run_agent_heartbeat_started_when_timeout_set(monkeypatch, tmp_pat
     async def fake_teardown(ctx, *, status="completed", exception=None):
         return status
 
-    monkeypatch.setattr(agent_mod, "_setup_live_persist", fake_setup)
-    monkeypatch.setattr(agent_mod, "_teardown_live_persist", fake_teardown)
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
     monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
     monkeypatch.setattr(
         agent_mod,
@@ -588,8 +588,8 @@ async def test_run_agent_no_heartbeat_when_timeout_none(monkeypatch, tmp_path):
     async def fake_teardown(ctx, *, status="completed", exception=None):
         return status
 
-    monkeypatch.setattr(agent_mod, "_setup_live_persist", fake_setup)
-    monkeypatch.setattr(agent_mod, "_teardown_live_persist", fake_teardown)
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
     monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
     monkeypatch.setattr(
         agent_mod,

@@ -15,6 +15,7 @@ from lionagi.casts.emission import SpawnRequest
 from lionagi.ln.concurrency import move_on_after
 from lionagi.orchestration import plan, role_node_builder
 
+from .._lifecycle import classify_exception
 from .._logging import progress
 from .._logging import warn as _warn
 from .._providers import parse_model_spec
@@ -352,19 +353,8 @@ async def _run_flow(
                 raise LionTimeoutError(f"Flow timed out after {timeout}s")
         else:
             result = await _run_flow_inner(model_spec, prompt, **inner_kw)
-    except KeyboardInterrupt:
-        _terminal_status = "aborted"
-        raise
-    except (TimeoutError, LionTimeoutError):
-        _terminal_status = "timed_out"
-        raise
     except BaseException as exc:
-        from lionagi.ln.concurrency.errors import cancelled_exc_classes
-
-        if isinstance(exc, cancelled_exc_classes()):
-            _terminal_status = "cancelled"
-        else:
-            _terminal_status = "failed"
+        _terminal_status = classify_exception(exc)
         raise
     finally:
         import anyio

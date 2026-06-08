@@ -871,9 +871,9 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             raise
         if not args.verbose:
             print(output)
-        from lionagi.cli.agent import _EXIT_CODE_BY_TERMINAL_STATUS
+        from lionagi.cli._lifecycle import EXIT_CODE_BY_STATUS
 
-        return _EXIT_CODE_BY_TERMINAL_STATUS.get(terminal_status, 0)
+        return EXIT_CODE_BY_STATUS.get(terminal_status, 0)
 
     log_error(f"Unknown orchestrate command: {args.orch_command}")
     return 1

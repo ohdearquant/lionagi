@@ -217,7 +217,7 @@ async def test_drop_legacy_check_is_idempotent(tmp_path: Path):
 
 
 def test_cli_exit_code_map_matches_adr0025():
-    from lionagi.cli.agent import _EXIT_CODE_BY_TERMINAL_STATUS
+    from lionagi.cli._lifecycle import EXIT_CODE_BY_STATUS as _EXIT_CODE_BY_TERMINAL_STATUS
 
     # ADR-0025 spec table: 0 / 1 / 124 / 130 / 143.
     assert _EXIT_CODE_BY_TERMINAL_STATUS == {
