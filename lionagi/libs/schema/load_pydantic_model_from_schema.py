@@ -16,6 +16,7 @@ from typing import Any, Optional, TypeVar, Union
 
 from pydantic import BaseModel, Field, PydanticUserError, create_model
 
+from lionagi.libs.nested import deep_merge as _deep_merge
 from lionagi.utils import is_import_installed
 
 logger = logging.getLogger(__name__)
@@ -226,16 +227,6 @@ def _array_type(
         return list  # type: ignore[return-value]
     item_type = _schema_to_type(items, f"{prop_name}_item", root_schema, models_cache, parent_name)
     return list[item_type]  # type: ignore[valid-type]
-
-
-def _deep_merge(base: dict, override: dict) -> dict:
-    merged = dict(base)
-    for k, v in override.items():
-        if k in merged and isinstance(merged[k], dict) and isinstance(v, dict):
-            merged[k] = _deep_merge(merged[k], v)
-        else:
-            merged[k] = v
-    return merged
 
 
 def _build_model_from_object(

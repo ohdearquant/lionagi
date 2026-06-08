@@ -8,11 +8,29 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-__all__ = ("AgentConfig",)
+__all__ = ("AgentConfig", "HooksMixin")
+
+
+class HooksMixin:
+    """Shared hook-registration helpers for agent config/spec dataclasses."""
+
+    hook_handlers: dict[str, list[Callable]]
+
+    def pre(self, tool_name: str, handler: Callable) -> HooksMixin:
+        self.hook_handlers.setdefault(f"pre:{tool_name}", []).append(handler)
+        return self
+
+    def post(self, tool_name: str, handler: Callable) -> HooksMixin:
+        self.hook_handlers.setdefault(f"post:{tool_name}", []).append(handler)
+        return self
+
+    def on_error(self, tool_name: str, handler: Callable) -> HooksMixin:
+        self.hook_handlers.setdefault(f"error:{tool_name}", []).append(handler)
+        return self
 
 
 @dataclass
-class AgentConfig:
+class AgentConfig(HooksMixin):
     """Configuration for a lionagi agent.
 
     Combines model settings, tool selection, hook registration, system prompt,
@@ -55,18 +73,6 @@ class AgentConfig:
     lion_system: bool = True
     cwd: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
-
-    def pre(self, tool_name: str, handler: Callable) -> AgentConfig:
-        self.hook_handlers.setdefault(f"pre:{tool_name}", []).append(handler)
-        return self
-
-    def post(self, tool_name: str, handler: Callable) -> AgentConfig:
-        self.hook_handlers.setdefault(f"post:{tool_name}", []).append(handler)
-        return self
-
-    def on_error(self, tool_name: str, handler: Callable) -> AgentConfig:
-        self.hook_handlers.setdefault(f"error:{tool_name}", []).append(handler)
-        return self
 
     def build_system_message(self) -> str:
         """Compose the system prompt from role + modes + literal system_prompt.

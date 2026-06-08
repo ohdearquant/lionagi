@@ -48,6 +48,8 @@ __all__ = (
 
 import yaml
 
+from lionagi.libs.nested import deep_merge as _deep_merge_impl
+
 from .config import AgentConfig
 from .spec import AgentSpec
 
@@ -302,12 +304,4 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
-    """Recursively merge override into base. Lists are concatenated."""
-    for k, v in override.items():
-        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
-            _deep_merge(base[k], v)
-        elif k in base and isinstance(base[k], list) and isinstance(v, list):
-            base[k] = base[k] + v
-        else:
-            base[k] = v
-    return base
+    return _deep_merge_impl(base, override, mutate=True)

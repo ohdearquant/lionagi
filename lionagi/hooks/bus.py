@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from enum import Enum
@@ -12,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
 
+from lionagi.ln.concurrency import maybe_await
 from lionagi.session.signal import Signal
 
 if TYPE_CHECKING:
@@ -107,9 +107,7 @@ class HookBus:
         handlers = list(self._handlers.get(point, []))
         for handler in handlers:
             try:
-                result = handler(**kwargs)
-                if inspect.isawaitable(result):
-                    await result
+                await maybe_await(handler(**kwargs))
             except StopHook:
                 break
         await self._record(point, kwargs)
@@ -123,9 +121,7 @@ class HookBus:
         handlers = list(self._handlers.get(point, []))
         for handler in handlers:
             try:
-                result = handler(**kwargs)
-                if inspect.isawaitable(result):
-                    await result
+                await maybe_await(handler(**kwargs))
             except StopHook:
                 break
             except Exception:  # noqa: BLE001 — hook isolation invariant

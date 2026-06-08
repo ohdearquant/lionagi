@@ -1,19 +1,11 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-import sys
 from typing import Any, Literal
 
 from pydantic import BaseModel, JsonValue
 
-# Python 3.10 lacks BaseExceptionGroup; the ``exceptiongroup`` backport is
-# already pulled in transitively (anyio + pytest depend on it). We avoid
-# adding it as a direct dependency by detecting the runtime and falling
-# back to the backport on 3.10.
-if sys.version_info >= (3, 11):
-    _BaseExceptionGroup = BaseExceptionGroup  # noqa: F821
-else:
-    from exceptiongroup import BaseExceptionGroup as _BaseExceptionGroup
+from lionagi.ln.concurrency._compat import BaseExceptionGroup as _BaseExceptionGroup
 
 from .._concepts import Manager
 from ..generic.pile import Pile
