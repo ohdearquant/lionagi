@@ -20,22 +20,9 @@ logger = logging.getLogger(__name__)
 
 
 class ActionManager(Manager):
-    """
-    A manager that registers function-based tools and invokes them
-    when triggered by an ActionRequest. Tools can be registered
-    individually or in bulk, and each tool must have a unique name.
-    """
+    """Registers function-based tools and invokes them from ActionRequests."""
 
     def __init__(self, *args: FuncTool, **kwargs) -> None:
-        """
-        Create an ActionManager, optionally registering initial tools.
-
-        Args:
-            *args (FuncTool):
-                A variable number of tools or callables.
-            **kwargs:
-                Additional named arguments that are also considered tools.
-        """
         super().__init__()
         self.registry: dict[str, Tool] = {}
 
@@ -48,15 +35,6 @@ class ActionManager(Manager):
         self.register_tools(tools, update=True)
 
     def __contains__(self, tool: FuncToolRef) -> bool:
-        """
-        Check if a tool is registered, by either:
-        - The Tool object itself,
-        - A string name for the function,
-        - Or the callable's __name__.
-
-        Returns:
-            bool: True if found, else False.
-        """
         if isinstance(tool, Tool):
             return tool.function in self.registry
         elif isinstance(tool, str):
@@ -66,23 +44,6 @@ class ActionManager(Manager):
         return False
 
     def register_tool(self, tool: FuncTool, update: bool = False) -> None:
-        """
-        Register a single tool/callable in the manager.
-
-        Args:
-            tool (FuncTool):
-                A `Tool` object, a raw callable function, or an MCP config dict.
-                - Tool: Registered directly
-                - Callable: Wrapped as Tool(func_callable=...)
-                - Dict: Treated as MCP config, Tool(mcp_config=...)
-            update (bool):
-                If True, allow replacing an existing tool with the same name.
-
-        Raises:
-            ValueError: If tool already registered and update=False.
-            TypeError: If `tool` is not a Tool, callable, or dict.
-        """
-        # Check if tool already exists
         if not update and tool in self:
             name = None
             if isinstance(tool, Tool):
@@ -98,7 +59,6 @@ class ActionManager(Manager):
         if callable(tool):
             tool = Tool(func_callable=tool)
         elif isinstance(tool, dict):
-            # Dict is treated as MCP config
             tool = Tool(mcp_config=tool)
         elif not isinstance(tool, Tool):
             raise TypeError(
@@ -107,35 +67,11 @@ class ActionManager(Manager):
         self.registry[tool.function] = tool
 
     def register_tools(self, tools: list[FuncTool] | FuncTool, update: bool = False) -> None:
-        """
-        Register multiple tools at once.
-
-        Args:
-            tools (list[FuncTool] | FuncTool):
-                A single or list of tools/callables.
-            update (bool):
-                If True, allow updating existing tools.
-
-        Raises:
-            ValueError: If a duplicate tool is found and update=False.
-            TypeError: If any item is not a Tool or callable.
-        """
         tools_list = tools if isinstance(tools, list) else [tools]
         for t in tools_list:
             self.register_tool(t, update=update)
 
     def match_tool(self, action_request: ActionRequest | BaseModel | dict) -> FunctionCalling:
-        """
-        Convert an ActionRequest (or dict with "function"/"arguments")
-        into a `FunctionCalling` instance by finding the matching tool.
-
-        Raises:
-            TypeError: If `action_request` is an unsupported type.
-            ValueError: If no matching tool is found in the registry.
-
-        Returns:
-            FunctionCalling: The event object that can be invoked.
-        """
         if not isinstance(action_request, ActionRequest | BaseModel | dict):
             raise TypeError(f"Unsupported type {type(action_request)}")
 
@@ -157,29 +93,12 @@ class ActionManager(Manager):
         self,
         func_call: BaseModel | ActionRequest,
     ) -> FunctionCalling:
-        """
-        High-level API to parse and run a function call.
-
-        Steps:
-          1) Convert `func_call` to FunctionCalling via `match_tool`.
-          2) `invoke()` the resulting object.
-          3) Return the `FunctionCalling`, which includes `execution`.
-
-        Args:
-            func_call: The action request model or ActionRequest object.
-
-        Returns:
-            `FunctionCalling` event after it completes execution.
-        """
         function_calling = self.match_tool(func_call)
-        # invoke() is total: a tool failure is captured as FAILED status +
-        # execution.error, not raised. Cancellation still propagates.
         await function_calling.invoke()
         return function_calling
 
     @property
     def schema_list(self) -> list[dict[str, Any]]:
-        """Return the list of JSON schemas for all registered tools."""
         return [tool.tool_schema for tool in self.registry.values()]
 
     def get_tool_schema(
@@ -188,26 +107,6 @@ class ActionManager(Manager):
         auto_register: bool = True,
         update: bool = False,
     ) -> dict:
-        """
-        Retrieve schemas for a subset of tools or for all.
-
-        Args:
-            tools (ToolRef):
-                - If True, return schema for all tools.
-                - If False, return an empty dict.
-                - If specific tool(s), returns only those schemas.
-            auto_register (bool):
-                If a tool (callable) is not yet in the registry, register if True.
-            update (bool):
-                If True, allow updating existing tools.
-
-        Returns:
-            dict: e.g., {"tools": [list of schemas]}
-
-        Raises:
-            ValueError: If requested tool is not found and auto_register=False.
-            TypeError: If tool specification is invalid.
-        """
         if isinstance(tools, list | tuple) and len(tools) == 1:
             tools = tools[0]
         if isinstance(tools, bool):
@@ -224,14 +123,9 @@ class ActionManager(Manager):
         auto_register: bool = True,
         update: bool = False,
     ) -> list[dict[str, Any]] | dict[str, Any]:
-        """
-        Internal helper to handle retrieval or registration of a single or
-        multiple tools, returning their schema(s).
-        """
         if isinstance(tool, dict):
-            return tool  # Already a schema
+            return tool
         if callable(tool):
-            # Possibly unregistered function
             name = tool.__name__
             if name not in self.registry:
                 if auto_register:
@@ -257,54 +151,13 @@ class ActionManager(Manager):
         update: bool = False,
         security: "MCPSecurityConfig | None" = None,
     ) -> list[str]:
-        """
-        Register tools from an MCP server with automatic discovery.
-
-        Args:
-            server_config: MCP server configuration (command, args, etc.)
-                          Can be {"server": "name"} to reference loaded config
-                          or full config dict with command/args
-            tool_names: Optional list of specific tool names to register.
-                       If None, will discover and register all available tools.
-            request_options: Optional dict mapping tool names to Pydantic model classes
-                            for request validation. E.g., {"exa_search": ExaSearchRequest}
-            update: If True, allow updating existing tools.
-            security: Per-call security policy for authorizing this server's
-                transport at client-creation time. Passed down to
-                ``MCPConnectionPool.get_client`` so a trusted loader does not
-                have to mutate the process-global default (which races across
-                concurrent loads). When None, the pool's standing default
-                applies (fail-closed unless a global policy is set).
-
-        Returns:
-            List of registered tool names
-
-        Example:
-            # Auto-discover with Pydantic validation
-            from lionagi.providers.exa.search.models import ExaSearchRequest
-            tools = await manager.register_mcp_server(
-                {"server": "search"},
-                request_options={"exa_search": ExaSearchRequest}
-            )
-
-            # Register specific tools only
-            tools = await manager.register_mcp_server(
-                {"command": "python", "args": ["-m", "server"]},
-                tool_names=["search", "fetch"]
-            )
-        """
         registered_tools = []
 
-        # Record the authorized policy for this server BEFORE building tools, so
-        # the lazily-created client at first tool invocation (the tool_names
-        # branch never calls get_client here) and any later reconnect re-apply
-        # it instead of falling back to the fail-closed default.
         if security is not None:
             from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
             MCPConnectionPool.remember_security(server_config, security)
 
-        # Extract server name for qualified naming
         server_name = None
         if isinstance(server_config, dict) and "server" in server_config:
             server_name = server_config["server"]
@@ -315,21 +168,16 @@ class ActionManager(Manager):
                     request_options[f"{server_name}_{k}"] = request_options.pop(k)
 
         if tool_names:
-            # Register specific tools with qualified names
             for tool_name in tool_names:
-                # Use qualified name to avoid collisions
-                # Store original tool name in config for MCP calls
                 config_with_metadata = dict(server_config)
                 config_with_metadata["_original_tool_name"] = tool_name
 
                 mcp_config = {tool_name: config_with_metadata}
 
-                # Get request_options for this tool if provided
                 tool_request_options = None
                 if request_options and tool_name in request_options:
                     tool_request_options = request_options[tool_name]
 
-                # Create tool with request_options for Pydantic validation
                 tool = Tool(mcp_config=mcp_config, request_options=tool_request_options)
                 self.register_tool(tool, update=update)
                 registered_tools.append(tool_name)
@@ -349,12 +197,10 @@ class ActionManager(Manager):
 
                 mcp_config = {tool.name: config_with_metadata}
 
-                # Get request_options for this tool if provided
                 tool_request_options = None
                 if request_options and tool.name in request_options:
                     tool_request_options = request_options[tool.name]
 
-                # Extract schema from FastMCP tool and convert to lionagi format
                 tool_schema = None
                 try:
                     if (
@@ -373,12 +219,10 @@ class ActionManager(Manager):
                             },
                         }
                 except Exception as schema_error:
-                    # If schema extraction fails, let Tool auto-generate from function signature
                     logging.warning(f"Could not extract schema for {tool.name}: {schema_error}")
                     tool_schema = None
 
                 try:
-                    # Create tool with auto-populated schema from MCP discovery
                     tool_obj = Tool(
                         mcp_config=mcp_config,
                         request_options=tool_request_options,
@@ -398,84 +242,28 @@ class ActionManager(Manager):
         update: bool = False,
         mcp_security: "MCPSecurityConfig | None" = None,
     ) -> dict[str, list[str]]:
-        """
-        Load MCP configurations from a .mcp.json file with auto-discovery.
-
-        Loading a config file is an explicit trust action: by pointing lionagi at
-        a ``.mcp.json`` you are authorizing its command/URL transports. Therefore
-        this method defaults to a permissive ``MCPSecurityConfig`` (commands and
-        URLs allowed). To restrict what a config may register — e.g. when the
-        config path itself comes from a less-trusted source — pass an explicit
-        ``mcp_security`` with allowlists or the relevant ``allow_*`` flags off.
-
-        The low-level connection pool remains fail-closed by default, so any
-        transport built WITHOUT going through a trusted loader like this one is
-        still denied unless a security config explicitly permits it.
-
-        Args:
-            config_path: Path to .mcp.json configuration file
-            server_names: Optional list of server names to load.
-                         If None, loads all servers.
-            update: If True, allow updating existing tools.
-            mcp_security: Security policy for the transports declared in the
-                config. Defaults to allow-commands + allow-urls (trusted load).
-
-        Returns:
-            Dict mapping server names to lists of registered tool names
-
-        Raises:
-            PermissionError: If a server's transport is rejected by the effective
-                ``mcp_security`` policy — surfaced loudly (not swallowed) so a
-                misconfiguration does not silently register zero tools.
-
-        Example:
-            # Load all servers and auto-discover their tools
-            tools = await manager.load_mcp_config("/path/to/.mcp.json")
-
-            # Load specific servers only
-            tools = await manager.load_mcp_config(
-                "/path/to/.mcp.json",
-                server_names=["search", "memory"]
-            )
-        """
         from lionagi.service.connections.mcp_wrapper import (
             MCPConnectionPool,
             MCPSecurityConfig,
         )
 
-        # Explicit config load = trust the declared transports unless the caller
-        # narrows it. Pass the policy DOWN the call chain (register → get_client
-        # → _create_client) rather than mutating the process-global default.
-        # Threading the policy is race-free: a concurrent load with a different
-        # policy cannot observe ours, because nothing shared is mutated. Trust
-        # also never silently broadens to later clients created outside this load.
+        # Explicit config load trusts declared transports by default.
         if mcp_security is None:
             mcp_security = MCPSecurityConfig(allow_commands=True, allow_urls=True)
 
-        # Load the config file into the connection pool
         MCPConnectionPool.load_config(config_path)
 
-        # Get server list to process
         if server_names is None:
-            # Get all server names from loaded config
-            # The config has already been validated by load_config
             server_names = list(MCPConnectionPool._configs.keys())
-
-        # Register tools from each server
         all_tools = {}
         for server_name in server_names:
             try:
-                # Register using server reference; authorize THIS server's
-                # transport with the load's policy (no global mutation).
                 tools = await self.register_mcp_server(
                     {"server": server_name}, update=update, security=mcp_security
                 )
                 all_tools[server_name] = tools
                 logger.info("Registered %d tools from server '%s'", len(tools), server_name)
             except PermissionError:
-                # A security denial affects how the config is authorized, not
-                # a single flaky server — surface it loudly with migration
-                # guidance rather than silently registering zero tools.
                 logger.error(
                     "MCP server '%s' was denied by the active MCPSecurityConfig. "
                     "Pass mcp_security=MCPSecurityConfig(allow_commands=True, "
@@ -498,84 +286,27 @@ async def load_mcp_tools(
     update: bool = False,
     mcp_security: "MCPSecurityConfig | None" = None,
 ) -> list[Tool]:
-    """
-    Standalone helper function to load MCP tools from servers.
-    Creates an ActionManager internally and returns tools ready for use.
-
-    Like :meth:`ActionManager.load_mcp_config`, an explicit config load trusts
-    the declared transports unless ``mcp_security`` narrows it: the policy is
-    threaded down to client creation for this load only (the process-global
-    default is never mutated) so concurrent loads cannot race and trust does
-    not silently broaden to every later MCP client in the process. A transport
-    rejected by the effective policy raises ``PermissionError`` loudly rather
-    than registering zero tools.
-
-    Args:
-        config_path: Path to .mcp.json file. If None, assumes config already loaded.
-        server_names: Optional list of server names to load.
-                     If None, loads all servers from config.
-        request_options_map: Optional dict mapping server names to tool request options.
-                             E.g., {"search": {"exa_search": ExaSearchRequest}}
-        update: If True, allow updating existing tools.
-        mcp_security: Security policy for the transports declared in the config.
-                     Defaults to allow-commands + allow-urls (trusted load).
-
-    Returns:
-        List of Tool objects ready to use with Branch
-
-    Raises:
-        PermissionError: If a server's transport is rejected by the effective
-            ``mcp_security`` policy — surfaced loudly (not swallowed).
-
-    Example:
-        # Simple one-liner to get MCP tools
-        from lionagi.protocols.action.manager import load_mcp_tools
-        from lionagi.providers.exa.search.models import ExaSearchRequest
-        from lionagi.providers.perplexity.chat.models import PerplexityChatRequest
-
-        # Load with Pydantic validation
-        tools = await load_mcp_tools(
-            "/path/to/.mcp.json",
-            ["search"],
-            request_options_map={
-                "search": {
-                    "exa_search": ExaSearchRequest,
-                    "perplexity_search": PerplexityChatRequest
-                }
-            }
-        )
-        branch = Branch(tools=tools)
-    """
     from lionagi.service.connections.mcp_wrapper import (
         MCPConnectionPool,
         MCPSecurityConfig,
     )
 
-    # Create a temporary ActionManager for tool management
     manager = ActionManager()
 
-    # Trusted load: pass the policy DOWN the call chain instead of mutating the
-    # process-global default, so concurrent loads cannot observe each other's
-    # policy and trust never silently broadens to later clients.
     if mcp_security is None:
         mcp_security = MCPSecurityConfig(allow_commands=True, allow_urls=True)
 
-    # Load config if provided
     if config_path:
         MCPConnectionPool.load_config(config_path)
 
-    # If no server names specified, discover from config
     if server_names is None and config_path:
-        # Get all server names from loaded config
         server_names = list(MCPConnectionPool._configs.keys())
 
     if server_names is None:
         raise ValueError("Either provide server_names or config_path to discover servers")
 
-    # Register all servers
     for server_name in server_names:
         try:
-            # Get request_options for this server if provided
             request_options = None
             if request_options_map and server_name in request_options_map:
                 request_options = request_options_map[server_name]
@@ -588,9 +319,6 @@ async def load_mcp_tools(
             )
             logger.info("Loaded %d tools from %s", len(tools_registered), server_name)
         except PermissionError:
-            # A security denial is a misconfiguration, not a flaky server —
-            # surface it loudly with migration guidance instead of silently
-            # loading zero tools.
             logger.error(
                 "MCP server '%s' was denied by the active MCPSecurityConfig. "
                 "Pass mcp_security=MCPSecurityConfig(allow_commands=True, "
@@ -602,7 +330,6 @@ async def load_mcp_tools(
         except Exception as e:
             logger.warning("Failed to load server '%s': %s", server_name, e)
 
-    # Return all registered tools as a list
     return list(manager.registry.values())
 
 
