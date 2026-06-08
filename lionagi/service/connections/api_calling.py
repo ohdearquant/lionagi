@@ -7,6 +7,7 @@ from pydantic import Field, model_validator
 from typing_extensions import Self
 
 from ..hooks.hooked_event import HookedEvent
+from ..token_budget import lookup_context_window
 from .endpoint import Endpoint
 
 logger = logging.getLogger(__name__)
@@ -66,31 +67,11 @@ class APICalling(HookedEvent):
             if "messages" in self.payload and isinstance(self.payload["messages"][-1], dict):
                 required_tokens = self.required_tokens
                 content = self.payload["messages"][-1]["content"]
-                # Model token limit mapping
-                token_limits = {
-                    # OpenAI models
-                    "gpt-4": 128_000,
-                    "o1": 200_000,
-                    "o3": 200_000,
-                    "gpt-4.1": 1_000_000,
-                    "gpt-5": 1_000_000,
-                    # Anthropic models
-                    "sonnet": 200_000,
-                    "haiku": 200_000,
-                    "opus": 200_000,
-                    # Google models
-                    "gemini": 1_000_000,
-                }
-
                 token_msg = f"\n\nEstimated Current Token Usage: {required_tokens}"
 
-                # Find matching token limit
                 if "model" in self.payload:
-                    model = self.payload["model"]
-                    for model_prefix, limit in token_limits.items():
-                        if model_prefix in model.lower():
-                            token_msg += f"/{limit:,}"
-                            break
+                    limit = lookup_context_window(self.payload["model"])
+                    token_msg += f"/{limit:,}"
 
                 # Update content based on its type
                 if isinstance(content, str):

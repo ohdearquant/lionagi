@@ -446,7 +446,7 @@ class TestRetryWithBackoff:
         async def fake_sleep(d):
             delays.append(d)
 
-        with patch("lionagi.service.resilience.anyio.sleep", side_effect=fake_sleep):
+        with patch("lionagi.ln.concurrency.patterns.anyio.sleep", side_effect=fake_sleep):
             with pytest.raises(ConnectionError):
                 await retry_with_backoff(
                     func_that_tracks_delays,
@@ -473,7 +473,7 @@ class TestRetryWithBackoff:
         async def fake_sleep(d):
             delays.append(d)
 
-        with patch("lionagi.service.resilience.anyio.sleep", side_effect=fake_sleep):
+        with patch("lionagi.ln.concurrency.patterns.anyio.sleep", side_effect=fake_sleep):
             with pytest.raises(ConnectionError):
                 await retry_with_backoff(
                     failing_func,
@@ -590,7 +590,9 @@ class TestWithRetryDecorator:
         async def fake_sleep(secs):
             sleep_calls.append(secs)
 
-        with patch.object(resilience_mod.anyio, "sleep", fake_sleep):
+        import lionagi.ln.concurrency.patterns as patterns_mod
+
+        with patch.object(patterns_mod.anyio, "sleep", fake_sleep):
             with pytest.raises(ValueError, match="excluded"):
                 await retry_with_backoff(
                     failing,
@@ -619,7 +621,9 @@ class TestWithRetryDecorator:
         async def fake_sleep(secs):
             sleep_calls.append(secs)
 
-        with patch.object(resilience_mod.anyio, "sleep", fake_sleep):
+        import lionagi.ln.concurrency.patterns as patterns_mod
+
+        with patch.object(patterns_mod.anyio, "sleep", fake_sleep):
             result = await retry_with_backoff(
                 sometimes_failing,
                 retry_exceptions=(APIClientError,),
@@ -630,4 +634,5 @@ class TestWithRetryDecorator:
             )
 
         assert result == "success"
-        assert sleep_calls == [2.0, 5.0]
+        # canonical retry uses base 2 exponentiation: 2.0*2^0=2.0, 2.0*2^1=4.0 (capped at 5.0)
+        assert sleep_calls == [2.0, 4.0]

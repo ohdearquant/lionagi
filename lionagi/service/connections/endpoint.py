@@ -259,6 +259,11 @@ class Endpoint:
                     if response is not None and not response.closed:
                         response.release()
 
+        # When retry_config is set, the outer call() already wraps this method in
+        # retry_with_backoff. Skip the internal backoff layer to prevent double-retry.
+        if self.retry_config:
+            return await _make_request_with_backoff()
+
         def giveup_on_client_error(e):
             # Don't retry on 4xx except 429 (rate limit)
             if isinstance(e, aiohttp.ClientResponseError):
