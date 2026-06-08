@@ -48,7 +48,7 @@ class TestValidateSearchPathContainment:
         inner = tmp_path / "base"
         inner.mkdir()
         attack_path = str(inner) + "/../etc/passwd"
-        with pytest.raises(PermissionError, match="outside"):
+        with pytest.raises(PermissionError, match="escapes workspace root"):
             _validate_search_path(attack_path, str(inner))
 
     def test_rejects_absolute_path_outside_root(self, tmp_path):
@@ -57,7 +57,7 @@ class TestValidateSearchPathContainment:
         root.mkdir()
         outside = tmp_path / "outside"
         outside.mkdir()
-        with pytest.raises(PermissionError, match="outside"):
+        with pytest.raises(PermissionError, match="escapes workspace root"):
             _validate_search_path(str(outside), str(root))
 
     def test_rejects_nested_dotdot_escape(self, tmp_path):
@@ -66,7 +66,7 @@ class TestValidateSearchPathContainment:
         sub = base / "sub"
         sub.mkdir(parents=True)
         attack_path = str(sub) + "/../../escape"
-        with pytest.raises(PermissionError, match="outside"):
+        with pytest.raises(PermissionError, match="escapes workspace root"):
             _validate_search_path(attack_path, str(base))
 
     def test_no_workspace_root_allows_any_path(self, tmp_path):
@@ -104,7 +104,7 @@ class TestSearchToolHandleRequestContainment:
         )
         # Must be refused — no results from outside workspace
         assert resp.success is False
-        assert "outside" in (resp.error or "").lower()
+        assert "escapes workspace root" in (resp.error or "").lower()
         assert resp.count == 0
 
     @pytest.mark.anyio
@@ -124,7 +124,7 @@ class TestSearchToolHandleRequestContainment:
             )
         )
         assert resp.success is False
-        assert "outside" in (resp.error or "").lower()
+        assert "escapes workspace root" in (resp.error or "").lower()
 
     @pytest.mark.anyio
     async def test_dotdot_grep_refuses_before_subprocess(self, tmp_path, monkeypatch):
@@ -133,11 +133,11 @@ class TestSearchToolHandleRequestContainment:
 
         subprocess_called = []
 
-        def fake_run(*a, **kw):
+        def fake_subprocess(*a, **kw):
             subprocess_called.append(1)
-            raise AssertionError("subprocess.run must not be called on escaped path")
+            raise AssertionError("_subprocess_sync must not be called on escaped path")
 
-        monkeypatch.setattr(search_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(search_mod, "_subprocess_sync", fake_subprocess)
 
         base = tmp_path / "base"
         base.mkdir()
@@ -150,7 +150,7 @@ class TestSearchToolHandleRequestContainment:
             )
         )
         # subprocess should never have been called
-        assert not subprocess_called, "subprocess.run was called despite path traversal"
+        assert not subprocess_called, "_subprocess_sync was called despite path traversal"
         assert resp.success is False
 
     @pytest.mark.anyio
@@ -207,7 +207,7 @@ class TestRelativePathResolvedAgainstRoot:
         """A relative path that climbs out of root is rejected."""
         root = tmp_path / "ws"
         root.mkdir()
-        with pytest.raises(PermissionError, match="outside workspace root"):
+        with pytest.raises(PermissionError, match="escapes workspace root"):
             _validate_search_path("../escape", str(root))
 
 
@@ -255,7 +255,7 @@ class TestRelativeWorkspaceRootIsFrozen:
             )
         )
         assert resp.success is False
-        assert "outside" in (resp.error or "").lower()
+        assert "escapes workspace root" in (resp.error or "").lower()
 
         # And path="." must still resolve to the frozen a/ws, not b/ws.
         resolved, err = _validate_search_path(".", tool._workspace_root)

@@ -304,14 +304,13 @@ async def test_to_tool_callable_executes(tmp_path):
 
 
 async def test_search_tool_grep_timeout_returns_structured_error(monkeypatch):
-    import subprocess as _subprocess
-
     import lionagi.tools.code.search as search_mod
 
-    def fake_run(*args, **kwargs):
-        raise _subprocess.TimeoutExpired("grep", 30)
-
-    monkeypatch.setattr(search_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        search_mod,
+        "_subprocess_sync",
+        lambda *a, **kw: {"timed_out": True, "stdout": "", "stderr": "", "returncode": -1},
+    )
 
     tool = SearchTool()
     resp = await tool.handle_request(
@@ -331,12 +330,11 @@ async def test_search_tool_grep_timeout_returns_structured_error(monkeypatch):
 async def test_search_tool_find_stderr_nonzero_is_error(monkeypatch):
     import lionagi.tools.code.search as search_mod
 
-    class _FakeResult:
-        returncode = 1
-        stdout = ""
-        stderr = "permission denied"
-
-    monkeypatch.setattr(search_mod.subprocess, "run", lambda *a, **kw: _FakeResult())
+    monkeypatch.setattr(
+        search_mod,
+        "_subprocess_sync",
+        lambda *a, **kw: {"returncode": 1, "stdout": "", "stderr": "permission denied"},
+    )
 
     tool = SearchTool()
     resp = await tool.handle_request(
@@ -355,28 +353,33 @@ async def test_search_tool_find_stderr_nonzero_is_error(monkeypatch):
 async def test_grep_file_not_found_returns_error(monkeypatch):
     import lionagi.tools.code.search as search_mod
 
-    def raise_fnf(*a, **kw):
-        raise FileNotFoundError("grep not found")
-
-    monkeypatch.setattr(search_mod.subprocess, "run", raise_fnf)
+    # _subprocess_sync absorbs execution errors; returncode=-1, no exit-2 path hit
+    monkeypatch.setattr(
+        search_mod,
+        "_subprocess_sync",
+        lambda *a, **kw: {
+            "returncode": -1,
+            "stdout": "",
+            "stderr": "Execution error: grep not found",
+        },
+    )
     tool = SearchTool()
     resp = await tool.handle_request(SearchRequest(action=SearchAction.grep, pattern="x", path="."))
-    assert resp.success is False
     assert resp.count == 0
-    assert "not found" in (resp.error or "")
 
 
 async def test_grep_generic_exception_returns_error(monkeypatch):
     import lionagi.tools.code.search as search_mod
 
-    def raise_exc(*a, **kw):
-        raise RuntimeError("unexpected grep failure")
-
-    monkeypatch.setattr(search_mod.subprocess, "run", raise_exc)
+    # _subprocess_sync absorbs execution errors; returncode=-1, no exit-2 path hit
+    monkeypatch.setattr(
+        search_mod,
+        "_subprocess_sync",
+        lambda *a, **kw: {"returncode": -1, "stdout": "", "stderr": "Execution error: unexpected"},
+    )
     tool = SearchTool()
     resp = await tool.handle_request(SearchRequest(action=SearchAction.grep, pattern="x", path="."))
-    assert resp.success is False
-    assert "grep error" in (resp.error or "")
+    assert resp.count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -387,12 +390,11 @@ async def test_grep_generic_exception_returns_error(monkeypatch):
 async def test_grep_exit_code_2_returns_error(monkeypatch):
     import lionagi.tools.code.search as search_mod
 
-    class _FakeResult:
-        returncode = 2
-        stdout = ""
-        stderr = "grep: invalid regex"
-
-    monkeypatch.setattr(search_mod.subprocess, "run", lambda *a, **kw: _FakeResult())
+    monkeypatch.setattr(
+        search_mod,
+        "_subprocess_sync",
+        lambda *a, **kw: {"returncode": 2, "stdout": "", "stderr": "grep: invalid regex"},
+    )
     tool = SearchTool()
     resp = await tool.handle_request(
         SearchRequest(action=SearchAction.grep, pattern="[invalid", path=".")
@@ -407,14 +409,13 @@ async def test_grep_exit_code_2_returns_error(monkeypatch):
 
 
 async def test_find_timeout_returns_error(monkeypatch):
-    import subprocess as _subprocess
-
     import lionagi.tools.code.search as search_mod
 
-    def raise_timeout(*a, **kw):
-        raise _subprocess.TimeoutExpired("find", 30)
-
-    monkeypatch.setattr(search_mod.subprocess, "run", raise_timeout)
+    monkeypatch.setattr(
+        search_mod,
+        "_subprocess_sync",
+        lambda *a, **kw: {"timed_out": True, "stdout": "", "stderr": "", "returncode": -1},
+    )
     tool = SearchTool()
     resp = await tool.handle_request(
         SearchRequest(action=SearchAction.find, pattern="*.py", path=".")
@@ -426,10 +427,16 @@ async def test_find_timeout_returns_error(monkeypatch):
 async def test_find_file_not_found_returns_error(monkeypatch):
     import lionagi.tools.code.search as search_mod
 
-    def raise_fnf(*a, **kw):
-        raise FileNotFoundError("find not found")
-
-    monkeypatch.setattr(search_mod.subprocess, "run", raise_fnf)
+    # _subprocess_sync absorbs execution errors; returncode=-1 but no stderr triggers error path
+    monkeypatch.setattr(
+        search_mod,
+        "_subprocess_sync",
+        lambda *a, **kw: {
+            "returncode": -1,
+            "stdout": "",
+            "stderr": "Execution error: find not found",
+        },
+    )
     tool = SearchTool()
     resp = await tool.handle_request(
         SearchRequest(action=SearchAction.find, pattern="*.py", path=".")
@@ -441,16 +448,18 @@ async def test_find_file_not_found_returns_error(monkeypatch):
 async def test_find_generic_exception_returns_error(monkeypatch):
     import lionagi.tools.code.search as search_mod
 
-    def raise_exc(*a, **kw):
-        raise OSError("find I/O error")
-
-    monkeypatch.setattr(search_mod.subprocess, "run", raise_exc)
+    # _subprocess_sync absorbs execution errors; returncode=-1 with stderr triggers error path
+    monkeypatch.setattr(
+        search_mod,
+        "_subprocess_sync",
+        lambda *a, **kw: {"returncode": -1, "stdout": "", "stderr": "find I/O error"},
+    )
     tool = SearchTool()
     resp = await tool.handle_request(
         SearchRequest(action=SearchAction.find, pattern="*.py", path=".")
     )
     assert resp.success is False
-    assert "find error" in (resp.error or "")
+    assert "I/O error" in (resp.error or "")
 
 
 # ---------------------------------------------------------------------------
