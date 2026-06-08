@@ -233,12 +233,12 @@ async def test_bash_tool_malformed_command_returns_permission_error_response():
 
 async def test_bash_tool_popen_failure_returns_execution_error(monkeypatch):
 
-    import lionagi.tools.code.bash as bash_mod
+    import lionagi.tools._subprocess as subprocess_mod
 
     def fake_popen(*args, **kwargs):
         raise OSError("no exec")
 
-    monkeypatch.setattr(bash_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(subprocess_mod.subprocess, "Popen", fake_popen)
 
     tool = BashTool()
     resp = await tool.handle_request(BashRequest(command="/bin/echo hi"))
@@ -257,7 +257,7 @@ async def test_bash_tool_timeout_mock_pid_calls_kill_not_killpg(monkeypatch):
     import subprocess
     from unittest.mock import MagicMock
 
-    import lionagi.tools.code.bash as bash_mod
+    import lionagi.tools._subprocess as subprocess_mod
 
     mock_proc = MagicMock()
     # Set pid to a MagicMock object — isinstance(pid, int) returns False,
@@ -271,8 +271,8 @@ async def test_bash_tool_timeout_mock_pid_calls_kill_not_killpg(monkeypatch):
     def fake_popen(*args, **kwargs):
         return mock_proc
 
-    monkeypatch.setattr(bash_mod.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(bash_mod.os, "killpg", lambda *a: killpg_calls.append(a))
+    monkeypatch.setattr(subprocess_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(subprocess_mod.os, "killpg", lambda *a: killpg_calls.append(a))
 
     tool = BashTool()
     resp = await tool.handle_request(BashRequest(command="sleep 60", timeout=10))
@@ -292,7 +292,7 @@ async def test_bash_tool_timeout_invalid_pid_calls_kill_not_killpg(monkeypatch, 
     import subprocess
     from unittest.mock import MagicMock
 
-    import lionagi.tools.code.bash as bash_mod
+    import lionagi.tools._subprocess as subprocess_mod
 
     mock_proc = MagicMock()
     mock_proc.pid = invalid_pid
@@ -304,8 +304,8 @@ async def test_bash_tool_timeout_invalid_pid_calls_kill_not_killpg(monkeypatch, 
     def fake_popen(*args, **kwargs):
         return mock_proc
 
-    monkeypatch.setattr(bash_mod.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(bash_mod.os, "killpg", lambda *a: killpg_calls.append(a))
+    monkeypatch.setattr(subprocess_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(subprocess_mod.os, "killpg", lambda *a: killpg_calls.append(a))
 
     tool = BashTool()
     resp = await tool.handle_request(BashRequest(command="sleep 60", timeout=10))

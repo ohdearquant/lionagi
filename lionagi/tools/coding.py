@@ -4,13 +4,8 @@
 from __future__ import annotations
 
 import base64
-import contextlib
-import os
 import re
 import shlex
-import signal
-import subprocess
-import threading
 from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
@@ -21,9 +16,13 @@ from pydantic import BaseModel, Field
 from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
-from lionagi.service.token_calculator import TokenCalculator
 
+from ._subprocess import _SHELL_CONTROL, _subprocess_sync
 from .base import LionTool
+from .context.context import ContextRequest, ContextTool
+from .file.editor import _write_text_no_follow
+from .file.reader import _list_dir_sync as _file_list_dir_sync
+from .file.reader import _read_sync as _file_read_sync
 
 if TYPE_CHECKING:
     from lionagi.session.branch import Branch
@@ -168,32 +167,6 @@ class SearchRequest(BaseModel):
     )
 
 
-class ContextAction(str, Enum):
-    status = "status"
-    get_messages = "get_messages"
-    evict = "evict"
-    evict_action_results = "evict_action_results"
-
-
-class ContextRequest(BaseModel):
-    action: ContextAction = Field(
-        ...,
-        description=(
-            "Action to perform. One of:\n"
-            "- 'status': Context usage — message count, types, token estimate.\n"
-            "- 'get_messages': List messages with index, role, preview.\n"
-            "- 'evict': Remove messages by index range (protects system message).\n"
-            "- 'evict_action_results': Remove old tool outputs, keep last N."
-        ),
-    )
-    start: int | None = Field(None, description="Start index (inclusive, 0-based).")
-    end: int | None = Field(None, description="End index (exclusive, 0-based).")
-    keep_last: int | None = Field(
-        None,
-        description="For 'evict_action_results': keep N most recent. Default 5.",
-    )
-
-
 class SandboxAction(str, Enum):
     create = "create"
     diff = "diff"
@@ -292,30 +265,12 @@ def _read_file_sync(path: str, offset: int, max_lines: int, workspace_root: Path
     except PermissionError as e:
         return {"success": False, "error": str(e)}
 
-    if not p.exists():
-        return {"success": False, "error": f"File not found: {path}"}
-    if not p.is_file():
-        return {"success": False, "error": f"Not a file: {path}"}
-
     if p.suffix.lower() in _IMAGE_EXTENSIONS:
         return _read_image_sync(path, workspace_root)
 
-    try:
-        with open(p, "rb") as f:
-            chunk = f.read(8192)
-        if b"\x00" in chunk:
-            return {"success": False, "error": f"Binary file: {path}"}
-    except OSError as e:
-        return {"success": False, "error": str(e)}
-
-    try:
-        with open(p, encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-    except OSError as e:
-        return {"success": False, "error": str(e)}
-
-    selected = lines[offset : offset + max_lines]
-    numbered = "".join(f"{offset + i + 1}\t{line}" for i, line in enumerate(selected))
+    resp = _file_read_sync(path, offset, max_lines, workspace_root)
+    if not resp.success:
+        return {"success": False, "error": resp.error}
 
     try:
         mtime = p.stat().st_mtime
@@ -324,7 +279,7 @@ def _read_file_sync(path: str, offset: int, max_lines: int, workspace_root: Path
 
     return {
         "success": True,
-        "content": numbered,
+        "content": resp.content,
         "_resolved": str(p.resolve()),
         "_mtime": mtime,
     }
@@ -333,18 +288,12 @@ def _read_file_sync(path: str, offset: int, max_lines: int, workspace_root: Path
 def _list_dir_sync(
     path: str, recursive: bool, file_types: list[str] | None, workspace_root: Path
 ) -> dict:
-    try:
-        base = _resolve_workspace_path(path, workspace_root)
-    except PermissionError as e:
-        return {"success": False, "error": str(e)}
-
-    from lionagi.libs.file.process import dir_to_files
-
-    try:
-        files = dir_to_files(str(base), recursive=recursive, file_types=file_types)
-        return {"success": True, "content": "\n".join(str(f) for f in files)}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    resp = _file_list_dir_sync(path, recursive, file_types, workspace_root)
+    return (
+        {"success": resp.success, "content": resp.content}
+        if resp.success
+        else {"success": False, "error": resp.error}
+    )
 
 
 def _write_file_sync(file_path: str, content: str, workspace_root: Path) -> dict:
@@ -410,7 +359,7 @@ def _edit_file_sync(
     updated = original.replace(old_string, new_string, -1 if replace_all else 1)
 
     try:
-        p.write_text(updated, encoding="utf-8")
+        _write_text_no_follow(p, updated)
     except OSError as e:
         return {"success": False, "error": str(e)}
 
@@ -429,99 +378,6 @@ def _edit_file_sync(
         "content": f"Replaced {count if replace_all else 1}x. ...{snippet}...",
         "_resolved": str(p.resolve()),
         "_mtime": mtime,
-    }
-
-
-_SHELL_CONTROL = re.compile(r"(;|&&|\|\||\||`|\$\(|[<>]|\n)")
-
-_MAX_OUTPUT_BYTES = 100_000
-
-
-def _drain_stream(stream, buf: bytearray) -> bool:
-    truncated = False
-    while True:
-        try:
-            chunk = stream.read(8192)
-        except Exception:
-            break
-        if not chunk:
-            break
-        remaining = _MAX_OUTPUT_BYTES - len(buf)
-        if remaining > 0:
-            buf.extend(chunk[:remaining])
-            if len(buf) >= _MAX_OUTPUT_BYTES:
-                truncated = True
-    return truncated
-
-
-def _subprocess_sync(cmd, shell: bool, timeout_s: float, cwd: str | None) -> dict:
-    try:
-        proc = subprocess.Popen(  # noqa: S603
-            cmd,
-            shell=shell,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=cwd or None,
-            start_new_session=True,
-        )
-    except FileNotFoundError as e:
-        return {"stdout": "", "stderr": str(e), "returncode": -1}
-    except Exception as e:
-        return {"stdout": "", "stderr": str(e), "returncode": -1}
-
-    stdout_buf = bytearray()
-    stderr_buf = bytearray()
-    stdout_truncated = [False]
-    stderr_truncated = [False]
-
-    def _drain_out():
-        stdout_truncated[0] = _drain_stream(proc.stdout, stdout_buf)
-
-    def _drain_err():
-        stderr_truncated[0] = _drain_stream(proc.stderr, stderr_buf)
-
-    t_out = threading.Thread(target=_drain_out, daemon=True)
-    t_err = threading.Thread(target=_drain_err, daemon=True)
-    t_out.start()
-    t_err.start()
-
-    timed_out = False
-    try:
-        proc.wait(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        # os.killpg is POSIX-only; on Windows fall through to proc.kill().
-        if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1:
-            with contextlib.suppress(ProcessLookupError, OSError):
-                os.killpg(proc.pid, signal.SIGKILL)
-        else:
-            proc.kill()
-        proc.wait()
-        t_out.join(timeout=1)
-        t_err.join(timeout=1)
-        timed_out = True
-
-    if not timed_out:
-        t_out.join()
-        t_err.join()
-
-    def _decode(buf: bytearray, truncated: bool) -> str:
-        text = bytes(buf).decode("utf-8", errors="replace")
-        if truncated:
-            text += f"\n\n[... truncated at {_MAX_OUTPUT_BYTES} bytes ...]\n"
-        return text
-
-    if timed_out:
-        return {
-            "stdout": _decode(stdout_buf, True),
-            "stderr": f"Timed out after {timeout_s}s",
-            "returncode": -1,
-            "timed_out": True,
-        }
-
-    return {
-        "stdout": _decode(stdout_buf, stdout_truncated[0]),
-        "stderr": _decode(stderr_buf, stderr_truncated[0]),
-        "returncode": proc.returncode,
     }
 
 
@@ -864,21 +720,17 @@ class CodingToolkit(LionTool):
                 }
             return {"success": False, "error": f"Unknown action: {action}"}
 
-        def _ensure_current_progression():
-            if "current_progression" not in branch.metadata:
-                from lionagi.protocols.generic.progression import Progression
-
-                cp = Progression()
-                for uid in msgs.progression:
-                    cp.append(uid)
-                branch.metadata["current_progression"] = cp
-            return branch.metadata["current_progression"]
+        _ctx_tool = ContextTool()
+        _ctx_func = _ctx_tool.bind(branch).func_callable
 
         async def context(
             action: str,
             start: int = None,
             end: int = None,
             keep_last: int = None,
+            summary: str = None,
+            mode: str = None,
+            scope: str = None,
         ) -> dict:
             """Manage your conversation context — check usage, list messages, evict old ones.
 
@@ -886,98 +738,18 @@ class CodingToolkit(LionTool):
             tool outputs you no longer need to free space for new work.
             Evicted messages are hidden from the LLM but preserved in conversation record.
             """
-            progression = branch.progression
-            pile = msgs.messages
-
-            if action == "status":
-                full_len = len(msgs.progression)
-                active_len = len(progression)
-                by_type: dict[str, int] = {}
-                total_tokens = 0
-                for uid in progression:
-                    if uid in pile:
-                        msg = pile[uid]
-                        role = msg.role if hasattr(msg, "role") else type(msg).__name__
-                        by_type[role] = by_type.get(role, 0) + 1
-                        c = msg.content if hasattr(msg, "content") else ""
-                        if c:
-                            total_tokens += TokenCalculator.tokenize(
-                                str(c) if not isinstance(c, str) else c
-                            )
-                return {
-                    "success": True,
-                    "active_messages": active_len,
-                    "total_messages": full_len,
-                    "evicted": full_len - active_len,
-                    "by_type": by_type,
-                    "estimated_tokens": total_tokens,
-                    "files_tracked": len(file_state),
-                }
-
-            elif action == "get_messages":
-                s = max(0, start or 0)
-                e = min(len(progression), end or len(progression))
-                summaries = []
-                for i in range(s, e):
-                    uid = progression[i]
-                    if uid in pile:
-                        msg = pile[uid]
-                        role = msg.role if hasattr(msg, "role") else type(msg).__name__
-                        c = ""
-                        if hasattr(msg, "content") and msg.content:
-                            raw = (
-                                str(msg.content)
-                                if not isinstance(msg.content, str)
-                                else msg.content
-                            )
-                            c = raw[:120].replace("\n", " ")
-                            if len(raw) > 120:
-                                c += "..."
-                        summaries.append(f"[{i}] {role}: {c}")
-                return {
-                    "success": True,
-                    "range": f"[{s}:{e}] of {len(progression)}",
-                    "messages": summaries,
-                }
-
-            elif action == "evict":
-                cp = _ensure_current_progression()
-                s = max(1, start or 1)
-                e = end if end is not None else s + 1
-                e = min(len(cp), e)
-                if s >= e:
-                    return {"success": False, "error": f"Invalid range [{s}:{e})"}
-                uids = [cp[i] for i in range(s, e) if i < len(cp)]
-                cp.exclude(uids)
-                return {
-                    "success": True,
-                    "removed": len(uids),
-                    "active": len(cp),
-                    "total": len(msgs.progression),
-                }
-
-            elif action == "evict_action_results":
-                cp = _ensure_current_progression()
-                keep = keep_last if keep_last is not None else 5
-                ar_uids = [
-                    uid for uid in cp if uid in pile and isinstance(pile[uid], ActionResponse)
-                ]
-                if len(ar_uids) <= keep:
-                    return {
-                        "success": True,
-                        "removed": 0,
-                        "message": f"Only {len(ar_uids)} action results, keeping all.",
-                    }
-                to_evict = ar_uids[:-keep] if keep > 0 else ar_uids
-                cp.exclude(to_evict)
-                return {
-                    "success": True,
-                    "removed": len(to_evict),
-                    "active": len(cp),
-                    "total": len(msgs.progression),
-                }
-
-            return {"success": False, "error": f"Unknown action: {action}"}
+            result = await _ctx_func(
+                action=action,
+                start=start,
+                end=end,
+                keep_last=keep_last,
+                summary=summary,
+                mode=mode,
+                scope=scope,
+            )
+            if action == "status" and isinstance(result, dict) and result.get("success"):
+                result["files_tracked"] = len(file_state)
+            return result
 
         async def _notify_post(
             tool_name: str, action: str, args: dict, result: dict
