@@ -35,10 +35,6 @@ class SystemContent(MessageContent):
         parts.append(self.system_message)
         return "\n\n".join(parts)
 
-    def render(self, *_args: Any, **_kwargs: Any) -> str:
-        """Render system message.  Delegates to :attr:`rendered` for beta API compat."""
-        return self.rendered
-
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SystemContent:
         """Construct SystemContent from dictionary."""

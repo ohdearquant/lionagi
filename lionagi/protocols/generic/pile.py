@@ -264,13 +264,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
     @synchronized
     def include(self, item: ID.ItemSeq | ID.Item, /) -> None:
         item_dict = _validate_collections(item, self.item_type, self.strict_type)
-
-        item_order = []
-        for i in item_dict.keys():
-            if i not in self.progression:
-                item_order.append(i)
-
-        self.progression.append(item_order)
+        self.progression.include(list(item_dict.keys()))
         self.collections.update(item_dict)
 
     @synchronized

@@ -46,10 +46,6 @@ class ActionResponseContent(MessageContent):
         """True when no error was recorded."""
         return self.error is None
 
-    def render(self, *_args: Any, **_kwargs: Any) -> str:
-        """Render action response.  Delegates to :attr:`rendered` for beta API compat."""
-        return self.rendered
-
     def render_summary(self) -> str:
         """Render result content for round-level aggregation."""
         from lionagi.libs.schema.minimal_yaml import minimal_yaml

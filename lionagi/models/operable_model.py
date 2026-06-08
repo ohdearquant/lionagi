@@ -11,9 +11,9 @@ from typing_extensions import Self, override
 
 from lionagi.utils import UNDEFINED, is_same_dtype
 
+from ._build_model import build_model_type
 from .field_model import FieldModel
 from .hashable_model import HashableModel
-from .model_params import ModelParams
 
 logger = logging.getLogger(__name__)
 
@@ -350,7 +350,7 @@ class OperableModel(HashableModel):
             elif field_name in self.all_fields:
                 parameter_fields[field_name] = self.all_fields[field_name]
 
-        model_params = ModelParams(
+        model_cls = build_model_type(
             name=name,
             parameter_fields=parameter_fields,
             base_type=base_type,
@@ -361,7 +361,6 @@ class OperableModel(HashableModel):
             doc=doc,
             frozen=frozen,
         )
-        model_cls = model_params.create_new_model()
 
         # model_rebuild() can raise PydanticUserError when referenced types
         # are not yet defined; log and continue so the model is still returned.
