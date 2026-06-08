@@ -230,9 +230,7 @@ def test_kill_proc_group_ignores_unreal_pid(monkeypatch):
     from lionagi.agent.settings import _kill_proc_group
 
     called: list = []
-    monkeypatch.setattr(
-        "lionagi.agent.settings.os.killpg", lambda *a: called.append(a)
-    )
+    monkeypatch.setattr("lionagi.agent.settings.os.killpg", lambda *a: called.append(a))
 
     _kill_proc_group(MagicMock())  # MagicMock().pid -> 1 via __index__
     for bad in (0, 1):

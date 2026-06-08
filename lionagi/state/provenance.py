@@ -10,12 +10,10 @@ easy to audit (every CLI entry point should pass through here).
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
-# Length matches what the ADR pins for the column comment: 16 chars is
-# enough for "same or different" comparisons without storing the whole
-# 64-char digest.
+from lionagi.ln._hash import compute_hash
+
 _AGENT_HASH_LEN = 16
 
 
@@ -45,7 +43,7 @@ def _hash_file(path: Path) -> str:
         data = path.read_bytes()
     except OSError:
         return ""
-    return hashlib.sha256(data).hexdigest()[:_AGENT_HASH_LEN]
+    return compute_hash(data)[:_AGENT_HASH_LEN]
 
 
 def resolve_model_spec(provider: str | None, model: str | None) -> str | None:

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import uuid
@@ -13,25 +14,15 @@ from pathlib import Path
 from typing import Any
 
 from lionagi import Branch, Session
-from lionagi.ln.concurrency import Lock
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
-from lionagi.state.artifact_verifier import (
-    missing_artifact_evidence,
-    missing_artifact_summary,
-    verify_artifact_contract,
-)
 
 from .._agents import AgentProfile, list_agents, load_agent_profile
 from .._logging import hint
+from .._persist import _resolve_project, teardown_persist
 from .._providers import build_imodel_from_spec, resolve_persisted_effort
 from .._runs import RunDir, allocate_run, save_last_branch_pointer
-
-
-def _resolve_session_model(provider: str | None, model: str | None) -> str | None:
-    return _provenance.resolve_model_spec(provider, model)
-
 
 __all__ = (
     "OrchestrationEnv",
@@ -121,8 +112,6 @@ def role_config(role: str):
 
 def resolve_modes(role: str, override: list[str] | None = None) -> list[str]:
     """Validated cognitive modes for a role: override gated by modes_allow."""
-    import logging
-
     from lionagi.casts.pattern import Mode
 
     cfg = role_config(role)
@@ -448,7 +437,7 @@ def build_worker_branch(
         _grant_spawn(wb)
 
     if env._live_persist:
-        _register_branch_hook(env._live_persist, wb)
+        register_branch_hook(env._live_persist, wb)
 
     return wb, w_model, w_profile
 
@@ -462,9 +451,6 @@ def finalize_orchestration(
     emit_hints: bool = True,
 ) -> tuple[list[tuple[str, str, str]], str]:
     """Persist branch snapshots + last-branch pointer + hints."""
-    import logging
-
-    # Ensure branches_dir exists (allocate_run did, but be defensive).
     env.run.ensure_state_dirs()
     log = logging.getLogger("lionagi.cli")
 
@@ -502,45 +488,41 @@ def finalize_orchestration(
     return branch_ids, orc_branch_id
 
 
-async def start_live_persist(
-    env: OrchestrationEnv,
+_log_orch = logging.getLogger("lionagi.cli")
+
+
+async def setup_orchestration_persist(
+    session: Any,
     *,
     invocation_kind: str | None = None,
     playbook_name: str | None = None,
     agent_name: str | None = None,
     artifacts_path: str | None = None,
-    artifact_contract: dict[str, Any] | None = None,
+    artifact_contract: dict | None = None,
     invocation_id: str | None = None,
     model: str | None = None,
     provider: str | None = None,
     effort: str | None = None,
     project: str | None = None,
-) -> None:
-    """Open state.db, create session row, register hooks on existing branches."""
-    import logging
-
+    branches: list[Any] | None = None,
+) -> dict | None:
     from lionagi.state.db import StateDB
 
-    db: StateDB | None = None
+    db = None
     try:
         db = StateDB()
         await db.open()
 
-        session = env.session
         session_id = str(session.id)
         session_dict = session.to_dict(mode="db")
 
         session_prog_id = str(uuid.uuid4())
         await db.create_progression(session_prog_id)
-        if project:
-            _proj, _proj_src = project, "explicit"
-        else:
-            from lionagi.cli._project import detect_project
 
-            _proj, _proj_src = detect_project()
-        from lionagi.cli.kill import current_pid_markers
+        _proj, _proj_src = _resolve_project(project)
+        from lionagi.cli.kill import current_pid_markers as _pid_markers
 
-        _identity_markers = current_pid_markers()
+        _identity_markers = _pid_markers()
         _node_meta = {**(session_dict.get("node_metadata") or {}), **_identity_markers}
         await db.create_session(
             {
@@ -560,7 +542,7 @@ async def start_live_persist(
                 "status": "running",
                 "started_at": time.time(),
                 "invocation_id": invocation_id,
-                "model": _resolve_session_model(provider, model),
+                "model": _provenance.resolve_model_spec(provider, model),
                 "provider": provider,
                 "effort": effort,
                 "agent_hash": _provenance.agent_definition_hash(agent_name),
@@ -580,29 +562,30 @@ async def start_live_persist(
             "artifact_contract": artifact_contract,
             "identity_markers": _identity_markers,
         }
-        env._live_persist = ctx
 
-        for branch in session.branches:
-            _register_branch_hook(ctx, branch)
+        for branch in branches or []:
+            register_branch_hook(ctx, branch)
+
+        return ctx
     except Exception as exc:
-        logging.getLogger("lionagi.cli").warning(
+        _log_orch.warning(
             "live persist setup failed (%s) — disabling persistence for this run",
             exc,
             exc_info=True,
         )
-        env._live_persist = None
         if db is not None:
             try:
                 await db.close()
-            except Exception as close_exc:  # noqa: BLE001
-                logging.getLogger("lionagi.cli").warning(
-                    "fallback db.close after setup failure also failed: %s",
-                    close_exc,
+            except Exception as close_exc:
+                _log_orch.warning(
+                    "fallback db.close after setup failure also failed: %s", close_exc
                 )
+        return None
 
 
-def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
-    """Register async message hook; branch row created lazily on first message."""
+def register_branch_hook(ctx: dict[str, Any], branch: Any) -> None:
+    from lionagi.ln.concurrency import Lock
+
     db = ctx["db"]
     session_id = ctx["session_id"]
     session_prog_id = ctx["session_prog_id"]
@@ -639,18 +622,15 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
             br_model: str | None = None
             br_provider: str | None = None
             try:
+                from lionagi.state import provenance as _provenance
+
                 ep_cfg = branch.chat_model.endpoint.config
                 br_provider = getattr(ep_cfg, "provider", None)
                 br_model_raw = (ep_cfg.kwargs or {}).get("model")
                 br_model = _provenance.resolve_model_spec(br_provider, br_model_raw)
-            except Exception as _provenance_exc:  # noqa: BLE001
-                import logging
+            except Exception as _prov_exc:
+                _log_orch.debug("branch provenance lookup failed for %s: %s", branch_id, _prov_exc)
 
-                logging.getLogger("lionagi.cli").debug(
-                    "branch provenance lookup failed for %s: %s",
-                    branch_id,
-                    _provenance_exc,
-                )
             await db.create_branch(
                 {
                     "id": branch_id,
@@ -680,9 +660,7 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
             if msg_dict.get("role") == "system":
                 await db.update_branch(branch_id, system_msg_id=msg_id)
         except Exception as exc:
-            import logging
-
-            logging.getLogger("lionagi.cli").warning(
+            _log_orch.warning(
                 "live persist write failed for branch %s: %s",
                 branch_id,
                 exc,
@@ -695,99 +673,50 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
     ctx["hooks"].append((branch, handler))
 
 
+async def start_live_persist(
+    env: OrchestrationEnv,
+    *,
+    invocation_kind: str | None = None,
+    playbook_name: str | None = None,
+    agent_name: str | None = None,
+    artifacts_path: str | None = None,
+    artifact_contract: dict[str, Any] | None = None,
+    invocation_id: str | None = None,
+    model: str | None = None,
+    provider: str | None = None,
+    effort: str | None = None,
+    project: str | None = None,
+) -> None:
+    ctx = await setup_orchestration_persist(
+        env.session,
+        invocation_kind=invocation_kind,
+        playbook_name=playbook_name,
+        agent_name=agent_name,
+        artifacts_path=artifacts_path,
+        artifact_contract=artifact_contract,
+        invocation_id=invocation_id,
+        model=model,
+        provider=provider,
+        effort=effort,
+        project=project,
+        branches=list(env.session.branches),
+    )
+    env._live_persist = ctx
+
+
 async def stop_live_persist(
     env: OrchestrationEnv,
     *,
     status: str = "completed",
     exception: BaseException | None = None,
 ) -> str:
-    """Update session bookmarks, lifecycle columns, close DB; returns effective status."""
-    import logging
-
     ctx = env._live_persist
-    if ctx is None:
-        return status
-    log = logging.getLogger("lionagi.cli")
-    db = ctx["db"]
-    try:
-        session_prog_id = ctx["session_prog_id"]
-        session_id = ctx["session_id"]
-
-        all_msgs = await db.get_progression(session_prog_id)
-        update_kwargs: dict[str, Any] = {
-            "ended_at": time.time(),
-        }
-        if all_msgs:
-            update_kwargs["first_msg_id"] = all_msgs[0]
-            update_kwargs["last_msg_id"] = all_msgs[-1]
-
-        extras = getattr(env, "_finalize_extras", None)
-        if extras:
-            markers = ctx.get("identity_markers") or {}
-            update_kwargs["node_metadata"] = json.dumps({**extras, **markers})
-
-        await db.update_session(session_id, **update_kwargs)
-
-        from lionagi.cli.agent import _resolve_run_reason
-
-        reason_code, reason_summary, evidence_refs = _resolve_run_reason(
-            status=status,
-            exception=exception,
-        )
-        metadata: dict[str, Any] | None = None
-        if exception is not None:
-            metadata = {"exception_class": type(exception).__name__}
-
-        session_row = await db.get_session(session_id) or {}
-        verification = verify_artifact_contract(
-            session_row.get("artifact_contract_json"),
-            artifacts_root=session_row.get("artifacts_path"),
-        )
-        await db.update_artifact_verification(session_id, verification)
-
-        final_status = status
-        final_reason_code = reason_code
-        final_reason_summary = reason_summary
-        final_evidence_refs = evidence_refs
-        if verification and verification["status"] == "failed":
-            missing = verification["missing_required"]
-            if status == "completed":
-                from lionagi.state.reasons import RunReasons
-
-                final_status = "failed"
-                final_reason_code = RunReasons.FAILED_MISSING_ARTIFACT
-                final_reason_summary = missing_artifact_summary(missing)
-                final_evidence_refs = missing_artifact_evidence(missing)
-            else:
-                metadata = dict(metadata or {})
-                metadata["artifact_verification_status"] = verification["status"]
-                metadata["missing_required_artifact_ids"] = [
-                    str(entry.get("id", "")) for entry in missing
-                ]
-
-        await db.update_status(
-            "session",
-            session_id,
-            new_status=final_status,
-            reason_code=final_reason_code,
-            reason_summary=final_reason_summary,
-            evidence_refs=final_evidence_refs,
-            source="executor",
-            actor=session_id,
-            metadata=metadata,
-        )
-
-        from lionagi.hooks import unroute_message_persistence
-
-        for branch, hook in ctx["hooks"]:
-            unroute_message_persistence(branch, hook)
-    except Exception as exc:
-        log.warning("live persist teardown failed: %s", exc, exc_info=True)
-        return status
-    finally:
-        try:
-            await db.close()
-        except Exception as exc:
-            log.warning("live persist db.close failed: %s", exc, exc_info=True)
-        env._live_persist = None
+    extras = getattr(env, "_finalize_extras", None)
+    final_status = await teardown_persist(
+        ctx,
+        status=status,
+        exception=exception,
+        extras=extras,
+    )
+    env._live_persist = None
     return final_status

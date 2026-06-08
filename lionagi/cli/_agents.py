@@ -34,32 +34,17 @@ Frontmatter fields (all optional, CLI flags override):
 
 from __future__ import annotations
 
-import re as _re
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Bare-name pattern: one or more ASCII letters, digits, underscores, or hyphens.
-# Rejects empty, path separators, '.', '..', leading dots, and other traversal.
-_BARE_NAME_RE = _re.compile(r"^[A-Za-z0-9_-]+$")
+from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
+from lionagi.libs.path_safety import validate_bare_name
+
+from ._project import _find_git_root
 
 
 def _validate_bare_name(name: str) -> None:
-    """Reject agent profile names that are not safe bare identifiers.
-
-    A valid name contains only ASCII letters, digits, underscores, or hyphens.
-    Path separators, '.', '..', leading dots, and control characters are all
-    rejected to prevent path traversal in profile resolution.
-
-    Raises:
-        ValueError: The name contains unsafe characters or components.
-    """
-    if not name or not _BARE_NAME_RE.match(name):
-        raise ValueError(
-            f"Invalid agent profile name {name!r}: must be a bare identifier "
-            "(ASCII letters, digits, underscores, hyphens only — no path "
-            "separators, '.', '..', or leading dots)."
-        )
+    validate_bare_name(name, label="agent profile name")
 
 
 def build_deadline_preamble(timeout_seconds: int) -> str:
@@ -117,19 +102,11 @@ def _find_lionagi_dirs() -> list[Path]:
     dirs: list[Path] = []
 
     # 1. Git root
-    try:
-        root = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],  # noqa: S607 — git is expected on $PATH
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if root.returncode == 0:
-            candidate = Path(root.stdout.strip()) / ".lionagi"
-            if candidate.is_dir():
-                dirs.append(candidate)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    git_root = _find_git_root(Path.cwd())
+    if git_root is not None:
+        candidate = git_root / ".lionagi"
+        if candidate.is_dir():
+            dirs.append(candidate)
 
     # 2. Walk up from cwd
     cwd = Path.cwd()
@@ -219,22 +196,7 @@ def load_agent_profile(name: str) -> AgentProfile:
 
 
 def _parse_profile(name: str, text: str) -> AgentProfile:
-    """Parse YAML frontmatter + markdown body."""
-    frontmatter = {}
-    body = text
-
-    if text.startswith("---"):
-        parts = text.split("---", 2)
-        if len(parts) >= 3:
-            fm_text = parts[1].strip()
-            body = parts[2].strip()
-            if fm_text:
-                import yaml
-
-                loaded = yaml.safe_load(fm_text) or {}
-                if not isinstance(loaded, dict):
-                    loaded = {}
-                frontmatter = loaded
+    frontmatter, body = _parse_frontmatter(text)
 
     lion_system = bool(frontmatter.get("lion_system", True))
     if lion_system:

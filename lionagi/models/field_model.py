@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import os
-import threading
-from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar
@@ -12,6 +10,7 @@ from typing import Annotated, Any, ClassVar
 from typing_extensions import Self, override
 
 from .._errors import ValidationError
+from ..ln._cache import BoundedLRUCache
 from ..ln._lazy_init import LazyInit
 from ..ln.types import Meta, ModelConfig, Params, Spec
 
@@ -35,12 +34,10 @@ def _get_pydantic_field_params() -> set[str]:
     return _PYDANTIC_FIELD_PARAMS
 
 
-# Global cache for annotated types with bounded size
-_MAX_CACHE_SIZE = int(os.environ.get("LIONAGI_FIELD_CACHE_SIZE", "10000"))
-_annotated_cache: OrderedDict[tuple[type, tuple[Meta, ...]], type] = OrderedDict()
-_cache_lock = threading.RLock()  # Thread-safe access to cache
+_annotated_cache: BoundedLRUCache[tuple[type, tuple[Meta, ...]], type] = BoundedLRUCache(
+    "LIONAGI_FIELD_CACHE_SIZE", 10000
+)
 
-# Configurable limit on metadata items to prevent explosion
 METADATA_LIMIT = int(os.environ.get("LIONAGI_FIELD_META_LIMIT", "10"))
 
 
@@ -325,31 +322,23 @@ class FieldModel(Params):
         """Materialize into an Annotated type (LRU-cached, thread-safe)."""
         cache_key = (self.base_type, self.metadata)
 
-        with _cache_lock:
-            if cache_key in _annotated_cache:
-                _annotated_cache.move_to_end(cache_key)
-                return _annotated_cache[cache_key]
+        cached = _annotated_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
-            actual_type = Any if self._is_sentinel(self.base_type) else self.base_type
-            current_metadata = () if self._is_sentinel(self.metadata) else self.metadata
+        actual_type = Any if self._is_sentinel(self.base_type) else self.base_type
+        current_metadata = () if self._is_sentinel(self.metadata) else self.metadata
 
-            if any(m.key == "nullable" and m.value for m in current_metadata):
-                actual_type = actual_type | None  # type: ignore
+        if any(m.key == "nullable" and m.value for m in current_metadata):
+            actual_type = actual_type | None  # type: ignore
 
-            if current_metadata:
-                args = [actual_type] + list(current_metadata)
-                result = Annotated.__class_getitem__(tuple(args))  # type: ignore
-            else:
-                result = actual_type  # type: ignore[misc]
+        if current_metadata:
+            args = [actual_type] + list(current_metadata)
+            result = Annotated.__class_getitem__(tuple(args))  # type: ignore
+        else:
+            result = actual_type  # type: ignore[misc]
 
-            _annotated_cache[cache_key] = result  # type: ignore[assignment]
-
-            while len(_annotated_cache) > _MAX_CACHE_SIZE:
-                try:
-                    _annotated_cache.popitem(last=False)
-                except KeyError:
-                    break
-
+        _annotated_cache.put(cache_key, result)  # type: ignore[arg-type]
         return result  # type: ignore[return-value]
 
     def extract_metadata(self, key: str) -> Any:

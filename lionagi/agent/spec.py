@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from lionagi.agent.config import HooksMixin
 from lionagi.casts.pack import Pack
 from lionagi.casts.profile import Profile
 
@@ -20,7 +21,7 @@ __all__ = ("AgentSpec",)
 
 
 @dataclass
-class AgentSpec:
+class AgentSpec(HooksMixin):
     """Universal runtime agent spec: Profile (identity) + runtime concerns.
 
     This is the orchestration-facing composition surface. Every entry point
@@ -42,18 +43,6 @@ class AgentSpec:
     yolo: bool = False
     mcp_servers: list[str] | None = None
     mcp_config_path: str | None = None
-
-    def pre(self, tool_name: str, handler: Callable) -> AgentSpec:
-        self.hook_handlers.setdefault(f"pre:{tool_name}", []).append(handler)
-        return self
-
-    def post(self, tool_name: str, handler: Callable) -> AgentSpec:
-        self.hook_handlers.setdefault(f"post:{tool_name}", []).append(handler)
-        return self
-
-    def on_error(self, tool_name: str, handler: Callable) -> AgentSpec:
-        self.hook_handlers.setdefault(f"error:{tool_name}", []).append(handler)
-        return self
 
     @classmethod
     def compose(

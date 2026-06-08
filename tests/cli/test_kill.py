@@ -346,9 +346,7 @@ def test_identity_absent_marker_requires_create_time_match(monkeypatch: pytest.M
     )
     # create_time differs → recycled PID → skip.
     assert (
-        _check_pid_identity(
-            42, "lionagi", expected_session_id="run-123", expected_create_time=1.0
-        )
+        _check_pid_identity(42, "lionagi", expected_session_id="run-123", expected_create_time=1.0)
         is False
     )
 
@@ -443,9 +441,7 @@ def test_current_pid_markers_records_own_pid():
     # dev env has psutil; create_time must be a real float matching this process.
     import psutil
 
-    assert markers["pid_create_time"] == pytest.approx(
-        psutil.Process(os.getpid()).create_time()
-    )
+    assert markers["pid_create_time"] == pytest.approx(psutil.Process(os.getpid()).create_time())
 
 
 async def test_kill_one_skips_recycled_pid_via_create_time(

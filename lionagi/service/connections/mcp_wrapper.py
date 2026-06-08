@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -13,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from lionagi.ln._hash import compute_hash
 from lionagi.ln.concurrency import Lock
 
 # Suppress MCP server logging by default
@@ -154,8 +154,7 @@ class MCPConnectionPool:
             return f"server:{server_config['server']}"
         material = {k: v for k, v in server_config.items() if not k.startswith("_")}
         blob = json.dumps(material, sort_keys=True, default=str)
-        digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()
-        return f"inline:{digest}"
+        return f"inline:{compute_hash(blob)}"
 
     @classmethod
     def remember_security(

@@ -12,6 +12,7 @@ from lionagi.models import FieldModel
 from lionagi.protocols.generic import Progression
 from lionagi.protocols.messages import Instruction, SenderRecipient
 
+from .._defaults import STANDARD_REMOVED_KWARGS
 from ..fields import Instruct
 from ..types import (
     ActionParam,
@@ -27,6 +28,22 @@ if TYPE_CHECKING:
     from lionagi.session.branch import Branch, ToolRef
 
     from .operative import Operative
+
+
+def _specs_from_fields(field_models: list) -> dict | None:
+    if not field_models:
+        return None
+    fields_dict = {}
+    for fm in field_models:
+        if isinstance(fm, FieldModel):
+            spec = fm.to_spec()
+        elif isinstance(fm, Spec):
+            spec = fm
+        else:
+            raise TypeError(f"Expected FieldModel or Spec, got {type(fm)}")
+        if spec.name:
+            fields_dict[spec.name] = spec
+    return fields_dict or None
 
 
 def prepare_operate_kw(
@@ -66,15 +83,7 @@ def prepare_operate_kw(
 ) -> dict:
     from .._guards import reject_removed_kwargs
 
-    reject_removed_kwargs(
-        kwargs,
-        {
-            "request_model": "response_format=",
-            "operative_model": "response_format=",
-            "imodel": "chat_model=",
-        },
-        where="operate",
-    )
+    reject_removed_kwargs(kwargs, STANDARD_REMOVED_KWARGS, where="operate")
 
     chat_model = chat_model or branch.chat_model
     parse_model = parse_model or chat_model
@@ -96,21 +105,7 @@ def prepare_operate_kw(
         if action_strategy:
             instruct.action_strategy = action_strategy
 
-    # Convert field_models to Spec if needed
-    fields_dict = None
-    if field_models:
-        fields_dict = {}
-        for fm in field_models:
-            # Convert FieldModel to Spec
-            if isinstance(fm, FieldModel):
-                spec = fm.to_spec()
-            elif isinstance(fm, Spec):
-                spec = fm
-            else:
-                raise TypeError(f"Expected FieldModel or Spec, got {type(fm)}")
-
-            if spec.name:
-                fields_dict[spec.name] = spec
+    fields_dict = _specs_from_fields(field_models)
 
     # Build Operative if needed
     operative = None
@@ -265,20 +260,7 @@ async def operate(
         elif isinstance(chat_param.response_format, BaseModel):
             model_class = type(chat_param.response_format)
 
-    # Convert field_models to fields dict
-    fields_dict = None
-    if field_models:
-        fields_dict = {}
-        for fm in field_models:
-            if isinstance(fm, FieldModel):
-                spec = fm.to_spec()
-            elif isinstance(fm, Spec):
-                spec = fm
-            else:
-                raise TypeError(f"Expected FieldModel or Spec, got {type(fm)}")
-
-            if spec.name:
-                fields_dict[spec.name] = spec
+    fields_dict = _specs_from_fields(field_models)
 
     # Create operative if needed
     if not operative and (model_class or action_param or fields_dict):

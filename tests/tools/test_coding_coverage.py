@@ -5,17 +5,21 @@
 
 import pytest
 
-from lionagi.tools.coding import (
+from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
+from lionagi.tools._subprocess import (
     _MAX_OUTPUT_BYTES,
+    _subprocess_sync,
+)
+from lionagi.tools._subprocess import (
+    _drain as _drain_stream,
+)
+from lionagi.tools.coding import (
     ALL_CODING_TOOLS,
     CodingToolkit,
-    _drain_stream,
     _edit_file_sync,
     _list_dir_sync,
     _read_file_sync,
     _read_image_sync,
-    _resolve_workspace_path,
-    _subprocess_sync,
     _write_file_sync,
 )
 
@@ -137,7 +141,7 @@ def test_read_file_sync_not_a_file_returns_error(tmp_path):
 
     result = _read_file_sync(str(sub), 0, 2000, tmp_path)
     assert result["success"] is False
-    assert "Not a file" in result["error"]
+    assert "not a file" in result["error"].lower()
 
 
 def test_read_file_sync_nonexistent_returns_error(tmp_path):
@@ -217,7 +221,7 @@ def test_edit_file_sync_oserror_on_read(tmp_path, monkeypatch):
 
 def test_drain_stream_truncates_at_max(monkeypatch):
     # Simulate a stream that emits 1 chunk larger than _MAX_OUTPUT_BYTES
-    monkeypatch.setattr("lionagi.tools.coding._MAX_OUTPUT_BYTES", 16, raising=False)
+    monkeypatch.setattr("lionagi.tools._subprocess._MAX_OUTPUT_BYTES", 16, raising=False)
     data = b"A" * 20
 
     call_count = [0]

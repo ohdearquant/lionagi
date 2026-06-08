@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 DENIED_NAMES: frozenset[str] = frozenset(
@@ -14,6 +15,8 @@ DENIED_NAMES: frozenset[str] = frozenset(
 DANGEROUS_CHARS: frozenset[str] = frozenset("/\\\x00")
 
 GLOB_CHARS: frozenset[str] = frozenset("*?[]{}~")
+
+_BARE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def has_traversal(p: Path) -> bool:
@@ -48,17 +51,25 @@ def check_path_safe(
     reject_absolute: bool = True,
     strip_at: bool = False,
 ) -> str:
-    """Validate a path string: reject traversal, optionally reject absolute paths.
+    """Validate a path string: reject traversal, NUL bytes, and optionally absolute paths.
 
+    Also rejects Windows-style drive-letter paths (e.g. C:foo) when reject_absolute is True.
     Raises ValueError on any violation.
     """
     entry = value.lstrip("@") if strip_at else value
+    if "\x00" in entry:
+        raise ValueError(f"{field_name} entry {value!r} contains NUL bytes")
     p = Path(entry)
     if reject_absolute and p.is_absolute():
         raise ValueError(
             f"{field_name} entry {value!r} is an absolute path — "
-            "only relative paths inside the repository are allowed. "
+            "only repo-relative paths inside the repository are allowed. "
             "Absolute paths can grant CLI access to arbitrary files."
+        )
+    if reject_absolute and len(entry) >= 2 and entry[1] == ":":
+        raise ValueError(
+            f"{field_name} entry {value!r} is a Windows drive-letter path — "
+            "only repo-relative paths inside the repository are allowed."
         )
     if ".." in p.parts:
         raise ValueError(
@@ -164,3 +175,37 @@ def validate_name(value: str, label: str = "name") -> str:
     if any(c in value for c in GLOB_CHARS):
         raise ValueError(f"invalid {label}: contains glob metacharacter")
     return value
+
+
+def validate_bare_name(name: str, label: str = "name") -> str:
+    """Validate a bare identifier: ASCII letters, digits, underscores, hyphens only.
+
+    Rejects empty strings, path separators, '.', '..', leading dots, glob chars,
+    and any character outside [A-Za-z0-9_-]. Raises ValueError on violation.
+    """
+    if not name or not _BARE_NAME_RE.match(name):
+        raise ValueError(
+            f"invalid {label} {name!r}: must be a bare identifier "
+            "(ASCII letters, digits, underscores, hyphens only — no path "
+            "separators, '.', '..', leading dots, or glob characters)"
+        )
+    return name
+
+
+def validate_path_component(component: str, label: str = "component") -> str:
+    """Validate a single path component for use as a filesystem path segment.
+
+    Rejects: empty, path separators (/\\), NUL, '.', '..', and leading dots.
+    Less strict than validate_bare_name — allows Unicode and most punctuation,
+    but blocks the characters that enable path traversal or hidden-file tricks.
+    Raises ValueError on violation.
+    """
+    if not component or not isinstance(component, str):
+        raise ValueError(f"invalid {label}: empty or not a string")
+    if "/" in component or "\\" in component or "\x00" in component:
+        raise ValueError(f"invalid {label} {component!r}: contains path separator or NUL")
+    if component in (".", ".."):
+        raise ValueError(f"invalid {label} {component!r}: reserved component")
+    if component.startswith("."):
+        raise ValueError(f"invalid {label} {component!r}: leading dot not allowed")
+    return component

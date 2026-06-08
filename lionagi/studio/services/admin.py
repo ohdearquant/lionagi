@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import time
 import uuid
@@ -9,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from lionagi.cli._process import pid_alive as _pid_is_live
+from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
 from lionagi.state.db import DEFAULT_DB_PATH
 from lionagi.state.reasons import SessionReasons
 
@@ -25,14 +26,6 @@ def db_health() -> dict[str, int]:
     wal_path = db_path.parent / (db_path.name + "-wal")
     wal_bytes = wal_path.stat().st_size if wal_path.exists() else 0
     return {"size_bytes": size_bytes, "wal_bytes": wal_bytes, "wal_pending": wal_bytes}
-
-
-def _pid_is_live(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
 
 
 def _find_pid_file(root: Path) -> int | None:
@@ -244,8 +237,6 @@ async def health_report() -> dict[str, Any]:
         "diagnostic_run_at": datetime.now(timezone.utc).isoformat(),
     }
 
-
-_ADMIN_TRANSITION_TARGETS: frozenset[str] = frozenset({"failed", "aborted", "cancelled"})
 
 _PHANTOM_REASON_CODES: dict[str, str] = {
     "process_dead": SessionReasons.HEALTH_PHANTOM_PROCESS_DEAD,

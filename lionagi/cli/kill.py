@@ -13,19 +13,9 @@ from typing import Any
 import psutil
 
 from ._logging import log_error, warn
-
-
-def _pid_alive(pid: int) -> bool:
-    """Return True iff *pid* is a live OS process."""
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+from ._process import _TABLE_TO_ENTITY_TYPE
+from ._process import pid_alive as _pid_alive
+from ._process import resolve_entity as _resolve_entity
 
 
 def _read_pid_from_entity(entity: dict[str, Any]) -> int | None:
@@ -160,45 +150,12 @@ def _terminate_pid(
     return "sigkill"
 
 
-_SEARCH_ORDER = ("sessions", "invocations", "plays", "shows")
-
 # Only sessions/invocations carry PIDs; plays/shows are orchestrators.
 _STALE_SWEEP_ORDER = ("sessions", "invocations")
 
 _PLAY_ACTIVE_STATUSES = frozenset(
     {"pending", "prepared", "running", "running_complete", "gated", "redoing"}
 )
-
-_TABLE_TO_ENTITY_TYPE = {
-    "sessions": "session",
-    "invocations": "invocation",
-    "plays": "play",
-    "shows": "show",
-}
-
-
-async def _resolve_entity(db: Any, id_or_short: str) -> tuple[str, str, dict[str, Any]] | None:
-    """Resolve an id (full UUID or prefix) to (table, entity_type, row)."""
-    id_or_short = id_or_short.strip()
-    is_prefix = len(id_or_short) < 36
-
-    for table in _SEARCH_ORDER:
-        if is_prefix:
-            cur = await db.db.execute(
-                f"SELECT * FROM {table} WHERE id LIKE ?",  # noqa: S608
-                (id_or_short + "%",),
-            )
-        else:
-            cur = await db.db.execute(
-                f"SELECT * FROM {table} WHERE id = ?",  # noqa: S608
-                (id_or_short,),
-            )
-        row = await cur.fetchone()
-        if row is not None:
-            entity_type = _TABLE_TO_ENTITY_TYPE[table]
-            return table, entity_type, db._row_to_dict(row)
-
-    return None
 
 
 async def _list_child_invocations(db: Any, session_id: str) -> list[dict[str, Any]]:

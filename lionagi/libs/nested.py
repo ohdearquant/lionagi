@@ -231,6 +231,31 @@ def deep_update(original: dict[Any, Any], update: dict[Any, Any]) -> dict[Any, A
     return original
 
 
+def deep_merge(base: dict, override: dict, *, mutate: bool = False) -> dict:
+    """Recursively merge override into base.
+
+    When mutate=True (default for settings), dicts recurse in-place and lists
+    are concatenated.  When mutate=False, a new dict is returned and lists are
+    overwritten by the override value.
+    """
+    if mutate:
+        for k, v in override.items():
+            if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+                deep_merge(base[k], v, mutate=True)
+            elif mutate and k in base and isinstance(base[k], list) and isinstance(v, list):
+                base[k] = base[k] + v
+            else:
+                base[k] = v
+        return base
+    merged = dict(base)
+    for k, v in override.items():
+        if k in merged and isinstance(merged[k], dict) and isinstance(v, dict):
+            merged[k] = deep_merge(merged[k], v, mutate=False)
+        else:
+            merged[k] = v
+    return merged
+
+
 __all__ = [
     "get_target_container",
     "nget",
@@ -239,4 +264,5 @@ __all__ = [
     "flatten",
     "unflatten",
     "deep_update",
+    "deep_merge",
 ]
