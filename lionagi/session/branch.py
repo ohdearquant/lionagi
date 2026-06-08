@@ -4,7 +4,7 @@
 from collections.abc import AsyncGenerator, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, Field, JsonValue, PrivateAttr, field_serializer
+from pydantic import BaseModel, JsonValue, PrivateAttr, field_serializer
 
 from lionagi.config import settings
 from lionagi.ln import AlcallParams
@@ -64,10 +64,7 @@ def _strip_capability_block(text: str) -> str:
         return text
     end = text.find(CAP_END, start)
     if end == -1:
-        # Unbalanced markers (truncated block, or the begin marker appears in
-        # the user's own prompt): leave the text intact rather than discard
-        # everything after the marker — silent prompt corruption is worse than
-        # a stale block, which a re-grant overwrites cleanly.
+        # Unbalanced markers — leave intact rather than silently corrupt
         return text
     return (text[:start] + text[end + len(CAP_END) :]).strip()
 
@@ -78,14 +75,7 @@ def _merge_instruct(
     guidance=None,
     context=None,
 ) -> dict:
-    """Normalize ``instruct`` to a dict, overlaying loose instruction fields.
-
-    Lets ``ReAct``/``ReActStream`` accept either a full ``Instruct``/dict or the
-    individual ``instruction``/``guidance``/``context`` keywords — the same shape
-    ``operate`` accepts. This is what makes a model-emitted ``SpawnRequest`` with
-    ``operation="ReAct"`` routable: the orchestration node builder passes a bare
-    ``instruction=`` parameter uniformly across every allowed operation.
-    """
+    """Normalize instruct to a dict, overlaying loose instruction fields."""
     if isinstance(instruct, Instruct):
         merged = instruct.to_dict()
     elif instruct:
@@ -102,46 +92,10 @@ def _merge_instruct(
 
 
 class Branch(Element, Relational):
-    """
-    Manages a conversation 'branch' with messages, tools, and iModels.
+    """Conversation branch: facade over message, action, model, and log managers."""
 
-    The `Branch` class serves as a high-level interface or orchestrator that:
-        - Handles message management (`MessageManager`).
-        - Registers and invokes tools/actions (`ActionManager`).
-        - Manages model instances (`iModelManager`).
-        - Logs activity (`LogManager`).
-
-    **Key responsibilities**:
-        - Storing and organizing messages, including system instructions, user instructions, and model responses.
-        - Handling asynchronous or synchronous execution of LLM calls and tool invocations.
-        - Providing a consistent interface for "operate," "chat," "communicate," "parse," etc.
-
-    Attributes:
-        user (SenderRecipient | None):
-            The user or "owner" of this branch (often tied to a session).
-        name (str | None):
-            A human-readable name for this branch.
-
-    Note:
-        Actual implementations for chat, parse, operate, etc., are referenced
-        via lazy loading or modular imports. You typically won't need to
-        subclass `Branch`, but you can instantiate it and call the
-        associated methods for complex orchestrations.
-    """
-
-    user: SenderRecipient | None = Field(
-        None,
-        description=(
-            "The user or sender of the branch, often a session object or "
-            "an external user identifier. Not to be confused with the "
-            "LLM API's user parameter."
-        ),
-    )
-
-    name: str | None = Field(
-        None,
-        description="A human-readable name of the branch (optional).",
-    )
+    user: SenderRecipient | None = None
+    name: str | None = None
 
     _message_manager: MessageManager | None = PrivateAttr(None)
     _action_manager: ActionManager | None = PrivateAttr(None)
@@ -159,13 +113,13 @@ class Branch(Element, Relational):
         *,
         user: "SenderRecipient" = None,
         name: str | None = None,
-        messages: Pile[RoledMessage] = None,  # message manager kwargs
+        messages: Pile[RoledMessage] = None,
         system: System | JsonValue = None,
         system_sender: "SenderRecipient" = None,
-        chat_model: iModel | dict | str = None,  # iModelManager kwargs
+        chat_model: iModel | dict | str = None,
         parse_model: iModel | dict | str = None,
-        tools: FuncTool | list[FuncTool] = None,  # ActionManager kwargs
-        log_config: DataLoggerConfig | dict = None,  # LogManager kwargs
+        tools: FuncTool | list[FuncTool] = None,
+        log_config: DataLoggerConfig | dict = None,
         system_datetime: bool | str = None,
         system_template=None,
         system_template_context: dict = None,
@@ -173,63 +127,12 @@ class Branch(Element, Relational):
         use_lion_system_message: bool = False,
         **kwargs,
     ):
-        """
-        Initializes a `Branch` with references to managers and an optional mailbox.
-
-        Args:
-            user (SenderRecipient, optional):
-                The user or sender context for this branch.
-            name (str | None, optional):
-                A human-readable name for this branch.
-            messages (Pile[RoledMessage], optional):
-                Initial messages for seeding the MessageManager.
-            system (System | JsonValue, optional):
-                Optional system-level configuration or message for the LLM.
-            system_sender (SenderRecipient, optional):
-                Sender to attribute to the system message if it is added.
-            chat_model (iModel, optional):
-                The primary "chat" iModel for conversation. If not provided,
-                uses default provider and model from settings.
-            parse_model (iModel, optional):
-                The "parse" iModel for structured data parsing.
-                Defaults to chat_model if not provided.
-            tools (FuncTool | list[FuncTool], optional):
-                Tools or a list of tools for the ActionManager.
-            log_config (LogManagerConfig | dict, optional):
-                Configuration dict or object for the LogManager.
-            system_datetime (bool | str, optional):
-                Whether to include timestamps in system messages (True/False)
-                or a string format for datetime.
-            system_template (jinja2.Template | str, optional):
-                **Deprecated.** Template rendering has been removed from
-                the message system. Passing this parameter raises a
-                ``DeprecationWarning`` and has no effect; it will be
-                removed in a future release.
-            system_template_context (dict, optional):
-                **Deprecated.** See ``system_template``.
-            logs (Pile[Log], optional):
-                Existing logs to seed the LogManager.
-            use_lion_system_message (bool, optional):
-                If `True`, uses the Lion system message for the branch.
-            **kwargs:
-                Additional parameters passed to `Element` parent init.
-        """
         super().__init__(user=user, name=name, **kwargs)
 
-        # --- MessageManager ---
         from lionagi.protocols.messages.manager import MessageManager
 
         self._message_manager = MessageManager(messages=messages)
-        # Universal signal emission: every message any path adds (CLI stream,
-        # API turn, tool act) raises its bus signal through this one hook, so
-        # observer-powered orchestration is transport-agnostic. Scheduled in the
-        # background (see _schedule_emit) and drained at operation boundaries.
         self._message_manager._on_message_added.append(self._schedule_emit)
-        # NOTE: the ordered-persistence hook (_persist_via_bus, ADR-0023b) is NOT
-        # registered here. It is async, and the *sync* add_message path (used for
-        # the construction-time system message) rejects async callbacks. The CLI
-        # live-persist wiring registers it via hooks.route_message_persistence in
-        # an async context, after which only a_add_message is used.
 
         if system_template is not None:
             import warnings
@@ -294,12 +197,10 @@ class Branch(Element, Relational):
 
         self._imodel_manager = iModelManager(chat=chat_model, parse=parse_model)
 
-        # --- ActionManager ---
         self._action_manager = ActionManager()
         if tools:
             self.register_tools(tools)
 
-        # --- LogManager ---
         if log_config:
             if isinstance(log_config, dict):
                 log_config = DataLoggerConfig(**log_config)
@@ -309,12 +210,8 @@ class Branch(Element, Relational):
 
         self._operation_manager = OperationManager()
 
-    # -------------------------------------------------------------------------
-    # Properties to expose managers and core data
-    # -------------------------------------------------------------------------
     @property
     def system(self) -> System | None:
-        """The system message/configuration, if any."""
         return self._message_manager.system
 
     @property
@@ -323,28 +220,20 @@ class Branch(Element, Relational):
 
     @property
     def msgs(self) -> MessageManager:
-        """Returns the associated MessageManager."""
         return self._message_manager
 
     @property
     def acts(self) -> ActionManager:
-        """Returns the associated ActionManager for tool management."""
         return self._action_manager
 
     @property
     def mdls(self) -> iModelManager:
-        """Returns the associated iModelManager."""
         return self._imodel_manager
 
     @property
     def progression(self) -> Progression:
-        """Active message ordering for LLM calls.
-
-        If metadata contains 'current_progression', uses that (agent-managed
-        subset). Otherwise returns the full progression from MessageManager.
-        Context tools modify current_progression to evict messages from the
-        LLM's view without deleting them from the conversation record.
-        """
+        # metadata['current_progression'] is an agent-managed subset that
+        # evicts messages from LLM view without deleting them
         cp = self.metadata.get("current_progression")
         if cp is not None:
             return cp
@@ -352,63 +241,36 @@ class Branch(Element, Relational):
 
     @property
     def messages(self) -> Pile[RoledMessage]:
-        """Convenience property to retrieve all messages from MessageManager."""
         return self._message_manager.messages
 
     @property
     def token_budget(self):
-        """Current token budget: used, limit, remaining, usage_pct.
-
-        Reads context window from the provider's CONTEXT_WINDOWS dict.
-        Uses branch.progression (respects evicted messages).
-        """
         from lionagi.service.token_budget import get_token_budget
 
         return get_token_budget(self)
 
     @property
     def logs(self) -> Pile[Log]:
-        """Convenience property to retrieve all logs from the LogManager."""
         return self._log_manager.logs
 
     @property
     def chat_model(self) -> iModel:
-        """
-        The primary "chat" model (`iModel`) used for conversational LLM calls.
-        """
         return self._imodel_manager.chat
 
     @chat_model.setter
     def chat_model(self, value: iModel) -> None:
-        """
-        Sets the primary "chat" model in the iModelManager.
-
-        Args:
-            value (iModel): The new chat model to register.
-        """
         self._imodel_manager.register_imodel("chat", value)
 
     @property
     def parse_model(self) -> iModel:
-        """The "parse" model (`iModel`) used for structured data parsing."""
         return self._imodel_manager.parse
 
     @parse_model.setter
     def parse_model(self, value: iModel) -> None:
-        """
-        Sets the "parse" model in the iModelManager.
-
-        Args:
-            value (iModel): The new parse model to register.
-        """
         self._imodel_manager.register_imodel("parse", value)
 
     @property
     def tools(self) -> dict[str, Tool]:
-        """
-        All registered tools (actions) in the ActionManager,
-        keyed by their tool names or IDs.
-        """
         return self._action_manager.registry
 
     def get_operation(self, operation: str) -> Callable | None:
@@ -417,38 +279,19 @@ class Branch(Element, Relational):
         return self._operation_manager.registry.get(operation)
 
     async def emit(self, event: Any) -> list[Any]:
-        """Emit an event to the owning session's observer, if attached.
-
-        Set by ``Session.include_branches``. When the branch is standalone
-        (no session), emission is a no-op returning ``[]``. This is how a
-        tool or operation running in a branch raises a typed structured-output
-        event into the session's reactive bus.
-        """
+        """Emit an event to the session observer. No-op when standalone."""
         if self._observer is None:
             return []
         return await self._observer.emit(event)
 
     async def authorize(self, action: Any) -> bool:
-        """Consult the session's pre-invoke governance gate for ``action``.
-
-        Delegates to ``observer.authorize`` (ADR-0076 Follow-up 1). A standalone
-        branch (no observer) always allows, so ungoverned branches are unaffected.
-        Used by tool execution to block a denied call before it runs.
-        """
+        """Pre-invoke governance gate. Standalone branches always allow."""
         if self._observer is None:
             return True
         return await self._observer.authorize(action)
 
     async def _persist_via_bus(self, msg: Any) -> None:
-        """``on_message_added`` hook: drive ordered persistence on the hook bus.
-
-        When a hook bus is attached (``_hooks`` — set by CLI live-persist wiring),
-        emit ``MESSAGE_ADD`` so the registered persistence handler writes this
-        message through the one transport (ADR-0023b). Unlike ``_schedule_emit``
-        this is awaited inside the message-add, so per-branch message order is
-        preserved (progression appends must not race). No-op without a bus, so
-        library and API usage are unaffected.
-        """
+        """on_message_added hook: emit MESSAGE_ADD for ordered persistence."""
         if self._hooks is None:
             return
         from lionagi.hooks.bus import HookPoint
@@ -456,13 +299,7 @@ class Branch(Element, Relational):
         await self._hooks.emit(HookPoint.MESSAGE_ADD, branch_id=str(self.id), message=msg)
 
     def _schedule_emit(self, msg: Any) -> None:
-        """``on_message_added`` hook: schedule this message's bus emission.
-
-        Fire-and-forget (tracked in ``_signal_tasks``, drained by
-        ``drain_signals``) so a slow observer handler never stalls the message
-        pipeline — the same non-blocking contract the CLI stream loop relied on,
-        now applied to EVERY transport. No-op without an observer.
-        """
+        """on_message_added hook: fire-and-forget signal emission."""
         if self._observer is None:
             return
         import asyncio
@@ -472,19 +309,11 @@ class Branch(Element, Relational):
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # Sync add outside an event loop — emission is async-only; skip.
-            # (Not a real orchestration path; observers run under async ops.)
             return
         self._signal_tasks.append(loop.create_task(emit_message(self, msg)))
 
     async def drain_signals(self) -> None:
-        """Await all pending background emissions and clear the queue.
-
-        Called at operation boundaries (run finally, operate/ReAct turn) so a
-        signal emitted on turn N — e.g. a ``SpawnRequest`` — is observed before
-        the orchestration decides quiescence. Handler exceptions are collected,
-        not raised, mirroring the prior CLI-stream drain semantics.
-        """
+        """Await pending background emissions. Called at operation boundaries."""
         if not self._signal_tasks:
             return
         from lionagi.ln.concurrency import gather as _gather
@@ -493,14 +322,7 @@ class Branch(Element, Relational):
         await _gather(*tasks, return_exceptions=True)
 
     async def _observed_run(self, coro: Any) -> Any:
-        """Wrap a public branch operation with bus lifecycle + signal drain.
-
-        One boundary for every transport/loop (operate, ReAct, communicate):
-        emit RunStart → run → drain this run's emissions (so a SpawnRequest the
-        turn produced is observed before the orchestration settles) → emit
-        RunEnd / RunFailed. ``coro`` is the already-constructed operation
-        coroutine. No-op lifecycle when standalone; the drain is always safe.
-        """
+        """Wrap an operation with RunStart/RunEnd lifecycle + signal drain."""
         has_observer = self._observer is not None
         if has_observer:
             from .signal import RunStart
@@ -523,49 +345,23 @@ class Branch(Element, Relational):
         return result
 
     async def emit_and_log(self, event: Any) -> list[Any]:
-        """Log an event to the DataLogger AND emit it onto the reactive bus.
-
-        The log is the durable record (persisted, outlives the session); the
-        emission is the in-memory reactive trace handlers can react to. Called
-        where an ``Event`` (an ``APICalling``, a tool call) completes, so
-        ``session.observe(APICalling, EventStatus.FAILED)`` reacts to a failed
-        call instead of only finding it after the fact in the logs. Emission is a
-        no-op for a standalone branch (no session); logging always happens.
-        """
+        """Log an event durably AND emit it onto the reactive bus."""
         self._log_manager.log(event)
         return await self.emit(event)
 
     def control(self, directive: "LoopDirective", *, reason: str | None = None) -> None:
-        """Queue a loop-control directive.
-
-        Called from an observer handler to steer the in-flight run.
-        The run loop polls this after each message signal.
-        """
+        """Queue a loop-control directive for the in-flight run."""
         from lionagi.session.control import LoopControl
 
         self._loop_control = LoopControl(directive, reason)
 
     def poll_control(self) -> "LoopControl | None":
-        """Return and CLEAR any queued directive (one-shot).
-
-        Returns ``None`` when no directive is pending.
-        """
+        """Return and clear any queued directive (one-shot)."""
         ctrl, self._loop_control = self._loop_control, None
         return ctrl
 
     @property
     def capabilities(self) -> Any:
-        """The agent's capability grant — an ``Operable`` of named typed
-        ``Spec``s the agent is allowed to emit. The streaming run loop parses
-        each assistant message against it: keys must be a subset of
-        ``capabilities.allowed()`` (else the emission is illegal and dropped),
-        and present capabilities are raised as a ``StructuredOutput`` bundle
-        onto the session bus. ``None`` (default) disables per-message
-        extraction; tool-use signals still fire.
-
-        Set the runtime grant directly (pure data, no prompt change), or use
-        :meth:`grant_capabilities` to also tell the model what it may emit.
-        """
         return self._capabilities
 
     @capabilities.setter
@@ -573,15 +369,7 @@ class Branch(Element, Relational):
         self._capabilities = operable
 
     def grant_capabilities(self, operable: Any, *, prompt: bool = True) -> None:
-        """Opt this branch into per-message capability emission.
-
-        Sets the runtime grant and (when ``prompt``) injects an idempotent
-        capability-instruction block into the system message so the model knows
-        which structured fields it may emit. Re-granting replaces the block;
-        :meth:`revoke_capabilities` removes it. Old strict behavior
-        (``operate(response_format=...)``) is untouched — that's the
-        final-output parse; this is per-message emission.
-        """
+        """Set the capability grant and optionally inject its prompt block."""
         self._capabilities = operable
         if prompt:
             from .capabilities import CAP_BEGIN, CAP_END, render_capabilities_prompt
@@ -592,7 +380,6 @@ class Branch(Element, Relational):
             self.msgs.set_system(self.msgs.create_system(system=combined))
 
     def revoke_capabilities(self) -> None:
-        """Clear the capability grant and remove its system-prompt block."""
         self._capabilities = None
         base = _strip_capability_block(self._system_text())
         if self.msgs.system is not None:
@@ -604,38 +391,11 @@ class Branch(Element, Relational):
             return ""
         return sys_msg.content.system_message or ""
 
-    # -------------------------------------------------------------------------
-    # Cloning
-    # -------------------------------------------------------------------------
     async def aclone(self, sender: ID.Ref = None) -> "Branch":
-        """
-        Asynchronously clones this `Branch` with optional new sender ID.
-
-        Args:
-            sender (ID.Ref, optional):
-                If provided, this ID is set as the sender for all cloned messages.
-
-        Returns:
-            Branch: A new branch instance, containing cloned state.
-        """
         async with self.msgs.messages:
             return self.clone(sender)
 
     def clone(self, sender: ID.Ref = None) -> "Branch":
-        """
-        Clones this `Branch` synchronously, optionally updating the sender ID.
-
-        Args:
-            sender (ID.Ref, optional):
-                If provided, all messages in the clone will have this sender ID.
-                Otherwise, uses the current branch's ID.
-
-        Raises:
-            ValueError: If `sender` is not a valid ID.Ref.
-
-        Returns:
-            Branch: A new branch object with a copy of the messages, system info, etc.
-        """
         if sender is not None:
             if not ID.is_id(sender):
                 raise ValueError(f"Cannot clone Branch: '{sender}' is not a valid sender ID.")
@@ -645,7 +405,6 @@ class Branch(Element, Relational):
         tools = (
             list(self._action_manager.registry.values()) if self._action_manager.registry else None
         )
-        # Transfer iModels: CLI endpoints get a fresh copy, API endpoints share
         chat_model = self.chat_model.copy() if self.chat_model.is_cli else self.chat_model
         parse_model = (
             self.parse_model.copy()
@@ -676,15 +435,6 @@ class Branch(Element, Relational):
         self._action_manager.register_tool(tools, update=update)
 
     def register_tools(self, tools: FuncTool | list[FuncTool] | LionTool, update: bool = False):
-        """
-        Registers one or more tools in the ActionManager.
-
-        Args:
-            tools (FuncTool | list[FuncTool] | LionTool):
-                A single tool or a list of tools to register.
-            update (bool, optional):
-                If `True`, updates existing tools with the same name.
-        """
         tools = [tools] if not isinstance(tools, list) else tools
         for tool in tools:
             self._register_tool(tool, update=update)
@@ -693,20 +443,7 @@ class Branch(Element, Relational):
     def _serialize_user(self, v):
         return str(v) if v else None
 
-    # -------------------------------------------------------------------------
-    # Conversion / Serialization
-    # -------------------------------------------------------------------------
     def to_df(self, *, progression: Progression = None):
-        """
-        Convert branch messages into a `pandas.DataFrame`.
-
-        Args:
-            progression (Progression, optional):
-                A custom message ordering. If `None`, uses the stored progression.
-
-        Returns:
-            pd.DataFrame: Each row represents a message, with columns defined by MESSAGE_FIELDS.
-        """
         from lionagi.protocols.generic.pile import Pile
         from lionagi.protocols.messages.base import MESSAGE_FIELDS
 
@@ -757,7 +494,6 @@ class Branch(Element, Relational):
             raise ValueError(f"Tool with name '{name}' already exists.")
 
         async def _connect(**kwargs):
-            """connect to an api endpoint"""
             api_call = await imodel.invoke(**kwargs)
             await self.emit_and_log(api_call)
             return api_call.response
@@ -821,17 +557,6 @@ class Branch(Element, Relational):
 
     @classmethod
     def from_dict(cls, data: dict):
-        """
-        Creates a `Branch` instance from a serialized dictionary.
-
-        Args:
-            data (dict):
-                Must include (or optionally include) `messages`, `logs`,
-                `chat_model`, `parse_model`, `system`, and `log_config`.
-
-        Returns:
-            Branch: A new `Branch` instance based on the deserialized data.
-        """
         dict_ = {
             "messages": data.pop("messages", Unset),
             "logs": data.pop("logs", Unset),
@@ -841,43 +566,26 @@ class Branch(Element, Relational):
             "log_config": data.pop("log_config", Unset),
         }
 
-        # When restoring from serialized state, the system message is already
-        # in the messages pile. Don't pass it again to __init__ or it'll duplicate.
+        # System message is already in the serialized messages pile — skip re-adding
         messages_val = dict_.get("messages", Unset)
         system_val = dict_.get("system", Unset)
         if messages_val is not Unset and system_val is not Unset:
-            dict_["system"] = Unset  # already in messages, skip re-adding
+            dict_["system"] = Unset
 
         params = {}
-
-        # Merge in the rest of the data
         for k, v in data.items():
-            # If the item is a dict with an 'id', we expand it
             if isinstance(v, dict) and "id" in v:
                 params.update(v)
             else:
                 params[k] = v
 
         params.update(dict_)
-        # Remove placeholders (Unset) so we don't incorrectly assign them
         return cls(**{k: v for k, v in params.items() if v is not Unset})
 
     def dump_logs(self, clear: bool = True, persist_path=None):
-        """
-        Dumps the log to a file or clears it.
-
-        Args:
-            clear (bool, optional):
-                If `True`, clears the log after dumping.
-            persist_path (str, optional):
-                The file path to save the log to.
-        """
         self._log_manager.dump(clear=clear, persist_path=persist_path)
 
     async def adump_logs(self, clear: bool = True, persist_path=None):
-        """
-        Asynchronously dumps the log to a file or clears it.
-        """
         await self._log_manager.adump(clear=clear, persist_path=persist_path)
 
     async def __aenter__(self):
@@ -886,9 +594,6 @@ class Branch(Element, Relational):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self._log_manager.adump(clear=True)
 
-    # -------------------------------------------------------------------------
-    # Asynchronous Operations (chat, parse, operate, etc.)
-    # -------------------------------------------------------------------------
     async def chat(
         self,
         instruction: Instruction | JsonValue = None,
@@ -908,53 +613,7 @@ class Branch(Element, Relational):
         include_token_usage_to_model: bool = False,
         **kwargs,
     ) -> tuple[Instruction, AssistantResponse]:
-        """
-        Invokes the chat model with the current conversation history. This method does not
-        automatically add messages to the branch. It is typically used for orchestrating.
-
-        **High-level flow**:
-            1. Construct a sequence of messages from the stored progression.
-            2. Integrate any pending action responses into the context.
-            3. Invoke the chat model with the combined messages.
-            4. Capture and return the final response as an `AssistantResponse`.
-
-        Args:
-            instruction (Any):
-                Main user instruction text or structured data.
-            guidance (Any):
-                Additional system or user guidance text.
-            context (Any):
-                Context data to pass to the model.
-            sender (Any):
-                The user or entity sending this message (defaults to `Branch.user`).
-            recipient (Any):
-                The recipient of this message (defaults to `self.id`).
-            request_fields (Any):
-                Partial field-level validation reference (rarely used).
-            response_format (type[BaseModel], optional):
-                A Pydantic model type for structured model responses.
-            progression (Any):
-                Custom ordering of messages in the conversation.
-            imodel (iModel, optional):
-                An override for the chat model to use. If not provided, uses `self.chat_model`.
-            tool_schemas (Any, optional):
-                Additional schemas for tool invocation in function-calling.
-            images (list, optional):
-                Optional images relevant to the model's context.
-            image_detail (Literal["low", "high", "auto"], optional):
-                Level of detail for image-based context (if relevant).
-            plain_content (str, optional):
-                Plain text content, will override any other content.
-            return_ins_res_message:
-                If `True`, returns the final `Instruction` and `AssistantResponse` objects.
-                else, returns only the response content.
-            **kwargs:
-                Additional parameters for the LLM invocation.
-
-        Returns:
-            tuple[Instruction, AssistantResponse]:
-                The `Instruction` object and the final `AssistantResponse`.
-        """
+        """Invoke the chat model. Does not auto-add messages to the branch."""
         from lionagi.operations.chat.chat import ChatParam, chat
 
         return await chat(
@@ -994,43 +653,7 @@ class Branch(Element, Relational):
         strict: bool = False,
         response_format: type[BaseModel] = None,
     ) -> BaseModel | dict | str | None:
-        """
-        Attempts to parse text into a structured Pydantic model using parse model logic. New messages are not appeneded to conversation context.
-
-        If fuzzy matching is enabled, tries to map partial or uncertain keys
-        to the known fields of the model. Retries are performed if initial parsing fails.
-
-        Args:
-            text (str):
-                The raw text to parse.
-            handle_validation (Literal["raise","return_value","return_none"]):
-                What to do if parsing fails (default: "return_value").
-            max_retries (int):
-                Number of times to retry parsing on failure (default: 3).
-            request_type (type[BaseModel], optional):
-                The Pydantic model to parse into.
-            operative (Operative, optional):
-                An `Operative` object with known request model and settings.
-            similarity_algo (str):
-                Algorithm name for fuzzy field matching.
-            similarity_threshold (float):
-                Threshold for matching (0.0 - 1.0).
-            fuzzy_match (bool):
-                Whether to attempt fuzzy matching for unmatched fields.
-            handle_unmatched (Literal["ignore","raise","remove","fill","force"]):
-                Policy for unrecognized fields (default: "force").
-            fill_value (Any):
-                Default placeholder for missing fields (if fill is used).
-            fill_mapping (dict[str, Any] | None):
-                A mapping of specific fields to fill values.
-            strict (bool):
-                If True, raises errors on ambiguous fields or data types.
-
-        Returns:
-            BaseModel | dict | str | None:
-                Parsed model instance, or a fallback based on `handle_validation`.
-        """
-
+        """Parse text into a Pydantic model. Does not add messages to context."""
         _pms = {k: v for k, v in locals().items() if k not in ("self", "_pms") and v is not None}
         from lionagi.operations.parse.parse import parse, prepare_parse_kws
 
@@ -1070,92 +693,7 @@ class Branch(Element, Relational):
         middle: "Middle | None" = None,
         **kwargs,
     ) -> list | BaseModel | None | dict | str:
-        """
-        Orchestrates an "operate" flow with optional tool invocation and
-        structured response validation. Messages **are** automatically
-        added to the conversation.
-
-        CLI endpoints (``chat_model.is_cli``) stream via ``run()`` and
-        accumulate text; API endpoints round-trip through ``communicate()``.
-        Pass ``middle`` to override the dispatch explicitly, or use
-        ``stream_persist``/``persist_dir`` for JSONL chunk logging on CLI runs.
-
-        **Workflow**:
-        1) Builds or updates an `Operative` object to specify how the LLM should respond.
-        2) Sends an instruction (`instruct`) or direct `instruction` text to `branch.chat()`.
-        3) Optionally validates/parses the result into a model or dictionary.
-        4) If `invoke_actions=True`, any requested tool calls are automatically invoked.
-        5) Returns either the final structure, raw response, or an updated `Operative`.
-
-        Args:
-            branch (Branch):
-                The active branch that orchestrates messages, models, and logs.
-            instruct (Instruct, optional):
-                Contains the instruction, guidance, context, etc. If not provided,
-                uses `instruction`, `guidance`, `context` directly.
-            instruction (Instruction | JsonValue, optional):
-                The main user instruction or content for the LLM.
-            guidance (JsonValue, optional):
-                Additional system or user instructions.
-            context (JsonValue, optional):
-                Extra context data.
-            sender (SenderRecipient, optional):
-                The sender ID for newly added messages.
-            recipient (SenderRecipient, optional):
-                The recipient ID for newly added messages.
-            progression (Progression, optional):
-                Custom ordering of conversation messages.
-
-            chat_model (iModel, optional):
-                The LLM used for the main chat operation. Defaults to `branch.chat_model`.
-            invoke_actions (bool, optional):
-                If `True`, executes any requested tools found in the LLM's response.
-            tool_schemas (list[dict], optional):
-                Additional schema definitions for tool-based function-calling.
-            images (list, optional):
-                Optional images appended to the LLM context.
-            image_detail (Literal["low","high","auto"], optional):
-                The level of image detail, if relevant.
-            parse_model (iModel, optional):
-                Model used for deeper or specialized parsing, if needed.
-            skip_validation (bool, optional):
-                If `True`, bypasses final validation and returns raw text or partial structure.
-            tools (ToolRef, optional):
-                Tools to be registered or made available if `invoke_actions` is True.
-            operative (Operative, optional):
-                If provided, reuses an existing operative's config for parsing/validation.
-            response_format (type[BaseModel], optional):
-                Expected Pydantic model for the final response (alias for `operative.request_type`).
-                rather than the structured or raw output.
-            actions (bool, optional):
-                If `True`, signals that function-calling or "action" usage is expected.
-            reason (bool, optional):
-                If `True`, signals that the LLM should provide chain-of-thought or reasoning (where applicable).
-            action_strategy (Literal["sequential","concurrent"], optional):
-                The strategy for invoking tools (default: "concurrent").
-            verbose_action (bool, optional):
-                If `True`, logs detailed information about tool invocation.
-            field_models (list[FieldModel] | None, optional):
-                Field-level definitions or overrides for the model schema.
-            exclude_fields (list|dict|None, optional):
-                Which fields to exclude from final validation or model building.
-            handle_validation (Literal["raise","return_value","return_none"], optional):
-                How to handle parsing failures (default: "return_value").
-            include_token_usage_to_model:
-                If `True`, includes token usage in the model messages.
-            **kwargs:
-                Additional keyword arguments passed to the LLM via `branch.chat()`.
-
-        Returns:
-            list | BaseModel | None | dict | str:
-                - The parsed or raw response from the LLM,
-                - `None` if validation fails and `handle_validation='return_none'`,
-                - or the entire `Operative` object if `return_operative=True`.
-
-        Raises:
-            ValueError:
-                - If the LLM's response cannot be parsed into the expected format and `handle_validation='raise'`.
-        """
+        """Operate: chat + optional tool invocation + structured parse. Adds messages."""
         _pms = {
             k: v
             for k, v in locals().items()
@@ -1165,12 +703,6 @@ class Branch(Element, Relational):
             _pms.update(kwargs)
         from lionagi.operations.operate.operate import operate, prepare_operate_kw
 
-        # Run lifecycle (RunStart → RunEnd|RunFailed) + signal drain via the
-        # shared boundary. Orthogonal to capabilities (no grant required) — it
-        # reports the run, not an exercised capability. ``RunEnd.data`` unwraps
-        # so ``session.observe(ResultType)`` still fires on the final result;
-        # the per-message capability bundles are distinct payloads (no
-        # double-emit). No-op when the branch is standalone.
         return await self._observed_run(operate(self, **prepare_operate_kw(self, **_pms)))
 
     async def communicate(
@@ -1195,57 +727,7 @@ class Branch(Element, Relational):
         include_token_usage_to_model: bool = False,
         **kwargs,
     ) -> BaseModel | dict | str | None:
-        """
-        A simpler orchestration than `operate()`, typically without tool invocation. Messages are automatically added to the conversation.
-
-        **Flow**:
-          1. Sends an instruction (or conversation) to the chat model.
-          2. Optionally parses the response into a structured model or fields.
-          3. Returns either the raw string, the parsed model, or a dict of fields.
-
-        Args:
-            instruction (Instruction | dict, optional):
-                The user's main query or data.
-            guidance (JsonValue, optional):
-                Additional instructions or context for the LLM.
-            context (JsonValue, optional):
-                Extra data or context.
-            plain_content (str, optional):
-                Plain text content appended to the instruction.
-            sender (SenderRecipient, optional):
-                Sender ID (defaults to `Branch.user`).
-            recipient (SenderRecipient, optional):
-                Recipient ID (defaults to `self.id`).
-            progression (ID.IDSeq, optional):
-                Custom ordering of messages.
-            response_format (type[BaseModel], optional):
-                A Pydantic model the response is parsed into.
-            request_fields (dict|list[str], optional):
-                If you only need certain fields from the LLM's response.
-            chat_model (iModel, optional):
-                An alternative to the default chat model.
-            parse_model (iModel, optional):
-                If parsing is needed, you can override the default parse model.
-            skip_validation (bool, optional):
-                If True, returns the raw response string unvalidated.
-            images (list, optional):
-                Any relevant images.
-            image_detail (Literal["low","high","auto"], optional):
-                Image detail level (if used).
-            num_parse_retries (int, optional):
-                Maximum parsing retries (capped at 5).
-            clear_messages (bool, optional):
-                Whether to clear stored messages before sending.
-            **kwargs:
-                Additional arguments for the underlying LLM call.
-
-        Returns:
-            Any:
-                - Raw string (if `skip_validation=True`),
-                - A validated Pydantic model,
-                - A dict of the requested fields,
-                - or `None` if parsing fails and `handle_validation='return_none'`.
-        """
+        """One-shot chat + optional parse, without tool invocation. Adds messages."""
         _pms = {
             k: v
             for k, v in locals().items()
@@ -1282,45 +764,7 @@ class Branch(Element, Relational):
         interpret_model=None,
         **kwargs,
     ) -> str:
-        """
-        Interprets (rewrites) a user's raw input into a more formal or structured
-        LLM prompt. This function can be seen as a "prompt translator," which
-        ensures the user's original query is clarified or enhanced for better
-        LLM responses. Messages are not automatically added to the conversation.
-
-        The method calls `branch.chat()` behind the scenes with a system prompt
-        that instructs the LLM to rewrite the input. You can provide additional
-        parameters in `**kwargs` (e.g., `parse_model`, `skip_validation`, etc.)
-        if you want to shape how the rewriting is done.
-
-        Args:
-            branch (Branch):
-                The active branch context for messages, logging, etc.
-            text (str):
-                The raw user input or question that needs interpreting.
-            domain (str | None, optional):
-                Optional domain hint (e.g. "finance", "marketing", "devops").
-                The LLM can use this hint to tailor its rewriting approach.
-            style (str | None, optional):
-                Optional style hint (e.g. "concise", "detailed").
-            **kwargs:
-                Additional arguments passed to `branch.communicate()`,
-                such as `parse_model`, `skip_validation`, `temperature`, etc.
-
-        Returns:
-            str:
-                A refined or "improved" user prompt string, suitable for feeding
-                back into the LLM as a clearer instruction.
-
-        Example:
-            refined = await interpret(
-                branch=my_branch, text="How do I do marketing analytics?",
-                domain="marketing", style="detailed"
-            )
-            # refined might be "Explain step-by-step how to set up a marketing analytics
-            #  pipeline to track campaign performance..."
-        """
-
+        """Rewrite raw input into a clearer prompt. Does not add messages."""
         _pms = {
             k: v
             for k, v in locals().items()
@@ -1364,91 +808,10 @@ class Branch(Element, Relational):
         include_token_usage_to_model: bool = True,
         **kwargs,
     ):
-        """
-        Performs a multi-step "ReAct" flow (inspired by the ReAct paradigm in LLM usage),
-        which may include:
-        1) Optionally interpreting the user's original instructions via `branch.interpret()`.
-        2) Generating chain-of-thought analysis or reasoning using a specialized schema (`ReActAnalysis`).
-        3) Optionally expanding the conversation multiple times if the analysis indicates more steps (extensions).
-        4) Producing a final answer by invoking the branch's `instruct()` method.
-
-        Args:
-            branch (Branch):
-                The active branch context that orchestrates messages, models, and actions.
-            instruct (Instruct | dict[str, Any], optional):
-                The user's instruction object or a dict with equivalent keys.
-                If omitted, the loose ``instruction``/``guidance``/``context``
-                keywords are used instead (the same shape ``operate`` accepts).
-            instruction (Instruction | JsonValue, optional):
-                The main instruction, used when ``instruct`` is not given.
-            guidance (JsonValue, optional):
-                Strategic direction, overlaid onto ``instruct`` when provided.
-            context (JsonValue, optional):
-                Background data, overlaid onto ``instruct`` when provided.
-            interpret (bool, optional):
-                If `True`, first interprets (`branch.interpret`) the instructions to refine them
-                before proceeding. Defaults to `False`.
-            interpret_domain (str | None, optional):
-                Optional domain hint for the interpretation step.
-            interpret_style (str | None, optional):
-                Optional style hint for the interpretation step.
-            interpret_sample (str | None, optional):
-                Optional sample hint for the interpretation step.
-            interpret_kwargs (dict | None, optional):
-                Additional arguments for the interpretation step.
-            tools (Any, optional):
-                Tools to be made available for the ReAct process. If omitted or `None`,
-                and if no `tool_schemas` are provided, it defaults to `True` (all tools).
-            tool_schemas (Any, optional):
-                Additional or custom schemas for tools if function calling is needed.
-            response_format (type[BaseModel], optional):
-                The final schema for the user-facing output after the ReAct expansions.
-                If `None`, the output is raw text or an unstructured response.
-            extension_allowed (bool, optional):
-                Whether to allow multiple expansions if the analysis indicates more steps.
-                Defaults to `False`.
-            max_extensions (int | None, optional):
-                The max number of expansions if `extension_allowed` is `True`.
-                If omitted, no upper limit is enforced (other than logic).
-            response_kwargs (dict | None, optional):
-                Extra kwargs passed into the final `_instruct()` call that produces the
-                final output. Defaults to `None`.
-            return_analysis (bool, optional):
-                If `True`, returns both the final output and the list of analysis objects
-                produced throughout expansions. Defaults to `False`.
-            analysis_model (iModel | None, optional):
-                A custom LLM model for generating the ReAct analysis steps. If `None`,
-                uses the branch's default `chat_model`.
-            include_token_usage_to_model:
-                If `True`, includes token usage in the model messages.
-            verbose (bool):
-                If `True`, logs detailed information about the process.
-            verbose_length (int):
-                If `verbose=True`, limits the length of logged strings to this value.
-            **kwargs:
-                Additional keyword arguments passed into the initial `branch.operate()` call.
-
-        Returns:
-            Any | tuple[Any, list]:
-                - If `return_analysis=False`, returns only the final output (which may be
-                a raw string, dict, or structured model depending on `response_format`).
-                - If `return_analysis=True`, returns a tuple of (final_output, list_of_analyses).
-                The list_of_analyses is a sequence of the intermediate or extended
-                ReActAnalysis objects.
-
-        Notes:
-            - Messages are automatically added to the branch context during the ReAct process.
-            - If `max_extensions` is greater than 5, a warning is logged, and it is set to 5.
-            - If `interpret=True`, the user instruction is replaced by the interpreted
-            string before proceeding.
-            - The expansions loop continues until either `analysis.extension_needed` is `False`
-            or `extensions` (the remaining allowed expansions) is `0`.
-        """
+        """Multi-step think-act-observe loop with optional interpretation and extensions."""
         from lionagi.operations.ReAct.ReAct import ReAct
 
         instruct = _merge_instruct(instruct, instruction, guidance, context)
-
-        # Remove potential duplicate parameters from kwargs
         kwargs_filtered = {
             k: v for k, v in kwargs.items() if k not in {"verbose_analysis", "verbose_action"}
         }
@@ -1521,10 +884,8 @@ class Branch(Element, Relational):
             ParseParam,
         )
 
-        # Convert Instruct to dict if needed, overlaying loose instruction fields
         instruct_dict = _merge_instruct(instruct, instruction, guidance, context)
 
-        # Build InterpretContext if interpretation requested
         intp_param = None
         if interpret:
             intp_param = InterpretParam(
@@ -1535,7 +896,6 @@ class Branch(Element, Relational):
                 imodel_kw=interpret_kwargs or {},
             )
 
-        # Build ChatContext
         chat_param = ChatParam(
             guidance=instruct_dict.get("guidance"),
             context=instruct_dict.get("context"),
@@ -1552,7 +912,6 @@ class Branch(Element, Relational):
             imodel_kw=kwargs,
         )
 
-        # Build ActionContext
         action_param = None
         if tools is not None or tool_schemas is not None:
             from lionagi.operations.act.act import _get_default_call_params
@@ -1565,7 +924,6 @@ class Branch(Element, Relational):
                 verbose_action=False,
             )
 
-        # Build ParseContext
         from lionagi.operations.parse.parse import get_default_call
 
         parse_param = ParseParam(
@@ -1577,7 +935,6 @@ class Branch(Element, Relational):
             imodel_kw={},
         )
 
-        # Response context for final answer
         resp_ctx = response_kwargs or {}
         if response_format:
             resp_ctx["response_format"] = response_format
@@ -1632,18 +989,7 @@ class Branch(Element, Relational):
         response_format=None,
         **kwargs,
     ) -> "AsyncGenerator[RoledMessage, None]":
-        """Stream Messages from a CLI endpoint.
-
-        Yields Instruction, AssistantResponse, ActionRequest, and
-        ActionResponse messages as they arrive from the stream.
-
-        Pass ``chat_model`` to override the branch default, enabling
-        multi-model conversations on a single branch.
-
-        Set ``stream_persist=True`` to enable real-time JSONL logging
-        of each message as it arrives, with branch state consolidated
-        on exit (including timeout/interrupt).
-        """
+        """Stream messages from a CLI endpoint."""
         from lionagi.operations.run.run import run as _run
         from lionagi.operations.types import RunParam
 
@@ -1666,6 +1012,3 @@ class Branch(Element, Relational):
 
         async for msg in _run(self, instruction, RunParam(**param_kw)):
             yield msg
-
-
-# File: lionagi/session/branch.py

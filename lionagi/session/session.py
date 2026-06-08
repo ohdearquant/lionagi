@@ -36,13 +36,7 @@ from .exchange import Exchange
 
 
 class Session(Node, Relational):
-    """
-    Manages multiple conversation branches in a session.
-
-    Attributes:
-        branches (Pile | None): Collection of conversation branches.
-        default_branch (Branch | None): The default conversation branch.
-    """
+    """Multi-branch conversation session with exchange, observer, and hook bus."""
 
     branches: Pile[Branch] = Field(
         default_factory=lambda: Pile(item_type={Branch}, strict_type=False)
@@ -89,22 +83,7 @@ class Session(Node, Relational):
         self._operation_manager.register(operation, func, update=update)
 
     def operation(self, name: str = None, *, update: bool = False):
-        """
-        Decorator to automatically register functions as operations.
-
-        Args:
-            name: Operation name. If None, uses the function's __name__.
-            update: Whether to update if operation already exists.
-
-        Usage:
-            @session.operation()
-            async def read_issue():
-                ...
-
-            @session.operation("custom_name")
-            async def some_function():
-                ...
-        """
+        """Decorator to register a function as a named operation."""
 
         def decorator(func: Callable) -> Callable:
             operation_name = name if name is not None else func.__name__
@@ -116,13 +95,7 @@ class Session(Node, Relational):
     async def run_operation(
         self, operation: str, *, branch: Branch | ID.Ref | None = None, **kwargs: Any
     ) -> Any:
-        """Directly invoke a registered operation (or built-in branch method).
-
-        Resolves ``operation`` via ``branch.get_operation`` — a registered
-        ``@session.operation()`` function or a built-in verb (chat, operate,
-        ReAct, …) — and calls it with ``**kwargs``. The direct counterpart to
-        graph execution: handy for observer handlers and one-off calls.
-        """
+        """Invoke a registered or built-in branch operation by name."""
         b = branch or self.default_branch
         if isinstance(b, str | UUID):
             b = self.branches[b]
@@ -131,22 +104,18 @@ class Session(Node, Relational):
             raise ValueError(f"Unknown operation: {operation!r}")
         return await meth(**kwargs)
 
-    # ==================== Hook bus ====================
-
     @property
     def hooks(self) -> "HookBus":
-        """Per-session hook bus (ADR-0023), lazily created and bound to the observer."""
+        """Lazily-created per-session hook bus."""
         if self._hooks is None:
             from lionagi.hooks import build_session_bus
 
             self._hooks = build_session_bus(observer=self.observer)
         return self._hooks
 
-    # ==================== Reactive event observation ====================
-
     @property
     def observer(self) -> "SessionObserver":
-        """Lazily-created reactive event dispatcher bound to this session."""
+        """Lazily-created reactive event dispatcher."""
         if self._observer is None:
             from .observer import SessionObserver
 
@@ -159,43 +128,21 @@ class Session(Node, Relational):
         handler: Callable | None = None,
         role: str | None = None,
     ) -> Any:
-        """Subscribe a handler to one or more AND-composed conditions. Usable as a decorator.
-
-        Handlers receive ``(matched, session)`` and fire when every condition
-        matches an emitted payload. Each *key* is a type, a Filter, or an
-        ``__as_filter__`` provider (``EventStatus.FAILED``) —
-        ``session.observe(APICalling, EventStatus.FAILED)`` reacts to failed API
-        calls. Mirrors ``@session.operation()``.
-
-        ``role`` subscribes by the emitting agent's role name — fires on anything
-        emitted by an agent with that role regardless of capability type.
-        """
+        """Subscribe a handler to AND-composed conditions. Usable as a decorator."""
         return self.observer.observe(*keys, handler=handler, role=role)
 
     def route(self, condition: Callable, *, into: str) -> "SessionObserver":
-        """Auto-append emitted events matching ``condition`` to a named stream."""
         return self.observer.route(condition, into=into)
 
     def gate(self, check: Callable) -> "SessionObserver":
-        """Set the permission gate run before an emitted event is honored.
-
-        The governance seam — charter/gate mediation plugs in here. Return
-        falsy (or raise) to deny: the event is still recorded, but no
-        observers fire.
-        """
+        """Set the governance gate consulted before events are dispatched."""
         return self.observer.gate(check)
 
     async def emit(self, event: Any) -> list[Any]:
-        """Emit an event: gate → record → route → dispatch. Returns handler results."""
         return await self.observer.emit(event)
 
     async def authorize(self, action: Any) -> bool:
-        """Consult the pre-invoke governance gate: may ``action`` proceed?
-
-        The blocking counterpart to ``emit``'s post-record gate — consulted
-        before an operation runs (ADR-0076 Follow-up 1). Allows when no gate is
-        set. Denials are recorded onto the observer Flow as ``GateDenied``.
-        """
+        """Pre-invoke governance gate. Allows when no gate is set."""
         return await self.observer.authorize(action)
 
     @model_validator(mode="after")
@@ -215,8 +162,6 @@ class Session(Node, Relational):
         return None
 
     def get_branch(self, branch: ID.Ref | str, default: Any = ..., /) -> Branch:
-        """Get a branch by its ID or name."""
-
         with contextlib.suppress(ItemNotFoundError, ValueError):
             id_ = ID.get_id(branch)
             return self.branches[id_]
@@ -243,7 +188,6 @@ class Session(Node, Relational):
         as_default_branch: bool = False,
         **kwargs,
     ) -> Branch:
-        """Create and include a new branch in the session."""
         params = {
             k: v
             for k, v in locals().items()
@@ -280,49 +224,22 @@ class Session(Node, Relational):
             del branch
 
     async def asplit(self, branch: ID.Ref) -> Branch:
-        """
-        Split a branch, creating a new branch with the same messages and tools.
-
-        Args:
-            branch: The branch to split or its identifier.
-
-        Returns:
-            The newly created branch.
-        """
         async with self.branches:
             return self.split(branch)
 
     def split(self, branch: ID.Ref) -> Branch:
-        """
-        Split a branch, creating a new branch with the same messages and tools.
-
-        Args:
-            branch: The branch to split or its identifier.
-
-        Returns:
-            The newly created branch.
-        """
         branch: Branch = self.branches[branch]
         branch_clone = branch.clone(sender=self.id)
         self.include_branches(branch_clone)
         return branch_clone
 
     def change_default_branch(self, branch: ID.Ref):
-        """
-        Change the default branch of the session.
-
-        Args:
-            branch: The branch to set as default or its identifier.
-        """
         branch = self.branches[branch]
         if not isinstance(branch, Branch):
             raise ValueError("Input value for branch is not a valid branch.")
         self.default_branch = branch
 
-    # ==================== Exchange Interface ====================
-
     def register_participant(self, entity_id: UUID) -> Flow[Message, Progression]:
-        """Register an external entity (non-branch) with the exchange."""
         return self.exchange.register(entity_id)
 
     def send(
@@ -332,23 +249,18 @@ class Session(Node, Relational):
         content: Any,
         channel: str | None = None,
     ) -> Message:
-        """Queue a message via the exchange."""
         return self.exchange.send(sender, recipient, content, channel)
 
     def receive(self, owner_id: UUID, sender: UUID | None = None) -> list[Message]:
-        """Peek at inbound messages for an entity."""
         return self.exchange.receive(owner_id, sender)
 
     def pop_message(self, owner_id: UUID, sender: UUID) -> Message | None:
-        """Pop oldest message from sender's inbox (FIFO)."""
         return self.exchange.pop_message(owner_id, sender)
 
     async def collect(self, owner_id: UUID) -> int:
-        """Route one entity's outbox messages to recipients."""
         return await self.exchange.collect(owner_id)
 
     async def sync(self) -> int:
-        """Route all pending messages across all entities."""
         return await self.exchange.sync()
 
     def to_df(
@@ -375,9 +287,6 @@ class Session(Node, Relational):
 
         if any(i not in self.branches for i in branches):
             raise ValueError("Branch does not exist.")
-
-        # Note: exclude_clone and exclude_load parameters are deprecated
-        # and currently have no effect. They are kept for API compatibility.
 
         messages = lcall(
             branches,
@@ -406,27 +315,7 @@ class Session(Node, Relational):
         node_builder: Any = None,
         max_spawn: int = 50,
     ) -> dict[str, Any]:
-        """
-        Execute a graph-based workflow using multi-branch orchestration.
-
-        Args:
-            graph: The workflow graph containing Operation nodes
-            context: Initial context for the workflow
-            parallel: Whether to execute independent operations in parallel
-            max_concurrent: Maximum concurrent operations (branches)
-            verbose: Enable verbose logging
-            default_branch: Branch to use as default (defaults to self.default_branch)
-            alcall_params: Parameters for async parallel call execution
-            on_progress: Callback(op_id, name, status, elapsed_s) for progress tracking
-            reactive: If True, run the self-expanding executor — operations may
-                emit a ``spawn_type`` payload that injects new operations into the
-                live graph without halting.
-            spawn_type: Emission type that triggers injection (default
-                ``casts.emission.SpawnRequest``). Only used when ``reactive``.
-            node_builder: ``(spawn_request, emitter_op) -> Operation | None`` that
-                turns a spawn payload into a graph node. Only used when ``reactive``.
-            max_spawn: Hard cap on dynamic injections. Only used when ``reactive``.
-        """
+        """Execute a graph-based DAG workflow, optionally reactive (self-expanding)."""
         from lionagi.operations.flow import flow
 
         branch = default_branch or self.default_branch
@@ -462,13 +351,7 @@ class Session(Node, Relational):
         node_builder: Any = None,
         max_spawn: int = 50,
     ):
-        """Stream graph execution — yield a ``FlowEvent`` as each op completes.
-
-        Async generator over the reactive (self-expanding) engine: downstream
-        ops auto-run as deps satisfy, spawned ops grow the live DAG, and each
-        completion is surfaced immediately rather than batched. Consume with
-        ``async for event in session.flow_stream(graph): ...``.
-        """
+        """Stream graph execution, yielding a FlowEvent per completed op."""
         from lionagi.operations.flow import flow_stream
 
         branch = default_branch or self.default_branch
