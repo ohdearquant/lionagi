@@ -10,6 +10,8 @@ bare worker prompt.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from lionagi import json_dumps
 
 from ..team import _now_iso, _save_team
@@ -20,12 +22,17 @@ from ..team import _now_iso, _save_team
 def _format_result_text(
     worker_results: list[dict],
     synthesis_result: dict | None = None,
+    *,
+    header_fn: Callable[[dict, int, int], list[str]] | None = None,
 ) -> str:
     lines = []
+    n = len(worker_results)
     for i, w in enumerate(worker_results, 1):
-        n = len(worker_results)
         lines.append(f"{'═' * 60}")
-        lines.append(f"  Worker {i}/{n}  [{w['model']}]")
+        if header_fn is not None:
+            lines.extend(header_fn(w, i, n))
+        else:
+            lines.append(f"  Worker {i}/{n}  [{w['model']}]")
         lines.append(f"  {w['time_ms']:.0f}ms")
         lines.append(f"{'═' * 60}")
         lines.append(w.get("response", "(no response)"))

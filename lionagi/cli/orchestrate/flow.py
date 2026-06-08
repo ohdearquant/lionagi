@@ -19,7 +19,12 @@ from .._lifecycle import classify_exception
 from .._logging import progress
 from .._logging import warn as _warn
 from .._providers import parse_model_spec
-from ._common import _create_fanout_team, _format_result_json, _post_results_to_team
+from ._common import (
+    _create_fanout_team,
+    _format_result_json,
+    _format_result_text,
+    _post_results_to_team,
+)
 from ._orchestration import (
     EFFORT_MAP,
     OrchestrationEnv,
@@ -208,31 +213,11 @@ def _parse_reactive(spec: str | None) -> tuple[bool, set[str] | None]:
     return (True, roles) if roles else (True, None)
 
 
-def _format_flow_result_text(
-    agent_results: list[dict],
-    synthesis_result: dict | None = None,
-) -> str:
-    lines = []
-    for w in agent_results:
-        deps = w.get("depends_on") or []
-        dep_str = f"  deps: {', '.join(deps)}" if deps else ""
-        tag = "  [spawned]" if w.get("spawned") else ""
-        lines.append(f"{'═' * 60}")
-        lines.append(f"  {w['id']} ({w['name']}){tag}  [{w['model']}]{dep_str}")
-        lines.append(f"  {w['time_ms']:.0f}ms")
-        lines.append(f"{'═' * 60}")
-        lines.append(w.get("response", "(no response)"))
-        lines.append("")
-
-    if synthesis_result is not None:
-        lines.append(f"{'═' * 60}")
-        lines.append(f"  Synthesis  [{synthesis_result['model']}]")
-        lines.append(f"  {synthesis_result['time_ms']:.0f}ms")
-        lines.append(f"{'═' * 60}")
-        lines.append(synthesis_result.get("response", "(no response)"))
-        lines.append("")
-
-    return "\n".join(lines)
+def _flow_header_fn(w: dict, i: int, n: int) -> list[str]:
+    deps = w.get("depends_on") or []
+    dep_str = f"  deps: {', '.join(deps)}" if deps else ""
+    tag = "  [spawned]" if w.get("spawned") else ""
+    return [f"  {w['id']} ({w['name']}){tag}  [{w['model']}]{dep_str}"]
 
 
 async def _run_flow(
@@ -473,12 +458,7 @@ async def _run_flow_inner(
     t_plan = time.monotonic() - t0
 
     # One deduplicated worker name per assignment (researcher, researcher-2, …).
-    name_counts: dict[str, int] = {}
-    agent_ids: list[str] = []
-    for ta in assignments:
-        name_counts[ta.assignee] = name_counts.get(ta.assignee, 0) + 1
-        n = name_counts[ta.assignee]
-        agent_ids.append(f"{ta.assignee}-{n}" if n > 1 else ta.assignee)
+    agent_ids: list[str] = [env.assign_name(ta.assignee) for ta in assignments]
 
     dep_indices = [_earlier_dep_indices(ta.depends_on, i) for i, ta in enumerate(assignments)]
 
@@ -921,7 +901,7 @@ async def _run_flow_inner(
     if output_format == "json":
         output = _format_result_json(agent_results, synthesis_result)
     else:
-        output = _format_flow_result_text(agent_results, synthesis_result)
+        output = _format_result_text(agent_results, synthesis_result, header_fn=_flow_header_fn)
 
     if synthesis_result:
         run.synthesis_path.write_text(synthesis_result["response"])
