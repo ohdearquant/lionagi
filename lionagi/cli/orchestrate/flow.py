@@ -12,7 +12,7 @@ import time
 from lionagi._errors import LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.casts.emission import SpawnRequest
-from lionagi.ln.concurrency import move_on_after
+from lionagi.ln.concurrency import CancelScope, move_on_after
 from lionagi.orchestration import plan, role_node_builder
 
 from .._lifecycle import classify_exception
@@ -32,6 +32,7 @@ from ._orchestration import (
     build_worker_branch,
     finalize_orchestration,
     mode_roster,
+    parse_orchestrator_provider,
     resolve_modes,
     resolve_worker_spec,
     role_config,
@@ -280,10 +281,7 @@ async def _run_flow(
         total_budget=timeout,
     )
 
-    _orc_ms = parse_model_spec(env.default_model_spec) if env.default_model_spec else None
-    _orc_provider = None
-    if _orc_ms and "/" in _orc_ms.model:
-        _orc_provider = _orc_ms.model.split("/", 1)[0]
+    _orc_model, _orc_provider = parse_orchestrator_provider(env.default_model_spec)
 
     artifact_contract = None
     if playbook_artifacts is not None or (
@@ -306,7 +304,7 @@ async def _run_flow(
         agent_name=agent_name,
         artifacts_path=str(env.run.artifact_root),
         invocation_id=invocation_id,
-        model=_orc_ms.model if _orc_ms else None,
+        model=_orc_model,
         provider=_orc_provider,
         effort=env.effort,
         project=project,
@@ -342,9 +340,7 @@ async def _run_flow(
         _terminal_status = classify_exception(exc)
         raise
     finally:
-        import anyio
-
-        with anyio.CancelScope(shield=True):
+        with CancelScope(shield=True):
             effective_status = await stop_live_persist(env, status=_terminal_status)
             if effective_status != _terminal_status:
                 _terminal_status = effective_status

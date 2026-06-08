@@ -17,10 +17,10 @@ import argparse
 import contextlib
 import fcntl
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from lionagi.ln._utils import now_utc
 from lionagi.utils import LIONAGI_HOME
 
 from ._logging import log_error, warn
@@ -81,22 +81,6 @@ def _load_team(team_id: str) -> dict:
     return json.loads(path.read_text())
 
 
-def _save_team(data: dict) -> Path:
-    """Direct write with exclusive lock — used by initial team creation."""
-    p = _teams_dir() / f"{data['id']}.json"
-    with open(p, "w") as fp:
-        fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
-        try:
-            fp.write(json.dumps(data, indent=2, default=str))
-        finally:
-            fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
-    return p
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _read_by_map(read_by) -> dict[str, str]:
     """Normalize read_by to dict[name → ISO timestamp].
 
@@ -121,14 +105,17 @@ def cmd_create(args: argparse.Namespace) -> int:
         return 1
 
     team_id = uuid4().hex[:12]
-    data = {
-        "id": team_id,
-        "name": args.name,
-        "members": members,
-        "messages": [],
-        "created_at": _now_iso(),
-    }
-    path = _save_team(data)
+    path = _teams_dir() / f"{team_id}.json"
+    with _locked_team(team_id, create_path=path) as data:
+        data.update(
+            {
+                "id": team_id,
+                "name": args.name,
+                "members": members,
+                "messages": [],
+                "created_at": now_utc().isoformat(),
+            }
+        )
     print(f"Created team '{args.name}' ({team_id})")
     print(f"  Members: {', '.join(members)}")
     print(f"  File: {path}")
@@ -202,7 +189,7 @@ def cmd_send(args: argparse.Namespace) -> int:
             "from": sender,
             "to": recipients,
             "content": args.content,
-            "timestamp": _now_iso(),
+            "timestamp": now_utc().isoformat(),
             "read_by": {},
         }
         # Op context: when a worker sends mid-flow, --from-op ties the
@@ -246,7 +233,7 @@ def cmd_receive(args: argparse.Namespace) -> int:
             print("No new messages." if me else "No messages.")
             return 0
 
-        now = _now_iso()
+        now = now_utc().isoformat()
         for msg in unread:
             read_by = _read_by_map(msg.get("read_by"))
             if me and me not in read_by:
