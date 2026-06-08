@@ -11,6 +11,7 @@ from lionagi.ln.concurrency import move_on_after
 from lionagi.orchestration import plan
 from lionagi.orchestration.prompts import SYNTHESIS_INSTRUCTION
 
+from .._lifecycle import classify_exception
 from .._logging import log_error, progress
 from .._providers import parse_model_spec
 from ._common import (
@@ -128,25 +129,10 @@ async def _run_fanout(
                 raise LionTimeoutError(msg)
             return result
         return await _run_fanout_inner(model_spec, prompt, **inner_kw)
-    except KeyboardInterrupt:
-        _terminal_status = "aborted"
-        raise
-    except (TimeoutError, LionTimeoutError):
-        # Catches both the move_on_after re-raise above and any
-        # timeout from inside _run_fanout_inner itself.
-        _terminal_status = "timed_out"
-        raise
     except BaseException as exc:
-        from lionagi.ln.concurrency.errors import cancelled_exc_classes
-
-        if isinstance(exc, cancelled_exc_classes()):
-            _terminal_status = "cancelled"
-        else:
-            _terminal_status = "failed"
+        _terminal_status = classify_exception(exc)
         raise
     finally:
-        # Shield teardown from outer cancellation so iModel executors are
-        # always closed; see lionagi/cli/agent.py for the full rationale.
         import anyio
 
         with anyio.CancelScope(shield=True):

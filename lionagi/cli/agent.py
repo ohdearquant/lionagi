@@ -19,6 +19,7 @@ from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 
 from ._agents import build_deadline_preamble, load_agent_profile
+from ._lifecycle import EXIT_CODE_BY_STATUS, classify_exception
 from ._logging import hint, log_error
 from ._persist import setup_agent_persist, teardown_agent_persist
 from ._providers import (
@@ -227,10 +228,6 @@ async def _run_agent(
             timeout=timeout,
             **({"repo": cwd} if cwd else {}),
         )
-    except KeyboardInterrupt as exc:
-        _terminal_status = "aborted"
-        _terminal_exc = exc
-        raise
     except (TimeoutError, LionTimeoutError) as exc:
         _terminal_status = "timed_out"
         _terminal_exc = exc
@@ -239,12 +236,7 @@ async def _run_agent(
         warn(f"agent timed out after {timeout}s")
         res = _extract_partial_output(branch) or None
     except BaseException as exc:
-        from lionagi.ln.concurrency import get_cancelled_exc_class
-
-        if isinstance(exc, get_cancelled_exc_class()):
-            _terminal_status = "cancelled"
-        else:
-            _terminal_status = "failed"
+        _terminal_status = classify_exception(exc)
         _terminal_exc = exc
         raise
     finally:
@@ -273,15 +265,6 @@ async def _run_agent(
     save_last_branch_pointer(run.run_id, branch_id)
 
     return res or "", provider, branch_id, _terminal_status
-
-
-_EXIT_CODE_BY_TERMINAL_STATUS: dict[str, int] = {
-    "completed": 0,
-    "failed": 1,
-    "timed_out": 124,
-    "aborted": 130,
-    "cancelled": 143,
-}
 
 
 def add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -364,14 +347,14 @@ def run_agent(args: argparse.Namespace) -> int:
             )
         )
     except KeyboardInterrupt:
-        return _EXIT_CODE_BY_TERMINAL_STATUS["aborted"]
+        return EXIT_CODE_BY_STATUS["aborted"]
     except BaseException as exc:
         if isinstance(exc, cancelled_exc_classes()):
-            return _EXIT_CODE_BY_TERMINAL_STATUS["cancelled"]
+            return EXIT_CODE_BY_STATUS["cancelled"]
         raise
 
     if not args.verbose:
         print(f"\n{result}" if result is not None else "", flush=True)
 
     hint(f'\n[to resume] li agent -r {branch_id} "..."')
-    return _EXIT_CODE_BY_TERMINAL_STATUS.get(terminal_status, 1)
+    return EXIT_CODE_BY_STATUS.get(terminal_status, 1)
