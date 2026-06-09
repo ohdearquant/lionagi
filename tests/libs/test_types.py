@@ -33,7 +33,6 @@ class MyTestEnum(Enum):
 
 
 def test_enum_allowed():
-    """Test Enum.allowed() method - Line 154"""
     allowed = MyTestEnum.allowed()
     assert isinstance(allowed, tuple)
     assert "value1" in allowed
@@ -57,20 +56,17 @@ class MyParams(Params):
 
 
 def test_params_invalid_parameter():
-    """Test Params.__init__ with invalid parameter - Line 188"""
     with pytest.raises(ValueError, match="Invalid parameter"):
         MyParams(field1="valid", invalid_field="should fail")
 
 
 def test_params_valid():
-    """Test Params.__init__ with valid parameters"""
     params = MyParams(field1="test", field2=42)
     assert params.field1 == "test"
     assert params.field2 == 42
 
 
 def test_params_allowed():
-    """Test Params.allowed() method"""
     allowed = MyParams.allowed()
     assert isinstance(allowed, set)
     assert "field1" in allowed
@@ -88,7 +84,6 @@ class MyParamsNoneSentinel(Params):
 
 
 def test_params_is_sentinel_none_as_sentinel():
-    """Test Params._is_sentinel with _none_as_sentinel=True - Line 197"""
     # When _none_as_sentinel is True, None should be treated as sentinel
     assert MyParamsNoneSentinel._is_sentinel(None) is True
     assert MyParamsNoneSentinel._is_sentinel(Undefined) is True
@@ -97,7 +92,6 @@ def test_params_is_sentinel_none_as_sentinel():
 
 
 def test_params_is_sentinel_default():
-    """Test Params._is_sentinel with default (_none_as_sentinel=False)"""
     # When _none_as_sentinel is False, None is not a sentinel
     assert MyParams._is_sentinel(None) is False
     assert MyParams._is_sentinel(Undefined) is True
@@ -115,7 +109,6 @@ class MyParamsStrict(Params):
 
 
 def test_params_strict_mode():
-    """Test Params strict mode validation - Lines 246-248"""
     with pytest.raises(ValueError, match="Missing required parameter"):
         MyParamsStrict(field1="value")  # field2 is missing and strict=True
 
@@ -134,14 +127,12 @@ class MyDataClass(DataClass):
 
 
 def test_dataclass_valid():
-    """Test DataClass with valid fields"""
     obj = MyDataClass(field1="test", field2=42)
     assert obj.field1 == "test"
     assert obj.field2 == 42
 
 
 def test_dataclass_allowed():
-    """Test DataClass.allowed() method - Line 214"""
     allowed = MyDataClass.allowed()
     assert isinstance(allowed, set)
     assert "field1" in allowed
@@ -157,7 +148,6 @@ class MyDataClassStrict(DataClass):
 
 
 def test_dataclass_strict_mode():
-    """Test DataClass strict mode - Lines 246-248"""
     with pytest.raises(ValueError, match="Missing required parameter"):
         MyDataClassStrict()  # Missing required field in strict mode
 
@@ -171,7 +161,6 @@ class MyDataClassPrefillUnset(DataClass):
 
 
 def test_dataclass_prefill_unset():
-    """Test DataClass prefill_unset behavior - Lines 251-253"""
     obj = MyDataClassPrefillUnset()
     # Field initialized to Undefined should be prefilled with Unset
     assert obj.field1 is Unset
@@ -186,14 +175,12 @@ class MyDataClassNoneSentinel(DataClass):
 
 
 def test_dataclass_is_sentinel_none():
-    """Test DataClass._is_sentinel with _none_as_sentinel=True"""
     assert MyDataClassNoneSentinel._is_sentinel(None) is True
     assert MyDataClassNoneSentinel._is_sentinel(Undefined) is True
     assert MyDataClassNoneSentinel._is_sentinel(Unset) is True
 
 
 def test_dataclass_to_dict():
-    """Test DataClass.to_dict() method"""
     obj = MyDataClass(field1="test", field2=42)
     result = obj.to_dict()
     assert "field1" in result
@@ -201,7 +188,6 @@ def test_dataclass_to_dict():
 
 
 def test_dataclass_to_dict_exclude():
-    """Test DataClass.to_dict() with exclude"""
     obj = MyDataClass(field1="test", field2=42)
     result = obj.to_dict(exclude={"field2"})
     assert "field1" in result
@@ -209,7 +195,6 @@ def test_dataclass_to_dict_exclude():
 
 
 def test_dataclass_with_updates():
-    """Test DataClass.with_updates() method"""
     obj = MyDataClass(field1="test", field2=42)
     updated = obj.with_updates(field2=100)
     assert updated.field1 == "test"
@@ -217,7 +202,6 @@ def test_dataclass_with_updates():
 
 
 def test_dataclass_hash():
-    """Test DataClass.__hash__() method"""
     # DataClass needs to be frozen to be hashable, use Params instead
     params1 = MyParams(field1="test", field2=42)
     params2 = MyParams(field1="test", field2=42)
@@ -228,7 +212,6 @@ def test_dataclass_hash():
 
 
 def test_dataclass_eq():
-    """Test DataClass.__eq__() method"""
     obj1 = MyDataClass(field1="test", field2=42)
     obj2 = MyDataClass(field1="test", field2=42)
     obj3 = MyDataClass(field1="other", field2=99)
@@ -237,7 +220,6 @@ def test_dataclass_eq():
 
 
 def test_dataclass_eq_not_dataclass():
-    """Test DataClass.__eq__() with non-DataClass"""
     obj = MyDataClass(field1="test", field2=42)
     assert obj != "not a dataclass"
     assert obj != 42
@@ -249,7 +231,6 @@ def test_dataclass_eq_not_dataclass():
 
 
 def test_params_to_dict():
-    """Test Params.to_dict() method"""
     params = MyParams(field1="test", field2=42)
     result = params.to_dict()
     assert "field1" in result
@@ -257,7 +238,6 @@ def test_params_to_dict():
 
 
 def test_params_to_dict_exclude():
-    """Test Params.to_dict() with exclude"""
     params = MyParams(field1="test", field2=42)
     result = params.to_dict(exclude={"field2"})
     assert "field1" in result
@@ -265,7 +245,6 @@ def test_params_to_dict_exclude():
 
 
 def test_params_with_updates():
-    """Test Params.with_updates() method"""
     params = MyParams(field1="test", field2=42)
     updated = params.with_updates(field2=100)
     assert updated.field1 == "test"
@@ -273,7 +252,6 @@ def test_params_with_updates():
 
 
 def test_params_hash():
-    """Test Params.__hash__() method"""
     params1 = MyParams(field1="test", field2=42)
     params2 = MyParams(field1="test", field2=42)
     # Just verify hash can be computed
@@ -284,7 +262,6 @@ def test_params_hash():
 
 
 def test_params_eq():
-    """Test Params.__eq__() method"""
     params1 = MyParams(field1="test", field2=42)
     params2 = MyParams(field1="test", field2=42)
     params3 = MyParams(field1="other", field2=99)
@@ -293,14 +270,12 @@ def test_params_eq():
 
 
 def test_params_eq_not_params():
-    """Test Params.__eq__() with non-Params"""
     params = MyParams(field1="test", field2=42)
     assert params != "not params"
     assert params != 42
 
 
 def test_params_default_kw():
-    """Test Params.default_kw() method"""
     params = MyParams(field1="test", field2=42)
     result = params.default_kw()
     assert isinstance(result, dict)
@@ -314,7 +289,6 @@ def test_params_default_kw():
 
 
 def test_is_sentinel():
-    """Test is_sentinel function"""
     assert is_sentinel(Undefined) is True
     assert is_sentinel(Unset) is True
     assert is_sentinel(None) is False
@@ -323,7 +297,6 @@ def test_is_sentinel():
 
 
 def test_not_sentinel():
-    """Test not_sentinel function"""
     assert not_sentinel(Undefined) is False
     assert not_sentinel(Unset) is False
     assert not_sentinel(None) is True

@@ -26,7 +26,6 @@ from lionagi.testing import LionAGIMockFactory
 
 
 def make_mocked_branch_for_react():
-    """Create a mocked Branch for ReAct testing."""
     return LionAGIMockFactory.create_mocked_branch(
         name="ReActTestBranch",
         user="tester",
@@ -63,8 +62,6 @@ async def async_search(query: str) -> str:
 # ============================================================================
 
 
-"""Tests for ReAct error handling, edge cases, and finalization behavior."""
-
 # ============================================================================
 # 4. Edge Cases
 # ============================================================================
@@ -72,7 +69,6 @@ async def async_search(query: str) -> str:
 
 @pytest.mark.asyncio
 async def test_invalid_tool_response_handling():
-    """Test handling of invalid/malformed tool responses."""
     branch = make_mocked_branch_for_react()
     branch.acts.register_tool(multiply)
 
@@ -102,7 +98,6 @@ async def test_invalid_tool_response_handling():
 
 @pytest.mark.asyncio
 async def test_all_none_response_recovery():
-    """Test recovery from response with all None values using continue_after_failed_response."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -129,7 +124,6 @@ async def test_all_none_response_recovery():
 
 @pytest.mark.asyncio
 async def test_continue_after_failed_response():
-    """Test that continue_after_failed_response allows continuation."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -158,7 +152,6 @@ async def test_continue_after_failed_response():
 
 @pytest.mark.asyncio
 async def test_empty_planned_actions():
-    """Test ReAct when analysis has no planned actions."""
     branch = make_mocked_branch_for_react()
 
     with (
@@ -186,11 +179,8 @@ async def test_empty_planned_actions():
 
 @pytest.mark.asyncio
 async def test_react_with_custom_response_format():
-    """Test ReAct with custom response format for final answer."""
 
     class CustomResult(BaseModel):
-        """Custom response format."""
-
         calculation: float
         explanation: str
 
@@ -221,7 +211,6 @@ async def test_react_with_custom_response_format():
 
 @pytest.mark.asyncio
 async def test_return_analysis_parameter():
-    """Test return_analysis parameter returns all intermediate analyses."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -247,7 +236,6 @@ async def test_return_analysis_parameter():
 
 @pytest.mark.asyncio
 async def test_reasoning_effort_parameter():
-    """Test reasoning_effort parameter affects guidance."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -274,7 +262,6 @@ async def test_reasoning_effort_parameter():
 
 @pytest.mark.asyncio
 async def test_verbose_analysis_output():
-    """Test verbose_analysis parameter for debugging output."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -303,7 +290,6 @@ async def test_verbose_analysis_output():
 
 @pytest.mark.asyncio
 async def test_react_with_many_extensions():
-    """Test ReAct with multiple reasoning rounds."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -333,7 +319,6 @@ async def test_react_with_many_extensions():
 
 @pytest.mark.asyncio
 async def test_react_with_many_tools():
-    """Test ReAct with many registered tools."""
     branch = make_mocked_branch_for_react()
 
     # Register multiple tools

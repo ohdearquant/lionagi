@@ -112,7 +112,6 @@ async def test_save_definition_increments_version(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_save_definition_unknown_kind_raises(tmp_path, monkeypatch):
-    """save_definition() with an unknown kind must raise ValueError (not return success)."""
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.studio.services.definitions as defs_mod
 
@@ -208,7 +207,6 @@ def test_save_definition_rejects_unsafe_name_post(encoded_name, tmp_path, monkey
     ],
 )
 def test_get_definition_rejects_unsafe_name(encoded_name, tmp_path, monkeypatch):
-    """GET /api/definitions/agent/<unsafe_name> must return 4xx."""
     client = _make_patched_client(tmp_path, monkeypatch)
     r = client.get(f"/api/definitions/agent/{encoded_name}")
     assert r.status_code in (400, 404, 422), (
@@ -226,7 +224,6 @@ def test_get_definition_rejects_unsafe_name(encoded_name, tmp_path, monkeypatch)
     ],
 )
 def test_rollback_definition_rejects_unsafe_name(encoded_name, tmp_path, monkeypatch):
-    """POST /api/definitions/agent/<unsafe_name>/rollback must return 4xx."""
     client = _make_patched_client(tmp_path, monkeypatch)
     r = client.post(
         f"/api/definitions/agent/{encoded_name}/rollback",
@@ -240,7 +237,6 @@ def test_rollback_definition_rejects_unsafe_name(encoded_name, tmp_path, monkeyp
 @pytest.mark.parametrize("name", ["my-agent", "my_agent", "myagent", "agent-123"])
 @pytest.mark.asyncio
 async def test_save_definition_accepts_safe_names(name, tmp_path, monkeypatch):
-    """Normal safe names must not be rejected by the validation layer."""
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
@@ -270,7 +266,6 @@ async def test_save_definition_accepts_safe_names(name, tmp_path, monkeypatch):
 @pytest.mark.parametrize("kind", ["agent", "playbook"])
 @pytest.mark.asyncio
 async def test_save_definition_accepts_valid_kinds(kind, tmp_path, monkeypatch):
-    """Valid kind values ('agent', 'playbook') must pass the validation gate."""
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.definitions as defs_mod
@@ -603,3 +598,136 @@ async def test_save_definition_fresh_home_no_kind_dir(tmp_path, monkeypatch):
 
     assert result["version"] >= 1
     assert (agents_dir / "my-agent.md").exists(), "agents/ dir and file must be created"
+
+
+# ---------------------------------------------------------------------------
+# Edge: rollback to non-existent version returns None
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rollback_definition_to_nonexistent_version_returns_none(tmp_path, monkeypatch):
+    import lionagi.cli._runs as cli_runs_mod
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
+
+    fake_home = tmp_path / "lionagi_home"
+    fake_home.mkdir()
+    agents_dir = fake_home / "agents"
+    agents_dir.mkdir()
+    playbooks_dir = fake_home / "playbooks"
+    playbooks_dir.mkdir()
+    fake_db = tmp_path / "state.db"
+
+    monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
+    monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
+    monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
+
+    await defs_mod.save_definition("agent", "my-agent", "v1 content")
+    result = await defs_mod.rollback_definition("agent", "my-agent", target_version=999)
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Edge: save_definition with very long name (boundary condition)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_save_definition_very_long_name(tmp_path, monkeypatch):
+    import lionagi.cli._runs as cli_runs_mod
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
+
+    fake_home = tmp_path / "lionagi_home"
+    fake_home.mkdir()
+    agents_dir = fake_home / "agents"
+    agents_dir.mkdir()
+    playbooks_dir = fake_home / "playbooks"
+    playbooks_dir.mkdir()
+    fake_db = tmp_path / "state.db"
+
+    monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
+    monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
+    monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
+
+    long_name = "a" * 200
+    result = await defs_mod.save_definition("agent", long_name, "# content")
+    assert result["version"] >= 1
+    assert result["name"] == long_name
+
+
+# ---------------------------------------------------------------------------
+# Edge: save_definition with very long content (boundary condition)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_save_definition_very_long_content(tmp_path, monkeypatch):
+    import lionagi.cli._runs as cli_runs_mod
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
+
+    fake_home = tmp_path / "lionagi_home"
+    fake_home.mkdir()
+    agents_dir = fake_home / "agents"
+    agents_dir.mkdir()
+    playbooks_dir = fake_home / "playbooks"
+    playbooks_dir.mkdir()
+    fake_db = tmp_path / "state.db"
+
+    monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
+    monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
+    monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
+
+    long_content = "# Agent\n" + ("x" * 100_000)
+    result = await defs_mod.save_definition("agent", "big-agent", long_content)
+    assert result["version"] >= 1
+    assert (agents_dir / "big-agent.md").read_text() == long_content
+
+
+# ---------------------------------------------------------------------------
+# Edge: get_definition with corrupted (empty) disk file
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_definition_empty_file_returns_empty_content(tmp_path, monkeypatch):
+    import lionagi.cli._runs as cli_runs_mod
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
+
+    fake_home = tmp_path / "lionagi_home"
+    fake_home.mkdir()
+    agents_dir = fake_home / "agents"
+    agents_dir.mkdir()
+    playbooks_dir = fake_home / "playbooks"
+    playbooks_dir.mkdir()
+    fake_db = tmp_path / "state.db"
+
+    (agents_dir / "empty-agent.md").write_text("")
+
+    monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
+    monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
+    monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
+
+    result = await defs_mod.get_definition("agent", "empty-agent")
+    assert result is not None
+    assert result["content"] == ""
+    assert result["name"] == "empty-agent"

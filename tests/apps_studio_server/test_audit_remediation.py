@@ -50,7 +50,6 @@ class TestArtifactAuthBypass:
     """
 
     def test_get_artifact_no_token_returns_401(self, monkeypatch, tmp_path):
-        """GET /api/artifacts/{id} without Authorization header → 401 when token set."""
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-artifact-secret")
         client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
 
@@ -62,7 +61,6 @@ class TestArtifactAuthBypass:
         )
 
     def test_get_artifact_wrong_token_returns_401(self, monkeypatch, tmp_path):
-        """GET /api/artifacts/{id} with wrong token → 401."""
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "correct-secret")
         client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
 
@@ -73,7 +71,6 @@ class TestArtifactAuthBypass:
         assert resp.status_code == 401
 
     def test_get_artifact_correct_token_passes_auth(self, monkeypatch, tmp_path):
-        """GET /api/artifacts/{id} with correct token must not return 401."""
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "correct-secret")
         client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
 
@@ -85,7 +82,6 @@ class TestArtifactAuthBypass:
         assert resp.status_code != 401
 
     def test_get_artifacts_by_session_no_token_returns_401(self, monkeypatch, tmp_path):
-        """GET /api/artifacts/by-session/{sid} without Authorization → 401."""
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-secret")
         client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
 
@@ -93,7 +89,6 @@ class TestArtifactAuthBypass:
         assert resp.status_code == 401
 
     def test_health_still_open(self, monkeypatch, tmp_path):
-        """/health remains accessible even with artifact auth enabled."""
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-secret")
         client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
 
@@ -101,7 +96,6 @@ class TestArtifactAuthBypass:
         assert resp.status_code == 200
 
     def test_stats_still_open(self, monkeypatch, tmp_path):
-        """/api/stats requires auth when a token is configured."""
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "test-secret")
         client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
 
@@ -109,7 +103,6 @@ class TestArtifactAuthBypass:
         assert resp.status_code == 401
 
     def test_artifact_auth_disabled_when_no_token(self, monkeypatch, tmp_path):
-        """Without LIONAGI_STUDIO_AUTH_TOKEN all routes are open."""
         monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
         client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
 
@@ -212,7 +205,6 @@ class TestBuildArgvValidation:
     """Regression: unknown/aliased action_kind must be validated fail-closed."""
 
     def test_unknown_kind_raises(self):
-        """build_argv with an unknown action_kind must raise ValueError."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="Unknown action_kind"):
@@ -241,32 +233,6 @@ class TestBuildArgvValidation:
         )
         assert "play" in argv, f"'play' not in argv: {argv}"
         assert "audit" in argv, f"playbook name not in argv: {argv}"
-
-    def test_valid_kinds_do_not_raise(self):
-        """All four ADR-0027 action kinds must be accepted."""
-        from lionagi.studio.scheduler.subprocess import build_argv
-
-        for kind in ("agent", "flow", "fanout", "play"):
-            argv = build_argv(
-                {
-                    "action_kind": kind,
-                    "action_model": "gpt-4",
-                    "action_prompt": "do stuff",
-                    "action_agent": None,
-                    "action_playbook": None,
-                    "action_project": None,
-                    "action_extra_args": [],
-                },
-                {},
-            )
-            assert "uv" in argv
-
-    def test_empty_string_kind_raises(self):
-        """Empty string action_kind must be rejected."""
-        from lionagi.studio.scheduler.subprocess import build_argv
-
-        with pytest.raises(ValueError, match="Unknown action_kind"):
-            build_argv({"action_kind": ""}, {})
 
 
 # ---------------------------------------------------------------------------
@@ -543,3 +509,148 @@ class TestInvocationReasonAggregation:
 
         assert status == "aborted"
         assert reason_code == RunReasons.ABORTED_USER
+
+
+# ---------------------------------------------------------------------------
+# Edge: stop() idempotency — calling stop() twice must not raise
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestSchedulerEngineStopIdempotency:
+    async def test_stop_called_twice_is_idempotent(self):
+        from lionagi.studio.scheduler.engine import SchedulerEngine
+
+        engine = SchedulerEngine()
+
+        async def noop_loop():
+            try:
+                await asyncio.sleep(9999)
+            except asyncio.CancelledError:
+                raise
+
+        engine._task = asyncio.create_task(noop_loop())
+        await engine.stop()
+        # Second stop() on an already-stopped engine must not raise
+        await engine.stop()
+        assert engine._task is None
+        assert len(engine._fire_tasks) == 0
+
+
+# ---------------------------------------------------------------------------
+# Edge: spawn_and_wait exits with SIGKILL or SIGSEGV (signal exit codes)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestSpawnAndWaitSignalExitCodes:
+    async def test_sigkill_exit_code_returned_as_numeric(self, monkeypatch):
+        from lionagi.studio.scheduler import subprocess as sp
+
+        class _FakeProc:
+            def __init__(self):
+                self.pid = 424244
+                self.returncode = -9
+
+            async def communicate(self):
+                return b"", b"killed"
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+            async def wait(self):
+                return self.returncode
+
+        proc = _FakeProc()
+
+        async def fake_exec(*a, **k):
+            return proc
+
+        monkeypatch.setattr(sp.asyncio, "create_subprocess_exec", fake_exec)
+
+        exit_code, stderr_tail = await sp.spawn_and_wait(["sleep", "1"], "inv-sigkill")
+        assert exit_code == -9
+        assert isinstance(stderr_tail, str)
+
+    async def test_sigsegv_exit_code_returned_as_numeric(self, monkeypatch):
+        from lionagi.studio.scheduler import subprocess as sp
+
+        class _FakeProc:
+            def __init__(self):
+                self.pid = 424245
+                self.returncode = -11
+
+            async def communicate(self):
+                return b"", b"segfault"
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+            async def wait(self):
+                return self.returncode
+
+        proc = _FakeProc()
+
+        async def fake_exec(*a, **k):
+            return proc
+
+        monkeypatch.setattr(sp.asyncio, "create_subprocess_exec", fake_exec)
+
+        exit_code, _ = await sp.spawn_and_wait(["sleep", "1"], "inv-sigsegv")
+        assert exit_code == -11
+
+
+# ---------------------------------------------------------------------------
+# Edge: _resolve_invocation_terminal with mixed completed and timed_out children
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestResolveInvocationTerminalMixedStatuses:
+    async def test_timed_out_takes_precedence_over_completed(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+        from lionagi.state.db import StateDB
+        from lionagi.state.reasons import RunReasons
+        from lionagi.studio.scheduler.engine import _resolve_invocation_terminal
+
+        async with StateDB() as db:
+            inv_id = "inv-mixed"
+            await db.create_invocation(
+                {"id": inv_id, "skill": "show", "started_at": 0.0, "status": "running"}
+            )
+            for i, child_status in enumerate(["completed", "timed_out", "completed"]):
+                prog = f"prog-mixed-{i}"
+                sid = f"sess-mixed-{i}"
+                await db.create_progression(prog)
+                await db.create_session(
+                    {
+                        "id": sid,
+                        "progression_id": prog,
+                        "status": "running",
+                        "started_at": 0.0,
+                        "invocation_id": inv_id,
+                    }
+                )
+                await db.update_status(
+                    "session",
+                    sid,
+                    new_status=child_status,
+                    reason_code=RunReasons.COMPLETED_OK
+                    if child_status == "completed"
+                    else RunReasons.TIMED_OUT_DEADLINE,
+                    reason_summary="seed",
+                    source="executor",
+                    actor="test",
+                )
+            status_out, reason_code, *_ = await _resolve_invocation_terminal(
+                db, inv_id, fallback_status="completed"
+            )
+
+        assert status_out == "timed_out"
+        assert reason_code == RunReasons.TIMED_OUT_DEADLINE

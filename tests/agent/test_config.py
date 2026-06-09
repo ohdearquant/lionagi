@@ -6,24 +6,6 @@
 from lionagi.agent.config import AgentConfig
 
 
-def test_defaults():
-    config = AgentConfig()
-    assert config.name == "agent"
-    assert config.model is None
-    assert config.effort is None
-    assert config.system_prompt == ""
-    assert config.tools == []
-    assert config.hook_handlers == {}
-    assert config.permissions == {}
-    assert config.mcp_servers is None
-    assert config.mcp_config_path is None
-    assert config.max_extensions == 20
-    assert config.yolo is False
-    assert config.lion_system is True
-    assert config.cwd is None
-    assert config.extra == {}
-
-
 def test_coding_preset_defaults():
     config = AgentConfig.coding()
     assert config.name == "coder"

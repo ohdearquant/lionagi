@@ -31,7 +31,6 @@ def example_parser(data: Any) -> str:
 
 # Actual test cases
 def test_tool_initialization():
-    """Test Tool class initialization"""
     tool = Tool(func_callable=example_func)
     assert callable(tool.func_callable)
     assert tool.func_callable == example_func
@@ -43,7 +42,6 @@ def test_tool_initialization():
 
 
 def test_tool_with_processors():
-    """Test Tool with pre/post processors"""
     tool = Tool(
         func_callable=example_func,
         preprocessor=example_processor,
@@ -59,7 +57,6 @@ def test_tool_with_processors():
 
 
 def test_tool_validation():
-    """Test Tool validation"""
     # Test non-callable function
     with pytest.raises(ValueError):
         Tool(func_callable="not_callable")
@@ -71,13 +68,11 @@ def test_tool_validation():
 
 
 def test_tool_function_name():
-    """Test Tool function_name property"""
     tool = Tool(func_callable=example_func)
     assert tool.function == "example_func"
 
 
 def test_tool_str_representation():
-    """Test Tool string representation"""
     tool = Tool(func_callable=example_func)
     str_rep = str(tool)
     assert "id" in str_rep
@@ -86,7 +81,6 @@ def test_tool_str_representation():
 
 
 def test_tool_tool_schemageneration():
-    """Test schema generation for Tool"""
     tool = Tool(func_callable=example_func)
     schema = tool.tool_schema
 
@@ -111,7 +105,6 @@ def test_tool_tool_schemageneration():
 
 
 def test_tool_required_fields():
-    """Test the required_fields property of Tool."""
 
     def func_without_defaults(a, b, c):
         return a + b + c  # type: ignore
@@ -127,7 +120,6 @@ def test_tool_required_fields():
 
 
 def test_tool_minimum_acceptable_fields():
-    """Test the minimum_acceptable_fields property of Tool."""
 
     def func_mixed_args(x, y="default", *args, **kwargs):
         return x + 1  # type: ignore
@@ -140,7 +132,6 @@ def test_tool_minimum_acceptable_fields():
 
 
 def test_tool_strict_func_call():
-    """Test that the Tool class can set and retrieve the strict_func_call flag."""
 
     def sample_func(a: int) -> int:
         return a + 1
@@ -154,7 +145,6 @@ def test_tool_strict_func_call():
 
 
 def test_tool_to_dict():
-    """Test the to_dict() method of Tool."""
 
     def sample_func(a: int, b: int = 0) -> int:
         return a + b
@@ -176,6 +166,5 @@ def test_tool_to_dict():
 
 
 def test_tool_from_dict_not_implemented():
-    """Test that Tool.from_dict() raises NotImplementedError."""
     with pytest.raises(NotImplementedError):
         Tool.from_dict({"fake": "data"})

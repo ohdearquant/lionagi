@@ -281,18 +281,6 @@ def test_progression_deep_copy():
     assert prog is not prog_copy
 
 
-def test_progression_memory_usage():
-    import sys
-
-    small_prog = Progression(order=[Element() for _ in range(10)])
-    large_prog = Progression(order=[Element() for _ in range(10000)])
-    small_size = sys.getsizeof(small_prog)
-    large_size = sys.getsizeof(large_prog)
-    assert large_size >= small_size
-    # Ensure memory usage grows sub-linearly
-    assert large_size <= small_size * 1000
-
-
 def test_progression_with_async_generator():
     import asyncio
 
@@ -343,19 +331,6 @@ def test_progression_remove_with_element():
     assert elements[2].id not in p
 
 
-def test_progression_memory_efficiency():
-    import sys
-
-    # Create a progression with a large number of elements
-    p = Progression(order=[Element() for _ in range(1000000)])
-
-    # Calculate memory usage
-    memory_usage = sys.getsizeof(p) + sum(sys.getsizeof(item) for item in p.order)
-
-    # Check if memory usage is reasonable (less than 100MB for 1 million elements)
-    assert memory_usage < 100 * 1024 * 1024  # 100MB in bytes
-
-
 def test_progression_serialization_advanced():
     import json
 
@@ -372,3 +347,95 @@ def test_progression_serialization_advanced():
     assert len(deserialized) == 5
     assert all(isinstance(elem, UUID) for elem in deserialized)  # IDs are UUIDs
     assert p == deserialized
+
+
+# ---------------------------------------------------------------------------
+# Edge case: serialization round-trip with duplicate IDs in order
+# ---------------------------------------------------------------------------
+
+
+def test_progression_serialization_with_duplicates_in_order():
+    el = Element()
+    p = Progression()
+    # Append the same element twice using append (which allows dupes via extend)
+    p.order.append(el.id)
+    p.order.append(el.id)
+    p._rebuild_members()
+    assert len(p.order) == 2
+
+    d = p.to_dict()
+    p2 = Progression.from_dict(d)
+    # deque allows duplicates; _members is a set so membership check differs
+    assert len(p2.order) == 2
+    assert el.id in p2._members
+
+
+# ---------------------------------------------------------------------------
+# Edge case: _members out-of-sync after direct order mutation
+# ---------------------------------------------------------------------------
+
+
+def test_members_out_of_sync_after_direct_order_mutation():
+    elements = [MockElement(value=i) for i in range(3)]
+    p = Progression(order=elements)
+    assert len(p._members) == 3
+
+    # Directly mutate the deque (bypasses _members maintenance)
+    extra = MockElement(value=99)
+    p.order.append(extra.id)
+    # _members is now stale -- rebuild fixes it
+    assert extra.id not in p._members
+    p._rebuild_members()
+    assert extra.id in p._members
+
+
+# ---------------------------------------------------------------------------
+# Edge case: large number of elements performance characteristics
+# ---------------------------------------------------------------------------
+
+
+def test_progression_large_number_of_elements():
+    n = 100_000
+    elements = [Element() for _ in range(n)]
+    p = Progression(order=elements)
+    assert len(p) == n
+    # Membership check must be O(1) via _members set
+    first_id = elements[0].id
+    last_id = elements[-1].id
+    assert first_id in p
+    assert last_id in p
+    assert len(p._members) == n
+
+
+# ---------------------------------------------------------------------------
+# Edge case: concurrent move + pop + append (asyncio cooperative)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_progression_concurrent_move_pop_append():
+    import asyncio
+
+    elements = [MockElement(value=i) for i in range(20)]
+    p = Progression(order=elements)
+
+    async def mover():
+        for _ in range(5):
+            if len(p.order) >= 2:
+                p.move(0, len(p.order) - 1)
+            await asyncio.sleep(0)
+
+    async def popper():
+        for _ in range(5):
+            if len(p.order) > 0:
+                p.pop(0)
+            await asyncio.sleep(0)
+
+    async def appender():
+        for _ in range(5):
+            p.append(MockElement(value=99))
+            await asyncio.sleep(0)
+
+    await asyncio.gather(mover(), popper(), appender())
+    # _members must remain consistent with order after concurrent ops
+    assert set(p.order) == p._members

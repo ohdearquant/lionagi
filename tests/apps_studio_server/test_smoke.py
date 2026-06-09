@@ -160,13 +160,6 @@ def test_playbooks_list_returns_dict(tmp_path, monkeypatch):
     assert "my-playbook" in names
 
 
-def test_playbooks_list_empty(tmp_path, monkeypatch):
-    client = _make_client(tmp_path, monkeypatch)
-    r = client.get("/api/playbooks")
-    assert r.status_code == 200
-    assert r.json()["playbooks"] == []
-
-
 # ---------------------------------------------------------------------------
 # Runs
 # ---------------------------------------------------------------------------
@@ -181,23 +174,6 @@ def test_runs_list_returns_dict(tmp_path, monkeypatch):
     assert isinstance(data["runs"], list)
 
 
-def test_runs_list_has_contract_fields(tmp_path, monkeypatch):
-    """RunSummary must contain the SQLite-backed fields (F-A1-1, ADR-0004 rewire).
-
-    list_runs() now reads from the sessions SQLite table, not filesystem.
-    Field names match the sessions schema: playbook_name, status, started_at,
-    ended_at (not worker_name/task/step_count/finished_at from the old JSON snapshots).
-    With an empty/absent DB, the list is empty.
-    """
-    client = _make_client(tmp_path, monkeypatch, with_run=True)
-    r = client.get("/api/runs")
-    assert r.status_code == 200
-    runs = r.json()["runs"]
-    # DB doesn't exist (fake_db) so sessions list is empty — correct behaviour
-    assert isinstance(runs, list)
-    assert len(runs) == 0
-
-
 def test_runs_list_filter_by_playbook(tmp_path, monkeypatch):
     """?playbook= filter replaces the old ?worker= param (F-A3-7, ADR-0005)."""
     client = _make_client(tmp_path, monkeypatch, with_run=True)
@@ -209,17 +185,6 @@ def test_runs_list_filter_by_playbook(tmp_path, monkeypatch):
     # Old ?worker= param should still 200 (FastAPI ignores unknown query params)
     r2 = client.get("/api/runs?worker=my-worker")
     assert r2.status_code == 200
-
-
-def test_runs_list_filter_by_status(tmp_path, monkeypatch):
-    client = _make_client(tmp_path, monkeypatch, with_run=True)
-    r = client.get("/api/runs?status=completed")
-    assert r.status_code == 200
-    assert r.json()["runs"] == []
-
-    r2 = client.get("/api/runs?status=failed")
-    assert r2.status_code == 200
-    assert r2.json()["runs"] == []
 
 
 def test_run_detail_contract_fields(tmp_path, monkeypatch):

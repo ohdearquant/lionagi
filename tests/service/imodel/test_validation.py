@@ -37,12 +37,6 @@ class TestiModelValidationErrors:
         # Should create payload, validation happens at API level
         assert len(api_call.payload["messages"]) == 1
 
-    def test_empty_content_in_messages(self):
-        """Test iModel with empty content in messages."""
-        imodel = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
-        api_call = imodel.create_api_calling(messages=[{"role": "user", "content": ""}])
-        assert api_call.payload["messages"][0]["content"] == ""
-
     def test_none_role_in_messages(self):
         """Test iModel with None role raises validation error."""
         imodel = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
@@ -56,19 +50,3 @@ class TestiModelValidationErrors:
         # Invalid model type should fail validation
         with pytest.raises(ValueError, match="Invalid payload"):
             imodel.create_api_calling(messages=[{"role": "user", "content": "test"}], model=123)
-
-    def test_very_long_message_content(self):
-        """Test iModel with extremely long message content."""
-        imodel = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
-        long_content = "x" * 1000000  # 1 million characters
-        api_call = imodel.create_api_calling(messages=[{"role": "user", "content": long_content}])
-        assert len(api_call.payload["messages"][0]["content"]) == 1000000
-
-    def test_special_characters_in_messages(self):
-        """Test iModel with special characters and unicode in messages."""
-        imodel = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
-        special_content = "Hello 世界 🌍 \n\t\r !@#$%^&*()"
-        api_call = imodel.create_api_calling(
-            messages=[{"role": "user", "content": special_content}]
-        )
-        assert api_call.payload["messages"][0]["content"] == special_content

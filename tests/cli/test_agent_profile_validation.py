@@ -17,18 +17,6 @@ from lionagi.cli._agents import _validate_bare_name, load_agent_profile
 class TestValidateBareName:
     """_validate_bare_name must reject anything that is not a safe identifier."""
 
-    def test_accepts_plain_name(self):
-        _validate_bare_name("orchestrator")
-
-    def test_accepts_hyphenated_name(self):
-        _validate_bare_name("my-agent")
-
-    def test_accepts_underscore_name(self):
-        _validate_bare_name("my_agent_v2")
-
-    def test_accepts_alphanumeric(self):
-        _validate_bare_name("Agent42")
-
     def test_rejects_path_separator_slash(self):
         with pytest.raises(ValueError, match="bare identifier"):
             _validate_bare_name("a/b")

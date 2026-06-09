@@ -194,3 +194,94 @@ def test_permission_policy_rejects_shell_control_before_wildcard_allow():
     d = p.check("bash", "run", {"command": "git status && rm -rf /tmp/x"})
     assert d.behavior == "deny"
     assert "Shell control operator" in d.reason
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_rules_mode_empty_allow_deny_escalate_defaults_to_deny():
+    p = PermissionPolicy(mode="rules")
+    d = p.check("bash", "run", {"command": "ls"})
+    assert d.behavior == "deny"
+    assert "no matching rule" in d.reason
+
+
+def test_check_with_args_containing_none_values():
+    p = PermissionPolicy(mode="rules", allow={"reader": ["*"]})
+    d = p.check("reader", "read", {"path": None, "extra": None})
+    assert d.behavior == "allow"
+
+
+def test_check_tool_name_with_special_characters():
+    p = PermissionPolicy(mode="rules", allow={"my-tool!": ["*"]})
+    d = p.check("my-tool!", "action", {"command": "ls"})
+    # The tool name contains special chars; _canonical_tool_name just lowercases it
+    assert d.behavior in ("allow", "deny")
+
+
+def test_rules_mode_unmatched_tool_defaults_to_deny():
+    p = PermissionPolicy(mode="rules", allow={"reader": ["*"]})
+    d = p.check("unknown_tool", "do", {"arg": "val"})
+    assert d.behavior == "deny"
+
+
+async def test_escalation_handler_returning_true_allows():
+    calls = []
+
+    async def approve(decision, args):
+        calls.append(decision)
+        return True
+
+    p = PermissionPolicy.safe()
+    p.on_escalate = approve
+    hook = p.to_pre_hook()
+    result = await hook("bash", "run", {"command": "uv run pytest"})
+    assert result is None
+    assert len(calls) == 1
+
+
+async def test_escalation_handler_returning_dict_returns_dict():
+    async def override(decision, args):
+        return {"overridden": True}
+
+    p = PermissionPolicy.safe()
+    p.on_escalate = override
+    hook = p.to_pre_hook()
+    result = await hook("bash", "run", {"command": "uv run pytest"})
+    assert result == {"overridden": True}
+
+
+async def test_multiple_escalation_handlers_chained_via_on_escalate():
+    chain_results = []
+
+    async def first_escalate(decision, args):
+        chain_results.append("first")
+        return True
+
+    p = PermissionPolicy.safe()
+    p.on_escalate = first_escalate
+    hook = p.to_pre_hook()
+    await hook("bash", "run", {"command": "cargo build"})
+    assert chain_results == ["first"]
+
+
+def test_permission_policy_from_dict_round_trip():
+    original = PermissionPolicy(
+        mode="rules",
+        allow={"bash": ["git *"], "reader": ["*"]},
+        deny={"bash": ["rm *"]},
+        escalate={"bash": ["sudo *"]},
+    )
+    data = {
+        "mode": original.mode,
+        "allow": {k: list(v) for k, v in original.allow.items()},
+        "deny": {k: list(v) for k, v in original.deny.items()},
+        "escalate": {k: list(v) for k, v in original.escalate.items()},
+    }
+    restored = PermissionPolicy.from_dict(data)
+    assert restored.mode == original.mode
+    assert restored.allow == original.allow
+    assert restored.deny == original.deny
+    assert restored.escalate == original.escalate

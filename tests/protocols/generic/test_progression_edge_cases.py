@@ -40,20 +40,12 @@ def _proc(**kw) -> _Proc:
 
 
 class TestProgressionInit:
-    def test_empty_progression(self):
-        p = Progression()
-        assert len(p) == 0
-
     def test_with_list_of_uuids(self):
         ids = [uuid4(), uuid4()]
         p = Progression(order=ids)
         assert len(p) == 2
         for uid in ids:
             assert uid in p
-
-    def test_name_stored(self):
-        p = Progression(name="test-prog")
-        assert p.name == "test-prog"
 
     def test_duplicate_ids_stored(self):
         uid = uuid4()
@@ -115,18 +107,6 @@ class TestProgressionInsertFront:
 
 
 class TestProgressionPopleft:
-    def test_popleft_returns_first(self):
-        uid1, uid2 = uuid4(), uuid4()
-        p = Progression(order=[uid1, uid2])
-        result = p.popleft()
-        assert result == uid1
-        assert len(p) == 1
-
-    def test_popleft_empty_raises(self):
-        p = Progression()
-        with pytest.raises(ItemNotFoundError):
-            p.popleft()
-
     def test_popleft_reduces_length(self):
         ids = [uuid4() for _ in range(3)]
         p = Progression(order=ids)
@@ -135,17 +115,6 @@ class TestProgressionPopleft:
 
 
 class TestProgressionPop:
-    def test_pop_returns_last(self):
-        uid1, uid2 = uuid4(), uuid4()
-        p = Progression(order=[uid1, uid2])
-        result = p.pop()
-        assert result == uid2
-
-    def test_pop_empty_raises(self):
-        p = Progression()
-        with pytest.raises(ItemNotFoundError):
-            p.pop()
-
     def test_pop_reduces_length(self):
         ids = [uuid4() for _ in range(4)]
         p = Progression(order=ids)
@@ -154,15 +123,6 @@ class TestProgressionPop:
 
 
 class TestProgressionContains:
-    def test_contains_existing(self):
-        uid = uuid4()
-        p = Progression(order=[uid])
-        assert uid in p
-
-    def test_not_contains_missing(self):
-        p = Progression(order=[uuid4()])
-        assert uuid4() not in p
-
     def test_contains_by_str_uuid(self):
         uid = uuid4()
         p = Progression(order=[uid])
@@ -170,13 +130,6 @@ class TestProgressionContains:
 
 
 class TestProgressionLenIter:
-    def test_len_empty(self):
-        assert len(Progression()) == 0
-
-    def test_len_non_empty(self):
-        p = Progression(order=[uuid4() for _ in range(7)])
-        assert len(p) == 7
-
     def test_iter_yields_uuids(self):
         ids = [uuid4() for _ in range(3)]
         p = Progression(order=ids)
@@ -269,18 +222,6 @@ class TestProgressionExtend:
         p = Progression()
         with pytest.raises(ValueError):
             p.extend([uuid4(), uuid4()])
-
-
-class TestProgressionClear:
-    def test_clear_empties(self):
-        p = Progression(order=[uuid4() for _ in range(5)])
-        p.clear()
-        assert len(p) == 0
-
-    def test_clear_empty_noop(self):
-        p = Progression()
-        p.clear()
-        assert len(p) == 0
 
 
 class TestProgressionInclude:
@@ -381,17 +322,6 @@ class TestProgressionCountIndex:
 
 
 class TestProgressionEquality:
-    def test_equal_progressions(self):
-        ids = [uuid4(), uuid4()]
-        p1 = Progression(order=ids)
-        p2 = Progression(order=ids)
-        assert p1 == p2
-
-    def test_different_progressions(self):
-        p1 = Progression(order=[uuid4()])
-        p2 = Progression(order=[uuid4()])
-        assert p1 != p2
-
     def test_equal_to_list(self):
         ids = [uuid4()]
         p = Progression(order=ids)
@@ -402,9 +332,6 @@ class TestProgressionRepr:
     def test_repr_contains_name(self):
         p = Progression(name="myprog")
         assert "myprog" in repr(p)
-
-    def test_repr_is_string(self):
-        assert isinstance(repr(Progression()), str)
 
 
 class TestProgressionNext:

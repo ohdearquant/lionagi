@@ -18,7 +18,6 @@ class TestiModelHooks:
 
     @pytest.mark.asyncio
     async def test_pre_invoke_hook_success(self, mock_response):
-        """Test successful pre-invocation hook execution."""
         hook_called = False
         hook_params = {}
 
@@ -49,7 +48,6 @@ class TestiModelHooks:
 
     @pytest.mark.asyncio
     async def test_post_invoke_hook_success(self, mock_response):
-        """Test successful post-invocation hook execution."""
         hook_called = False
         captured_event = None
 
@@ -81,7 +79,6 @@ class TestiModelHooks:
 
     @pytest.mark.asyncio
     async def test_pre_event_create_hook(self, mock_response):
-        """Test pre-event-create hook execution."""
         hook_called = False
         event_type_captured = None
 
@@ -113,7 +110,6 @@ class TestiModelHooks:
 
     @pytest.mark.asyncio
     async def test_hook_error_handling(self):
-        """Test hook error handling and event cancellation."""
 
         async def failing_hook(event, **kwargs):
             raise ValueError("Hook intentionally failed")
@@ -140,7 +136,6 @@ class TestiModelHooks:
 
     @pytest.mark.asyncio
     async def test_hook_timeout_behavior(self):
-        """Test hook timeout handling."""
 
         async def slow_hook(event, **kwargs):
             await asyncio.sleep(0.1)  # Longer than timeout
@@ -166,7 +161,6 @@ class TestiModelHooks:
 
     @pytest.mark.asyncio
     async def test_hook_exit_behavior(self):
-        """Test hook exit flag behavior."""
 
         async def exit_requesting_hook(event, **kwargs):
             raise RuntimeError("Exit requested by hook")
@@ -192,7 +186,6 @@ class TestiModelHooks:
 
     @pytest.mark.asyncio
     async def test_multiple_hook_chaining(self, mock_response):
-        """Test execution of multiple hooks in sequence."""
         execution_order = []
 
         async def pre_create_hook(event_type, **kwargs):
@@ -239,7 +232,6 @@ class TestiModelHooks:
 
     @pytest.mark.asyncio
     async def test_hook_state_management(self, mock_response):
-        """Test hook state management across multiple calls."""
         call_count = 0
         state_accumulator = []
 
@@ -274,7 +266,6 @@ class TestiModelHooks:
 
     @pytest.mark.asyncio
     async def test_hook_params_passing(self, mock_response):
-        """Test custom parameters passed to hooks."""
         received_params = {}
 
         async def param_receiving_hook(event, **kwargs):
@@ -312,7 +303,6 @@ class TestiModelHooks:
 
     @pytest.mark.asyncio
     async def test_hook_cleanup_on_error(self):
-        """Test that hook cleanup occurs properly on errors."""
         cleanup_called = False
 
         async def hook_with_cleanup(event, **kwargs):
@@ -346,7 +336,6 @@ class TestiModelHooks:
 
     @pytest.mark.asyncio
     async def test_hook_with_async_generator(self):
-        """Test hooks don't interfere with streaming operations."""
         hook_called = False
 
         async def stream_hook(event, **kwargs):
@@ -379,7 +368,6 @@ class TestiModelHooks:
 
     @pytest.mark.asyncio
     async def test_concurrent_hooks_thread_safety(self, mock_response):
-        """Test hook execution is thread-safe under concurrent calls."""
         call_tracker = []
         lock = asyncio.Lock()
 
@@ -423,7 +411,6 @@ class TestiModelHooks:
 
     @pytest.mark.asyncio
     async def test_hook_exception_types(self):
-        """Test different exception types in hooks."""
 
         async def value_error_hook(event, **kwargs):
             raise ValueError("Value error in hook")
@@ -460,7 +447,6 @@ class TestiModelHooks:
 
     @pytest.mark.asyncio
     async def test_hook_registry_dynamic_update(self, mock_response):
-        """Test dynamically updating hook registry."""
         call_log = []
 
         async def hook_v1(event, **kwargs):
@@ -509,7 +495,6 @@ class TestProcessChunkExitTuple:
 
     @pytest.mark.asyncio
     async def test_process_chunk_raises_exception_from_exit_tuple(self):
-        """When handle_streaming_chunk returns ((*_, exc), True, *_), raise exc."""
         from unittest.mock import AsyncMock, patch
 
         from lionagi.ln.types import Undefined
@@ -552,7 +537,6 @@ class TestProcessChunkExitTuple:
 
     @pytest.mark.asyncio
     async def test_process_chunk_raises_runtime_error_when_no_cause(self):
-        """When exit=True but hook_result has no BaseException, RuntimeError is raised."""
         from unittest.mock import AsyncMock, patch
 
         from lionagi.service.imodel import iModel

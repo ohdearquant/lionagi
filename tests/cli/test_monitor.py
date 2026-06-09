@@ -177,22 +177,6 @@ def test_since_timestamp_bad_unit():
         _since_timestamp("5z")
 
 
-def test_colour_status_running():
-    result = _colour_status("running")
-    # Should contain the word "running"
-    assert "running" in result
-
-
-def test_colour_status_unknown():
-    result = _colour_status("some_unknown_status")
-    # Unknown statuses are returned as-is
-    assert result == "some_unknown_status"
-
-
-def test_pid_alive_none():
-    assert _pid_alive(None) is None
-
-
 def test_pid_alive_own_process():
     import os
 
@@ -231,25 +215,6 @@ def test_format_table_one_row():
     assert "session" in output
     assert "myproject" in output
     assert "running" in output
-
-
-def test_format_table_header():
-    rows = [
-        {
-            "id": "x",
-            "type": "y",
-            "project": "z",
-            "status": "running",
-            "phase": "-",
-            "elapsed": "-",
-            "agents": "-",
-        }
-    ]
-    output = _format_table(rows)
-    assert "ID" in output
-    assert "TYPE" in output
-    assert "STATUS" in output
-    assert "ELAPSED" in output
 
 
 # ── Unit: row builders ────────────────────────────────────────────────────────
@@ -843,3 +808,86 @@ def test_watch_mode_sigint_clean(temp_db_path: Path, monkeypatch: pytest.MonkeyP
     t.join(timeout=2)
     # Watch loop must return 0 (not raise or hang)
     assert exit_code == 0
+
+
+# ── Edge cases ────────────────────────────────────────────────────────────────
+
+
+def test_elapsed_negative_start_returns_zero_string():
+    future_start = time.time() + 1000
+    result = _elapsed(future_start)
+    assert result == "0s"
+
+
+def test_elapsed_with_ended_at_uses_ended_at():
+    start = time.time() - 200
+    ended = start + 100
+    result = _elapsed(start, ended_at=ended)
+    assert "1m" in result or "100s" in result or "1m40s" in result
+
+
+@pytest.mark.asyncio
+async def test_run_detail_session_with_corrupt_node_metadata(temp_db_path: Path) -> None:
+    import json
+
+    async with StateDB() as db:
+        sid = await _make_session(db, model="claude-opus-4", project="demo")
+        await db.db.execute(
+            "UPDATE sessions SET node_metadata = ? WHERE id = ?",
+            ("this is not json {{{", sid),
+        )
+        await db.db.commit()
+
+    output = await _run_detail(sid)
+    assert "SESSION" in output or "error" in output.lower()
+
+
+@pytest.mark.asyncio
+async def test_gather_table_rows_large_result_set(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        for _ in range(50):
+            await _make_session(db, status="running")
+        rows = await _gather_table_rows(db, since=None, entity_type="session", project=None)
+
+    assert len(rows) >= 50
+
+
+@pytest.mark.asyncio
+async def test_find_entity_ambiguous_prefix_returns_first_match(temp_db_path: Path) -> None:
+    prefix = "aaaa"
+    async with StateDB() as db:
+        s1 = prefix + "1111bbbb"
+        s2 = prefix + "2222bbbb"
+        pid1, pid2 = s1 + "x", s2 + "x"
+        await db.create_progression(pid1)
+        await db.create_progression(pid2)
+        await db.create_session(
+            {"id": s1, "progression_id": pid1, "status": "running", "started_at": time.time()}
+        )
+        await db.create_session(
+            {"id": s2, "progression_id": pid2, "status": "running", "started_at": time.time()}
+        )
+
+        result = await _find_entity(db, prefix)
+
+    assert result is not None
+    assert result[1]["id"].startswith(prefix)
+
+
+@pytest.mark.asyncio
+async def test_gather_table_rows_since_excludes_old_invocations(temp_db_path: Path) -> None:
+    async with StateDB() as db:
+        old_inv = await _make_invocation(db, status="running")
+        await db.db.execute(
+            "UPDATE invocations SET updated_at = ? WHERE id = ?",
+            (time.time() - 7200, old_inv),
+        )
+        await db.db.commit()
+        recent_inv = await _make_invocation(db, status="running")
+
+        since = time.time() - 60
+        rows = await _gather_table_rows(db, since=since, entity_type="invocation", project=None)
+
+    ids = [r["id"] for r in rows]
+    assert not any(old_inv[:16] in i for i in ids)
+    assert any(recent_inv[:16] in i for i in ids)

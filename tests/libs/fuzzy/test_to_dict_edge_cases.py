@@ -122,21 +122,18 @@ class IterableObject:
 
 
 def test_to_dict_with_object_dict_attr():
-    """Test object with __dict__"""
     obj = ObjectWithDunderDict()
     result = to_dict(obj)
     assert result == {"a": 1, "b": 2}
 
 
 def test_to_dict_kwargs_passthrough():
-    """Test kwargs passed through to json.loads"""
     # Test with parse_float kwarg
     result = to_dict('{"num": 1.5}', parse_float=lambda x: int(float(x)))
     assert result["num"] == 1
 
 
 def test_to_dict_nested_dataclasses():
-    """Test nested dataclasses"""
     person = Person(name="Charlie", age=40)
     nested = NestedData(person=person, tags=["tag1", "tag2"])
     result = to_dict(nested)
@@ -145,20 +142,17 @@ def test_to_dict_nested_dataclasses():
 
 
 def test_to_dict_error_without_suppress():
-    """Test error propagation without suppress"""
     with pytest.raises(ValueError):
         to_dict("{invalid json}", suppress=False)
 
 
 def test_to_dict_mapping_preservation():
-    """Test that mapping types are converted properly"""
     ordered = OrderedDict([("z", 26), ("a", 1)])
     result = to_dict(ordered)
     assert result == {"z": 26, "a": 1}
 
 
 def test_to_dict_bytes_not_enumerated():
-    """Test that bytes are not treated as iterable for enumeration"""
     # bytes should not be enumerated, but we need to check behavior
     try:
         result = to_dict(b"test")
@@ -170,13 +164,11 @@ def test_to_dict_bytes_not_enumerated():
 
 
 def test_to_dict_frozenset_in_top_level():
-    """Test frozenset conversion"""
     result = to_dict(frozenset([1, 2, 3]))
     assert result == {0: 1, 1: 2, 2: 3}
 
 
 def test_to_dict_recursive_sequences():
-    """Test recursive processing of sequences"""
     data = [1, "2", '{"three": 3}', (4, 5)]
     result = to_dict(data, recursive=True)
     # Should enumerate top-level list
@@ -190,26 +182,22 @@ def test_to_dict_recursive_sequences():
 
 
 def test_to_dict_with_none_max_depth():
-    """Test None as max_recursive_depth"""
     result = to_dict({"a": 1}, recursive=True, max_recursive_depth=None)
     assert result == {"a": 1}
 
 
 def test_to_dict_string_type_none():
-    """Test str_type=None"""
     result = to_dict('{"a": 1}', str_type=None)
     assert result == {"a": 1}
 
 
 def test_to_dict_recursive_with_enum():
-    """Test recursive processing with enum values"""
     data = {"status": Status, "nested": {"color": Color}}
     result = to_dict(data, recursive=True, use_enum_values=True)
     assert isinstance(result["status"], dict)
 
 
 def test_convert_top_level_with_exception_fallback():
-    """Test fallback behavior when object conversion fails"""
 
     class WeirdObject:
         def __iter__(self):
@@ -224,7 +212,6 @@ def test_convert_top_level_with_exception_fallback():
 
 
 def test_preprocess_recursive_with_mapping():
-    """Test recursive processing preserves mapping structure"""
     data = {"a": {"b": {"c": 1}}}
     result = _preprocess_recursive(
         data,
@@ -242,14 +229,12 @@ def test_preprocess_recursive_with_mapping():
 
 
 def test_object_to_mapping_like_with_to_json():
-    """Test object with to_json method"""
     obj = ObjectWithToJson()
     result = _object_to_mapping_like(obj, prioritize_model_dump=False)
     assert result == {"method": "to_json", "data": "value"}
 
 
 def test_to_dict_recursive_python_only():
-    """Test recursive_python_only flag"""
     obj = ObjectWithToDict()
     data = {"obj": obj}
     result = to_dict(data, recursive=True, recursive_python_only=True)
@@ -259,7 +244,6 @@ def test_to_dict_recursive_python_only():
 
 
 def test_convert_top_level_object_returns_non_mapping():
-    """Test object conversion that returns something requiring dict() cast (line 290)"""
 
     class StrangeObject:
         """Object that to_dict returns a number"""
@@ -276,7 +260,6 @@ def test_convert_top_level_object_returns_non_mapping():
 
 
 def test_convert_top_level_string_from_object():
-    """Test when object conversion returns a string that needs parsing (line 276)"""
 
     class ObjReturnsJsonString:
         """Object whose to_dict returns a JSON string"""
@@ -291,7 +274,6 @@ def test_convert_top_level_string_from_object():
 
 
 def test_convert_top_level_non_sequence_to_string():
-    """Test non-sequence object that converts to string requiring parsing (line 276)"""
 
     class NumberObject:
         """A non-sequence object that converts to JSON string"""
@@ -307,7 +289,6 @@ def test_convert_top_level_non_sequence_to_string():
 
 
 def test_convert_top_level_dataclass_fallback():
-    """Test dataclass fallback path (line 305)"""
 
     # Create a dataclass that somehow bypasses the earlier object_to_mapping_like
     # This is hard because dataclasses are caught in _object_to_mapping_like

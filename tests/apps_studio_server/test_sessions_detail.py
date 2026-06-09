@@ -10,6 +10,7 @@ Coverage targets:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -674,3 +675,90 @@ async def test_session_exists_returns_false_when_db_file_absent(patched_sessions
     # Do not create the DB file
 
     assert await svc.session_exists("any-id") is False
+
+
+# ---------------------------------------------------------------------------
+# Edge: get_session_messages_after with negative timestamp returns all messages
+# ---------------------------------------------------------------------------
+
+
+async def test_get_session_messages_after_negative_timestamp(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-neg")
+    await seed_branch(db_path, branch_id="br-neg", session_id="sess-neg", msg_ids=["m-neg-1"])
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": "m-neg-1",
+                "created_at": 10.0,
+                "content": {"text": "msg"},
+                "sender": "user",
+                "recipient": "worker",
+                "role": "user",
+                "node_metadata": {},
+            }
+        )
+
+    result = await svc.get_session_messages_after("sess-neg", -1.0)
+    assert len(result) == 1
+    assert result[0]["id"] == "m-neg-1"
+
+
+async def test_get_session_messages_after_zero_timestamp(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-zero")
+    await seed_branch(db_path, branch_id="br-zero", session_id="sess-zero", msg_ids=["m-zero-1"])
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": "m-zero-1",
+                "created_at": 1.0,
+                "content": {"text": "msg"},
+                "sender": "user",
+                "recipient": "worker",
+                "role": "user",
+                "node_metadata": {},
+            }
+        )
+
+    result = await svc.get_session_messages_after("sess-zero", 0.0)
+    assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# Edge: concurrent list_sessions and save_session (WAL-mode writer/reader)
+# ---------------------------------------------------------------------------
+
+
+async def test_concurrent_list_and_seed_sessions(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-concurrent-1")
+
+    async def _seed_more():
+        for i in range(3):
+            await seed_session(db_path, session_id=f"sess-concurrent-extra-{i}")
+
+    results, _ = await asyncio.gather(svc.list_sessions(), _seed_more())
+    assert isinstance(results, list)
+    assert len(results) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Edge: get_session with very large node_metadata JSON
+# ---------------------------------------------------------------------------
+
+
+async def test_get_session_large_node_metadata_parses_correctly(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    large_meta = {
+        "agents": [{"id": f"agent-{i}", "name": f"Agent {i}", "model": "gpt-4"} for i in range(50)],
+        "operations": [
+            {"id": f"op-{i}", "agent_id": f"agent-{i % 50}", "depends_on": []} for i in range(100)
+        ],
+    }
+    await seed_session(db_path, session_id="sess-large-meta", node_metadata=large_meta)
+
+    result = await svc.get_session("sess-large-meta")
+    assert result is not None
+    assert result["graph"] is not None
+    assert len(result["graph"]["nodes"]) == 100

@@ -1170,3 +1170,89 @@ async def test_new_db_has_artifact_columns(db: StateDB):
     cols = {r["name"] for r in await cur.fetchall()}
     assert "artifact_contract_json" in cols
     assert "artifact_verification_json" in cols
+
+
+# ── Additional edge cases ─────────────────────────────────────────────────────
+
+
+async def test_sequential_open_close_reopen(tmp_path):
+    """An instance can be opened, closed, and reopened without error.
+    Verifies that close() resets internal state so subsequent open() works."""
+    path = tmp_path / "lifecycle.db"
+    state = StateDB(str(path))
+
+    await state.open()
+    version_first = await state.schema_version()
+    await state.close()
+    assert state._db is None
+
+    # Second open must succeed.
+    await state.open()
+    version_second = await state.schema_version()
+    await state.close()
+
+    assert version_first == version_second == "1"
+    assert state._db is None
+
+
+async def test_methods_raise_after_close(db: StateDB):
+    """Calling methods that access .db after close() propagates RuntimeError."""
+    await db.close()
+    with pytest.raises(RuntimeError, match="not open"):
+        await db.get_session("anything")
+
+
+async def test_update_session_with_show_status_no_reason_raises(db: StateDB):
+    """update_session with a status that has no canonical default raises ValueError
+    when the entity type is session but status has no mapping."""
+    # "pending" is a play status, not a session status — validate_session_status
+    # catches it before the reason_code lookup.
+    s = await _make_session(db, status="running")
+    with pytest.raises(ValueError):
+        await db.update_session(s["id"], status="pending")
+
+
+async def test_create_session_very_long_strings(db: StateDB):
+    """Extremely long name/user values are stored and retrieved without truncation."""
+    long_name = "x" * 4096
+    long_user = "y" * 4096
+    prog_id = uid()
+    await db.create_progression(prog_id)
+    sid = uid()
+    await db.create_session(
+        {"id": sid, "progression_id": prog_id, "name": long_name, "user": long_user}
+    )
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["name"] == long_name
+    assert row["user"] == long_user
+
+
+async def test_error_recovery_after_failed_transaction(db: StateDB):
+    """After a failed transaction (e.g. bad SQL) the connection is still usable."""
+    # Force a rollback by attempting a bad operation.
+    try:
+        await db.db.execute("SELECT * FROM nonexistent_table_xyz")
+    except Exception:
+        pass
+    # Connection must still accept valid queries.
+    version = await db.schema_version()
+    assert version == "1"
+
+
+async def test_get_session_sql_injection_payload(db: StateDB):
+    """SQL injection payload in session_id is safely parameterized — returns None."""
+    malicious_id = "' OR '1'='1"
+    result = await db.get_session(malicious_id)
+    assert result is None
+
+
+async def test_get_branch_sql_injection_payload(db: StateDB):
+    """SQL injection payload in branch_id returns None (parameterized query)."""
+    malicious_id = "'; DROP TABLE branches; --"
+    result = await db.get_branch(malicious_id)
+    assert result is None
+    # Table must still exist.
+    cur = await db.db.execute("SELECT COUNT(*) AS n FROM branches")
+    row = await cur.fetchone()
+    assert row["n"] == 0

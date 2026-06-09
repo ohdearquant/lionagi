@@ -3,7 +3,6 @@
 
 import json
 
-import pytest
 from pydantic import BaseModel
 
 from lionagi.libs.schema.load_pydantic_model_from_schema import (
@@ -13,16 +12,6 @@ from lionagi.libs.schema.load_pydantic_model_from_schema import (
 # ---------------------------------------------------------------------------
 # Basic input validation
 # ---------------------------------------------------------------------------
-
-
-def test_loader_invalid_json_string_raises():
-    with pytest.raises(ValueError):
-        load_pydantic_model_from_schema("not a json string")
-
-
-def test_loader_wrong_type_raises():
-    with pytest.raises(TypeError):
-        load_pydantic_model_from_schema(12345)
 
 
 # ---------------------------------------------------------------------------

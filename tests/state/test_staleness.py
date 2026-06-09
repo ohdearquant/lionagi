@@ -189,3 +189,108 @@ def test_thresholds_cover_all_invocation_kinds():
 
     missing = _INVOCATION_KINDS - STALE_THRESHOLDS.keys()
     assert not missing, f"invocation_kinds without explicit threshold: {missing}"
+
+
+# ── Additional edge cases ─────────────────────────────────────────────────────
+
+
+def test_staleness_check_now_none_uses_real_time():
+    """staleness_check with now=None uses time.time() — production code path.
+    A very-old running session (last activity at t=0) must be stale even
+    when now is not supplied explicitly."""
+    session = {
+        "status": "running",
+        "invocation_kind": "agent",
+        "last_message_at": 0,  # epoch, always stale
+    }
+    # Must not raise and must return "stale"
+    result = staleness_check(session)
+    assert result == "stale"
+
+
+def test_staleness_check_now_none_active_session_is_none():
+    """A session active within the last minute is not stale when now=None."""
+    session = {
+        "status": "running",
+        "invocation_kind": "agent",
+        "last_message_at": time.time() - 60,
+    }
+    result = staleness_check(session)
+    assert result is None
+
+
+def test_staleness_boundary_exactly_at_threshold_is_not_stale():
+    """A session whose idle time equals the threshold exactly is NOT stale.
+    The check is strictly-greater-than: ts - last_activity > threshold."""
+    now = 1_000_000.0
+    threshold = STALE_THRESHOLDS["agent"]  # 6h
+    session = {
+        "status": "running",
+        "invocation_kind": "agent",
+        "last_message_at": now - threshold,  # exactly at threshold
+    }
+    # Exactly at threshold: not stale (> not >=)
+    assert staleness_check(session, now=now) is None
+
+
+def test_staleness_boundary_one_second_over_threshold_is_stale():
+    """One second past the threshold crosses into stale."""
+    now = 1_000_000.0
+    threshold = STALE_THRESHOLDS["agent"]
+    session = {
+        "status": "running",
+        "invocation_kind": "agent",
+        "last_message_at": now - (threshold + 1),
+    }
+    assert staleness_check(session, now=now) == "stale"
+
+
+def test_staleness_play_threshold():
+    now = 1_000_000.0
+    threshold = STALE_THRESHOLDS["play"]  # 6h
+    session_under = {
+        "status": "running",
+        "invocation_kind": "play",
+        "last_message_at": now - (threshold - 1),
+    }
+    session_over = {
+        "status": "running",
+        "invocation_kind": "play",
+        "last_message_at": now - (threshold + 1),
+    }
+    assert staleness_check(session_under, now=now) is None
+    assert staleness_check(session_over, now=now) == "stale"
+
+
+def test_staleness_fanout_threshold():
+    now = 1_000_000.0
+    threshold = STALE_THRESHOLDS["fanout"]  # 12h
+    session_under = {
+        "status": "running",
+        "invocation_kind": "fanout",
+        "last_message_at": now - (threshold - 1),
+    }
+    session_over = {
+        "status": "running",
+        "invocation_kind": "fanout",
+        "last_message_at": now - (threshold + 1),
+    }
+    assert staleness_check(session_under, now=now) is None
+    assert staleness_check(session_over, now=now) == "stale"
+
+
+def test_staleness_show_play_threshold():
+    now = 1_000_000.0
+    threshold = STALE_THRESHOLDS["show-play"]  # 12h
+    session_under = {
+        "status": "running",
+        "invocation_kind": "show-play",
+        "last_message_at": now - (threshold - 1),
+    }
+    session_over = {
+        "status": "running",
+        "invocation_kind": "show-play",
+        "last_message_at": now - (threshold + 1),
+    }
+    assert staleness_check(session_under, now=now) is None
+    assert staleness_check(session_over, now=now) == "stale"

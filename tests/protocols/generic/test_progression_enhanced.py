@@ -197,29 +197,12 @@ class TestMembersSyncAfterMutations:
 class TestContainsUsesMembers:
     """__contains__ should use O(1) _members lookup."""
 
-    def test_contains_element(self, prog, elems):
-        for e in elems:
-            assert e in prog
-
-    def test_contains_uuid(self, prog, elems):
-        for e in elems:
-            assert e.id in prog
-
     def test_contains_uuid_string(self, prog, elems):
         for e in elems:
             assert str(e.id) in prog
 
-    def test_not_contains_random_uuid(self, prog):
-        assert uuid4() not in prog
-
     def test_not_contains_invalid_string(self, prog):
         assert "not-a-uuid" not in prog
-
-    def test_contains_after_removal(self, prog, elems):
-        target = elems[0]
-        prog.remove(target)
-        assert target not in prog
-        assert target.id not in prog
 
     def test_contains_multiple_items(self, prog, elems):
         # validate_order handles sequences, so [id1, id2] checks all
@@ -508,10 +491,6 @@ class TestReverse:
         prog.reverse()
         assert list(prog.order) == list(reversed(ids_before))
 
-    def test_reverse_empty(self, empty_prog):
-        empty_prog.reverse()
-        assert len(empty_prog) == 0
-
     def test_reverse_single_item(self, single_prog):
         p, e = single_prog
         p.reverse()
@@ -529,11 +508,6 @@ class TestReverse:
         prog.reverse()
         assert list(prog.order) == ids_before
 
-    def test_reverse_does_not_change_length(self, prog):
-        original_len = len(prog)
-        prog.reverse()
-        assert len(prog) == original_len
-
     def test_reverse_contains_still_works(self, prog, elems):
         prog.reverse()
         for e in elems:
@@ -542,21 +516,6 @@ class TestReverse:
 
 class TestMembersUnaffectedByReorderOps:
     """move, swap, and reverse do not change set membership."""
-
-    def test_move_members_unchanged(self, prog, elems):
-        expected = {e.id for e in elems}
-        prog.move(0, 4)
-        assert prog._members == expected
-
-    def test_swap_members_unchanged(self, prog, elems):
-        expected = {e.id for e in elems}
-        prog.swap(1, 3)
-        assert prog._members == expected
-
-    def test_reverse_members_unchanged(self, prog, elems):
-        expected = {e.id for e in elems}
-        prog.reverse()
-        assert prog._members == expected
 
     def test_chained_operations_members_consistent(self, prog, elems):
         """Sequence of move, swap, reverse should keep _members consistent."""

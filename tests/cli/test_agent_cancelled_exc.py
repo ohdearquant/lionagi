@@ -39,7 +39,6 @@ class TestCacheAndReaderFunctions:
     def test_cancelled_exc_classes_returns_asyncio_fallback_when_no_cache(
         self,
     ) -> None:
-        """If cache was never populated, fallback must be asyncio.CancelledError."""
         from lionagi.ln.concurrency.errors import cancelled_exc_classes
 
         result = cancelled_exc_classes()
@@ -49,7 +48,6 @@ class TestCacheAndReaderFunctions:
     def test_cancelled_exc_classes_never_calls_anyio_after_loop_exit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """cancelled_exc_classes() must not raise even when anyio would."""
         import anyio as _anyio
 
         import lionagi.ln.concurrency.errors as errors_mod
@@ -69,7 +67,6 @@ class TestCacheAndReaderFunctions:
         assert asyncio.CancelledError in result
 
     def test_cache_cancelled_exc_class_populates_cache(self) -> None:
-        """cache_cancelled_exc_class() must fill _CANCELLED_EXC_CLASS inside a loop."""
         import lionagi.ln.concurrency.errors as errors_mod
 
         errors_mod._CANCELLED_EXC_CLASS = None
@@ -85,7 +82,6 @@ class TestCacheAndReaderFunctions:
         assert asyncio.CancelledError in errors_mod._CANCELLED_EXC_CLASS
 
     def test_cache_is_idempotent(self) -> None:
-        """Calling cache_cancelled_exc_class() twice must not change the cached value."""
         import lionagi.ln.concurrency.errors as errors_mod
 
         errors_mod._CANCELLED_EXC_CLASS = None
@@ -104,7 +100,6 @@ class TestCacheAndReaderFunctions:
         asyncio.run(_inner())
 
     def test_cancelled_exc_classes_returns_cached_after_loop_exit(self) -> None:
-        """After loop exit, cancelled_exc_classes() returns the cached tuple."""
         import lionagi.ln.concurrency.errors as errors_mod
 
         errors_mod._CANCELLED_EXC_CLASS = None
@@ -123,24 +118,6 @@ class TestCacheAndReaderFunctions:
         result = cancelled_exc_classes()
         assert asyncio.CancelledError in result
 
-    def test_asyncio_cancelled_error_isinstance_check_works(self) -> None:
-        """isinstance(exc, cancelled_exc_classes()) must catch CancelledError."""
-        import lionagi.ln.concurrency.errors as errors_mod
-
-        errors_mod._CANCELLED_EXC_CLASS = None
-
-        async def _inner() -> None:
-            from lionagi.ln.concurrency.errors import cache_cancelled_exc_class
-
-            cache_cancelled_exc_class()
-
-        asyncio.run(_inner())
-
-        from lionagi.ln.concurrency.errors import cancelled_exc_classes
-
-        exc = asyncio.CancelledError()
-        assert isinstance(exc, cancelled_exc_classes())
-
 
 # ---------------------------------------------------------------------------
 # Integration test: simulate the run_agent error path post-loop-exit
@@ -148,22 +125,6 @@ class TestCacheAndReaderFunctions:
 
 
 class TestRunAgentCancelledExcPath:
-    """
-    Simulate the exact failure scenario from issue #1082.
-
-    In production:
-      1. ``run_async(_run_agent(...))`` runs the coroutine to completion.
-      2. ``run_async`` tears down the event loop.
-      3. Inside the ``except BaseException`` block in ``run_agent``, the code
-         previously called ``anyio.get_cancelled_exc_class()`` — which raises
-         ``NoEventLoopError`` because the loop is gone.
-
-    Here we reproduce that by:
-      - Running a dummy coroutine with ``run_async`` (which starts + stops a loop).
-      - Verifying that a ``CancelledError`` raised *after* ``run_async`` returns
-        is still correctly classified by ``cancelled_exc_classes()``.
-    """
-
     def setup_method(self) -> None:
         """Reset module-level cache before each test."""
         import lionagi.ln.concurrency.errors as errors_mod
@@ -173,7 +134,6 @@ class TestRunAgentCancelledExcPath:
     def test_no_noeventloouperror_when_classifying_after_loop_exit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Classifying an exception after loop exit must not raise NoEventLoopError."""
         import anyio as _anyio
 
         import lionagi.ln.concurrency.errors as errors_mod

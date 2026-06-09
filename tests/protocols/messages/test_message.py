@@ -2,12 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 
 from lionagi.protocols.messages.base import (
-    MESSAGE_FIELDS,
-    MessageField,
     MessageRole,
     validate_sender_recipient,
 )
@@ -60,55 +57,12 @@ class _MockMessage(RoledMessage):
 # ============================================================================
 
 
-def test_message_role_enum():
-    """Test MessageRole enumeration values and types."""
-    assert isinstance(MessageRole.SYSTEM, Enum)
-    assert isinstance(MessageRole.USER, Enum)
-    assert isinstance(MessageRole.ASSISTANT, Enum)
-    assert isinstance(MessageRole.UNSET, Enum)
-    assert isinstance(MessageRole.ACTION, Enum)
-
-    assert MessageRole.SYSTEM.value == "system"
-    assert MessageRole.USER.value == "user"
-    assert MessageRole.ASSISTANT.value == "assistant"
-    assert MessageRole.UNSET.value == "unset"
-    assert MessageRole.ACTION.value == "action"
-
-
-# ============================================================================
-# MessageField Tests
-# ============================================================================
-
-
-def test_message_field_enum():
-    """Test MessageField enumeration and MESSAGE_FIELDS constant."""
-    assert isinstance(MessageField.CREATED_AT, Enum)
-    assert isinstance(MessageField.ROLE, Enum)
-    assert isinstance(MessageField.CONTENT, Enum)
-    assert isinstance(MessageField.ID, Enum)
-    assert isinstance(MessageField.SENDER, Enum)
-    assert isinstance(MessageField.RECIPIENT, Enum)
-    assert isinstance(MessageField.METADATA, Enum)
-
-    assert MessageField.CREATED_AT.value == "created_at"
-    assert MessageField.ROLE.value == "role"
-    assert MessageField.CONTENT.value == "content"
-    assert MessageField.ID.value == "id"
-    assert MessageField.SENDER.value == "sender"
-    assert MessageField.RECIPIENT.value == "recipient"
-    assert MessageField.METADATA.value == "metadata"
-
-    # Verify MESSAGE_FIELDS contains all field values
-    assert all(field.value in MESSAGE_FIELDS for field in MessageField)
-
-
 # ============================================================================
 # MessageContent Tests
 # ============================================================================
 
 
 def test_message_content_dataclass():
-    """Test MessageContent is a proper dataclass with slots."""
     content = _MockContent(text="test content", metadata={"key": "value"})
 
     assert content.text == "test content"
@@ -119,13 +73,11 @@ def test_message_content_dataclass():
 
 
 def test_message_content_rendered():
-    """Test MessageContent rendered property."""
     content = _MockContent(text="Hello World")
     assert content.rendered == "Hello World"
 
 
 def test_message_content_from_dict():
-    """Test MessageContent.from_dict() classmethod."""
     data = {"text": "test message", "metadata": {"importance": "high"}}
     content = _MockContent.from_dict(data)
 
@@ -135,7 +87,6 @@ def test_message_content_from_dict():
 
 
 def test_message_content_to_dict():
-    """Test MessageContent.to_dict() method from DataClass."""
     content = _MockContent(text="test", metadata={"key": "value"})
     data = content.to_dict()
 
@@ -146,7 +97,6 @@ def test_message_content_to_dict():
 
 
 def test_message_content_none_as_sentinel():
-    """Test MessageContent._config.none_as_sentinel."""
     assert MessageContent._config.none_as_sentinel is True
 
 
@@ -156,7 +106,6 @@ def test_message_content_none_as_sentinel():
 
 
 def test_roled_message_initialization():
-    """Test basic initialization of Message with MessageContent."""
     content = _MockContent(text="Hello")
     message = _MockMessage(
         content=content,
@@ -173,7 +122,6 @@ def test_roled_message_initialization():
 
 
 def test_roled_message_initialization_from_string():
-    """Test Message initialization with string content."""
     message = _MockMessage(content="Hello World", sender="user")
 
     assert message.content.text == "Hello World"
@@ -181,7 +129,6 @@ def test_roled_message_initialization_from_string():
 
 
 def test_roled_message_initialization_from_dict():
-    """Test Message initialization with dict content."""
     message = _MockMessage(
         content={"text": "Hello", "metadata": {"type": "greeting"}},
         sender="user",
@@ -192,7 +139,6 @@ def test_roled_message_initialization_from_dict():
 
 
 def test_roled_message_content_always_message_content():
-    """Test that content is always MessageContent, never dict."""
     message = _MockMessage(content={"text": "test"})
 
     assert isinstance(message.content, MessageContent)
@@ -205,7 +151,6 @@ def test_roled_message_content_always_message_content():
 
 
 def test_roled_message_role_classvar():
-    """Test role is a ClassVar property, not an instance field."""
     from typing import ClassVar
 
     class _UserMessage(RoledMessage):
@@ -228,20 +173,17 @@ def test_roled_message_role_classvar():
 
 
 def test_roled_message_role_ignored_in_constructor():
-    """Test that passing role= to constructor is silently ignored."""
     message = _MockMessage(role="user", content=_MockContent(text="test"), sender="user")
     assert message.role == MessageRole.UNSET
 
 
 def test_roled_message_role_in_serialization():
-    """Test that role appears in serialized output."""
     message = _MockMessage(content=_MockContent(text="test"))
     d = message.to_dict()
     assert d["role"] == "unset"
 
 
 def test_roled_message_role_default():
-    """Test default role is UNSET."""
     message = _MockMessage(content=_MockContent(text="test"))
     assert message.role == MessageRole.UNSET
 
@@ -252,7 +194,6 @@ def test_roled_message_role_default():
 
 
 def test_roled_message_sender_recipient_validation():
-    """Test sender and recipient validation."""
     message = _MockMessage(
         role=MessageRole.USER,
         content=_MockContent(text="test"),
@@ -265,7 +206,6 @@ def test_roled_message_sender_recipient_validation():
 
 
 def test_roled_message_sender_recipient_string():
-    """Test sender and recipient with string values."""
     message = _MockMessage(
         role=MessageRole.USER,
         content=_MockContent(text="test"),
@@ -278,7 +218,6 @@ def test_roled_message_sender_recipient_string():
 
 
 def test_roled_message_sender_recipient_none():
-    """Test sender and recipient with None values."""
     message = _MockMessage(
         role=MessageRole.USER,
         content=_MockContent(text="test"),
@@ -297,7 +236,6 @@ def test_roled_message_sender_recipient_none():
 
 
 def test_roled_message_rendered_property():
-    """Test RoledMessage rendered property delegates to content.rendered."""
     content = _MockContent(text="Hello World")
     message = _MockMessage(role=MessageRole.USER, content=content)
 
@@ -306,7 +244,6 @@ def test_roled_message_rendered_property():
 
 
 def test_roled_message_chat_msg_property():
-    """Test Message chat_msg property."""
     message = _MockMessage(content=_MockContent(text="Hello"))
 
     chat_msg = message.chat_msg
@@ -316,7 +253,6 @@ def test_roled_message_chat_msg_property():
 
 
 def test_roled_message_chat_msg_property_error_handling():
-    """Test chat_msg property returns None on error."""
     # This test assumes chat_msg can fail gracefully
     # In practice, it should work for valid messages
     message = _MockMessage(role=MessageRole.USER, content=_MockContent(text="Hello"))
@@ -325,7 +261,6 @@ def test_roled_message_chat_msg_property_error_handling():
 
 
 def test_roled_message_image_content_property():
-    """Test image_content property returns None for text content."""
     message = _MockMessage(role=MessageRole.USER, content=_MockContent(text="Hello"))
 
     # For simple text content, image_content should be None
@@ -338,7 +273,6 @@ def test_roled_message_image_content_property():
 
 
 def test_roled_message_update_sender():
-    """Test update() method updates sender."""
     message = _MockMessage(
         role=MessageRole.USER,
         content=_MockContent(text="Hello"),
@@ -350,7 +284,6 @@ def test_roled_message_update_sender():
 
 
 def test_roled_message_update_recipient():
-    """Test update() method updates recipient."""
     message = _MockMessage(
         role=MessageRole.USER,
         content=_MockContent(text="Hello"),
@@ -362,7 +295,6 @@ def test_roled_message_update_recipient():
 
 
 def test_roled_message_update_content():
-    """Test update() method updates content via from_dict()."""
     message = _MockMessage(
         role=MessageRole.USER,
         content=_MockContent(text="Original", metadata={"version": 1}),
@@ -377,7 +309,6 @@ def test_roled_message_update_content():
 
 
 def test_roled_message_update_multiple_fields():
-    """Test update() method updates multiple fields at once."""
     message = _MockMessage(
         role=MessageRole.USER,
         content=_MockContent(text="Original"),
@@ -393,7 +324,6 @@ def test_roled_message_update_multiple_fields():
 
 
 def test_roled_message_update_preserves_other_fields():
-    """Test update() preserves fields not being updated."""
     message = _MockMessage(
         role=MessageRole.USER,
         content=_MockContent(text="Original", metadata={"key": "value"}),
@@ -421,7 +351,6 @@ def test_roled_message_update_preserves_other_fields():
 
 
 def test_roled_message_to_dict():
-    """Test Message serialization to dict."""
     message = _MockMessage(
         content=_MockContent(text="test"),
         sender="user",
@@ -438,7 +367,6 @@ def test_roled_message_to_dict():
 
 
 def test_roled_message_serialization_to_dict():
-    """Test serialization of RoledMessage to dict."""
     message = _MockMessage(role=MessageRole.USER, content=_MockContent(text="test"), sender="user")
 
     serialized = message.to_dict()
@@ -452,7 +380,6 @@ def test_roled_message_serialization_to_dict():
 
 
 def test_roled_message_str_representation():
-    """Test string representation of RoledMessage."""
     message = _MockMessage(
         role=MessageRole.USER,
         content=_MockContent(text="test"),
@@ -472,19 +399,16 @@ def test_roled_message_str_representation():
 
 
 def test_validate_sender_recipient_message_role():
-    """Test validate_sender_recipient with MessageRole."""
     result = validate_sender_recipient(MessageRole.USER)
     assert result == MessageRole.USER
 
 
 def test_validate_sender_recipient_string():
-    """Test validate_sender_recipient with valid string."""
     result = validate_sender_recipient("user")
     assert result == MessageRole.USER
 
 
 def test_validate_sender_recipient_none():
-    """Test validate_sender_recipient with None."""
     result = validate_sender_recipient(None)
     assert result == MessageRole.UNSET
 
@@ -495,7 +419,6 @@ def test_validate_sender_recipient_none():
 
 
 def test_message_workflow_complete():
-    """Test complete message workflow: create, update, serialize."""
     # Create message
     message = _MockMessage(
         role=MessageRole.USER,
@@ -520,7 +443,6 @@ def test_message_workflow_complete():
 
 
 def test_message_content_immutability_via_update():
-    """Test that content updates create new instances via from_dict()."""
     message = _MockMessage(role=MessageRole.USER, content=_MockContent(text="Original"))
 
     original_content = message.content

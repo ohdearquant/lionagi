@@ -7,10 +7,7 @@ from lionagi.libs.schema.function_to_schema import FunctionSchema, function_to_s
 
 
 class TestFunctionToSchema:
-    """Test cases for function_to_schema function."""
-
     def test_simple_function_google_style(self):
-        """Test schema generation for simple function with Google-style docstring."""
 
         def sample_func(x: int, y: str) -> bool:
             """Sample function for testing.
@@ -44,7 +41,6 @@ class TestFunctionToSchema:
         assert "y" in params["required"]
 
     def test_function_with_rest_style_docstring(self):
-        """Test schema generation with reST-style docstring."""
 
         def rest_func(param1: int, param2: str):
             """Function with reST docstring.
@@ -62,7 +58,6 @@ class TestFunctionToSchema:
         assert "param2" in func_def["parameters"]["properties"]
 
     def test_function_without_docstring(self):
-        """Test schema generation for function without docstring."""
 
         def no_doc_func(x: int):
             pass
@@ -75,7 +70,6 @@ class TestFunctionToSchema:
         assert "x" in func_def["parameters"]["properties"]
 
     def test_function_without_type_hints(self):
-        """Test schema generation for function without type hints."""
 
         def no_hints(x, y):
             """Function without type hints.
@@ -94,7 +88,6 @@ class TestFunctionToSchema:
         assert params["properties"]["y"]["type"] == "string"
 
     def test_function_with_list_parameter(self):
-        """Test schema generation with list type hint."""
 
         def list_func(items: list) -> bool:
             """Function with list parameter.
@@ -110,7 +103,6 @@ class TestFunctionToSchema:
         assert params["properties"]["items"]["type"] == "array"
 
     def test_function_with_dict_parameter(self):
-        """Test schema generation with dict type hint."""
 
         def dict_func(data: dict) -> bool:
             """Function with dict parameter.
@@ -126,7 +118,6 @@ class TestFunctionToSchema:
         assert params["properties"]["data"]["type"] == "object"
 
     def test_function_with_float_parameter(self):
-        """Test schema generation with float type hint."""
 
         def float_func(value: float) -> bool:
             """Function with float parameter.
@@ -142,7 +133,6 @@ class TestFunctionToSchema:
         assert params["properties"]["value"]["type"] == "number"
 
     def test_function_with_bool_parameter(self):
-        """Test schema generation with bool type hint."""
 
         def bool_func(flag: bool) -> bool:
             """Function with bool parameter.
@@ -158,7 +148,6 @@ class TestFunctionToSchema:
         assert params["properties"]["flag"]["type"] == "boolean"
 
     def test_function_with_tuple_parameter(self):
-        """Test schema generation with tuple type hint."""
 
         def tuple_func(coords: tuple) -> bool:
             """Function with tuple parameter.
@@ -174,7 +163,6 @@ class TestFunctionToSchema:
         assert params["properties"]["coords"]["type"] == "array"
 
     def test_custom_function_description(self):
-        """Test schema generation with custom function description."""
 
         def func_with_desc(x: int):
             """Original description.
@@ -190,7 +178,6 @@ class TestFunctionToSchema:
         assert schema["function"]["description"] == custom_desc
 
     def test_custom_parameter_descriptions(self):
-        """Test schema generation with custom parameter descriptions."""
 
         def func_with_params(x: int, y: str):
             """Function.
@@ -212,7 +199,6 @@ class TestFunctionToSchema:
         assert params["properties"]["y"]["description"] == "Custom description for y."
 
     def test_strict_mode_enabled(self):
-        """Test schema generation with strict mode enabled."""
 
         def strict_func(x: int):
             """Strict function.
@@ -227,7 +213,6 @@ class TestFunctionToSchema:
         assert schema["function"]["strict"] is True
 
     def test_strict_mode_disabled(self):
-        """Test schema generation with strict mode explicitly disabled."""
 
         def non_strict_func(x: int):
             """Non-strict function.
@@ -247,7 +232,6 @@ class TestFunctionToSchema:
         assert schema["function"]["name"] == "non_strict_func"
 
     def test_custom_request_options(self):
-        """Test schema generation with custom request options."""
 
         def custom_func(x: int):
             """Custom function.
@@ -275,7 +259,6 @@ class TestFunctionToSchema:
         assert "x" not in params["properties"]  # Original params should be replaced
 
     def test_return_as_object(self):
-        """Test schema generation returning FunctionSchema object."""
 
         def obj_func(x: int):
             """Object function.
@@ -297,7 +280,6 @@ class TestFunctionToSchema:
         assert "function" in schema_dict
 
     def test_multiple_parameters_all_types(self):
-        """Test function with multiple parameters of different types."""
 
         def multi_type_func(a: int, b: str, c: float, d: bool, e: list, f: dict, g: tuple):
             """Function with multiple parameter types.
@@ -325,7 +307,6 @@ class TestFunctionToSchema:
         assert props["g"]["type"] == "array"
 
     def test_function_name_extraction(self):
-        """Test that function name is correctly extracted."""
 
         def my_custom_function_name():
             """Test function."""
@@ -336,7 +317,6 @@ class TestFunctionToSchema:
         assert schema["function"]["name"] == "my_custom_function_name"
 
     def test_empty_parameter_list(self):
-        """Test function with no parameters."""
 
         def no_params():
             """Function with no parameters."""
@@ -349,7 +329,6 @@ class TestFunctionToSchema:
         assert params["required"] == []
 
     def test_multiline_parameter_description(self):
-        """Test parameter with multiline description."""
 
         def multiline_func(x: int):
             """Function with multiline description.
@@ -368,7 +347,6 @@ class TestFunctionToSchema:
         assert "multiline description" in x_desc
 
     def test_complex_function_docstring(self):
-        """Test function with complex docstring structure."""
 
         def complex_func(param1: str, param2: int):
             """Complex function with detailed documentation.
@@ -402,10 +380,7 @@ class TestFunctionToSchema:
 
 
 class TestFunctionSchema:
-    """Test cases for FunctionSchema model."""
-
     def test_function_schema_creation(self):
-        """Test creating FunctionSchema instance."""
         schema = FunctionSchema(
             name="test_func",
             description="Test function.",
@@ -421,7 +396,6 @@ class TestFunctionSchema:
         assert "x" in schema.parameters["properties"]
 
     def test_function_schema_to_dict(self):
-        """Test FunctionSchema to_dict method."""
         schema = FunctionSchema(
             name="test_func",
             description="Test function.",
@@ -433,7 +407,6 @@ class TestFunctionSchema:
         assert schema_dict["function"]["name"] == "test_func"
 
     def test_function_schema_with_strict(self):
-        """Test FunctionSchema with strict parameter."""
         schema = FunctionSchema(
             name="strict_func",
             description="Strict function.",
@@ -446,7 +419,6 @@ class TestFunctionSchema:
         assert schema_dict["function"]["strict"] is True
 
     def test_function_schema_none_parameters(self):
-        """Test FunctionSchema with None parameters."""
         schema = FunctionSchema(
             name="no_params_func",
             description="Function with no parameters.",

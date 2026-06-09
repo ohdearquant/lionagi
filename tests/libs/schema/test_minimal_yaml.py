@@ -18,10 +18,7 @@ from lionagi.libs.schema.minimal_yaml import minimal_yaml
 
 
 class TestBasicConversion:
-    """Test basic YAML conversion functionality."""
-
     def test_simple_dict(self):
-        """Test conversion of simple dictionary."""
         data = {"name": "John", "age": 30}
         result = minimal_yaml(data)
 
@@ -30,7 +27,6 @@ class TestBasicConversion:
         assert isinstance(result, str)
 
     def test_simple_list(self):
-        """Test conversion of simple list."""
         data = ["apple", "banana", "cherry"]
         result = minimal_yaml(data)
 
@@ -39,7 +35,6 @@ class TestBasicConversion:
         assert "- cherry" in result
 
     def test_nested_dict(self):
-        """Test conversion of nested dictionary."""
         data = {"person": {"name": "John", "age": 30}}
         result = minimal_yaml(data)
 
@@ -48,7 +43,6 @@ class TestBasicConversion:
         assert "age: 30" in result
 
     def test_list_of_dicts(self):
-        """Test conversion of list containing dictionaries."""
         data = [{"name": "John", "age": 30}, {"name": "Jane", "age": 25}]
         result = minimal_yaml(data)
 
@@ -58,7 +52,6 @@ class TestBasicConversion:
         assert "age: 25" in result
 
     def test_dict_with_list_values(self):
-        """Test conversion of dictionary with list values."""
         data = {"fruits": ["apple", "banana"], "colors": ["red", "yellow"]}
         result = minimal_yaml(data)
 
@@ -68,7 +61,6 @@ class TestBasicConversion:
         assert "colors:" in result
 
     def test_scalar_values(self):
-        """Test conversion of scalar values."""
         # String
         assert "hello" in minimal_yaml({"value": "hello"})
 
@@ -83,10 +75,7 @@ class TestBasicConversion:
 
 
 class TestPruning:
-    """Test pruning of empty values."""
-
     def test_none_values_removed(self):
-        """Test that None values are removed when drop_empties=True."""
         data = {"name": "John", "age": None, "active": True}
         result = minimal_yaml(data, drop_empties=True)
 
@@ -95,7 +84,6 @@ class TestPruning:
         assert "age" not in result
 
     def test_empty_string_removed(self):
-        """Test that empty strings are removed."""
         data = {"name": "John", "email": "", "phone": "123"}
         result = minimal_yaml(data, drop_empties=True)
 
@@ -104,7 +92,6 @@ class TestPruning:
         assert "email" not in result
 
     def test_whitespace_only_string_removed(self):
-        """Test that whitespace-only strings are removed."""
         data = {"name": "John", "comment": "   ", "city": "NYC"}
         result = minimal_yaml(data, drop_empties=True)
 
@@ -113,7 +100,6 @@ class TestPruning:
         assert "comment" not in result
 
     def test_empty_list_removed(self):
-        """Test that empty lists are removed."""
         data = {"items": [], "name": "John"}
         result = minimal_yaml(data, drop_empties=True)
 
@@ -121,7 +107,6 @@ class TestPruning:
         assert "items" not in result
 
     def test_empty_dict_removed(self):
-        """Test that empty dictionaries are removed."""
         data = {"person": {}, "valid": "data"}
         result = minimal_yaml(data, drop_empties=True)
 
@@ -129,7 +114,6 @@ class TestPruning:
         assert "person" not in result
 
     def test_zero_preserved(self):
-        """Test that zero values are preserved."""
         data = {"count": 0, "total": 100}
         result = minimal_yaml(data, drop_empties=True)
 
@@ -137,7 +121,6 @@ class TestPruning:
         assert "total: 100" in result
 
     def test_false_preserved(self):
-        """Test that False values are preserved."""
         data = {"active": False, "verified": True}
         result = minimal_yaml(data, drop_empties=True)
 
@@ -145,7 +128,6 @@ class TestPruning:
         assert "verified: true" in result
 
     def test_recursive_pruning(self):
-        """Test that pruning works recursively."""
         data = {"outer": {"inner": {"value": None, "empty": ""}, "name": "test"}}
         result = minimal_yaml(data, drop_empties=True)
 
@@ -154,7 +136,6 @@ class TestPruning:
         assert "empty" not in result
 
     def test_list_pruning(self):
-        """Test that empty items in lists are removed."""
         data = {"items": ["valid", "", None, "another"]}
         result = minimal_yaml(data, drop_empties=True)
 
@@ -163,7 +144,6 @@ class TestPruning:
         # Empty strings and None should be removed from list
 
     def test_drop_empties_false(self):
-        """Test that empty values are kept when drop_empties=False."""
         data = {"name": "John", "age": None, "email": ""}
         result = minimal_yaml(data, drop_empties=False)
 
@@ -173,10 +153,7 @@ class TestPruning:
 
 
 class TestMultilineStrings:
-    """Test multiline string handling."""
-
     def test_multiline_string_uses_block_scalar(self):
-        """Test that multiline strings use block scalar style."""
         data = {"description": "Line 1\nLine 2\nLine 3"}
         result = minimal_yaml(data)
 
@@ -186,7 +163,6 @@ class TestMultilineStrings:
         assert "Line 3" in result
 
     def test_single_line_string_plain_style(self):
-        """Test that single-line strings use plain style."""
         data = {"description": "Single line"}
         result = minimal_yaml(data)
 
@@ -194,7 +170,6 @@ class TestMultilineStrings:
         assert "|" not in result
 
     def test_multiline_preserves_content(self):
-        """Test that multiline conversion preserves content."""
         data = {"text": "First line\nSecond line with spaces\nThird line\n\nFifth line"}
         result = minimal_yaml(data)
 
@@ -204,10 +179,7 @@ class TestMultilineStrings:
 
 
 class TestNestedStructures:
-    """Test deeply nested structure handling."""
-
     def test_deeply_nested_dict(self):
-        """Test deeply nested dictionary."""
         data = {"level1": {"level2": {"level3": {"level4": {"value": "deep"}}}}}
         result = minimal_yaml(data)
 
@@ -218,7 +190,6 @@ class TestNestedStructures:
         assert "value: deep" in result
 
     def test_complex_nested_structure(self):
-        """Test complex nested structure with mixed types."""
         data = {
             "project": {
                 "name": "test",
@@ -234,7 +205,6 @@ class TestNestedStructures:
         assert "- a" in result
 
     def test_nested_lists(self):
-        """Test nested lists."""
         data = {"matrix": [[1, 2, 3], [4, 5, 6], [7, 8, 9]]}
         result = minimal_yaml(data)
 
@@ -242,7 +212,6 @@ class TestNestedStructures:
         # Nested lists should be represented
 
     def test_list_of_nested_dicts(self):
-        """Test list of nested dictionaries."""
         data = {
             "users": [
                 {"name": "John", "settings": {"theme": "dark"}},
@@ -257,10 +226,7 @@ class TestNestedStructures:
 
 
 class TestJsonStringInput:
-    """Test JSON string input handling."""
-
     def test_json_string_parsed(self):
-        """Test that JSON strings are parsed before conversion."""
         json_str = json.dumps({"name": "John", "age": 30})
         result = minimal_yaml(json_str)
 
@@ -268,7 +234,6 @@ class TestJsonStringInput:
         assert "age: 30" in result
 
     def test_json_string_with_nested_data(self):
-        """Test JSON string with nested data."""
         data = {"person": {"name": "John", "contacts": ["email", "phone"]}}
         json_str = json.dumps(data)
         result = minimal_yaml(json_str)
@@ -278,7 +243,6 @@ class TestJsonStringInput:
         assert "contacts:" in result
 
     def test_dict_input_not_parsed_as_json(self):
-        """Test that dict input is not treated as JSON."""
         data = {"name": "John", "age": 30}
         result = minimal_yaml(data)
 
@@ -288,10 +252,7 @@ class TestJsonStringInput:
 
 
 class TestParameters:
-    """Test optional parameters."""
-
     def test_custom_indent(self):
-        """Test custom indent parameter."""
         data = {"person": {"name": "John"}}
 
         # Default indent (2)
@@ -305,7 +266,6 @@ class TestParameters:
         assert isinstance(result_custom, str)
 
     def test_sort_keys_true(self):
-        """Test sort_keys=True parameter."""
         data = {"zebra": 1, "apple": 2, "mango": 3}
         result = minimal_yaml(data, sort_keys=True)
 
@@ -316,7 +276,6 @@ class TestParameters:
         assert keys == ["apple", "mango", "zebra"]
 
     def test_sort_keys_false(self):
-        """Test sort_keys=False parameter (preserves insertion order)."""
         data = {"zebra": 1, "apple": 2, "mango": 3}
         result = minimal_yaml(data, sort_keys=False)
 
@@ -324,7 +283,6 @@ class TestParameters:
         assert isinstance(result, str)
 
     def test_line_width_parameter(self):
-        """Test line_width parameter."""
         data = {"key": "very long value " * 10}
 
         # Should not wrap with large line_width
@@ -335,23 +293,18 @@ class TestParameters:
 
 
 class TestEdgeCases:
-    """Test edge cases and special scenarios."""
-
     def test_empty_input(self):
-        """Test empty dictionary input."""
         result = minimal_yaml({})
 
         assert result.strip() == "{}"
 
     def test_single_key_dict(self):
-        """Test dictionary with single key."""
         data = {"key": "value"}
         result = minimal_yaml(data)
 
         assert "key: value" in result
 
     def test_numeric_keys(self):
-        """Test dictionary with numeric keys."""
         data = {1: "one", 2: "two", 3: "three"}
         result = minimal_yaml(data)
 
@@ -359,7 +312,6 @@ class TestEdgeCases:
         # Numeric keys should be converted
 
     def test_special_characters_in_strings(self):
-        """Test strings with special characters."""
         data = {"text": "Hello: world, with-special_chars!"}
         result = minimal_yaml(data)
 
@@ -367,7 +319,6 @@ class TestEdgeCases:
         assert isinstance(result, str)
 
     def test_unicode_characters(self):
-        """Test unicode characters."""
         data = {"name": "José", "city": "São Paulo", "emoji": "🎉"}
         result = minimal_yaml(data, drop_empties=False)
 
@@ -376,7 +327,6 @@ class TestEdgeCases:
         # Unicode should be preserved
 
     def test_very_large_numbers(self):
-        """Test very large numbers."""
         data = {"big": 999999999999999999, "small": 0.000000001}
         result = minimal_yaml(data)
 
@@ -384,7 +334,6 @@ class TestEdgeCases:
         # Large numbers should be represented
 
     def test_boolean_values(self):
-        """Test boolean values."""
         data = {"enabled": True, "disabled": False}
         result = minimal_yaml(data)
 
@@ -392,14 +341,12 @@ class TestEdgeCases:
         assert "disabled: false" in result
 
     def test_null_value_explicit(self):
-        """Test explicit null values."""
         data = {"value": None}
         result = minimal_yaml(data, drop_empties=False)
 
         assert "value:" in result
 
     def test_mixed_type_list(self):
-        """Test list with mixed types."""
         data = {"mixed": [1, "two", 3.0, True, None]}
         result = minimal_yaml(data)
 
@@ -407,7 +354,6 @@ class TestEdgeCases:
         assert isinstance(result, str)
 
     def test_tuple_handling(self):
-        """Test tuple handling."""
         data = {"coords": (1, 2, 3)}
         result = minimal_yaml(data, drop_empties=False)
 
@@ -415,7 +361,6 @@ class TestEdgeCases:
         assert isinstance(result, str)
 
     def test_set_handling(self):
-        """Test set handling."""
         data = {"tags": {"tag1", "tag2", "tag3"}}
         result = minimal_yaml(data, drop_empties=False)
 
@@ -423,7 +368,6 @@ class TestEdgeCases:
         assert isinstance(result, str)
 
     def test_nested_empty_collections_pruned(self):
-        """Test that nested empty collections are fully pruned."""
         data = {
             "outer": {
                 "inner1": {"deep": {}},
@@ -438,10 +382,7 @@ class TestEdgeCases:
 
 
 class TestNoAliases:
-    """Test that aliases/anchors are disabled."""
-
     def test_repeated_objects_no_aliases(self):
-        """Test that repeated objects don't create aliases."""
         shared_list = [1, 2, 3]
         data = {"list1": shared_list, "list2": shared_list}
 
@@ -452,7 +393,6 @@ class TestNoAliases:
         assert "*" not in result or "*" not in result.split(":")[0]
 
     def test_repeated_dicts_no_aliases(self):
-        """Test that repeated dicts don't create aliases."""
         shared_dict = {"key": "value"}
         data = {"dict1": shared_dict, "dict2": shared_dict}
 
@@ -463,16 +403,12 @@ class TestNoAliases:
 
 
 class TestReturnType:
-    """Test return type and format."""
-
     def test_returns_string(self):
-        """Test that minimal_yaml returns a string."""
         result = minimal_yaml({"key": "value"})
 
         assert isinstance(result, str)
 
     def test_output_is_valid_yaml(self):
-        """Test that output can be parsed as YAML."""
         import yaml
 
         data = {"name": "John", "age": 30, "items": ["a", "b", "c"]}
@@ -483,7 +419,6 @@ class TestReturnType:
         assert isinstance(parsed, dict)
 
     def test_roundtrip_consistency(self):
-        """Test that data can be round-tripped through YAML."""
         import yaml
 
         data = {
@@ -505,10 +440,7 @@ class TestReturnType:
 
 
 class TestPruningHelpers:
-    """Test the internal pruning helper functions."""
-
     def test_empty_tuple_removed(self):
-        """Test that empty tuples are removed."""
         data = {"items": (), "valid": "data"}
         result = minimal_yaml(data, drop_empties=True)
 
@@ -516,7 +448,6 @@ class TestPruningHelpers:
         assert "items" not in result
 
     def test_empty_set_removed(self):
-        """Test that empty sets are removed."""
         data = {"tags": set(), "name": "test"}
         result = minimal_yaml(data, drop_empties=True)
 
@@ -524,7 +455,6 @@ class TestPruningHelpers:
         assert "tags" not in result
 
     def test_nested_list_pruning(self):
-        """Test pruning in nested lists."""
         data = {"items": [["valid"], [], ["another"], None]}
         result = minimal_yaml(data, drop_empties=True)
 

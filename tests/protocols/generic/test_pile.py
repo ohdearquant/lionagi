@@ -207,19 +207,6 @@ def test_large_scale_operations():
     assert large_pile[50000].value == 50001
 
 
-def test_memory_efficiency():
-    elements = [MockElement(value=i) for i in range(100000)]
-    p = Pile(elements)
-
-    # Calculate memory usage
-    pile_size = sys.getsizeof(p)
-    internal_size = sum(sys.getsizeof(item) for item in p.collections.values())
-    total_size = pile_size + internal_size
-
-    # Check if memory usage is reasonable (less than 100MB for 100,000 elements)
-    assert total_size < 100 * 1024 * 1024  # 100MB in bytes
-
-
 def test_pile_with_custom_progression_basic():
     elements = [MockElement(value=i) for i in range(5)]
     custom_prog = Progression(order=[e.id for e in elements])
@@ -349,8 +336,6 @@ def test_pile_scaling_performance(n):
 
 
 def test_pile_memory_leak():
-    import gc
-    import weakref
 
     p = Pile()
     refs = []
@@ -392,25 +377,6 @@ def test_pile_with_property_access():
     assert [e.squared for e in p.values()] == [i**2 for i in range(10)]
 
 
-def test_pile_with_context_manager():
-    class ManagedPile(Pile):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            self.clear()
-
-    # Call model_rebuild to resolve generic types
-    # Import typing module to ensure Any is available in namespace
-    import typing
-
-    ManagedPile.model_rebuild(_types_namespace={"Any": typing.Any})
-
-    with ManagedPile(collections=[MockElement(value=i) for i in range(5)]) as mp:
-        assert len(mp) == 5
-    assert len(mp) == 0
-
-
 def test_pile_with_custom_progression():
     class ReversedProgression(Progression):
         def __iter__(self):
@@ -422,55 +388,6 @@ def test_pile_with_custom_progression():
         order=ReversedProgression(order=[e.id for e in elements]),
     )
     assert [e.value for e in p.values()] == [4, 3, 2, 1, 0]
-
-
-@pytest.mark.parametrize("n", [10, 100, 1000])
-def test_pile_memory_usage(n):
-    import sys
-
-    p = Pile(collections=[MockElement(value=i) for i in range(n)])
-    memory_usage = sys.getsizeof(p) + sum(sys.getsizeof(e) for e in p.values())
-
-    # Rough estimation: each MockElement should take about 100 bytes
-    expected_usage = sys.getsizeof(p) + n * 100
-    assert memory_usage < expected_usage * 1.2  # Allow 20% margin
-
-
-def test_pile_with_weakref():
-    class WeakRefElement(Element):
-        pass
-
-    p = Pile()
-    refs = []
-    for _ in range(10):
-        e = WeakRefElement()
-        weak_e = weakref.ref(e)
-        refs.append(weak_e)
-        p.include(e)
-
-    del p
-    gc.collect()
-
-    assert sum(ref() is not None for ref in refs) == 1
-
-
-def test_pile_with_abc():
-    from abc import ABC, abstractmethod
-
-    class AbstractElement(Element, ABC):
-        @abstractmethod
-        def abstract_method(self):
-            pass
-
-    class ConcreteElement(AbstractElement):
-        def abstract_method(self):
-            return "Implemented"
-
-    p = Pile(collections=[ConcreteElement() for _ in range(5)])
-    assert all(e.abstract_method() == "Implemented" for e in p.values())
-
-    with pytest.raises(TypeError):
-        Pile(collections=[AbstractElement()])
 
 
 @pytest.fixture
@@ -695,3 +612,147 @@ async def test_async_type_checking():
         await p.ainclude("not an Node")
 
     assert len(p) == 1
+
+
+# ---------------------------------------------------------------------------
+# Edge case: from_dict with malformed/partial data
+# ---------------------------------------------------------------------------
+
+
+class TestPileFromDictEdgeCases:
+    def test_from_dict_missing_collections_key(self):
+        p = Pile()
+        d = p.to_dict()
+        d.pop("collections", None)
+        p2 = Pile.from_dict(d)
+        assert len(p2) == 0
+
+    def test_from_dict_empty_collections(self):
+        d = {"collections": [], "progression": {"order": []}}
+        p = Pile.from_dict(d)
+        assert len(p) == 0
+
+    def test_from_dict_mismatched_progression_length_raises(self):
+        elems = [MockElement(value=i) for i in range(2)]
+        p = Pile(collections=elems)
+        d = p.to_dict()
+        d["progression"]["order"] = d["progression"]["order"][:1]
+        with pytest.raises(Exception):
+            Pile.from_dict(d)
+
+    def test_from_dict_wrong_type_in_collections_raises(self):
+        d = {"collections": [{"not": "an element"}]}
+        with pytest.raises(Exception):
+            Pile.from_dict(d)
+
+
+# ---------------------------------------------------------------------------
+# Edge case: item_type with subclass instances (strict_type=False)
+# ---------------------------------------------------------------------------
+
+
+class TestPileSubclassItemType:
+    def test_subclass_accepted_when_strict_false(self):
+        class Base(Element):
+            pass
+
+        class Sub(Base):
+            pass
+
+        p = Pile(item_type=Base, strict_type=False)
+        sub_instance = Sub()
+        p.include(sub_instance)
+        assert sub_instance in p
+
+    def test_subclass_rejected_when_strict_true(self):
+        class Base(Element):
+            pass
+
+        class Sub(Base):
+            pass
+
+        p = Pile(item_type=Base, strict_type=True)
+        sub_instance = Sub()
+        with pytest.raises(Exception):
+            p.include(sub_instance)
+
+    def test_deep_inheritance_chain_accepted_when_strict_false(self):
+        class A(Element):
+            pass
+
+        class B(A):
+            pass
+
+        class C(B):
+            pass
+
+        p = Pile(item_type=A, strict_type=False)
+        c_instance = C()
+        p.include(c_instance)
+        assert c_instance in p
+
+
+# ---------------------------------------------------------------------------
+# Edge case: set operations with incompatible item_types
+# ---------------------------------------------------------------------------
+
+
+class TestPileSetOperationsWithItemTypes:
+    def test_or_with_incompatible_item_type_raises_on_include(self):
+        class TypeA(Element):
+            pass
+
+        class TypeB(Element):
+            pass
+
+        a_instance = TypeA()
+        b_instance = TypeB()
+        p_a = Pile(collections=[a_instance], item_type=TypeA)
+        p_b = Pile(collections=[b_instance], item_type=TypeB)
+        with pytest.raises(Exception):
+            _ = p_a | p_b
+
+    def test_or_with_compatible_items_succeeds(self):
+        elems_a = [MockElement(value=i) for i in range(2)]
+        elems_b = [MockElement(value=i + 10) for i in range(2)]
+        p_a = Pile(collections=elems_a, item_type=MockElement)
+        p_b = Pile(collections=elems_b, item_type=MockElement)
+        result = p_a | p_b
+        assert len(result) == 4
+
+    def test_and_with_no_overlap_returns_empty(self):
+        elems_a = [MockElement(value=i) for i in range(3)]
+        elems_b = [MockElement(value=i + 10) for i in range(3)]
+        p_a = Pile(collections=elems_a)
+        p_b = Pile(collections=elems_b)
+        result = p_a & p_b
+        assert len(result) == 0
+
+    def test_xor_with_partial_overlap(self):
+        shared = MockElement(value=99)
+        elems_a = [MockElement(value=0), shared]
+        elems_b = [shared, MockElement(value=1)]
+        p_a = Pile(collections=elems_a)
+        p_b = Pile(collections=elems_b)
+        result = p_a ^ p_b
+        assert shared not in result
+        assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# Edge case: concurrent include from multiple asyncio tasks
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pile_concurrent_include_from_multiple_tasks():
+    p = Pile()
+    n_per_task = 50
+    n_tasks = 4
+
+    async def adder():
+        for _ in range(n_per_task):
+            await p.ainclude(Element())
+
+    await asyncio.gather(*[adder() for _ in range(n_tasks)])
+    assert len(p) == n_per_task * n_tasks

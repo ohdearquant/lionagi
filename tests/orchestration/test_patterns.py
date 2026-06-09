@@ -304,3 +304,59 @@ class TestSpawnRoles:
         assert roles["architect"].capabilities is not None
         arch_caps = [s.name for s in roles["architect"].capabilities.__op_fields__]
         assert "spawn_request" in arch_caps
+
+
+# ── New edge cases ─────────────────────────────────────────────────────────────
+
+
+class TestBuildDagGraphEdgeCases:
+    def test_cyclic_depends_on_self_dropped(self):
+        session, roles = _roles("researcher")
+        # step 1 depends on itself (self-dep) — must be silently dropped
+        assignments = [
+            TaskAssignment(task="a", assignee="researcher", depends_on=["1"]),
+            TaskAssignment(task="b", assignee="researcher", depends_on=["1"]),
+        ]
+        graph, ids = build_dag_graph(session, assignments, roles)
+        assert len(graph.internal_nodes) == 2
+        # step 1 self-dep is dropped; only edge is 1->2
+        assert len(graph.internal_edges) == 1
+        assert graph.is_acyclic()
+
+    def test_empty_roles_dict_raises_value_error(self):
+        session = Session()
+        assignments = [TaskAssignment(task="x", assignee="researcher")]
+        with pytest.raises(ValueError):
+            build_dag_graph(session, assignments, {})
+
+    def test_large_assignment_list_performance(self):
+        session, roles = _roles("researcher")
+        assignments = [TaskAssignment(task=f"task {i}", assignee="researcher") for i in range(100)]
+        graph, ids = build_dag_graph(session, assignments, roles)
+        assert len(graph.internal_nodes) == 100
+        assert len(ids) == 100
+
+    def test_duplicate_assignee_names_in_assignments(self):
+        session, roles = _roles("researcher")
+        # same assignee appears many times — each gets its own cloned branch
+        assignments = [TaskAssignment(task=f"t{i}", assignee="researcher") for i in range(5)]
+        graph, ids = build_dag_graph(session, assignments, roles)
+        assert len(graph.internal_nodes) == 5
+        # every node's branch_id is distinct (cloned, not reused)
+        branch_ids = [graph.internal_nodes[nid].branch_id for nid in ids]
+        assert len(set(branch_ids)) == 5
+
+
+class TestBuildFanoutGraphEdgeCases:
+    def test_empty_roles_dict_raises(self):
+        session = Session()
+        assignments = [TaskAssignment(task="x", assignee="nobody")]
+        with pytest.raises(ValueError):
+            build_fanout_graph(session, assignments, {})
+
+    def test_large_fanout_all_workers_created(self):
+        session, roles = _roles("researcher")
+        assignments = [TaskAssignment(task=f"t{i}", assignee="researcher") for i in range(50)]
+        graph, worker_ids = build_fanout_graph(session, assignments, roles)
+        assert len(worker_ids) == 50
+        assert len(graph.internal_nodes) == 50

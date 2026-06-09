@@ -234,3 +234,45 @@ class TestListLeakRegression:
         assert "SECRETPW" not in err_str, (
             f"netloc password leaked from list of URL strings under non-sensitive key: {err_str!r}"
         )
+
+
+class TestRedactUrlEdgeCases:
+    def test_percent_encoded_credentials_in_netloc_redacted(self):
+        # user:p%40ss (@ encoded as %40) in netloc — urllib decodes on parse
+        url = "https://user:p%40ss@example.com/path"
+        result = _redact_url(url)
+        assert "p%40ss" not in result
+        assert "p@ss" not in result
+
+    def test_percent_encoded_colon_in_password_redacted(self):
+        # password contains %3A (encoded colon)
+        url = "postgresql://user:p%3Ass@localhost/db"
+        result = _redact_url(url)
+        assert "p%3Ass" not in result
+        assert "p:ss" not in result
+
+    def test_data_uri_not_parsed_as_credential_url(self):
+        # data: URIs should not be treated as having a netloc password
+        value = "data:text/plain;base64,SGVsbG8gV29ybGQ="
+        result = _redact_url(value)
+        # data URIs have no password component; result must not corrupt the URI
+        assert "SGVsbG8gV29ybGQ=" in result
+
+    def test_very_long_url_no_backtracking_hang(self):
+        # 9000-char URL with no sensitive params — must return quickly, not hang
+        import time
+
+        long_path = "/path/" + "x" * 8000
+        url = f"https://example.com{long_path}?safe=value"
+        start = time.monotonic()
+        result = _redact_url(url)
+        elapsed = time.monotonic() - start
+        assert elapsed < 2.0, f"_redact_url took {elapsed:.2f}s on a long URL"
+        assert "safe=value" in result
+
+    def test_very_long_url_with_sensitive_param_redacted(self):
+        long_path = "/path/" + "a" * 7000
+        url = f"https://example.com{long_path}?token=mysecret&ok=1"
+        result = _redact_url(url)
+        assert "mysecret" not in result
+        assert "token=***" in result

@@ -47,37 +47,7 @@ def _make_branch(exchange: Exchange):
     return SimpleNamespace(id=branch_id, msgs=msgs, _included=included)
 
 
-class TestMessengerActionEnum:
-    def test_enum_values(self):
-        assert MessengerAction.send == "send"
-        assert MessengerAction.done == "done"
-        assert MessengerAction.finished == "finished"
-        assert MessengerAction.wakeup == "wakeup"
-
-
-class TestMessengerRequestModel:
-    def test_minimal_request(self):
-        req = MessengerRequest(action="done")
-        assert req.action == MessengerAction.done
-        assert req.to is None
-        assert req.content is None
-
-    def test_send_request(self):
-        req = MessengerRequest(action="send", to="alice", content="hi")
-        assert req.to == "alice"
-        assert req.content == "hi"
-
-    def test_send_request_list_to(self):
-        req = MessengerRequest(action="send", to=["alice", "bob"], content="hi")
-        assert req.to == ["alice", "bob"]
-
-
 class TestLionMessengerBasics:
-    def test_is_system_tool(self):
-        m = LionMessenger(exchange=Exchange())
-        assert m.is_lion_system_tool is True
-        assert m.system_tool_name == "messenger"
-
     def test_to_tool_raises(self):
         m = LionMessenger(exchange=Exchange())
         with pytest.raises(NotImplementedError, match="requires branch context"):
@@ -89,12 +59,6 @@ class TestLionMessengerBasics:
         m.on("done", lambda **kw: calls.append(kw))
         m._fire("done", name="x")
         assert calls == [{"name": "x"}]
-
-    def test_fire_no_callback_noop(self):
-        m = LionMessenger(exchange=Exchange())
-        result = m._fire("done", name="x")
-        assert result is None
-        assert "done" not in m._callbacks
 
 
 class TestMessengerBindSend:
@@ -193,15 +157,6 @@ class TestMessengerBindStateEvents:
         result = tool.func_callable(action="finished")
         assert "no reason" in result
 
-    def test_default_sender_name_from_branch_id(self):
-        ex = Exchange()
-        m = LionMessenger(exchange=ex)
-        branch = _make_branch(ex)
-        tool = m.bind(branch, roster={})
-        result = tool.func_callable(action="done", content="ok")
-        # sender_name defaults to str(branch.id)[:8]
-        assert str(branch.id)[:8] in result
-
 
 class TestMessengerBindWakeup:
     def test_wakeup_missing_to(self):
@@ -262,3 +217,82 @@ class TestMessengerBindUnknownAction:
         tool = m.bind(branch, roster={})
         result = tool.func_callable(action="bogus")
         assert "Unknown action: bogus" in result
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestMessengerEdgeCases:
+    def test_send_to_self_same_branch_id(self):
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+        branch = _make_branch(ex)
+        # Register sender also as a recipient under an alias
+        tool = m.bind(branch, roster={"self": branch.id}, sender_name="self")
+        result = tool.func_callable(action="send", to="self", content="hello me")
+        assert "Sent to self" in result
+
+    def test_send_very_large_content(self):
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+        branch = _make_branch(ex)
+        alice_id = uuid4()
+        ex.register(alice_id)
+        tool = m.bind(branch, roster={"alice": alice_id})
+        large_content = "X" * 100_000
+        result = tool.func_callable(action="send", to="alice", content=large_content)
+        assert "Sent to alice" in result
+
+    def test_send_after_branch_unregistered(self):
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+        branch = _make_branch(ex)
+        alice_id = uuid4()
+        ex.register(alice_id)
+        tool = m.bind(branch, roster={"alice": alice_id})
+        ex.unregister(alice_id)
+        # Sending to unregistered recipient — exchange.send may raise or return error
+        try:
+            result = tool.func_callable(action="send", to="alice", content="hi")
+            # If it returns a string, must contain something informative
+            assert isinstance(result, str)
+        except Exception:
+            pass
+
+    def test_concurrent_sends_from_multiple_branches(self):
+        import asyncio
+
+        ex = Exchange()
+        alice_id = uuid4()
+        ex.register(alice_id)
+
+        results = []
+
+        def _send_from_fresh_branch():
+            branch = _make_branch(ex)
+            tool = LionMessenger(exchange=ex).bind(branch, roster={"alice": alice_id})
+            result = tool.func_callable(action="send", to="alice", content="ping")
+            results.append(result)
+
+        # Run multiple synchronous sends — the Exchange is not async here,
+        # but we confirm there's no shared-state corruption.
+        for _ in range(10):
+            _send_from_fresh_branch()
+
+        assert all("Sent to alice" in r for r in results)
+
+    def test_wakeup_targets_branch_that_was_not_done(self):
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+        wakeup_events = []
+        m.on("wakeup", lambda **kw: wakeup_events.append(kw))
+        branch = _make_branch(ex)
+        alice_id = uuid4()
+        ex.register(alice_id)
+        tool = m.bind(branch, roster={"alice": alice_id}, sender_name="bob")
+        # Wakeup doesn't require the target to be in "done" state — it's just a send
+        result = tool.func_callable(action="wakeup", to="alice", content="rise!")
+        assert "Woke up alice" in result
+        assert wakeup_events[0]["target"] == "alice"

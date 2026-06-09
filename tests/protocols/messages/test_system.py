@@ -11,7 +11,6 @@ from lionagi.protocols.types import MessageRole, System
 
 
 def test_systemcontent_initialization():
-    """Test basic initialization of SystemContent dataclass"""
     # Default initialization
     content = SystemContent()
     assert content.system_message == "You are a helpful AI assistant. Let's think step by step."
@@ -29,7 +28,6 @@ def test_systemcontent_initialization():
 
 
 def test_systemcontent_slots():
-    """Test that SystemContent uses slots for memory efficiency"""
     content = SystemContent()
 
     # Should not have __dict__ due to slots=True
@@ -41,7 +39,6 @@ def test_systemcontent_slots():
 
 
 def test_systemcontent_rendered_without_datetime():
-    """Test rendered property without datetime"""
     content = SystemContent(system_message="Test message")
 
     rendered = content.rendered
@@ -50,7 +47,6 @@ def test_systemcontent_rendered_without_datetime():
 
 
 def test_systemcontent_rendered_with_datetime():
-    """Test rendered property with datetime"""
     content = SystemContent(system_message="Test message", system_datetime="2024-01-01T12:00")
 
     rendered = content.rendered
@@ -60,7 +56,6 @@ def test_systemcontent_rendered_with_datetime():
 
 
 def test_systemcontent_from_dict_basic():
-    """Test SystemContent.from_dict() with basic data"""
     data = {"system_message": "Custom message"}
     content = SystemContent.from_dict(data)
 
@@ -69,7 +64,6 @@ def test_systemcontent_from_dict_basic():
 
 
 def test_systemcontent_from_dict_with_datetime_true():
-    """Test SystemContent.from_dict() with system_datetime=True"""
     data = {"system_message": "Test", "system_datetime": True}
     content = SystemContent.from_dict(data)
 
@@ -83,7 +77,6 @@ def test_systemcontent_from_dict_with_datetime_true():
 
 
 def test_systemcontent_from_dict_with_datetime_false():
-    """Test SystemContent.from_dict() with system_datetime=False"""
     data = {"system_message": "Test", "system_datetime": False}
     content = SystemContent.from_dict(data)
 
@@ -92,7 +85,6 @@ def test_systemcontent_from_dict_with_datetime_false():
 
 
 def test_systemcontent_from_dict_with_datetime_none():
-    """Test SystemContent.from_dict() with system_datetime=None"""
     data = {"system_message": "Test", "system_datetime": None}
     content = SystemContent.from_dict(data)
 
@@ -101,7 +93,6 @@ def test_systemcontent_from_dict_with_datetime_none():
 
 
 def test_systemcontent_from_dict_with_custom_datetime():
-    """Test SystemContent.from_dict() with custom datetime string"""
     custom_datetime = "2024-01-01T12:00:00"
     data = {"system_message": "Test", "system_datetime": custom_datetime}
     content = SystemContent.from_dict(data)
@@ -111,7 +102,6 @@ def test_systemcontent_from_dict_with_custom_datetime():
 
 
 def test_systemcontent_from_dict_empty():
-    """Test SystemContent.from_dict() with empty dict uses defaults"""
     data = {}
     content = SystemContent.from_dict(data)
 
@@ -120,7 +110,6 @@ def test_systemcontent_from_dict_empty():
 
 
 def test_systemcontent_from_dict_partial():
-    """Test SystemContent.from_dict() with partial data"""
     data = {"system_datetime": "2024-01-01T12:00"}
     content = SystemContent.from_dict(data)
 
@@ -135,7 +124,6 @@ def test_systemcontent_from_dict_partial():
 
 
 def test_system_initialization():
-    """Test basic initialization of System"""
     system_msg = "Test system message"
     system = System(content=SystemContent(system_message=system_msg))
 
@@ -147,7 +135,6 @@ def test_system_initialization():
 
 
 def test_system_with_datetime_true():
-    """Test System with datetime generation (datetime=True)"""
     system_msg = "Test system message"
     system = System(content={"system_message": system_msg, "system_datetime": True})
 
@@ -161,7 +148,6 @@ def test_system_with_datetime_true():
 
 
 def test_system_with_datetime_false():
-    """Test System with datetime=False"""
     system = System(content={"system_message": "Test", "system_datetime": False})
 
     assert system.content.system_datetime is None
@@ -169,7 +155,6 @@ def test_system_with_datetime_false():
 
 
 def test_system_with_datetime_none():
-    """Test System with datetime=None (default)"""
     system = System(content={"system_message": "Test"})
 
     assert system.content.system_datetime is None
@@ -177,7 +162,6 @@ def test_system_with_datetime_none():
 
 
 def test_system_with_custom_datetime():
-    """Test System with custom datetime string"""
     custom_datetime = "2024-01-01T12:00:00"
     system = System(content={"system_message": "Test", "system_datetime": custom_datetime})
 
@@ -187,7 +171,6 @@ def test_system_with_custom_datetime():
 
 
 def test_system_update():
-    """Test updating System message"""
     system = System(content={"system_message": "Initial message"})
 
     # Update system message
@@ -207,7 +190,6 @@ def test_system_update():
 
 
 def test_system_content_format():
-    """Test System content formatting"""
     system = System(content={"system_message": "Test message"})
 
     formatted = system.chat_msg
@@ -216,7 +198,6 @@ def test_system_content_format():
 
 
 def test_system_with_default_message():
-    """Test System with default message"""
     system = System(content={})
 
     assert "You are a helpful AI assistant" in system.rendered
@@ -227,7 +208,6 @@ def test_system_with_default_message():
 
 
 def test_system_str_representation():
-    """Test string representation of System"""
     system = System(content={"system_message": "Test message"})
 
     str_repr = str(system)
@@ -238,7 +218,6 @@ def test_system_str_representation():
 
 
 def test_system_message_load():
-    """Test loading System from dictionary"""
     protected_params = {
         "role": MessageRole.SYSTEM,
         "content": {"system_message": "Test message"},
@@ -255,7 +234,6 @@ def test_system_message_load():
 
 
 def test_system_validation():
-    """Test System validation"""
     # Test with invalid sender/recipient
     with pytest.raises(ValueError):
         System(content={"system_message": "Test"}, sender=123)
@@ -265,7 +243,6 @@ def test_system_validation():
 
 
 def test_system_serialization():
-    """Test System serialization"""
     system = System(content={"system_message": "Test message", "system_datetime": True})
 
     serialized = system.model_dump()
@@ -277,7 +254,6 @@ def test_system_serialization():
 
 
 def test_system_chat_message():
-    """Test System chat message format"""
     system = System(content={"system_message": "Test message"})
 
     chat_msg = system.chat_msg
@@ -286,7 +262,6 @@ def test_system_chat_message():
 
 
 def test_system_content_validator_with_none():
-    """Test System content validator handles None"""
     system = System(content=None)
 
     assert isinstance(system.content, SystemContent)
@@ -296,7 +271,6 @@ def test_system_content_validator_with_none():
 
 
 def test_system_content_validator_with_dict():
-    """Test System content validator handles dict"""
     content_dict = {
         "system_message": "Custom message",
         "system_datetime": "2024-01-01T12:00",
@@ -309,7 +283,6 @@ def test_system_content_validator_with_dict():
 
 
 def test_system_content_validator_with_systemcontent():
-    """Test System content validator handles SystemContent instance"""
     content = SystemContent(system_message="Custom message", system_datetime="2024-01-01T12:00")
     system = System(content=content)
 
@@ -318,7 +291,6 @@ def test_system_content_validator_with_systemcontent():
 
 
 def test_system_content_validator_with_invalid_type():
-    """Test System content validator rejects invalid types"""
     with pytest.raises(TypeError):
         System(content="invalid string")
 
@@ -332,7 +304,6 @@ def test_system_content_validator_with_invalid_type():
 
 
 def test_system_complete_workflow():
-    """Test complete workflow with System and SystemContent"""
     # Create system with datetime
     system = System(
         content={
@@ -363,7 +334,6 @@ def test_system_complete_workflow():
 
 
 def test_system_datetime_scenarios():
-    """Test all datetime scenarios in one comprehensive test"""
     # Scenario 1: datetime=True (auto-generate)
     sys1 = System(content={"system_message": "Test", "system_datetime": True})
     assert sys1.content.system_datetime is not None

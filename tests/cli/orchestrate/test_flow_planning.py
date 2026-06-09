@@ -221,3 +221,54 @@ async def test_workers_override_keeps_role_modes(tmp_path):
     )
     assert "reviewer: codex/expensive (workers)" in out
     assert "adversarial" in out  # role behaviour preserved, not stripped like --bare
+
+
+# ── Edge cases ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_large_number_of_assignments_truncated_at_200(tmp_path):
+    many = [TaskAssignment(task=f"task-{i}", assignee="researcher") for i in range(250)]
+    orc = _FakeOrcBranch([SimpleNamespace(assignments=many)])
+    out = await _run_flow_inner("codex/gpt-5.5", "task", env=_env(tmp_path, orc), dry_run=True)
+    plan_lines = [ln for ln in out.splitlines() if ln.strip().startswith(("1.", "200.", "201."))]
+    assert not any("201." in ln for ln in plan_lines), "assignments beyond 200 must be truncated"
+    assert any("200." in ln for ln in plan_lines), "200th assignment must still appear"
+
+
+@pytest.mark.asyncio
+async def test_plan_with_self_dependency_drops_self_loop(tmp_path):
+    assignments = [
+        TaskAssignment(task="research", assignee="researcher", depends_on=["1"]),
+    ]
+    orc = _FakeOrcBranch([SimpleNamespace(assignments=assignments)])
+    out = await _run_flow_inner("codex/gpt-5.5", "task", env=_env(tmp_path, orc), dry_run=True)
+    assert "researcher" in out
+
+
+@pytest.mark.asyncio
+async def test_plan_deps_reference_only_earlier_indices(tmp_path):
+    assignments = [
+        TaskAssignment(task="a", assignee="researcher"),
+        TaskAssignment(task="b", assignee="architect", depends_on=["1"]),
+        TaskAssignment(task="c", assignee="implementer", depends_on=["1", "2"]),
+    ]
+    orc = _FakeOrcBranch([SimpleNamespace(assignments=assignments)])
+    out = await _run_flow_inner("codex/gpt-5.5", "task", env=_env(tmp_path, orc), dry_run=True)
+    assert "depends_on: 1, 2" in out or "depends_on: 1" in out
+
+
+@pytest.mark.asyncio
+async def test_flow_plan_error_message_is_informative(tmp_path):
+    orc = _FakeOrcBranch([SimpleNamespace(assignments=[]), SimpleNamespace(assignments=[])])
+    with pytest.raises(FlowPlanError) as exc_info:
+        await _run_flow_inner("codex/gpt-5.5", "task", env=_env(tmp_path, orc), dry_run=True)
+    assert "no usable plan" in str(exc_info.value).lower() or "empty" in str(exc_info.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_empty_task_string_does_not_crash_planning(tmp_path):
+    assignments = [TaskAssignment(task="", assignee="researcher")]
+    orc = _FakeOrcBranch([SimpleNamespace(assignments=assignments)])
+    out = await _run_flow_inner("codex/gpt-5.5", "", env=_env(tmp_path, orc), dry_run=True)
+    assert "researcher" in out

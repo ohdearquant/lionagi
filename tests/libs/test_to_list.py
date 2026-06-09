@@ -421,3 +421,60 @@ class TestEdgeCases:
         data = [[1, 2], (3, 4), {5, 6}, [7, 8]]
         result = to_list(data, flatten=True, flatten_tuple_set=True)
         assert set(result) == {1, 2, 3, 4, 5, 6, 7, 8}
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: spec group "libs"
+# ---------------------------------------------------------------------------
+
+
+class TestToListEdgeCases:
+    def test_deeply_nested_list_exceeding_100_levels(self):
+        """to_list with >100 levels of nesting should handle recursion without
+        hitting Python's default stack limit (tests flatten=True traversal)."""
+        depth = 110
+        # Build a list nested 110 levels deep: [[[...[1]...]]]
+        inner = [1]
+        for _ in range(depth):
+            inner = [inner]
+        result = to_list(inner, flatten=True)
+        assert result == [1]
+
+    def test_use_values_true_on_custom_mapping_subclass(self):
+        """use_values=True on a Mapping subclass that raises during .values()
+        should propagate the exception (not silently return empty)."""
+
+        class BrokenMapping(CustomMapping):
+            def values(self):
+                raise RuntimeError("values() broken")
+
+        broken = BrokenMapping({"a": 1})
+        with pytest.raises(RuntimeError, match="values\\(\\) broken"):
+            to_list(broken, use_values=True)
+
+    def test_flatten_with_mixed_generators_and_lists(self):
+        """flatten=True should consume generators lazily without materialising
+        them all at once — the result order matches iteration order."""
+
+        def gen():
+            yield 10
+            yield 20
+
+        data = [gen(), [30, 40], gen()]
+        result = to_list(data, flatten=True)
+        assert result == [10, 20, 30, 40, 10, 20]
+
+    def test_to_list_params_as_partial_raises_attribute_error(self):
+        """ToListParams.__call__ delegates to self.as_partial() which does not
+        exist on the base Params class — calling it should raise AttributeError.
+        This test documents the current (broken) behaviour so a regression is
+        caught if the method is accidentally removed after being added."""
+        params = ToListParams(
+            flatten=True,
+            dropna=True,
+            unique=False,
+            use_values=False,
+            flatten_tuple_set=False,
+        )
+        with pytest.raises(AttributeError):
+            params([[1, None, 2]])

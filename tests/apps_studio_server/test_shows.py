@@ -131,13 +131,11 @@ def test_show_detail_not_found(patched_app):
 
 
 def test_path_traversal_encoded_dotdot_shows(patched_app):
-    """URL-encoded %2e%2e must not escape SHOWS_ROOT."""
     r = patched_app.get("/api/shows/%2e%2e")
     assert r.status_code == 404
 
 
 def test_path_traversal_encoded_slash_shows(patched_app):
-    """Encoded slash in topic must be rejected."""
     r = patched_app.get("/api/shows/aaa%2Fbbb")
     assert r.status_code == 404
 
@@ -328,3 +326,121 @@ def test_get_show_returns_404_when_dir_absent_and_no_db_row(docker_patched_app):
     client, _topic = docker_patched_app
     r = client.get("/api/shows/nonexistent-topic-xyz")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Edge: list_shows falls back to filesystem when DB query fails
+# ---------------------------------------------------------------------------
+
+
+def test_list_shows_falls_back_to_filesystem_on_db_failure(
+    shows_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.config as config_mod
+    import lionagi.studio.services.shows as shows_mod
+
+    shows_root.mkdir(parents=True, exist_ok=True)
+    topic = "fallback-show"
+    show_dir = shows_root / topic
+    play_dir = show_dir / "play-001"
+    play_dir.mkdir(parents=True)
+    (show_dir / "_show.md").write_text("# Show: fallback-show")
+    (play_dir / "_meta.json").write_text('{"status": "success"}')
+
+    # Point to a real DB file that exists but has no shows table
+    fake_db = tmp_path / "state.db"
+    fake_db.write_bytes(b"SQLite format 3\x00" + b"\x00" * 100)
+
+    monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(shows_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(shows_mod, "_DB", str(fake_db))
+
+    from fastapi.testclient import TestClient
+
+    from lionagi.studio.app import app
+
+    client = TestClient(app)
+    r = client.get("/api/shows")
+    assert r.status_code == 200
+    topics = {item["topic"] for item in r.json()}
+    assert topic in topics
+
+
+# ---------------------------------------------------------------------------
+# Edge: get_show with play dir that has no _meta.json
+# ---------------------------------------------------------------------------
+
+
+def test_get_show_play_dir_without_meta_json(patched_app, shows_root: Path):
+    topic = "no-meta-show"
+    show_dir = shows_root / topic
+    play_dir = show_dir / "play-no-meta"
+    play_dir.mkdir(parents=True)
+    (show_dir / "_show.md").write_text("# Show: no-meta-show")
+    # Intentionally do NOT write _meta.json
+
+    r = patched_app.get(f"/api/shows/{topic}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["topic"] == topic
+    plays = data["plays"]
+    assert len(plays) == 1
+    # meta should be an empty dict (fallback)
+    assert plays[0]["meta"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Edge: _extract_goal with malformed headers
+# ---------------------------------------------------------------------------
+
+
+def test_extract_goal_no_goal_header_returns_none():
+    from lionagi.studio.services.shows import _extract_goal
+
+    md = "# Show: test\n\nSome intro without a goal section."
+    assert _extract_goal(md) is None
+
+
+def test_extract_goal_with_unicode_content():
+    from lionagi.studio.services.shows import _extract_goal
+
+    md = "# Show: test\n\n## Goal\nGoal: 目标是提升性能 ✓ α β γ\n## Other\nstuff"
+    result = _extract_goal(md)
+    assert result is not None
+    assert "目标" in result
+
+
+def test_extract_goal_truncates_at_500_chars():
+    from lionagi.studio.services.shows import _extract_goal
+
+    long_goal = "x" * 600
+    md = f"# Show: test\n\n## Goal\n{long_goal}\n"
+    result = _extract_goal(md)
+    assert result is not None
+    assert len(result) == 500
+
+
+# ---------------------------------------------------------------------------
+# Edge: shows with very long topic names
+# ---------------------------------------------------------------------------
+
+
+def test_show_with_long_topic_name(patched_app, shows_root: Path):
+    long_topic = "a" * 100
+    show_dir = shows_root / long_topic
+    play_dir = show_dir / "play-001"
+    play_dir.mkdir(parents=True)
+    (show_dir / "_show.md").write_text(f"# Show: {long_topic}")
+    (play_dir / "_meta.json").write_text('{"status": "success"}')
+
+    r = patched_app.get("/api/shows")
+    assert r.status_code == 200
+    topics = {item["topic"] for item in r.json()}
+    assert long_topic in topics
+
+    r2 = patched_app.get(f"/api/shows/{long_topic}")
+    assert r2.status_code == 200
+    assert r2.json()["topic"] == long_topic

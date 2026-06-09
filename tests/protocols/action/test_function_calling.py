@@ -54,7 +54,6 @@ def async_tool():
 
 @pytest.mark.asyncio
 async def test_function_calling_init():
-    """Test FunctionCalling initialization."""
     tool = Tool(func_callable=helper_sync_func)
     arguments = {"x": 1, "y": "test"}
 
@@ -67,7 +66,6 @@ async def test_function_calling_init():
 
 @pytest.mark.asyncio
 async def test_function_calling_with_sync_function():
-    """Test FunctionCalling with synchronous function."""
     tool = Tool(func_callable=helper_sync_func)
     func_call = FunctionCalling(func_tool=tool, arguments={"x": 1, "y": "test"})
 
@@ -80,7 +78,6 @@ async def test_function_calling_with_sync_function():
 
 @pytest.mark.asyncio
 async def test_function_calling_with_async_function(async_tool):
-    """Test FunctionCalling with asynchronous function."""
     func_call = FunctionCalling(func_tool=async_tool, arguments={"x": 1, "y": "test"})
 
     await func_call.invoke()
@@ -92,7 +89,6 @@ async def test_function_calling_with_async_function(async_tool):
 
 @pytest.mark.asyncio
 async def test_function_calling_with_parser(tool_with_processors):
-    """Test FunctionCalling with result parser."""
     func_call = FunctionCalling(func_tool=tool_with_processors, arguments={"x": 1, "y": "test"})
 
     result = await func_call.invoke()
@@ -102,7 +98,6 @@ async def test_function_calling_with_parser(tool_with_processors):
 
 @pytest.mark.asyncio
 async def test_function_calling_error_handling():
-    """Test FunctionCalling error handling."""
 
     async def error_func(**kwargs):
         raise ValueError("Test error")
@@ -117,7 +112,6 @@ async def test_function_calling_error_handling():
 
 
 def test_function_calling_str_representation():
-    """Test FunctionCalling string representations."""
     tool = Tool(func_callable=helper_sync_func)
     func_call = FunctionCalling(func_tool=tool, arguments={"x": 1, "y": "test"})
 
@@ -135,7 +129,6 @@ def test_function_calling_str_representation():
 
 @pytest.mark.asyncio
 async def test_function_calling_with_empty_arguments():
-    """Test FunctionCalling with empty arguments."""
     tool = Tool(func_callable=helper_sync_func)
     func_call = FunctionCalling(func_tool=tool, arguments={})
 
@@ -146,7 +139,6 @@ async def test_function_calling_with_empty_arguments():
 
 @pytest.mark.asyncio
 async def test_function_calling_processor_error():
-    """Test FunctionCalling with failing processor."""
 
     async def error_processor(value: Any, **kwargs) -> Any:
         raise ValueError("Processor error")
@@ -365,3 +357,88 @@ async def test_sync_postprocessor_returning_coroutine_is_not_awaited():
     )
     # Close the coroutine to avoid ResourceWarning.
     func_call.execution.response.close()
+
+
+# ---------------------------------------------------------------------------
+# Edge case: Tool with **kwargs in signature
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_function_calling_tool_with_kwargs_in_signature():
+    def func_with_kwargs(x: int = 0, **kwargs):
+        return f"{x}-{sorted(kwargs.items())}"
+
+    tool = Tool(func_callable=func_with_kwargs)
+    func_call = FunctionCalling(func_tool=tool, arguments={"x": 1, "extra": "yes"})
+    await func_call.invoke()
+    assert func_call.status == EventStatus.COMPLETED
+    assert "1" in func_call.response
+
+
+# ---------------------------------------------------------------------------
+# Edge case: Concurrent invocations of the same FunctionCalling instance
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_function_calling_concurrent_invocations_are_idempotent():
+    import asyncio
+
+    call_count = 0
+
+    async def counting_func(x: int = 0):
+        nonlocal call_count
+        call_count += 1
+        return call_count
+
+    tool = Tool(func_callable=counting_func)
+    func_call = FunctionCalling(func_tool=tool, arguments={"x": 1})
+    await asyncio.gather(func_call.invoke(), func_call.invoke(), func_call.invoke())
+    assert func_call.status == EventStatus.COMPLETED
+    assert call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Edge case: Tool invocation timeout (hangs indefinitely)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_function_calling_invocation_timeout():
+    import asyncio
+
+    async def hanging_func():
+        await asyncio.sleep(9999)
+
+    tool = Tool(func_callable=hanging_func)
+    func_call = FunctionCalling(func_tool=tool, arguments={})
+    task = asyncio.create_task(func_call.invoke())
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=0.1)
+    except asyncio.TimeoutError:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    assert func_call.status != EventStatus.COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# Edge case: Preprocessor returning None
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_function_calling_preprocessor_returns_none():
+    def returns_none(kwargs, **kw):
+        return None
+
+    def func(x: int = 0):
+        return x
+
+    tool = Tool(func_callable=func, preprocessor=returns_none)
+    func_call = FunctionCalling(func_tool=tool, arguments={"x": 5})
+    await func_call.invoke()
+    assert func_call.status == EventStatus.FAILED

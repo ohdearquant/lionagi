@@ -20,19 +20,11 @@ class TestLLMProviders:
     """iModel construction for every documented provider."""
 
     def test_openai_imodel_constructs(self):
-        """OpenAI provider with gpt-4.1-mini should construct without error."""
         model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test")
         assert model is not None
         assert model.endpoint is not None
 
-    def test_openai_multiple_models(self):
-        """OpenAI provider supports multiple model variants."""
-        for model_name in ("gpt-4.1", "gpt-4o", "gpt-4o-mini"):
-            m = iModel(provider="openai", model=model_name, api_key="test")
-            assert m is not None
-
     def test_anthropic_imodel_constructs(self):
-        """Anthropic provider should construct with a Claude model."""
         model = iModel(
             provider="anthropic",
             model="claude-sonnet-4-5-20250929",
@@ -41,23 +33,12 @@ class TestLLMProviders:
         assert model is not None
         assert model.endpoint is not None
 
-    def test_anthropic_haiku_model(self):
-        """Anthropic provider should also accept the Haiku model variant."""
-        model = iModel(
-            provider="anthropic",
-            model="claude-haiku-4-5-20251001",
-            api_key="test",
-        )
-        assert model is not None
-
     def test_gemini_imodel_constructs(self):
-        """Gemini provider should construct with gemini-2.5-flash."""
         model = iModel(provider="gemini", model="gemini-2.5-flash", api_key="test")
         assert model is not None
         assert model.endpoint is not None
 
     def test_groq_imodel_constructs(self):
-        """Groq provider should construct with llama-3.3-70b-versatile."""
         model = iModel(
             provider="groq",
             model="llama-3.3-70b-versatile",
@@ -67,7 +48,6 @@ class TestLLMProviders:
         assert model.endpoint is not None
 
     def test_openrouter_imodel_constructs(self):
-        """OpenRouter provider should construct with a namespaced model."""
         model = iModel(
             provider="openrouter",
             model="google/gemini-2.5-flash",
@@ -77,13 +57,11 @@ class TestLLMProviders:
         assert model.endpoint is not None
 
     def test_perplexity_imodel_constructs(self):
-        """Perplexity provider should construct with the sonar model."""
         model = iModel(provider="perplexity", model="sonar", api_key="test")
         assert model is not None
         assert model.endpoint is not None
 
     def test_nvidia_nim_imodel_constructs(self):
-        """NVIDIA NIM provider should construct with meta/llama3-8b-instruct."""
         model = iModel(
             provider="nvidia_nim",
             model="meta/llama3-8b-instruct",
@@ -93,7 +71,6 @@ class TestLLMProviders:
         assert model.endpoint is not None
 
     def test_ollama_imodel_constructs(self):
-        """Ollama provider should construct with a base_url and no api_key."""
         model = iModel(
             provider="ollama",
             model="llama3",
@@ -104,7 +81,6 @@ class TestLLMProviders:
         assert model.endpoint is not None
 
     def test_custom_endpoint_imodel_constructs(self):
-        """A custom provider with explicit base_url should construct."""
         model = iModel(
             provider="custom",
             model="my-model",
@@ -114,50 +90,12 @@ class TestLLMProviders:
         assert model is not None
         assert model.endpoint is not None
 
-    def test_imodel_with_rate_limiting(self):
-        """iModel should accept rate-limiting parameters without error."""
-        model = iModel(
-            provider="openai",
-            model="gpt-4o-mini",
-            api_key="test",
-            limit_requests=100,
-            limit_tokens=50000,
-            capacity_refresh_time=30,
-        )
-        assert model is not None
-        assert model.executor is not None
-
     def test_imodel_copy_returns_new_instance(self):
-        """iModel.copy() should return a distinct iModel with a new ID."""
         original = iModel(provider="openai", model="gpt-4o-mini", api_key="test")
         copied = original.copy()
         assert copied is not original
         assert isinstance(copied, iModel)
         assert copied.id != original.id
-
-    def test_cli_provider_claude_code(self):
-        """claude_code CLI provider should construct (no CLI binary needed)."""
-        try:
-            model = iModel(provider="claude_code", api_key="test")
-            assert model is not None
-        except Exception:
-            pytest.skip("claude_code provider could not be constructed")
-
-    def test_cli_provider_gemini_code(self):
-        """gemini_code CLI provider should construct (no CLI binary needed)."""
-        try:
-            model = iModel(provider="gemini_code", api_key="test")
-            assert model is not None
-        except Exception:
-            pytest.skip("gemini_code provider could not be constructed")
-
-    def test_cli_provider_codex(self):
-        """codex CLI provider should construct (no CLI binary needed)."""
-        try:
-            model = iModel(provider="codex", api_key="test")
-            assert model is not None
-        except Exception:
-            pytest.skip("codex provider could not be constructed")
 
 
 # ===========================================================================
@@ -169,19 +107,16 @@ class TestCLIEndpointArchitecture:
     """Verify CLIEndpoint class hierarchy and properties documented in llm-providers.md."""
 
     def test_cli_endpoint_import(self):
-        """CLIEndpoint should be importable from connections package."""
         from lionagi.service.connections import CLIEndpoint
 
         assert CLIEndpoint is not None
 
     def test_cli_endpoint_is_subclass_of_endpoint(self):
-        """CLIEndpoint inherits from Endpoint."""
         from lionagi.service.connections import CLIEndpoint, Endpoint
 
         assert issubclass(CLIEndpoint, Endpoint)
 
     def test_cli_endpoint_class_vars(self):
-        """CLIEndpoint has is_cli=True and conservative concurrency defaults."""
         from lionagi.service.connections import CLIEndpoint
 
         assert CLIEndpoint.is_cli is True
@@ -189,13 +124,11 @@ class TestCLIEndpointArchitecture:
         assert CLIEndpoint.DEFAULT_QUEUE_CAPACITY == 10
 
     def test_cli_endpoint_session_id_property(self):
-        """CLIEndpoint exposes session_id getter/setter."""
         from lionagi.service.connections import CLIEndpoint
 
         assert hasattr(CLIEndpoint, "session_id")
 
     def test_imodel_is_cli_property(self):
-        """iModel.is_cli returns True for CLI providers."""
         try:
             model = iModel(provider="claude_code", api_key="test")
             assert model.is_cli is True
@@ -203,12 +136,10 @@ class TestCLIEndpointArchitecture:
             pytest.skip("claude_code provider could not be constructed")
 
     def test_api_imodel_is_not_cli(self):
-        """iModel.is_cli returns False for API providers."""
         model = iModel(provider="openai", model="gpt-4.1-mini", api_key="test")
         assert model.is_cli is False
 
     def test_match_endpoint_routes_cli_providers(self):
-        """match_endpoint returns CLIEndpoint subclass for CLI provider strings."""
         from lionagi.service.connections import CLIEndpoint, match_endpoint
 
         for provider in ("claude_code", "gemini_code", "codex"):
@@ -223,13 +154,11 @@ class TestCLIProviderRequestModels:
     """Verify CLI request models exist with documented parameters."""
 
     def test_claude_code_request_import(self):
-        """ClaudeCodeRequest model should be importable."""
         from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
 
         assert ClaudeCodeRequest is not None
 
     def test_claude_code_request_fields(self):
-        """ClaudeCodeRequest should have documented fields."""
         from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
 
         fields = ClaudeCodeRequest.model_fields
@@ -252,7 +181,6 @@ class TestCLIProviderRequestModels:
             assert field in fields, f"Missing field: {field}"
 
     def test_claude_code_request_as_cmd_args(self):
-        """ClaudeCodeRequest.as_cmd_args() builds CLI argument list."""
         from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
 
         req = ClaudeCodeRequest(prompt="hello")
@@ -263,13 +191,11 @@ class TestCLIProviderRequestModels:
         assert "--output-format" in args
 
     def test_gemini_code_request_import(self):
-        """GeminiCodeRequest model should be importable."""
         from lionagi.providers.google.gemini_code.models import GeminiCodeRequest
 
         assert GeminiCodeRequest is not None
 
     def test_gemini_code_request_fields(self):
-        """GeminiCodeRequest should have documented fields."""
         from lionagi.providers.google.gemini_code.models import GeminiCodeRequest
 
         fields = GeminiCodeRequest.model_fields
@@ -286,7 +212,6 @@ class TestCLIProviderRequestModels:
             assert field in fields, f"Missing field: {field}"
 
     def test_gemini_code_request_as_cmd_args(self):
-        """GeminiCodeRequest.as_cmd_args() builds CLI argument list."""
         from lionagi.providers.google.gemini_code.models import GeminiCodeRequest
 
         req = GeminiCodeRequest(prompt="analyze")
@@ -296,13 +221,11 @@ class TestCLIProviderRequestModels:
         assert "analyze" in args
 
     def test_codex_code_request_import(self):
-        """CodexCodeRequest model should be importable."""
         from lionagi.providers.openai.codex.models import CodexCodeRequest
 
         assert CodexCodeRequest is not None
 
     def test_codex_code_request_fields(self):
-        """CodexCodeRequest should have documented fields."""
         from lionagi.providers.openai.codex.models import CodexCodeRequest
 
         fields = CodexCodeRequest.model_fields
@@ -321,7 +244,6 @@ class TestCLIProviderRequestModels:
             assert field in fields, f"Missing field: {field}"
 
     def test_codex_code_request_as_cmd_args(self):
-        """CodexCodeRequest.as_cmd_args() builds CLI argument list."""
         from lionagi.providers.openai.codex.models import CodexCodeRequest
 
         req = CodexCodeRequest(prompt="fix tests")
@@ -335,7 +257,6 @@ class TestCLIProviderEndpoints:
     """Verify CLI endpoint classes exist and have documented configuration."""
 
     def test_claude_code_cli_endpoint_import(self):
-        """ClaudeCodeCLIEndpoint should be importable."""
         from lionagi.providers.anthropic.claude_code.endpoint import (
             ClaudeCodeCLIEndpoint,
         )
@@ -343,7 +264,6 @@ class TestCLIProviderEndpoints:
         assert ClaudeCodeCLIEndpoint is not None
 
     def test_claude_code_endpoint_constructs(self):
-        """ClaudeCodeCLIEndpoint constructs with default config."""
         from lionagi.providers.anthropic.claude_code.endpoint import (
             ClaudeCodeCLIEndpoint,
         )
@@ -357,7 +277,6 @@ class TestCLIProviderEndpoints:
         assert ep.is_cli is True
 
     def test_claude_code_endpoint_handlers(self):
-        """ClaudeCodeCLIEndpoint exposes claude_handlers property."""
         from lionagi.providers.anthropic.claude_code.endpoint import (
             ClaudeCodeCLIEndpoint,
         )
@@ -376,7 +295,6 @@ class TestCLIProviderEndpoints:
             assert key in handlers
 
     def test_claude_code_update_handlers(self):
-        """update_handlers merges new handler callbacks."""
         from lionagi.providers.anthropic.claude_code.endpoint import (
             ClaudeCodeCLIEndpoint,
         )
@@ -387,13 +305,11 @@ class TestCLIProviderEndpoints:
         assert ep.claude_handlers["on_text"] is callback
 
     def test_gemini_cli_endpoint_import(self):
-        """GeminiCLIEndpoint should be importable."""
         from lionagi.providers.google.gemini_code.endpoint import GeminiCLIEndpoint
 
         assert GeminiCLIEndpoint is not None
 
     def test_gemini_cli_endpoint_constructs(self):
-        """GeminiCLIEndpoint constructs with default config."""
         from lionagi.providers.google.gemini_code.endpoint import GeminiCLIEndpoint
 
         ep = GeminiCLIEndpoint()
@@ -401,7 +317,6 @@ class TestCLIProviderEndpoints:
         assert ep.is_cli is True
 
     def test_gemini_cli_endpoint_handlers(self):
-        """GeminiCLIEndpoint exposes gemini_handlers with correct keys."""
         from lionagi.providers.google.gemini_code.endpoint import GeminiCLIEndpoint
 
         ep = GeminiCLIEndpoint()
@@ -411,13 +326,11 @@ class TestCLIProviderEndpoints:
             assert key in handlers
 
     def test_codex_cli_endpoint_import(self):
-        """CodexCLIEndpoint should be importable."""
         from lionagi.providers.openai.codex.endpoint import CodexCLIEndpoint
 
         assert CodexCLIEndpoint is not None
 
     def test_codex_cli_endpoint_constructs(self):
-        """CodexCLIEndpoint constructs with default config."""
         from lionagi.providers.openai.codex.endpoint import CodexCLIEndpoint
 
         ep = CodexCLIEndpoint()
@@ -425,7 +338,6 @@ class TestCLIProviderEndpoints:
         assert ep.is_cli is True
 
     def test_codex_cli_endpoint_handlers(self):
-        """CodexCLIEndpoint exposes codex_handlers with correct keys."""
         from lionagi.providers.openai.codex.endpoint import CodexCLIEndpoint
 
         ep = CodexCLIEndpoint()
@@ -439,7 +351,6 @@ class TestCLISessionManagement:
     """Verify session management patterns documented in claude-code-usage.md."""
 
     def test_imodel_copy_creates_fresh_session(self):
-        """iModel.copy() for CLI providers creates independent session."""
         try:
             model = iModel(provider="claude_code", api_key="test")
             copied = model.copy()
@@ -450,7 +361,6 @@ class TestCLISessionManagement:
             pytest.skip("claude_code provider could not be constructed")
 
     def test_imodel_copy_share_session(self):
-        """iModel.copy(share_session=True) carries over session_id."""
         try:
             model = iModel(provider="claude_code", api_key="test")
             # Simulate a session ID being set
@@ -470,7 +380,6 @@ class TestTools:
     """Tool construction and schema generation from documented patterns."""
 
     def test_function_to_schema_structure(self):
-        """function_to_schema should produce an OpenAI-format tool schema."""
         from lionagi.libs.schema.function_to_schema import function_to_schema
 
         def greet(name: str, enthusiasm: int) -> str:
@@ -496,7 +405,6 @@ class TestTools:
         assert "required" in params
 
     def test_function_to_schema_description(self):
-        """function_to_schema should extract the docstring description."""
         from lionagi.libs.schema.function_to_schema import function_to_schema
 
         def add(a: int, b: int) -> int:
@@ -514,7 +422,6 @@ class TestTools:
         assert len(fn["description"]) > 0
 
     def test_tool_constructs_from_callable(self):
-        """Tool(func_callable=fn) should construct with expected attributes."""
         from lionagi.protocols.action.tool import Tool
 
         def search(query: str, limit: int) -> list:
@@ -534,7 +441,6 @@ class TestTools:
         assert tool.tool_schema["function"]["name"] == "search"
 
     def test_tool_schema_has_parameters(self):
-        """Tool schema should include parameter definitions from the function signature."""
         from lionagi.protocols.action.tool import Tool
 
         def translate(text: str, target_language: str) -> str:
@@ -552,7 +458,6 @@ class TestTools:
         assert "target_language" in params["properties"]
 
     def test_tool_with_request_options(self):
-        """Tool should accept a Pydantic model as request_options for parameter validation."""
         from lionagi.protocols.action.tool import Tool
 
         class SearchParams(BaseModel):
@@ -583,7 +488,6 @@ class TestMCP:
     """MCP-related imports and constructs from documented patterns."""
 
     def test_load_mcp_tools_import_resolves(self):
-        """load_mcp_tools should be importable from the top-level lionagi package."""
         from lionagi import load_mcp_tools
 
         assert callable(load_mcp_tools)

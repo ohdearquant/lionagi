@@ -83,3 +83,41 @@ def test_team_detail_missing_returns_404(tmp_path, monkeypatch):
 
     r = client.get("/api/teams/missing")
     assert r.status_code == 404
+
+
+# ── Edge cases ────────────────────────────────────────────────────────────────
+
+
+def test_get_team_path_traversal_dotdot_rejected(tmp_path, monkeypatch):
+    teams_root = tmp_path / "teams"
+    teams_root.mkdir()
+    client = _make_client(monkeypatch, teams_root)
+
+    r = client.get("/api/teams/%2e%2e%2fetc%2fpasswd")
+    assert r.status_code == 404
+
+
+def test_list_teams_invalid_json_file_is_skipped(tmp_path, monkeypatch):
+    teams_root = tmp_path / "teams"
+    teams_root.mkdir()
+    (teams_root / "invalid.json").write_text("not-valid-json{{")
+    _write_team(teams_root, "valid.json", {"id": "v1", "name": "Valid Team", "members": []})
+    client = _make_client(monkeypatch, teams_root)
+
+    r = client.get("/api/teams")
+    assert r.status_code == 200
+    data = r.json()
+    team_ids = {t["id"] for t in data["teams"]}
+    assert "v1" in team_ids
+    assert all(t["id"] != "invalid" for t in data["teams"])
+
+
+def test_get_team_with_json_suffix_in_id(tmp_path, monkeypatch):
+    teams_root = tmp_path / "teams"
+    _write_team(teams_root, "myteam.json", {"id": "myteam", "name": "My Team", "members": []})
+    client = _make_client(monkeypatch, teams_root)
+
+    r = client.get("/api/teams/myteam.json")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["id"] == "myteam"

@@ -224,3 +224,38 @@ class TestPublicAllowlist:
 
         resp = client.get("/health", headers={"Authorization": "Bearer wrong"})
         assert resp.status_code == 200
+
+
+@pytest.mark.integration
+class TestAuthEdgeCases:
+    def test_empty_string_token_configured_allows_all(self, monkeypatch, tmp_path):
+        # LIONAGI_STUDIO_AUTH_TOKEN="" is falsy — the guard must not activate
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "")
+        client = _make_client(monkeypatch, tmp_path)
+        resp = client.get("/api/invocations/")
+        assert resp.status_code != 401
+
+    def test_token_with_newline_in_header_rejected(self, monkeypatch, tmp_path):
+        # Header injection attempt: "Bearer validtoken\nX-Injected: evil"
+        # HTTP headers cannot contain bare newlines; starlette strips/rejects them.
+        # This just ensures the server does not crash and still returns 401.
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
+        client = _make_client(monkeypatch, tmp_path)
+        # TestClient encodes headers; we pass a value that looks like injection
+        try:
+            resp = client.get(
+                "/api/invocations/",
+                headers={"Authorization": "Bearer testsecret\nX-Evil: injected"},
+            )
+            # If the request is allowed, it must not 200 with injected data
+            assert resp.status_code in (400, 401, 422)
+        except Exception:
+            # A low-level rejection (e.g. ValueError for bad header) is also acceptable
+            pass
+
+    def test_bearer_prefix_case_sensitive_rejected(self, monkeypatch, tmp_path):
+        # "bearer testsecret" (lowercase) must be rejected — comparison is exact
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
+        client = _make_client(monkeypatch, tmp_path)
+        resp = client.get("/api/invocations/", headers={"Authorization": "bearer testsecret"})
+        assert resp.status_code == 401

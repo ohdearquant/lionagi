@@ -16,8 +16,6 @@ class SampleEvent(Event):
 
 
 class TestBroadcaster:
-    """Test suite for Broadcaster class."""
-
     @pytest.fixture(autouse=True)
     def reset_broadcaster(self):
         """Reset broadcaster state before each test."""
@@ -30,7 +28,6 @@ class TestBroadcaster:
         Broadcaster._instance = None
 
     def test_broadcaster_singleton(self):
-        """Test that Broadcaster follows singleton pattern."""
 
         # Create a subclass for testing
         class TestBroadcaster(Broadcaster):
@@ -43,7 +40,6 @@ class TestBroadcaster:
         assert TestBroadcaster._instance is broadcaster1
 
     def test_subscribe_adds_callback(self):
-        """Test that subscribe adds callback to subscribers list."""
 
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
@@ -55,7 +51,6 @@ class TestBroadcaster:
         assert TestBroadcaster.get_subscriber_count() == 1
 
     def test_subscribe_prevents_duplicates(self):
-        """Test that subscribing same callback twice doesn't duplicate."""
 
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
@@ -68,7 +63,6 @@ class TestBroadcaster:
         assert TestBroadcaster.get_subscriber_count() == 1
 
     def test_unsubscribe_removes_callback(self):
-        """Test that unsubscribe removes callback from subscribers."""
 
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
@@ -82,7 +76,6 @@ class TestBroadcaster:
         assert TestBroadcaster.get_subscriber_count() == 0
 
     def test_unsubscribe_nonexistent_callback_no_error(self):
-        """Test that unsubscribing nonexistent callback doesn't raise error."""
 
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
@@ -95,7 +88,6 @@ class TestBroadcaster:
 
     @pytest.mark.asyncio
     async def test_broadcast_calls_sync_callback(self):
-        """Test that broadcast calls synchronous callbacks."""
 
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
@@ -110,7 +102,6 @@ class TestBroadcaster:
 
     @pytest.mark.asyncio
     async def test_broadcast_calls_async_callback(self):
-        """Test that broadcast awaits asynchronous callbacks."""
 
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
@@ -125,7 +116,6 @@ class TestBroadcaster:
 
     @pytest.mark.asyncio
     async def test_broadcast_calls_multiple_subscribers(self):
-        """Test that broadcast calls all registered subscribers."""
 
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
@@ -147,7 +137,6 @@ class TestBroadcaster:
 
     @pytest.mark.asyncio
     async def test_broadcast_validates_event_type(self):
-        """Test that broadcast raises error for wrong event type."""
 
         class SpecificBroadcaster(Broadcaster):
             _event_type = SampleEvent
@@ -168,7 +157,6 @@ class TestBroadcaster:
 
     @pytest.mark.asyncio
     async def test_broadcast_handles_callback_exception(self):
-        """Test that broadcast catches and logs callback exceptions."""
 
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
@@ -189,7 +177,6 @@ class TestBroadcaster:
 
     @pytest.mark.asyncio
     async def test_broadcast_handles_async_callback_exception(self):
-        """Test that broadcast catches and logs async callback exceptions."""
 
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
@@ -210,7 +197,6 @@ class TestBroadcaster:
 
     @pytest.mark.asyncio
     async def test_broadcast_with_no_subscribers(self):
-        """Test that broadcasting with no subscribers doesn't error."""
 
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
@@ -222,7 +208,6 @@ class TestBroadcaster:
         assert TestBroadcaster.get_subscriber_count() == 0
 
     def test_get_subscriber_count_accuracy(self):
-        """Test that get_subscriber_count returns accurate count."""
 
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
@@ -244,7 +229,6 @@ class TestBroadcaster:
         assert TestBroadcaster.get_subscriber_count() == 2
 
     def test_multiple_broadcaster_subclasses_independent(self):
-        """Test that different Broadcaster subclasses maintain independent state."""
 
         class BroadcasterA(Broadcaster):
             _event_type = SampleEvent
@@ -270,7 +254,6 @@ class TestBroadcaster:
 
     @pytest.mark.asyncio
     async def test_broadcast_mixed_sync_async_callbacks(self):
-        """Test broadcasting to mix of sync and async callbacks."""
 
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
@@ -350,7 +333,6 @@ class TestBroadcasterCoroutineOnlyRegression:
 
     @pytest.mark.asyncio
     async def test_async_subscriber_coroutine_is_still_awaited(self):
-        """Async subscriber's coroutine must still be awaited (regression safety net)."""
         results = []
 
         async def async_callback(event):
@@ -361,3 +343,115 @@ class TestBroadcasterCoroutineOnlyRegression:
         await self.TaskBroadcaster.broadcast(event)
 
         assert results == ["done"], "async subscriber coroutine was not awaited"
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: subscribe/unsubscribe during broadcast, many subscribers,
+# weakref GC cleanup, slow subscriber does not block broadcast
+# ---------------------------------------------------------------------------
+
+
+class TestBroadcasterEdgeCases:
+    @pytest.fixture(autouse=True)
+    def fresh_broadcaster(self):
+        class _EdgeBroadcaster(Broadcaster):
+            _event_type = SampleEvent
+
+        self.EdgeBroadcaster = _EdgeBroadcaster
+        yield
+        _EdgeBroadcaster._subscribers.clear()
+        _EdgeBroadcaster._instance = None
+
+    @pytest.mark.asyncio
+    async def test_subscribe_during_broadcast_does_not_call_new_subscriber(self):
+        called = []
+
+        def late_subscriber(event):
+            called.append("late")
+
+        def first_subscriber(event):
+            called.append("first")
+            self.EdgeBroadcaster.subscribe(late_subscriber)
+
+        self.EdgeBroadcaster.subscribe(first_subscriber)
+        event = SampleEvent()
+        await self.EdgeBroadcaster.broadcast(event)
+        assert called == ["first"]
+
+    @pytest.mark.asyncio
+    async def test_unsubscribe_during_broadcast_does_not_crash(self):
+        called = []
+
+        def self_removing_subscriber(event):
+            called.append("self_removing")
+            self.EdgeBroadcaster.unsubscribe(self_removing_subscriber)
+
+        def other_subscriber(event):
+            called.append("other")
+
+        self.EdgeBroadcaster.subscribe(self_removing_subscriber)
+        self.EdgeBroadcaster.subscribe(other_subscriber)
+        event = SampleEvent()
+        await self.EdgeBroadcaster.broadcast(event)
+        assert "self_removing" in called
+        assert "other" in called
+
+    @pytest.mark.asyncio
+    async def test_hundreds_of_subscribers_all_called(self):
+        results = []
+        n = 200
+        callbacks = [MagicMock(side_effect=lambda e, i=i: results.append(i)) for i in range(n)]
+        for cb in callbacks:
+            self.EdgeBroadcaster.subscribe(cb)
+        assert self.EdgeBroadcaster.get_subscriber_count() == n
+        event = SampleEvent()
+        await self.EdgeBroadcaster.broadcast(event)
+        assert len(results) == n
+
+    def test_weakref_bound_method_gc_cleanup(self):
+        class Handler:
+            def handle(self, event):
+                pass
+
+        h = Handler()
+        self.EdgeBroadcaster.subscribe(h.handle)
+        assert self.EdgeBroadcaster.get_subscriber_count() == 1
+        del h
+        import gc
+
+        gc.collect()
+        count = self.EdgeBroadcaster.get_subscriber_count()
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_slow_sync_subscriber_runs_synchronously_blocking(self):
+        import time
+
+        start_times = []
+        end_times = []
+
+        def slow_subscriber(event):
+            start_times.append(time.monotonic())
+            time.sleep(0.05)
+            end_times.append(time.monotonic())
+
+        fast_results = []
+
+        def fast_subscriber(event):
+            fast_results.append(time.monotonic())
+
+        self.EdgeBroadcaster.subscribe(slow_subscriber)
+        self.EdgeBroadcaster.subscribe(fast_subscriber)
+        event = SampleEvent()
+        await self.EdgeBroadcaster.broadcast(event)
+        assert len(start_times) == 1
+        assert len(fast_results) == 1
+        assert fast_results[0] >= end_times[0]
+
+    @pytest.mark.asyncio
+    async def test_never_unsubscribed_subscribers_accumulate(self):
+        n = 50
+        for i in range(n):
+            cb = MagicMock()
+            self.EdgeBroadcaster.subscribe(cb)
+        assert self.EdgeBroadcaster.get_subscriber_count() == n

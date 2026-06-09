@@ -589,3 +589,79 @@ async def test_search_tool_gets_workspace_root_from_cwd(tmp_path):
     result = await tool.func_callable(action="grep", pattern="x", path=str(outside))
     assert result["success"] is False
     assert "workspace root" in (result.get("error") or "")
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+
+async def test_create_agent_coding_plus_standalone_tools_registers_all(tmp_path):
+    from lionagi.agent.config import AgentConfig
+
+    config = AgentConfig.coding(cwd=str(tmp_path))
+    # Append a standalone bash on top of the coding preset (which already includes bash)
+    # The final set should still include all coding tools
+    branch = await create_agent(config, load_settings=False)
+    registry = set(branch.acts.registry.keys())
+    assert "bash" in registry
+    assert "reader" in registry
+    assert "editor" in registry
+    assert "search" in registry
+
+
+async def test_create_agent_pre_hook_raises_propagates_exception():
+    config = AgentConfig(tools=["bash"])
+
+    async def bad_hook(tool_name, action, args):
+        raise RuntimeError("pre-hook explosion")
+
+    config.pre("bash", bad_hook)
+    branch = await create_agent(config, load_settings=False)
+
+    bash_tool = branch.acts.registry.get("bash_tool") or branch.acts.registry.get("bash")
+    assert bash_tool.preprocessor is not None
+    with pytest.raises(RuntimeError, match="pre-hook explosion"):
+        await bash_tool.preprocessor({"action": "run", "command": "ls"})
+
+
+async def test_create_agent_with_empty_tools_list_registers_nothing():
+    config = AgentConfig(tools=[])
+    branch = await create_agent(config, load_settings=False)
+    coding_tool_names = {
+        "reader",
+        "editor",
+        "bash",
+        "search",
+        "reader_tool",
+        "editor_tool",
+        "bash_tool",
+        "search_tool",
+    }
+    assert not coding_tool_names.intersection(branch.acts.registry.keys())
+
+
+async def test_create_agent_mcp_config_not_file_is_skipped(tmp_path, monkeypatch):
+    from lionagi.protocols.action.manager import ActionManager
+
+    calls = []
+
+    async def fake_load_mcp(self, config_path, server_names=None, update=False):
+        calls.append(config_path)
+
+    monkeypatch.setattr(ActionManager, "load_mcp_config", fake_load_mcp)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    # Path does not exist as a file — should be silently skipped
+    config = AgentConfig(mcp_config_path=str(tmp_path / "nonexistent.mcp.json"))
+    await create_agent(config, load_settings=False)
+    assert calls == []
+
+
+async def test_create_agent_system_prompt_with_lion_system_prepends_lion_prompt():
+    config = AgentConfig(system_prompt="My custom prompt.", lion_system=True)
+    branch = await create_agent(config, load_settings=False)
+    sys_msg = branch.msgs.system
+    assert sys_msg is not None
+    rendered = sys_msg.rendered
+    assert "My custom prompt." in rendered

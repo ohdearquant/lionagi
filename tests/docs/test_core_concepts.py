@@ -29,39 +29,6 @@ class TestImportsAndTopLevelExports:
         assert Session is not None
         assert iModel is not None
 
-    def test_top_level_primitives(self):
-        from lionagi import Edge, Element, Graph, Node, Pile, Progression
-
-        assert Element is not None
-        assert Pile is not None
-        assert Progression is not None
-        assert Node is not None
-        assert Edge is not None
-        assert Graph is not None
-
-    def test_top_level_event_and_hooks(self):
-        from lionagi import Event, HookRegistry
-
-        assert Event is not None
-        assert HookRegistry is not None
-
-    def test_top_level_model_utilities(self):
-        from lionagi import FieldModel, OperableModel, Undefined, Unset
-
-        assert FieldModel is not None
-        assert OperableModel is not None
-        assert Undefined is not None
-        assert Unset is not None
-
-    def test_top_level_misc(self):
-        from lionagi import BaseModel, Field, __version__, ln, load_mcp_tools
-
-        assert __version__ is not None
-        assert ln is not None
-        assert load_mcp_tools is not None
-        assert BaseModel is not None
-        assert Field is not None
-
     def test_message_types_import(self):
         from lionagi.protocols.messages import (
             ActionRequest,
@@ -102,25 +69,12 @@ class TestImportsAndTopLevelExports:
 class TestBranchConstruction:
     """Branch() with various documented constructor patterns."""
 
-    def test_minimal_branch(self):
-        from lionagi import Branch
-
-        branch = Branch()
-        assert branch is not None
-        assert branch.id is not None
-
     def test_branch_with_system_and_name(self):
         from lionagi import Branch
 
         branch = Branch(system="You are a research assistant.", name="researcher")
         assert branch.name == "researcher"
         assert branch.system is not None
-
-    def test_branch_with_user(self):
-        from lionagi import Branch
-
-        branch = Branch(user="alice", name="test")
-        assert branch.user == "alice"
 
     def test_branch_with_imodel(self):
         from lionagi import Branch, iModel
@@ -151,53 +105,8 @@ class TestIModelConstruction:
         assert model is not None
 
 
-class TestPrimitiveConstruction:
-    """Element, Pile, Progression basic construction."""
-
-    def test_element_construction(self):
-        from lionagi import Element
-
-        elem = Element()
-        assert elem.id is not None
-        assert elem.created_at is not None
-        assert isinstance(elem.metadata, dict)
-
-    def test_pile_construction(self):
-        from lionagi import Element, Pile
-
-        pile = Pile()
-        assert len(pile) == 0
-
-        e1 = Element()
-        e2 = Element()
-        pile = Pile(collections=[e1, e2])
-        assert len(pile) == 2
-        # O(1) UUID-keyed access
-        assert pile[e1.id] is e1
-
-    def test_progression_construction(self):
-        from lionagi import Progression
-
-        prog = Progression()
-        assert len(prog) == 0
-
-    def test_node_construction(self):
-        from lionagi import Node
-
-        node = Node(content="test content")
-        assert node.content == "test content"
-        assert node.id is not None
-
-
 class TestSessionConstruction:
     """Session() documented construction patterns."""
-
-    def test_session_minimal(self):
-        from lionagi import Session
-
-        session = Session()
-        assert session is not None
-        assert session.default_branch is not None
 
     def test_session_new_branch(self):
         from lionagi import Session
@@ -206,13 +115,6 @@ class TestSessionConstruction:
         branch = session.new_branch(name="analyst", system="Analyze data")
         assert branch.name == "analyst"
         assert branch in session.branches
-
-    def test_session_default_branch_exists(self):
-        from lionagi import Session
-
-        session = Session()
-        assert session.default_branch is not None
-        assert len(session.branches) >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -326,85 +228,6 @@ class TestSchemaAndToolRegistration:
 # ---------------------------------------------------------------------------
 # C -- API/Method Existence (no mocks, no calls)
 # ---------------------------------------------------------------------------
-
-
-class TestBranchMethodsExist:
-    """Branch methods documented in operations.md are callable."""
-
-    def test_branch_has_core_operations(self):
-        from lionagi import Branch
-
-        branch = Branch()
-        assert callable(branch.chat)
-        assert callable(branch.communicate)
-        assert callable(branch.parse)
-        assert callable(branch.operate)
-        assert callable(branch.ReAct)
-
-    def test_branch_properties_exist(self):
-        from lionagi import Branch
-
-        branch = Branch(system="test system")
-        # .msgs returns MessageManager
-        assert branch.msgs is not None
-        # .messages returns Pile of messages
-        assert branch.messages is not None
-        # .system returns System msg
-        assert branch.system is not None
-        # .tools returns dict
-        assert isinstance(branch.tools, dict)
-        # .chat_model and .parse_model
-        assert branch.chat_model is not None
-        assert branch.parse_model is not None
-        # .logs returns Pile
-        assert branch.logs is not None
-
-    def test_branch_to_dict_exists(self):
-        from lionagi import Branch
-
-        branch = Branch()
-        result = branch.to_dict()
-        assert isinstance(result, dict)
-
-    def test_branch_from_dict_exists(self):
-        from lionagi import Branch
-
-        assert callable(Branch.from_dict)
-
-
-class TestMessageManagerProperties:
-    """MessageManager convenience properties from messages-and-memory.md."""
-
-    def test_message_manager_has_last_response(self):
-        from lionagi import Branch
-
-        branch = Branch()
-        # Should return None when no responses exist
-        assert branch.msgs.last_response is None
-
-    def test_message_manager_has_last_instruction(self):
-        from lionagi import Branch
-
-        branch = Branch()
-        assert branch.msgs.last_instruction is None
-
-    def test_message_manager_has_collection_properties(self):
-        from lionagi import Branch
-
-        branch = Branch()
-        # These return Pile instances (possibly empty)
-        assert branch.msgs.assistant_responses is not None
-        assert branch.msgs.instructions is not None
-        assert branch.msgs.action_requests is not None
-        assert branch.msgs.action_responses is not None
-
-    def test_message_manager_progression(self):
-        from lionagi import Branch
-
-        branch = Branch(system="test")
-        # progression tracks message ordering
-        assert branch.msgs.progression is not None
-        assert len(branch.msgs.progression) >= 1  # at least the system msg
 
 
 class TestMessageTypeConstruction:

@@ -36,7 +36,6 @@ def populated_manager():
 
 
 def test_action_manager_init():
-    """Test ActionManager initialization."""
     manager = ActionManager()
     assert isinstance(manager.registry, dict)
     assert len(manager.registry) == 0
@@ -50,7 +49,6 @@ def test_action_manager_init():
 
 
 def test_tool_registration(action_manager):
-    """Test tool registration functionality."""
     # Test registering a callable
     action_manager.register_tool(helper_func)
     assert helper_func.__name__ in action_manager.registry
@@ -70,7 +68,6 @@ def test_tool_registration(action_manager):
 
 
 def test_tool_registration_validation(action_manager):
-    """Test tool registration validation."""
     # Test invalid tool type
     with pytest.raises(TypeError):
         action_manager.register_tool("not_a_tool")
@@ -82,7 +79,6 @@ def test_tool_registration_validation(action_manager):
 
 
 def test_contains_check(populated_manager):
-    """Test tool existence checking."""
     # Test with function name
     assert "helper_func" in populated_manager
 
@@ -99,7 +95,6 @@ def test_contains_check(populated_manager):
 
 @pytest.mark.asyncio
 async def test_match_tool_action_request(populated_manager):
-    """Test matching tool from ActionRequest."""
     # Test with ActionRequest
     request = ActionRequest(content={"function": "helper_func", "arguments": {"x": 1}})
     result = populated_manager.match_tool(request)
@@ -121,7 +116,6 @@ async def test_match_tool_action_request(populated_manager):
 
 @pytest.mark.asyncio
 async def test_invoke(populated_manager):
-    """Test tool invocation."""
 
     # Test with ActionRequest
     request = ActionRequest(content={"function": "helper_func", "arguments": {"x": 3, "y": "test"}})
@@ -130,7 +124,6 @@ async def test_invoke(populated_manager):
 
 
 def test_schema_list(populated_manager):
-    """Test retrieving tool schemas."""
     schemas = populated_manager.schema_list
     assert isinstance(schemas, list)
     assert len(schemas) == 2
@@ -138,7 +131,6 @@ def test_schema_list(populated_manager):
 
 
 def test_get_tool_schema(populated_manager):
-    """Test retrieving specific tool schemas."""
     # Test with boolean=True (all tools)
     result = populated_manager.get_tool_schema(True)
     assert "tools" in result
@@ -170,7 +162,6 @@ def test_get_tool_schema(populated_manager):
 
 
 def test_get_tool_schema_with_kwargs(populated_manager):
-    """Test retrieving tool schemas with additional kwargs."""
     result = populated_manager.get_tool_schema(True)
     assert "tools" in result
 

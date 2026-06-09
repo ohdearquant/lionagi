@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from lionagi.hooks import HookBus, HookPoint, StopHook, hook
@@ -306,3 +308,64 @@ async def test_emit_handler_registered_during_emit_does_not_fire():
     # On the NEXT emit, "late" should fire.
     await bus.emit(HookPoint.SESSION_START, session_id="s")
     assert "late" in calls
+
+
+# ── New edge cases ────────────────────────────────────────────────────────────
+
+
+async def test_concurrent_emit_from_multiple_tasks_same_point():
+    bus = HookBus()
+    calls: list[int] = []
+
+    async def counter(**kw):
+        calls.append(kw.get("n", 0))
+
+    bus.on(HookPoint.MESSAGE_ADD, counter)
+    await asyncio.gather(*[bus.emit(HookPoint.MESSAGE_ADD, n=i) for i in range(10)])
+    assert len(calls) == 10
+    assert sorted(calls) == list(range(10))
+
+
+async def test_handler_registers_sibling_on_same_point_mid_dispatch():
+    bus = HookBus()
+    calls: list[str] = []
+
+    async def second(**kw):
+        calls.append("second")
+
+    async def first(**kw):
+        calls.append("first")
+        bus.on(HookPoint.SESSION_END, second)
+
+    bus.on(HookPoint.SESSION_END, first)
+    await bus.emit(HookPoint.SESSION_END)
+    # snapshot taken before dispatch; "second" was registered after snapshot
+    assert calls == ["first"]
+    # on the next emit, "second" fires
+    await bus.emit(HookPoint.SESSION_END)
+    assert "second" in calls
+
+
+def test_on_called_repeatedly_without_off_grows_unbounded():
+    bus = HookBus()
+
+    async def h(**kw):
+        pass
+
+    for _ in range(100):
+        bus.on(HookPoint.MESSAGE_ADD, h)
+    assert len(bus.handlers_for(HookPoint.MESSAGE_ADD)) == 100
+
+
+async def test_emit_with_extra_kwargs_no_handler_accepts():
+    bus = HookBus()
+    received: list[dict] = []
+
+    async def accepts_all(**kw):
+        received.append(kw)
+
+    bus.on(HookPoint.SESSION_START, accepts_all)
+    await bus.emit(HookPoint.SESSION_START, completely_unknown_key="x", another=99)
+    assert len(received) == 1
+    assert received[0]["completely_unknown_key"] == "x"
+    assert received[0]["another"] == 99

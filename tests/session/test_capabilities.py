@@ -14,7 +14,13 @@ from lionagi.ln.types import Operable, Spec
 from lionagi.operations._observe import emit_message as _emit_message_signal
 from lionagi.protocols.messages import AssistantResponse
 from lionagi.protocols.messages.assistant_response import AssistantResponseContent
-from lionagi.session.capabilities import CAP_BEGIN, CAP_END, render_capabilities_prompt
+from lionagi.session.branch import Branch
+from lionagi.session.capabilities import (
+    CAP_BEGIN,
+    CAP_END,
+    CapabilityViolation,
+    render_capabilities_prompt,
+)
 from lionagi.session.session import Session
 
 
@@ -156,3 +162,62 @@ async def test_grant_then_emit_observed():
 
     await asyncio.sleep(0.05)
     assert seen == ["wired"]
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: CapabilityViolation, empty Operable, grant with no system msg
+# ---------------------------------------------------------------------------
+
+
+def test_capability_violation_creation():
+    v = CapabilityViolation(
+        offending=["bad_key"],
+        allowed=["finding", "question"],
+        block={"bad_key": {"x": 1}},
+    )
+    assert v.offending == ["bad_key"]
+    assert v.allowed == ["finding", "question"]
+    assert v.block == {"bad_key": {"x": 1}}
+
+
+def test_capability_violation_defaults():
+    v = CapabilityViolation(offending=[], allowed=[])
+    assert v.block is None
+
+
+def test_render_capabilities_prompt_empty_operable():
+    from lionagi.ln.types import Operable
+
+    empty_operable = Operable((), name="Empty")
+    prompt = render_capabilities_prompt(empty_operable)
+    assert isinstance(prompt, str)
+    assert len(prompt) > 0
+
+
+def test_grant_capabilities_when_no_system_message_yet():
+    branch = Branch()
+    assert branch.msgs.system is None
+
+    branch.grant_capabilities(_grant())
+
+    assert branch.capabilities is not None
+    sys_msg = branch.msgs.system
+    assert sys_msg is not None
+    assert CAP_BEGIN in sys_msg.content.system_message
+
+
+async def test_concurrent_grant_and_revoke():
+    import asyncio
+
+    s = Session()
+    branch = s.default_branch
+
+    async def grant():
+        branch.grant_capabilities(_grant())
+
+    async def revoke():
+        branch.revoke_capabilities()
+
+    results = await asyncio.gather(grant(), revoke(), return_exceptions=True)
+    for r in results:
+        assert not isinstance(r, Exception)

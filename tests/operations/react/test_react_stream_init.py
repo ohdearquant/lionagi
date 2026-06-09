@@ -25,7 +25,6 @@ from lionagi.testing import LionAGIMockFactory
 
 
 def make_mocked_branch_for_react():
-    """Create a mocked Branch for ReAct testing."""
     return LionAGIMockFactory.create_mocked_branch(
         name="ReActTestBranch",
         user="tester",
@@ -62,12 +61,8 @@ async def async_search(query: str) -> str:
 # ============================================================================
 
 
-"""Tests for ReAct tool execution flows and initial invocation."""
-
-
 @pytest.mark.asyncio
 async def test_single_tool_invocation():
-    """Test ReAct with single tool call - verifies tool integration."""
     branch = make_mocked_branch_for_react()
     branch.acts.register_tool(multiply)
 
@@ -96,7 +91,6 @@ async def test_single_tool_invocation():
 
 @pytest.mark.asyncio
 async def test_multiple_tool_calls_sequential_strategy():
-    """Test ReAct specifying sequential action strategy."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -135,7 +129,6 @@ async def test_multiple_tool_calls_sequential_strategy():
 
 @pytest.mark.asyncio
 async def test_concurrent_action_strategy():
-    """Test ReAct with concurrent action strategy specification."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -161,7 +154,6 @@ async def test_concurrent_action_strategy():
 
 @pytest.mark.asyncio
 async def test_planned_actions_structure():
-    """Test that PlannedAction structure is properly handled."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -188,7 +180,6 @@ async def test_planned_actions_structure():
 
 @pytest.mark.asyncio
 async def test_tools_parameter_variations():
-    """Test different ways to specify tools parameter."""
     branch = make_mocked_branch_for_react()
     branch.acts.register_tool(multiply)
 

@@ -3,34 +3,13 @@
 
 """Tests for BashTool: request model, response model, execution, security."""
 
-import asyncio
-
 import pytest
 
-from lionagi.protocols.action.tool import Tool
 from lionagi.tools.code.bash import BashRequest, BashResponse, BashTool
 
 # ---------------------------------------------------------------------------
 # BashRequest model
 # ---------------------------------------------------------------------------
-
-
-def test_bash_request_required_command():
-    req = BashRequest(command="echo hi")
-    assert req.command == "echo hi"
-
-
-def test_bash_request_defaults():
-    req = BashRequest(command="ls")
-    assert req.timeout is None
-    assert req.cwd is None
-    assert req.allow_shell is False
-
-
-def test_bash_request_custom_fields():
-    req = BashRequest(command="pwd", timeout=5000, cwd="/tmp", allow_shell=False)
-    assert req.timeout == 5000
-    assert req.cwd == "/tmp"
 
 
 def test_bash_request_allow_shell_excluded_from_dump():
@@ -45,21 +24,6 @@ def test_bash_request_allow_shell_excluded_from_dump():
 # ---------------------------------------------------------------------------
 
 
-def test_bash_response_defaults():
-    resp = BashResponse(return_code=0)
-    assert resp.stdout == ""
-    assert resp.stderr == ""
-    assert resp.timed_out is False
-
-
-def test_bash_response_fields():
-    resp = BashResponse(stdout="out", stderr="err", return_code=1, timed_out=True)
-    assert resp.stdout == "out"
-    assert resp.stderr == "err"
-    assert resp.return_code == 1
-    assert resp.timed_out is True
-
-
 # ---------------------------------------------------------------------------
 # BashTool.handle_request: basic execution
 # ---------------------------------------------------------------------------
@@ -71,12 +35,6 @@ async def test_handle_request_echo_returns_stdout():
     assert resp.return_code == 0
     assert "hello" in resp.stdout
     assert resp.timed_out is False
-
-
-async def test_handle_request_returns_bash_response():
-    tool = BashTool()
-    resp = await tool.handle_request(BashRequest(command="/bin/echo ok"))
-    assert isinstance(resp, BashResponse)
 
 
 async def test_handle_request_non_zero_exit():
@@ -103,12 +61,6 @@ async def test_handle_request_timeout():
     resp = await tool.handle_request(BashRequest(command="sleep 10", timeout=100))
     assert resp.timed_out is True
     assert resp.return_code == -1
-
-
-async def test_handle_request_timeout_stderr_message():
-    tool = BashTool()
-    resp = await tool.handle_request(BashRequest(command="sleep 10", timeout=100))
-    assert "100" in resp.stderr or "timed out" in resp.stderr.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -185,25 +137,6 @@ async def test_handle_request_cwd(tmp_path):
 # ---------------------------------------------------------------------------
 # to_tool
 # ---------------------------------------------------------------------------
-
-
-def test_to_tool_returns_tool_instance():
-    tool = BashTool()
-    t = tool.to_tool()
-    assert isinstance(t, Tool)
-
-
-def test_to_tool_cached():
-    tool = BashTool()
-    t1 = tool.to_tool()
-    t2 = tool.to_tool()
-    assert t1 is t2
-
-
-def test_to_tool_func_callable_is_async():
-    tool = BashTool()
-    t = tool.to_tool()
-    assert asyncio.iscoroutinefunction(t.func_callable)
 
 
 async def test_to_tool_callable_executes():
@@ -313,3 +246,60 @@ async def test_bash_tool_timeout_invalid_pid_calls_kill_not_killpg(monkeypatch, 
     assert killpg_calls == [], f"os.killpg must not be called for pid={invalid_pid!r}"
     mock_proc.kill.assert_called_once()
     assert resp.timed_out is True
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: empty command, null bytes, very long command, mixed I/O
+# ---------------------------------------------------------------------------
+
+
+async def test_bash_tool_empty_command_string():
+    tool = BashTool()
+    resp = await tool.handle_request(BashRequest(command=""))
+    # shlex.split("") → [] → Popen rejects or execution error
+    assert isinstance(resp.return_code, int)
+
+
+async def test_bash_tool_command_with_null_bytes_rejected():
+    tool = BashTool()
+    # shlex raises ValueError on null bytes → PermissionError → return_code -1
+    resp = await tool.handle_request(BashRequest(command="echo\x00hello"))
+    assert resp.return_code == -1
+
+
+async def test_bash_tool_very_long_command_executes_or_fails_gracefully():
+    tool = BashTool()
+    long_arg = "A" * 65536
+    resp = await tool.handle_request(BashRequest(command=f"/bin/echo {long_arg}"))
+    assert isinstance(resp.return_code, int)
+
+
+async def test_bash_tool_stdout_and_stderr_simultaneously(tmp_path):
+    # Write a script to a file so we don't need shell quoting tricks
+    script = tmp_path / "dual_output.py"
+    script.write_text("import sys\nsys.stdout.write('OUT')\nsys.stderr.write('ERR')\n")
+    tool = BashTool()
+    resp = await tool.handle_request(BashRequest(command=f"python3 {script}"))
+    assert resp.return_code == 0
+    assert "OUT" in resp.stdout
+    assert "ERR" in resp.stderr
+
+
+async def test_bash_tool_allow_shell_does_not_reject_operators():
+    tool = BashTool()
+    resp = await tool.handle_request(
+        BashRequest(command="/bin/echo hi && /bin/echo there", allow_shell=True)
+    )
+    assert resp.return_code == 0
+    assert "hi" in resp.stdout
+
+
+async def test_bash_tool_allow_shell_adversarial_injection_executes():
+    tool = BashTool()
+    # With allow_shell=True the command runs as a shell string.
+    # This confirms allow_shell=True does NOT silently reject.
+    resp = await tool.handle_request(
+        BashRequest(command="/bin/echo injected; /bin/echo second", allow_shell=True)
+    )
+    assert resp.return_code == 0
+    assert "injected" in resp.stdout

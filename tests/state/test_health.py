@@ -268,3 +268,98 @@ def test_worst_health_zombie_beats_orphaned():
 def test_severity_table_covers_all_health_levels():
     """Catch drift between SessionHealth and HEALTH_SEVERITY."""
     assert set(HEALTH_SEVERITY) == set(SessionHealth)
+
+
+# ── Additional edge cases ─────────────────────────────────────────────────────
+
+
+def test_running_stale_locks_and_process_dead_is_stale_not_zombie():
+    """Stale locks on a *running* session classify as STALE, not ZOMBIE.
+    ZOMBIE only applies to terminal sessions — running ones with dead process
+    are STALE regardless of lock state."""
+    s = {
+        "status": "running",
+        "invocation_kind": "agent",
+        "last_message_at": NOW - 200,
+        "message_count": 3,
+    }
+    h = classify_session_health(
+        s,
+        now=NOW,
+        process_alive=False,
+        has_artifacts=False,
+        has_stale_locks=True,
+    )
+    assert h == SessionHealth.STALE
+
+
+def test_running_zero_last_activity_is_unresponsive_when_alive():
+    """last_activity falls back to 0; now - 0 is very large, so process-alive
+    session with zero activity is unresponsive past any threshold."""
+    s = {
+        "status": "running",
+        "invocation_kind": "agent",
+        "last_message_at": None,
+        "updated_at": None,
+        "started_at": None,
+    }
+    h = classify_session_health(
+        s,
+        now=NOW,
+        process_alive=True,
+        has_artifacts=False,
+        has_stale_locks=False,
+    )
+    assert h == SessionHealth.UNRESPONSIVE
+
+
+def test_play_threshold_same_as_agent():
+    """play and agent share the same 6h threshold."""
+    s_play = {
+        "status": "running",
+        "invocation_kind": "play",
+        "last_message_at": NOW - (6 * 3600 + 60),
+    }
+    h = classify_session_health(
+        s_play, now=NOW, process_alive=True, has_artifacts=False, has_stale_locks=False
+    )
+    assert h == SessionHealth.UNRESPONSIVE
+
+
+def test_fanout_threshold_more_lenient_than_agent():
+    """fanout has a 12h threshold; 9h-quiet alive session stays IDLE."""
+    s = {
+        "status": "running",
+        "invocation_kind": "fanout",
+        "last_message_at": NOW - (9 * 3600),
+    }
+    h = classify_session_health(
+        s, now=NOW, process_alive=True, has_artifacts=False, has_stale_locks=False
+    )
+    assert h == SessionHealth.IDLE
+
+
+def test_show_play_threshold_more_lenient_than_agent():
+    """show-play also has a 12h threshold; 9h-quiet alive session stays IDLE."""
+    s = {
+        "status": "running",
+        "invocation_kind": "show-play",
+        "last_message_at": NOW - (9 * 3600),
+    }
+    h = classify_session_health(
+        s, now=NOW, process_alive=True, has_artifacts=False, has_stale_locks=False
+    )
+    assert h == SessionHealth.IDLE
+
+
+def test_worst_health_all_six_levels():
+    """worst_health selects ZOMBIE when all six levels present."""
+    all_levels = [
+        SessionHealth.HEALTHY,
+        SessionHealth.IDLE,
+        SessionHealth.UNRESPONSIVE,
+        SessionHealth.STALE,
+        SessionHealth.ORPHANED,
+        SessionHealth.ZOMBIE,
+    ]
+    assert worst_health(all_levels) == SessionHealth.ZOMBIE

@@ -36,7 +36,6 @@ class TestGraphSynchronizedAddNode:
             assert graph.node_edge_mapping[node.id] == {"in": {}, "out": {}}
 
     def test_concurrent_add_node_large_batch(self):
-        """100 threads adding nodes concurrently still yields correct count."""
         graph = Graph()
         num_threads = 100
         nodes = [Node() for _ in range(num_threads)]
@@ -54,7 +53,6 @@ class TestGraphSynchronizedAddEdge:
     """Concurrent add_edge must not corrupt internal_edges or node_edge_mapping."""
 
     def test_concurrent_add_edge_no_corruption(self):
-        """20 threads each add a unique edge between pre-existing node pairs."""
         graph = Graph()
         num_edges = 20
 
@@ -81,7 +79,6 @@ class TestGraphSynchronizedAddEdge:
             assert graph.node_edge_mapping[edge.tail]["in"][edge.id] == edge.head
 
     def test_concurrent_add_edge_shared_nodes(self):
-        """Multiple edges from the same head node added concurrently."""
         graph = Graph()
         head = Node()
         tails = [Node() for _ in range(20)]
@@ -131,7 +128,6 @@ class TestGraphSynchronizedMixedOperations:
         assert len(graph.node_edge_mapping) == 0
 
     def test_interleaved_add_remove_edges(self):
-        """Add edges then remove them with overlapping thread pools."""
         graph = Graph()
         num_pairs = 10
 

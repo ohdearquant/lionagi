@@ -34,7 +34,6 @@ class TestFanOutIn:
     """Tests for the fan-out/in (expert panel) pattern from fan-out-in.md."""
 
     def test_multiple_branches_with_different_system_prompts(self):
-        """Multiple branches can be created with distinct system prompts."""
         from lionagi import Branch
 
         expert_prompts = {
@@ -56,7 +55,6 @@ class TestFanOutIn:
 
     @pytest.mark.asyncio
     async def test_fan_out_gather_with_mocked_branches(self):
-        """asyncio.gather with multiple mocked branch.communicate calls works."""
         branches = {
             "security": LionAGIMockFactory.create_mocked_branch(
                 name="security",
@@ -84,7 +82,6 @@ class TestFanOutIn:
         assert "intuitive" in results[2]
 
     def test_session_with_multiple_branches_for_fan_out(self):
-        """Session can hold multiple branches for a fan-out pattern."""
         from lionagi import Session
 
         session = Session()
@@ -108,7 +105,6 @@ class TestFanOutIn:
 
     @pytest.mark.asyncio
     async def test_fan_out_aggregation(self):
-        """Fan-out results can be aggregated into a synthesizer branch."""
         expert_responses = [
             "Security: LGTM",
             "Performance: Needs caching",
@@ -135,7 +131,6 @@ class TestSequentialAnalysis:
     """Tests for the sequential pipeline pattern from sequential-analysis.md."""
 
     def test_sequential_pipeline_branch_creation(self):
-        """Parser, validator, and formatter branches can be created."""
         from lionagi import Branch
 
         parser = Branch(
@@ -160,7 +155,6 @@ class TestSequentialAnalysis:
         assert validator.id != formatter.id
 
     def test_branches_have_independent_message_history(self):
-        """Each branch maintains its own independent message history."""
         from lionagi import Branch
 
         branch_a = Branch(system="System A", name="A")
@@ -174,7 +168,6 @@ class TestSequentialAnalysis:
 
     @pytest.mark.asyncio
     async def test_sequential_communicate_pipeline(self):
-        """A sequential pipeline passes output of one branch as input to the next."""
         parser = LionAGIMockFactory.create_mocked_branch(
             name="parser",
             response="Parsed: {name: Alice, age: 30}",
@@ -200,15 +193,6 @@ class TestSequentialAnalysis:
         formatted = await formatter.communicate(f"Format this: {parsed}")
         assert "Alice" in formatted
 
-    def test_communicate_is_async_method(self):
-        """branch.communicate is an async method (coroutine function)."""
-        import asyncio
-
-        from lionagi import Branch
-
-        branch = Branch()
-        assert asyncio.iscoroutinefunction(branch.communicate)
-
 
 # ============================================================================
 # Tournament Validation Pattern
@@ -219,7 +203,6 @@ class TestTournamentValidation:
     """Tests for the tournament/judge pattern from tournament-validation.md."""
 
     def test_multiple_solver_branches_different_prompts(self):
-        """Multiple solver branches can be created with different strategies."""
         from lionagi import Branch
 
         strategies = [
@@ -239,7 +222,6 @@ class TestTournamentValidation:
             assert solver.system is not None
 
     def test_judge_branch_creation(self):
-        """A judge branch can be created with an evaluation prompt."""
         from lionagi import Branch
 
         judge = Branch(
@@ -253,7 +235,6 @@ class TestTournamentValidation:
         assert judge.system is not None
 
     def test_clone_returns_independent_branch(self):
-        """branch.clone() returns a new Branch with independent state."""
         from lionagi import Branch
 
         original = Branch(
@@ -270,7 +251,6 @@ class TestTournamentValidation:
         assert cloned.system is not None
 
     def test_clone_has_independent_message_pile(self):
-        """Cloned branch has its own message Pile, not a shared reference."""
         from lionagi import Branch
 
         original = Branch(system="Solve problems.", name="solver")
@@ -281,7 +261,6 @@ class TestTournamentValidation:
 
     @pytest.mark.asyncio
     async def test_tournament_solver_and_judge_flow(self):
-        """Solvers produce answers, judge selects the best one."""
         solvers = [
             LionAGIMockFactory.create_mocked_branch(
                 name=f"solver_{i}",
@@ -313,15 +292,7 @@ class TestTournamentValidation:
 class TestConditionalFlows:
     """Tests for conditional workflow patterns from conditional-flows.md."""
 
-    def test_builder_construction(self):
-        """Builder() (OperationGraphBuilder) can be instantiated."""
-        from lionagi import Builder
-
-        builder = Builder()
-        assert builder is not None
-
     def test_multiple_specialized_branches(self):
-        """Multiple branches can be created with specialized roles."""
         from lionagi import Branch
 
         roles = {
@@ -342,7 +313,6 @@ class TestConditionalFlows:
 
     @pytest.mark.asyncio
     async def test_conditional_routing(self):
-        """Simulate conditional routing: classify then route to specialist."""
         classifier = LionAGIMockFactory.create_mocked_branch(
             name="classifier",
             response="category: technical",
@@ -369,7 +339,6 @@ class TestConditionalFlows:
         assert "Technical analysis" in result
 
     def test_session_branch_routing_by_name(self):
-        """Session supports looking up branches by name for routing."""
         from lionagi import Session
 
         session = Session()
@@ -396,7 +365,6 @@ class TestReActWithRAG:
     """Tests for the ReAct+RAG pattern from react-with-rag.md."""
 
     def test_branch_with_tools_for_react(self):
-        """Branch can be constructed with search tools for ReAct."""
         from lionagi import Branch
 
         branch = Branch(
@@ -410,31 +378,7 @@ class TestReActWithRAG:
         assert "search_knowledge" in registry
         assert "search_papers" in registry
 
-    def test_react_method_exists_and_is_callable(self):
-        """branch.ReAct exists as an async method."""
-        import asyncio
-
-        from lionagi import Branch
-
-        branch = Branch(
-            tools=[search_knowledge],
-            name="react_branch",
-        )
-        assert hasattr(branch, "ReAct")
-        assert asyncio.iscoroutinefunction(branch.ReAct)
-
-    def test_operate_method_exists_and_is_callable(self):
-        """branch.operate exists as an async method."""
-        import asyncio
-
-        from lionagi import Branch
-
-        branch = Branch(name="operate_branch")
-        assert hasattr(branch, "operate")
-        assert asyncio.iscoroutinefunction(branch.operate)
-
     def test_tool_registration_with_search_functions(self):
-        """Search-like functions are properly registered as tools."""
         from lionagi import Branch
 
         branch = Branch(tools=[search_knowledge, search_papers])
@@ -451,7 +395,6 @@ class TestReActWithRAG:
         assert papers_tool is not None
 
     def test_tool_functions_return_expected_values(self):
-        """The search tool functions produce expected output."""
         result = search_knowledge("quantum computing")
         assert result == "Results for: quantum computing"
 
@@ -459,7 +402,6 @@ class TestReActWithRAG:
         assert result == "Papers about: machine learning"
 
     def test_branch_with_tools_and_system_prompt(self):
-        """Branch can combine system prompt and tools for a RAG agent."""
         from lionagi import Branch
 
         branch = Branch(

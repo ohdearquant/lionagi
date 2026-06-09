@@ -49,7 +49,6 @@ class TestBrainstorming:
     """Tests for brainstorming.md cookbook patterns."""
 
     def test_diverse_personality_branches(self):
-        """Creating multiple branches with diverse personality system prompts."""
         personas = [
             "You are a bold, risk-taking entrepreneur.",
             "You are a cautious, detail-oriented analyst.",
@@ -77,7 +76,6 @@ class TestBrainstorming:
 
     @pytest.mark.asyncio
     async def test_parallel_brainstorm_gather(self):
-        """asyncio.gather pattern with multiple mocked branches."""
         branches = [
             LionAGIMockFactory.create_mocked_branch(
                 name=f"thinker_{i}",
@@ -97,7 +95,6 @@ class TestBrainstorming:
             assert result is not None
 
     def test_brainstorm_branches_have_independent_histories(self):
-        """Each brainstorm branch maintains its own message history."""
         b1 = Branch(system="You are optimistic.", name="optimist")
         b2 = Branch(system="You are pessimistic.", name="pessimist")
 
@@ -117,7 +114,6 @@ class TestCodeReviewCrew:
     """Tests for code-review-crew.md cookbook patterns."""
 
     def test_reviewer_branches_creation(self):
-        """Creating security, performance, maintainability reviewer branches."""
         reviewers = {
             "security": "You are a security expert. Find vulnerabilities.",
             "performance": "You are a performance expert. Find bottlenecks.",
@@ -139,7 +135,6 @@ class TestCodeReviewCrew:
             assert branch.system is not None
 
     def test_review_result_model_validates(self):
-        """ReviewResult pydantic model validates as expected."""
         result = ReviewResult(
             issues=["SQL injection risk", "Missing input validation"],
             severity="high",
@@ -152,12 +147,6 @@ class TestCodeReviewCrew:
         clean = ReviewResult(issues=[], severity="low", recommendation="Code looks good.")
         assert len(clean.issues) == 0
 
-    def test_builder_exists(self):
-        """OperationGraphBuilder (Builder) exists for workflow construction."""
-        from lionagi.operations.builder import OperationGraphBuilder
-
-        assert OperationGraphBuilder is not None
-
 
 # ---------------------------------------------------------------------------
 # Claim Extraction cookbook
@@ -168,7 +157,6 @@ class TestClaimExtraction:
     """Tests for claim-extraction.md cookbook patterns."""
 
     def test_claim_model_validation(self):
-        """Claim pydantic model with text/source/confidence fields validates."""
         claim = Claim(
             text="The earth orbits the sun.",
             source="astronomy textbook",
@@ -179,7 +167,6 @@ class TestClaimExtraction:
         assert claim.confidence == 0.99
 
     def test_claim_confidence_bounds(self):
-        """Claim confidence must be between 0 and 1."""
         # Valid boundary values
         Claim(text="t", source="s", confidence=0.0)
         Claim(text="t", source="s", confidence=1.0)
@@ -191,7 +178,6 @@ class TestClaimExtraction:
             Claim(text="t", source="s", confidence=-0.1)
 
     def test_branch_with_extraction_system_prompt(self):
-        """Branch with a claim extraction system prompt can be created."""
         extraction_prompt = (
             "You are a claim extraction specialist. "
             "Extract factual claims from the provided text. "
@@ -203,7 +189,6 @@ class TestClaimExtraction:
 
     @pytest.mark.asyncio
     async def test_extraction_with_mocked_branch(self, mocked_branch_structured):
-        """Branch with tools for extraction patterns returns a result."""
         result = await mocked_branch_structured.communicate(
             "Extract claims from: The sun is a star located at the center of the solar system."
         )
@@ -219,7 +204,6 @@ class TestResearchSynthesis:
     """Tests for research-synthesis.md cookbook patterns."""
 
     def test_session_with_researcher_and_synthesizer(self):
-        """Session with researcher and synthesizer branches."""
         session = Session()
 
         researcher = session.new_branch(
@@ -237,7 +221,6 @@ class TestResearchSynthesis:
         assert len(session.branches) == 3
 
     def test_fan_out_pattern_construction(self):
-        """Fan-out/fan-in pattern: multiple researcher branches feed a synthesizer."""
         session = Session()
 
         topics = [
@@ -264,7 +247,6 @@ class TestResearchSynthesis:
         assert len(session.branches) == 5
 
     def test_session_get_branch_by_name(self):
-        """Session can retrieve branches by name."""
         session = Session()
         session.new_branch(system="Researcher prompt", name="my_researcher")
 
@@ -282,7 +264,6 @@ class TestDataPersistence:
     """Tests for data-persistence.md cookbook patterns."""
 
     def test_branch_to_dict_returns_dict(self):
-        """branch.to_dict() returns a dictionary."""
         branch = LionAGIMockFactory.create_mocked_branch(
             name="persist_test",
             response="some response",
@@ -292,7 +273,6 @@ class TestDataPersistence:
         assert "messages" in data
 
     def test_branch_roundtrip_serialization(self):
-        """Branch.from_dict(branch.to_dict()) roundtrips structurally."""
         original = LionAGIMockFactory.create_mocked_branch(
             name="roundtrip_test",
             user="roundtrip_user",
@@ -306,12 +286,10 @@ class TestDataPersistence:
         assert restored.user == original.user
 
     def test_branch_to_df_method_exists(self):
-        """branch.to_df() exists as a callable method."""
         branch = Branch(system="test system", name="df_test")
         assert callable(branch.to_df)
 
     def test_branch_to_df_returns_dataframe(self):
-        """branch.to_df() returns a pandas DataFrame."""
         import pandas as pd
 
         branch = Branch(system="test system", name="df_test")
@@ -330,7 +308,6 @@ class TestHRAutomation:
     """Tests for hr-automation.md cookbook patterns."""
 
     def test_multi_branch_workflow_creation(self):
-        """Multi-branch workflow: screener, interviewer, evaluator branches."""
         screener = Branch(
             system="You are an HR screener. Review resumes for minimum qualifications.",
             name="screener",
@@ -351,7 +328,6 @@ class TestHRAutomation:
         assert workflow[2].name == "evaluator"
 
     def test_candidate_evaluation_model(self):
-        """CandidateEvaluation pydantic model validates properly."""
         evaluation = CandidateEvaluation(
             name="Alice Smith",
             score=85.5,
@@ -382,7 +358,6 @@ class TestHRAutomation:
             )
 
     def test_state_persistence_pattern(self):
-        """branch.to_dict() captures state for HR workflow persistence."""
         screener = LionAGIMockFactory.create_mocked_branch(
             name="screener",
             response="Candidate meets minimum qualifications.",
@@ -398,7 +373,6 @@ class TestHRAutomation:
 
     @pytest.mark.asyncio
     async def test_sequential_workflow_execution(self):
-        """Branches can be invoked sequentially to simulate a pipeline."""
         screener = LionAGIMockFactory.create_mocked_branch(
             name="screener", response="Candidate passes screening."
         )

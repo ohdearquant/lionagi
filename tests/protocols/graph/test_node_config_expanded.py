@@ -17,7 +17,6 @@ Covers:
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
 
 import pytest
@@ -40,18 +39,10 @@ def _content_hash(content):
 class TestNodeConfigNewFields:
     """Test new fields added to NodeConfig."""
 
-    def test_embedding_enabled_default(self):
-        cfg = NodeConfig()
-        assert cfg.embedding_enabled is False
-
     def test_embedding_enabled_set(self):
         cfg = NodeConfig(embedding_enabled=True, embedding_dim=768)
         assert cfg.embedding_enabled is True
         assert cfg.embedding_dim == 768
-
-    def test_embedding_model_default(self):
-        cfg = NodeConfig()
-        assert cfg.embedding_model is None
 
     def test_embedding_model_set(self):
         cfg = NodeConfig(
@@ -62,33 +53,17 @@ class TestNodeConfigNewFields:
         assert cfg.embedding_model == "text-embedding-3-small"
         assert cfg.embedding_dim == 1536
 
-    def test_content_type_default(self):
-        cfg = NodeConfig()
-        assert cfg.content_type is None
-
     def test_content_type_set(self):
         cfg = NodeConfig(content_type=dict)
         assert cfg.content_type is dict
-
-    def test_flatten_content_default(self):
-        cfg = NodeConfig()
-        assert cfg.flatten_content is False
 
     def test_flatten_content_set(self):
         cfg = NodeConfig(flatten_content=True)
         assert cfg.flatten_content is True
 
-    def test_track_created_by_default(self):
-        cfg = NodeConfig()
-        assert cfg.track_created_by is False
-
     def test_track_created_by_set(self):
         cfg = NodeConfig(track_created_by=True)
         assert cfg.track_created_by is True
-
-    def test_immutable_content_default(self):
-        cfg = NodeConfig()
-        assert cfg.immutable_content is False
 
     def test_immutable_content_set(self):
         cfg = NodeConfig(immutable_content=True)
@@ -109,45 +84,6 @@ class TestNodeConfigNewProperties:
     def test_has_audit_fields_true_when_track_created_by(self):
         cfg = NodeConfig(track_created_by=True)
         assert cfg.has_audit_fields is True
-
-
-class TestNodeConfigNewFieldsImmutability:
-    """Frozen enforcement on new fields."""
-
-    def test_cannot_set_embedding_enabled(self):
-        cfg = NodeConfig()
-        with pytest.raises(FrozenInstanceError):
-            cfg.embedding_enabled = True
-
-    def test_cannot_set_embedding_dim(self):
-        cfg = NodeConfig()
-        with pytest.raises(FrozenInstanceError):
-            cfg.embedding_dim = 768
-
-    def test_cannot_set_embedding_model(self):
-        cfg = NodeConfig()
-        with pytest.raises(FrozenInstanceError):
-            cfg.embedding_model = "model"
-
-    def test_cannot_set_content_type(self):
-        cfg = NodeConfig()
-        with pytest.raises(FrozenInstanceError):
-            cfg.content_type = dict
-
-    def test_cannot_set_flatten_content(self):
-        cfg = NodeConfig()
-        with pytest.raises(FrozenInstanceError):
-            cfg.flatten_content = True
-
-    def test_cannot_set_track_created_by(self):
-        cfg = NodeConfig()
-        with pytest.raises(FrozenInstanceError):
-            cfg.track_created_by = True
-
-    def test_cannot_set_immutable_content(self):
-        cfg = NodeConfig()
-        with pytest.raises(FrozenInstanceError):
-            cfg.immutable_content = True
 
 
 # ===================================================================

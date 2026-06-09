@@ -15,7 +15,6 @@ from lionagi.protocols.messages.message import MessageRole
 
 
 def test_action_response_content_initialization_defaults():
-    """Test ActionResponseContent initialization with default values."""
     content = ActionResponseContent()
 
     assert content.function == ""
@@ -25,7 +24,6 @@ def test_action_response_content_initialization_defaults():
 
 
 def test_action_response_content_initialization_with_values():
-    """Test ActionResponseContent initialization with explicit values."""
     content = ActionResponseContent(
         function="test_function",
         arguments={"arg1": "value1", "arg2": 42},
@@ -40,7 +38,6 @@ def test_action_response_content_initialization_with_values():
 
 
 def test_action_response_content_dataclass_immutable_slots():
-    """Test that ActionResponseContent uses slots for memory efficiency."""
     content = ActionResponseContent(function="test")
 
     # Verify slots are defined
@@ -52,7 +49,6 @@ def test_action_response_content_dataclass_immutable_slots():
 
 
 def test_action_response_content_arguments_default_factory():
-    """Test that arguments field uses default factory for independent instances."""
     content1 = ActionResponseContent()
     content2 = ActionResponseContent()
 
@@ -65,7 +61,6 @@ def test_action_response_content_arguments_default_factory():
 
 
 def test_action_response_content_rendered_property():
-    """Test the rendered property formats content as YAML."""
     content = ActionResponseContent(
         function="calculate_sum",
         arguments={"a": 10, "b": 20},
@@ -86,7 +81,6 @@ def test_action_response_content_rendered_property():
 
 
 def test_action_response_content_rendered_with_complex_output():
-    """Test rendered property with complex nested output."""
     content = ActionResponseContent(
         function="process_data",
         arguments={"input": "data.json"},
@@ -127,7 +121,6 @@ def test_action_response_content_rendered_with_none_output():
 
 
 def test_action_response_content_from_dict_flat_structure():
-    """Test from_dict with flat dictionary structure (new format)."""
     data = {
         "function": "test_function",
         "arguments": {"param": "value"},
@@ -144,7 +137,6 @@ def test_action_response_content_from_dict_flat_structure():
 
 
 def test_action_response_content_from_dict_nested_structure():
-    """Test from_dict with nested 'action_response' key (old format - backward compat)."""
     data = {
         "action_response": {
             "function": "legacy_function",
@@ -163,7 +155,6 @@ def test_action_response_content_from_dict_nested_structure():
 
 
 def test_action_response_content_from_dict_missing_fields():
-    """Test from_dict with missing optional fields."""
     data = {
         "action_response": {
             "function": "minimal_function",
@@ -179,7 +170,6 @@ def test_action_response_content_from_dict_missing_fields():
 
 
 def test_action_response_content_from_dict_empty_dict():
-    """Test from_dict with completely empty dictionary."""
     data = {}
 
     content = ActionResponseContent.from_dict(data)
@@ -191,7 +181,6 @@ def test_action_response_content_from_dict_empty_dict():
 
 
 def test_action_response_content_from_dict_action_request_id_coercion():
-    """Test that action_request_id is coerced to string if provided."""
     data = {
         "function": "test",
         "action_request_id": 12345,  # Integer, should be converted to string
@@ -204,7 +193,6 @@ def test_action_response_content_from_dict_action_request_id_coercion():
 
 
 def test_action_response_content_from_dict_nested_with_partial_fields():
-    """Test from_dict with nested structure but partial fields."""
     data = {
         "action_response": {
             "function": "partial_function",
@@ -228,7 +216,6 @@ def test_action_response_content_from_dict_nested_with_partial_fields():
 
 
 def test_action_response_initialization_with_content_dict():
-    """Test ActionResponse initialization with content as dictionary."""
     response = ActionResponse(
         content={
             "function": "test_function",
@@ -245,7 +232,6 @@ def test_action_response_initialization_with_content_dict():
 
 
 def test_action_response_initialization_with_content_object():
-    """Test ActionResponse initialization with ActionResponseContent object."""
     content = ActionResponseContent(
         function="direct_function",
         arguments={"param": 123},
@@ -260,7 +246,6 @@ def test_action_response_initialization_with_content_object():
 
 
 def test_action_response_initialization_with_none_content():
-    """Test ActionResponse initialization with None content."""
     response = ActionResponse(content=None)
 
     assert response.role == MessageRole.ACTION
@@ -271,7 +256,6 @@ def test_action_response_initialization_with_none_content():
 
 
 def test_action_response_content_validator_with_nested_dict():
-    """Test ActionResponse content validator with nested action_response dict."""
     response = ActionResponse(
         content={
             "action_response": {
@@ -291,7 +275,6 @@ def test_action_response_content_validator_with_nested_dict():
 
 
 def test_action_response_content_validator_invalid_type():
-    """Test ActionResponse content validator rejects invalid types."""
     with pytest.raises(TypeError, match="content must be dict or ActionResponseContent"):
         ActionResponse(content="invalid_string")
 
@@ -303,7 +286,6 @@ def test_action_response_content_validator_invalid_type():
 
 
 def test_action_response_role_is_action():
-    """Test that ActionResponse has correct role."""
     response = ActionResponse(content=ActionResponseContent())
 
     assert response.role == MessageRole.ACTION
@@ -311,7 +293,6 @@ def test_action_response_role_is_action():
 
 
 def test_action_response_with_action_request_id():
-    """Test ActionResponse properly stores action_request_id."""
     response = ActionResponse(
         content={
             "function": "linked_function",
@@ -325,7 +306,6 @@ def test_action_response_with_action_request_id():
 
 
 def test_action_response_rendered_content():
-    """Test that ActionResponse can access rendered content."""
     response = ActionResponse(
         content={
             "function": "render_test",
@@ -343,7 +323,6 @@ def test_action_response_rendered_content():
 
 
 def test_action_response_content_access():
-    """Test direct access to ActionResponseContent fields through ActionResponse."""
     response = ActionResponse(
         content={
             "function": "access_test",
@@ -366,7 +345,6 @@ def test_action_response_content_access():
 
 
 def test_action_response_content_with_empty_strings():
-    """Test ActionResponseContent with empty string values."""
     content = ActionResponseContent(
         function="",
         arguments={},
@@ -381,7 +359,6 @@ def test_action_response_content_with_empty_strings():
 
 
 def test_action_response_content_with_complex_arguments():
-    """Test ActionResponseContent with nested/complex arguments."""
     complex_args = {
         "config": {
             "nested": {
@@ -406,7 +383,6 @@ def test_action_response_content_with_complex_arguments():
 
 
 def test_action_response_content_output_types():
-    """Test ActionResponseContent with various output types."""
     # String output
     content_str = ActionResponseContent(function="f", output="string output")
     assert content_str.output == "string output"
@@ -437,7 +413,6 @@ def test_action_response_content_output_types():
 
 
 def test_action_response_dataclass_equality():
-    """Test ActionResponseContent equality comparison."""
     content1 = ActionResponseContent(
         function="test",
         arguments={"a": 1},
@@ -467,7 +442,6 @@ def test_action_response_dataclass_equality():
 
 
 def test_action_response_multiple_instances_independence():
-    """Test that multiple ActionResponse instances are independent."""
     response1 = ActionResponse(content={"function": "func1", "arguments": {"x": 1}, "output": 1})
 
     response2 = ActionResponse(content={"function": "func2", "arguments": {"x": 2}, "output": 2})
@@ -482,7 +456,6 @@ def test_action_response_multiple_instances_independence():
 
 
 def test_action_response_content_rendered_is_always_string():
-    """Test that rendered property always returns a string, even for edge cases."""
     test_cases = [
         ActionResponseContent(function="", arguments={}, output=None),
         ActionResponseContent(function="f", arguments={}, output=""),

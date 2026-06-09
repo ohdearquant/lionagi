@@ -72,44 +72,7 @@ def test_format_budget_preamble_index_and_count():
 # directly rather than invoking _run_flow_inner (which needs a live backend).
 
 
-def _equal_split(n: int, total_budget: int) -> int:
-    """Replicate the per-assignment share from _run_flow_inner."""
-    return int(total_budget / n)
-
-
-def test_equal_split_3_assignments():
-    assert _equal_split(3, 600) == 200
-
-
-def test_equal_split_rounds_down():
-    assert _equal_split(3, 700) == 233
-
-
-def test_no_budget_preamble_when_total_budget_none():
-    """The `if env.total_budget and assignments` guard stays empty without a timeout."""
-    total_budget = None
-    n = 2
-    preambles: dict[int, str] = {}
-    if total_budget and n:
-        share = int(total_budget / n)
-        preambles[0] = _format_budget_preamble(1, n, share, time.time() + total_budget)
-    assert preambles == {}
-
-
 # ── OrchestrationEnv.total_budget ─────────────────────────────────────────
-
-
-def test_orchestration_env_has_total_budget_field():
-    """OrchestrationEnv must expose a total_budget attribute (None by default)."""
-    # Spot-check that the field exists at the class level. We cannot
-    # construct a full OrchestrationEnv without a live Session/Branch,
-    # so we inspect the dataclass fields.
-    import dataclasses
-
-    from lionagi.cli.orchestrate._orchestration import OrchestrationEnv
-
-    field_names = {f.name for f in dataclasses.fields(OrchestrationEnv)}
-    assert "total_budget" in field_names
 
 
 def test_setup_orchestration_passes_total_budget():

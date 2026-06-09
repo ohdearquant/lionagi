@@ -653,3 +653,175 @@ class TestUpdateStatusSourceValidation:
             "SELECT source FROM status_transitions WHERE entity_id = ?", (sid,)
         )
         assert (await cur.fetchone())["source"] == source
+
+
+# ── Additional edge cases ─────────────────────────────────────────────────────
+
+
+async def _create_team(db: StateDB, *, status: str = "active") -> str:
+    team_id = uuid.uuid4().hex[:12]
+    now = time.time()
+    await db.db.execute(
+        "INSERT INTO teams (id, name, created_at, updated_at, status) VALUES (?, ?, ?, ?, ?)",
+        (team_id, f"team-{team_id}", now, now, status),
+    )
+    await db.db.commit()
+    return team_id
+
+
+async def _create_schedule_run(db: StateDB, *, status: str = "running") -> str:
+    sched_id = uuid.uuid4().hex[:12]
+    run_id = uuid.uuid4().hex[:12]
+    now = time.time()
+    # Create a minimal schedule first (schedule_runs has FK to schedules).
+    await db.db.execute(
+        "INSERT INTO schedules (id, name, trigger_type, action_kind, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (sched_id, f"sched-{sched_id}", "cron", "agent", now, now),
+    )
+    await db.db.execute(
+        "INSERT INTO schedule_runs (id, schedule_id, action_kind, action_args, "
+        "trigger_context, status, fired_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, sched_id, "agent", "{}", "{}", status, now, now),
+    )
+    await db.db.commit()
+    return run_id
+
+
+class TestUpdateStatusTeamAndScheduleRun:
+    async def test_update_status_team_entity_type(self, db: StateDB):
+        """team is a valid entity_type — should write transition row.
+        Teams support status values 'active' and 'archived'."""
+        team_id = await _create_team(db, status="active")
+        await db.update_status(
+            "team",
+            team_id,
+            new_status="archived",
+            reason_code=RunReasons.COMPLETED_OK,
+            reason_summary="Team archived.",
+        )
+        cur = await db.db.execute("SELECT status FROM teams WHERE id = ?", (team_id,))
+        row = dict(await cur.fetchone())
+        assert row["status"] == "archived"
+
+        cur = await db.db.execute(
+            "SELECT entity_type FROM status_transitions WHERE entity_id = ?", (team_id,)
+        )
+        tr = dict(await cur.fetchone())
+        assert tr["entity_type"] == "team"
+
+    async def test_update_status_schedule_run_entity_type(self, db: StateDB):
+        """schedule_run is a valid entity_type — should write transition row."""
+        run_id = await _create_schedule_run(db)
+        await db.update_status(
+            "schedule_run",
+            run_id,
+            new_status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+        )
+        cur = await db.db.execute("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+        row = dict(await cur.fetchone())
+        assert row["status"] == "completed"
+
+
+class TestUpdateStatusMetadataParameter:
+    async def test_metadata_stored_in_transition_row(self, db: StateDB):
+        """metadata parameter is JSON-serialized into status_transitions.metadata."""
+        sid = await _create_session(db)
+        meta = {"context": "integration test", "attempt": 2}
+        await db.update_status(
+            "session",
+            sid,
+            new_status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+            metadata=meta,
+        )
+        cur = await db.db.execute(
+            "SELECT metadata FROM status_transitions WHERE entity_id = ?", (sid,)
+        )
+        row = await cur.fetchone()
+        assert row is not None
+        import json
+
+        stored = json.loads(row["metadata"])
+        assert stored == meta
+
+    async def test_metadata_none_stores_null(self, db: StateDB):
+        """metadata=None stores NULL in the transition row."""
+        sid = await _create_session(db)
+        await db.update_status(
+            "session",
+            sid,
+            new_status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+            metadata=None,
+        )
+        cur = await db.db.execute(
+            "SELECT metadata FROM status_transitions WHERE entity_id = ?", (sid,)
+        )
+        row = await cur.fetchone()
+        assert row is not None
+        assert row["metadata"] is None
+
+
+class TestUpdateStatusActorParameter:
+    async def test_actor_written_to_transition_row(self, db: StateDB):
+        """actor parameter is stored in status_transitions.actor."""
+        sid = await _create_session(db)
+        await db.update_status(
+            "session",
+            sid,
+            new_status="failed",
+            reason_code=RunReasons.FAILED_EXCEPTION,
+            actor="cli-agent",
+        )
+        cur = await db.db.execute(
+            "SELECT actor FROM status_transitions WHERE entity_id = ?", (sid,)
+        )
+        row = await cur.fetchone()
+        assert row["actor"] == "cli-agent"
+
+    async def test_actor_none_stores_null(self, db: StateDB):
+        """actor=None (default) stores NULL — not an error."""
+        sid = await _create_session(db)
+        await db.update_status(
+            "session",
+            sid,
+            new_status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+            actor=None,
+        )
+        cur = await db.db.execute(
+            "SELECT actor FROM status_transitions WHERE entity_id = ?", (sid,)
+        )
+        row = await cur.fetchone()
+        assert row["actor"] is None
+
+
+class TestConcurrentUpdateStatus:
+    async def test_sequential_updates_on_same_session_all_write_transitions(self, db: StateDB):
+        """Multiple sequential update_status calls each write a status_transitions row.
+        Verifies that the transitions table accumulates all history, not just the last row.
+        (aiosqlite uses a single shared connection for :memory: — concurrent BEGIN IMMEDIATE
+        within the same connection nests and raises; real contention is covered in
+        test_db_locking.py with file-backed multi-connection setups.)"""
+        sid = await _create_session(db)
+
+        await db.update_status(
+            "session",
+            sid,
+            new_status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+        )
+        await db.update_status(
+            "session",
+            sid,
+            new_status="failed",
+            reason_code=RunReasons.FAILED_EXCEPTION,
+        )
+
+        cur = await db.db.execute(
+            "SELECT COUNT(*) AS n FROM status_transitions WHERE entity_id = ?", (sid,)
+        )
+        n = (await cur.fetchone())["n"]
+        assert n == 2, f"Expected 2 transition rows, got {n}"

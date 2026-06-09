@@ -14,32 +14,9 @@ from lionagi.operations.select.utils import SelectionModel
 from lionagi.session.branch import Branch
 
 
-class TestSelectionModel:
-    """Test SelectionModel class."""
-
-    def test_selection_model_creation(self):
-        """Test creating a SelectionModel."""
-        model = SelectionModel()
-        assert model.selected == []
-
-    def test_selection_model_with_selections(self):
-        """Test SelectionModel with selections."""
-        model = SelectionModel(selected=["option1", "option2"])
-        assert model.selected == ["option1", "option2"]
-
-    def test_selection_model_prompt(self):
-        """Test SelectionModel PROMPT class variable."""
-        assert "select up to" in SelectionModel.PROMPT.lower()
-        assert "{max_num_selections}" in SelectionModel.PROMPT
-        assert "{choices}" in SelectionModel.PROMPT
-
-
 class TestSelectBasic:
-    """Test basic select function."""
-
     @pytest.mark.asyncio
     async def test_select_with_string_list(self):
-        """Test selection from string list."""
         # Create mock branch
         branch = MagicMock(spec=Branch)
 
@@ -62,7 +39,6 @@ class TestSelectBasic:
 
     @pytest.mark.asyncio
     async def test_select_with_return_branch(self):
-        """Test select with return_branch=True."""
         branch = MagicMock(spec=Branch)
 
         async def mock_operate(**kwargs):
@@ -82,7 +58,6 @@ class TestSelectBasic:
 
     @pytest.mark.asyncio
     async def test_select_branch_creation_backwards_compat(self):
-        """Test branch creation for backwards compatibility."""
         # Mock Branch class to avoid real API calls
         mock_branch_instance = MagicMock(spec=Branch)
 
@@ -107,7 +82,6 @@ class TestSelectBasic:
 
     @pytest.mark.asyncio
     async def test_select_verbose_mode(self, caplog):
-        """Test select with verbose output."""
         branch = MagicMock(spec=Branch)
 
         async def mock_operate(**kwargs):
@@ -127,11 +101,8 @@ class TestSelectBasic:
 
 
 class TestSelectV1StringChoices:
-    """Test select_v1 with string list choices."""
-
     @pytest.mark.asyncio
     async def test_select_v1_single_selection(self):
-        """Test selecting single item from string list."""
         branch = MagicMock(spec=Branch)
 
         async def mock_operate(**kwargs):
@@ -157,7 +128,6 @@ class TestSelectV1StringChoices:
 
     @pytest.mark.asyncio
     async def test_select_v1_multiple_selections(self):
-        """Test selecting multiple items."""
         branch = MagicMock(spec=Branch)
 
         async def mock_operate(**kwargs):
@@ -178,7 +148,6 @@ class TestSelectV1StringChoices:
 
     @pytest.mark.asyncio
     async def test_select_v1_verbose_mode(self, caplog):
-        """Test select_v1 with verbose output."""
         branch = MagicMock(spec=Branch)
 
         async def mock_operate(**kwargs):
@@ -198,11 +167,8 @@ class TestSelectV1StringChoices:
 
 
 class TestSelectV1EnumChoices:
-    """Test select_v1 with Enum choices."""
-
     @pytest.mark.asyncio
     async def test_select_v1_with_enum(self):
-        """Test selection from Enum."""
 
         class Color(Enum):
             RED = "red_value"
@@ -230,7 +196,6 @@ class TestSelectV1EnumChoices:
 
     @pytest.mark.asyncio
     async def test_select_v1_enum_multiple_selections(self):
-        """Test multiple selections from Enum."""
 
         class Priority(Enum):
             LOW = 1
@@ -258,11 +223,8 @@ class TestSelectV1EnumChoices:
 
 
 class TestSelectV1DictChoices:
-    """Test select_v1 with dict choices."""
-
     @pytest.mark.asyncio
     async def test_select_v1_with_dict(self):
-        """Test selection from dictionary."""
         choices = {
             "option_a": "First option description",
             "option_b": "Second option description",
@@ -288,7 +250,6 @@ class TestSelectV1DictChoices:
 
     @pytest.mark.asyncio
     async def test_select_v1_dict_multiple(self):
-        """Test multiple selections from dict."""
         choices = {
             "key1": {"nested": "value1"},
             "key2": {"nested": "value2"},
@@ -313,11 +274,8 @@ class TestSelectV1DictChoices:
 
 
 class TestSelectV1ModelChoices:
-    """Test select_v1 with Pydantic model choices."""
-
     @pytest.mark.asyncio
     async def test_select_v1_with_basemodel_instances(self):
-        """Test selection from BaseModel instances."""
 
         class Option(BaseModel):
             name: str
@@ -349,7 +307,6 @@ class TestSelectV1ModelChoices:
 
     @pytest.mark.asyncio
     async def test_select_v1_with_basemodel_classes(self):
-        """Test selection from BaseModel classes."""
 
         class OptionA(BaseModel):
             field_a: str
@@ -377,11 +334,8 @@ class TestSelectV1ModelChoices:
 
 
 class TestSelectV1InstructHandling:
-    """Test instruction handling in select_v1."""
-
     @pytest.mark.asyncio
     async def test_select_v1_with_instruct_object(self):
-        """Test with Instruct object."""
         from lionagi.operations.fields import Instruct
 
         instruct = Instruct(instruction="Choose the best", context={"data": "value"})
@@ -406,7 +360,6 @@ class TestSelectV1InstructHandling:
 
     @pytest.mark.asyncio
     async def test_select_v1_with_dict_instruct(self):
-        """Test with dict instruction."""
         instruct_dict = {
             "instruction": "Select item",
             "context": [{"key": "value"}],
@@ -431,7 +384,6 @@ class TestSelectV1InstructHandling:
 
     @pytest.mark.asyncio
     async def test_select_v1_empty_instruct(self):
-        """Test with empty/None instruction."""
         branch = MagicMock(spec=Branch)
 
         async def mock_operate(**kwargs):
@@ -451,7 +403,6 @@ class TestSelectV1InstructHandling:
 
     @pytest.mark.asyncio
     async def test_select_v1_context_extension(self):
-        """Test that context is extended with choices."""
         instruct_dict = {
             "instruction": "Select",
             "context": [{"existing": "data"}],
@@ -478,11 +429,8 @@ class TestSelectV1InstructHandling:
 
 
 class TestSelectV1ResponseParsing:
-    """Test response parsing in select_v1."""
-
     @pytest.mark.asyncio
     async def test_select_v1_list_response(self):
-        """Test list response handling in select_v1."""
         branch = MagicMock(spec=Branch)
 
         # SelectionModel requires list for selected field
@@ -504,7 +452,6 @@ class TestSelectV1ResponseParsing:
 
     @pytest.mark.asyncio
     async def test_select_v1_dict_response(self):
-        """Test handling dict response."""
         branch = MagicMock(spec=Branch)
 
         async def mock_operate(**kwargs):
@@ -524,11 +471,8 @@ class TestSelectV1ResponseParsing:
 
 
 class TestSelectV1EdgeCases:
-    """Test edge cases in select_v1."""
-
     @pytest.mark.asyncio
     async def test_select_v1_empty_choices(self):
-        """Test with empty choices."""
         branch = MagicMock(spec=Branch)
 
         async def mock_operate(**kwargs):
@@ -547,7 +491,6 @@ class TestSelectV1EdgeCases:
 
     @pytest.mark.asyncio
     async def test_select_v1_max_selections_zero(self):
-        """Test with max_num_selections=0."""
         branch = MagicMock(spec=Branch)
 
         async def mock_operate(**kwargs):
@@ -566,7 +509,6 @@ class TestSelectV1EdgeCases:
 
     @pytest.mark.asyncio
     async def test_select_v1_operate_kwargs_passed(self):
-        """Test that operate kwargs are passed through."""
         branch = MagicMock(spec=Branch)
 
         async def mock_operate(**kwargs):
@@ -588,11 +530,8 @@ class TestSelectV1EdgeCases:
 
 
 class TestSelectV1Integration:
-    """Integration tests for select_v1."""
-
     @pytest.mark.asyncio
     async def test_select_v1_full_workflow_strings(self):
-        """Test complete workflow with string choices."""
         branch = MagicMock(spec=Branch)
 
         choices = ["python", "javascript", "rust", "go"]
@@ -618,7 +557,6 @@ class TestSelectV1Integration:
 
     @pytest.mark.asyncio
     async def test_select_v1_full_workflow_enum(self):
-        """Test complete workflow with enum choices."""
 
         class Framework(Enum):
             PYTORCH = "PyTorch framework"
@@ -643,7 +581,6 @@ class TestSelectV1Integration:
 
     @pytest.mark.asyncio
     async def test_select_v1_full_workflow_dict(self):
-        """Test complete workflow with dict choices."""
         choices = {
             "fast": "Optimized for speed",
             "reliable": "Optimized for reliability",

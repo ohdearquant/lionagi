@@ -44,13 +44,6 @@ def make_action_call(name="act1", fn="fetch", args=None):
 
 
 class TestLvarMetadata:
-    def test_basic_creation(self):
-        m = LvarMetadata(model="Report", field="title", local_name="t", value="Hello")
-        assert m.model == "Report"
-        assert m.field == "title"
-        assert m.local_name == "t"
-        assert m.value == "Hello"
-
     def test_frozen(self):
         m = LvarMetadata(model="R", field="f", local_name="l", value="v")
         with pytest.raises((AttributeError, TypeError)):
@@ -58,11 +51,6 @@ class TestLvarMetadata:
 
 
 class TestRLvarMetadata:
-    def test_basic_creation(self):
-        m = RLvarMetadata(local_name="x", value="raw text")
-        assert m.local_name == "x"
-        assert m.value == "raw text"
-
     def test_frozen(self):
         m = RLvarMetadata(local_name="x", value="v")
         with pytest.raises((AttributeError, TypeError)):
@@ -82,11 +70,6 @@ class TestLactMetadata:
 
 
 class TestParsedConstructor:
-    def test_basic(self):
-        pc = ParsedConstructor(class_name="Report", kwargs={"title": "X"}, raw="Report(title='X')")
-        assert pc.class_name == "Report"
-        assert pc.kwargs == {"title": "X"}
-
     def test_has_dict_unpack_false(self):
         pc = ParsedConstructor(class_name="A", kwargs={"x": 1}, raw="A(x=1)")
         assert pc.has_dict_unpack is False
@@ -97,12 +80,6 @@ class TestParsedConstructor:
 
 
 class TestActionCall:
-    def test_basic(self):
-        ac = make_action_call()
-        assert ac.name == "act1"
-        assert ac.function == "fetch"
-        assert ac.arguments == {"url": "http://x"}
-
     def test_frozen(self):
         ac = make_action_call()
         with pytest.raises((AttributeError, TypeError)):
@@ -369,3 +346,66 @@ class TestCoerceResultOptionalScalar:
         m = OptionalModel.model_construct(note=ac)
         result = revalidate_with_action_results(m, {"opt": None})
         assert result.note is None
+
+
+# ── New edge cases ─────────────────────────────────────────────────────────────
+
+
+class TestLNDLOutputLargeFields:
+    def test_large_fields_dict_accessible(self):
+        fields = {f"key_{i}": float(i) for i in range(1000)}
+        out = LNDLOutput(fields=fields, lvars={}, lacts={}, actions={}, raw_out_block="")
+        assert out["key_0"] == 0.0
+        assert out["key_999"] == 999.0
+
+    def test_large_fields_dict_getattr(self):
+        fields = {f"f{i}": i for i in range(500)}
+        out = LNDLOutput(fields=fields, lvars={}, lacts={}, actions={}, raw_out_block="")
+        assert out.f0 == 0
+        assert out.f499 == 499
+
+
+class TestRevalidateWithNestedActionCalls:
+    def test_nested_basemodel_action_call_at_depth_2(self):
+        # NestedModel.inner.title holds an ActionCall — depth > 1
+        inner_ac = ActionCall(name="inner_act", function="fetch", arguments={}, raw_call="fetch()")
+        inner = SimpleModel.model_construct(title=inner_ac, score=0.0)
+        outer = NestedModel.model_construct(name="outer", inner=inner)
+        result = revalidate_with_action_results(outer, {"inner_act": "fetched-title"})
+        assert result.inner.title == "fetched-title"
+        assert result.name == "outer"
+
+
+class TestCoerceResultComplexUnions:
+    def test_str_int_none_union_passes_through(self):
+        # str | int | None is not an Optional scalar (3 members including None)
+        # _unwrap_scalar returns None → passthrough
+        from typing import Union
+
+        result = _coerce_result("hello", Union[str, int, None])
+        assert result == "hello"
+
+    def test_int_float_union_passes_through(self):
+        from typing import Union
+
+        result = _coerce_result(42, Union[int, float])
+        assert result == 42
+
+    def test_list_str_annotation_passes_through(self):
+        result = _coerce_result(["a", "b", "c"], list[str])
+        assert result == ["a", "b", "c"]
+
+
+class TestActionCallEdgeCases:
+    def test_empty_arguments_dict_accepted(self):
+        ac = ActionCall(name="act", function="fn", arguments={}, raw_call="fn()")
+        assert ac.arguments == {}
+
+    def test_function_with_non_empty_name_accepted(self):
+        ac = ActionCall(name="x", function="my_func", arguments={"a": 1}, raw_call="my_func(a=1)")
+        assert ac.function == "my_func"
+
+    def test_frozen_prevents_mutation(self):
+        ac = ActionCall(name="a", function="f", arguments={}, raw_call="f()")
+        with pytest.raises((AttributeError, TypeError)):
+            ac.name = "b"

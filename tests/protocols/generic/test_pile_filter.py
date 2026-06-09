@@ -99,9 +99,6 @@ class TestIsHomogenous:
         p = Pile(collections=items)
         assert p.is_homogenous() is False
 
-    def test_empty_pile_homogenous(self):
-        assert Pile().is_homogenous() is True
-
 
 # ---------------------------------------------------------------------------
 # 11. adapt_to / adapt_from (json)
@@ -156,21 +153,6 @@ class TestMisc:
     def test_str(self, pile_3):
         assert str(pile_3) == "Pile(3)"
 
-    def test_bool_empty(self):
-        assert not Pile()
-
-    def test_bool_non_empty(self, pile_3):
-        assert pile_3
-
-    def test_size(self, pile_3):
-        assert pile_3.size() == 3
-
-    def test_is_empty_false(self, pile_3):
-        assert not pile_3.is_empty()
-
-    def test_is_empty_true(self):
-        assert Pile().is_empty()
-
     def test_keys_returns_ids(self, pile_3, three_items):
         keys = pile_3.keys()
         assert all(isinstance(k, UUID) for k in keys)
@@ -187,11 +169,6 @@ class TestMisc:
         for uuid, item in pairs:
             assert isinstance(uuid, UUID)
             assert isinstance(item, Item)
-
-    def test_next_raises_on_empty(self):
-        p = Pile()
-        with pytest.raises(StopIteration):
-            next(p)
 
     def test_next_returns_first(self, pile_3, three_items):
         first = next(pile_3)

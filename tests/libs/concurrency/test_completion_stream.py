@@ -21,8 +21,6 @@ pytestmark = pytest.mark.anyio
 
 
 async def test_completion_stream_basic_usage(anyio_backend):
-    """Test CompletionStream basic async for loop."""
-
     async def task(x):
         await anyio.sleep(0.001 * x)
         return x * 2
@@ -37,8 +35,6 @@ async def test_completion_stream_basic_usage(anyio_backend):
 
 
 async def test_completion_stream_preserves_index_result_pairs(anyio_backend):
-    """Test CompletionStream returns correct (index, result) tuples."""
-
     async def task(x):
         # Reverse order completion times to test index tracking
         await anyio.sleep(0.001 * (10 - x))
@@ -57,7 +53,6 @@ async def test_completion_stream_preserves_index_result_pairs(anyio_backend):
 
 
 async def test_completion_stream_empty_awaitables(anyio_backend):
-    """Test CompletionStream with empty awaitable list."""
     results = []
     async with CompletionStream([]) as stream:
         async for idx, result in stream:
@@ -72,7 +67,6 @@ async def test_completion_stream_empty_awaitables(anyio_backend):
 
 
 async def test_completion_stream_with_limit(anyio_backend):
-    """Test CompletionStream respects concurrency limit."""
     current_running = {"count": 0, "max": 0}
 
     async def tracked_task(x):
@@ -93,7 +87,6 @@ async def test_completion_stream_with_limit(anyio_backend):
 async def test_completion_stream_limit_none_allows_all_concurrent(
     anyio_backend,
 ):
-    """Test CompletionStream with limit=None allows all tasks to run concurrently."""
     current_running = {"count": 0, "max": 0}
 
     async def tracked_task(x):
@@ -118,7 +111,6 @@ async def test_completion_stream_limit_none_allows_all_concurrent(
 
 
 async def test_completion_stream_early_break_exits_cleanly(anyio_backend):
-    """Test breaking early exits the stream cleanly without consuming all results."""
     consumed = []
 
     async def task(x):
@@ -140,7 +132,6 @@ async def test_completion_stream_early_break_exits_cleanly(anyio_backend):
 
 
 async def test_completion_stream_consume_all_results(anyio_backend):
-    """Test consuming all results without early break completes normally."""
     results = []
 
     async def task(x):
@@ -162,7 +153,6 @@ async def test_completion_stream_consume_all_results(anyio_backend):
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 async def test_completion_stream_exception_propagation(anyio_backend):
-    """Test CompletionStream propagates exceptions through ExceptionGroup."""
     from lionagi.ln.concurrency._compat import ExceptionGroup
 
     async def failing_task(x):
@@ -184,7 +174,6 @@ async def test_completion_stream_exception_propagation(anyio_backend):
 
 
 async def test_completion_stream_cleanup_on_exception(anyio_backend):
-    """Test CompletionStream cleans up resources on exception."""
     from lionagi.ln.concurrency._compat import ExceptionGroup
 
     async def failing_task(x):
@@ -209,7 +198,6 @@ async def test_completion_stream_cleanup_on_exception(anyio_backend):
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 async def test_completion_stream_exception_early_in_iteration(anyio_backend):
-    """Test exception early in iteration propagates through ExceptionGroup."""
     from lionagi.ln.concurrency._compat import ExceptionGroup
 
     async def task(x):
@@ -237,7 +225,6 @@ async def test_completion_stream_exception_early_in_iteration(anyio_backend):
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 async def test_completion_stream_not_in_context_manager_raises(anyio_backend):
-    """Test CompletionStream raises when used outside context manager."""
     import warnings
 
     # Use task factory to create coroutines
@@ -256,8 +243,6 @@ async def test_completion_stream_not_in_context_manager_raises(anyio_backend):
 
 
 async def test_completion_stream_proper_cleanup_in_aexit(anyio_backend):
-    """Test CompletionStream __aexit__ properly closes all resources."""
-
     async def task(x):
         await anyio.sleep(0.001)
         return x
@@ -288,8 +273,6 @@ async def test_completion_stream_proper_cleanup_in_aexit(anyio_backend):
 
 @pytest.mark.slow
 async def test_completion_stream_handles_slow_tasks(anyio_backend):
-    """Test CompletionStream handles tasks with varying completion times."""
-
     async def task(x):
         # Reverse order completion times
         await anyio.sleep(0.001 * (10 - x))
@@ -307,8 +290,6 @@ async def test_completion_stream_handles_slow_tasks(anyio_backend):
 
 
 async def test_completion_stream_single_task(anyio_backend):
-    """Test CompletionStream with single task."""
-
     async def task():
         await anyio.sleep(0.001)
         return "single_result"
@@ -322,8 +303,6 @@ async def test_completion_stream_single_task(anyio_backend):
 
 
 async def test_completion_stream_completed_count_tracking(anyio_backend):
-    """Test CompletionStream tracks completed count correctly."""
-
     async def task(x):
         await anyio.sleep(0.001)
         return x
@@ -350,8 +329,6 @@ async def test_completion_stream_completed_count_tracking(anyio_backend):
 
 
 async def test_completion_stream_stop_async_iteration(anyio_backend):
-    """Test CompletionStream raises StopAsyncIteration when done."""
-
     async def task(x):
         await anyio.sleep(0.001)
         return x
@@ -370,8 +347,6 @@ async def test_completion_stream_stop_async_iteration(anyio_backend):
 
 
 async def test_completion_stream_with_immediate_results(anyio_backend):
-    """Test CompletionStream with tasks that complete immediately."""
-
     async def instant_task(x):
         return x * 2
 
@@ -391,8 +366,6 @@ async def test_completion_stream_with_immediate_results(anyio_backend):
 
 @pytest.mark.slow
 async def test_completion_stream_realistic_workload(anyio_backend):
-    """Test CompletionStream with realistic mixed-speed workload."""
-
     async def mixed_speed_task(x):
         # Varying delays to simulate real-world variance
         import random
@@ -415,7 +388,6 @@ async def test_completion_stream_realistic_workload(anyio_backend):
 
 
 async def test_completion_stream_partial_consumption_then_break(anyio_backend):
-    """Test CompletionStream with partial consumption and early break."""
     consumed = []
 
     async def task(x):

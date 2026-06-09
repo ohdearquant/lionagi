@@ -529,6 +529,114 @@ def test_cleanup_flow_results_non_dict_returned_unchanged():
     assert cleanup_flow_results({"no_op_results": True}) == {"no_op_results": True}
 
 
+# ---------------------------------------------------------------------------
+# Edge condition that raises an exception (not returns False, but throws)
+# ---------------------------------------------------------------------------
+
+
+class ExplodingCondition(EdgeCondition):
+    async def apply(self, context: dict) -> bool:
+        raise RuntimeError("condition exploded")
+
+
+@pytest.mark.asyncio
+async def test_flow_edge_condition_exception_is_captured():
+    op_a = Operation(operation="chat", parameters={"instruction": "A"})
+    op_b = Operation(operation="chat", parameters={"instruction": "B"})
+
+    graph = Graph()
+    graph.add_node(op_a)
+    graph.add_node(op_b)
+    graph.add_edge(Edge(head=op_a.id, tail=op_b.id, condition=ExplodingCondition()))
+
+    session = Session()
+    branch = make_mock_branch()
+    session.branches.include(branch)
+    session.default_branch = branch
+
+    result = await flow(session, graph, parallel=False, verbose=False)
+    assert op_a.id in result["completed_operations"]
+    assert op_b.id in result["completed_operations"], (
+        "op_b runs even when edge condition raises — exception is not treated as failed condition"
+    )
+
+
+# ---------------------------------------------------------------------------
+# cleanup_flow_results with no keep_only clears everything
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_flow_results_clears_all_when_keep_only_is_none():
+    from lionagi.operations.flow import cleanup_flow_results
+
+    result = {
+        "operation_results": {"a": 1, "b": 2},
+        "completed_operations": ["a", "b"],
+    }
+    out = cleanup_flow_results(result, keep_only=None)
+    assert out["operation_results"] == {}
+    assert out["completed_operations"] == []
+
+
+# ---------------------------------------------------------------------------
+# flow with operations assigned to non-existent branch IDs falls back gracefully
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flow_with_nonexistent_branch_id_falls_back():
+    op = Operation(operation="chat", parameters={"instruction": "hi"})
+    import uuid
+
+    op.branch_id = uuid.uuid4()  # random branch ID not in session
+
+    graph = Graph()
+    graph.add_node(op)
+
+    session = Session()
+    branch = make_mock_branch()
+    session.branches.include(branch)
+    session.default_branch = branch
+
+    # Should fall back to default branch and still execute
+    result = await flow(session, graph, parallel=False, verbose=False)
+    assert op.id in result["completed_operations"]
+
+
+# ---------------------------------------------------------------------------
+# flow_with_cleanup convenience wrapper
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flow_with_cleanup_keeps_only_specified():
+    from lionagi.operations.flow import flow_with_cleanup
+
+    op_a = Operation(operation="chat", parameters={"instruction": "A"})
+    op_b = Operation(operation="chat", parameters={"instruction": "B"})
+
+    graph = Graph()
+    graph.add_node(op_a)
+    graph.add_node(op_b)
+
+    session = Session()
+    branch = make_mock_branch()
+    session.branches.include(branch)
+    session.default_branch = branch
+
+    result = await flow_with_cleanup(
+        session,
+        graph,
+        parallel=False,
+        cleanup_results=True,
+        keep_only=[op_a.id],
+    )
+    # Only op_a in results
+    assert op_a.id in result["operation_results"] or result["operation_results"] == {}
+    # op_b should be filtered out
+    assert op_b.id not in result["operation_results"]
+
+
 @pytest.mark.asyncio
 async def test_flow_rejects_non_edge_condition_object_via_public_flow():
     """flow raises TypeError when an edge has a Condition that is not EdgeCondition."""

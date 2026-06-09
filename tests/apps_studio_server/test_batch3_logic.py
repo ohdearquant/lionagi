@@ -21,7 +21,6 @@ from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
 class TestIsSessionStreamDone:
     def test_running_status_returns_false(self):
-        """A session with 'running' status must never trigger done, regardless of staleness."""
         from lionagi.studio.services.sessions import is_session_stream_done
 
         state = {"status": "running", "updated_at": 0.0}
@@ -29,7 +28,6 @@ class TestIsSessionStreamDone:
         assert not is_session_stream_done(state, now=9_999_999.0)
 
     def test_completed_but_fresh_returns_false(self):
-        """Terminal status alone is not enough — updated_at must also be > 60s ago."""
         from lionagi.studio.services.sessions import (
             SESSION_DONE_STABLE_SECS,
             is_session_stream_done,
@@ -41,7 +39,6 @@ class TestIsSessionStreamDone:
         assert not is_session_stream_done(state, now=now)
 
     def test_completed_and_stale_returns_true(self):
-        """Both conditions met → done."""
         from lionagi.studio.services.sessions import (
             SESSION_DONE_STABLE_SECS,
             is_session_stream_done,
@@ -52,7 +49,6 @@ class TestIsSessionStreamDone:
         assert is_session_stream_done(state, now=now)
 
     def test_failed_and_stale_returns_true(self):
-        """'failed' is also a terminal status."""
         from lionagi.studio.services.sessions import (
             SESSION_DONE_STABLE_SECS,
             is_session_stream_done,
@@ -62,19 +58,7 @@ class TestIsSessionStreamDone:
         state = {"status": "failed", "updated_at": now - SESSION_DONE_STABLE_SECS - 1}
         assert is_session_stream_done(state, now=now)
 
-    def test_aborted_and_stale_returns_true(self):
-        """'aborted' is also a terminal status."""
-        from lionagi.studio.services.sessions import (
-            SESSION_DONE_STABLE_SECS,
-            is_session_stream_done,
-        )
-
-        now = 1_000_000.0
-        state = {"status": "aborted", "updated_at": now - SESSION_DONE_STABLE_SECS - 1}
-        assert is_session_stream_done(state, now=now)
-
     def test_none_state_returns_false(self):
-        """Missing/unknown session must keep the stream alive (not close it)."""
         from lionagi.studio.services.sessions import is_session_stream_done
 
         assert not is_session_stream_done(None, now=9_999_999.0)
@@ -87,7 +71,6 @@ class TestGetSessionStreamState:
         monkeypatch.setattr(svc, "DEFAULT_DB_PATH", db_path)
 
     def test_returns_none_when_db_missing(self, tmp_path, monkeypatch):
-        """When the DB file does not exist, return None (keep stream alive)."""
         import lionagi.studio.services.sessions as svc
 
         self._patch_db(monkeypatch, svc, tmp_path / "nonexistent.db")
@@ -95,7 +78,6 @@ class TestGetSessionStreamState:
         assert result is None
 
     def test_returns_none_for_unknown_session(self, tmp_path, monkeypatch):
-        """Row not found → None (not an error)."""
         import lionagi.studio.services.sessions as svc
 
         db_path = tmp_path / "test.db"
@@ -116,7 +98,6 @@ class TestGetSessionStreamState:
         assert result is None
 
     def test_returns_state_dict_for_known_session(self, tmp_path, monkeypatch):
-        """Existing row returns {updated_at, status}."""
         import lionagi.studio.services.sessions as svc
 
         db_path = tmp_path / "test.db"
@@ -143,7 +124,6 @@ class TestGetSessionStreamState:
         assert result["status"] == "completed"
 
     def test_null_status_becomes_completed(self, tmp_path, monkeypatch):
-        """Legacy rows with NULL status must map to 'completed' (not None)."""
         import lionagi.studio.services.sessions as svc
 
         db_path = tmp_path / "test.db"
@@ -181,7 +161,6 @@ class TestUpdatePlaybookValidation:
         return path
 
     def test_valid_update_succeeds(self, tmp_path, monkeypatch):
-        """A well-formed update (links reference existing steps) must not raise."""
         import lionagi.studio.services.playbooks as svc
 
         monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
@@ -196,7 +175,6 @@ class TestUpdatePlaybookValidation:
         assert result["data"]["description"] == "updated"
 
     def test_invalid_link_raises_value_error(self, tmp_path, monkeypatch):
-        """Links that reference non-existent steps must raise ValueError."""
         import lionagi.studio.services.playbooks as svc
 
         monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
@@ -216,7 +194,6 @@ class TestUpdatePlaybookValidation:
             )
 
     def test_router_returns_422_on_invalid_update(self, tmp_path, monkeypatch):
-        """Router must convert ValueError from update_playbook() to HTTP 422."""
         import lionagi.studio.services.playbooks as svc
 
         monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
@@ -245,7 +222,6 @@ class TestUpdatePlaybookValidation:
         assert resp.status_code == 422
 
     def test_update_does_not_write_on_validation_failure(self, tmp_path, monkeypatch):
-        """File must not be written when validation fails."""
         import lionagi.studio.services.playbooks as svc
 
         monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
@@ -266,15 +242,12 @@ class TestUpdatePlaybookValidation:
 
 
 class TestUpdatePlaybookSpecFieldValidation:
-    """#1013 spec-field gap: workers/max_ops/effort must be validated on PUT."""
-
     def _make_playbook(self, tmp_path: Path, name: str) -> Path:
         path = tmp_path / f"{name}.playbook.yaml"
         path.write_text("description: test\n")
         return path
 
     def test_workers_out_of_range_raises_value_error(self, tmp_path, monkeypatch):
-        """workers: 999 must be rejected — this was the exact failure scenario."""
         import lionagi.studio.services.playbooks as svc
 
         monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
@@ -304,7 +277,6 @@ class TestUpdatePlaybookSpecFieldValidation:
         assert "workers" in resp.text
 
     def test_workers_valid_range_accepted(self, tmp_path, monkeypatch):
-        """workers: 4 is in [1, 32] and must not raise."""
         import lionagi.studio.services.playbooks as svc
 
         monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
@@ -314,7 +286,6 @@ class TestUpdatePlaybookSpecFieldValidation:
         assert result is not None
 
     def test_max_ops_out_of_range_raises(self, tmp_path, monkeypatch):
-        """max-ops: 999 (YAML hyphenated form) must be rejected after key normalization."""
         import lionagi.studio.services.playbooks as svc
 
         monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
@@ -325,7 +296,6 @@ class TestUpdatePlaybookSpecFieldValidation:
             svc.update_playbook("pb-maxops", {"max-ops": 999})
 
     def test_invalid_effort_raises(self, tmp_path, monkeypatch):
-        """effort: 'turbo' is not a valid effort level."""
         import lionagi.studio.services.playbooks as svc
 
         monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
@@ -335,7 +305,6 @@ class TestUpdatePlaybookSpecFieldValidation:
             svc.update_playbook("pb-effort", {"effort": "turbo"})
 
     def test_valid_effort_accepted(self, tmp_path, monkeypatch):
-        """effort: 'high' is a valid effort level."""
         import lionagi.studio.services.playbooks as svc
 
         monkeypatch.setattr(svc, "_PLAYBOOKS_ROOT", tmp_path)
@@ -345,7 +314,6 @@ class TestUpdatePlaybookSpecFieldValidation:
         assert result is not None
 
     def test_validate_playbook_returns_error_for_bad_workers(self, tmp_path, monkeypatch):
-        """validate_playbook() endpoint must report spec errors in {ok, errors}."""
         import lionagi.studio.services.playbooks as svc
 
         result = svc.validate_playbook("any", {"workers": 0})

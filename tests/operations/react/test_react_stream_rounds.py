@@ -25,7 +25,6 @@ from lionagi.testing import LionAGIMockFactory
 
 
 def make_mocked_branch_for_react():
-    """Create a mocked Branch for ReAct testing."""
     return LionAGIMockFactory.create_mocked_branch(
         name="ReActTestBranch",
         user="tester",
@@ -62,8 +61,6 @@ async def async_search(query: str) -> str:
 # ============================================================================
 
 
-"""Tests for ReAct multi-step reasoning rounds, extensions, and state."""
-
 # ============================================================================
 # 2. Multi-Step Reasoning
 # ============================================================================
@@ -71,7 +68,6 @@ async def async_search(query: str) -> str:
 
 @pytest.mark.asyncio
 async def test_reasoning_chain_with_context_accumulation():
-    """Test multi-step reasoning with context building across rounds."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -115,7 +111,6 @@ async def test_reasoning_chain_with_context_accumulation():
 
 @pytest.mark.asyncio
 async def test_max_extensions_limit():
-    """Test that extension loop respects max_extensions limit."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -146,7 +141,6 @@ async def test_max_extensions_limit():
 
 @pytest.mark.asyncio
 async def test_early_termination_extension_false():
-    """Test early termination when extension_needed is False."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -172,7 +166,6 @@ async def test_early_termination_extension_false():
 
 @pytest.mark.asyncio
 async def test_extension_not_allowed():
-    """Test behavior when extension_allowed is False."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -199,7 +192,6 @@ async def test_extension_not_allowed():
 
 @pytest.mark.asyncio
 async def test_max_extensions_clamped_to_100():
-    """Test that max_extensions is clamped to 100."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -228,7 +220,6 @@ async def test_max_extensions_clamped_to_100():
 
 @pytest.mark.asyncio
 async def test_react_with_real_tools_integration():
-    """Test ReAct with real tool registration and execution."""
     branch = Branch(user="test_user")
 
     # Register real tools
@@ -262,7 +253,6 @@ async def test_react_with_real_tools_integration():
 
 @pytest.mark.asyncio
 async def test_branch_state_consistency():
-    """Test that ReAct completes with expected call pattern."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -286,7 +276,6 @@ async def test_branch_state_consistency():
 
 @pytest.mark.asyncio
 async def test_clear_messages_parameter():
-    """Test clear_messages parameter is properly forwarded."""
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -309,7 +298,6 @@ async def test_clear_messages_parameter():
 
 @pytest.mark.asyncio
 async def test_react_with_async_tool_registration():
-    """Test ReAct can register and reference async tools."""
     branch = make_mocked_branch_for_react()
     branch.acts.register_tool(async_search)
 

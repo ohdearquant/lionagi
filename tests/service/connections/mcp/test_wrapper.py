@@ -1,5 +1,6 @@
 """Tests for lionagi.service.connections.mcp.wrapper module."""
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, mock_open, patch
@@ -441,3 +442,114 @@ class TestCreateMCPTool:
             result = await tool()
 
             assert result == {"custom": "data"}
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: max_connections_per_server, concurrent get_client race,
+# tool timeout, large arguments, server error
+# ---------------------------------------------------------------------------
+
+
+class TestMCPConnectionPoolEdgeCases:
+    @pytest.fixture(autouse=True)
+    def reset_pool(self):
+        MCPConnectionPool._clients = {}
+        MCPConnectionPool._configs = {}
+        MCPConnectionPool._security = None
+        MCPConnectionPool._server_security = {}
+        yield
+        MCPConnectionPool._clients = {}
+        MCPConnectionPool._configs = {}
+        MCPConnectionPool._security = None
+        MCPConnectionPool._server_security = {}
+
+    def test_max_connections_per_server_default(self):
+        config = MCPSecurityConfig()
+        assert config.max_connections_per_server == 5
+
+    def test_max_connections_per_server_custom(self):
+        config = MCPSecurityConfig(max_connections_per_server=10)
+        assert config.max_connections_per_server == 10
+
+    @pytest.mark.asyncio
+    async def test_concurrent_get_client_for_same_server_creates_one_client(self):
+        MCPConnectionPool._configs = {"shared_server": {"command": "python", "args": ["s.py"]}}
+        create_count = [0]
+        lock = asyncio.Lock()
+
+        async def tracked_create(config, security=None):
+            async with lock:
+                create_count[0] += 1
+                mock_client = MagicMock()
+                mock_client.is_connected.return_value = True
+                return mock_client
+
+        with patch.object(MCPConnectionPool, "_create_client", side_effect=tracked_create):
+            results = await asyncio.gather(
+                *[MCPConnectionPool.get_client({"server": "shared_server"}) for _ in range(5)]
+            )
+
+        assert create_count[0] == 1
+        assert all(r is results[0] for r in results)
+
+    @pytest.mark.asyncio
+    async def test_mcp_tool_with_large_arguments(self):
+        mcp_config = {"url": "https://api.example.com/mcp"}
+        tool_name = "process_text"
+
+        large_text = "x" * 100000
+        mock_client = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.content = [MagicMock(text="done")]
+        mock_client.call_tool.return_value = mock_result
+
+        with patch.object(MCPConnectionPool, "get_client", return_value=mock_client):
+            tool = create_mcp_tool(mcp_config, tool_name)
+            result = await tool(text=large_text)
+
+        mock_client.call_tool.assert_called_once_with(tool_name, {"text": large_text})
+        assert result == "done"
+
+    @pytest.mark.asyncio
+    async def test_mcp_tool_server_returns_error_propagates(self):
+        mcp_config = {"url": "https://api.example.com/mcp"}
+        tool_name = "failing_tool"
+
+        mock_client = AsyncMock()
+        mock_client.call_tool.side_effect = RuntimeError("server error: tool not found")
+
+        with patch.object(MCPConnectionPool, "get_client", return_value=mock_client):
+            tool = create_mcp_tool(mcp_config, tool_name)
+            with pytest.raises(RuntimeError, match="server error"):
+                await tool(arg="value")
+
+    @pytest.mark.asyncio
+    async def test_mcp_tool_timeout_propagates(self):
+        mcp_config = {"url": "https://api.example.com/mcp"}
+        tool_name = "slow_tool"
+
+        mock_client = AsyncMock()
+        mock_client.call_tool.side_effect = asyncio.TimeoutError()
+
+        with patch.object(MCPConnectionPool, "get_client", return_value=mock_client):
+            tool = create_mcp_tool(mcp_config, tool_name)
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(tool(), timeout=0.1)
+
+    @pytest.mark.asyncio
+    async def test_mcp_tool_with_large_result(self):
+        mcp_config = {"url": "https://api.example.com/mcp"}
+        tool_name = "large_result_tool"
+
+        large_response = "y" * 500000
+        mock_client = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.content = [MagicMock(text=large_response)]
+        mock_client.call_tool.return_value = mock_result
+
+        with patch.object(MCPConnectionPool, "get_client", return_value=mock_client):
+            tool = create_mcp_tool(mcp_config, tool_name)
+            result = await tool()
+
+        assert result == large_response
+        assert len(result) == 500000

@@ -204,3 +204,107 @@ async def test_no_spawn_behaves_like_normal_flow():
     assert ran == ["plain"]
     assert result["spawned_operations"] == 0
     assert len(result["completed_operations"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Multiple spawn requests from the same operation (batch spawn)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_multiple_spawn_requests_from_single_op():
+    """An operation returning a list of SpawnRequests spawns multiple nodes."""
+    executed: list[str] = []
+
+    async def multi_spawner(**kw):
+        executed.append("multi_spawner")
+        return [
+            SpawnRequest(instruction="branch-a", independent=True),
+            SpawnRequest(instruction="branch-b", independent=True),
+        ]
+
+    async def spawned_op(**kw):
+        executed.append("spawned")
+        return "spawned result"
+
+    session = _session_with_ops(multi_spawner=multi_spawner, spawned_op=spawned_op)
+
+    def node_builder(req: SpawnRequest, emitter: Operation) -> Operation:
+        return create_operation("spawned_op", parameters={})
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("multi_spawner")
+    graph = builder.get_graph()
+
+    result = await flow(session, graph, reactive=True, node_builder=node_builder)
+
+    assert "multi_spawner" in executed
+    assert result["spawned_operations"] == 2
+    assert len(result["completed_operations"]) == 3
+
+
+# ---------------------------------------------------------------------------
+# Spawn request that references a non-existent operation name
+# (node_builder raises, spawn is silently dropped)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_spawn_with_nonexistent_op_name_is_dropped():
+    """When node_builder raises, the spawn is dropped and flow continues."""
+    executed: list[str] = []
+
+    async def spawner(**kw):
+        executed.append("spawner")
+        return SpawnRequest(instruction="nonexistent-op", independent=True)
+
+    session = _session_with_ops(spawner=spawner)
+
+    def failing_node_builder(req: SpawnRequest, emitter: Operation) -> Operation:
+        raise ValueError("no such operation: nonexistent-op")
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("spawner")
+    graph = builder.get_graph()
+
+    result = await flow(session, graph, reactive=True, node_builder=failing_node_builder)
+
+    # Original op completed; bad spawn was silently dropped
+    assert "spawner" in executed
+    assert result["spawned_operations"] == 0
+    assert len(result["completed_operations"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Independent spawn with failed predecessor — still runs (independent=True)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_independent_spawn_runs_even_when_emitter_fails():
+    """independent=True spawn does not depend on emitter completion/success."""
+    executed: list[str] = []
+
+    async def failing_spawner(**kw):
+        executed.append("failing_spawner_start")
+        # Return a spawn first, then fail
+        return SpawnRequest(instruction="follow", independent=True)
+
+    async def follow(**kw):
+        executed.append("follow")
+        return "follow result"
+
+    session = _session_with_ops(failing_spawner=failing_spawner, follow=follow)
+
+    def node_builder(req: SpawnRequest, emitter: Operation) -> Operation:
+        return create_operation("follow", parameters={})
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("failing_spawner")
+    graph = builder.get_graph()
+
+    result = await flow(session, graph, reactive=True, node_builder=node_builder)
+
+    # follow ran because independent=True (no edge to failing_spawner)
+    assert "follow" in executed
+    assert result["spawned_operations"] >= 1

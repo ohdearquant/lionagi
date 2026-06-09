@@ -129,10 +129,7 @@ def make_parallel_graph() -> tuple[Graph, dict[str, Operation]]:
 
 
 class TestBranchManagement:
-    """Test branch creation, registration, selection, and iteration."""
-
     def test_session_initialization_with_default_branch(self):
-        """Test Session creates default branch on initialization."""
         session = Session()
 
         assert session.default_branch is not None
@@ -140,7 +137,6 @@ class TestBranchManagement:
         assert len(session.branches) == 1
 
     def test_session_initialization_with_custom_branch(self):
-        """Test Session can be initialized with custom branch."""
         custom_branch = make_mock_branch("CustomBranch")
         session = Session()
         session.include_branches(custom_branch)
@@ -150,7 +146,6 @@ class TestBranchManagement:
         assert len(session.branches) >= 2
 
     def test_include_branches_single(self):
-        """Test including single branch."""
         session = Session()
         initial_count = len(session.branches)
 
@@ -162,7 +157,6 @@ class TestBranchManagement:
         assert branch.user == session.id  # Branch user set to session ID
 
     def test_include_branches_multiple(self):
-        """Test including multiple branches at once."""
         session = Session()
         initial_count = len(session.branches)
 
@@ -173,7 +167,6 @@ class TestBranchManagement:
         assert len(session.branches) == initial_count + 3
 
     def test_include_branches_idempotent(self):
-        """Test that including same branch twice doesn't duplicate."""
         session = Session()
         branch = make_mock_branch("TestBranch")
 
@@ -185,7 +178,6 @@ class TestBranchManagement:
         assert len(session.branches) == initial_count  # No duplication
 
     def test_get_branch_by_id(self):
-        """Test retrieving branch by ID."""
         session = Session()
         branch = make_mock_branch("TestBranch")
         session.include_branches(branch)
@@ -196,7 +188,6 @@ class TestBranchManagement:
         assert retrieved.id == branch.id
 
     def test_get_branch_by_name(self):
-        """Test retrieving branch by name."""
         session = Session()
         branch = make_mock_branch("UniqueNameBranch")
         session.include_branches(branch)
@@ -207,14 +198,12 @@ class TestBranchManagement:
         assert retrieved.name == "UniqueNameBranch"
 
     def test_get_branch_not_found_raises_error(self):
-        """Test getting non-existent branch raises error."""
         session = Session()
 
         with pytest.raises(ItemNotFoundError):
             session.get_branch("nonexistent")
 
     def test_get_branch_with_default_value(self):
-        """Test get_branch returns default when branch not found."""
         session = Session()
 
         default_value = "default"
@@ -223,7 +212,6 @@ class TestBranchManagement:
         assert result == default_value
 
     def test_remove_branch(self):
-        """Test removing branch from session."""
         session = Session()
         branch = make_mock_branch("RemoveBranch")
         session.include_branches(branch)
@@ -235,7 +223,6 @@ class TestBranchManagement:
         assert branch not in session.branches
 
     def test_remove_branch_updates_default_branch(self):
-        """Test removing default branch updates to next available."""
         session = Session()
         branch1 = make_mock_branch("Branch1")
         branch2 = make_mock_branch("Branch2")
@@ -251,7 +238,6 @@ class TestBranchManagement:
         assert session.default_branch in session.branches
 
     def test_change_default_branch(self):
-        """Test changing default branch."""
         session = Session()
         branch1 = make_mock_branch("Branch1")
         branch2 = make_mock_branch("Branch2")
@@ -264,7 +250,6 @@ class TestBranchManagement:
         assert session.default_branch is not initial_default
 
     def test_new_branch_creates_and_includes(self):
-        """Test new_branch creates branch and adds to session."""
         session = Session()
         initial_count = len(session.branches)
 
@@ -275,7 +260,6 @@ class TestBranchManagement:
         assert len(session.branches) == initial_count + 1
 
     def test_new_branch_with_custom_imodel(self):
-        """Test creating new branch with custom iModel."""
         session = Session()
 
         custom_model = iModel(provider="openai", model="gpt-4o", api_key="test")
@@ -284,7 +268,6 @@ class TestBranchManagement:
         assert new_branch.chat_model.model_name == "gpt-4o"
 
     def test_new_branch_as_default(self):
-        """Test creating new branch and setting as default."""
         session = Session()
         old_default = session.default_branch
 
@@ -294,7 +277,6 @@ class TestBranchManagement:
         assert session.default_branch is not old_default
 
     def test_split_branch_preserves_messages(self):
-        """Test split creates new branch with cloned messages."""
         session = Session()
         branch = make_mock_branch("OriginalBranch")
         session.include_branches(branch)
@@ -315,7 +297,6 @@ class TestBranchManagement:
         assert cloned_branch.id != branch.id
 
     def test_split_branch_clones_tools(self):
-        """Test split clones tool manager."""
         session = Session()
         branch = make_mock_branch("OriginalBranch")
 
@@ -334,7 +315,6 @@ class TestBranchManagement:
 
     @pytest.mark.asyncio
     async def test_asplit_branch(self):
-        """Test async split branch."""
         session = Session()
         branch = make_mock_branch("AsyncSplitBranch")
         session.include_branches(branch)
@@ -345,7 +325,6 @@ class TestBranchManagement:
         assert cloned_branch.id != branch.id
 
     def test_iterate_over_branches(self):
-        """Test iterating over session branches."""
         session = Session()
         branches = [make_mock_branch(f"Branch{i}") for i in range(3)]
         session.include_branches(branches)

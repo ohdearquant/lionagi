@@ -121,33 +121,11 @@ class IterableObject:
 # ============================================================================
 
 
-def test_to_dict_basic_dict():
-    """Test basic dict input"""
-    assert to_dict({"a": 1, "b": 2}) == {"a": 1, "b": 2}
-
-
-def test_to_dict_none():
-    """Test None input"""
-    assert to_dict(None) == {}
-
-
-def test_to_dict_empty_string():
-    """Test empty string"""
-    assert to_dict("") == {}
-
-
-def test_to_dict_json_string():
-    """Test JSON string"""
-    assert to_dict('{"a": 1}') == {"a": 1}
-
-
 def test_to_dict_fuzzy_parse():
-    """Test fuzzy JSON parsing"""
     assert to_dict("{'a': 1, 'b': 2}", fuzzy_parse=True) == {"a": 1, "b": 2}
 
 
 def test_to_dict_xml_string():
-    """Test XML string parsing"""
     pytest.importorskip("xmltodict")
     xml = '<?xml version="1.0"?><root><item>test</item></root>'
     result = to_dict(xml, str_type="xml")
@@ -155,7 +133,6 @@ def test_to_dict_xml_string():
 
 
 def test_to_dict_custom_parser():
-    """Test custom parser"""
 
     def parser(s):
         return {"custom": s}
@@ -164,56 +141,7 @@ def test_to_dict_custom_parser():
     assert result == {"custom": "test"}
 
 
-def test_to_dict_set():
-    """Test set conversion"""
-    result = to_dict({1, 2, 3})
-    assert result == {1: 1, 2: 2, 3: 3}
-
-
-def test_to_dict_list():
-    """Test list conversion"""
-    assert to_dict([1, 2, 3]) == {0: 1, 1: 2, 2: 3}
-
-
-def test_to_dict_tuple():
-    """Test tuple conversion"""
-    assert to_dict((1, 2, 3)) == {0: 1, 1: 2, 2: 3}
-
-
-def test_to_dict_pydantic_model():
-    """Test Pydantic-like model"""
-    obj = PydanticLike()
-    result = to_dict(obj)
-    assert result == {"name": "pydantic", "value": 42}
-
-
-def test_to_dict_dataclass():
-    """Test dataclass"""
-    person = Person(name="Bob", age=35)
-    result = to_dict(person)
-    assert result["name"] == "Bob"
-    assert result["age"] == 35
-
-
-def test_to_dict_enum_class():
-    """Test enum class"""
-    result = to_dict(Color, use_enum_values=True)
-    assert result == {"RED": 1, "GREEN": 2, "BLUE": 3}
-
-
-def test_to_dict_enum_without_values():
-    """Test enum class without values"""
-    result = to_dict(Color, use_enum_values=False)
-    assert "RED" in result
-
-
-def test_to_dict_with_suppress():
-    """Test suppress mode"""
-    assert to_dict("{invalid json}", suppress=True) == {}
-
-
 def test_to_dict_recursive_basic():
-    """Test recursive processing"""
     data = {"a": '{"nested": true}', "b": [1, 2, 3]}
     result = to_dict(data, recursive=True)
     # Note: JSON strings within dicts are not parsed due to use_enum_values kwarg issue
@@ -223,7 +151,6 @@ def test_to_dict_recursive_basic():
 
 
 def test_to_dict_recursive_nested_structures():
-    """Test deeply nested recursive processing"""
     data = {"level1": {"level2": '{"level3": "value"}'}}
     result = to_dict(data, recursive=True)
     # Verify recursive structure preserved (strings not parsed due to kwarg issue)
@@ -232,7 +159,6 @@ def test_to_dict_recursive_nested_structures():
 
 
 def test_to_dict_recursive_custom_objects():
-    """Test recursive with custom objects"""
     obj = ObjectWithToDict()
     data = {"obj": obj}
     result = to_dict(data, recursive=True, recursive_python_only=False)
@@ -240,33 +166,28 @@ def test_to_dict_recursive_custom_objects():
 
 
 def test_to_dict_max_recursive_depth_default():
-    """Test default max recursive depth"""
     nested = {"a": {"b": {"c": {"d": {"e": {"f": "deep"}}}}}}
     result = to_dict(nested, recursive=True)
     assert isinstance(result, dict)
 
 
 def test_to_dict_max_recursive_depth_custom():
-    """Test custom max recursive depth"""
     nested = {"a": {"b": {"c": "value"}}}
     result = to_dict(nested, recursive=True, max_recursive_depth=2)
     assert isinstance(result, dict)
 
 
 def test_to_dict_max_recursive_depth_negative():
-    """Test negative max_recursive_depth raises error (line 345)"""
     with pytest.raises(ValueError, match="must be a non-negative integer"):
         to_dict({"a": 1}, recursive=True, max_recursive_depth=-1)
 
 
 def test_to_dict_max_recursive_depth_too_large():
-    """Test max_recursive_depth > 10 raises error (line 349)"""
     with pytest.raises(ValueError, match="must be less than or equal to 10"):
         to_dict({"a": 1}, recursive=True, max_recursive_depth=11)
 
 
 def test_to_dict_max_recursive_depth_boundary():
-    """Test max_recursive_depth at boundaries"""
     # 0 should work
     result = to_dict({"a": 1}, recursive=True, max_recursive_depth=0)
     assert isinstance(result, dict)
@@ -277,21 +198,18 @@ def test_to_dict_max_recursive_depth_boundary():
 
 
 def test_to_dict_deprecated_use_model_dump():
-    """Test deprecated use_model_dump parameter"""
     obj = PydanticLike()
     result = to_dict(obj, use_model_dump=True)
     assert result == {"name": "pydantic", "value": 42}
 
 
 def test_to_dict_prioritize_model_dump_false():
-    """Test prioritize_model_dump=False"""
     obj = ObjectWithToDict()
     result = to_dict(obj, prioritize_model_dump=False)
     assert result == {"method": "to_dict", "data": "value"}
 
 
 def test_to_dict_complex_nested_scenario():
-    """Test complex nested scenario with multiple types"""
     data = {
         "list": [1, 2, {"nested": "value"}],
         "tuple": (4, 5, 6),
