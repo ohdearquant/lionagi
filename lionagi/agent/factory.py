@@ -62,9 +62,10 @@ async def create_agent(
     branch_kwargs = {}
 
     if spec.model:
-        from lionagi.cli._providers import (
+        from lionagi.service.providers import (
             CLI_PROVIDERS,
             PROVIDER_EFFORT_KWARG,
+            PROVIDER_YOLO_KWARGS,
             parse_model_spec,
         )
 
@@ -81,8 +82,6 @@ async def create_agent(
             if kwarg:
                 extra[kwarg] = effort
         if spec.yolo:
-            from lionagi.cli._providers import PROVIDER_YOLO_KWARGS
-
             extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
 
         # CLI providers (codex/claude_code) auth via subprocess — a placeholder
