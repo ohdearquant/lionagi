@@ -10,7 +10,7 @@ import uuid
 
 import pytest
 
-from lionagi.outcomes import GateVerdict, ReviewVerdict
+from lionagi.outcomes import GateVerdict, ReviewOutcome
 from lionagi.state.db import StateDB
 
 
@@ -46,7 +46,7 @@ async def _make_session(db: StateDB, **fields) -> dict:
 
 async def test_insert_artifact_with_invocation_link(db: StateDB):
     inv = await _make_invocation(db)
-    verdict = ReviewVerdict(
+    verdict = ReviewOutcome(
         verdict="APPROVE",
         summary="LGTM",
         round=1,

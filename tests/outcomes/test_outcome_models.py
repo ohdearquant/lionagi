@@ -15,9 +15,9 @@ from pydantic import ValidationError
 
 from lionagi.outcomes import (
     CIResult,
-    Finding,
     GateVerdict,
-    ReviewVerdict,
+    ReviewFinding,
+    ReviewOutcome,
     SkillOutcome,
 )
 from lionagi.outcomes.ci import CIRunCommand
@@ -41,7 +41,7 @@ def test_skill_outcome_dump_round_trips():
 
 def test_review_verdict_default_outcome_kind_pinned():
     """ADR-0021 promises kind='review_verdict' — frontend dispatch depends on it."""
-    v = ReviewVerdict(
+    v = ReviewOutcome(
         verdict="APPROVE",
         summary="LGTM",
     )
@@ -52,43 +52,43 @@ def test_review_verdict_default_outcome_kind_pinned():
 
 def test_review_verdict_accepts_hyphenated_producer_string():
     """Producer strings like APPROVE-WITH-SUGGESTIONS are normalized on ingest."""
-    v = ReviewVerdict.model_validate({"verdict": "APPROVE-WITH-SUGGESTIONS", "summary": "ok"})
+    v = ReviewOutcome.model_validate({"verdict": "APPROVE-WITH-SUGGESTIONS", "summary": "ok"})
     assert v.verdict == "APPROVE_WITH_SUGGESTIONS"
 
 
 def test_review_verdict_accepts_spaced_producer_string():
-    v = ReviewVerdict.model_validate({"verdict": "REQUEST CHANGES", "summary": "ok"})
+    v = ReviewOutcome.model_validate({"verdict": "REQUEST CHANGES", "summary": "ok"})
     assert v.verdict == "REQUEST_CHANGES"
 
 
 def test_review_verdict_rejects_unknown_decision():
     with pytest.raises(ValidationError):
-        ReviewVerdict(verdict="MEH", summary="?")
+        ReviewOutcome(verdict="MEH", summary="?")
 
 
 def test_review_verdict_round_must_be_positive():
     with pytest.raises(ValidationError):
-        ReviewVerdict(verdict="APPROVE", summary="ok", round=0)
+        ReviewOutcome(verdict="APPROVE", summary="ok", round=0)
 
 
 def test_finding_severity_constrained():
-    Finding(
+    ReviewFinding(
         severity="critical",
         category="security",
         description="rm -rf in user input",
     )
     with pytest.raises(ValidationError):
-        Finding(severity="hot", category="x", description="y")
+        ReviewFinding(severity="hot", category="x", description="y")
 
 
 def test_review_verdict_dump_round_trips():
-    v = ReviewVerdict(
+    v = ReviewOutcome(
         verdict="REQUEST_CHANGES",
         summary="3 issues",
         passed=False,
         round=2,
         findings=[
-            Finding(
+            ReviewFinding(
                 severity="high",
                 category="correctness",
                 file="src/main.py",
@@ -100,7 +100,7 @@ def test_review_verdict_dump_round_trips():
     )
     dumped = v.model_dump()
     assert dumped["outcome_kind"] == "review_verdict"
-    again = ReviewVerdict.model_validate(dumped)
+    again = ReviewOutcome.model_validate(dumped)
     assert again == v
 
 
@@ -176,7 +176,7 @@ def test_outcome_kinds_are_distinct():
     """Each concrete outcome must have a unique outcome_kind string —
     the frontend's switch dispatches on this value."""
     kinds = {
-        ReviewVerdict(verdict="APPROVE", summary="x").outcome_kind,
+        ReviewOutcome(verdict="APPROVE", summary="x").outcome_kind,
         GateVerdict(summary="x", gate_passed=True).outcome_kind,
         CIResult(summary="x").outcome_kind,
     }
@@ -185,22 +185,22 @@ def test_outcome_kinds_are_distinct():
 
 def test_finding_rejects_absolute_unix_path():
     with pytest.raises(ValidationError, match="repo-relative"):
-        Finding(severity="high", category="security", description="x", file="/etc/passwd")
+        ReviewFinding(severity="high", category="security", description="x", file="/etc/passwd")
 
 
 def test_finding_rejects_absolute_windows_path():
     with pytest.raises(ValidationError, match="repo-relative"):
-        Finding(severity="high", category="security", description="x", file="C:\\secret.py")
+        ReviewFinding(severity="high", category="security", description="x", file="C:\\secret.py")
 
 
 def test_finding_rejects_parent_traversal():
     with pytest.raises(ValidationError, match="traversal"):
-        Finding(severity="high", category="security", description="x", file="../secret.py")
+        ReviewFinding(severity="high", category="security", description="x", file="../secret.py")
 
 
 def test_finding_rejects_deep_traversal():
     with pytest.raises(ValidationError, match="traversal"):
-        Finding(
+        ReviewFinding(
             severity="medium",
             category="correctness",
             description="x",
@@ -210,32 +210,32 @@ def test_finding_rejects_deep_traversal():
 
 def test_finding_rejects_nul_byte():
     with pytest.raises(ValidationError, match="NUL"):
-        Finding(severity="low", category="style", description="x", file="foo\x00bar.py")
+        ReviewFinding(severity="low", category="style", description="x", file="foo\x00bar.py")
 
 
 def test_finding_rejects_line_zero():
     """Line numbers must be 1-indexed (ge=1); 0 is invalid."""
     with pytest.raises(ValidationError):
-        Finding(severity="low", category="style", description="x", line=0)
+        ReviewFinding(severity="low", category="style", description="x", line=0)
 
 
 def test_finding_rejects_negative_line():
     with pytest.raises(ValidationError):
-        Finding(severity="low", category="style", description="x", line=-3)
+        ReviewFinding(severity="low", category="style", description="x", line=-3)
 
 
 def test_finding_accepts_valid_relative_path():
-    f = Finding(severity="low", category="style", description="x", file="src/main.py")
+    f = ReviewFinding(severity="low", category="style", description="x", file="src/main.py")
     assert f.file == "src/main.py"
 
 
 def test_finding_accepts_none_file():
-    f = Finding(severity="low", category="style", description="x", file=None)
+    f = ReviewFinding(severity="low", category="style", description="x", file=None)
     assert f.file is None
 
 
 def test_finding_accepts_positive_line():
-    f = Finding(severity="info", category="docs", description="x", line=42)
+    f = ReviewFinding(severity="info", category="docs", description="x", line=42)
     assert f.line == 42
 
 
