@@ -128,6 +128,3 @@ deferral above.
 - ADR-0072 (reactive capability bus), ADR-0074 (role composition and packs),
   ADR-0075 (engines), ADR-0077 (autonomy protections), ADR-0021 (artifact
   outcomes).
-- Survey + debt inventory + design doc:
-  `khive .khive/workspaces/20260909/lionagi-coherence/` (`survey/A–E`,
-  `DEBT_INVENTORY.md`, `DESIGN.md`).
