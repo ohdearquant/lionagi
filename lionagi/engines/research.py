@@ -13,6 +13,7 @@ reaction rules, not a per-task DAG plan.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import Field
@@ -150,6 +151,7 @@ class ResearchEngine(Engine):
         topic = topic.strip()
         if not topic:
             raise ValueError("topic is empty")
+        run.root = topic
         run.seen(topic)  # mark the root so a child cannot re-explore it
 
         # Reaction rules — the engine's decomposition logic, bound to this run.
@@ -178,11 +180,19 @@ class ResearchEngine(Engine):
 
     async def _team_for(self, run: EngineRun, depth: int) -> list:
         return [
-            await run.make_agent(role, name=f"{role}-d{depth}", emits=_EMITS) for role in self.roles
+            await run.make_agent(
+                role, name=f"{role}-d{depth}", model=self.model_for(role), emits=_EMITS
+            )
+            for role in self.roles
         ]
 
     async def _explore(self, run: EngineRun, topic: str, depth: int) -> None:
         if depth > self.max_depth or run.seen(topic):
+            return
+        # Depth expansion spends a whole team — gate it on the quality judge
+        # (off-topic / duplicative / trivial sub-questions stop here).
+        jid = f"d{depth}-" + re.sub(r"[^a-zA-Z0-9]+", "-", topic).strip("-")[:32]
+        if not await self.judge(run, jid, f"deeper exploration (depth {depth}): {topic}"):
             return
         run.notify("node_registered", topic=topic, depth=depth)
         async with run._sem:
@@ -193,7 +203,12 @@ class ResearchEngine(Engine):
         findings = run.by_type(FindingEmitted)
         contradictions = run.by_type(ContradictionFound)
         run.notify("synthesizing", findings=len(findings))
-        synth = await run.make_agent(self.synthesis_role, name="synthesizer")
+        synth = await run.make_agent(
+            self.synthesis_role,
+            name="synthesizer",
+            model=self.model_for("synthesize"),
+            exempt=True,
+        )
         res = await synth.operate(
             instruction=_synthesis_instruction(topic, findings, contradictions)
         )

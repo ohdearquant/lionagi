@@ -162,6 +162,7 @@ class ReviewEngine(Engine):
         self, run: EngineRun, artifact: str, *, dimensions: tuple[str, ...] | None = None
     ) -> str:
         dims = tuple(dimensions) if dimensions else self.dimensions
+        run.root = artifact
         run.observe(IssueFound, lambda i, _c: self._on_issue(run, i))
 
         # Fan out: one reviewer per dimension, in parallel.
@@ -193,6 +194,7 @@ class ReviewEngine(Engine):
                 self.reviewer_role,
                 name=f"review-{dimension}",
                 modes=[mode] if mode else None,
+                model=self.model_for("review"),
                 emits=(IssueFound,),
             )
             await agent.operate(instruction=_dimension_instruction(artifact, dimension))
@@ -203,6 +205,7 @@ class ReviewEngine(Engine):
                 self.verifier_role,
                 name=f"verify-{issue.dimension}",
                 modes=["adversarial"],
+                model=self.model_for("verify"),
                 emits=(VerifyResult,),
             )
             await verifier.operate(instruction=_verify_instruction(issue))
@@ -211,7 +214,13 @@ class ReviewEngine(Engine):
         issues = run.by_type(IssueFound)
         verifications = run.by_type(VerifyResult)
         run.notify("verdict", issues=len(issues), verifications=len(verifications))
-        synth = await run.make_agent(self.synthesis_role, name="verdict", emits=(ReviewVerdict,))
+        synth = await run.make_agent(
+            self.synthesis_role,
+            name="verdict",
+            model=self.model_for("verdict"),
+            emits=(ReviewVerdict,),
+            exempt=True,
+        )
         res = await synth.operate(
             instruction=_verdict_instruction(artifact, dimensions, issues, verifications)
         )

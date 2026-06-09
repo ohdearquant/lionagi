@@ -22,7 +22,9 @@ the *Chain* shape, complementing research's Tree and review's Dimensional.
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -231,8 +233,6 @@ def _label(e: ChainEvent) -> str:
         or getattr(e, "procedure", "")
     )
     text = " ".join(str(text).split())
-    if len(text) > 100:
-        text = text[:97] + "..."
     return f"{e.eid}[{type(e).__name__}] {text}"
 
 
@@ -377,14 +377,16 @@ def _apply_instruction(c: ConclusionDrawn, decisions: str) -> str:
     )
 
 
-def _synthesis_instruction(run: HypothesisRun) -> str:
+def render_evidence(run: HypothesisRun) -> str:
+    """Render the run's evidence trail — chains, conclusions, applications,
+    pending experiments, open questions. Shared by the synthesis instruction
+    and the exported ``report.md`` appendix."""
     events: list[ChainEvent] = [e for evs in run.store.values() for e in evs]
     chains = trace_chains(events)
     concluded = {c.question_ref for c in run.events_of(ConclusionDrawn)}
     open_qs = [q for q in run.events_of(QuestionRaised) if q.eid not in concluded]
 
-    parts = ["Write the evidence report for this hypothesis-pipeline run.\n"]
-    parts.append(f"\n# Evidence chains ({len(chains)})")
+    parts = [f"# Evidence chains ({len(chains)})"]
     for chain in chains:
         parts.append("\n- " + " -> ".join(_label(e) for e in chain))
     parts.append(f"\n\n# Conclusions ({len(run.events_of(ConclusionDrawn))})")
@@ -404,14 +406,19 @@ def _synthesis_instruction(run: HypothesisRun) -> str:
         parts.append(f"\n\n# Open questions — no conclusion yet ({len(open_qs)})")
         for q in open_qs:
             parts.append(f"\n- {q.eid} {q.what_is_unknown}")
-    parts.append(
-        "\n\nOrganize by decision, not by pipeline stage: for each decision touched, "
+    return "".join(parts)
+
+
+def _synthesis_instruction(run: HypothesisRun) -> str:
+    return (
+        "Write the evidence report for this hypothesis-pipeline run.\n\n"
+        f"{render_evidence(run)}\n\n"
+        "Organize by decision, not by pipeline stage: for each decision touched, "
         "state what is now supported, challenged, or qualified, on what basis "
         "(empirical | quantitative | theoretical | taste), and what evidence is "
         "still missing. List pending experiments as a ready-to-run queue. Be "
         "specific; do not pad."
     )
-    return "".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +453,36 @@ class HypothesisRun(EngineRun):
     def events_of(self, event_type: type) -> list[Any]:
         return self.store.get(event_type, [])
 
+    def export(self, dir_path: str | Path, *, report: str = "") -> dict[str, str]:
+        """Write the run's evidence to *dir_path*: ``chains.json`` (the full
+        typed event graph, machine-readable for downstream KG ingestion) and
+        ``report.md`` (synthesis + evidence-trail appendix)."""
+        d = Path(dir_path)
+        d.mkdir(parents=True, exist_ok=True)
+        events = [e for evs in self.store.values() for e in evs]
+        chains = trace_chains(events)
+        concluded = {c.question_ref for c in self.events_of(ConclusionDrawn)}
+        payload = {
+            "root": self.root,
+            "agents_made": self.agents_made,
+            "events": [{"type": type(e).__name__, **e.model_dump()} for e in events],
+            "chains": [[e.eid for e in ch] for ch in chains],
+            "pending_experiments": [x.model_dump() for x in self.pending],
+            "open_questions": [
+                q.eid for q in self.events_of(QuestionRaised) if q.eid not in concluded
+            ],
+            "decisions_touched": sorted(
+                {a.decision_ref for a in self.events_of(ApplicationMapped) if a.decision_ref}
+            ),
+        }
+        chains_path = d / "chains.json"
+        chains_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        trail = render_evidence(self)
+        md = f"{report.strip()}\n\n---\n\n{trail}\n" if report.strip() else f"{trail}\n"
+        report_path = d / "report.md"
+        report_path.write_text(md, encoding="utf-8")
+        return {"chains": str(chains_path), "report": str(report_path)}
+
 
 # ---------------------------------------------------------------------------
 # Engine
@@ -466,15 +503,25 @@ class HypothesisEngine(Engine):
     executable_methods
         Experiment methods agents can run inline. Others (``benchmark`` by
         default) queue on ``run.pending`` with their full spec for CI/human
-        execution.
-    validate_tools
-        Tool names granted to the validator so experiments can measure for
-        real instead of reasoning analytically.
+        execution. Add ``"benchmark"`` only when the validator has real tools.
+    validate_tools / validate_cwd / validate_permissions
+        Sandbox for the validator: tool names granted so experiments measure
+        for real, the workspace they are path-guarded to, and the permission
+        preset (default ``"safe"``). Tool-bearing agents also get the
+        destructive-command guard from :meth:`EngineRun.make_agent`.
     max_questions
-        Per-extraction cap threaded into the prompt.
+        Per-extraction cap threaded into the prompt (soft; the judge gate and
+        the run budget are the hard bounds).
+    repair_retries
+        Re-prompt turns when an expected emission did not arrive — the loop
+        that keeps small/weak models productive instead of silently dropped.
 
     ``max_depth`` bounds back-edge *cycles*: follow-up questions and findings
-    raised at ``gen > max_depth`` are recorded but not expanded.
+    raised at ``gen > max_depth`` are recorded but not expanded. Set
+    ``judge_model`` (base class) to gate question expansion on a quality judge.
+    Per-stage models route through ``models={"extract": ..., "research": ...,
+    "hypothesize": ..., "design": ..., "validate": ..., "conclude": ...,
+    "apply": ..., "synthesize": ...}``.
     """
 
     run_context_cls: type[EngineRun] = HypothesisRun
@@ -492,7 +539,10 @@ class HypothesisEngine(Engine):
         synthesis_role: str = "synthesizer",
         executable_methods: tuple[str, ...] = ("analysis", "comparison", "proof"),
         validate_tools: tuple[str, ...] = (),
+        validate_cwd: str | None = None,
+        validate_permissions: str | None = "safe",
         max_questions: int = 8,
+        repair_retries: int = 1,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -506,19 +556,32 @@ class HypothesisEngine(Engine):
         self.synthesis_role = synthesis_role
         self.executable_methods = set(executable_methods)
         self.validate_tools = tuple(validate_tools)
+        self.validate_cwd = validate_cwd
+        self.validate_permissions = validate_permissions
         self.max_questions = max_questions
+        self.repair_retries = repair_retries
 
     # -- lifecycle ------------------------------------------------------------
 
     async def _run(
-        self, run: HypothesisRun, findings: str | list[str], *, decisions: str = ""
+        self,
+        run: HypothesisRun,
+        findings: str | list[str],
+        *,
+        decisions: str = "",
+        export_dir: str | Path | None = None,
     ) -> str:
-        """Push *findings* through the pipeline, then write the evidence report."""
+        """Push *findings* through the pipeline, then write the evidence report.
+
+        When *export_dir* is given, also writes ``chains.json`` + ``report.md``
+        there (the files-now persistence layer for downstream KG ingestion).
+        """
         seeds = [findings] if isinstance(findings, str) else list(findings)
         seeds = [s.strip() for s in seeds if s and s.strip()]
         if not seeds:
             raise ValueError("findings is empty")
         run.decisions = decisions
+        run.root = " | ".join(seeds)
 
         # Collector first: stamps eids before any reaction reads them.
         run.observe(ChainEvent, lambda e, _c: run.collect(e))
@@ -533,7 +596,11 @@ class HypothesisEngine(Engine):
             await run.emit(FindingPosted(description=seed, source="seed", gen=0))
 
         await run.wait_quiescence()
-        return await self._synthesize(run)
+        report = await self._synthesize(run)
+        if export_dir is not None:
+            paths = run.export(export_dir, report=report)
+            run.notify("exported", **paths)
+        return report
 
     # -- reactions ------------------------------------------------------------
 
@@ -543,7 +610,7 @@ class HypothesisEngine(Engine):
             return
         if run.seen(f"f:{f.description}"):
             return
-        run.spawn(self._guard(run, "extract", self._extract(run, f)))
+        run.spawn(self._guard(run, "extract", self._extract, f))
 
     def _on_question(self, run: HypothesisRun, q: QuestionRaised) -> None:
         if q.gen > self.max_depth:
@@ -551,83 +618,145 @@ class HypothesisEngine(Engine):
             return
         if run.seen(f"q:{q.what_is_unknown}"):
             return
-        run.spawn(self._guard(run, "research", self._research(run, q)))
+        run.spawn(self._guard(run, "research", self._research, q))
 
     def _on_hypothesis(self, run: HypothesisRun, h: HypothesisFormed) -> None:
         if run.seen(f"h:{h.statement}"):
             return
-        run.spawn(self._guard(run, "design", self._design(run, h)))
+        run.spawn(self._guard(run, "design", self._design, h))
 
     def _on_experiment(self, run: HypothesisRun, x: ExperimentDesigned) -> None:
         if x.method not in self.executable_methods:
             run.pending.append(x)
             run.notify("experiment_pending", eid=x.eid, method=x.method)
             return
-        run.spawn(self._guard(run, "validate", self._validate(run, x)))
+        run.spawn(self._guard(run, "validate", self._validate, x))
 
     def _on_result(self, run: HypothesisRun, r: ResultRecorded) -> None:
         if run.seen(f"r:{r.experiment_ref}:{r.eid}"):
             return
-        run.spawn(self._guard(run, "conclude", self._conclude(run, r)))
+        run.spawn(self._guard(run, "conclude", self._conclude, r))
 
     def _on_conclusion(self, run: HypothesisRun, c: ConclusionDrawn) -> None:
-        run.spawn(self._guard(run, "apply", self._apply(run, c)))
+        run.spawn(self._guard(run, "apply", self._apply, c))
 
     # -- stages ---------------------------------------------------------------
 
-    async def _guard(self, run: HypothesisRun, stage: str, coro: Any) -> None:
-        """A stage failure must not kill the pipeline."""
+    async def _guard(self, run: HypothesisRun, stage: str, fn: Any, event: Any) -> None:
+        """A stage failure must not kill the pipeline. Takes the stage function
+        (not a coroutine) so a budget-declined spawn closes cleanly without an
+        orphaned never-awaited inner coroutine."""
         try:
-            await coro
+            await fn(run, event)
         except Exception as exc:
             logger.warning("hypothesis stage %s failed: %s", stage, exc)
             run.notify("stage_error", stage=stage, error=str(exc))
 
     async def _extract(self, run: HypothesisRun, f: FindingPosted) -> None:
+        # Seeds are caller-provided; back-edge findings (gen > 0) came from an
+        # agent and pass the judge before spending more budget.
+        if f.gen > 0 and not await self.judge(run, f.eid, _label(f)):
+            return
+        emits = (QuestionRaised,)
         async with run._sem:
             agent = await run.make_agent(
-                self.question_role, name=f"extract-{f.eid}", emits=(QuestionRaised,)
+                self.question_role,
+                name=f"extract-{f.eid}",
+                model=self.model_for("extract"),
+                emits=emits,
             )
-            await agent.operate(
-                instruction=_extract_instruction(f, run.decisions, self.max_questions)
+            await run.operate_with_repair(
+                agent,
+                _extract_instruction(f, run.decisions, self.max_questions),
+                arrived=lambda: any(x.parent_ref == f.eid for x in run.events_of(QuestionRaised)),
+                emits=emits,
+                retries=self.repair_retries,
             )
 
     async def _research(self, run: HypothesisRun, q: QuestionRaised) -> None:
+        subject = f"{_label(q)} | alternatives: {'; '.join(q.alternatives) or '(none)'}"
+        if not await self.judge(run, q.eid, subject):
+            return
+        emits = (EvidenceCollected, QuestionRaised)
         async with run._sem:
             researcher = await run.make_agent(
                 self.research_role,
                 name=f"research-{q.eid}",
-                emits=(EvidenceCollected, QuestionRaised),
+                model=self.model_for("research"),
+                emits=emits,
             )
-            await researcher.operate(instruction=_research_instruction(q))
+            await run.operate_with_repair(
+                researcher,
+                _research_instruction(q),
+                arrived=lambda: any(
+                    e.question_ref == q.eid for e in run.events_of(EvidenceCollected)
+                ),
+                emits=(EvidenceCollected,),
+                retries=self.repair_retries,
+            )
         evidence = [e for e in run.events_of(EvidenceCollected) if e.question_ref == q.eid]
+        h_emits = (HypothesisFormed, ConclusionDrawn)
         async with run._sem:
             hypothesizer = await run.make_agent(
                 self.hypothesis_role,
                 name=f"hypothesize-{q.eid}",
-                emits=(HypothesisFormed, ConclusionDrawn),
+                model=self.model_for("hypothesize"),
+                emits=h_emits,
             )
-            await hypothesizer.operate(instruction=_hypothesize_instruction(q, evidence))
+            await run.operate_with_repair(
+                hypothesizer,
+                _hypothesize_instruction(q, evidence),
+                arrived=lambda: (
+                    any(h.question_ref == q.eid for h in run.events_of(HypothesisFormed))
+                    or any(c.question_ref == q.eid for c in run.events_of(ConclusionDrawn))
+                ),
+                emits=h_emits,
+                retries=self.repair_retries,
+            )
 
     async def _design(self, run: HypothesisRun, h: HypothesisFormed) -> None:
+        emits = (ExperimentDesigned,)
         async with run._sem:
             agent = await run.make_agent(
-                self.design_role, name=f"design-{h.eid}", emits=(ExperimentDesigned,)
+                self.design_role,
+                name=f"design-{h.eid}",
+                model=self.model_for("design"),
+                emits=emits,
             )
-            await agent.operate(instruction=_design_instruction(h))
+            await run.operate_with_repair(
+                agent,
+                _design_instruction(h),
+                arrived=lambda: any(
+                    x.hypothesis_ref == h.eid for x in run.events_of(ExperimentDesigned)
+                ),
+                emits=emits,
+                retries=self.repair_retries,
+            )
 
     async def _validate(self, run: HypothesisRun, x: ExperimentDesigned) -> None:
         h = run.find(x.hypothesis_ref)
         q = run.find(h.question_ref) if isinstance(h, HypothesisFormed) else None
         gen = q.gen if isinstance(q, QuestionRaised) else 0
+        emits = (ResultRecorded, FindingPosted)
         async with run._sem:
             agent = await run.make_agent(
                 self.validate_role,
                 name=f"validate-{x.eid}",
+                model=self.model_for("validate"),
                 tools=self.validate_tools,
-                emits=(ResultRecorded, FindingPosted),
+                permissions=self.validate_permissions if self.validate_tools else None,
+                cwd=self.validate_cwd,
+                emits=emits,
             )
-            await agent.operate(instruction=_validate_instruction(x, gen))
+            await run.operate_with_repair(
+                agent,
+                _validate_instruction(x, gen),
+                arrived=lambda: any(
+                    r.experiment_ref == x.eid for r in run.events_of(ResultRecorded)
+                ),
+                emits=(ResultRecorded,),
+                retries=self.repair_retries,
+            )
 
     async def _conclude(self, run: HypothesisRun, r: ResultRecorded) -> None:
         x = run.find(r.experiment_ref)
@@ -636,21 +765,32 @@ class HypothesisEngine(Engine):
         h = h if isinstance(h, HypothesisFormed) else None
         q = run.find(h.question_ref) if h else None
         q = q if isinstance(q, QuestionRaised) else None
+        emits = (ConclusionDrawn, QuestionRaised)
         async with run._sem:
             agent = await run.make_agent(
                 self.conclude_role,
                 name=f"conclude-{r.eid}",
-                emits=(ConclusionDrawn, QuestionRaised),
+                model=self.model_for("conclude"),
+                emits=emits,
             )
-            await agent.operate(
-                instruction=_conclude_instruction(r, x, h, q.eid if q else "", q.gen if q else 0)
+            await run.operate_with_repair(
+                agent,
+                _conclude_instruction(r, x, h, q.eid if q else "", q.gen if q else 0),
+                arrived=lambda: any(c.result_ref == r.eid for c in run.events_of(ConclusionDrawn)),
+                emits=(ConclusionDrawn,),
+                retries=self.repair_retries,
             )
 
     async def _apply(self, run: HypothesisRun, c: ConclusionDrawn) -> None:
         async with run._sem:
             agent = await run.make_agent(
-                self.apply_role, name=f"apply-{c.eid}", emits=(ApplicationMapped,)
+                self.apply_role,
+                name=f"apply-{c.eid}",
+                model=self.model_for("apply"),
+                emits=(ApplicationMapped,),
             )
+            # No repair: "bears on nothing -> emit nothing" is a legitimate
+            # outcome for this stage.
             await agent.operate(instruction=_apply_instruction(c, run.decisions))
 
     async def _synthesize(self, run: HypothesisRun) -> str:
@@ -660,6 +800,11 @@ class HypothesisEngine(Engine):
             applications=len(run.events_of(ApplicationMapped)),
             pending=len(run.pending),
         )
-        synth = await run.make_agent(self.synthesis_role, name="synthesizer")
+        synth = await run.make_agent(
+            self.synthesis_role,
+            name="synthesizer",
+            model=self.model_for("synthesize"),
+            exempt=True,
+        )
         res = await synth.operate(instruction=_synthesis_instruction(run))
         return str(res) if res is not None else ""

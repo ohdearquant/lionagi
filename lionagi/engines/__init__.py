@@ -17,7 +17,13 @@ review, …) subclass it.
 
 from __future__ import annotations
 
-from .engine import Engine, EngineEvent, EngineRun
+from .engine import (
+    Engine,
+    EngineBudgetError,
+    EngineEvent,
+    EngineRun,
+    JudgeVerdict,
+)
 from .hypothesis import (
     ApplicationMapped,
     ChainEvent,
@@ -30,6 +36,7 @@ from .hypothesis import (
     HypothesisRun,
     QuestionRaised,
     ResultRecorded,
+    render_evidence,
     trace_chains,
 )
 from .planning import PlanError, PlanningEngine
@@ -51,6 +58,8 @@ __all__ = (
     "Engine",
     "EngineRun",
     "EngineEvent",
+    "EngineBudgetError",
+    "JudgeVerdict",
     # planning (Planned-DAG shape — li o flow as an engine)
     "PlanningEngine",
     "PlanError",
@@ -78,4 +87,5 @@ __all__ = (
     "ConclusionDrawn",
     "ApplicationMapped",
     "trace_chains",
+    "render_evidence",
 )

@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 __all__ = (
     "render_capabilities_prompt",
     "CapabilityViolation",
+    "EmissionRejected",
     "CAP_BEGIN",
     "CAP_END",
 )
@@ -35,6 +36,19 @@ class CapabilityViolation(BaseModel):
 
     offending: list[str] = Field(description="Emitted keys outside the grant.")
     allowed: list[str] = Field(description="The granted capability names.")
+    block: dict | None = Field(default=None, description="The raw rejected block.")
+
+
+class EmissionRejected(BaseModel):
+    """An in-grant capability block failed schema validation — not honored.
+
+    Surfaced onto the bus (not silently dropped) so a repair loop can re-prompt
+    the agent with the concrete validation error — the difference between a
+    weak model recovering and its work vanishing.
+    """
+
+    branch_name: str = Field(default="", description="The emitting branch, for attribution.")
+    error: str = Field(description="The validation error, verbatim.")
     block: dict | None = Field(default=None, description="The raw rejected block.")
 
 

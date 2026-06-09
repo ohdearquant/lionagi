@@ -10,15 +10,17 @@ import contextlib
 import logging
 from collections import deque
 from collections.abc import Callable
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.casts.emission import build_emission_operable
 from lionagi.ln.concurrency import Semaphore, gather
+from lionagi.ln.types import TypeFilter
 from lionagi.session.session import Session
-from lionagi.session.signal import NodeCompleted, NodeFailed, NodeStarted
+from lionagi.session.signal import NodeCompleted, NodeFailed, NodeStarted, Signal
 
 if TYPE_CHECKING:
     from lionagi.protocols.generic.pile import Pile
@@ -32,6 +34,18 @@ class EngineEvent(BaseModel):
     """Base for engine-only domain events with no casts-emission twin."""
 
 
+class JudgeVerdict(EngineEvent):
+    """The quality gate's call on whether a work item is worth expanding."""
+
+    subject: str = Field(default="", description="The id of the item being judged.")
+    allow: bool = Field(default=True, description="True to expand, false to stop this branch.")
+    reason: str = Field(default="", description="Why — one concrete sentence.")
+
+
+class EngineBudgetError(RuntimeError):
+    """The run's hard agent budget is exhausted; no further agents may be made."""
+
+
 def _event_dict(event: Any) -> dict[str, Any]:
     if hasattr(event, "model_dump"):
         try:
@@ -41,8 +55,40 @@ def _event_dict(event: Any) -> dict[str, Any]:
     return {}
 
 
+def _judge_instruction(eid: str, subject: str, context: str) -> str:
+    return (
+        "You are the quality gate of an autonomous pipeline. Decide whether this "
+        "work item deserves further expansion (it will spawn more agents).\n\n"
+        f"# Root objective\n{context or '(none stated)'}\n\n"
+        f"# Item ({eid})\n{subject}\n\n"
+        "Reject if it is off-topic for the root objective, duplicative, trivial, "
+        "or unsafe. Otherwise pass. Emit a judge_verdict with "
+        f"subject='{eid}', allow (true|false), reason. If you cannot emit, reply "
+        "with exactly PASS or REJECT."
+    )
+
+
+def _repair_instruction(schema_hint: str) -> str:
+    return (
+        "Your previous response produced no valid emission, so the pipeline "
+        "received nothing. Emit now, inside a fenced ```json code block. Common "
+        "failures: JSON not fenced, wrong top-level key, misspelled field names, "
+        "extra fields not in the schema (forbidden), prose instead of JSON. "
+        f"{schema_hint} Emit only the fenced block(s); no other text is needed."
+    )
+
+
+def emission_keys(emits: tuple[type, ...]) -> str:
+    """Render the top-level emission key(s) for a repair hint."""
+    from lionagi.casts.emission import _field_name
+
+    names = ", ".join(f"'{_field_name(m)}'" for m in emits)
+    return f"Expected top-level key(s): {names}." if names else ""
+
+
 class EngineRun:
-    """Per-run context: session, dedup set, in-flight tasks, concurrency limiter."""
+    """Per-run context: session, dedup set, in-flight tasks, concurrency limiter,
+    and the hard resource budget (agent count + wall-clock deadline)."""
 
     def __init__(
         self,
@@ -54,21 +100,49 @@ class EngineRun:
         self.engine = engine
         self.session = session if session is not None else Session()
         self.on_event = on_event
+        self.root: str = ""
+        self.agents_made: int = 0
         self._sem = Semaphore(engine.max_concurrent)
         self._active: set[asyncio.Task] = set()
         self._pending: deque = deque()
         self._seen: set[str] = set()
+        self._t0 = monotonic()
+        self._deadline = None if engine.deadline_s is None else self._t0 + engine.deadline_s
+        self._budget_notified = False
 
     @property
     def events(self) -> Pile:
         return self.session.observer.flow.items
 
     def by_type(self, event_type: type) -> list[Any]:
+        """Stored payloads matching *event_type* — unwraps Signal envelopes AND
+        capability bundles (an agent's emission arrives as a StructuredOutput
+        whose bundle carries the typed event as a field)."""
+        obs = self.session.observer
+        flt = TypeFilter(event_type)
         out: list[Any] = []
-        for e in self.session.observer.by_type(event_type):
-            data = getattr(e, "data", None)
-            out.append(data if isinstance(data, event_type) else e)
+        for e in obs.flow.items:
+            payload = e.data if isinstance(e, Signal) else e
+            out.extend(obs._match(flt, e, payload))
         return out
+
+    # -- resource budget --------------------------------------------------------
+
+    def budget_left(self) -> bool:
+        """True while the run may still make agents (count + deadline)."""
+        if self.agents_made >= self.engine.max_agents:
+            return False
+        return not (self._deadline is not None and monotonic() >= self._deadline)
+
+    def _notify_budget_once(self, reason: str) -> None:
+        if not self._budget_notified:
+            self._budget_notified = True
+            self.notify(
+                "budget_exhausted",
+                reason=reason,
+                agents_made=self.agents_made,
+                elapsed=round(monotonic() - self._t0, 1),
+            )
 
     async def emit(self, event: Any) -> list[Any]:
         results = await self.session.emit(event)
@@ -98,10 +172,37 @@ class EngineRun:
         model: str | None = None,
         tools: tuple[str, ...] = (),
         emits: tuple[type, ...] = (),
+        permissions: Any = None,
+        cwd: str | None = None,
+        secure: bool = True,
+        exempt: bool = False,
     ) -> Branch:
+        # ``exempt`` is for terminal stages (synthesis/verdict) that must run
+        # even when the expansion budget is gone — degrade, don't lose the run.
+        if not exempt and not self.budget_left():
+            self._notify_budget_once("make_agent")
+            raise EngineBudgetError(
+                f"agent budget exhausted ({self.agents_made}/{self.engine.max_agents})"
+            )
+        self.agents_made += 1
         spec = AgentSpec.compose(
-            role, modes=modes, model=model or self.engine.model, tools=tuple(tools)
+            role,
+            modes=modes,
+            model=model or self.engine.model,
+            tools=tuple(tools),
+            permissions=permissions,
+            cwd=cwd,
         )
+        if secure and tools:
+            from pathlib import Path
+
+            from lionagi.agent.hooks import guard_destructive, guard_paths
+
+            spec.pre("bash", guard_destructive)
+            workspace_root = str(Path(cwd) if cwd else Path.cwd())
+            path_guard = guard_paths(allowed_paths=[workspace_root])
+            spec.pre("reader", path_guard)
+            spec.pre("editor", path_guard)
         branch = await create_agent(spec, load_settings=False)
         if name:
             branch.name = name
@@ -112,7 +213,43 @@ class EngineRun:
                 branch.grant_capabilities(op)
         return branch
 
+    async def operate_with_repair(
+        self,
+        branch: Branch,
+        instruction: str,
+        *,
+        arrived: Callable[[], bool],
+        emits: tuple[type, ...] = (),
+        retries: int = 1,
+    ) -> Any:
+        """Operate, then re-prompt up to *retries* times while *arrived*() is
+        false — the repair loop that keeps weak models in the pipeline. The
+        repair turn names the expected emission keys so the model can fix
+        fence/field mistakes instead of being silently dropped."""
+        res = await branch.operate(instruction=instruction)
+        attempt = 0
+        while not arrived() and attempt < retries:
+            attempt += 1
+            self.notify(
+                "emission_repair",
+                agent=getattr(branch, "name", "") or "",
+                attempt=attempt,
+            )
+            res = await branch.operate(instruction=_repair_instruction(emission_keys(emits)))
+        if retries and not arrived():
+            self.notify(
+                "emission_missing",
+                agent=getattr(branch, "name", "") or "",
+                attempts=attempt + 1,
+            )
+        return res
+
     def spawn(self, coro: Any) -> asyncio.Task | None:
+        if not self.budget_left():
+            self._notify_budget_once("spawn")
+            with contextlib.suppress(Exception):
+                coro.close()
+            return None
         try:
             task = asyncio.ensure_future(coro)
         except RuntimeError:
@@ -234,7 +371,36 @@ class EngineRun:
 
 
 class Engine:
-    """Stateless event-driven engine base; subclasses implement _run()."""
+    """Stateless event-driven engine base; subclasses implement _run().
+
+    Resource protection (per run):
+
+    max_agents
+        Hard cap on agents created — the primary recursion bound. When
+        exhausted, reactions stop spawning (graceful: the run still
+        synthesizes what it has) and ``make_agent`` raises
+        :class:`EngineBudgetError`.
+    deadline_s
+        Optional wall-clock cap; expansion stops once passed.
+    max_depth / dedup
+        Semantic bounds — engines also gate on depth/cycle generation and
+        normalized-topic dedup.
+
+    Quality / direction control:
+
+    judge_model + judge_role
+        When ``judge_model`` is set, :meth:`judge` runs a cheap gate agent at
+        expansion points: it sees the run's root objective and the candidate
+        item, and passes or rejects it (off-topic, duplicative, trivial,
+        unsafe). Fail-open with a ``judge_error`` notify — the hard budget
+        remains the backstop.
+    models
+        Per-stage model overrides (``{"extract": "ollama/qwen3", "conclude":
+        "claude_code/sonnet"}``) — route cheap models to volume stages and
+        capable ones to judgement stages. Any agent process lionagi supports
+        is a valid worker: API chat models, CLI agents (``claude_code/...``,
+        ``codex/...``, ``pi/...``), or local ones.
+    """
 
     run_context_cls: type[EngineRun] = EngineRun
 
@@ -242,12 +408,59 @@ class Engine:
         self,
         *,
         model: str | None = None,
+        models: dict[str, str] | None = None,
         max_depth: int = 3,
         max_concurrent: int = 5,
+        max_agents: int = 50,
+        deadline_s: float | None = None,
+        judge_model: str | None = None,
+        judge_role: str = "critic",
     ) -> None:
         self.model = model
+        self.models = dict(models) if models else {}
         self.max_depth = max_depth
         self.max_concurrent = max_concurrent
+        self.max_agents = max_agents
+        self.deadline_s = deadline_s
+        self.judge_model = judge_model
+        self.judge_role = judge_role
+
+    def model_for(self, stage: str) -> str | None:
+        return self.models.get(stage) or self.model
+
+    async def judge(self, run: EngineRun, eid: str, subject: str) -> bool:
+        """Quality gate before an expansion point. True = expand.
+
+        No-op (True) when ``judge_model`` is unset. The judge sees the run's
+        root objective (direction control) and emits a ``JudgeVerdict``; a
+        weak judge that cannot emit may answer PASS/REJECT in text. Errors
+        fail open with a ``judge_error`` notify — budget still bounds.
+        """
+        if not self.judge_model:
+            return True
+        try:
+            async with run._sem:
+                agent = await run.make_agent(
+                    self.judge_role,
+                    name=f"judge-{eid}",
+                    model=self.judge_model,
+                    emits=(JudgeVerdict,),
+                )
+                res = await agent.operate(instruction=_judge_instruction(eid, subject, run.root))
+            for v in run.by_type(JudgeVerdict):
+                if v.subject == eid:
+                    if not v.allow:
+                        run.notify("gated", eid=eid, reason=v.reason)
+                    return v.allow
+            allow = "reject" not in str(res or "").lower()
+            if not allow:
+                run.notify("gated", eid=eid, reason="text-reject")
+            return allow
+        except EngineBudgetError:
+            return False
+        except Exception as exc:
+            run.notify("judge_error", eid=eid, error=str(exc))
+            return True
 
     def new_run(
         self,

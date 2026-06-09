@@ -50,7 +50,7 @@ class StopStream(Exception):  # noqa: N818
         self.reason = reason
 
 
-def attempt_extract(text: str, capabilities: Operable) -> tuple[list[Any], list[Any]]:
+def attempt_extract(text: str, capabilities: Operable) -> tuple[list[Any], list[Any], list[Any]]:
     """Parse capability emissions out of an assistant message.
 
     A capability is a named typed field (a ``Spec``); ``capabilities`` is the
@@ -64,25 +64,29 @@ def attempt_extract(text: str, capabilities: Operable) -> tuple[list[Any], list[
     - keys ⊆ grant → validated via ``create_model`` into a bundle (a dynamic
       model with one field per present capability);
     - any key outside the grant → an *illegal* emission (the agent reaching
-      past its capabilities): not honored, recorded as a ``CapabilityViolation``.
+      past its capabilities): not honored, recorded as a ``CapabilityViolation``;
+    - keys ⊆ grant but schema validation fails → recorded as an
+      ``EmissionRejected`` so repair loops can re-prompt instead of the work
+      silently vanishing.
 
-    Returns ``(bundles, violations)`` — both lists, since one response may
-    carry several blocks.
+    Returns ``(bundles, violations, rejects)`` — all lists, since one response
+    may carry several blocks.
     """
     if not text or not isinstance(text, str):
-        return [], []
+        return [], [], []
     from lionagi.ln.fuzzy._extract_json import extract_json
-    from lionagi.session.capabilities import CapabilityViolation
+    from lionagi.session.capabilities import CapabilityViolation, EmissionRejected
 
     try:
         data = extract_json(text, fuzzy_parse=True, return_one_if_single=False)
     except Exception:
-        return [], []
+        return [], [], []
     blocks = data if isinstance(data, list) else [data]
 
     allowed = capabilities.allowed()
     bundles: list[Any] = []
     violations: list[Any] = []
+    rejects: list[Any] = []
     for block in blocks:
         if not isinstance(block, dict) or not block:
             continue
@@ -108,8 +112,9 @@ def attempt_extract(text: str, capabilities: Operable) -> tuple[list[Any], list[
             bundles.append(model.model_validate(block))
         except Exception as e:
             logger.debug("Capability block failed validation, skipped: %s", e)
+            rejects.append(EmissionRejected(error=str(e), block=block))
             continue
-    return bundles, violations
+    return bundles, violations, rejects
 
 
 async def emit_message(branch: Branch, msg: RoledMessage) -> None:
@@ -144,7 +149,7 @@ async def emit_message(branch: Branch, msg: RoledMessage) -> None:
     if isinstance(msg, AssistantResponse):
         capabilities = getattr(branch, "_capabilities", None)
         if capabilities is not None:
-            bundles, violations = attempt_extract(msg.response, capabilities)
+            bundles, violations, rejects = attempt_extract(msg.response, capabilities)
             role_name: str | None = getattr(capabilities, "name", None)
             if bundles:
                 # Emit all bundles concurrently — a slow handler on one bundle
@@ -161,6 +166,11 @@ async def emit_message(branch: Branch, msg: RoledMessage) -> None:
             # silent drops — session.observe(CapabilityViolation) can react.
             for violation in violations:
                 await branch.emit(Signal(data=violation))
+            # In-grant blocks that failed schema validation become observable
+            # repair events — session.observe(EmissionRejected) can re-prompt.
+            for reject in rejects:
+                reject.branch_name = getattr(branch, "name", "") or ""
+                await branch.emit(Signal(data=reject))
 
 
 def check_control(branch: Branch) -> None:
