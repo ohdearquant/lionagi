@@ -5,11 +5,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from lionagi._paths import RUNS_ROOT
-
 from . import sessions as _sessions_svc
-from ._io import read_json_file as _read_json_file
-from ._path_safety import public_path, safe_path_join
+from ._path_safety import public_path
 
 _STATUS_ALIASES: dict[str, set[str]] = {
     "done": {"done", "completed", "success", "finished"},
@@ -561,41 +558,94 @@ def paginate_runs(
     }
 
 
-def get_run(run_id: str) -> dict[str, Any] | None:
-    if not RUNS_ROOT.exists():
+async def get_run(run_id: str) -> dict[str, Any] | None:
+    """Return run detail for *run_id* by reading from StateDB.
+
+    Uses the same data source as list_runs() (StateDB sessions/branches).
+    The flat-file run.json read path was removed because write_manifest()
+    had zero callers — all live runs persist to SQLite via create_session().
+    Keys in the returned dict are kept identical to the old flat-file path so
+    the frontend contract is unchanged.
+
+    Fields with no direct DB equivalent:
+      state_root            — derived from artifacts_path if stored, else None
+      artifact_root         — derived from artifacts_path column, else None
+      task                  — not persisted in DB; returns ""
+      step_count            — count of branches (proxy for steps)
+      error                 — not persisted in DB; returns None
+      cwd                   — not persisted in DB; returns None
+      manifest              — returns {} (no flat-file manifest exists)
+    """
+    session = await _sessions_svc.get_session(run_id)
+    if session is None:
         return None
 
-    safe_path_join(RUNS_ROOT, run_id)
+    artifacts_path = session.get("artifacts_path")
+    artifact_root: Path | None = Path(artifacts_path) if artifacts_path else None
 
-    state_root = RUNS_ROOT / run_id
-    if not state_root.is_dir():
-        matches = [d for d in RUNS_ROOT.iterdir() if d.is_dir() and d.name.startswith(run_id)]
-        if not matches:
-            return None
-        state_root = sorted(matches, key=lambda p: p.stat().st_mtime, reverse=True)[0]
-        run_id = state_root.name
+    branches: list[dict[str, Any]] = session.get("branches") or []
+    step_count = len(branches)
 
-    manifest_path = state_root / "run.json"
-    artifact_root = state_root / "artifacts"
-    manifest: dict[str, Any] = {}
-    if manifest_path.exists():
-        loaded = _read_json_file(manifest_path)
-        if loaded is not None:
-            manifest = loaded
-            art = manifest.get("artifact_root")
-            if art:
-                artifact_root = Path(art)
+    # Derive state_root from artifact_root (artifact_root is inside state_root)
+    state_root: Path | None = artifact_root.parent if artifact_root else None
 
-    branches: list[dict[str, Any]] = []
-    branches_dir = state_root / "branches"
-    if branches_dir.exists():
-        for bf in sorted(
-            branches_dir.glob("*.json"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        ):
-            loaded = _read_json_file(bf)
-            if loaded is not None:
-                branches.append(loaded)
+    summary: dict[str, Any] = {
+        "run_id": run_id,
+        "state_root": public_path(state_root) if state_root else None,
+        "artifact_root": public_path(artifact_root) if artifact_root else None,
+        "worker_name": session.get("agent_name") or session.get("playbook_name") or "",
+        "task": "",
+        "status": session.get("status") or "completed",
+        "step_count": step_count,
+        "started_at": session.get("started_at"),
+        "finished_at": session.get("ended_at"),
+        "model": session.get("model") or "",
+    }
 
-    return _adapt_detail(run_id, state_root, artifact_root, manifest, branches)
+    return {
+        **summary,
+        "error": None,
+        "cwd": None,
+        "steps": _build_steps_from_db(branches),
+        "graph": session.get("graph"),
+        "manifest": {},
+        "branches": branches,
+        "artifact_contract_json": session.get("artifact_contract_json"),
+        "artifact_verification_json": session.get("artifact_verification_json"),
+    }
+
+
+def _build_steps_from_db(branches: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """Build a steps list from DB-hydrated branch dicts.
+
+    Each branch dict from get_session() has: id, name, messages (list),
+    model, provider, agent_name, status, started_at, ended_at.
+    """
+    if not branches:
+        return None
+    steps = []
+    for b in branches:
+        if not isinstance(b, dict):
+            continue
+        name = b.get("name") or b.get("agent_name") or "agent"
+        messages = b.get("messages") or []
+        role_counts: dict[str, int] = {}
+        for m in messages:
+            r = m.get("role", "")
+            if r:
+                role_counts[r] = role_counts.get(r, 0) + 1
+        steps.append(
+            {
+                "step": name,
+                "status": "completed" if messages else "pending",
+                "result": {
+                    "agent": name,
+                    "model": b.get("model") or "",
+                    "message_count": len(messages),
+                    "roles": role_counts,
+                },
+                "messages": messages,
+                "timestamp": b.get("started_at"),
+            }
+        )
+    return steps if steps else None

@@ -8,7 +8,9 @@ filesystem reads on the main async thread.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import uuid
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -59,7 +61,6 @@ def _make_client(
     monkeypatch.setattr(agents_mod, "_AGENTS_ROOT", agents_root)
     monkeypatch.setattr(playbooks_mod, "_PLAYBOOKS_ROOT", playbooks_root)
     monkeypatch.setattr(skills_mod, "SKILLS_ROOT", skills_root)
-    monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
     monkeypatch.setattr(cli_runs_mod, "RUNS_ROOT", runs_root)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
     monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", fake_db)
@@ -121,18 +122,49 @@ def _make_client(
 # ---------------------------------------------------------------------------
 
 
-def test_run_detail_uses_thread_offload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """GET /api/runs/{id} must complete without blocking the event loop.
+def test_run_detail_reads_from_statedb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GET /api/runs/{id} reads from StateDB (not flat-file run.json).
 
-    The route handler wraps the synchronous get_run() in
-    anyio.to_thread.run_sync. We verify the route works correctly and
-    that anyio.to_thread.run_sync is actually called.
+    get_run() is now async and reads the same SQLite source as list_runs().
     """
-    client = _make_client(tmp_path, monkeypatch, with_run=True)
-    r = client.get("/api/runs/20240101T000000-abc123")
+    from lionagi.state.db import StateDB
+
+    run_id = str(uuid.uuid4())
+    db_path = tmp_path / "state.db"
+
+    async def _seed():
+        async with StateDB(db_path) as db:
+            prog_id = f"{run_id}-prog"
+            await db.create_progression(prog_id)
+            await db.create_session(
+                {
+                    "id": run_id,
+                    "progression_id": prog_id,
+                    "name": "async-run",
+                    "status": "completed",
+                    "agent_name": "my-worker",
+                    "model": "gpt-5",
+                    "invocation_kind": "agent",
+                    "source_kind": "live",
+                }
+            )
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_seed())
+    finally:
+        loop.close()
+
+    import lionagi.studio.services.sessions as sessions_mod
+
+    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
+
+    client = _make_client(tmp_path, monkeypatch)
+    r = client.get(f"/api/runs/{run_id}")
     assert r.status_code == 200
     data = r.json()
-    assert data["run_id"] == "20240101T000000-abc123"
+    assert data["run_id"] == run_id
     assert data["worker_name"] == "my-worker"
 
 
@@ -243,23 +275,16 @@ def test_skill_detail_uses_thread_offload(tmp_path: Path, monkeypatch: pytest.Mo
 # ---------------------------------------------------------------------------
 
 
-def test_run_detail_calls_anyio_to_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify that the runs detail route actually invokes anyio.to_thread.run_sync."""
-    import anyio.to_thread
+def test_run_detail_returns_404_for_nonexistent_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /api/runs/{id} returns 404 for an ID absent from StateDB.
 
-    original_run_sync = anyio.to_thread.run_sync
-    call_count = 0
-
-    async def tracking_run_sync(*args: Any, **kwargs: Any) -> Any:
-        nonlocal call_count
-        call_count += 1
-        return await original_run_sync(*args, **kwargs)
-
-    client = _make_client(tmp_path, monkeypatch, with_run=True)
-    with patch.object(anyio.to_thread, "run_sync", side_effect=tracking_run_sync):
-        r = client.get("/api/runs/20240101T000000-abc123")
-    assert r.status_code == 200
-    assert call_count >= 1, "anyio.to_thread.run_sync was not called for runs detail"
+    get_run() is now async and reads StateDB directly (no thread offload needed).
+    """
+    client = _make_client(tmp_path, monkeypatch)
+    r = client.get("/api/runs/20240101T000000-abc123")
+    assert r.status_code == 404
 
 
 def test_agents_list_calls_anyio_to_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
