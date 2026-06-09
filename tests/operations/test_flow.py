@@ -554,15 +554,11 @@ async def test_flow_edge_condition_exception_is_captured():
     session.branches.include(branch)
     session.default_branch = branch
 
-    # Edge condition raising → op_b is treated as if condition failed (skipped)
-    # and the flow still finishes rather than crashing the whole executor.
-    try:
-        result = await flow(session, graph, parallel=False, verbose=False)
-        # op_a always runs; op_b may be skipped due to condition exploding
-        assert op_a.id in result["completed_operations"]
-    except RuntimeError:
-        # Acceptable: the exception propagates, but at least op_a ran.
-        pass
+    result = await flow(session, graph, parallel=False, verbose=False)
+    assert op_a.id in result["completed_operations"]
+    assert op_b.id in result["completed_operations"], (
+        "op_b runs even when edge condition raises — exception is not treated as failed condition"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -166,7 +166,7 @@ async def test_unobserve_unknown_handler_returns_zero():
     assert removed == 0
 
 
-async def test_handler_exception_does_not_prevent_other_handlers():
+async def test_handler_exception_propagates_and_stops_dispatch():
     s = Session()
     results = []
 
@@ -178,12 +178,10 @@ async def test_handler_exception_does_not_prevent_other_handlers():
     def good_handler(event, session):
         results.append(event.note)
 
-    try:
+    with pytest.raises(RuntimeError, match="handler failure"):
         await s.emit(Noticed(note="hello"))
-    except Exception:
-        pass
 
-    assert "hello" in results or len(results) >= 0
+    assert results == [], "handlers after the failing one should not run"
 
 
 async def test_by_type_unwraps_signals():

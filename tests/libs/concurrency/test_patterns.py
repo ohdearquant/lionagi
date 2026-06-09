@@ -516,16 +516,20 @@ async def test_race_all_succeed_returns_one_valid_result(anyio_backend):
 
 
 @pytest.mark.anyio
-async def test_retry_max_delay_capping(anyio_backend):
-    """retry with base_delay > max_delay should cap the sleep to max_delay."""
-    calls = {"n": 0}
-    import time
+async def test_retry_max_delay_capping(anyio_backend, monkeypatch):
+    recorded_delays = []
+    _real_sleep = anyio.sleep
 
-    timings = []
+    async def mock_sleep(seconds):
+        recorded_delays.append(seconds)
+        await _real_sleep(0)
+
+    monkeypatch.setattr("anyio.sleep", mock_sleep)
+
+    calls = {"n": 0}
 
     async def track():
         calls["n"] += 1
-        timings.append(time.monotonic())
         if calls["n"] < 4:
             raise TimeoutError("retry me")
         return "done"
@@ -534,15 +538,14 @@ async def test_retry_max_delay_capping(anyio_backend):
         track,
         attempts=4,
         base_delay=0.05,
-        max_delay=0.01,  # cap below base_delay forces max_delay path
+        max_delay=0.01,
         retry_on=(TimeoutError,),
         jitter=0.0,
     )
     assert result == "done"
     assert calls["n"] == 4
-    for i in range(1, len(timings)):
-        gap = timings[i] - timings[i - 1]
-        assert gap < 0.5, f"gap {gap:.3f}s — max_delay cap not working"
+    for d in recorded_delays:
+        assert d <= 0.01 + 1e-9, f"delay {d} exceeds max_delay 0.01"
 
 
 @pytest.mark.anyio
