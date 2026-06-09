@@ -4,11 +4,76 @@
 All notable changes to lionagi are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.26.18] - 2026-06-09
+
+Engine layer expansion — hypothesis and coding engines with autonomy
+protections (ADR-0077), the casts module-coherence pass (ADR-0078), a
+15-PR bug/security sweep, and a codebase-wide trim/consolidation.
+
+### Added
+
+- **HypothesisEngine** — hypothesis-driven development engine (Chain shape):
+  frame → question → evidence → analyze, with per-run chain export (JSON +
+  markdown evidence files). (#1358)
+- **CodingEngine** — gated plan/implement/test/fix loop with a ground-truth
+  subprocess test runner (pass = exit code 0, never an LLM claim), judge-gated
+  fix rounds, and a `to_hypothesis_seeds` bridge into HypothesisEngine. (#1358)
+- **Engine autonomy protections** (ADR-0077) — run-level resource budgets,
+  judge gates, emission repair/retry for weak models, per-stage model routing,
+  generation caps. (#1358)
+
+### Changed
+
+- **Module coherence pass** (ADR-0078) — normative casts model (pattern /
+  role / mode / profile are configuration; agent is a runtime concept):
+  single capability-grant source via `AgentSpec.emits`; CLI orchestrator and
+  casts-role workers route through `create_agent` (one construction stack);
+  provider tables moved down to `service/providers.py` and path constants to
+  `lionagi._paths` (no more upward imports into `cli`); `AgentConfig`
+  deprecated by delegation onto Profile/AgentSpec; plane-distinct vocabulary
+  (`outcomes.Finding` → `ReviewFinding`, `ReviewVerdict` → `ReviewOutcome`);
+  curated `casts` public surface; `EngineEvent` forbids extra fields. (#1358)
+- **Docstring/comment trim** across session, models, service, providers,
+  adapters, cli, operations, state, studio, hooks, engines, casts, tools,
+  libs, config. (#1340–#1344)
+- **Utility consolidation** — shared path-safety, `_io`/`_subprocess`, and
+  NDJSON/CLI subprocess primitives; `ln.concurrency` adoption; render
+  consolidation; CLI lifecycle/concurrency primitives + `last_response`.
+  (#1345, #1346, #1351–#1355)
+- **CI** — coverage on one version, uv caching, perf-test gating. (#1349)
+
+### Fixed
+
+- **ModelParams global cache** cross-wired distinct types — dropped. (#1356)
+- **Pile set ops** — `items=` kwarg and `dict_values` crash. (#1316)
+- **`iModel(model=...)`** resolves default provider from settings. (#1317)
+- **PyYAML as core dependency** — `lionagi.agent` imports on base install.
+  (#1315)
+- **Studio run detail** reads StateDB like the list endpoint (was silently
+  null for post-migration runs). (#1358)
+- **ReviewEngine** uses structured concurrency instead of `asyncio.gather`.
+  (#1322)
+- lndl bool coercion (#1320), `CommonMeta` key-presence validation (#1325),
+  `fuzzy_match_keys` Sequence handling (#1318), StateDB orjson serialization
+  (#1326), `guard_destructive` default hook in coding presets (#1324), ruff
+  format gate stragglers (#1314).
+
+### Security
+
+- **Studio API auth** — `GET /api/invocations` and `/api/sessions` gated
+  behind bearer token. (#1319)
+- **Docker symlink mounts** constrained to an allowlist. (#1323)
+- **SSRF guard** — local-address allowlist for Ollama loopback endpoints.
+  (#1327)
+- **Credential redaction** across all URL schemes and nested dict details.
+  (#1321)
+- **Agentic-CLI path grants** validated against repo containment. (#1328)
+
 ## [0.26.17] - 2026-06-07
 
 Security-hardening pass: fail-closed boundaries across MCP transports, file/exec
-paths, and CLI providers, plus SSRF and credential-leak guards — alongside the
-#1257 bug sweep.
+paths, and CLI providers, plus SSRF and credential-leak guards — alongside
+the #1257 bug sweep.
 
 ### Security
 
