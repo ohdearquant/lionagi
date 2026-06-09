@@ -13,7 +13,7 @@ from collections.abc import Callable
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.ln.concurrency import Semaphore, gather
@@ -31,6 +31,8 @@ EventCallback = Callable[[dict[str, Any]], Any]
 
 class EngineEvent(BaseModel):
     """Base for engine-only domain events with no casts-emission twin."""
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class JudgeVerdict(EngineEvent):
