@@ -23,6 +23,8 @@ async def create_agent(
     project_dir: str | None = None,
     trust_project_settings: bool = False,
     trusted_hook_modules: set[str] | frozenset[str] | None = None,
+    chat_model: Any = None,
+    log_config: Any = None,
 ) -> Branch:
     """Create a fully configured Branch from an AgentSpec (or legacy AgentConfig).
 
@@ -35,6 +37,13 @@ async def create_agent(
         project_dir: Project root for settings resolution. Auto-detected if None.
         trust_project_settings: If True, load project-local settings.
         trusted_hook_modules: Python module paths allowed for import-based hooks.
+        chat_model: Prebuilt ``iModel`` to use verbatim. When provided, the
+            ``spec.model`` string-parsing path is skipped — callers that build a
+            richer iModel (CLI flag routing: bypass/yolo/fast/theme/repo) inject
+            it here so the factory stays the single construction site.
+        log_config: Optional ``DataLoggerConfig`` (or dict) forwarded to the
+            Branch. Lets a caller pin log behavior (e.g. ``auto_save_on_exit``)
+            without a second Branch builder.
 
     Returns:
         A Branch ready to use with tools registered and hooks applied.
@@ -61,7 +70,9 @@ async def create_agent(
 
     branch_kwargs = {}
 
-    if spec.model:
+    if chat_model is not None:
+        branch_kwargs["chat_model"] = chat_model
+    elif spec.model:
         from lionagi.service.providers import (
             CLI_PROVIDERS,
             PROVIDER_EFFORT_KWARG,
@@ -97,6 +108,9 @@ async def create_agent(
             **extra,
         )
         branch_kwargs["chat_model"] = chat_model
+
+    if log_config is not None:
+        branch_kwargs["log_config"] = log_config
 
     branch = Branch(**branch_kwargs)
 

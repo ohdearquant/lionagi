@@ -265,7 +265,7 @@ async def _run_flow(
 
     cache_cancelled_exc_class()
 
-    env = setup_orchestration(
+    env = await setup_orchestration(
         pattern_name="Flow",
         model_spec=model_spec,
         agent_name=agent_name,
@@ -556,7 +556,7 @@ async def _run_flow_inner(
     role_base: dict[str, object] = {}
 
     for i, ta in enumerate(assignments):
-        w_branch, w_model, w_profile = build_worker_branch(
+        w_branch, w_model, w_profile = await build_worker_branch(
             env,
             agent_id=agent_ids[i],
             role=ta.assignee,

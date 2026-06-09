@@ -64,7 +64,7 @@ async def _run_fanout(
 
     cache_cancelled_exc_class()
 
-    env = setup_orchestration(
+    env = await setup_orchestration(
         pattern_name="Fanout",
         model_spec=model_spec,
         agent_name=agent_name,
@@ -196,7 +196,7 @@ async def _run_fanout_inner(
     for i, ta in enumerate(assignments):
         model_override = pool[i % len(pool)] if pool else None
         wname = worker_names[i]
-        w_branch, w_model, _ = build_worker_branch(
+        w_branch, w_model, _ = await build_worker_branch(
             env,
             agent_id=wname,
             role=ta.assignee,
