@@ -165,6 +165,44 @@ async def test_make_agent_builds_casts_branch_with_emissions():
 
 
 @pytest.mark.asyncio
+async def test_make_agent_grants_emits_exactly_once(monkeypatch):
+    """Single-grant regression: emits is threaded through AgentSpec, so
+    create_agent grants once — the engine no longer re-grants afterward.
+    The branch's capabilities must match the stage emits exactly (the field
+    set is the override plus the always-appended escalation_request), and
+    grant_capabilities must fire exactly once."""
+    from lionagi.session.branch import Branch
+
+    calls: list[object] = []
+    original = Branch.grant_capabilities
+
+    def spy(self, operable, *, prompt: bool = True):
+        calls.append(operable)
+        return original(self, operable, prompt=prompt)
+
+    monkeypatch.setattr(Branch, "grant_capabilities", spy)
+
+    run = _run()
+    b = await run.make_agent("researcher", name="r1", emits=(Finding,))
+    assert len(calls) == 1  # one grant site, not two
+    assert b.capabilities.allowed() == {"finding", "escalation_request"}
+
+
+@pytest.mark.asyncio
+async def test_make_agent_no_emits_uses_role_contract():
+    """No emits ⇒ the role's declared contract is granted (researcher emits
+    Finding + Gap), still via the single create_agent grant site."""
+    run = _run()
+    b = await run.make_agent("researcher", name="r1")
+    role_op = b.capabilities
+    assert role_op is not None
+    from lionagi.casts import Role
+
+    expected = Role.load("researcher").emission_operable().allowed()
+    assert role_op.allowed() == expected
+
+
+@pytest.mark.asyncio
 async def test_run_dag_emits_node_lifecycle_signals():
     """run_dag executes a prebuilt DAG and tees NodeStarted/NodeCompleted onto
     the bus — the seam persistence/Studio observe instead of an on_progress

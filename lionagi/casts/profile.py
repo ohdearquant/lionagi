@@ -69,3 +69,22 @@ class Profile:
             modes=data.get("modes") or [],
             name=data.get("name"),
         )
+
+    def to_yaml(self, path: str | Path) -> None:
+        """Save this Profile to a YAML file, symmetric with :meth:`from_yaml`.
+
+        Writes ``{name, role, modes: [...]}`` using role/mode canonical names —
+        the same schema ``from_yaml`` reads, so the round-trip recomposes an
+        equal Profile.
+        """
+        import yaml
+
+        data = {
+            "name": self.name,
+            "role": self.role.name,
+            "modes": [m.name for m in self.modes],
+        }
+        Path(path).write_text(
+            yaml.dump(data, default_flow_style=False, allow_unicode=True),
+            encoding="utf-8",
+        )

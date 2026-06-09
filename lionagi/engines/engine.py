@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from lionagi.agent import AgentSpec, create_agent
-from lionagi.casts.emission import build_emission_operable
 from lionagi.ln.concurrency import Semaphore, gather
 from lionagi.ln.types import TypeFilter
 from lionagi.session.session import Session
@@ -191,6 +190,7 @@ class EngineRun:
             model=model or self.engine.model,
             tools=tuple(tools),
             permissions=permissions,
+            emits=tuple(emits) if emits else None,
             cwd=cwd,
         )
         if secure and tools:
@@ -203,14 +203,12 @@ class EngineRun:
             path_guard = guard_paths(allowed_paths=[workspace_root])
             spec.pre("reader", path_guard)
             spec.pre("editor", path_guard)
+        # create_agent is the single grant site: emits is threaded through the
+        # spec above, so capabilities are granted once during construction.
         branch = await create_agent(spec, load_settings=False)
         if name:
             branch.name = name
         self.session.include_branches(branch)
-        if emits:
-            op = build_emission_operable(tuple(emits))
-            if op is not None:
-                branch.grant_capabilities(op)
         return branch
 
     async def operate_with_repair(
