@@ -19,12 +19,23 @@ import json
 import pytest
 import yaml
 
+from lionagi.engines.coding import (
+    ChangeProposed,
+    CodeResultRecorded,
+    CodingEngine,
+    TestsRan,
+    WorkPlanned,
+)
+from lionagi.engines.coding import (
+    VerifyResult as CodeVerifyResult,
+)
 from lionagi.engines.hypothesis import (
     ApplicationMapped,
     ConclusionDrawn,
     EvidenceCollected,
     HypothesisEngine,
     QuestionRaised,
+    ResultRecorded,
 )
 from lionagi.engines.research import FindingEmitted, ResearchEngine
 from lionagi.engines.review import IssueFound, ReviewEngine, VerifyResult
@@ -384,3 +395,78 @@ async def test_hypothesis_budget_degrades_gracefully_e2e(tmp_path, monkeypatch):
     report = await eng.run("seed finding", on_event=lambda e: notified.append(e))
     assert "PARTIAL REPORT" in report
     assert any(e["type"] == "budget_exhausted" for e in notified)
+
+
+@pytest.mark.asyncio
+async def test_coding_engine_pass_path_e2e(tmp_path, monkeypatch):
+    """plan + implement emit through the real fenced-JSON -> bundle path; the
+    engine runs a trivial passing test command as ground truth, the critic
+    approves, and the run concludes passed=True. The implementer's coding tools
+    are granted but not exercised (the scripted provider returns canned JSON) —
+    what is under test is the live emission + the real subprocess gate."""
+    _write_script(
+        tmp_path,
+        monkeypatch,
+        [
+            _when(
+                "planning a coding task",
+                {
+                    "work_planned": {
+                        "approach": "add a hello() that returns 'hi'",
+                        "files_to_touch": ["hello.py"],
+                        "test_strategy": "assert hello() == 'hi'",
+                        "acceptance_criteria": ["hello() returns 'hi'"],
+                    }
+                },
+            ),
+            _when(
+                "Implement the plan",
+                {
+                    "change_proposed": {
+                        "summary": "wrote hello() returning 'hi'",
+                        "files_touched": ["hello.py"],
+                        "test_cmd": "pytest -q",
+                        "plan_ref": "W-1",
+                    }
+                },
+            ),
+            _when(
+                "Review the implemented change",
+                {
+                    "verify_result": {
+                        "verdict": "APPROVE",
+                        "rationale": "tests green and hello() returns 'hi'",
+                        "meets_acceptance": True,
+                        "change_ref": "P-1",
+                        "tests_ref": "T-1",
+                    }
+                },
+            ),
+        ],
+    )
+
+    eng = CodingEngine(model=SCRIPTED_MODEL, repair_retries=0)
+    run = eng.new_run()
+    result = await eng._run(
+        run,
+        "add a hello function",
+        # ground truth: a trivial command that exits 0, through the REAL runner
+        test_cmd="true",
+        workspace=str(tmp_path),
+        export_dir=tmp_path / "out",
+    )
+
+    assert isinstance(result, CodeResultRecorded)
+    assert result.passed is True
+    # the full typed chain formed through the real emission path:
+    assert run.events_of(WorkPlanned)[0].acceptance_criteria == ["hello() returns 'hi'"]
+    assert run.events_of(ChangeProposed)[0].plan_ref == "W-1"
+    assert run.events_of(TestsRan)[0].passed is True  # ground truth, not a claim
+    assert run.events_of(CodeVerifyResult)[0].meets_acceptance is True
+
+    # results.json carries hypothesis-ingestible seeds
+    data = json.loads((tmp_path / "out" / "results.json").read_text())
+    assert data["passed"] is True
+    seed = data["hypothesis_seeds"][0]
+    rr = ResultRecorded.model_validate(seed)  # the bus-interop bridge round-trips
+    assert rr.passed is True

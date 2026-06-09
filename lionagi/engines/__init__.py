@@ -17,6 +17,18 @@ review, …) subclass it.
 
 from __future__ import annotations
 
+from .coding import (
+    ChangeProposed,
+    CodeResultRecorded,
+    CodingChainEvent,
+    CodingEngine,
+    CodingRun,
+    TestsRan,
+    WorkPlanned,
+)
+from .coding import (
+    VerifyResult as CodeVerifyResult,
+)
 from .engine import (
     Engine,
     EngineBudgetError,
@@ -88,4 +100,15 @@ __all__ = (
     "ApplicationMapped",
     "trace_chains",
     "render_evidence",
+    # coding (Gated-Loop shape — plan/implement/test/fix/verify with a
+    # ground-truth subprocess test runner; CodeVerifyResult disambiguates the
+    # review engine's VerifyResult at the package level)
+    "CodingEngine",
+    "CodingRun",
+    "CodingChainEvent",
+    "WorkPlanned",
+    "ChangeProposed",
+    "TestsRan",
+    "CodeVerifyResult",
+    "CodeResultRecorded",
 )
