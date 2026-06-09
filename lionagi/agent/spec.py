@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from lionagi.agent.config import HooksMixin
+from lionagi.agent.config import HooksMixin, _wire_secure_guards
 from lionagi.casts.pack import Pack
 from lionagi.casts.profile import Profile
 
@@ -109,13 +109,7 @@ class AgentSpec(HooksMixin):
             **kwargs,
         )
         if secure:
-            from lionagi.agent.hooks import guard_destructive, guard_paths
-
-            spec.pre("bash", guard_destructive)
-            workspace_root = str(Path(cwd) if cwd else Path.cwd())
-            path_guard = guard_paths(allowed_paths=[workspace_root])
-            spec.pre("reader", path_guard)
-            spec.pre("editor", path_guard)
+            _wire_secure_guards(spec, cwd)
         return spec
 
     @classmethod
