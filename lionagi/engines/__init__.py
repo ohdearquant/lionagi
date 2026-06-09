@@ -18,6 +18,20 @@ review, …) subclass it.
 from __future__ import annotations
 
 from .engine import Engine, EngineEvent, EngineRun
+from .hypothesis import (
+    ApplicationMapped,
+    ChainEvent,
+    ConclusionDrawn,
+    EvidenceCollected,
+    ExperimentDesigned,
+    FindingPosted,
+    HypothesisEngine,
+    HypothesisFormed,
+    HypothesisRun,
+    QuestionRaised,
+    ResultRecorded,
+    trace_chains,
+)
 from .planning import PlanError, PlanningEngine
 from .research import (
     ContradictionFound,
@@ -51,4 +65,17 @@ __all__ = (
     "VerifyResult",
     "ReviewVerdict",
     "DEFAULT_DIMENSIONS",
+    # hypothesis (Chain shape — evidence chains for decisions)
+    "HypothesisEngine",
+    "HypothesisRun",
+    "ChainEvent",
+    "FindingPosted",
+    "QuestionRaised",
+    "EvidenceCollected",
+    "HypothesisFormed",
+    "ExperimentDesigned",
+    "ResultRecorded",
+    "ConclusionDrawn",
+    "ApplicationMapped",
+    "trace_chains",
 )
