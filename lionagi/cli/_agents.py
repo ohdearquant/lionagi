@@ -37,10 +37,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
-
-from ._project import _find_git_root
 
 
 def _validate_bare_name(name: str) -> None:
@@ -92,35 +91,6 @@ class AgentProfile:
     lion_system: bool = True
     artifact_defaults: dict | None = None
     extra: dict = field(default_factory=dict)
-
-
-def _find_lionagi_dirs() -> list[Path]:
-    """Find .lionagi/ directories — project-local first, then global ~/.lionagi/.
-
-    Returns all found directories in priority order (project-local wins).
-    """
-    dirs: list[Path] = []
-
-    # 1. Git root
-    git_root = _find_git_root(Path.cwd())
-    if git_root is not None:
-        candidate = git_root / ".lionagi"
-        if candidate.is_dir():
-            dirs.append(candidate)
-
-    # 2. Walk up from cwd
-    cwd = Path.cwd()
-    for parent in [cwd, *cwd.parents]:
-        candidate = parent / ".lionagi"
-        if candidate.is_dir() and candidate not in dirs:
-            dirs.append(candidate)
-
-    # 3. Global ~/.lionagi/ (always check)
-    home_candidate = Path.home() / ".lionagi"
-    if home_candidate.is_dir() and home_candidate not in dirs:
-        dirs.append(home_candidate)
-
-    return dirs
 
 
 def _find_lionagi_dir() -> Path | None:

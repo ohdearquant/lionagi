@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from lionagi.cli._runs import RUNS_ROOT
+from lionagi._paths import RUNS_ROOT
 
 from . import sessions as _sessions_svc
 from ._io import read_json_file as _read_json_file

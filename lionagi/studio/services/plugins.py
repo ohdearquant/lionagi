@@ -21,7 +21,7 @@ MARKETPLACE_DIR = _REPO_ROOT / "marketplace"
 # Fallback: if the server is running from a pip-install, try LIONAGI_HOME.parent
 if not MARKETPLACE_DIR.exists():
     try:
-        from lionagi.cli._runs import LIONAGI_HOME  # type: ignore[import-untyped]
+        from lionagi._paths import LIONAGI_HOME
 
         _fallback = LIONAGI_HOME.parent / "marketplace"
         if _fallback.exists():

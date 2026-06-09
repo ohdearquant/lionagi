@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from lionagi._paths import RUNS_ROOT
 from lionagi.libs.path_safety import validate_path_component
 from lionagi.utils import LIONAGI_HOME
 
@@ -51,8 +52,6 @@ __all__ = (
     "list_runs",
     "current_run_id",
 )
-
-RUNS_ROOT = LIONAGI_HOME / "runs"
 _LEGACY_AGENTS_ROOT = LIONAGI_HOME / "logs" / "agents"
 _LAST_BRANCH_POINTER = LIONAGI_HOME / "last_branch.json"
 _RUN_ID_ENV_VAR = "LIONAGI_RUN_ID"
