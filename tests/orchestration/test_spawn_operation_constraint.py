@@ -8,7 +8,7 @@ create_operation without validating against the allowlist, enabling model output
 to route spawned work to any registered session operation.
 
 Fix: Defense-in-depth guard in role_node_builder falls back to 'operate' and
-emits a warning when the operation is outside _SPAWN_ALLOWED_OPERATIONS.
+emits a warning when the operation is outside SPAWN_ALLOWED_OPERATIONS.
 The primary guard is SpawnRequest being typed as Literal[...], but this
 routing-level check survives if the Literal enforcement is bypassed (e.g.
 via a constructed SpawnRequest with model_construct).
@@ -21,7 +21,7 @@ import logging
 
 import pytest
 
-from lionagi.casts.emission import _SPAWN_ALLOWED_OPERATIONS, SpawnRequest
+from lionagi.casts.emission import SPAWN_ALLOWED_OPERATIONS, SpawnRequest
 from lionagi.orchestration.patterns import role_node_builder
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
@@ -40,7 +40,7 @@ def _make_roles(*names: str) -> dict[str, Branch]:
 class TestRoleNodeBuilderOperationConstraint:
     """The routing boundary must not pass untrusted operation names to create_operation."""
 
-    @pytest.mark.parametrize("op", sorted(_SPAWN_ALLOWED_OPERATIONS))
+    @pytest.mark.parametrize("op", sorted(SPAWN_ALLOWED_OPERATIONS))
     def test_allowed_operations_pass_through(self, op: str):
         """Documented operations must work unchanged after the guard."""
         roles = _make_roles("researcher")
@@ -104,7 +104,7 @@ class TestSpawnedNodeParamsBindToTarget:
     ``instruction``), so an allowed ReAct spawn raised ``TypeError`` at run time.
     """
 
-    @pytest.mark.parametrize("op", sorted(_SPAWN_ALLOWED_OPERATIONS))
+    @pytest.mark.parametrize("op", sorted(SPAWN_ALLOWED_OPERATIONS))
     def test_node_params_bind_to_branch_method(self, op: str):
         roles = _make_roles("researcher")
         nb = role_node_builder(roles)

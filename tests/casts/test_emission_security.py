@@ -20,7 +20,7 @@ import pytest
 from pydantic import ValidationError
 
 from lionagi.casts.emission import (
-    _SPAWN_ALLOWED_OPERATIONS,
+    SPAWN_ALLOWED_OPERATIONS,
     Finding,
     SpawnRequest,
 )
@@ -35,7 +35,7 @@ class TestSpawnRequestOperationAllowlist:
     role_node_builder or create_operation.
     """
 
-    @pytest.mark.parametrize("op", sorted(_SPAWN_ALLOWED_OPERATIONS))
+    @pytest.mark.parametrize("op", sorted(SPAWN_ALLOWED_OPERATIONS))
     def test_allowed_operations_accepted(self, op: str):
         """All documented operations must be accepted."""
         req = SpawnRequest(instruction="do something", operation=op)

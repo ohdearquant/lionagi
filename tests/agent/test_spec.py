@@ -158,6 +158,42 @@ class TestAgentSpecEmission:
         spec = AgentSpec.compose("critic", grant_emissions=False)
         assert spec.emission_operable() is None
 
+    def test_emits_none_uses_role_contract(self):
+        # None (default) ⇒ identical to the role's declared emission contract.
+        spec = AgentSpec.compose("analyst")
+        assert spec.emits is None
+        assert spec.emission_operable() == spec.profile.role.emission_operable()
+
+    def test_emits_explicit_tuple_overrides_role(self):
+        from lionagi.casts import Finding, Gap
+
+        spec = AgentSpec.compose("analyst", emits=(Finding, Gap))
+        op = spec.emission_operable()
+        assert op is not None
+        # The override governs the field set, not the role's (AnalysisResult,
+        # Finding) contract; EscalationRequest is always appended.
+        assert op.allowed() == {"finding", "gap", "escalation_request"}
+        assert op.allowed() != spec.profile.role.emission_operable().allowed()
+
+    def test_emits_empty_tuple_grants_nothing(self):
+        # Deliberate: () ⇒ grant nothing (build_emission_operable(()) is None),
+        # distinct from None which falls back to the role contract.
+        spec = AgentSpec.compose("analyst", emits=())
+        assert spec.emits == ()
+        assert spec.emission_operable() is None
+
+    def test_emits_false_grant_short_circuits_override(self):
+        from lionagi.casts import Finding
+
+        spec = AgentSpec.compose("analyst", emits=(Finding,), grant_emissions=False)
+        assert spec.emission_operable() is None
+
+    def test_compose_threads_emits_onto_spec(self):
+        from lionagi.casts import Finding
+
+        spec = AgentSpec.compose("analyst", emits=(Finding,))
+        assert spec.emits == (Finding,)
+
 
 # ---------------------------------------------------------------------------
 # AgentSpec.from_legacy (AgentConfig bridge)

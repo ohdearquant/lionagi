@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from lionagi.agent.config import HooksMixin
+from lionagi.agent.config import HooksMixin, _wire_secure_guards
 from lionagi.casts.pack import Pack
 from lionagi.casts.profile import Profile
 
@@ -35,6 +35,7 @@ class AgentSpec(HooksMixin):
     tools: tuple[str, ...] = ()
     permissions: PermissionPolicy | None = None
     grant_emissions: bool = True
+    emits: tuple | None = None
     pack: str | Pack | None = "default"
     lion_system: bool = True
     extra_prompt: str | None = None
@@ -56,11 +57,17 @@ class AgentSpec(HooksMixin):
         permissions: Any = None,
         pack: str | Pack | None = "default",
         grant_emissions: bool = True,
+        emits: tuple | None = None,
         system_prompt: str | None = None,
         cwd: str | None = None,
         yolo: bool = False,
     ) -> AgentSpec:
-        """Build an AgentSpec from a role name/object + optional overrides."""
+        """Build an AgentSpec from a role name/object + optional overrides.
+
+        ``emits`` overrides *what* capability models are granted: ``None`` uses
+        the role's declared contract; a tuple grants exactly those models (plus
+        EscalationRequest). Engines pass it for stage-specific event types.
+        """
         prof = Profile.compose(role, modes=modes)
         perm = _resolve_permissions(permissions)
         return cls(
@@ -71,6 +78,7 @@ class AgentSpec(HooksMixin):
             permissions=perm,
             pack=pack,
             grant_emissions=grant_emissions,
+            emits=emits,
             extra_prompt=system_prompt or None,
             cwd=cwd,
             yolo=yolo,
@@ -109,13 +117,7 @@ class AgentSpec(HooksMixin):
             **kwargs,
         )
         if secure:
-            from lionagi.agent.hooks import guard_destructive, guard_paths
-
-            spec.pre("bash", guard_destructive)
-            workspace_root = str(Path(cwd) if cwd else Path.cwd())
-            path_guard = guard_paths(allowed_paths=[workspace_root])
-            spec.pre("reader", path_guard)
-            spec.pre("editor", path_guard)
+            _wire_secure_guards(spec, cwd)
         return spec
 
     @classmethod
@@ -151,9 +153,21 @@ class AgentSpec(HooksMixin):
         return "\n\n".join(parts)
 
     def emission_operable(self) -> Operable | None:
-        """Return the role's Operable for emission granting, or None."""
+        """Return the Operable for emission granting, or None.
+
+        ``grant_emissions=False`` disables granting entirely. Otherwise an
+        explicit ``emits`` tuple overrides *what* is granted (empty tuple ⇒
+        grant nothing, since ``build_emission_operable(())`` is None); ``None``
+        falls back to the role's declared contract.
+        """
         if not self.grant_emissions:
             return None
+        if self.emits is not None:
+            from lionagi.casts import build_emission_operable
+
+            return build_emission_operable(
+                tuple(self.emits), name=f"{self.profile.role.name}_emissions"
+            )
         return self.profile.emission_operable()
 
     def to_yaml(self, path: str | Path) -> None:

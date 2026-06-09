@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.engines.review import IssueFound, ReviewEngine
+from lionagi.engines.review import IssueFound, ReviewEngine, VerifyResult
 
 
 class _FakeAgent:
@@ -18,6 +18,25 @@ class _FakeAgent:
     async def operate(self, *, instruction: str):
         self._rec.append(instruction)
         return None
+
+
+class _ProseAgent:
+    """Returns prose until ``emit_on_call``, then emits — the weak-model failure
+    the repair loop recovers (mirrors ``_ProseBranch`` in
+    test_engine_protection.py). ``emit_on_call=0`` never emits (clean reviewer)."""
+
+    def __init__(self, run, name: str, emit_on_call: int, event):
+        self.name = name
+        self._run = run
+        self._event = event
+        self._emit_on = emit_on_call
+        self.calls: list[str] = []
+
+    async def operate(self, *, instruction: str):
+        self.calls.append(instruction)
+        if self._emit_on and len(self.calls) == self._emit_on:
+            await self._run.emit(self._event)
+        return "prose"
 
 
 @pytest.mark.asyncio
@@ -95,3 +114,76 @@ async def test_verdict_reads_issues_from_store():
     out = await eng._verdict(run, "ART", ("security",))
     assert out == "REQUEST-CHANGES"
     assert "X-issue" in captured["instruction"]
+
+
+# -- emission repair (ADR-0077 §3) -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_review_dimension_repairs_prose_reviewer():
+    """A reviewer that returns prose first gets re-prompted; the repair turn
+    lands the issue and an ``emission_repair`` notify fires."""
+    eng = ReviewEngine(repair_retries=1)
+    run = eng.new_run()
+    events: list[dict] = []
+    run.on_event = events.append
+    issue = IssueFound(dimension="security", description="sqli", severity="critical")
+    agent = _ProseAgent(run, "review-security", emit_on_call=2, event=issue)
+
+    async def fake_make(role, **kw):
+        return agent
+
+    run.make_agent = fake_make
+    await eng._review_dimension(run, "ARTIFACT", "security")
+
+    assert len(agent.calls) == 2  # initial operate (prose) + repair turn (emits)
+    assert "produced no valid emission" in agent.calls[1]
+    assert "issue_found" in agent.calls[1]
+    assert any(e["type"] == "emission_repair" for e in events)
+    assert len(run.by_type(IssueFound)) == 1
+
+
+@pytest.mark.asyncio
+async def test_review_dimension_clean_reviewer_fabricates_nothing():
+    """A genuinely clean dimension (prose, no issue) is nudged once but the
+    repair never invents an issue — transport-hardening, not gold-plating."""
+    eng = ReviewEngine(repair_retries=1)
+    run = eng.new_run()
+    events: list[dict] = []
+    run.on_event = events.append
+    agent = _ProseAgent(run, "review-style", emit_on_call=0, event=None)
+
+    async def fake_make(role, **kw):
+        return agent
+
+    run.make_agent = fake_make
+    await eng._review_dimension(run, "ARTIFACT", "style")
+
+    assert len(agent.calls) == 2  # one repair nudge attempted
+    assert any(e["type"] == "emission_missing" for e in events)
+    assert len(run.by_type(IssueFound)) == 0  # nothing fabricated
+
+
+@pytest.mark.asyncio
+async def test_verify_repairs_prose_verifier():
+    """The adversarial verifier always owes a verdict, so a prose first response
+    is repaired into a VerifyResult."""
+    eng = ReviewEngine(repair_retries=1)
+    run = eng.new_run()
+    events: list[dict] = []
+    run.on_event = events.append
+    issue = IssueFound(dimension="security", description="sqli", severity="critical")
+    result = VerifyResult(issue="sqli", holds=True, rationale="boundary test confirms")
+    agent = _ProseAgent(run, "verify-security", emit_on_call=2, event=result)
+
+    async def fake_make(role, **kw):
+        return agent
+
+    run.make_agent = fake_make
+    await eng._verify(run, issue)
+
+    assert len(agent.calls) == 2
+    assert "produced no valid emission" in agent.calls[1]
+    assert "verify_result" in agent.calls[1]
+    assert any(e["type"] == "emission_repair" for e in events)
+    assert run.by_type(VerifyResult)[0].holds is True

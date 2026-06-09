@@ -60,9 +60,9 @@ def test_resolve_none_for_both_none():
 
 def test_hash_none_for_missing_agent(tmp_path: Path, monkeypatch):
     """Unknown agent name → None (caller writes NULL to agent_hash)."""
-    import lionagi.cli._agents as _agents_mod
+    import lionagi._paths as _paths_mod
 
-    monkeypatch.setattr(_agents_mod, "_find_lionagi_dirs", lambda: [tmp_path / "empty"])
+    monkeypatch.setattr(_paths_mod, "find_lionagi_dirs", lambda: [tmp_path / "empty"])
     assert agent_definition_hash("never-existed") is None
 
 
@@ -73,7 +73,7 @@ def test_hash_none_for_empty_name():
 
 def test_hash_finds_nested_md(tmp_path: Path, monkeypatch):
     """ADR-0022 lookup order: ``agents/<name>/<name>.md`` first."""
-    import lionagi.cli._agents as _agents_mod
+    import lionagi._paths as _paths_mod
 
     home = tmp_path / "lionagi-home"
     agents = home / "agents"
@@ -82,14 +82,14 @@ def test_hash_finds_nested_md(tmp_path: Path, monkeypatch):
     body = b"# reviewer\nbe thorough.\n"
     (nested / "reviewer.md").write_bytes(body)
 
-    monkeypatch.setattr(_agents_mod, "_find_lionagi_dirs", lambda: [home])
+    monkeypatch.setattr(_paths_mod, "find_lionagi_dirs", lambda: [home])
     expected = hashlib.sha256(body).hexdigest()[:16]
     assert agent_definition_hash("reviewer") == expected
 
 
 def test_hash_falls_back_to_flat_md(tmp_path: Path, monkeypatch):
     """When no nested dir exists, fall back to ``agents/<name>.md``."""
-    import lionagi.cli._agents as _agents_mod
+    import lionagi._paths as _paths_mod
 
     home = tmp_path / "lionagi-home"
     agents = home / "agents"
@@ -97,14 +97,14 @@ def test_hash_falls_back_to_flat_md(tmp_path: Path, monkeypatch):
     body = b"# analyst\n"
     (agents / "analyst.md").write_bytes(body)
 
-    monkeypatch.setattr(_agents_mod, "_find_lionagi_dirs", lambda: [home])
+    monkeypatch.setattr(_paths_mod, "find_lionagi_dirs", lambda: [home])
     expected = hashlib.sha256(body).hexdigest()[:16]
     assert agent_definition_hash("analyst") == expected
 
 
 def test_hash_finds_project_local_profile(tmp_path: Path, monkeypatch):
     """Project-local .lionagi takes priority over global ~/.lionagi."""
-    import lionagi.cli._agents as _agents_mod
+    import lionagi._paths as _paths_mod
 
     # Project-local profile
     local_home = tmp_path / "project" / ".lionagi"
@@ -121,8 +121,8 @@ def test_hash_finds_project_local_profile(tmp_path: Path, monkeypatch):
 
     # Project-local dir comes first, matching load_agent_profile() semantics
     monkeypatch.setattr(
-        _agents_mod,
-        "_find_lionagi_dirs",
+        _paths_mod,
+        "find_lionagi_dirs",
         lambda: [local_home, global_home],
     )
 

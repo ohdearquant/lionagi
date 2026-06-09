@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi import Branch, Session
+from lionagi.agent import AgentSpec, create_agent
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
@@ -145,6 +146,17 @@ def resolve_modes(role: str, override: list[str] | None = None) -> list[str]:
     return out
 
 
+def _is_casts_role(role: str) -> bool:
+    """True if *role* is a loadable built-in casts Role (vs a user profile)."""
+    from lionagi.casts.pattern import Role
+
+    try:
+        Role.load(role)
+    except ValueError:
+        return False
+    return True
+
+
 def casts_role_system(role: str, modes: list[str] | None = None) -> str | None:
     """Composed system message for a casts role, or None if not built-in."""
     from lionagi.casts.pattern import Role
@@ -270,7 +282,7 @@ class OrchestrationEnv:
         return list(self._all_names)
 
 
-def setup_orchestration(
+async def setup_orchestration(
     *,
     pattern_name: str,
     model_spec: str,
@@ -318,13 +330,27 @@ def setup_orchestration(
     run = allocate_run(save_dir=save_dir)
     run.ensure_artifact_root()
 
-    orc_system = orc_profile.system_prompt if orc_profile else casts_role_system("orchestrator")
-    orc_branch = Branch(
-        chat_model=orc_imodel,
-        system=orc_system,
-        log_config=DataLoggerConfig(auto_save_on_exit=False),
-        name="orchestrator",
-    )
+    orc_log_config = DataLoggerConfig(auto_save_on_exit=False)
+    if orc_profile:
+        # User profile supplies a verbatim system prompt (no casts composition).
+        orc_branch = Branch(
+            chat_model=orc_imodel,
+            system=orc_profile.system_prompt,
+            log_config=orc_log_config,
+            name="orchestrator",
+        )
+    else:
+        # Canonical path: the built-in "orchestrator" casts role composed +
+        # built by the factory (LION prepend + policy block), byte-identical to
+        # the old casts_role_system("orchestrator").
+        orc_spec = AgentSpec.compose("orchestrator", grant_emissions=False)
+        orc_branch = await create_agent(
+            orc_spec,
+            load_settings=False,
+            chat_model=orc_imodel,
+            log_config=orc_log_config,
+        )
+        orc_branch.name = "orchestrator"
     _session_id_env = os.environ.get("LIONAGI_SESSION_ID")
     session = (
         Session(id=_session_id_env, default_branch=orc_branch)
@@ -352,7 +378,7 @@ def setup_orchestration(
     )
 
 
-def build_worker_branch(
+async def build_worker_branch(
     env: OrchestrationEnv,
     *,
     agent_id: str,
@@ -363,7 +389,14 @@ def build_worker_branch(
     grant_spawn: bool = False,
     modes: list[str] | None = None,
 ) -> tuple[Branch, str, AgentProfile | None]:
-    """Resolve model/profile/system and build a worker Branch."""
+    """Resolve model/profile/system and build a worker Branch.
+
+    Casts-role workers route through ``AgentSpec.compose`` + ``create_agent``
+    (the canonical construction path — factory wires settings/system/model/
+    emissions consistently). Verbatim-prompt workers (explicit override, a user
+    profile's own ``system_prompt``, or ``--bare``) have no casts Role to
+    compose, so their Branch is built directly with the literal prompt.
+    """
     from ._common import BARE_WORKER_SYSTEM
 
     w_cfg = None if env.bare else role_config(role)
@@ -418,27 +451,50 @@ def build_worker_branch(
     else:
         wname = env.assign_name(role)
 
-    if system_prompt_override is not None:
-        base_system = system_prompt_override
-    elif not env.bare and w_profile and w_profile.system_prompt:
-        base_system = w_profile.system_prompt
-    elif (
-        not env.bare
-        and (role_system := casts_role_system(role, modes=resolve_modes(role, modes))) is not None
-    ):
-        base_system = role_system
-    else:
-        base_system = BARE_WORKER_SYSTEM
-
+    resolved_modes = [] if env.bare else resolve_modes(role, modes)
     team_section = team_worker_system(env.team_data, wname)
-    w_system = f"{base_system}\n\n{team_section}" if team_section else base_system
 
-    wb = Branch(
-        chat_model=w_imodel,
-        system=w_system,
-        log_config=DataLoggerConfig(auto_save_on_exit=False),
-        name=wname,
-    )
+    # A worker's system is either a casts-role composition or a verbatim string
+    # (explicit override / user-profile prompt / bare default). Only the casts
+    # case routes its prompt through the factory; the verbatim cases have no
+    # casts Role to compose from, so their string is set after construction.
+    verbatim_system: str | None = None
+    if system_prompt_override is not None:
+        verbatim_system = system_prompt_override
+    elif not env.bare and w_profile and w_profile.system_prompt:
+        verbatim_system = w_profile.system_prompt
+    elif env.bare or not _is_casts_role(role):
+        verbatim_system = BARE_WORKER_SYSTEM
+
+    log_config = DataLoggerConfig(auto_save_on_exit=False)
+    if verbatim_system is None:
+        # Casts-role worker: AgentSpec.compose + create_agent is the canonical
+        # construction. The factory prepends LION_SYSTEM and renders the role's
+        # policy block, so the result is byte-identical to the old
+        # casts_role_system(role, modes) + team_section path. grant_emissions is
+        # off — spawn rights (if any) are granted below exactly as before.
+        spec = AgentSpec.compose(
+            role,
+            modes=resolved_modes,
+            grant_emissions=False,
+            system_prompt=team_section,
+        )
+        wb = await create_agent(
+            spec,
+            load_settings=False,
+            chat_model=w_imodel,
+            log_config=log_config,
+        )
+        wb.name = wname
+    else:
+        w_system = f"{verbatim_system}\n\n{team_section}" if team_section else verbatim_system
+        wb = Branch(
+            chat_model=w_imodel,
+            system=w_system,
+            log_config=log_config,
+            name=wname,
+        )
+
     env.session.include_branches(wb)
 
     if grant_spawn:

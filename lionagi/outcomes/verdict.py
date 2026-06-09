@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """ADR-0021 §A: review + gate verdicts.
 
-Produced by codex-pr-review (ReviewVerdict), play-gate (GateVerdict),
+Produced by codex-pr-review (ReviewOutcome), play-gate (GateVerdict),
 or any skill that issues a binary or graded judgment.
 """
 
@@ -20,8 +20,12 @@ from ._base import SkillOutcome
 Severity = Literal["critical", "high", "medium", "low", "info"]
 
 
-class Finding(HashableModel):
-    """One reviewer finding with optional file/line + suggestion."""
+class ReviewFinding(HashableModel):
+    """One reviewer finding with optional file/line + suggestion.
+
+    Distinct from ``lionagi.casts.emission.Finding`` (reactive-bus base).
+    This is the ops-plane artifact contract (ADR-0021).
+    """
 
     severity: Severity = Field(
         description="Operator severity bucket (drives sort + render color).",
@@ -56,7 +60,7 @@ class Finding(HashableModel):
     def _validate_file(cls, v: object) -> object:
         if v is None or not isinstance(v, str):
             return v
-        check_path_safe(v, "Finding.file", reject_absolute=True)
+        check_path_safe(v, "ReviewFinding.file", reject_absolute=True)
         return v
 
 
@@ -68,12 +72,15 @@ VerdictDecision = Literal[
 ]
 
 
-class ReviewVerdict(SkillOutcome):
-    """Reviewer judgment + findings list.
+class ReviewOutcome(SkillOutcome):
+    """Reviewer judgment + findings list (ops-plane artifact, ADR-0021 §A).
 
     The frontend renders this as the ``ReviewVerdictCard`` (ADR-0021 §E)
     — severity/category breakdown on top, blocking findings expanded,
     minor suggestions collapsed.
+
+    Distinct from ``lionagi.engines.review.ReviewVerdict`` (reactive-bus
+    emission from the engines layer).
     """
 
     outcome_kind: Literal["review_verdict"] = "review_verdict"
@@ -88,7 +95,7 @@ class ReviewVerdict(SkillOutcome):
             return v.replace("-", "_").replace(" ", "_")
         return v
 
-    findings: list[Finding] = Field(
+    findings: list[ReviewFinding] = Field(
         default_factory=list,
         description="Findings list — blocking-first ordering is the writer's responsibility.",
     )
@@ -97,7 +104,7 @@ class ReviewVerdict(SkillOutcome):
         ge=1,
         description=(
             "1-indexed iteration number for multi-round reviews. The "
-            "codex-pr-review skill writes one ReviewVerdict per round."
+            "codex-pr-review skill writes one ReviewOutcome per round."
         ),
     )
 

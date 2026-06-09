@@ -131,3 +131,83 @@ async def test_synthesis_reads_findings_from_store():
     assert "A" in captured["instruction"]
     assert "B" in captured["instruction"]
     assert "the topic" in captured["instruction"]
+
+
+# -- emission repair (ADR-0077 §3) -------------------------------------------
+
+
+class _ProseTeamMember:
+    """A node's team member that returns prose until ``emit_on_call``, then
+    emits — the weak-model failure the repair loop recovers (mirrors the
+    ``_ProseBranch`` in test_engine_protection.py)."""
+
+    name = "researcher-d0"
+
+    def __init__(self, run, emit_on_call: int, event):
+        self._run = run
+        self._event = event
+        self._emit_on = emit_on_call
+        self.calls: list[str] = []
+
+    async def operate(self, *, instruction):
+        self.calls.append(instruction)
+        if len(self.calls) == self._emit_on:
+            await self._run.emit(self._event)
+        return "prose"
+
+
+@pytest.mark.asyncio
+async def test_drive_node_repairs_when_team_emits_nothing():
+    """A node whose whole team returned prose gets re-prompted; the repair turn
+    lands the finding and an ``emission_repair`` notify fires."""
+    eng = ResearchEngine(repair_retries=1)
+    run = eng.new_run()
+    events: list[dict] = []
+    run.on_event = events.append
+    # emit only on the 3rd call: run_team(1) → repair first-operate(2) → repair turn(3).
+    member = _ProseTeamMember(run, 3, FindingEmitted(description="late finding", novelty=0.1))
+
+    await eng._drive_node(run, [member], "Research topic (depth 0/1): X")
+    await run.wait_quiescence()
+
+    assert len(member.calls) == 3
+    assert "produced no valid emission" in member.calls[2]
+    assert "finding_emitted" in member.calls[2]  # repair names the expected key
+    assert any(e["type"] == "emission_repair" for e in events)
+    assert len(run.by_type(FindingEmitted)) == 1
+
+
+@pytest.mark.asyncio
+async def test_drive_node_no_repair_when_team_emits():
+    """A node that emits on the first team pass costs no extra agent call — the
+    arrived() pre-check short-circuits before any repair operate."""
+    eng = ResearchEngine(repair_retries=1)
+    run = eng.new_run()
+    events: list[dict] = []
+    run.on_event = events.append
+    member = _ProseTeamMember(run, 1, FindingEmitted(description="early", novelty=0.1))
+
+    await eng._drive_node(run, [member], "Research topic (depth 0/1): X")
+    await run.wait_quiescence()
+
+    assert len(member.calls) == 1  # run_team only; no repair operate
+    assert not any(e["type"] == "emission_repair" for e in events)
+    assert len(run.by_type(FindingEmitted)) == 1
+
+
+@pytest.mark.asyncio
+async def test_drive_node_empty_team_is_noop():
+    """An empty team (e.g. a budget-declined node) drives run_team once and never
+    attempts repair — preserves the dedup/budget contracts."""
+    eng = ResearchEngine(repair_retries=2)
+    run = eng.new_run()
+    teams_run: list[str] = []
+
+    async def fake_run_team(team, instruction, **kw):
+        teams_run.append(instruction)
+        return ""
+
+    run.run_team = fake_run_team
+    await eng._drive_node(run, [], "Research topic (depth 0/1): X")
+    assert teams_run == ["Research topic (depth 0/1): X"]
+    assert len(run.by_type(FindingEmitted)) == 0

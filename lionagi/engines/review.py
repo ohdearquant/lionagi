@@ -139,6 +139,10 @@ class ReviewEngine(Engine):
         verdict author.
     verify_severities
         Issue severities that reactively spawn an adversarial verifier.
+    repair_retries
+        Re-prompt turns when a reviewer or verifier emits no valid event — the
+        loop that keeps small/weak workers in the pipeline instead of silently
+        dropping their stage (ADR-0077 §3).
     """
 
     def __init__(
@@ -149,6 +153,7 @@ class ReviewEngine(Engine):
         verifier_role: str = "critic",
         synthesis_role: str = "synthesizer",
         verify_severities: tuple[str, ...] = ("critical", "major"),
+        repair_retries: int = 1,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -157,11 +162,13 @@ class ReviewEngine(Engine):
         self.verifier_role = verifier_role
         self.synthesis_role = synthesis_role
         self.verify_severities = set(verify_severities)
+        self.repair_retries = repair_retries
 
     async def _run(
         self, run: EngineRun, artifact: str, *, dimensions: tuple[str, ...] | None = None
     ) -> str:
         dims = tuple(dimensions) if dimensions else self.dimensions
+        run.root = artifact
         run.observe(IssueFound, lambda i, _c: self._on_issue(run, i))
 
         # Fan out: one reviewer per dimension, in parallel.
@@ -187,31 +194,58 @@ class ReviewEngine(Engine):
     # -- stages ---------------------------------------------------------------
 
     async def _review_dimension(self, run: EngineRun, artifact: str, dimension: str) -> None:
+        emits = (IssueFound,)
         async with run._sem:
             mode = _DIM_MODE.get(dimension)
             agent = await run.make_agent(
                 self.reviewer_role,
                 name=f"review-{dimension}",
                 modes=[mode] if mode else None,
-                emits=(IssueFound,),
+                model=self.model_for("review"),
+                emits=emits,
             )
-            await agent.operate(instruction=_dimension_instruction(artifact, dimension))
+            # Repair re-prompts a reviewer that emitted prose instead of fenced
+            # issues — it requests an emission, never fabricates one, so a
+            # genuinely clean dimension simply emits nothing again.
+            await run.operate_with_repair(
+                agent,
+                _dimension_instruction(artifact, dimension),
+                arrived=lambda: any(i.dimension == dimension for i in run.by_type(IssueFound)),
+                emits=emits,
+                retries=self.repair_retries,
+            )
 
     async def _verify(self, run: EngineRun, issue: IssueFound) -> None:
+        emits = (VerifyResult,)
         async with run._sem:
             verifier = await run.make_agent(
                 self.verifier_role,
                 name=f"verify-{issue.dimension}",
                 modes=["adversarial"],
-                emits=(VerifyResult,),
+                model=self.model_for("verify"),
+                emits=emits,
             )
-            await verifier.operate(instruction=_verify_instruction(issue))
+            await run.operate_with_repair(
+                verifier,
+                _verify_instruction(issue),
+                arrived=lambda: any(
+                    v.issue == issue.description for v in run.by_type(VerifyResult)
+                ),
+                emits=emits,
+                retries=self.repair_retries,
+            )
 
     async def _verdict(self, run: EngineRun, artifact: str, dimensions: tuple[str, ...]) -> str:
         issues = run.by_type(IssueFound)
         verifications = run.by_type(VerifyResult)
         run.notify("verdict", issues=len(issues), verifications=len(verifications))
-        synth = await run.make_agent(self.synthesis_role, name="verdict", emits=(ReviewVerdict,))
+        synth = await run.make_agent(
+            self.synthesis_role,
+            name="verdict",
+            model=self.model_for("verdict"),
+            emits=(ReviewVerdict,),
+            exempt=True,
+        )
         res = await synth.operate(
             instruction=_verdict_instruction(artifact, dimensions, issues, verifications)
         )

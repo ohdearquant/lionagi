@@ -8,7 +8,7 @@ from typing import Any
 
 import anyio
 
-from lionagi.cli._runs import LIONAGI_HOME
+from lionagi._paths import LIONAGI_HOME
 from lionagi.state.db import DEFAULT_DB_PATH
 
 from ._db import open_db as _open_db
