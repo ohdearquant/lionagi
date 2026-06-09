@@ -544,6 +544,7 @@ async def test_retry_max_delay_capping(anyio_backend, monkeypatch):
     )
     assert result == "done"
     assert calls["n"] == 4
+    assert len(recorded_delays) == 3, "3 retries = 3 sleeps"
     for d in recorded_delays:
         assert d <= 0.01 + 1e-9, f"delay {d} exceeds max_delay 0.01"
 
