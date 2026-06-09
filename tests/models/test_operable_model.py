@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 import pytest
@@ -337,9 +338,8 @@ def test_new_model_with_invalid_field_names_raises():
         model.new_model(use_fields={"real_field", "nonexistent_field"})
 
 
-def test_concurrent_add_field_is_safe():
-    import asyncio
-
+@pytest.mark.asyncio
+async def test_concurrent_add_field_is_safe():
     model = OperableModel()
     errors = []
 
@@ -349,11 +349,8 @@ def test_concurrent_add_field_is_safe():
         except Exception as e:
             errors.append(e)
 
-    async def run():
-        tasks = [add_one(f"cf_{i}", i) for i in range(20)]
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    asyncio.get_event_loop().run_until_complete(run())
+    tasks = [add_one(f"cf_{i}", i) for i in range(20)]
+    await asyncio.gather(*tasks, return_exceptions=True)
     # No unhandled exceptions outside ValueError (duplicate field)
     for e in errors:
         assert isinstance(e, ValueError)
