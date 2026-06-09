@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from lionagi import FieldModel
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.casts.emission import (
-    _SPAWN_ALLOWED_OPERATIONS,
+    SPAWN_ALLOWED_OPERATIONS,
     SpawnRequest,
     TaskAssignment,
     build_emission_operable,
@@ -83,12 +83,12 @@ def role_node_builder(roles: dict[str, Branch]):
         # via model-emitted spawn requests. Fail closed on anything outside the
         # documented allowlist.
         op = req.operation or "operate"
-        if op not in _SPAWN_ALLOWED_OPERATIONS:
+        if op not in SPAWN_ALLOWED_OPERATIONS:
             logger.warning(
                 "SpawnRequest.operation %r is outside the allowed set %r — "
                 "falling back to 'operate'. (Possible prompt injection.)",
                 op,
-                sorted(_SPAWN_ALLOWED_OPERATIONS),
+                sorted(SPAWN_ALLOWED_OPERATIONS),
             )
             op = "operate"
         node = create_operation(

@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.ln.types import Operable, Spec
 
-_SPAWN_ALLOWED_OPERATIONS: frozenset[str] = frozenset({"operate", "chat", "communicate", "ReAct"})
+SPAWN_ALLOWED_OPERATIONS: frozenset[str] = frozenset({"operate", "chat", "communicate", "ReAct"})
 
 __all__ = (
     # discovery
@@ -46,6 +46,8 @@ __all__ = (
     "EscalationRequest",
     "SpawnRequest",
     "build_emission_operable",
+    "field_name_for",
+    "SPAWN_ALLOWED_OPERATIONS",
 )
 
 
@@ -441,10 +443,14 @@ class SpawnRequest(_EmissionModel):
 # Operable builder
 # ---------------------------------------------------------------------------
 
-_CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 
-def _field_name(model: type[BaseModel]) -> str:
+def field_name_for(model: type[BaseModel]) -> str:
+    """Convert a PascalCase model name to a snake_case field key.
+
+    Handles acronym runs: ``CIResult`` → ``ci_result``.
+    """
     return _CAMEL_RE.sub("_", model.__name__).lower()
 
 
@@ -457,5 +463,5 @@ def build_emission_operable(
         return None
     if EscalationRequest not in models:
         models = (*models, EscalationRequest)
-    specs = tuple(Spec(m, name=_field_name(m)) for m in models)
+    specs = tuple(Spec(m, name=field_name_for(m)) for m in models)
     return Operable(specs, name=name)

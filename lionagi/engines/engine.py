@@ -80,9 +80,9 @@ def _repair_instruction(schema_hint: str) -> str:
 
 def emission_keys(emits: tuple[type, ...]) -> str:
     """Render the top-level emission key(s) for a repair hint."""
-    from lionagi.casts.emission import _field_name
+    from lionagi.casts.emission import field_name_for
 
-    names = ", ".join(f"'{_field_name(m)}'" for m in emits)
+    names = ", ".join(f"'{field_name_for(m)}'" for m in emits)
     return f"Expected top-level key(s): {names}." if names else ""
 
 
