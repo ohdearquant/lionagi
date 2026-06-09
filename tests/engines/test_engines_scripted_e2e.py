@@ -321,6 +321,42 @@ async def test_review_engine_e2e_with_adversarial_verify(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_review_repair_recovers_prose_reviewer_e2e(tmp_path, monkeypatch):
+    """The reviewer's first response is prose (a weak-model failure); the repair
+    turn re-prompts and the second response emits a valid issue through the real
+    fenced-JSON → bundle path. The verdict then reads it from the store."""
+    _write_script(
+        tmp_path,
+        monkeypatch,
+        [
+            _when("for **correctness** only", text="The cursor logic looks suspicious..."),
+            _when(
+                "produced no valid emission",
+                {
+                    "issue_found": {
+                        "dimension": "correctness",
+                        "description": "off-by-one in cursor advance",
+                        "severity": "major",
+                        "location": "store.rs:41",
+                        "confidence": 0.7,
+                    }
+                },
+            ),
+            _when("Issue a single ReviewVerdict", text="REQUEST-CHANGES: fix cursor advance."),
+        ],
+    )
+
+    notified: list[dict] = []
+    eng = ReviewEngine(model=SCRIPTED_MODEL, dimensions=("correctness",), repair_retries=1)
+    out = await eng.run(
+        "fn next(&mut self) { self.pos += 1; ... }",
+        on_event=lambda e: notified.append(e),
+    )
+    assert "REQUEST-CHANGES" in out
+    assert any(e["type"] == "emission_repair" for e in notified)
+
+
+@pytest.mark.asyncio
 async def test_hypothesis_budget_degrades_gracefully_e2e(tmp_path, monkeypatch):
     """With budget for only the extraction agent, expansion stops but the
     exempt synthesizer still writes the report — the run never dies empty."""

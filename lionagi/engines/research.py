@@ -126,6 +126,10 @@ class ResearchEngine(Engine):
         output). Each is granted the research emissions.
     synthesis_role
         Casts role that writes the final synthesis from the emission store.
+    repair_retries
+        Re-prompt turns when an exploration node's whole team emitted no finding
+        — the loop that keeps small/weak workers in the pipeline instead of a
+        node silently producing nothing (ADR-0077 §3).
 
     All run-state (session, seen topics, in-flight nodes) lives on the
     per-call :class:`EngineRun`, so one engine runs many topics concurrently.
@@ -137,12 +141,14 @@ class ResearchEngine(Engine):
         novelty_threshold: float = 0.7,
         roles: tuple[str, ...] = ("researcher", "analyst", "critic"),
         synthesis_role: str = "synthesizer",
+        repair_retries: int = 1,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.novelty_threshold = novelty_threshold
         self.roles = roles
         self.synthesis_role = synthesis_role
+        self.repair_retries = repair_retries
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -160,7 +166,7 @@ class ResearchEngine(Engine):
 
         run.notify("node_registered", topic=topic, depth=0)
         team = await self._team_for(run, 0)
-        await run.run_team(team, _node_instruction(topic, 0, self.max_depth))
+        await self._drive_node(run, team, _node_instruction(topic, 0, self.max_depth))
 
         # Drain the recursively-spawned depth nodes before synthesizing.
         await run.wait_quiescence()
@@ -197,7 +203,33 @@ class ResearchEngine(Engine):
         run.notify("node_registered", topic=topic, depth=depth)
         async with run._sem:
             team = await self._team_for(run, depth)
-            await run.run_team(team, _node_instruction(topic, depth, self.max_depth))
+            await self._drive_node(run, team, _node_instruction(topic, depth, self.max_depth))
+
+    async def _drive_node(self, run: EngineRun, team: list, instruction: str) -> None:
+        """Run an exploration team, then repair if the whole node emitted nothing.
+
+        The team runs as before (sequential, build-on-prior); repair only fires
+        when no ``FindingEmitted``/``DepthRequested`` arrived from this node — the
+        weak-model case where every member returned prose. It re-prompts the
+        consolidating (last) member; a node with real findings costs no extra
+        call (early return). An empty team has nothing to drive or repair."""
+        before = len(run.by_type(FindingEmitted)) + len(run.by_type(DepthRequested))
+        await run.run_team(team, instruction)
+        if not team:
+            return
+
+        def arrived() -> bool:
+            return len(run.by_type(FindingEmitted)) + len(run.by_type(DepthRequested)) > before
+
+        if arrived():
+            return
+        await run.operate_with_repair(
+            team[-1],
+            instruction,
+            arrived=arrived,
+            emits=(FindingEmitted,),
+            retries=self.repair_retries,
+        )
 
     async def _synthesize(self, run: EngineRun, topic: str) -> str:
         findings = run.by_type(FindingEmitted)
