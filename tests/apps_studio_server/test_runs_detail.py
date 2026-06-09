@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
+fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from lionagi.state.db import StateDB  # noqa: E402
 
