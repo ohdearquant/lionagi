@@ -46,7 +46,7 @@ def test_systemcontent_from_dict_datetime_handling():
 
 def test_json_structure_format_response_format():
     """Test JsonStructure._format_response_format static method"""
-    from lionagi.protocols.structure.json_structure import JsonStructure
+    from lionagi.operations.schema.json_structure import JsonStructure
 
     response_format = {"name": "string", "age": "integer"}
     result = JsonStructure._format_response_format(response_format)

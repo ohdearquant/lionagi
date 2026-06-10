@@ -159,10 +159,7 @@ class TestGraphContainment:
         """Test edge containment check"""
         graph, _, _, edge = simple_graph
         assert edge in graph
-        assert (
-            Edge(head=create_test_node("Node1"), tail=create_test_node("Node2"))
-            not in graph
-        )
+        assert Edge(head=create_test_node("Node1"), tail=create_test_node("Node2")) not in graph
 
     def test_empty_graph_contains(self, empty_graph):
         """Test containment checks on empty graph"""

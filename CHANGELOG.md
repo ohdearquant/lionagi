@@ -4,6 +4,153 @@
 All notable changes to lionagi are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.26.18] - 2026-06-09
+
+Engine layer expansion — hypothesis and coding engines with autonomy
+protections (ADR-0077), the casts module-coherence pass (ADR-0078), a
+15-PR bug/security sweep, and a codebase-wide trim/consolidation.
+
+### Added
+
+- **HypothesisEngine** — hypothesis-driven development engine (Chain shape):
+  frame → question → evidence → analyze, with per-run chain export (JSON +
+  markdown evidence files). (#1358)
+- **CodingEngine** — gated plan/implement/test/fix loop with a ground-truth
+  subprocess test runner (pass = exit code 0, never an LLM claim), judge-gated
+  fix rounds, and a `to_hypothesis_seeds` bridge into HypothesisEngine. (#1358)
+- **Engine autonomy protections** (ADR-0077) — run-level resource budgets,
+  judge gates, emission repair/retry for weak models, per-stage model routing,
+  generation caps. (#1358)
+
+### Changed
+
+- **Module coherence pass** (ADR-0078) — normative casts model (pattern /
+  role / mode / profile are configuration; agent is a runtime concept):
+  single capability-grant source via `AgentSpec.emits`; CLI orchestrator and
+  casts-role workers route through `create_agent` (one construction stack);
+  provider tables moved down to `service/providers.py` and path constants to
+  `lionagi._paths` (no more upward imports into `cli`); `AgentConfig`
+  deprecated by delegation onto Profile/AgentSpec; plane-distinct vocabulary
+  (`outcomes.Finding` → `ReviewFinding`, `ReviewVerdict` → `ReviewOutcome`);
+  curated `casts` public surface; `EngineEvent` forbids extra fields. (#1358)
+- **Docstring/comment trim** across session, models, service, providers,
+  adapters, cli, operations, state, studio, hooks, engines, casts, tools,
+  libs, config. (#1340–#1344)
+- **Utility consolidation** — shared path-safety, `_io`/`_subprocess`, and
+  NDJSON/CLI subprocess primitives; `ln.concurrency` adoption; render
+  consolidation; CLI lifecycle/concurrency primitives + `last_response`.
+  (#1345, #1346, #1351–#1355)
+- **CI** — coverage on one version, uv caching, perf-test gating. (#1349)
+
+### Fixed
+
+- **ModelParams global cache** cross-wired distinct types — dropped. (#1356)
+- **Pile set ops** — `items=` kwarg and `dict_values` crash. (#1316)
+- **`iModel(model=...)`** resolves default provider from settings. (#1317)
+- **PyYAML as core dependency** — `lionagi.agent` imports on base install.
+  (#1315)
+- **Studio run detail** reads StateDB like the list endpoint (was silently
+  null for post-migration runs). (#1358)
+- **ReviewEngine** uses structured concurrency instead of `asyncio.gather`.
+  (#1322)
+- lndl bool coercion (#1320), `CommonMeta` key-presence validation (#1325),
+  `fuzzy_match_keys` Sequence handling (#1318), StateDB orjson serialization
+  (#1326), `guard_destructive` default hook in coding presets (#1324), ruff
+  format gate stragglers (#1314).
+
+### Security
+
+- **Studio API auth** — `GET /api/invocations` and `/api/sessions` gated
+  behind bearer token. (#1319)
+- **Docker symlink mounts** constrained to an allowlist. (#1323)
+- **SSRF guard** — local-address allowlist for Ollama loopback endpoints.
+  (#1327)
+- **Credential redaction** across all URL schemes and nested dict details.
+  (#1321)
+- **Agentic-CLI path grants** validated against repo containment. (#1328)
+
+## [0.26.17] - 2026-06-07
+
+Security-hardening pass: fail-closed boundaries across MCP transports, file/exec
+paths, and CLI providers, plus SSRF and credential-leak guards — alongside
+the #1257 bug sweep.
+
+### Security
+
+- **Fail-closed MCP transports** — full inline MCP transport now fingerprinted
+  into the policy key (closes a trust-leak where differing transports could share
+  a policy entry); MCP transports fail closed under threaded access, with
+  rate-limit deferral and processor-join fixes. (#1285, #1279)
+- **Image-URL SSRF guard** — outbound image-URL fetches are validated and
+  message construction hardened. (#1280)
+- **Fail-closed path/exec boundaries** — tool path and exec boundaries reject on
+  ambiguity instead of proceeding. (#1281)
+- **CLI provider validation** — async correctness fixes plus fail-closed CLI path
+  validation. (#1278)
+- **Auth gating + credential redaction** — agent auth gating, spawn-constraint
+  enforcement, and credential redaction across adapters/models. (#1282)
+- **Artifact auth + input validation** — status-history integrity, artifact
+  authorization, and input validation across state/cli/studio. (#1283)
+- **Dependabot** — resolved 6 dependency vulnerabilities. (#1274)
+
+### Fixed
+
+- **Bug sweep** — pi-CLI parser events, SIGINT reason code, `li kill`
+  PID-identity guard against recycled PIDs, lndl export. (#1257)
+- **`os.killpg` on non-Unix** — guarded for platforms without process groups.
+  (#1286)
+
+### Changed
+
+- **`lionagi/` ruff gate enabled** plus Studio UI alignment. (#1284)
+- Ruff format + mechanical lint cleanup, no behavior change. (#1277)
+
+### Docs
+
+- README CLI section, ADR taxonomy, deprecation purge, migration-guide extract,
+  DeepWiki integration. (#1259)
+- Forbid internal audit/review references in committed code comments. (#1287)
+- Align AGENT.md + CONTRIBUTING.md with actual tooling. (#1275)
+
+## [0.26.16] - 2026-06-06
+
+### Fixed
+
+- **Codex silent failures** — `turn.failed`/`error` events were swallowed;
+  now yield `StreamChunk(type="error")`. (#1272)
+- **Codex `fast_mode`** — `service_tier=flex` → `service_tier=fast`. (#1272)
+
+### Changed
+
+- **Unified CLI provider types** — remove `ClaudeChunk`/`CodexChunk` and
+  `ClaudeSession`/`CodexSession`; shared `CLISession` + `StreamChunk`
+  passthrough. −255 lines. (#1272)
+
+## [0.26.15] - 2026-06-02
+
+Reactive orchestration, domain engines, observer-as-hook-transport.
+
+### Added
+
+- **Reactive self-expanding flow** — `SpawnRequest` injects nodes into a
+  running DAG; CLI rewired onto casts + emissions.
+- **Domain engines** (ADR-0075) — `PlanningEngine`, `ResearchEngine`,
+  `ReviewEngine`; `li o flow` routes through `run_dag`.
+- **Observer-as-hook transport** (ADR-0076) — emission/control/lifecycle
+  extracted to `_observe.py`; API-model agents drive the bus.
+- **Hook bus persistence** (ADR-0023b), pre-invoke governance gate,
+  `li o flow --workers`, compositional filter DSL.
+- **SWE-bench harness** — real instances, deterministic oracle, blind
+  judge, per-dollar verdict.
+- **Daytona sandbox** — isolated containers + context tool + tool guidance.
+
+### Fixed
+
+- **Roled agents lost tool-use** — `with_updates` dropped response schema.
+- **Studio show-detail 404** in Docker + stale frontend build.
+- **Daytona shell injection** — cwd now shell-quoted.
+- **Codex `skip_git_repo_check`** defaulted to `True`.
+
 ## [0.26.14] - 2026-05-30
 
 ### Fixed

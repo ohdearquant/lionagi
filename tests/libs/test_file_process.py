@@ -30,9 +30,7 @@ def test_dir_to_files_verbose_logs_count(tmp_path, caplog):
 # ---------------------------------------------------------------------------
 
 
-def test_dir_to_files_process_file_exception_ignored_with_verbose(
-    tmp_path, monkeypatch, caplog
-):
+def test_dir_to_files_process_file_exception_ignored_with_verbose(tmp_path, monkeypatch, caplog):
     (tmp_path / "good.py").write_text("x = 1")
 
     class _BadPath:
@@ -56,9 +54,7 @@ def test_dir_to_files_process_file_exception_ignored_with_verbose(
     monkeypatch.setattr(Path, "glob", patched_glob)
 
     with caplog.at_level(logging.WARNING):
-        result = dir_to_files(
-            tmp_path, file_types=[".py"], ignore_errors=True, verbose=True
-        )
+        result = dir_to_files(tmp_path, file_types=[".py"], ignore_errors=True, verbose=True)
 
     assert result == []
 
@@ -68,9 +64,7 @@ def test_dir_to_files_process_file_exception_ignored_with_verbose(
 # ---------------------------------------------------------------------------
 
 
-def test_dir_to_files_process_file_exception_raised_when_not_ignored(
-    tmp_path, monkeypatch
-):
+def test_dir_to_files_process_file_exception_raised_when_not_ignored(tmp_path, monkeypatch):
     class _BadPath:
         def is_file(self):
             return True

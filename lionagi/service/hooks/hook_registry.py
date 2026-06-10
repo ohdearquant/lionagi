@@ -135,7 +135,7 @@ class HookRegistry:
         return await handler(ev_, ct_, ch_, **kw)
 
     async def pre_event_create(
-        self, event_type: type[E], /, exit: bool = False, **kw
+        self, event_type: type[E], /, should_exit: bool = False, **kw
     ) -> tuple[E | Exception | None, bool, EventStatus]:
         """Hook to be called before an event is created.
 
@@ -149,23 +149,27 @@ class HookRegistry:
             - raise an exception if this event should be cancelled
                 (status: cancelled, reason: f"pre-event-create hook aborted this event: {e}")
         """
+        # Pop legacy exit alias from kw so it doesn't collide with should_exit.
+        _exit_compat = kw.pop("exit", False)
+        _should_exit = should_exit or bool(_exit_compat)
+        # Re-inject for hook functions that read *, exit=False in their signature.
+        kw["exit"] = _should_exit
         try:
             res = await self._call(
                 HookEventTypes.PreEventCreate,
                 None,
                 None,
                 event_type,
-                exit=exit,
                 **kw,
             )
             return (res, False, EventStatus.COMPLETED)
         except get_cancelled_exc_class() as e:
             return ((Undefined, e), True, EventStatus.CANCELLED)
         except Exception as e:
-            return (e, exit, EventStatus.CANCELLED)
+            return (e, _should_exit, EventStatus.CANCELLED)
 
     async def pre_invocation(
-        self, event: E, /, exit: bool = False, **kw
+        self, event: E, /, should_exit: bool = False, **kw
     ) -> tuple[Any, bool, EventStatus]:
         """Hook to be called when an event is dequeued and right before it is invoked.
 
@@ -175,45 +179,49 @@ class HookRegistry:
         It can either raise an exception to abort the event invocation or pass to continue (status: cancelled).
         It cannot modify the event itself, and won't be able to access the event instance.
         """
+        _exit_compat = kw.pop("exit", False)
+        _should_exit = should_exit or bool(_exit_compat)
+        kw["exit"] = _should_exit
         try:
             res = await self._call(
                 HookEventTypes.PreInvocation,
                 None,
                 None,
                 event,
-                exit=exit,
                 **kw,
             )
             return (res, False, EventStatus.COMPLETED)
         except get_cancelled_exc_class() as e:
             return ((Undefined, e), True, EventStatus.CANCELLED)
         except Exception as e:
-            return (e, exit, EventStatus.CANCELLED)
+            return (e, _should_exit, EventStatus.CANCELLED)
 
     async def post_invocation(
-        self, event: E, /, exit: bool = False, **kw
+        self, event: E, /, should_exit: bool = False, **kw
     ) -> tuple[None | Exception, bool, EventStatus]:
         """Hook to be called right after event finished its execution.
         It can either raise an exception to abort the event invocation or pass to continue (status: aborted).
         It cannot modify the event itself, and won't be able to access the event instance.
         """
+        _exit_compat = kw.pop("exit", False)
+        _should_exit = should_exit or bool(_exit_compat)
+        kw["exit"] = _should_exit
         try:
             res = await self._call(
                 HookEventTypes.PostInvocation,
                 None,
                 None,
                 event,
-                exit=exit,
                 **kw,
             )
             return (res, False, EventStatus.COMPLETED)
         except get_cancelled_exc_class() as e:
             return ((Undefined, e), True, EventStatus.CANCELLED)
         except Exception as e:
-            return (e, exit, EventStatus.ABORTED)
+            return (e, _should_exit, EventStatus.ABORTED)
 
     async def handle_streaming_chunk(
-        self, chunk_type: str | type, chunk: Any, /, exit: bool = False, **kw
+        self, chunk_type: str | type, chunk: Any, /, should_exit: bool = False, **kw
     ) -> tuple[Any, bool, EventStatus | None]:
         """Hook to be called to consume streaming chunks.
 
@@ -222,19 +230,21 @@ class HookRegistry:
         The handler function signature should be: `async def handler(chunk: Any) -> None`
         It can either raise an exception to mark the event invocation as "failed" or pass to continue (status: aborted).
         """
+        _exit_compat = kw.pop("exit", False)
+        _should_exit = should_exit or bool(_exit_compat)
+        kw["exit"] = _should_exit
         try:
             res = await self._call_stream_handler(
                 chunk_type,
                 chunk,
                 None,
-                exit=exit,
                 **kw,
             )
             return (res, False, None)
         except get_cancelled_exc_class() as e:
             return ((Undefined, e), True, EventStatus.CANCELLED)
         except Exception as e:
-            return (e, exit, EventStatus.ABORTED)
+            return (e, _should_exit, EventStatus.ABORTED)
 
     async def call(
         self,
@@ -244,7 +254,7 @@ class HookRegistry:
         hook_type: HookEventTypes = None,
         chunk_type=None,
         chunk=None,
-        exit=False,
+        should_exit: bool = False,
         **kw,
     ):
         """Call a hook or stream handler.
@@ -252,6 +262,10 @@ class HookRegistry:
         If method is provided, it will call the corresponding hook.
         If chunk_type is provided, it will call the corresponding stream handler.
         If both are provided, method will be used.
+
+        The legacy ``exit`` keyword may be passed in ``**kw`` for backward
+        compatibility.  Each internal dispatch method normalizes ``exit`` /
+        ``should_exit`` before forwarding to the actual hook function.
         """
         if hook_type is None and chunk_type is None:
             raise ValueError("Either method or chunk_type must be provided")
@@ -261,24 +275,24 @@ class HookRegistry:
             match hook_type:
                 case HookEventTypes.PreEventCreate:
                     return (
-                        await self.pre_event_create(event_like, exit=exit, **kw),
+                        await self.pre_event_create(event_like, should_exit=should_exit, **kw),
                         meta,
                     )
                 case HookEventTypes.PreInvocation:
                     meta["event_id"] = str(event_like.id)
                     meta["event_created_at"] = event_like.created_at
                     return (
-                        await self.pre_invocation(event_like, exit=exit, **kw),
+                        await self.pre_invocation(event_like, should_exit=should_exit, **kw),
                         meta,
                     )
                 case HookEventTypes.PostInvocation:
                     meta["event_id"] = str(event_like.id)
                     meta["event_created_at"] = event_like.created_at
                     return (
-                        await self.post_invocation(event_like, exit=exit, **kw),
+                        await self.post_invocation(event_like, should_exit=should_exit, **kw),
                         meta,
                     )
-        return await self.handle_streaming_chunk(chunk_type, chunk, exit=exit, **kw)
+        return await self.handle_streaming_chunk(chunk_type, chunk, should_exit=should_exit, **kw)
 
     def _can_handle(
         self,

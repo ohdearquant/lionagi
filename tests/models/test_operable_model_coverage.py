@@ -140,11 +140,11 @@ class TestFieldHasattr:
         m = _Sample()
         m.add_field("n", annotation=int, value=1)
         m.field_setattr("n", "custom_key", "val")
-        # A custom attr stored in json_schema_extra under this field's key
-        # True because field_obj.json_schema_extra["custom_key"] exists,
-        # and field_hasattr checks whether field_name is in json_schema_extra.
-        m.extra_fields["n"].json_schema_extra = {"n": "something"}
-        assert m.field_hasattr("n", "nothing") is True
+        # field_hasattr must check for the *attr* key, not the field name.
+        # "custom_key" was stored in json_schema_extra — it must be found.
+        assert m.field_hasattr("n", "custom_key") is True
+        # "nothing" was never stored — it must NOT be found (old bug: returned True).
+        assert not m.field_hasattr("n", "nothing")
 
     def test_missing_field_raises(self):
         m = _Sample()
@@ -195,10 +195,10 @@ class TestNewModel:
             def model_rebuild(cls, *a, **kw):
                 raise RuntimeError("forward ref broken")
 
-        # Patch ModelParams.create_new_model to return our Boom class.
+        # Patch the model builder to return our Boom class.
         from lionagi.models import operable_model as om
 
-        monkeypatch.setattr(om.ModelParams, "create_new_model", lambda self: _Boom)
+        monkeypatch.setattr(om, "build_model_type", lambda **kw: _Boom)
         # Should NOT raise.
         cls = m.new_model(use_fields={"base"}, update_forward_refs=True)
         assert cls is _Boom

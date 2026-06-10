@@ -39,6 +39,13 @@ class _FakeOrcBranch:
 
 
 def _env(tmp_path, orc) -> SimpleNamespace:
+    _name_counts: dict = {}
+
+    def _assign_name(role: str) -> str:
+        _name_counts[role] = _name_counts.get(role, 0) + 1
+        n = _name_counts[role]
+        return f"{role}-{n}" if n > 1 else role
+
     return SimpleNamespace(
         run=SimpleNamespace(
             artifact_root=tmp_path,
@@ -54,6 +61,7 @@ def _env(tmp_path, orc) -> SimpleNamespace:
         pack=None,
         session=SimpleNamespace(),
         builder=SimpleNamespace(),
+        assign_name=_assign_name,
     )
 
 

@@ -153,20 +153,6 @@ def test_message_manager_with_response_format(message_manager):
     assert "name" in schema.model_fields
 
 
-def test_message_manager_with_request_model(message_manager):
-    """Test message manager with request model"""
-    instruction = message_manager.add_message(
-        instruction="Test",
-        request_model=RequestModel,
-        sender="user",
-        recipient="assistant",
-    )
-
-    # request_model may be stored in content or may not be exposed directly
-    # Check if it's stored in the content or metadata
-    assert hasattr(instruction.content, "response_schema") or hasattr(instruction, "metadata")
-
-
 def test_message_manager_with_images(message_manager):
     """Test message manager with images"""
     instruction = message_manager.add_message(

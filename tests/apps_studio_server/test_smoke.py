@@ -6,7 +6,9 @@ plus path-traversal guard tests for /api/runs and /api/agents.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import uuid
 from pathlib import Path
 
 import pytest
@@ -53,7 +55,6 @@ def _make_client(
     monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(agents_mod, "_AGENTS_ROOT", agents_root)
     monkeypatch.setattr(playbooks_mod, "_PLAYBOOKS_ROOT", playbooks_root)
-    monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
     monkeypatch.setattr(cli_runs_mod, "RUNS_ROOT", runs_root)
     # Redirect state DB so runs/sessions/shows queries don't touch the real DB
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
@@ -223,9 +224,42 @@ def test_runs_list_filter_by_status(tmp_path, monkeypatch):
 
 
 def test_run_detail_contract_fields(tmp_path, monkeypatch):
-    """RunDetail must include graph, error, cwd, manifest, branches."""
-    client = _make_client(tmp_path, monkeypatch, with_run=True)
-    r = client.get("/api/runs/20240101T000000-abc123")
+    """RunDetail must include all required fields; reads from StateDB not flat-file."""
+    from lionagi.state.db import StateDB
+
+    run_id = str(uuid.uuid4())
+    db_path = tmp_path / "state.db"
+
+    async def _seed():
+        async with StateDB(db_path) as db:
+            prog_id = f"{run_id}-prog"
+            await db.create_progression(prog_id)
+            await db.create_session(
+                {
+                    "id": run_id,
+                    "progression_id": prog_id,
+                    "name": "smoke-run",
+                    "status": "completed",
+                    "agent_name": "my-worker",
+                    "model": "gpt-5",
+                    "invocation_kind": "agent",
+                    "source_kind": "live",
+                }
+            )
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_seed())
+    finally:
+        loop.close()
+
+    import lionagi.studio.services.sessions as sessions_mod
+
+    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
+
+    client = _make_client(tmp_path, monkeypatch)
+    r = client.get(f"/api/runs/{run_id}")
     assert r.status_code == 200
     data = r.json()
     for field in (
@@ -242,9 +276,11 @@ def test_run_detail_contract_fields(tmp_path, monkeypatch):
         "branches",
     ):
         assert field in data, f"missing field: {field}"
-    assert data["graph"] == {"nodes": [], "edges": []}
+    # graph is None when no node_metadata stored (DB-backed path)
+    assert data["graph"] is None
     assert isinstance(data["branches"], list)
     assert isinstance(data["manifest"], dict)
+    assert data["worker_name"] == "my-worker"
 
 
 # ---------------------------------------------------------------------------

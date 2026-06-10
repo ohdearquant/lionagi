@@ -12,9 +12,7 @@ class ParseError(Exception):
     def __init__(self, message: str, token: Token):
         self.message = message
         self.token = token
-        super().__init__(
-            f"Parse error at line {token.line}, column {token.column}: {message}"
-        )
+        super().__init__(f"Parse error at line {token.line}, column {token.column}: {message}")
 
 
 class Parser:

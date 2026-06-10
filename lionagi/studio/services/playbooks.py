@@ -4,7 +4,7 @@ from typing import Any
 
 import yaml
 
-from lionagi.cli._runs import LIONAGI_HOME
+from lionagi._paths import LIONAGI_HOME
 
 from ._path_safety import public_path, safe_path_join
 

@@ -133,11 +133,7 @@ def to_list(
             return list(input_) if use_values else [input_]
 
         if isinstance(input_, Mapping):
-            return (
-                list(input_.values())
-                if use_values and hasattr(input_, "values")
-                else [input_]
-            )
+            return list(input_.values()) if use_values and hasattr(input_, "values") else [input_]
 
         if isinstance(input_, _MODEL_LIKE):
             return [input_]
@@ -152,9 +148,7 @@ def to_list(
 
     initial_list = _to_list_type(input_, use_values=use_values)
     skip_types: tuple[type, ...] = _SKIP_TYPE if flatten_tuple_set else _SKIP_TUPLE_SET
-    processed = _process_list(
-        initial_list, flatten=flatten, dropna=dropna, skip_types=skip_types
-    )
+    processed = _process_list(initial_list, flatten=flatten, dropna=dropna, skip_types=skip_types)
 
     if unique:
         seen = set()

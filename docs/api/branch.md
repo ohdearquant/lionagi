@@ -24,14 +24,13 @@ branch = li.Branch(
 | `system` | `System \| JsonValue` | `None` | System prompt (str or dict) |
 | `chat_model` | `iModel \| dict \| str` | `None` | Primary model for chat / communicate / operate |
 | `parse_model` | `iModel \| dict \| str` | `None` | Model used for `parse()` retries |
-| `imodel` | `iModel` | `None` | Deprecated alias for `chat_model` |
 | `tools` | `FuncTool \| list[FuncTool]` | `None` | Pre-register tools on construction |
 | `messages` | `Pile[RoledMessage]` | `None` | Restore prior conversation history |
 | `logs` | `Pile[Log]` | `None` | Restore prior activity logs |
 | `log_config` | `DataLoggerConfig \| dict` | `None` | Log output configuration |
 | `system_datetime` | `bool \| str` | `None` | Inject current timestamp into system prompt |
-| `system_template` | `str \| None` | `None` | Jinja2-style system template string |
-| `system_template_context` | `dict` | `None` | Variables for `system_template` |
+| `system_template` | `str \| None` | `None` | **Deprecated** — emits `DeprecationWarning`, has no effect; will be removed in a future release |
+| `system_template_context` | `dict` | `None` | **Deprecated** — emits `DeprecationWarning`, has no effect; will be removed in a future release |
 | `use_lion_system_message` | `bool` | `False` | Prepend LIONAGI system preamble |
 
 ## Properties

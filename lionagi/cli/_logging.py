@@ -88,9 +88,7 @@ class _LazyStderrHandler(logging.StreamHandler):
         super().emit(record)
 
 
-def _setup_channel(
-    name: str, level: int, formatter: logging.Formatter
-) -> logging.Logger:
+def _setup_channel(name: str, level: int, formatter: logging.Formatter) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.setLevel(level)
     logger.propagate = False

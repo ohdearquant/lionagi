@@ -11,7 +11,6 @@ from lionagi.ln.fuzzy import string_similarity
 from lionagi.utils import is_same_dtype
 
 
-# TODO: Make select a field to be added into a model, much like reason and action
 class SelectionModel(BaseModel):
     """Model representing the selection output."""
 
@@ -58,7 +57,10 @@ def parse_to_representation(
         if is_same_dtype(choices, str):
             return choices, choices
 
-    raise NotImplementedError
+    raise TypeError(
+        f"Unsupported choices type: {type(choices).__name__!r}. "
+        "Expected list/tuple/set of str or BaseModel, dict, or Enum subclass."
+    )
 
 
 def get_choice_representation(choice: Any) -> str:
@@ -66,10 +68,10 @@ def get_choice_representation(choice: Any) -> str:
         return choice
 
     if isinstance(choice, BaseModel):
-        import json
+        from lionagi.ln import json_dumps
 
         schema = choice.model_json_schema()
-        return f"{choice.__class__.__name__}:\n{json.dumps(schema, indent=2)}"
+        return f"{choice.__class__.__name__}:\n{json_dumps(schema, pretty=True)}"
 
     if isinstance(choice, Enum):
         return get_choice_representation(choice.value)

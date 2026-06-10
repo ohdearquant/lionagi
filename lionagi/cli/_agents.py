@@ -34,9 +34,16 @@ Frontmatter fields (all optional, CLI flags override):
 
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
+from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
+from lionagi.libs.path_safety import validate_bare_name
+
+
+def _validate_bare_name(name: str) -> None:
+    validate_bare_name(name, label="agent profile name")
 
 
 def build_deadline_preamble(timeout_seconds: int) -> str:
@@ -84,43 +91,6 @@ class AgentProfile:
     lion_system: bool = True
     artifact_defaults: dict | None = None
     extra: dict = field(default_factory=dict)
-
-
-def _find_lionagi_dirs() -> list[Path]:
-    """Find .lionagi/ directories — project-local first, then global ~/.lionagi/.
-
-    Returns all found directories in priority order (project-local wins).
-    """
-    dirs: list[Path] = []
-
-    # 1. Git root
-    try:
-        root = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],  # noqa: S607 — git is expected on $PATH
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if root.returncode == 0:
-            candidate = Path(root.stdout.strip()) / ".lionagi"
-            if candidate.is_dir():
-                dirs.append(candidate)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    # 2. Walk up from cwd
-    cwd = Path.cwd()
-    for parent in [cwd, *cwd.parents]:
-        candidate = parent / ".lionagi"
-        if candidate.is_dir() and candidate not in dirs:
-            dirs.append(candidate)
-
-    # 3. Global ~/.lionagi/ (always check)
-    home_candidate = Path.home() / ".lionagi"
-    if home_candidate.is_dir() and home_candidate not in dirs:
-        dirs.append(home_candidate)
-
-    return dirs
 
 
 def _find_lionagi_dir() -> Path | None:
@@ -172,7 +142,9 @@ def load_agent_profile(name: str) -> AgentProfile:
     Searches project-local .lionagi/agents/ first, then ~/.lionagi/agents/.
     Resolves directory layout (<name>/<name>.md) before flat (<name>.md).
     Raises FileNotFoundError if not found in any location.
+    Raises ValueError if name contains path separators or traversal components.
     """
+    _validate_bare_name(name)
     dirs = _find_lionagi_dirs()
     if not dirs:
         raise FileNotFoundError(
@@ -194,22 +166,7 @@ def load_agent_profile(name: str) -> AgentProfile:
 
 
 def _parse_profile(name: str, text: str) -> AgentProfile:
-    """Parse YAML frontmatter + markdown body."""
-    frontmatter = {}
-    body = text
-
-    if text.startswith("---"):
-        parts = text.split("---", 2)
-        if len(parts) >= 3:
-            fm_text = parts[1].strip()
-            body = parts[2].strip()
-            if fm_text:
-                import yaml
-
-                loaded = yaml.safe_load(fm_text) or {}
-                if not isinstance(loaded, dict):
-                    loaded = {}
-                frontmatter = loaded
+    frontmatter, body = _parse_frontmatter(text)
 
     lion_system = bool(frontmatter.get("lion_system", True))
     if lion_system:

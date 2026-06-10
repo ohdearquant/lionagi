@@ -63,13 +63,9 @@ class TestActionManagerDictRegistration:
         """Test updating existing dict tool with update=True."""
         manager = ActionManager()
 
-        original_config = {
-            "update_tool": {"command": "python", "args": ["-m", "original"]}
-        }
+        original_config = {"update_tool": {"command": "python", "args": ["-m", "original"]}}
 
-        updated_config = {
-            "update_tool": {"command": "python", "args": ["-m", "updated"]}
-        }
+        updated_config = {"update_tool": {"command": "python", "args": ["-m", "updated"]}}
 
         manager.register_tool(original_config)
         manager.register_tool(updated_config, update=True)
@@ -131,13 +127,9 @@ class TestActionManagerMatchToolEdgeCases:
         """Test match_tool with unregistered function name."""
         manager = ActionManager()
 
-        request = ActionRequest(
-            content={"function": "nonexistent_func", "arguments": {}}
-        )
+        request = ActionRequest(content={"function": "nonexistent_func", "arguments": {}})
 
-        with pytest.raises(
-            ValueError, match="Function nonexistent_func is not registered"
-        ):
+        with pytest.raises(ValueError, match="Function nonexistent_func is not registered"):
             manager.match_tool(request)
 
 
@@ -200,9 +192,7 @@ class TestActionManagerSchemaEdgeCases:
         """Test _get_tool_schema with unregistered string name."""
         manager = ActionManager()
 
-        with pytest.raises(
-            ValueError, match="Tool unregistered_name is not registered"
-        ):
+        with pytest.raises(ValueError, match="Tool unregistered_name is not registered"):
             manager._get_tool_schema("unregistered_name")
 
 
@@ -252,9 +242,7 @@ class TestActionManagerMCPMethodStubs:
         manager = ActionManager()
 
         # Mock the MCP connection pool to avoid real MCP dependencies
-        with patch(
-            "lionagi.service.connections.mcp_wrapper.MCPConnectionPool"
-        ) as mock_pool:
+        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
             mock_client = AsyncMock()
             mock_tool = Mock()
             mock_tool.name = "mocked_tool"
@@ -278,9 +266,7 @@ class TestActionManagerMCPMethodStubs:
         manager = ActionManager()
 
         # Mock the MCP connection pool
-        with patch(
-            "lionagi.service.connections.mcp_wrapper.MCPConnectionPool"
-        ) as mock_pool:
+        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
             mock_pool.load_config = Mock()
             mock_pool._configs = {"test_server": {"command": "python"}}
 
@@ -301,26 +287,20 @@ class TestLoadMCPToolsFunction:
     @pytest.mark.asyncio
     async def test_load_mcp_tools_no_servers_error(self):
         """Test load_mcp_tools raises error when no servers specified."""
-        with pytest.raises(
-            ValueError, match="Either provide server_names or config_path"
-        ):
+        with pytest.raises(ValueError, match="Either provide server_names or config_path"):
             await load_mcp_tools()
 
     @pytest.mark.asyncio
     async def test_load_mcp_tools_with_server_names(self):
         """Test load_mcp_tools with explicit server names."""
         # Mock the ActionManager and its methods
-        with patch(
-            "lionagi.protocols.action.manager.ActionManager"
-        ) as mock_manager_class:
+        with patch("lionagi.protocols.action.manager.ActionManager") as mock_manager_class:
             mock_manager = Mock()
             mock_manager.registry = {
                 "tool1": Mock(spec=Tool),
                 "tool2": Mock(spec=Tool),
             }
-            mock_manager.register_mcp_server = AsyncMock(
-                return_value=["tool1", "tool2"]
-            )
+            mock_manager.register_mcp_server = AsyncMock(return_value=["tool1", "tool2"])
             mock_manager_class.return_value = mock_manager
 
             result = await load_mcp_tools(server_names=["test_server"])

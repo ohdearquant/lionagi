@@ -46,9 +46,7 @@ class TestProcessorStreamingPath:
         class _StreamProc(Processor):
             event_type: ClassVar[type[Event]] = _StreamEvent
 
-        proc = _StreamProc(
-            queue_capacity=5, capacity_refresh_time=0.01, concurrency_limit=1
-        )
+        proc = _StreamProc(queue_capacity=5, capacity_refresh_time=0.01, concurrency_limit=1)
         event = _StreamEvent()
         await proc.enqueue(event)
         await asyncio.wait_for(proc.process(), timeout=3.0)
@@ -58,9 +56,7 @@ class TestProcessorStreamingPath:
         class _StreamProc2(Processor):
             event_type: ClassVar[type[Event]] = _StreamEvent
 
-        proc = _StreamProc2(
-            queue_capacity=5, capacity_refresh_time=0.01, concurrency_limit=2
-        )
+        proc = _StreamProc2(queue_capacity=5, capacity_refresh_time=0.01, concurrency_limit=2)
         events = [_StreamEvent() for _ in range(2)]
         for e in events:
             await proc.enqueue(e)
@@ -72,9 +68,7 @@ class TestProcessorStreamingPath:
         class _StreamProc3(Processor):
             event_type: ClassVar[type[Event]] = _StreamEvent
 
-        proc = _StreamProc3(
-            queue_capacity=5, capacity_refresh_time=0.01, concurrency_limit=0
-        )
+        proc = _StreamProc3(queue_capacity=5, capacity_refresh_time=0.01, concurrency_limit=0)
         event = _StreamEvent()
         await proc.enqueue(event)
         await asyncio.wait_for(proc.process(), timeout=3.0)

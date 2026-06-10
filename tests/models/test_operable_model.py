@@ -360,9 +360,9 @@ def test_to_dict_with_unset_field():
     model.add_field("unassigned_field")  # No 'value' => remains UNDEFINED
 
     output = model.to_dict()
-    assert (
-        "unassigned_field" not in output
-    ), "Field that remains UNDEFINED should not appear in to_dict() output."
+    assert "unassigned_field" not in output, (
+        "Field that remains UNDEFINED should not appear in to_dict() output."
+    )
 
 
 def test_field_getattr_looks_in_json_schema_extra():

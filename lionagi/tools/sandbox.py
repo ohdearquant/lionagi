@@ -15,12 +15,13 @@ Why worktrees over tempdir:
 
 from __future__ import annotations
 
-import subprocess
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from lionagi.ln.concurrency import run_sync
+
+from ._subprocess import _subprocess_sync
 
 
 @dataclass
@@ -33,19 +34,11 @@ class SandboxSession:
 
 
 def _run_git(args: list[str], cwd: str | None = None) -> tuple[str, str, int]:
-    result = subprocess.run(
-        ["git"] + args,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        cwd=cwd,
-    )
-    return result.stdout.strip(), result.stderr.strip(), result.returncode
+    result = _subprocess_sync(["git"] + args, False, 30.0, cwd)  # noqa: S603  # argv is always ["git"] + validated git sub-commands; no shell interpolation
+    return result["stdout"].strip(), result["stderr"].strip(), result["returncode"]
 
 
-def _create_worktree_sync(
-    repo_root: str, branch_name: str, base_branch: str
-) -> SandboxSession:
+def _create_worktree_sync(repo_root: str, branch_name: str, base_branch: str) -> SandboxSession:
     """Create a git worktree for isolated work."""
     root = Path(repo_root)
     worktree_dir = root / ".worktrees" / branch_name
@@ -112,6 +105,7 @@ def _cleanup_worktree_sync(session: SandboxSession) -> dict:
         ["branch", "-D", session.branch_name],
         cwd=session.repo_root,
     )
+    session.is_active = False
     return {
         "worktree_removed": rc1 == 0,
         "branch_deleted": rc2 == 0,
@@ -122,9 +116,7 @@ def _cleanup_worktree_sync(session: SandboxSession) -> dict:
 def _merge_sync(session: SandboxSession) -> dict:
     """Merge worktree branch back into base branch."""
     _run_git(["add", "-A"], cwd=session.worktree_path)
-    _run_git(
-        ["commit", "-m", f"sandbox: {session.branch_name}"], cwd=session.worktree_path
-    )
+    _run_git(["commit", "-m", f"sandbox: {session.branch_name}"], cwd=session.worktree_path)
 
     stdout, stderr, rc = _run_git(
         [

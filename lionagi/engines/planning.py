@@ -157,6 +157,11 @@ class PlanningEngine(Engine):
             res = op_results.get(nid)
             outputs.append(f"## {ta.assignee}\n{res if res is not None else '(no output)'}")
         run.notify("synthesizing", outputs=len(outputs))
-        synth = await run.make_agent(self.synthesis_role, name="synthesizer")
+        synth = await run.make_agent(
+            self.synthesis_role,
+            name="synthesizer",
+            model=self.model_for("synthesize"),
+            exempt=True,
+        )
         res = await synth.operate(instruction=_synthesis_instruction(prompt, outputs))
         return str(res) if res is not None else ""

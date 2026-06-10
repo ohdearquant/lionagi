@@ -1,31 +1,24 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Resilience patterns for API clients.
-
-This module provides resilience patterns for API clients, including
-the CircuitBreaker pattern and retry with exponential backoff.
-"""
+"""Resilience patterns: circuit breaker and retry with exponential backoff."""
 
 import functools
 import logging
-import random
 import time
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from typing import Any, TypeVar
 
-import anyio
-
 from lionagi.ln.concurrency import Lock
+from lionagi.ln.concurrency import retry as _canonical_retry
 
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
 
 class APIClientError(Exception):
-    """Base exception for all API client errors."""
+    """Base exception for API client errors."""
 
     def __init__(
         self,
@@ -34,15 +27,6 @@ class APIClientError(Exception):
         headers: dict[str, str] | None = None,
         response_data: dict[str, Any] | None = None,
     ):
-        """
-        Initialize the API client error.
-
-        Args:
-            message: The error message.
-            status_code: The HTTP status code, if applicable.
-            headers: The response headers, if applicable.
-            response_data: The response data, if applicable.
-        """
         self.message = message
         self.status_code = status_code
         self.headers = headers or {}
@@ -51,54 +35,21 @@ class APIClientError(Exception):
 
 
 class CircuitBreakerOpenError(APIClientError):
-    """Exception raised when a circuit breaker is open."""
+    """Raised when a circuit breaker is open."""
 
     def __init__(self, message: str, retry_after: float | None = None):
-        """
-        Initialize the circuit breaker open error.
-
-        Args:
-            message: The error message.
-            retry_after: The time to wait before retrying, in seconds.
-        """
         super().__init__(message)
         self.retry_after = retry_after
 
 
 class CircuitState(Enum):
-    """Circuit breaker states."""
-
-    CLOSED = "closed"  # Normal operation
-    OPEN = "open"  # Failing, rejecting requests
-    HALF_OPEN = "half_open"  # Testing if service recovered
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
 
 
 class CircuitBreaker:
-    """
-    Circuit breaker pattern implementation for preventing calls to failing services.
-
-    The circuit breaker pattern prevents repeated calls to a failing service,
-    based on the principle of "fail fast" for better system resilience. When
-    a service fails repeatedly, the circuit opens and rejects requests for a
-    period of time, then transitions to a half-open state to test if the
-    service has recovered.
-
-    Example:
-        ```python
-        # Create a circuit breaker with a failure threshold of 5
-        # and a recovery time of 30 seconds
-        breaker = CircuitBreaker(failure_threshold=5, recovery_time=30.0)
-
-        # Execute a function with circuit breaker protection
-        try:
-            result = await breaker.execute(my_async_function, arg1, arg2, kwarg1=value1)
-        except CircuitBreakerOpenError:
-            # Handle the case where the circuit is open
-            with contextlib.suppress(Exception):
-                # Alternative approach using contextlib.suppress
-                pass
-        ```
-    """
+    """Fail-fast circuit breaker for async service calls."""
 
     def __init__(
         self,
@@ -108,30 +59,18 @@ class CircuitBreaker:
         excluded_exceptions: set[type[Exception]] | None = None,
         name: str = "default",
     ):
-        """
-        Initialize the circuit breaker.
-
-        Args:
-            failure_threshold: Number of failures before opening the circuit.
-            recovery_time: Time in seconds to wait before transitioning to half-open.
-            half_open_max_calls: Maximum number of calls allowed in half-open state.
-            excluded_exceptions: Set of exception types that should not count as failures.
-            name: Name of the circuit breaker for logging and metrics.
-        """
         self.failure_threshold = failure_threshold
         self.recovery_time = recovery_time
         self.half_open_max_calls = half_open_max_calls
         self.excluded_exceptions = excluded_exceptions or set()
         self.name = name
 
-        # State variables
         self.failure_count = 0
         self.state = CircuitState.CLOSED
         self.last_failure_time = 0
         self._half_open_calls = 0
         self._lock = Lock()
 
-        # Metrics
         self._metrics = {
             "success_count": 0,
             "failure_count": 0,
@@ -146,7 +85,6 @@ class CircuitBreaker:
 
     @property
     def metrics(self) -> dict[str, Any]:
-        """Get circuit breaker metrics."""
         return self._metrics.copy()
 
     def to_dict(self):
@@ -158,12 +96,6 @@ class CircuitBreaker:
         }
 
     async def _change_state(self, new_state: CircuitState) -> None:
-        """
-        Change circuit state with logging and metrics tracking.
-
-        Args:
-            new_state: The new circuit state.
-        """
         old_state = self.state
         if new_state != old_state:
             self.state = new_state
@@ -179,30 +111,20 @@ class CircuitBreaker:
                 f"Circuit '{self.name}' state changed from {old_state.value} to {new_state.value}"
             )
 
-            # Reset counters on state change
             if new_state == CircuitState.HALF_OPEN:
                 self._half_open_calls = 0
             elif new_state == CircuitState.CLOSED:
                 self.failure_count = 0
 
     async def _check_state(self) -> bool:
-        """
-        Check circuit state and determine if request can proceed.
-
-        Returns:
-            True if request can proceed, False otherwise.
-        """
         async with self._lock:
             now = time.time()
 
             if self.state == CircuitState.OPEN:
-                # Check if recovery time has elapsed
                 if now - self.last_failure_time >= self.recovery_time:
                     await self._change_state(CircuitState.HALF_OPEN)
                 else:
-                    recovery_remaining = self.recovery_time - (
-                        now - self.last_failure_time
-                    )
+                    recovery_remaining = self.recovery_time - (now - self.last_failure_time)
                     self._metrics["rejected_count"] += 1
 
                     logger.warning(
@@ -213,7 +135,6 @@ class CircuitBreaker:
                     return False
 
             if self.state == CircuitState.HALF_OPEN:
-                # Only allow a limited number of calls in half-open state
                 if self._half_open_calls >= self.half_open_max_calls:
                     self._metrics["rejected_count"] += 1
 
@@ -227,25 +148,8 @@ class CircuitBreaker:
 
             return True
 
-    async def execute(
-        self, func: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any
-    ) -> T:
-        """
-        Execute a coroutine with circuit breaker protection.
-
-        Args:
-            func: The coroutine function to execute.
-            *args: Positional arguments for the function.
-            **kwargs: Keyword arguments for the function.
-
-        Returns:
-            The result of the function execution.
-
-        Raises:
-            CircuitBreakerOpenError: If the circuit is open.
-            Exception: Any exception raised by the function.
-        """
-        # Check if circuit allows this call
+    async def execute(self, func: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any) -> T:
+        """Execute with circuit breaker protection."""
         can_proceed = await self._check_state()
         if not can_proceed:
             remaining = self.recovery_time - (time.time() - self.last_failure_time)
@@ -260,21 +164,16 @@ class CircuitBreaker:
             )
             result = await func(*args, **kwargs)
 
-            # Handle success
             async with self._lock:
                 self._metrics["success_count"] += 1
 
-                # On success in half-open state, close the circuit
                 if self.state == CircuitState.HALF_OPEN:
                     await self._change_state(CircuitState.CLOSED)
 
             return result
 
         except Exception as e:
-            # Determine if this exception should count as a circuit failure
-            is_excluded = any(
-                isinstance(e, exc_type) for exc_type in self.excluded_exceptions
-            )
+            is_excluded = any(isinstance(e, exc_type) for exc_type in self.excluded_exceptions)
 
             if not is_excluded:
                 async with self._lock:
@@ -282,13 +181,11 @@ class CircuitBreaker:
                     self.last_failure_time = time.time()
                     self._metrics["failure_count"] += 1
 
-                    # Log failure
                     logger.warning(
                         f"Circuit '{self.name}' failure: {e}. "
                         f"Count: {self.failure_count}/{self.failure_threshold}"
                     )
 
-                    # Check if we need to open the circuit
                     if (
                         self.state == CircuitState.CLOSED
                         and self.failure_count >= self.failure_threshold
@@ -300,7 +197,7 @@ class CircuitBreaker:
 
 
 class RetryConfig:
-    """Configuration for retry behavior."""
+    """Configuration for retry with exponential backoff."""
 
     def __init__(
         self,
@@ -318,20 +215,8 @@ class RetryConfig:
         ),
         exclude_exceptions: tuple[type[Exception], ...] = (),
     ):
-        """
-        Initialize retry configuration.
-
-        Args:
-            max_retries: Maximum number of retry attempts.
-            base_delay: Initial delay between retries in seconds.
-            max_delay: Maximum delay between retries in seconds.
-            backoff_factor: Multiplier applied to delay after each retry.
-            jitter: Whether to add randomness to delay timings.
-            jitter_factor: How much randomness to add as a percentage.
-            retry_exceptions: Tuple of exception types that should trigger retry.
-                Defaults to transient errors only (API, connection, timeout).
-            exclude_exceptions: Tuple of exception types that should not be retried.
-        """
+        if backoff_factor < 1.0:
+            raise ValueError("backoff_factor must be >= 1.0")
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.max_delay = max_delay
@@ -342,12 +227,6 @@ class RetryConfig:
         self.exclude_exceptions = exclude_exceptions
 
     def to_dict(self) -> dict[str, Any]:
-        """
-        Convert configuration to a dictionary.
-
-        Returns:
-            Dictionary representation of the configuration.
-        """
         return {
             "max_retries": self.max_retries,
             "base_delay": self.base_delay,
@@ -358,12 +237,6 @@ class RetryConfig:
         }
 
     def as_kwargs(self) -> dict[str, Any]:
-        """
-        Convert configuration to keyword arguments for retry_with_backoff.
-
-        Returns:
-            Dictionary of keyword arguments.
-        """
         return {
             "max_retries": self.max_retries,
             "base_delay": self.base_delay,
@@ -393,67 +266,48 @@ async def retry_with_backoff(
     jitter_factor: float = 0.2,
     **kwargs: Any,
 ) -> T:
-    """
-    Retry an async function with exponential backoff.
+    async def _fn() -> T:
+        return await func(*args, **kwargs)
 
-    Args:
-        func: The async function to retry.
-        *args: Positional arguments for the function.
-        retry_exceptions: Tuple of exception types to retry.
-        exclude_exceptions: Tuple of exception types to not retry.
-        max_retries: Maximum number of retries.
-        base_delay: Initial delay between retries in seconds.
-        max_delay: Maximum delay between retries in seconds.
-        backoff_factor: Factor to increase delay with each retry.
-        jitter: Whether to add randomness to the delay.
-        jitter_factor: How much randomness to add as a percentage.
-        **kwargs: Keyword arguments for the function.
+    if exclude_exceptions:
+        # Runtime dispatch: exclude_exceptions must be checked per-instance,
+        # not per-type, to correctly handle subclass hierarchies (e.g.
+        # retry_on=(OSError,), exclude=(ConnectionError,) — ConnectionError
+        # IS-A OSError but must not be retried).
+        class _Excluded(BaseException):
+            def __init__(self, inner: Exception):
+                self.inner = inner
 
-    Returns:
-        The result of the function execution.
+        _inner = _fn
 
-    Raises:
-        Exception: The last exception raised by the function after all retries.
-    """
-    retries = 0
-    delay = base_delay
+        async def _fn_guarded() -> T:
+            try:
+                return await _inner()
+            except exclude_exceptions as exc:
+                raise _Excluded(exc) from exc
 
-    while True:
         try:
-            return await func(*args, **kwargs)
-        except exclude_exceptions:
-            # Don't retry these exceptions
-            logger.debug(f"Not retrying {func.__name__} for excluded exception type")
-            raise
-        except retry_exceptions as e:
-            # No need to store the exception since we're raising it if max retries reached
-            retries += 1
-            if retries > max_retries:
-                logger.warning(
-                    f"Maximum retries ({max_retries}) reached for {func.__name__}"
-                )
-                raise
-
-            # Calculate backoff with optional jitter
-            if jitter:
-                # This is not used for cryptographic purposes, just for jitter
-                jitter_amount = random.uniform(
-                    1.0 - jitter_factor, 1.0 + jitter_factor
-                )  # noqa: S311
-                current_delay = min(delay * jitter_amount, max_delay)
-            else:
-                current_delay = min(delay, max_delay)
-
-            logger.info(
-                f"Retry {retries}/{max_retries} for {func.__name__} "
-                f"after {current_delay:.2f}s delay. Error: {e!s}"
+            return await _canonical_retry(
+                _fn_guarded,
+                attempts=max_retries + 1,
+                base_delay=base_delay,
+                max_delay=max_delay,
+                backoff_factor=backoff_factor,
+                retry_on=retry_exceptions,
+                jitter=jitter_factor if jitter else 0.0,
             )
+        except _Excluded as wrapper:
+            raise wrapper.inner from wrapper.__cause__
 
-            # Increase delay for next iteration
-            delay = delay * backoff_factor
-
-            # Wait before retrying
-            await anyio.sleep(current_delay)
+    return await _canonical_retry(
+        _fn,
+        attempts=max_retries + 1,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        backoff_factor=backoff_factor,
+        retry_on=retry_exceptions,
+        jitter=jitter_factor if jitter else 0.0,
+    )
 
 
 def circuit_breaker(
@@ -463,27 +317,12 @@ def circuit_breaker(
     excluded_exceptions: set[type[Exception]] | None = None,
     name: str | None = None,
 ) -> Callable[[Callable[..., Awaitable[T]]], Callable[..., Awaitable[T]]]:
-    """
-    Decorator to apply circuit breaker pattern to an async function.
-
-    Args:
-        failure_threshold: Number of failures before opening the circuit.
-        recovery_time: Time in seconds to wait before transitioning to half-open.
-        half_open_max_calls: Maximum number of calls allowed in half-open state.
-        excluded_exceptions: Set of exception types that should not count as failures.
-        name: Name of the circuit breaker for logging and metrics.
-
-    Returns:
-        Decorator function that applies circuit breaker pattern.
-    """
+    """Decorator applying circuit breaker pattern to an async function."""
 
     def decorator(
         func: Callable[..., Awaitable[T]],
     ) -> Callable[..., Awaitable[T]]:
-        # Create a unique name for the circuit breaker if not provided
         cb_name = name or f"cb_{func.__module__}_{func.__qualname__}"
-
-        # Create circuit breaker instance
         cb = CircuitBreaker(
             failure_threshold=failure_threshold,
             recovery_time=recovery_time,
@@ -516,22 +355,7 @@ def with_retry(
     ),
     exclude_exceptions: tuple[type[Exception], ...] = (),
 ) -> Callable[[Callable[..., Awaitable[T]]], Callable[..., Awaitable[T]]]:
-    """
-    Decorator to apply retry with backoff pattern to an async function.
-
-    Args:
-        max_retries: Maximum number of retry attempts.
-        base_delay: Initial delay between retries in seconds.
-        max_delay: Maximum delay between retries in seconds.
-        backoff_factor: Multiplier applied to delay after each retry.
-        jitter: Whether to add randomness to delay timings.
-        jitter_factor: How much randomness to add as a percentage.
-        retry_exceptions: Tuple of exception types that should trigger retry.
-        exclude_exceptions: Tuple of exception types that should not be retried.
-
-    Returns:
-        Decorator function that applies retry pattern.
-    """
+    """Decorator applying retry with exponential backoff to an async function."""
 
     def decorator(
         func: Callable[..., Awaitable[T]],

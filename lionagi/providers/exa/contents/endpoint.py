@@ -36,9 +36,7 @@ class ExaContentsEndpoint(Endpoint):
         if config is None:
             from lionagi.config import settings
 
-            kwargs.setdefault(
-                "api_key", settings.EXA_API_KEY or "dummy-key-for-testing"
-            )
+            kwargs.setdefault("api_key", settings.EXA_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("timeout", 120)
             kwargs.setdefault("max_retries", 3)
         super().__init__(config=config, **kwargs)
@@ -51,11 +49,7 @@ class ExaContentsEndpoint(Endpoint):
     ):
         if self.config.request_options is not None:
             model_cls = self.config.request_options
-            raw = (
-                request
-                if isinstance(request, dict)
-                else request.model_dump(exclude_none=True)
-            )
+            raw = request if isinstance(request, dict) else request.model_dump(exclude_none=True)
             merged = {**self.config.kwargs, **raw, **kwargs}
             obj = model_cls.model_validate(merged)
             payload = obj.model_dump(by_alias=True, exclude_none=True)

@@ -57,7 +57,7 @@ def _assistant(text: str) -> AssistantResponse:
 
 
 def test_extract_single_capability():
-    bundles, violations = _attempt_extract(
+    bundles, violations, _rejects = _attempt_extract(
         '{"finding": {"claim": "x", "confidence": 0.9}}', _grant()
     )
     assert len(bundles) == 1 and not violations
@@ -67,7 +67,7 @@ def test_extract_single_capability():
 
 def test_extract_multiple_keys_one_block():
     text = '```json\n{"finding": {"claim": "y"}, "question": {"text": "why?"}}\n```'
-    bundles, _ = _attempt_extract(text, _grant())
+    bundles, _, _ = _attempt_extract(text, _grant())
     assert len(bundles) == 1
     assert bundles[0].finding.claim == "y"
     assert bundles[0].question.text == "why?"
@@ -82,25 +82,25 @@ def test_extract_multiple_blocks_one_message():
         '```json\n{"finding": {"claim": "second", "confidence": 0.9}}\n```\n'
         "done."
     )
-    bundles, _ = _attempt_extract(text, _grant())
+    bundles, _, _ = _attempt_extract(text, _grant())
     assert len(bundles) == 2
     assert [b.finding.claim for b in bundles] == ["first", "second"]
 
 
 def test_extract_prose_returns_empty():
-    assert _attempt_extract("just thinking out loud", _grant()) == ([], [])
+    assert _attempt_extract("just thinking out loud", _grant()) == ([], [], [])
 
 
 def test_extract_non_capability_json_ignored():
     # valid JSON, keys disjoint from the grant → ordinary output, not a capability
-    assert _attempt_extract('{"unrelated": 1}', _grant()) == ([], [])
+    assert _attempt_extract('{"unrelated": 1}', _grant()) == ([], [], [])
 
 
 def test_extract_illegal_emission_becomes_violation(caplog):
     from lionagi.session.capabilities import CapabilityViolation
 
     # 'secret' is outside the grant → not honored, recorded as a violation
-    bundles, violations = _attempt_extract(
+    bundles, violations, _rejects = _attempt_extract(
         '{"finding": {"claim": "z"}, "secret": {"x": 1}}', _grant()
     )
     assert bundles == []  # the mixed block is not honored
@@ -127,6 +127,38 @@ async def test_violation_emitted_as_bus_signal():
     )
 
     assert caught == [["secret"]]  # governance observer fired on the over-grant
+
+
+def test_extract_invalid_in_grant_block_becomes_reject():
+    from lionagi.session.capabilities import EmissionRejected
+
+    # 'finding' is granted but the block fails schema validation (bad type)
+    bundles, violations, rejects = _attempt_extract(
+        '{"finding": {"claim": "z", "confidence": "very high"}}', _grant()
+    )
+    assert bundles == [] and violations == []
+    assert len(rejects) == 1
+    r = rejects[0]
+    assert isinstance(r, EmissionRejected)
+    assert "confidence" in r.error
+    assert r.block == {"finding": {"claim": "z", "confidence": "very high"}}
+
+
+async def test_reject_emitted_as_bus_signal_with_branch_name():
+    from lionagi.session.capabilities import EmissionRejected
+
+    s = Session()
+    caught = []
+    s.observe(EmissionRejected, lambda r, _: caught.append(r.branch_name))
+
+    branch = s.default_branch
+    branch.name = "weak-extractor"
+    branch.capabilities = _grant()
+    await _emit_message_signal(
+        branch, _assistant('{"finding": {"claim": "z", "confidence": "very high"}}')
+    )
+
+    assert caught == ["weak-extractor"]  # repair observers can attribute it
 
 
 # -- assistant capability bundle → bus, observed by TYPE --------------------

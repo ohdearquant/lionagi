@@ -27,7 +27,8 @@ async def list_runs(
 
 @router.get("/{run_id}")
 async def get_run(run_id: str) -> dict[str, Any]:
-    run = runs_svc.get_run(run_id)
+    # get_run reads from StateDB (same source as list_runs); no thread offload needed.
+    run = await runs_svc.get_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
     return run

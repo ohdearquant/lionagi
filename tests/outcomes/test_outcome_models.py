@@ -15,9 +15,9 @@ from pydantic import ValidationError
 
 from lionagi.outcomes import (
     CIResult,
-    Finding,
     GateVerdict,
-    ReviewVerdict,
+    ReviewFinding,
+    ReviewOutcome,
     SkillOutcome,
 )
 from lionagi.outcomes.ci import CIRunCommand
@@ -39,12 +39,9 @@ def test_skill_outcome_dump_round_trips():
     assert again == o
 
 
-# ── ReviewVerdict ─────────────────────────────────────────────────────────────
-
-
 def test_review_verdict_default_outcome_kind_pinned():
     """ADR-0021 promises kind='review_verdict' — frontend dispatch depends on it."""
-    v = ReviewVerdict(
+    v = ReviewOutcome(
         verdict="APPROVE",
         summary="LGTM",
     )
@@ -55,43 +52,43 @@ def test_review_verdict_default_outcome_kind_pinned():
 
 def test_review_verdict_accepts_hyphenated_producer_string():
     """Producer strings like APPROVE-WITH-SUGGESTIONS are normalized on ingest."""
-    v = ReviewVerdict.model_validate({"verdict": "APPROVE-WITH-SUGGESTIONS", "summary": "ok"})
+    v = ReviewOutcome.model_validate({"verdict": "APPROVE-WITH-SUGGESTIONS", "summary": "ok"})
     assert v.verdict == "APPROVE_WITH_SUGGESTIONS"
 
 
 def test_review_verdict_accepts_spaced_producer_string():
-    v = ReviewVerdict.model_validate({"verdict": "REQUEST CHANGES", "summary": "ok"})
+    v = ReviewOutcome.model_validate({"verdict": "REQUEST CHANGES", "summary": "ok"})
     assert v.verdict == "REQUEST_CHANGES"
 
 
 def test_review_verdict_rejects_unknown_decision():
     with pytest.raises(ValidationError):
-        ReviewVerdict(verdict="MEH", summary="?")
+        ReviewOutcome(verdict="MEH", summary="?")
 
 
 def test_review_verdict_round_must_be_positive():
     with pytest.raises(ValidationError):
-        ReviewVerdict(verdict="APPROVE", summary="ok", round=0)
+        ReviewOutcome(verdict="APPROVE", summary="ok", round=0)
 
 
 def test_finding_severity_constrained():
-    Finding(
+    ReviewFinding(
         severity="critical",
         category="security",
         description="rm -rf in user input",
     )
     with pytest.raises(ValidationError):
-        Finding(severity="hot", category="x", description="y")
+        ReviewFinding(severity="hot", category="x", description="y")
 
 
 def test_review_verdict_dump_round_trips():
-    v = ReviewVerdict(
+    v = ReviewOutcome(
         verdict="REQUEST_CHANGES",
         summary="3 issues",
         passed=False,
         round=2,
         findings=[
-            Finding(
+            ReviewFinding(
                 severity="high",
                 category="correctness",
                 file="src/main.py",
@@ -103,7 +100,7 @@ def test_review_verdict_dump_round_trips():
     )
     dumped = v.model_dump()
     assert dumped["outcome_kind"] == "review_verdict"
-    again = ReviewVerdict.model_validate(dumped)
+    again = ReviewOutcome.model_validate(dumped)
     assert again == v
 
 
@@ -179,8 +176,98 @@ def test_outcome_kinds_are_distinct():
     """Each concrete outcome must have a unique outcome_kind string —
     the frontend's switch dispatches on this value."""
     kinds = {
-        ReviewVerdict(verdict="APPROVE", summary="x").outcome_kind,
+        ReviewOutcome(verdict="APPROVE", summary="x").outcome_kind,
         GateVerdict(summary="x", gate_passed=True).outcome_kind,
         CIResult(summary="x").outcome_kind,
     }
     assert len(kinds) == 3
+
+
+def test_finding_rejects_absolute_unix_path():
+    with pytest.raises(ValidationError, match="repo-relative"):
+        ReviewFinding(severity="high", category="security", description="x", file="/etc/passwd")
+
+
+def test_finding_rejects_absolute_windows_path():
+    with pytest.raises(ValidationError, match="repo-relative"):
+        ReviewFinding(severity="high", category="security", description="x", file="C:\\secret.py")
+
+
+def test_finding_rejects_parent_traversal():
+    with pytest.raises(ValidationError, match="traversal"):
+        ReviewFinding(severity="high", category="security", description="x", file="../secret.py")
+
+
+def test_finding_rejects_deep_traversal():
+    with pytest.raises(ValidationError, match="traversal"):
+        ReviewFinding(
+            severity="medium",
+            category="correctness",
+            description="x",
+            file="foo/../../etc/passwd",
+        )
+
+
+def test_finding_rejects_nul_byte():
+    with pytest.raises(ValidationError, match="NUL"):
+        ReviewFinding(severity="low", category="style", description="x", file="foo\x00bar.py")
+
+
+def test_finding_rejects_line_zero():
+    """Line numbers must be 1-indexed (ge=1); 0 is invalid."""
+    with pytest.raises(ValidationError):
+        ReviewFinding(severity="low", category="style", description="x", line=0)
+
+
+def test_finding_rejects_negative_line():
+    with pytest.raises(ValidationError):
+        ReviewFinding(severity="low", category="style", description="x", line=-3)
+
+
+def test_finding_accepts_valid_relative_path():
+    f = ReviewFinding(severity="low", category="style", description="x", file="src/main.py")
+    assert f.file == "src/main.py"
+
+
+def test_finding_accepts_none_file():
+    f = ReviewFinding(severity="low", category="style", description="x", file=None)
+    assert f.file is None
+
+
+def test_finding_accepts_positive_line():
+    f = ReviewFinding(severity="info", category="docs", description="x", line=42)
+    assert f.line == 42
+
+
+def test_gate_verdict_defaults_passed_to_gate_passed_true():
+    """When passed is omitted, it defaults to gate_passed (LIONAGI-AUDIT-003)."""
+    g = GateVerdict(gate_passed=True, summary="ok")
+    assert g.passed is True
+
+
+def test_gate_verdict_defaults_passed_to_gate_passed_false():
+    g = GateVerdict(gate_passed=False, summary="nope")
+    assert g.passed is False
+
+
+def test_gate_verdict_rejects_contradictory_passed():
+    """gate_passed=True and passed=False is a contradictory state and must fail."""
+    with pytest.raises(ValidationError, match="gate_passed"):
+        GateVerdict(gate_passed=True, passed=False, summary="contradicts")
+
+
+def test_gate_verdict_rejects_contradictory_passed_reversed():
+    with pytest.raises(ValidationError, match="gate_passed"):
+        GateVerdict(gate_passed=False, passed=True, summary="contradicts")
+
+
+def test_gate_verdict_consistent_both_true():
+    g = GateVerdict(gate_passed=True, passed=True, summary="consistent")
+    assert g.gate_passed is True
+    assert g.passed is True
+
+
+def test_gate_verdict_consistent_both_false():
+    g = GateVerdict(gate_passed=False, passed=False, summary="consistent")
+    assert g.gate_passed is False
+    assert g.passed is False

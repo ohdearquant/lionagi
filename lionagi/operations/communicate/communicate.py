@@ -10,6 +10,7 @@ from lionagi.ln.fuzzy import FuzzyMatchKeysParams
 from lionagi.ln.fuzzy._fuzzy_validate import fuzzy_validate_mapping
 from lionagi.ln.types import Undefined
 
+from .._defaults import STANDARD_REMOVED_KWARGS
 from ..types import ChatParam, ParseParam
 
 if TYPE_CHECKING:
@@ -27,10 +28,8 @@ def prepare_communicate_kw(
     sender=None,
     recipient=None,
     progression=None,
-    request_model=None,
     response_format=None,
     request_fields=None,
-    imodel=None,
     chat_model=None,
     parse_model=None,
     skip_validation=False,
@@ -39,32 +38,14 @@ def prepare_communicate_kw(
     num_parse_retries=3,
     fuzzy_match_kwargs=None,
     clear_messages=False,
-    operative_model=None,
     include_token_usage_to_model: bool = False,
     **kwargs,
 ):
-    # Handle deprecated parameters
-    if operative_model:
-        warnings.warn(
-            "Parameter 'operative_model' is deprecated and will be removed in v0.21.0. "
-            "Use 'response_format' instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+    from .._guards import reject_removed_kwargs
 
-    if (
-        (operative_model and response_format)
-        or (operative_model and request_model)
-        or (response_format and request_model)
-    ):
-        raise ValueError(
-            "Cannot specify both operative_model and response_format "
-            "or operative_model and request_model as they are aliases "
-            "for the same parameter."
-        )
+    reject_removed_kwargs(kwargs, STANDARD_REMOVED_KWARGS, where="communicate")
 
-    response_format = response_format or operative_model or request_model
-    imodel = imodel or chat_model or branch.chat_model
+    imodel = chat_model or branch.chat_model
     parse_model = parse_model or branch.parse_model
 
     if num_parse_retries > 5:
@@ -144,10 +125,9 @@ async def communicate(
 
     # Handle response_format with parse
     if parse_param and chat_param.response_format:
-        from lionagi.protocols.messages.assistant_response import AssistantResponse
-
         # Pull structure from the instruction message
-        from lionagi.protocols.structure.base import Structure
+        from lionagi.operations.schema.structure import Structure
+        from lionagi.protocols.messages.assistant_response import AssistantResponse
 
         from ..parse.parse import parse
 

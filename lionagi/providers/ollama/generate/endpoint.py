@@ -18,7 +18,6 @@ from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.utils import is_import_installed
 
 from .._config import OllamaConfigs
-from .models import OllamaGenerateRequest
 
 __all__ = ("OllamaGenerateEndpoint",)
 
@@ -49,6 +48,9 @@ class OllamaGenerateEndpoint(Endpoint):
             )
         # Ollama does not need an API key
         kwargs.pop("api_key", None)
+        # Ollama runs on the local machine; allow loopback addresses in the SSRF
+        # guard while keeping all other blocked ranges (IMDS etc.) enforced.
+        kwargs.setdefault("allow_local_network", True)
         super().__init__(config=config, **kwargs)
 
     def create_payload(

@@ -9,6 +9,12 @@ on:
 permissions:
   contents: write
 
+# gh-deploy force-pushes gh-pages; concurrent runs race on the ref and the
+# loser fails with "cannot lock ref". Only the newest commit's docs matter.
+concurrency:
+  group: docs-deploy
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest

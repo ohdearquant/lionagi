@@ -2,27 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-import yaml
-
-from lionagi.cli._runs import LIONAGI_HOME
+from lionagi._paths import LIONAGI_HOME
+from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 
 from ._path_safety import public_path, safe_path_join
 
 SKILLS_ROOT = LIONAGI_HOME / "skills"
-
-
-def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    """Parse YAML frontmatter + markdown body. Returns (frontmatter_dict, body_text)."""
-    if not text.startswith("---"):
-        return {}, text
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return {}, text
-    try:
-        fm = yaml.safe_load(parts[1]) or {}
-    except yaml.YAMLError:
-        fm = {}
-    return fm if isinstance(fm, dict) else {}, parts[2].strip()
 
 
 def _find_skill_md(skill_dir: Any) -> Any | None:

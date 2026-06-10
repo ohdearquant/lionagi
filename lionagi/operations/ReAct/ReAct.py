@@ -1,13 +1,12 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: N999  -- module intentionally named ReAct (acronym); rename breaks public API
 
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from pydantic import BaseModel
-
-logger = logging.getLogger(__name__)
 
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.libs.validate.common_field_validators import validate_model_to_type
@@ -19,13 +18,15 @@ from ..fields import Instruct
 from ..types import ActionParam, ChatParam, HandleValidation, InterpretParam, ParseParam
 from .utils import Analysis, ReActAnalysis
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from lionagi.session.branch import Branch
 
 B = TypeVar("B", bound=type[BaseModel])
 
 
-async def ReAct(
+async def ReAct(  # noqa: N802  # public name is the ReAct acronym
     branch: "Branch",
     instruct: Instruct | dict[str, Any],
     interpret: bool = False,
@@ -59,9 +60,7 @@ async def ReAct(
         verbose_analysis = kwargs.pop("verbose")
 
     # Convert Instruct to dict if needed
-    instruct_dict = (
-        instruct.to_dict() if isinstance(instruct, Instruct) else dict(instruct)
-    )
+    instruct_dict = instruct.to_dict() if isinstance(instruct, Instruct) else dict(instruct)
 
     # Build InterpretParam if interpretation requested
     intp_param = None
@@ -74,18 +73,11 @@ async def ReAct(
             imodel_kw=interpret_kwargs or {},
         )
 
-    # Build ChatParam
-    chat_param = ChatParam(
+    chat_param = ChatParam.from_branch(
+        branch,
         guidance=instruct_dict.get("guidance"),
         context=instruct_dict.get("context"),
-        sender=branch.user or "user",
-        recipient=branch.id,
-        response_format=None,  # Will be set in operate calls
-        progression=None,
         tool_schemas=tool_schemas or [],
-        images=[],
-        image_detail="auto",
-        plain_content="",
         include_token_usage_to_model=include_token_usage_to_model,
         imodel=analysis_model or branch.chat_model,
         imodel_kw=kwargs,
@@ -149,7 +141,7 @@ async def ReAct(
     )
 
 
-async def ReAct_v1(
+async def ReAct_v1(  # noqa: N802  # public name preserves the ReAct acronym
     branch: "Branch",
     instruction: str,
     chat_param: ChatParam,
@@ -303,7 +295,7 @@ def handle_field_models(
     return fms
 
 
-async def ReActStream(
+async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
     branch: "Branch",
     instruction: str,
     chat_param: ChatParam,
@@ -443,9 +435,7 @@ async def ReActStream(
         from ..act.act import _get_default_call_params
 
         _actx = (
-            action_param.with_updates(
-                strategy=getattr(analysis, "action_strategy", "concurrent")
-            )
+            action_param.with_updates(strategy=getattr(analysis, "action_strategy", "concurrent"))
             if action_param
             else ActionParam(
                 action_call_params=_get_default_call_params(),
@@ -489,9 +479,7 @@ async def ReActStream(
                     field_models=fms,
                 )
                 round_count += 1
-                out = verbose_yield(
-                    f"\n### ReAct Round No.{round_count} (injected):\n", analysis
-                )
+                out = verbose_yield(f"\n### ReAct Round No.{round_count} (injected):\n", analysis)
                 yield out
                 if extensions:
                     extensions -= 1
@@ -501,9 +489,7 @@ async def ReActStream(
 
         # Build parse context for extension
         ext_parse_param = (
-            parse_param.with_updates(
-                response_format=kwargs["chat_param"].response_format
-            )
+            parse_param.with_updates(response_format=kwargs["chat_param"].response_format)
             if parse_param
             else None
         )
@@ -555,9 +541,7 @@ async def ReActStream(
     final_chat_param = chat_param.with_updates(**resp_ctx_updates)
 
     final_parse_param = (
-        parse_param.with_updates(response_format=final_response_format)
-        if parse_param
-        else None
+        parse_param.with_updates(response_format=final_response_format) if parse_param else None
     )
 
     # Build operate kwargs, honoring response_kwargs
