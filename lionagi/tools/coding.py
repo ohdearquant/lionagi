@@ -19,6 +19,7 @@ from lionagi.protocols.action.tool import Tool
 
 from ._subprocess import _SHELL_CONTROL, _subprocess_sync
 from .base import LionTool
+from .code.check import CodeCheckRequest, _resolve_check_paths, _ruff_check_sync
 from .context.context import ContextRequest, ContextTool
 from .file.editor import EditorRequest, _write_text_no_follow
 from .file.reader import ReaderRequest, _evict_expired, _open_sync, _read_cached
@@ -272,11 +273,20 @@ def _edit_file_sync(
             )
         elif old_string.strip() and old_string.strip() in original:
             hint = " — a match exists ignoring surrounding whitespace; check indentation."
-        return {"success": False, "error": f"old_string not found in {file_path}{hint}"}
+        return {
+            "success": False,
+            "error": (
+                f"old_string not found in {file_path}{hint}. "
+                "Re-read the file and copy the exact text including all whitespace."
+            ),
+        }
     if count > 1 and not replace_all:
         return {
             "success": False,
-            "error": f"old_string appears {count} times. Set replace_all=True.",
+            "error": (
+                f"old_string appears {count} times. "
+                "Either set replace_all=True or expand old_string with more surrounding context."
+            ),
         }
 
     updated = original.replace(old_string, new_string, -1 if replace_all else 1)
@@ -314,12 +324,13 @@ ALL_CODING_TOOLS: tuple[str, ...] = (
     "editor",
     "bash",
     "search",
+    "code_check",
     "context",
     "sandbox",
     "subagent",
 )
 
-DEFAULT_CODING_TOOLS: tuple[str, ...] = ("reader", "editor", "bash", "search")
+DEFAULT_CODING_TOOLS: tuple[str, ...] = ("reader", "editor", "bash", "search", "code_check")
 
 
 class CodingToolkit(LionTool):
@@ -482,7 +493,11 @@ class CodingToolkit(LionTool):
             # Canonical empty-path contract: every reader action requires path,
             # matching ReaderTool.handle_request's pre-dispatch guard.
             if not path:
-                return {"success": False, "content": None, "error": "'path' is required"}
+                return {
+                    "success": False,
+                    "content": None,
+                    "error": "'path' is required. Provide a file path for 'read'/'open' or a directory path for 'list_dir'.",
+                }
             if action == "open":
                 _evict_expired(_open_cache)
                 resp = await run_sync(_open_sync, path, _open_cache, workspace_root, frozenset())
@@ -574,7 +589,10 @@ class CodingToolkit(LionTool):
             if _SHELL_CONTROL.search(command):
                 return {
                     "stdout": "",
-                    "stderr": f"Shell control operators rejected: {command!r}",
+                    "stderr": (
+                        f"Shell control operators are not supported: {command!r}. "
+                        "Run one command per call; use cwd= instead of `cd x && cmd`."
+                    ),
                     "return_code": -1,
                     "timed_out": False,
                 }
@@ -826,11 +844,38 @@ class CodingToolkit(LionTool):
             except Exception as e:
                 return {"success": False, "error": str(e)}
 
+        async def code_check(
+            paths: list,
+            tool: str = "ruff",
+            max_diagnostics: int = 50,
+        ) -> dict:
+            """Run static analysis on Python files and return structured diagnostics.
+
+            Call this after editing a file to get immediate IDE-grade feedback.
+            Each diagnostic is returned as file:line:col with code and message so
+            the agent can locate and fix the issue without re-reading the file.
+
+            Composability (edit -> check workflow):
+              1. editor(action='edit', file_path=..., old_string=..., new_string=...)
+              2. code_check(paths=[<same file_path>])
+              3. Diagnostics list gives actionable file:line:col entries to fix next.
+
+            Supported tools:
+            - 'ruff': fast Python linter (default). Requires ruff in PATH.
+              Returns status='unavailable' if the binary is absent — not an error.
+            """
+            resolved_paths, err = _resolve_check_paths(paths, workspace_root)
+            if err is not None:
+                return err.model_dump()
+            resp = await run_sync(_ruff_check_sync, resolved_paths, max_diagnostics)
+            return resp.model_dump()
+
         tool_defs = [
             ("reader", reader, ReaderRequest),
             ("editor", editor, EditorRequest),
             ("bash", bash, BashRequest),
             ("search", search, SearchRequest),
+            ("code_check", code_check, CodeCheckRequest),
             ("context", context, ContextRequest),
             ("sandbox", sandbox, SandboxRequest),
             ("subagent", subagent, SubagentRequest),
