@@ -619,11 +619,19 @@ class Engine:
                     await watchdog
             # Drain any tasks still in _active so nothing leaks past run().
             # Runs whether _run() succeeded, failed, or was cancelled by the
-            # deadline watchdog.  suppress(CancelledError) guards the case
-            # where an outer scope is also cancelling this coroutine.
+            # deadline watchdog.  The drain is shielded so it completes even
+            # if the caller cancels run() mid-cleanup, but that external
+            # CancelledError is re-raised — swallowing it would hand the
+            # caller a stale _run() result and break structured cancellation.
             if run._active:
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await run.cancel_active()
+                drain = asyncio.ensure_future(run.cancel_active())
+                try:
+                    await asyncio.shield(drain)
+                except asyncio.CancelledError:
+                    if drain.cancelled() or not drain.done():
+                        raise  # external cancellation of run() itself
+                except Exception:
+                    logger.exception("engine active-task drain failed")
 
     async def _run(self, run: EngineRun, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("Engine subclass must implement _run(run, ...)")

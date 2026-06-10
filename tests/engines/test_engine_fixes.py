@@ -593,6 +593,39 @@ async def test_active_tasks_drained_when_run_raises():
     assert spawned_cancelled.is_set(), "spawned task was not cancelled in the finalizer"
 
 
+async def test_external_cancel_during_drain_propagates():
+    """Cancelling Engine.run() while the finalizer is draining _active must
+    raise CancelledError to the caller — not return _run()'s stale result.
+
+    Codex round-2 repro: the old suppress(CancelledError, Exception) around
+    the drain swallowed the caller's cancellation and returned "ok"."""
+    in_drain = asyncio.Event()
+
+    class _SlowDrainEngine(Engine):
+        async def _run(self, run, *a, **kw):
+            async def stubborn_child():
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError:
+                    in_drain.set()
+                    # Delay our own cancellation so run() sits in the drain
+                    # await long enough for the caller to cancel it.
+                    await asyncio.sleep(0.3)
+                    raise
+
+            run.spawn(stubborn_child())
+            return "ok"
+
+    eng = _SlowDrainEngine()
+    outer = asyncio.ensure_future(eng.run())
+
+    await asyncio.wait_for(in_drain.wait(), timeout=5)
+    outer.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await outer
+
+
 # ---------------------------------------------------------------------------
 # Minor 4 — _normalize_spec called exactly once via run()
 # ---------------------------------------------------------------------------
