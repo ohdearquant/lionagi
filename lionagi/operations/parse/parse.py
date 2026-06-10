@@ -14,7 +14,7 @@ from lionagi.ln import (
     to_list,
 )
 from lionagi.ln.fuzzy import FuzzyMatchKeysParams
-from lionagi.protocols.structure.base import Structure
+from lionagi.operations.schema.structure import Structure
 from lionagi.protocols.types import AssistantResponse
 
 from .._defaults import get_default_parse_call as get_default_call

@@ -250,11 +250,11 @@ class InstructionContent(MessageContent):
 
 def _resolve_structure_cls(structure: type | str | None) -> type | None:
     if structure is None or structure == "json":
-        from lionagi.protocols.structure.json_structure import JsonStructure
+        from lionagi.operations.schema.json_structure import JsonStructure
 
         return JsonStructure
     if isinstance(structure, str):
-        from lionagi.protocols.structure.json_structure import JsonStructure
+        from lionagi.operations.schema.json_structure import JsonStructure
 
         return JsonStructure
     return structure

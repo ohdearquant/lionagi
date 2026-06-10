@@ -310,7 +310,7 @@ async def run_and_collect(
         return full_text
 
     # Pull structure from the instruction message
-    from lionagi.protocols.structure.base import Structure
+    from lionagi.operations.schema.structure import Structure
 
     if not isinstance(parse_param.structure, Structure) and ins_msg is not None:
         si = getattr(ins_msg.content, "_structure_instance", None)
