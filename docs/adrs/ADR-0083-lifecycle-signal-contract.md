@@ -99,7 +99,8 @@ Invariants:
 | `StructuredOutput(data=EscalationRequest)` | `escalated` | Capability-emission path before `NodeEscalated` is issued. |
 | `GateDenied` | *(ignored)* | Governance detail; may trigger `NodeAwaitingApproval` upstream but is not a lane by itself. |
 | `MessageAdded`, `HookSignal`, others | *(ignored)* | Not state-bearing. |
-| `EventStatus.SKIPPED / CANCELLED / ABORTED` | `failed` (v1) | Mapped conservatively until a `cancelled` lane is added in a follow-up. |
+| `EventStatus.SKIPPED` | `failed` (v1) | `_execute_operation` emits `on_progress(..., "failed")` in the skip path, producing `NodeFailed` on the bus. Conservative mapping until a `cancelled` lane is added. |
+| `EventStatus.CANCELLED / ABORTED` | *(not emitted in v1)* | These statuses are raised as exceptions and propagate up the call stack; no signal is emitted for them in the current executor. A `cancelled` lane is deferred to a follow-up. |
 
 ### 5. Location
 
@@ -130,13 +131,20 @@ All new symbols live in `lionagi/session/signal.py` and are exported from
   un-instrumented nodes is `"queued"` (acceptable conservative fallback).
 - `lane_for` trusts signal ordering. Out-of-order delivery (rare on a
   synchronous in-process bus) could misproject state.
+- In the batch executor (`DependencyAwareExecutor`), `NodeQueued` is emitted
+  for all nodes upfront before any dependency check, so it means "entered the
+  runnable graph" rather than "dependencies met". This is intentional v1
+  semantics and consistent with the ADR definition; a future "ready" lane
+  could close the gap if needed.
 
 ## Bridge points wired in this ADR
 
 | Location | Signal | When |
 |----------|--------|------|
 | `engines/engine.py` `_on_progress` | `NodeQueued` | `status=="queued"` callback from flow |
+| `engines/engine.py` `_on_progress` | `NodeFailed` | `status=="failed"` — covers both execution failure and skipped nodes |
 | `operations/flow.py` `DependencyAwareExecutor.execute()` | via `on_progress` callback | Before `_alcall` on initial nodes |
+| `operations/flow.py` `DependencyAwareExecutor._execute_operation()` | via `on_progress("failed")` | In the skip path when edge conditions are not met |
 | `operations/flow.py` `ReactiveExecutor.execute()` | via `on_progress` callback | Before `tg.start_soon` for each initial node |
 | `operations/flow.py` `ReactiveExecutor.execute_stream()` | via `on_progress` callback | Before `tg.start_soon` for each initial node (inside `_driver`) |
 | `operations/flow.py` `ReactiveExecutor._accept_node()` | via `on_progress` callback | After `_assign_injected_branch` for injected children |

@@ -209,6 +209,12 @@ class DependencyAwareExecutor:
                         str(operation.id)[:8],
                     )
 
+                if self.on_progress:
+                    ref_id = operation.metadata.get("reference_id", str(operation.id)[:8])
+                    branch = self.operation_branches.get(operation.id, self.session.default_branch)
+                    branch_name = getattr(branch, "name", None) or ref_id
+                    self.on_progress(str(operation.id), branch_name, "failed", 0.0)
+
                 self.completion_events[operation.id].set()
                 return
 
@@ -627,9 +633,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self._result_sink = send
 
         initial = [n for n in self.graph.internal_nodes.values() if isinstance(n, Operation)]
-        # Use the private attribute (same as batch execute) — avoids creating an
-        # observer if one was never set up on this session.
-        observer = getattr(self.session, "_observer", None)
+        observer = getattr(self.session, "observer", None)
         if observer is not None:
             self.session.observe(self.spawn_type, self._on_bus_spawn)
         self._running = True

@@ -360,6 +360,133 @@ async def test_reactive_injected_child_receives_node_queued():
 
 
 # ---------------------------------------------------------------------------
+# Skipped nodes project to 'failed' lane
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_skipped_node_projects_to_failed_lane():
+    """A node skipped by an always-false edge condition emits NodeFailed → lane 'failed'.
+
+    This is a regression guard: before the fix, the skip path did not call
+    on_progress, so the node stayed in 'queued' forever.
+    """
+    from lionagi.engines import Engine
+    from lionagi.operations.node import Operation
+    from lionagi.protocols.graph.edge import Edge, EdgeCondition
+    from lionagi.protocols.graph.graph import Graph
+    from lionagi.session.branch import Branch
+    from lionagi.session.session import Session
+
+    class AlwaysFalse(EdgeCondition):
+        async def apply(self, context: dict) -> bool:
+            return False
+
+    async def root_op(**kw):
+        return "root done"
+
+    session = Session()
+    branch = Branch(name="root")
+    session.include_branches(branch)
+    session.default_branch = branch
+    session.register_operation("root_op", root_op)
+
+    collected: dict[str, list[Signal]] = {}
+
+    def _capture(sig: Signal, _ctx: Any) -> None:
+        op_id = getattr(sig, "op_id", None) or "run"
+        collected.setdefault(op_id, []).append(sig)
+
+    for sig_type in (NodeQueued, NodeStarted, NodeCompleted, NodeFailed):
+        session.observe(sig_type, handler=_capture)
+
+    # Build: root_op → skipped_op with always-false condition
+    root = Operation(operation="root_op", parameters={})
+    skipped = Operation(operation="root_op", parameters={})
+
+    graph = Graph()
+    graph.add_node(root)
+    graph.add_node(skipped)
+    graph.add_edge(Edge(head=root.id, tail=skipped.id, condition=AlwaysFalse()))
+
+    run = Engine().new_run(session=session)
+    result = await run.run_dag(graph)
+
+    assert str(root.id) in [str(x) for x in result["completed_operations"]]
+    assert str(skipped.id) in [str(x) for x in result.get("skipped_operations", [])]
+
+    skipped_op_id = str(skipped.id)
+    assert skipped_op_id in collected, (
+        "No signals collected for the skipped op — on_progress was not called in the skip path"
+    )
+    assert lane_for(collected[skipped_op_id]) == "failed", (
+        f"Skipped node must project to 'failed', got {lane_for(collected[skipped_op_id])}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# execute_stream subscribes via the public observer property
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_stream_uses_public_observer_property(monkeypatch):
+    """execute_stream subscribes spawn handling via the public 'observer' property.
+
+    The public property is a lazy-init that always returns a SessionObserver.
+    Using the private _observer attribute would return None when the session
+    was created without prior observer access, silently dropping reactive
+    spawns. This test pins that the subscription goes through the public path.
+    """
+    from lionagi.operations.flow import ReactiveExecutor
+    from lionagi.protocols.graph.graph import Graph
+    from lionagi.session.session import Session
+
+    observer_accesses: list[str] = []
+    original_getattr = getattr
+
+    # Patch getattr on Session to track which attribute name is used for the observer
+    real_session = Session()
+
+    def tracking_getattr(obj, name, *args):
+        if obj is real_session and name in ("observer", "_observer"):
+            observer_accesses.append(name)
+        return original_getattr(obj, name, *args)
+
+    monkeypatch.setattr("builtins.getattr", tracking_getattr)
+
+    # A minimal graph with one no-op operation so execute_stream runs
+    from lionagi.operations.node import Operation
+
+    async def noop(**kw):
+        return None
+
+    real_session.register_operation("noop", noop)
+    from lionagi.session.branch import Branch
+
+    b = Branch(name="b")
+    real_session.include_branches(b)
+    real_session.default_branch = b
+
+    op = Operation(operation="noop", parameters={})
+    g = Graph()
+    g.add_node(op)
+
+    events = []
+    async for ev in real_session.flow_stream(g):
+        events.append(ev)
+
+    # The stream must have checked the observer via the public property name
+    assert "observer" in observer_accesses, (
+        "execute_stream must access session.observer (public property), "
+        f"not session._observer — accesses seen: {observer_accesses}"
+    )
+    assert "_observer" not in observer_accesses or "observer" in observer_accesses, (
+        "execute_stream fell back to _observer instead of public observer property"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Export contract
 # ---------------------------------------------------------------------------
 
