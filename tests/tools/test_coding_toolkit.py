@@ -309,3 +309,104 @@ async def test_coding_toolkit_editor_reports_ambiguous_replacement_without_writi
     assert result["success"] is False
     # File must be unchanged
     assert target.read_text() == "a\na\n"
+
+
+# ---------------------------------------------------------------------------
+# Schema equivalence: CodingToolkit uses canonical file/ schemas (anti-divergence)
+# ---------------------------------------------------------------------------
+
+
+def test_reader_request_schema_is_canonical():
+    """CodingToolkit's reader tool_def must reference the canonical ReaderRequest."""
+    from lionagi.tools.coding import CodingToolkit
+    from lionagi.tools.file.reader import ReaderRequest as CanonicalReaderRequest
+
+    b = Branch()
+    tk = CodingToolkit(notify=False, workspace_root="/tmp", tools=["reader"])
+    tools = tk.bind(b)
+    reader_tool = tools[0]
+    assert reader_tool.request_options is CanonicalReaderRequest, (
+        "CodingToolkit reader must use the canonical ReaderRequest from tools/file/reader.py"
+    )
+
+
+def test_editor_request_schema_is_canonical():
+    """CodingToolkit's editor tool_def must reference the canonical EditorRequest."""
+    from lionagi.tools.coding import CodingToolkit
+    from lionagi.tools.file.editor import EditorRequest as CanonicalEditorRequest
+
+    b = Branch()
+    tk = CodingToolkit(notify=False, workspace_root="/tmp", tools=["editor"])
+    tools = tk.bind(b)
+    editor_tool = tools[0]
+    assert editor_tool.request_options is CanonicalEditorRequest, (
+        "CodingToolkit editor must use the canonical EditorRequest from tools/file/editor.py"
+    )
+
+
+def test_canonical_reader_request_has_open_action():
+    """Canonical ReaderRequest must enumerate the 'open' action so CodingToolkit exposes it."""
+    from lionagi.tools.file.reader import ReaderAction
+
+    assert hasattr(ReaderAction, "open"), "ReaderAction must include the 'open' member"
+    assert ReaderAction.open.value == "open"
+
+
+# ---------------------------------------------------------------------------
+# Reader: open action (docling not required — validate error path without it)
+# ---------------------------------------------------------------------------
+
+
+async def test_reader_open_unsupported_extension_fails(tmp_path):
+    """open action on a non-document file returns a descriptive failure."""
+    f = tmp_path / "code.py"
+    f.write_text("x = 1\n")
+    _, _, tools = _make_toolkit(tmp_path)
+    result = await _tool_fn(tools, "reader")(action="open", path=str(f))
+    # Either unsupported extension or docling-not-installed — both are informative failures
+    assert result["success"] is False
+    assert result.get("error")
+
+
+async def test_reader_open_missing_path_fails(tmp_path):
+    """open action with empty/None path returns failure immediately."""
+    _, _, tools = _make_toolkit(tmp_path)
+    result = await _tool_fn(tools, "reader")(action="open", path="")
+    assert result["success"] is False
+
+
+async def test_reader_open_caches_and_read_serves_from_cache(tmp_path, monkeypatch):
+    """After a successful open, subsequent read on the same path uses the cache."""
+    import time
+
+    import lionagi.tools.coding as _coding_mod
+    from lionagi.tools.file.reader import ReaderResponse
+
+    cached_text = "line one\nline two\nline three\n"
+
+    # Patch _open_sync in the coding module namespace (that's where the closure
+    # captures it) so we don't need docling installed in CI.
+    def _fake_open_sync(path, cache, workspace_root, allowed_url_hosts):
+        cache[path] = (cached_text, time.time())
+        lines = cached_text.split("\n")
+        return ReaderResponse(
+            success=True,
+            content=f"Opened: {path} ({len(lines)} lines). Use read to view.",
+        )
+
+    monkeypatch.setattr(_coding_mod, "_open_sync", _fake_open_sync)
+
+    f = tmp_path / "report.pdf"
+    f.write_bytes(b"%PDF-1.4 fake")
+
+    _, _, tools = _make_toolkit(tmp_path)
+    reader_fn = _tool_fn(tools, "reader")
+
+    open_result = await reader_fn(action="open", path=str(f))
+    assert open_result["success"] is True, open_result.get("error")
+
+    # Now read should serve from cache (not from disk bytes)
+    read_result = await reader_fn(action="read", path=str(f), offset=0, limit=2)
+    assert read_result["success"] is True
+    assert "line one" in read_result["content"]
+    assert "line two" in read_result["content"]
