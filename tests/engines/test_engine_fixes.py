@@ -49,8 +49,13 @@ class _SlowEvent(EngineEvent):
 @pytest.mark.asyncio
 async def test_deadline_watchdog_cancels_slow_spawned_tasks():
     """A spawned task that would run longer than ``deadline_s`` must be
-    cancelled by the watchdog.  The run must complete (not hang) and the
-    budget_exhausted event must be emitted."""
+    cancelled by the watchdog.  The run must be interrupted (CancelledError
+    propagates to the caller) and budget_exhausted must be emitted.
+
+    Deadline cancellation now interrupts *all* in-flight work — both spawned
+    background tasks and the main _run() coroutine — so Engine.run() raises
+    CancelledError rather than returning a partial result after the overrun.
+    """
     # Very short deadline so the test is fast.
     eng = _StubEngine(deadline_s=0.05)
     cancelled = asyncio.Event()
@@ -72,9 +77,13 @@ async def test_deadline_watchdog_cancels_slow_spawned_tasks():
     eng._run = _override_run
 
     events: list[dict] = []
-    result = await eng.run(on_event=events.append)
+    # Deadline now cancels _run_task, so Engine.run() raises CancelledError.
+    with pytest.raises(asyncio.CancelledError):
+        await eng.run(on_event=events.append)
 
-    assert result == "done"
+    # Give the event loop one tick for the spawned task to finish cancelling.
+    await asyncio.sleep(0)
+
     assert cancelled.is_set(), "slow worker was not cancelled by the watchdog"
     assert not ran_to_completion.is_set(), "slow worker must not have finished"
     assert any(e["type"] == "budget_exhausted" for e in events), (
@@ -419,3 +428,236 @@ async def test_operate_with_repair_no_chat_model_falls_back_to_api_template():
     assert repair_instructions, "repair must have been issued"
     # Should use the API template (key hints), not crash.
     assert "finding_emitted" in repair_instructions[0]
+
+
+# ---------------------------------------------------------------------------
+# Codex-confirmed Major 1 — deadline cancels in-flight operate_with_repair
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_deadline_cancels_in_flight_operate_with_repair():
+    """A branch.operate() call that blocks past deadline_s must be cancelled
+    by the watchdog.  Engine.run() must raise CancelledError (not return a
+    partial success after the overrun) and the cancellation must happen within
+    a reasonable bound.
+
+    This is the codex-confirmed repro: a fake branch whose operate() sleeps
+    past the deadline and the engine calls it directly via operate_with_repair
+    (no run.spawn() — sequential, in-flight work).
+    """
+    import time
+
+    from lionagi.engines.engine import EngineRun
+
+    operate_completed = asyncio.Event()
+    operate_started = asyncio.Event()
+
+    class _SlowBranch:
+        name = "slow"
+        chat_model = SimpleNamespace(is_cli=False)
+
+        async def operate(self, *, instruction):
+            operate_started.set()
+            await asyncio.sleep(10)  # far past the 0.02 s deadline
+            operate_completed.set()
+            return "done"
+
+    class _SlowEngine(Engine):
+        async def _run(self, run: EngineRun, *a, **kw):
+            branch = _SlowBranch()
+            await run.operate_with_repair(
+                branch,
+                "do work",
+                arrived=lambda: False,  # never arrives — only deadline stops it
+                emits=(),
+                retries=0,
+            )
+            return "completed"
+
+    eng = _SlowEngine(deadline_s=0.02)
+    t0 = time.monotonic()
+
+    events: list[dict] = []
+    with pytest.raises(asyncio.CancelledError):
+        await eng.run(on_event=events.append)
+
+    elapsed = time.monotonic() - t0
+
+    # Must cancel within a reasonable bound (<<10 s — the sleep duration).
+    assert elapsed < 2.0, f"deadline overrun: ran for {elapsed:.2f}s, expected <2s"
+    assert not operate_completed.is_set(), "branch.operate must not have completed"
+    assert any(e["type"] == "budget_exhausted" for e in events), (
+        f"budget_exhausted not emitted; events: {[e['type'] for e in events]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Major 2 — CLI repair example is syntactically valid JSON
+# ---------------------------------------------------------------------------
+
+
+def test_cli_repair_instruction_example_is_valid_json():
+    """The fenced block in the CLI repair instruction must be parseable by
+    json.loads() without modification — a worker who copies it literally
+    gets a valid emission, not a JSON parse error."""
+    import json
+    import re
+
+    from lionagi.engines.coding import WorkPlanned
+
+    hint = emission_keys((WorkPlanned,))
+    msg = _cli_repair_instruction(hint, (WorkPlanned,))
+
+    # Extract the fenced code block.  The pattern requires a newline after
+    # the opening fence to avoid matching inline ``` references in prose.
+    m = re.search(r"```json\n(.*?)\n```", msg, re.DOTALL)
+    assert m is not None, "CLI repair instruction must contain a fenced JSON block"
+    fenced_content = m.group(1)
+
+    # Must parse without error.
+    parsed = json.loads(fenced_content)
+    assert isinstance(parsed, dict), "fenced block must be a JSON object"
+    assert "work_planned" in parsed, (
+        f"emission key 'work_planned' missing from fenced block; got keys: {list(parsed)}"
+    )
+
+
+def test_cli_repair_instruction_fenced_block_validates_against_emission():
+    """The fenced block must not only parse as JSON but also validate against
+    the actual emission model — running it through the pipeline's extraction
+    path must produce a valid typed bundle, not a rejection."""
+    import json
+    import re
+
+    from lionagi.casts.emission import build_emission_operable
+    from lionagi.engines.coding import WorkPlanned
+    from lionagi.operations._observe import attempt_extract
+
+    hint = emission_keys((WorkPlanned,))
+    msg = _cli_repair_instruction(hint, (WorkPlanned,))
+
+    m = re.search(r"```json\n(.*?)\n```", msg, re.DOTALL)
+    assert m is not None, "CLI repair instruction must contain a fenced JSON block"
+    fenced_content = m.group(1)
+
+    # Simulate what the pipeline does: wrap in a fenced code block (as it
+    # would appear in a model response) and run attempt_extract().
+    response_text = f"```json\n{fenced_content}\n```"
+    capabilities = build_emission_operable((WorkPlanned,))
+    bundles, violations, rejects = attempt_extract(response_text, capabilities)
+
+    assert not violations, f"emission had violations: {violations}"
+    assert not rejects, f"emission was rejected: {rejects}"
+    assert bundles, (
+        "attempt_extract returned no bundles — the example JSON did not parse into "
+        f"a WorkPlanned instance; fenced_content={fenced_content!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Major 3 — _active tasks are drained even when _run() raises immediately
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_active_tasks_drained_when_run_raises():
+    """If _run() spawns a long-lived task then raises immediately, the spawned
+    task must be cancelled and _active must be empty after Engine.run() exits.
+
+    Without the fix, Engine.run()'s finally only cleaned up the watchdog —
+    the spawned task would leak.
+    """
+    spawned_cancelled = asyncio.Event()
+
+    class _LeakyEngine(Engine):
+        async def _run(self, run, *a, **kw):
+            async def long_background():
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError:
+                    spawned_cancelled.set()
+                    raise
+
+            run.spawn(long_background())
+            raise RuntimeError("_run failed immediately")
+
+    eng = _LeakyEngine()
+
+    with pytest.raises(RuntimeError, match="_run failed immediately"):
+        await eng.run()
+
+    # Give the event loop one tick to process the cancellation.
+    await asyncio.sleep(0)
+
+    assert spawned_cancelled.is_set(), "spawned task was not cancelled in the finalizer"
+
+
+# ---------------------------------------------------------------------------
+# Minor 4 — _normalize_spec called exactly once via run()
+# ---------------------------------------------------------------------------
+
+
+def test_coding_engine_normalizes_spec_exactly_once(monkeypatch):
+    """``_normalize_spec`` must be called exactly once when ``CodingEngine.run()``
+    is invoked — not twice (once in run() and once in _run()).
+
+    The fix: run() stores the normalized result and passes it to _run() via
+    ``_normalized`` kwarg; _run() uses that result directly."""
+    import lionagi.engines.coding as _coding_mod
+
+    call_count = 0
+    _original = _coding_mod._normalize_spec
+
+    def _counting_normalize(spec):
+        nonlocal call_count
+        call_count += 1
+        return _original(spec)
+
+    monkeypatch.setattr(_coding_mod, "_normalize_spec", _counting_normalize)
+
+    # We only want to test the normalization count; stop before agents are made.
+    eng = CodingEngine()
+
+    # Patch new_run so the run never actually executes agent stages.
+    class _EarlyExit(Exception):
+        pass
+
+    original_new_run = eng.new_run
+
+    def _spy_new_run(**kw):
+        run = original_new_run(**kw)
+        # Patch _run on the engine instance to raise immediately — we only
+        # care that _normalize_spec was called the right number of times by
+        # the run() → _run() dispatch.
+        return run
+
+    monkeypatch.setattr(eng, "new_run", _spy_new_run)
+
+    import asyncio as _asyncio
+
+    async def _check():
+        # Override _run to exit immediately after normalization path.
+        original_run_inner = eng._run
+
+        async def _fake_run(
+            run, spec, *, test_cmd, workspace=None, export_dir=None, _normalized=None
+        ):
+            # Just count how many times _normalize_spec was called up to here.
+            # _normalized kwarg should carry the pre-normalized pair.
+            assert _normalized is not None, (
+                "_run() must receive the pre-normalized pair from run(); "
+                "got _normalized=None which means run() did not forward it"
+            )
+            raise _EarlyExit()
+
+        eng._run = _fake_run
+        with pytest.raises(_EarlyExit):
+            await eng.run("do something", test_cmd=["true"])
+
+    _asyncio.run(_check())
+
+    assert call_count == 1, (
+        f"_normalize_spec was called {call_count} times; expected exactly 1 "
+        f"(run() normalizes once and passes the result to _run())"
+    )

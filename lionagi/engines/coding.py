@@ -516,20 +516,24 @@ class CodingEngine(Engine):
         session: Any = None,
         on_event: Any = None,
     ) -> CodeResultRecorded:
-        """Validate *spec* before creating any run state, then delegate to _run.
+        """Normalize *spec* exactly once before creating any run state.
 
         ``_normalize_spec`` raises ``ValueError`` / ``TypeError`` for malformed
         specs.  Without this gate those errors surface after the session and
         observers are already initialized — callers cannot distinguish a setup
-        error from a mid-run failure.  Validating here keeps ``_run`` clean and
-        ensures the error is raised before any side-effectful state is created.
+        error from a mid-run failure.
+
+        The normalized ``(task_text, experiment_ref)`` tuple is forwarded to
+        ``_run()`` via keyword argument so that ``_run`` consumes exactly what
+        was validated here — normalization happens once, not twice.
         """
-        _normalize_spec(spec)  # raises ValueError/TypeError for bad input
+        task_text, experiment_ref = _normalize_spec(spec)  # raises on bad input
         return await super().run(
             spec,
             test_cmd=test_cmd,
             workspace=workspace,
             export_dir=export_dir,
+            _normalized=(task_text, experiment_ref),
             session=session,
             on_event=on_event,
         )
@@ -542,6 +546,7 @@ class CodingEngine(Engine):
         test_cmd: str | list[str],
         workspace: str | None = None,
         export_dir: str | Path | None = None,
+        _normalized: tuple[str, str] | None = None,
     ) -> CodeResultRecorded:
         """Drive *spec* through plan -> implement -> test -> [fix] -> verify ->
         conclude. Returns the terminal :class:`CodeResultRecorded`.
@@ -550,10 +555,18 @@ class CodingEngine(Engine):
         string with shell-control characters runs in a shell, otherwise it is
         split). *workspace* is the implementer's cwd and path-guard root. When
         *export_dir* is given, ``results.json`` + ``report.md`` (and the full
-        per-round test outputs) are written there."""
+        per-round test outputs) are written there.
+
+        *_normalized* carries the pre-validated ``(task_text, experiment_ref)``
+        pair from ``run()``.  When present, this avoids a second
+        ``_normalize_spec`` call so the spec is normalized exactly once."""
         if not test_cmd:
             raise ValueError("test_cmd is required — the engine needs ground truth to gate on")
-        task_text, experiment_ref = _normalize_spec(spec)
+        if _normalized is not None:
+            task_text, experiment_ref = _normalized
+        else:
+            # Direct _run() call without the run() gate (e.g. tests): normalize here.
+            task_text, experiment_ref = _normalize_spec(spec)
         run.task_text = task_text
         run.experiment_ref = experiment_ref
         run.test_cmd = test_cmd
