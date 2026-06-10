@@ -28,6 +28,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger("lionagi.engines")
 EventCallback = Callable[[dict[str, Any]], Any]
 
+# Sentinel used by Engine.run() to distinguish "partial export produced a
+# result" from "partial export returned None intentionally".
+_UNSET: Any = object()
+
+# Maximum wall-clock seconds allowed for the post-cancellation partial export.
+# Kept short so a hung synthesis LLM call cannot extend the run unboundedly.
+_PARTIAL_EXPORT_TIMEOUT_S: float = 120.0
+
 
 class EngineEvent(BaseModel):
     """Base for engine-only domain events with no casts-emission twin."""
@@ -678,8 +686,42 @@ class Engine:
         # spawned background tasks, but also sequential awaits inside _run().
         run_task = asyncio.ensure_future(self._run(run, *args, **kwargs))
         run._run_task = run_task
+        partial_result: Any = _UNSET
         try:
             return await run_task
+        except asyncio.CancelledError:
+            # Distinguish internal cancellation (engine's own deadline/budget
+            # watchdog) from external cancellation (the caller cancelled run()).
+            # The watchdog sets _budget_notified before cancelling run_task.
+            # On Python >=3.11 we can also check task.cancelling() > 0 to detect
+            # a simultaneous external cancel; on 3.10 we trust _budget_notified
+            # alone, which is set only by the engine's own watchdog/budget guard.
+            current = asyncio.current_task()
+            caller_cancelled = (
+                current is not None and hasattr(current, "cancelling") and current.cancelling() > 0
+            )
+            if run._budget_notified and not caller_cancelled:
+                # Internal cancellation only — synthesize and export whatever
+                # state was collected before the deadline/budget cut in.
+                # Must run under asyncio.shield so we are not in a cancelled
+                # scope; a short independent timeout keeps a hung synthesis
+                # from extending the run indefinitely.
+                partial_coro = self._partial_export(run, *args, **kwargs)
+                partial_task = asyncio.ensure_future(partial_coro)
+                try:
+                    partial_result = await asyncio.wait_for(
+                        asyncio.shield(partial_task),
+                        timeout=_PARTIAL_EXPORT_TIMEOUT_S,
+                    )
+                except (asyncio.CancelledError, asyncio.TimeoutError, Exception) as exc:
+                    logger.warning("partial export after budget cancellation failed: %s", exc)
+                    if not partial_task.done():
+                        partial_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            await partial_task
+            else:
+                # External cancellation — surface it after cleanup (below).
+                raise
         finally:
             if watchdog is not None and not watchdog.done():
                 watchdog.cancel()
@@ -715,6 +757,23 @@ class Engine:
                     raise
                 except Exception:
                     logger.exception("engine active-task drain failed")
+        if partial_result is not _UNSET:
+            return partial_result
+
+    async def _partial_export(self, run: EngineRun, *args: Any, **kwargs: Any) -> Any:
+        """Called when the engine's own deadline/budget watchdog cancels the run.
+
+        Subclasses that can produce a meaningful partial result (synthesis over
+        whatever events were collected before the deadline) override this method.
+        The default returns None — callers that need a report should use an
+        engine subclass that overrides this hook.
+
+        This coroutine always runs outside the cancelled scope (under
+        asyncio.shield in Engine.run), so awaiting is safe.  Keep it bounded:
+        if synthesis requires a live LLM call, give it a hard deadline so a
+        hung call cannot extend the run indefinitely.
+        """
+        return None
 
     async def _run(self, run: EngineRun, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("Engine subclass must implement _run(run, ...)")

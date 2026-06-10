@@ -49,12 +49,15 @@ class _SlowEvent(EngineEvent):
 @pytest.mark.asyncio
 async def test_deadline_watchdog_cancels_slow_spawned_tasks():
     """A spawned task that would run longer than ``deadline_s`` must be
-    cancelled by the watchdog.  The run must be interrupted (CancelledError
-    propagates to the caller) and budget_exhausted must be emitted.
+    cancelled by the watchdog.  After cancellation, Engine.run() must return
+    normally (the partial export hook runs, even if it returns None for a
+    _StubEngine), budget_exhausted must be emitted, and the slow worker must
+    not have run to completion.
 
-    Deadline cancellation now interrupts *all* in-flight work — both spawned
-    background tasks and the main _run() coroutine — so Engine.run() raises
-    CancelledError rather than returning a partial result after the overrun.
+    Internal deadline/budget cancellation is a normal terminal state — it does
+    NOT propagate as CancelledError to the caller (that is reserved for
+    external cancellation).  See also test_external_cancellation_propagates
+    and test_deadline_cancels_in_flight_operate_with_repair.
     """
     # Very short deadline so the test is fast.
     eng = _StubEngine(deadline_s=0.05)
@@ -77,9 +80,9 @@ async def test_deadline_watchdog_cancels_slow_spawned_tasks():
     eng._run = _override_run
 
     events: list[dict] = []
-    # Deadline now cancels _run_task, so Engine.run() raises CancelledError.
-    with pytest.raises(asyncio.CancelledError):
-        await eng.run(on_event=events.append)
+    # Internal deadline cancellation returns normally (partial export = None for stub).
+    result = await eng.run(on_event=events.append)
+    assert result is None, f"Expected None from stub partial export, got {result!r}"
 
     # Give the event loop one tick for the spawned task to finish cancelling.
     await asyncio.sleep(0)
@@ -438,9 +441,10 @@ async def test_operate_with_repair_no_chat_model_falls_back_to_api_template():
 @pytest.mark.asyncio
 async def test_deadline_cancels_in_flight_operate_with_repair():
     """A branch.operate() call that blocks past deadline_s must be cancelled
-    by the watchdog.  Engine.run() must raise CancelledError (not return a
-    partial success after the overrun) and the cancellation must happen within
-    a reasonable bound.
+    by the watchdog.  Engine.run() must return normally within a reasonable
+    bound — internal deadline cancellation is a normal terminal state (not a
+    propagated CancelledError).  The partial export hook runs (returning None
+    for this stub engine) and budget_exhausted must be emitted.
 
     This is the codex-confirmed repro: a fake branch whose operate() sleeps
     past the deadline and the engine calls it directly via operate_with_repair
@@ -479,8 +483,9 @@ async def test_deadline_cancels_in_flight_operate_with_repair():
     t0 = time.monotonic()
 
     events: list[dict] = []
-    with pytest.raises(asyncio.CancelledError):
-        await eng.run(on_event=events.append)
+    # Internal deadline cancellation returns normally; partial export = None for stub.
+    result = await eng.run(on_event=events.append)
+    assert result is None, f"Expected None from stub partial export, got {result!r}"
 
     elapsed = time.monotonic() - t0
 
