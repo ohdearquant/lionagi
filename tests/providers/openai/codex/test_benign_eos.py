@@ -177,3 +177,48 @@ async def test_error_event_without_error_key_is_not_benign():
     assert len(chunks) == 1
     assert chunks[0].type == "error"
     assert not chunks[0].metadata.get("benign_eos")
+
+
+@pytest.mark.asyncio
+async def test_error_event_with_toplevel_message_surfaces_the_message():
+    """An "error" event carrying its message at the TOP LEVEL (no "error" key)
+    — the shape the codex CLI emits for usage-limit errors — must surface the
+    actual message as chunk content, not the str() of an empty error dict.
+
+    Real-world shape:
+        {"type": "error", "message": "You've hit your usage limit. ..."}
+    """
+    msg = (
+        "You've hit your usage limit. Visit "
+        "https://chatgpt.com/codex/settings/usage to purchase more credits."
+    )
+    events = [{"type": "error", "message": msg}]
+    chunks = await _chunks_from_events(events)
+
+    assert len(chunks) == 1
+    error_chunk = chunks[0]
+    assert error_chunk.type == "error"
+    assert not error_chunk.metadata.get("benign_eos")
+    assert error_chunk.content == msg, (
+        f"actionable message discarded: content={error_chunk.content!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_turn_failed_with_nested_message_still_preferred_over_toplevel():
+    """turn.failed keeps its nested error.message as the surfaced content even
+    when a top-level "message" is also present — the nested one is the
+    provider's canonical detail for that event type."""
+    events = [
+        {
+            "type": "turn.failed",
+            "message": "outer",
+            "error": {"message": "inner detail"},
+        }
+    ]
+    chunks = await _chunks_from_events(events)
+
+    assert len(chunks) == 1
+    assert chunks[0].type == "error"
+    assert not chunks[0].metadata.get("benign_eos")
+    assert chunks[0].content == "inner detail"
