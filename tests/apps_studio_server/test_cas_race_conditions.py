@@ -453,3 +453,261 @@ def test_prune_cleans_orphaned_messages_and_progressions(tmp_path, monkeypatch):
     # Recent entries survive.
     for mid in recent_msgs:
         assert mid in remaining_msgs, f"Recent message {mid} should survive"
+
+
+# ── newborn-orphan regression ─────────────────────────────────────────────────
+
+
+def _seed_unguarded_global_delete(db_path: Path) -> tuple[str, str]:
+    """Simulate the old global-delete code path for FAIL-before demonstration.
+
+    Returns (orphan_prog_id, orphan_msg_id) — both committed without a
+    referencing session, simulating _persist.py mid-startup state.
+    """
+
+    async def _seed() -> tuple[str, str]:
+        orphan_prog_id = str(uuid.uuid4())
+        orphan_msg_id = str(uuid.uuid4())
+        async with StateDB(db_path) as db:
+            # Progression committed (matches create_progression commit order).
+            await db.create_progression(orphan_prog_id)
+            # Message committed (matches insert_message commit order).
+            await db.db.execute(
+                "INSERT INTO messages (id, content, created_at, role, lion_class)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (orphan_msg_id, '{"content":"newborn"}', time.time(), "user", 2),
+            )
+            await db.db.commit()
+            # Append to collection to simulate mid-startup hook write.
+            import json
+
+            await db.db.execute(
+                "UPDATE progressions SET collection = ? WHERE id = ?",
+                (json.dumps([orphan_msg_id]), orphan_prog_id),
+            )
+            await db.db.commit()
+        # No create_session() call — simulates the gap between progression
+        # commit and session commit in setup_agent_persist().
+        return orphan_prog_id, orphan_msg_id
+
+    return run_async(_seed())
+
+
+async def _run_global_delete(db_path: Path) -> None:
+    """Reproduce the old (buggy) global-delete SQL without the scope fix."""
+    async with StateDB(db_path) as db:
+        await db.db.execute("BEGIN IMMEDIATE")
+        try:
+            await db.db.execute(
+                "DELETE FROM progressions WHERE id NOT IN ("
+                "  SELECT progression_id FROM sessions"
+                "  UNION"
+                "  SELECT progression_id FROM branches"
+                ")"
+            )
+            await db.db.execute(
+                "DELETE FROM messages WHERE id NOT IN ("
+                "  SELECT value FROM progressions, json_each(progressions.collection)"
+                ")"
+            )
+            await db.db.commit()
+        except BaseException:
+            await db.db.rollback()
+            raise
+
+
+def test_newborn_orphan_global_delete_destroys_progression(tmp_path, monkeypatch):
+    """FAIL-before: the old global-delete deletes a newborn progression with no session yet.
+
+    This reproduces the race: _persist.py commits progression before session.
+    The old NOT IN (SELECT ... FROM sessions UNION ...) query returns nothing for
+    sessions/branches table (session row doesn't exist yet), so the progression
+    is spuriously deleted.
+    """
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    # Seed an old prunable session so the prune has something to do.
+    old_ts = time.time() - 40 * 86400
+
+    async def _seed_old_session() -> None:
+        async with StateDB(db_path) as db:
+            old_pid = str(uuid.uuid4())
+            old_sid = str(uuid.uuid4())
+            await db.create_progression(old_pid)
+            await db.create_session(
+                {
+                    "id": old_sid,
+                    "progression_id": old_pid,
+                    "name": "old-prunable",
+                    "status": "completed",
+                    "started_at": old_ts,
+                }
+            )
+
+    run_async(_seed_old_session())
+
+    # Seed the newborn — progression+message committed, session not yet.
+    orphan_prog_id, orphan_msg_id = _seed_unguarded_global_delete(db_path)
+
+    # Verify they exist before the buggy delete.
+    async def _exists_prog(pid: str) -> bool:
+        async with StateDB(db_path) as db:
+            cur = await db.db.execute("SELECT id FROM progressions WHERE id = ?", (pid,))
+            return await cur.fetchone() is not None
+
+    async def _exists_msg(mid: str) -> bool:
+        async with StateDB(db_path) as db:
+            cur = await db.db.execute("SELECT id FROM messages WHERE id = ?", (mid,))
+            return await cur.fetchone() is not None
+
+    assert run_async(_exists_prog(orphan_prog_id)), "Newborn progression must exist before delete"
+    assert run_async(_exists_msg(orphan_msg_id)), "Newborn message must exist before delete"
+
+    # Run the old global-delete code path.
+    run_async(_run_global_delete(db_path))
+
+    # FAIL-before: global delete wipes the newborn progression and message.
+    assert not run_async(_exists_prog(orphan_prog_id)), (
+        "FAIL-before confirmed: global-delete wiped the newborn progression"
+    )
+    assert not run_async(_exists_msg(orphan_msg_id)), (
+        "FAIL-before confirmed: global-delete wiped the newborn message"
+    )
+
+
+def test_newborn_orphan_scoped_delete_preserves_progression(tmp_path, monkeypatch):
+    """PASS-after: the scoped delete (fix) never touches a newborn progression.
+
+    prune_old_data() only deletes progressions/messages that were captured
+    from the pruned sessions' lineage before the DELETE.  A newborn progression
+    with no referencing session is not in that candidate set — it survives.
+    """
+    import lionagi.state.db as state_db_mod
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(maint, "DEFAULT_DB_PATH", db_path)
+
+    old_ts = time.time() - 40 * 86400
+
+    async def _seed_old_session() -> None:
+        async with StateDB(db_path) as db:
+            old_pid = str(uuid.uuid4())
+            old_sid = str(uuid.uuid4())
+            await db.create_progression(old_pid)
+            await db.create_session(
+                {
+                    "id": old_sid,
+                    "progression_id": old_pid,
+                    "name": "old-prunable-2",
+                    "status": "completed",
+                    "started_at": old_ts,
+                }
+            )
+
+    run_async(_seed_old_session())
+
+    # Newborn: progression+message committed, no session row yet.
+    orphan_prog_id, orphan_msg_id = _seed_unguarded_global_delete(db_path)
+
+    async def _exists_prog(pid: str) -> bool:
+        async with StateDB(db_path) as db:
+            cur = await db.db.execute("SELECT id FROM progressions WHERE id = ?", (pid,))
+            return await cur.fetchone() is not None
+
+    async def _exists_msg(mid: str) -> bool:
+        async with StateDB(db_path) as db:
+            cur = await db.db.execute("SELECT id FROM messages WHERE id = ?", (mid,))
+            return await cur.fetchone() is not None
+
+    # Run the fixed prune_old_data (scoped delete).
+    result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
+    assert result["sessions_pruned"] >= 1  # Old session was pruned.
+
+    # PASS-after: newborn progression and message survive.
+    assert run_async(_exists_prog(orphan_prog_id)), (
+        "PASS-after: scoped delete must not touch newborn progression"
+    )
+    assert run_async(_exists_msg(orphan_msg_id)), (
+        "PASS-after: scoped delete must not touch newborn message"
+    )
+
+
+# ── NULL-trap test ────────────────────────────────────────────────────────────
+
+
+def test_null_in_collection_does_not_stall_message_cleanup(tmp_path, monkeypatch):
+    """A progression collection containing JSON null doesn't block message cleanup.
+
+    The NOT IN (SELECT value FROM progressions, json_each(collection) WHERE value IS NOT NULL)
+    guard ensures that a null entry in the collection array doesn't propagate
+    a NULL into the NOT IN set and silently suppress all message deletions.
+    """
+    import json
+
+    import lionagi.state.db as state_db_mod
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(maint, "DEFAULT_DB_PATH", db_path)
+
+    old_ts = time.time() - 40 * 86400
+
+    async def _seed() -> tuple[str, str, str]:
+        """Create an old session whose progression collection has a JSON null entry.
+
+        Returns (session_id, prog_id, real_msg_id).
+        """
+        async with StateDB(db_path) as db:
+            pid = str(uuid.uuid4())
+            sid = str(uuid.uuid4())
+            real_msg_id = str(uuid.uuid4())
+
+            await db.create_progression(pid)
+            await db.create_session(
+                {
+                    "id": sid,
+                    "progression_id": pid,
+                    "name": "null-trap-session",
+                    "status": "completed",
+                    "started_at": old_ts,
+                }
+            )
+            # Insert a real message.
+            await db.db.execute(
+                "INSERT INTO messages (id, content, created_at, role, lion_class)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (real_msg_id, '{"content":"msg"}', old_ts, "user", 2),
+            )
+            await db.db.commit()
+            # Collection contains both a valid id AND a JSON null.
+            bad_collection = json.dumps([real_msg_id, None])
+            await db.db.execute(
+                "UPDATE progressions SET collection = ? WHERE id = ?",
+                (bad_collection, pid),
+            )
+            await db.db.commit()
+        return sid, pid, real_msg_id
+
+    sid, pid, real_msg_id = run_async(_seed())
+
+    async def _count_msgs() -> int:
+        async with StateDB(db_path) as db:
+            cur = await db.db.execute("SELECT COUNT(*) FROM messages")
+            row = await cur.fetchone()
+            return row[0]
+
+    assert run_async(_count_msgs()) == 1  # One message before prune.
+
+    result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
+    assert result["sessions_pruned"] == 1
+
+    # The real message must be cleaned up (not stalled by the null entry).
+    assert run_async(_count_msgs()) == 0, (
+        "NULL in collection must not stall message cleanup via NOT IN NULL trap"
+    )
