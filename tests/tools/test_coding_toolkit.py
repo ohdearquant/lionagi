@@ -446,28 +446,31 @@ def test_coding_toolkit_reader_request_options_raises_without_path(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-async def test_open_empty_path_shape_matches_reader_tool(tmp_path):
-    """CodingToolkit open with empty path must include 'content' key in error dict.
+@pytest.mark.parametrize("action", ["open", "read", "list_dir"])
+async def test_empty_path_exactly_matches_reader_tool(tmp_path, action):
+    """Every reader action with an empty path returns byte-identical output to
+    ReaderTool's canonical pre-dispatch guard:
+    {'success': False, 'content': None, 'error': "'path' is required"}.
 
-    Codex finding: the CodingToolkit wrapper omitted 'content' from the error dict,
-    diverging from ReaderTool's ReaderResponse shape
-    {'success': False, 'content': None, 'error': ...}.
+    Codex round-1/round-2 findings: the wrapper omitted 'content' and used a
+    divergent error string for open, and list_dir fell through the guard
+    entirely, listing the workspace root instead of erroring.
     """
-    # CodingToolkit response for empty-string path (direct function call bypasses schema)
+    from lionagi.tools.file.reader import ReaderTool
+
+    (tmp_path / "a.py").write_text("x")
+
     _, _, tools = _make_toolkit(tmp_path)
     reader_fn = _tool_fn(tools, "reader")
-    ct_dict = await reader_fn(action="open", path="")
+    actual = await reader_fn(action=action, path="")
 
-    assert ct_dict["success"] is False
-    assert "content" in ct_dict, (
-        "CodingToolkit open error response must include 'content' key to match ReaderResponse shape"
-    )
-    assert "error" in ct_dict
+    expected = (
+        await ReaderTool(workspace_root=str(tmp_path)).handle_request(
+            {"action": action, "path": ""}
+        )
+    ).model_dump()
 
-    # ReaderResponse canonical shape has exactly these three keys
-    assert set(ct_dict.keys()) >= {"success", "content", "error"}, (
-        f"Missing required keys. Got: {set(ct_dict.keys())}"
-    )
+    assert actual == expected
 
 
 # ---------------------------------------------------------------------------
@@ -503,7 +506,7 @@ async def test_reader_open_real_html_fixture(tmp_path):
 
 
 async def test_open_nonexistent_pdf_equivalence(tmp_path):
-    """nonexistent .pdf path: both tools return success=False."""
+    """nonexistent .pdf path: CodingToolkit output is byte-identical to ReaderTool."""
     from lionagi.tools.file.reader import ReaderRequest, ReaderTool
 
     fake_pdf = str(tmp_path / "nope.pdf")
@@ -515,7 +518,7 @@ async def test_open_nonexistent_pdf_equivalence(tmp_path):
     _, _, tools = _make_toolkit(tmp_path)
     reader_fn = _tool_fn(tools, "reader")
     ct_result = await reader_fn(action="open", path=fake_pdf)
-    assert ct_result["success"] is False
+    assert ct_result == rt_resp.model_dump()
 
 
 async def test_read_offset_beyond_cached_doc_equivalence(tmp_path, monkeypatch):
@@ -548,7 +551,7 @@ async def test_read_offset_beyond_cached_doc_equivalence(tmp_path, monkeypatch):
     ct_result = await reader_fn(action="read", path=str(f), offset=9999, limit=10)
     assert ct_result["success"] is True  # empty slice is still a success
 
-    # ReaderTool standalone: same scenario
+    # ReaderTool standalone: same scenario must produce byte-identical output
     standalone = ReaderTool(workspace_root=str(tmp_path))
     from lionagi.tools.file.reader import ReaderRequest
 
@@ -556,4 +559,4 @@ async def test_read_offset_beyond_cached_doc_equivalence(tmp_path, monkeypatch):
     rt_resp = await standalone.handle_request(
         ReaderRequest(action="read", path=str(f), offset=9999, limit=10)
     )
-    assert rt_resp.success is True
+    assert ct_result == rt_resp.model_dump()
