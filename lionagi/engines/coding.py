@@ -315,6 +315,11 @@ class CodingRun(EngineRun):
         self._eid_counts: dict[str, int] = {}
         self._index: dict[str, CodingChainEvent] = {}
         self._test_runs: int = 0
+        # Pre-implement workspace snapshot: maps path → porcelain XY status.
+        # None means the snapshot could not be taken (non-git or spawn failure).
+        self._ws_baseline: dict[str, str] | None = {}
+        # Paths newly changed/added since the baseline (populated by _run).
+        self._ws_delta: list[str] = []
 
     def collect(self, event: CodingChainEvent) -> CodingChainEvent:
         """Stamp the engine-assigned eid, store the event, and fan it to on_event.
@@ -534,28 +539,43 @@ class CodingEngine(Engine):
         run.observe(CodingChainEvent, lambda e, _c: run.collect(e))
 
         plan = await self._plan(run)
+        # Snapshot workspace state before the implementer runs so the post-
+        # implement check computes a delta, not an absolute status read.
+        run._ws_baseline = await self._capture_ws_baseline(run)
         change = await self._implement(run, plan)
         if change is None:
-            # Emission is metadata; the workspace is ground truth.  Check for
-            # actual file changes before declaring no-work.  A worker that wrote
-            # files but failed to emit structured output should still reach the
-            # test gate — the test command is the authority, not the emission.
-            ws_files = await self._workspace_changed(run)
-            if not ws_files:
+            # Emission is metadata; the workspace delta is ground truth.  Three
+            # outcomes after _implement returns None:
+            #   (a) delta non-empty  → work detected; proceed to test gate.
+            #   (b) delta empty      → no work; preserve no-change verdict.
+            #   (c) check failed     → unknown; fail open to test gate.
+            delta, check_failed = await self._workspace_changed(run)
+            run._ws_delta = delta
+            if check_failed:
+                # Cannot prove workspace unchanged — treat as unknown, not no-work.
+                run.notify("workspace_check_failed")
+                change = run.collect(
+                    ChangeProposed(
+                        summary="(synthesized — workspace check failed; test gate is authoritative)",
+                        files_touched=[],
+                        plan_ref=plan.eid,
+                    )
+                )
+            elif not delta:
                 return await self._conclude(
                     run, plan, passed=False, caveat="implementer emitted no change"
                 )
-            # Work detected in workspace despite emission failure.  Synthesize a
-            # minimal ChangeProposed from `git status` and proceed to the test
-            # stage.  The emission failure is downgraded to a warning event.
-            run.notify("metadata_missing", work_detected=True, files=ws_files)
-            change = run.collect(
-                ChangeProposed(
-                    summary="(synthesized from workspace — implementer emitted no structured change)",
-                    files_touched=ws_files,
-                    plan_ref=plan.eid,
+            else:
+                # Work detected in workspace despite emission failure.  Synthesize
+                # a minimal ChangeProposed and proceed; emission failure is a warning.
+                run.notify("metadata_missing", work_detected=True, files=delta)
+                change = run.collect(
+                    ChangeProposed(
+                        summary="(synthesized from workspace — implementer emitted no structured change)",
+                        files_touched=delta,
+                        plan_ref=plan.eid,
+                    )
                 )
-            )
 
         tests = await self._test(run, change, round_no=0)
         change, tests = await self._fix_loop(run, plan, change, tests)
@@ -740,11 +760,12 @@ class CodingEngine(Engine):
 
     # -- ground-truth helpers -------------------------------------------------
 
-    async def _workspace_changed(self, run: CodingRun) -> list[str]:
-        """Return the list of changed/untracked paths from ``git status --porcelain``
-        in the workspace.  Empty list means no changes detected (or the workspace
-        is not a git repo).  Used as the fallback ground-truth check when the
-        implementer did not emit a structured ``ChangeProposed``."""
+    async def _capture_ws_baseline(self, run: CodingRun) -> dict[str, str] | None:
+        """Snapshot ``git status --porcelain`` before the implement stage.
+
+        Returns a ``{path: xy_status}`` dict so the post-implement call can
+        compute a true delta.  Returns ``None`` when the workspace is not a git
+        repo or the subprocess fails — callers treat ``None`` as unknown state."""
         result = await run_sync(
             _subprocess_sync,
             ["git", "status", "--porcelain"],
@@ -753,25 +774,76 @@ class CodingEngine(Engine):
             run.workspace,
         )
         if int(result.get("returncode", -1)) != 0:
-            return []
-        lines = result.get("stdout", "").splitlines()
-        # Each porcelain line is "XY path" or "XY path -> renamed".  Extract
-        # the rightmost path token (after " -> " when present).
-        files: list[str] = []
-        for line in lines:
-            if not line.strip():
-                continue
-            parts = line[3:].split(" -> ", 1)
-            files.append(parts[-1].strip())
-        return files
+            return None
+        return _parse_porcelain(result.get("stdout", ""))
+
+    async def _workspace_changed(self, run: CodingRun) -> tuple[list[str], bool]:
+        """Return ``(delta_paths, check_failed)`` after the implement stage.
+
+        *delta_paths* is the list of paths whose porcelain status is new or
+        changed relative to the pre-implement baseline captured in
+        ``run._ws_baseline``.  A path counts as changed when it appears in the
+        post-implement output and either (a) was absent from the baseline or
+        (b) its XY status string differs from the baseline value.
+
+        *check_failed* is ``True`` when ``git status`` itself failed — the
+        caller must treat this as unknown state, not no-work."""
+        result = await run_sync(
+            _subprocess_sync,
+            ["git", "status", "--porcelain"],
+            False,
+            30.0,
+            run.workspace,
+        )
+        if int(result.get("returncode", -1)) != 0:
+            return [], True
+        after = _parse_porcelain(result.get("stdout", ""))
+        baseline = run._ws_baseline or {}
+        delta = [path for path, xy in after.items() if path not in baseline or baseline[path] != xy]
+        return sorted(delta), False
 
     async def _capture_diff(self, run: CodingRun) -> str:
-        """Capture ``git diff`` in the workspace for the verify stage. Best-effort
-        — a non-git workspace simply yields an empty diff."""
+        """Capture the diff for the verify stage.
+
+        Combines ``git diff`` (tracked changes) with per-file
+        ``git diff --no-index /dev/null <file>`` output for any untracked paths
+        in ``run._ws_delta`` — so the verifier sees the full content of newly
+        written files, not just an empty diff.  No index mutation: the no-index
+        form compares directly and leaves the git index unchanged."""
         result = await run_sync(_subprocess_sync, ["git", "diff"], False, 30.0, run.workspace)
-        if int(result.get("returncode", -1)) != 0:
-            return ""
-        return result.get("stdout", "")
+        tracked = result.get("stdout", "") if int(result.get("returncode", -1)) == 0 else ""
+
+        # Untracked paths that the implementer added (from the delta).  Only
+        # include paths that are still untracked after the implement stage so
+        # we don't double-count files that were staged between stages.
+        untracked_result = await run_sync(
+            _subprocess_sync,
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            False,
+            30.0,
+            run.workspace,
+        )
+        untracked_set: set[str] = set()
+        if int(untracked_result.get("returncode", -1)) == 0:
+            untracked_set = set(untracked_result.get("stdout", "").splitlines())
+
+        untracked_in_delta = [p for p in run._ws_delta if p in untracked_set]
+        parts = [tracked] if tracked else []
+        for rel_path in untracked_in_delta:
+            abs_path = str(Path(run.workspace) / rel_path)
+            r = await run_sync(
+                _subprocess_sync,
+                ["git", "diff", "--no-index", "--", "/dev/null", abs_path],
+                False,
+                30.0,
+                run.workspace,
+            )
+            # --no-index exits 1 when files differ (which is always here); that
+            # is the normal success case, not an error.
+            content = r.get("stdout", "")
+            if content:
+                parts.append(content)
+        return "\n".join(parts)
 
     def _write_output(self, run: CodingRun, output: str) -> str:
         """Write the full captured test output to the export dir, returning the
@@ -784,6 +856,26 @@ class CodingEngine(Engine):
         path = run.export_dir / f"test_output_{run._test_runs}.txt"
         path.write_text(output, encoding="utf-8")
         return str(path)
+
+
+def _parse_porcelain(output: str) -> dict[str, str]:
+    """Parse ``git status --porcelain`` output into a ``{path: xy}`` map.
+
+    Each line is ``XY path`` or ``XY old -> new`` (rename).  We record the
+    rightmost path token (the destination for renames) mapped to its two-
+    character XY status.  Used to compute a pre/post delta without relying on
+    absolute porcelain counts."""
+    mapping: dict[str, str] = {}
+    for line in output.splitlines():
+        if len(line) < 4:
+            continue
+        xy = line[:2]
+        rest = line[3:]
+        # Rename lines: "old -> new" — track the destination path.
+        path = rest.split(" -> ", 1)[-1].strip()
+        if path:
+            mapping[path] = xy
+    return mapping
 
 
 def _resolve_cmd(test_cmd: str | list[str]) -> tuple[str | list[str], bool]:

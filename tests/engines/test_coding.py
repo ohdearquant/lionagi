@@ -380,12 +380,16 @@ async def test_fix_loop_stops_when_implementer_repeats_change(tmp_path, monkeypa
 
 @pytest.mark.asyncio
 async def test_no_change_proposed_concludes_failed(tmp_path, monkeypatch):
+    # A git workspace is required so workspace-check succeeds and the delta is
+    # provably empty — the no-change verdict is only valid when the check itself
+    # did not fail (finding 3: check failure → fail open, not no-change).
+    _make_git_workspace(tmp_path)
     eng = CodingEngine(repair_retries=0)
     run = eng.new_run()
     plan_ev = WorkPlanned(approach="x")
     branches = {
         "plan": _ScriptedBranch(run, [plan_ev], name="plan"),
-        "implement": _ScriptedBranch(run, [], name="implement"),  # emits nothing
+        "implement": _ScriptedBranch(run, [], name="implement"),  # emits nothing, writes nothing
     }
 
     async def fake_make(role, *, name=None, **kw):
@@ -546,6 +550,172 @@ async def test_emission_failure_no_workspace_changes_preserves_no_change_verdict
     assert any("emitted no change" in c for c in result.caveats)
     # The test gate must NOT have run.
     assert run.events_of(TestsRan) == [], "test stage ran despite no workspace changes"
+
+
+@pytest.mark.asyncio
+async def test_pre_dirty_workspace_no_worker_output_preserves_no_change(tmp_path, monkeypatch):
+    """False-positive regression (#1364 finding 1): files that exist in the
+    workspace BEFORE the implement stage must not be attributed to the worker.
+
+    Setup: a git workspace with a _staging/ directory and an untracked fixture
+    file present from BEFORE the run.  The implementer emits nothing and writes
+    nothing.  The delta must be empty → no-change verdict preserved, gate does
+    not run.  Without the baseline, the pre-existing dirty state would have
+    triggered metadata_missing and sent the run to the test gate."""
+    _make_git_workspace(tmp_path)
+    # Pre-existing dirty state: a staged file and an untracked file, both
+    # created before the engine starts — not worker output.
+    staging_dir = tmp_path / "_staging"
+    staging_dir.mkdir()
+    (staging_dir / "old.txt").write_text("pre-existing\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "_staging/old.txt"],
+        cwd=str(tmp_path),
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "fixture.py").write_text("# fixture\n", encoding="utf-8")
+    # Both are present before _run; the implementer is a no-op.
+
+    eng = CodingEngine(repair_retries=0)
+    run = eng.new_run()
+    plan_ev = WorkPlanned(approach="do nothing")
+    branches = {
+        "plan": _ScriptedBranch(run, [plan_ev], name="plan"),
+        "implement": _ScriptedBranch(run, [], name="implement"),
+    }
+
+    async def fake_make(role, *, name=None, **kw):
+        return branches[name]
+
+    monkeypatch.setattr(run, "make_agent", fake_make)
+
+    result = await eng._run(
+        run,
+        "do nothing",
+        test_cmd=[sys.executable, "-c", "exit(0)"],
+        workspace=str(tmp_path),
+    )
+    # Pre-existing dirty state is in the baseline → delta is empty → no-change.
+    assert result.passed is False
+    assert any("emitted no change" in c for c in result.caveats)
+    assert run.events_of(TestsRan) == [], "test stage ran on pre-existing dirty state"
+
+
+@pytest.mark.asyncio
+async def test_untracked_only_work_verify_diff_contains_file_content(tmp_path, monkeypatch):
+    """Finding 2: when the implementer writes an untracked file and the test
+    gate passes, the verify stage must receive a diff that contains the file's
+    actual content — not an empty diff."""
+    _make_git_workspace(tmp_path)
+
+    eng = CodingEngine(repair_retries=0)
+    run = eng.new_run()
+
+    plan_ev = WorkPlanned(approach="write lib.py")
+    target_file = tmp_path / "lib.py"
+    lib_content = "def compute(): return 99\n"
+
+    class _UntrackedBranch:
+        name = "implement"
+
+        async def operate(self, *, instruction):
+            target_file.write_text(lib_content, encoding="utf-8")
+            return "wrote lib.py"  # prose, no emission
+
+    verdict_holder: list[VerifyResult] = []
+
+    class _CapturingVerifyBranch:
+        name = "verify"
+
+        async def operate(self, *, instruction):
+            # Capture the diff the verify stage received via its instruction text.
+            verdict_holder.append(instruction)
+            await run.emit(
+                VerifyResult(verdict="APPROVE", rationale="content present", meets_acceptance=True)
+            )
+            return "ok"
+
+    branches = {
+        "plan": _ScriptedBranch(run, [plan_ev], name="plan"),
+        "implement": _UntrackedBranch(),
+        "verify": _CapturingVerifyBranch(),
+    }
+
+    async def fake_make(role, *, name=None, **kw):
+        return branches[name]
+
+    monkeypatch.setattr(run, "make_agent", fake_make)
+
+    test_cmd = [
+        sys.executable,
+        "-c",
+        f"import sys; sys.exit(0 if __import__('os').path.exists(r'{target_file}') else 1)",
+    ]
+    result = await eng._run(run, "write lib.py", test_cmd=test_cmd, workspace=str(tmp_path))
+
+    assert result.passed is True
+    # The verify instruction must contain the file content — not the "(no diff captured)" stub.
+    assert verdict_holder, "verify stage never ran"
+    verify_instruction = verdict_holder[0]
+    assert "compute" in verify_instruction, (
+        f"untracked file content missing from verify diff; got: {verify_instruction[:300]!r}"
+    )
+    assert "(no diff captured" not in verify_instruction
+
+
+@pytest.mark.asyncio
+async def test_workspace_check_failure_fails_open_to_test_gate(tmp_path, monkeypatch):
+    """Finding 3: when git status itself fails (non-git workspace here), the
+    engine must NOT conclude no-change.  It must emit workspace_check_failed
+    and fail open — the test gate runs and its exit code is authoritative."""
+    # tmp_path is NOT a git repo → git status will fail → check_failed=True.
+    eng = CodingEngine(repair_retries=0)
+    run = eng.new_run()
+
+    plan_ev = WorkPlanned(approach="write something")
+
+    class _WritingBranch:
+        name = "implement"
+
+        async def operate(self, *, instruction):
+            (tmp_path / "output.txt").write_text("done\n", encoding="utf-8")
+            return "wrote output.txt"  # prose, no emission
+
+    verdict_ev = VerifyResult(verdict="APPROVE", rationale="gate passed", meets_acceptance=True)
+    branches = {
+        "plan": _ScriptedBranch(run, [plan_ev], name="plan"),
+        "implement": _WritingBranch(),
+        "verify": _ScriptedBranch(run, [verdict_ev], name="verify"),
+    }
+
+    async def fake_make(role, *, name=None, **kw):
+        return branches[name]
+
+    monkeypatch.setattr(run, "make_agent", fake_make)
+    monkeypatch.setattr(eng, "_capture_diff", lambda r: _async(""))
+
+    events: list[dict] = []
+    run.on_event = events.append
+
+    # Gate always passes — we want to confirm the test stage ran at all.
+    result = await eng._run(
+        run,
+        "write something",
+        test_cmd=[sys.executable, "-c", "exit(0)"],
+        workspace=str(tmp_path),
+    )
+
+    # workspace_check_failed event must have fired.
+    assert any(e["type"] == "workspace_check_failed" for e in events), (
+        f"workspace_check_failed not in: {[e['type'] for e in events]}"
+    )
+    # Fail open: test gate ran.
+    assert len(run.events_of(TestsRan)) >= 1, "test stage did not run after workspace_check_failed"
+    # Test gate passed → result passed.
+    assert result.passed is True
+    # No-change caveat must NOT appear (that is only for provably-empty delta).
+    assert not any("emitted no change" in c for c in result.caveats)
 
 
 # ---------------------------------------------------------------------------
