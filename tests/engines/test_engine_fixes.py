@@ -595,13 +595,24 @@ async def test_active_tasks_drained_when_run_raises():
 
 async def test_external_cancel_during_drain_propagates():
     """Cancelling Engine.run() while the finalizer is draining _active must
-    raise CancelledError to the caller — not return _run()'s stale result.
+    raise CancelledError to the caller — not return _run()'s stale result —
+    and only AFTER the drain has fully completed, so no run-owned task
+    outlives run() from the caller's perspective.
 
-    Codex round-2 repro: the old suppress(CancelledError, Exception) around
-    the drain swallowed the caller's cancellation and returned "ok"."""
+    Codex round-2 repro: suppress(CancelledError, Exception) around the drain
+    swallowed the caller's cancellation and returned "ok".  Codex round-3
+    repro: re-raising immediately left the child alive past the caller's
+    observation of cancellation."""
     in_drain = asyncio.Event()
+    child_cleanup_done = asyncio.Event()
+    captured_runs = []
 
     class _SlowDrainEngine(Engine):
+        def new_run(self, **kw):
+            run = super().new_run(**kw)
+            captured_runs.append(run)
+            return run
+
         async def _run(self, run, *a, **kw):
             async def stubborn_child():
                 try:
@@ -611,6 +622,7 @@ async def test_external_cancel_during_drain_propagates():
                     # Delay our own cancellation so run() sits in the drain
                     # await long enough for the caller to cancel it.
                     await asyncio.sleep(0.3)
+                    child_cleanup_done.set()
                     raise
 
             run.spawn(stubborn_child())
@@ -624,6 +636,13 @@ async def test_external_cancel_during_drain_propagates():
 
     with pytest.raises(asyncio.CancelledError):
         await outer
+
+    # The caller must observe cancellation only after the drain finished:
+    # the child's cleanup ran to completion and nothing is left in _active.
+    assert child_cleanup_done.is_set(), "caller observed cancellation before child cleanup finished"
+    assert captured_runs and not captured_runs[0]._active, (
+        "run._active not drained at caller-visible exit"
+    )
 
 
 # ---------------------------------------------------------------------------

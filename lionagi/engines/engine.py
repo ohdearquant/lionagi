@@ -628,8 +628,23 @@ class Engine:
                 try:
                     await asyncio.shield(drain)
                 except asyncio.CancelledError:
-                    if drain.cancelled() or not drain.done():
-                        raise  # external cancellation of run() itself
+                    if drain.cancelled():
+                        raise
+                    # External cancellation of run() itself.  The drain keeps
+                    # running under shield — wait it out (absorbing repeated
+                    # cancellations) so no run-owned task outlives run() from
+                    # the caller's perspective, then surface the cancellation.
+                    while not drain.done():
+                        try:
+                            await asyncio.shield(drain)
+                        except asyncio.CancelledError:
+                            continue
+                    if not drain.cancelled() and drain.exception() is not None:
+                        logger.exception(
+                            "engine active-task drain failed",
+                            exc_info=drain.exception(),
+                        )
+                    raise
                 except Exception:
                     logger.exception("engine active-task drain failed")
 
