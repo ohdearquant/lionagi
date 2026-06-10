@@ -481,13 +481,13 @@ class CodingToolkit(LionTool):
             """
             if action == "open":
                 if not path:
-                    return {"success": False, "error": "'path' is required for open"}
+                    return {"success": False, "content": None, "error": "'path' is required"}
                 _evict_expired(_open_cache)
                 resp = await run_sync(_open_sync, path, _open_cache, workspace_root, frozenset())
                 return {"success": resp.success, "content": resp.content, "error": resp.error}
             if action == "read":
                 if not path:
-                    return {"success": False, "error": "'path' is required for read"}
+                    return {"success": False, "content": None, "error": "'path' is required"}
                 start = max(0, offset or 0)
                 max_lines = limit if (limit and limit > 0) else 2000
                 # Serve from docling cache if the path was previously opened.

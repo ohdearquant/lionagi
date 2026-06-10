@@ -410,3 +410,150 @@ async def test_reader_open_caches_and_read_serves_from_cache(tmp_path, monkeypat
     assert read_result["success"] is True
     assert "line one" in read_result["content"]
     assert "line two" in read_result["content"]
+
+
+# ---------------------------------------------------------------------------
+# Schema validation: path is required in LLM-facing schema (anti-drift)
+# ---------------------------------------------------------------------------
+
+
+def test_coding_toolkit_reader_schema_requires_path(tmp_path):
+    """CodingToolkit reader bind — LLM-facing schema must mark 'path' as required.
+
+    This guards against schema drift where path reverts to Optional: an LLM
+    that omits path would pass JSON schema validation but fail at runtime.
+    """
+    _, _, tools = _make_toolkit(tmp_path)
+    reader_tool = next(t for t in tools if t.func_callable.__name__ == "reader")
+    required = reader_tool.tool_schema["function"]["parameters"]["required"]
+    assert "path" in required, (
+        f"'path' must be in required fields of reader schema, got: {required}"
+    )
+
+
+def test_coding_toolkit_reader_request_options_raises_without_path(tmp_path):
+    """request_options(action='read') without path must raise ValidationError."""
+    from pydantic import ValidationError
+
+    _, _, tools = _make_toolkit(tmp_path)
+    reader_tool = next(t for t in tools if t.func_callable.__name__ == "reader")
+    with pytest.raises(ValidationError):
+        reader_tool.request_options(action="read")
+
+
+# ---------------------------------------------------------------------------
+# Error shape equivalence: CodingToolkit open vs ReaderTool for empty path
+# ---------------------------------------------------------------------------
+
+
+async def test_open_empty_path_shape_matches_reader_tool(tmp_path):
+    """CodingToolkit open with empty path must include 'content' key in error dict.
+
+    Codex finding: the CodingToolkit wrapper omitted 'content' from the error dict,
+    diverging from ReaderTool's ReaderResponse shape
+    {'success': False, 'content': None, 'error': ...}.
+    """
+    # CodingToolkit response for empty-string path (direct function call bypasses schema)
+    _, _, tools = _make_toolkit(tmp_path)
+    reader_fn = _tool_fn(tools, "reader")
+    ct_dict = await reader_fn(action="open", path="")
+
+    assert ct_dict["success"] is False
+    assert "content" in ct_dict, (
+        "CodingToolkit open error response must include 'content' key to match ReaderResponse shape"
+    )
+    assert "error" in ct_dict
+
+    # ReaderResponse canonical shape has exactly these three keys
+    assert set(ct_dict.keys()) >= {"success", "content", "error"}, (
+        f"Missing required keys. Got: {set(ct_dict.keys())}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Docling smoke: real import path for 'open' action is reachable
+# ---------------------------------------------------------------------------
+
+
+def test_docling_import_is_available():
+    """Confirm docling is installed so the 'open' action's real code path is exercisable."""
+    from docling.document_converter import DocumentConverter  # noqa: F401
+
+
+async def test_reader_open_real_html_fixture(tmp_path):
+    """Real docling open path: convert a minimal HTML file, no mocking."""
+    html_file = tmp_path / "page.html"
+    html_file.write_text("<html><body><p>Hello lion</p></body></html>", encoding="utf-8")
+
+    _, _, tools = _make_toolkit(tmp_path)
+    reader_fn = _tool_fn(tools, "reader")
+
+    result = await reader_fn(action="open", path=str(html_file))
+    assert result["success"] is True, f"open failed: {result.get('error')}"
+    assert result["content"] is not None
+
+    # Cache populated — subsequent read should serve from cache
+    read_result = await reader_fn(action="read", path=str(html_file), offset=0, limit=10)
+    assert read_result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Equivalence: nonexistent PDF and offset-beyond-cache for CodingToolkit vs ReaderTool
+# ---------------------------------------------------------------------------
+
+
+async def test_open_nonexistent_pdf_equivalence(tmp_path):
+    """nonexistent .pdf path: both tools return success=False."""
+    from lionagi.tools.file.reader import ReaderRequest, ReaderTool
+
+    fake_pdf = str(tmp_path / "nope.pdf")
+
+    standalone = ReaderTool(workspace_root=str(tmp_path))
+    rt_resp = await standalone.handle_request(ReaderRequest(action="open", path=fake_pdf))
+    assert rt_resp.success is False
+
+    _, _, tools = _make_toolkit(tmp_path)
+    reader_fn = _tool_fn(tools, "reader")
+    ct_result = await reader_fn(action="open", path=fake_pdf)
+    assert ct_result["success"] is False
+
+
+async def test_read_offset_beyond_cached_doc_equivalence(tmp_path, monkeypatch):
+    """Offset beyond end of cached doc: both tools return success=True with empty/minimal content."""
+    import time
+
+    import lionagi.tools.coding as _coding_mod
+    from lionagi.tools.file.reader import ReaderResponse, ReaderTool
+
+    cached_text = "only one line"
+
+    def _fake_open_sync(path, cache, workspace_root, allowed_url_hosts):
+        cache[path] = (cached_text, time.time())
+        return ReaderResponse(success=True, content=f"Opened: {path}")
+
+    monkeypatch.setattr(_coding_mod, "_open_sync", _fake_open_sync)
+
+    # Also patch the standalone ReaderTool's module-level _open_sync
+    import lionagi.tools.file.reader as _reader_mod
+
+    monkeypatch.setattr(_reader_mod, "_open_sync", _fake_open_sync)
+
+    f = tmp_path / "report.pdf"
+    f.write_bytes(b"%PDF-1.4 fake")
+
+    # CodingToolkit: open then read with offset=9999
+    _, _, tools = _make_toolkit(tmp_path)
+    reader_fn = _tool_fn(tools, "reader")
+    await reader_fn(action="open", path=str(f))
+    ct_result = await reader_fn(action="read", path=str(f), offset=9999, limit=10)
+    assert ct_result["success"] is True  # empty slice is still a success
+
+    # ReaderTool standalone: same scenario
+    standalone = ReaderTool(workspace_root=str(tmp_path))
+    from lionagi.tools.file.reader import ReaderRequest
+
+    await standalone.handle_request(ReaderRequest(action="open", path=str(f)))
+    rt_resp = await standalone.handle_request(
+        ReaderRequest(action="read", path=str(f), offset=9999, limit=10)
+    )
+    assert rt_resp.success is True
