@@ -108,6 +108,10 @@ class DependencyAwareExecutor:
         limiter = CapacityLimiter(capacity)
 
         nodes = [n for n in self.graph.internal_nodes.values() if isinstance(n, Operation)]
+        if self.on_progress:
+            for node in nodes:
+                _name = node.metadata.get("reference_id", str(node.id)[:8])
+                self.on_progress(str(node.id), _name, "queued", 0.0)
         await self._alcall(nodes, self._execute_operation, limiter=limiter)
 
         completed_ops = [
@@ -204,6 +208,12 @@ class DependencyAwareExecutor:
                         "Skipping operation due to edge conditions: %s",
                         str(operation.id)[:8],
                     )
+
+                if self.on_progress:
+                    ref_id = operation.metadata.get("reference_id", str(operation.id)[:8])
+                    branch = self.operation_branches.get(operation.id, self.session.default_branch)
+                    branch_name = getattr(branch, "name", None) or ref_id
+                    self.on_progress(str(operation.id), branch_name, "failed", 0.0)
 
                 self.completion_events[operation.id].set()
                 return
@@ -587,6 +597,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
             async with create_task_group() as tg:
                 self._tg = tg
                 for node in initial:
+                    if self.on_progress:
+                        _name = node.metadata.get("reference_id", str(node.id)[:8])
+                        self.on_progress(str(node.id), _name, "queued", 0.0)
                     tg.start_soon(self._run_tracked, node)
         finally:
             self._running = False
@@ -634,6 +647,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
                 async with create_task_group() as tg:
                     self._tg = tg
                     for node in initial:
+                        if self.on_progress:
+                            _name = node.metadata.get("reference_id", str(node.id)[:8])
+                            self.on_progress(str(node.id), _name, "queued", 0.0)
                         tg.start_soon(self._run_tracked, node)
             finally:
                 await send.aclose()
@@ -767,6 +783,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
         if newly_added:
             self._assign_injected_branch(child, emitter_id, independent)
+            if self.on_progress:
+                _name = child.metadata.get("reference_id", str(child.id)[:8])
+                self.on_progress(str(child.id), _name, "queued", 0.0)
         return True
 
     def _assign_injected_branch(self, child: Operation, emitter_id: Any, independent: bool) -> None:

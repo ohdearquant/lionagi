@@ -9,8 +9,13 @@ from .exchange import Exchange
 from .observer import SessionObserver
 from .session import Session
 from .signal import (
+    NodeAwaitingApproval,
+    NodeEscalated,
+    NodeLifecycleState,
+    NodeQueued,
     Signal,
     StructuredOutput,
+    lane_for,
 )
 
 __all__ = [
@@ -18,9 +23,14 @@ __all__ = [
     "CapabilityViolation",
     "Exchange",
     "Message",
+    "NodeAwaitingApproval",
+    "NodeEscalated",
+    "NodeLifecycleState",
+    "NodeQueued",
     "Session",
     "SessionObserver",
     "Signal",
     "StructuredOutput",
+    "lane_for",
     "render_capabilities_prompt",
 ]
