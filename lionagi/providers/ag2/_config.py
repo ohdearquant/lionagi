@@ -8,7 +8,6 @@ from lionagi.service.connections.registry import EndpointType
 
 
 class AG2Configs(ProviderConfig, Enum):
-
     GROUP_CHAT = (
         "group_chat",
         ["groupchat", "chat"],

@@ -29,7 +29,7 @@ async def main():
     )
 
     results = await session.flow(builder.get_graph(), parallel=True)
-    print(results[n2])
+    print(results["operation_results"][n2])
 
 asyncio.run(main())
 ```
@@ -84,7 +84,7 @@ Adds a node that depends on multiple sources — useful for fan-in synthesis.
 
 ```python
 new_ids = builder.expand_from_result(
-    items=results[n1],          # list of items from a prior execution result
+    items=results["operation_results"][n1],
     source_node_id=n1,
     operation="communicate",
     strategy=ExpansionStrategy.CONCURRENT,
@@ -200,23 +200,24 @@ async def analyze(topic: str) -> str:
     )
 
     results = await session.flow(builder.get_graph(), parallel=True, max_concurrent=3)
-    return results[synthesis_id]
+    return results["operation_results"][synthesis_id]
 
 asyncio.run(analyze("open-source LLM deployment in regulated industries"))
 ```
 
 ## Note context accumulation
 
-Flow operations accumulate cross-node context in a `Note` object passed through
-`session.flow()`. Each operation can read from and write to this shared note.
+Flow operations accumulate cross-node context in a `Note` object internally.
+Each operation can read from and write to this shared note during execution.
 
 - `deep_update()` merges nested dicts across operations — keys are merged recursively.
 - List values are **replaced** (last writer wins), not concatenated.
-- `Note` is available as `results.context` after `session.flow()` completes.
+- The final merged context is available as `results["final_context"]` (a plain `dict`,
+  not the `Note` wrapper) after `session.flow()` completes.
 
 ```python
 results = await session.flow(builder.get_graph(), parallel=True)
-accumulated = results.context  # Note object with merged state
+accumulated = results["final_context"]  # plain dict with merged state
 ```
 
 → Note API: [note.md](note.md)

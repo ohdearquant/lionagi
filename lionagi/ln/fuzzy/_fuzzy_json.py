@@ -115,12 +115,10 @@ def _validate_return_type(
     Raises:
         TypeError: If result is a bare primitive type.
     """
-    if isinstance(result, (dict, list)):
+    if isinstance(result, dict | list):
         return result
 
-    raise TypeError(
-        f"fuzzy_json returns dict or list, got primitive type: {type(result).__name__}"
-    )
+    raise TypeError(f"fuzzy_json returns dict or list, got primitive type: {type(result).__name__}")
 
 
 def _clean_json_string_safe(s: str) -> str:

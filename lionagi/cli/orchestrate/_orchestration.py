@@ -1,30 +1,11 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Pattern-agnostic orchestration primitives.
-
-Every CLI orchestration pattern (fanout, flow, and any future ones) walks
-the same phases — only a few of them carry pattern-specific logic:
-
-    A. Setup        (shared)   — load profile, build orchestrator, allocate run
-    B. Plan         (pattern)  — orchestrator emits a casts ``list[TaskAssignment]``
-    C. Build worker (shared)   — resolve model/role/system → Branch with cwd
-    D. Execute DAG  (shared)   — session.flow(builder)
-    E. Iterate      (pattern)  — optional critic/re-plan loop (flow only today)
-    F. Synthesize   (shared)   — optional final synthesis agent
-    G. Finalize     (shared)   — persist, write manifest, emit hints
-
-This module provides A / C / G as standalone functions and an
-``OrchestrationEnv`` dataclass that bundles the setup output. D and F are
-thin enough to stay inline in the pattern files. B and E are genuinely
-pattern-specific and stay with their owners.
-
-A ``Pattern`` base class is deliberately NOT introduced yet — two patterns
-does not justify the abstraction. Revisit when a third arrives.
-"""
+"""Pattern-agnostic orchestration primitives (setup, worker build, finalize)."""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import uuid
@@ -33,30 +14,16 @@ from pathlib import Path
 from typing import Any
 
 from lionagi import Branch, Session
-from lionagi.ln.concurrency import Lock
+from lionagi.agent import AgentSpec, create_agent
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
-from lionagi.state.artifact_verifier import (
-    missing_artifact_evidence,
-    missing_artifact_summary,
-    verify_artifact_contract,
-)
 
 from .._agents import AgentProfile, list_agents, load_agent_profile
 from .._logging import hint
-from .._providers import build_imodel_from_spec, resolve_persisted_effort
+from .._persist import _resolve_project, teardown_persist
+from .._providers import build_imodel_from_spec, parse_model_spec, resolve_persisted_effort
 from .._runs import RunDir, allocate_run, save_last_branch_pointer
-
-
-def _resolve_session_model(provider: str | None, model: str | None) -> str | None:
-    """ADR-0022: canonical 'provider/model' for the session.model column.
-
-    Thin wrapper over :func:`provenance.resolve_model_spec` so callers
-    don't repeat the import. Returns None when both args are None.
-    """
-    return _provenance.resolve_model_spec(provider, model)
-
 
 __all__ = (
     "OrchestrationEnv",
@@ -76,24 +43,27 @@ __all__ = (
     "casts_role_system",
     "role_config",
     "resolve_modes",
+    "parse_orchestrator_provider",
 )
 
 
-# ── casts role bridge ───────────────────────────────────────────────────
-# The orchestrator plans against, and workers run as, casts roles (40 built-in,
-# each with a description + body + emission contract). User `.lionagi/agents/*`
-# profiles still override a role by name — additive, profile wins on conflict.
+def parse_orchestrator_provider(model_spec: str) -> tuple[str | None, str | None]:
+    """Parse model_spec into (model, provider) for session-row provenance."""
+    ms = parse_model_spec(model_spec) if model_spec else None
+    if ms is None:
+        return None, None
+    provider = ms.model.split("/", 1)[0] if "/" in ms.model else None
+    return ms.model, provider
 
 
 def available_roles() -> list[str]:
-    """Roster the orchestrator may assign to: casts roles ∪ user profiles."""
+    """Casts roles + user profiles the orchestrator may assign to."""
     from lionagi.casts.pattern import list_roles
 
     return sorted(set(list_roles()) | set(list_agents()))
 
 
 def _role_blurb(role: str, default_model: str) -> str:
-    """One-line roster description for *role* — user profile wins over casts."""
     try:
         p = load_agent_profile(role)
         return f"user profile (model: {p.model or default_model})"
@@ -105,24 +75,17 @@ def _role_blurb(role: str, default_model: str) -> str:
         desc = Role.load(role).description
     except ValueError:
         return ""
-    # Keep the roster tight — first sentence (descriptions can run long).
     first = desc.split(". ", 1)[0].strip()
     return (first[:160] + "…") if len(first) > 161 else first
 
 
 def role_roster(default_model: str) -> str:
-    """Render the available-roles roster for the orchestrator's planning prompt."""
     lines = [f"- {r}: {_role_blurb(r, default_model)}" for r in available_roles()]
     return "Available roles (set each TaskAssignment.assignee to one):\n" + "\n".join(lines)
 
 
 def mode_roster() -> str:
-    """One-line roster of valid cognitive-mode names for the planner.
-
-    Without this the planner invents mode names (which are then dropped); the
-    roster lets it pick real ones when a subtask genuinely needs a reasoning
-    style. Names only — they are self-describing and keep the prompt tight.
-    """
+    """Valid cognitive-mode names for the planner prompt."""
     from lionagi.casts.pattern import list_modes
 
     return (
@@ -132,16 +95,11 @@ def mode_roster() -> str:
     )
 
 
-# ── pack-based per-role config (ADR-0074) ───────────────────────────────
-# The shipped default pack supplies per-role runtime config (model/effort/
-# default_modes/modes_allow). Loaded once; failures degrade to "no config".
-
 _DEFAULT_PACK_LOADED = False
 _DEFAULT_PACK = None
 
 
 def _default_pack():
-    """The shipped default casts pack (cached), or None if unavailable."""
     global _DEFAULT_PACK_LOADED, _DEFAULT_PACK
     if not _DEFAULT_PACK_LOADED:
         _DEFAULT_PACK_LOADED = True
@@ -159,20 +117,12 @@ def _default_pack():
 
 
 def role_config(role: str):
-    """``RoleConfig`` for *role* from the default pack, or None."""
     pack = _default_pack()
     return pack.config(role) if pack else None
 
 
 def resolve_modes(role: str, override: list[str] | None = None) -> list[str]:
-    """Cognitive modes for *role*: validated per-task override, else pack defaults.
-
-    A per-task *override* is gated by the role's ``modes_allow`` (empty =
-    unrestricted); every mode is existence-checked against the casts roster.
-    Invalid/disallowed modes are dropped with a warning.
-    """
-    import logging
-
+    """Validated cognitive modes for a role: override gated by modes_allow."""
     from lionagi.casts.pattern import Mode
 
     cfg = role_config(role)
@@ -196,13 +146,19 @@ def resolve_modes(role: str, override: list[str] | None = None) -> list[str]:
     return out
 
 
-def casts_role_system(role: str, modes: list[str] | None = None) -> str | None:
-    """Composed system message for a casts *role* (LION-prepended), or None.
+def _is_casts_role(role: str) -> bool:
+    """True if *role* is a loadable built-in casts Role (vs a user profile)."""
+    from lionagi.casts.pattern import Role
 
-    *modes* (already resolved/validated) overlay their cognitive behaviors onto
-    the role body. None when *role* is not a built-in casts role — the caller
-    then falls back to a user profile or the bare worker prompt.
-    """
+    try:
+        Role.load(role)
+    except ValueError:
+        return False
+    return True
+
+
+def casts_role_system(role: str, modes: list[str] | None = None) -> str | None:
+    """Composed system message for a casts role, or None if not built-in."""
     from lionagi.casts.pattern import Role
 
     try:
@@ -219,19 +175,12 @@ def casts_role_system(role: str, modes: list[str] | None = None) -> str | None:
     return LION_SYSTEM_MESSAGE.strip() + "\n\n" + msg
 
 
-# ── Generic orchestrator-prompt building blocks ─────────────────────────
-# Reused across patterns. Kept as module-level constants/functions so
-# patterns compose them into their own planning prompts without each
-# pattern restating the text.
-
 EFFORT_GUIDANCE: str = (
     "EFFORT TIERS: Use per-op guidance for behavioral framing. "
     "low=skim structure quickly; medium=careful read; high=thorough "
     "analysis; xhigh=deep multi-step reasoning. Match effort to task weight. "
 )
 
-# Short instructions injected into each worker's context when its agent
-# has an effort override. Keeps worker prompts tight.
 EFFORT_MAP: dict[str, str] = {
     "low": "Skim quickly, structured output.",
     "medium": "Read carefully, balance depth/speed.",
@@ -242,7 +191,6 @@ EFFORT_MAP: dict[str, str] = {
 
 
 def team_guidance(team_name: str | None) -> str:
-    """Return team-mode orchestrator guidance, or empty string if no team."""
     if not team_name:
         return ""
     return (
@@ -257,24 +205,11 @@ def team_worker_system(
     team_data: dict | None,
     worker_name: str,
 ) -> str | None:
-    """Render the TEAM coordination section (to be APPENDED to the base
-    system prompt), or None outside team mode.
-
-    Roster comes from ``team_data["members"]`` — which was populated at
-    team-creation time from the full pre-computed worker name list. This
-    avoids an ordering bug: workers are built one-by-one, so reading
-    from ``env.all_names`` would show a partial roster to early workers.
-
-    build_worker_branch composes this section onto BARE_WORKER_SYSTEM or
-    a profile's system_prompt so workers keep their artifact protocol
-    and tool guidance.
-    """
+    """TEAM coordination section to append to worker system prompt, or None."""
     if not team_data:
         return None
     from ._common import TEAM_COORD_SECTION  # avoid import cycle
 
-    # team_data["members"] includes "orchestrator" + all worker names.
-    # Render orchestrator explicitly at the top, then teammates, then self.
     all_members = team_data.get("members", [])
     worker_names = [m for m in all_members if m != "orchestrator"]
     teammates = [n for n in worker_names if n != worker_name]
@@ -289,19 +224,10 @@ def team_worker_system(
     )
 
 
-# ── Worker spec resolution ──────────────────────────────────────────────
-
-
 def resolve_worker_spec(
     token: str,
 ) -> tuple[str, AgentProfile | None]:
-    """Resolve a worker token to (model_spec, profile_or_None).
-
-    Tokens containing ``/`` are treated as explicit model specs
-    (``codex/gpt-5.4``). Bare tokens try to load a profile first; if
-    there is no profile with that name, they fall through as a model
-    spec — useful for one-off names the user passes through.
-    """
+    """Resolve a worker token to (model_spec, profile_or_None)."""
     if "/" in token:
         return token, None
     try:
@@ -314,18 +240,9 @@ def resolve_worker_spec(
         return token, None
 
 
-# ── OrchestrationEnv ────────────────────────────────────────────────────
-
-
 @dataclass
 class OrchestrationEnv:
-    """Shared state and config for one orchestration run.
-
-    Created by ``setup_orchestration``, consumed by ``build_worker_branch``
-    and ``finalize_orchestration``, and passed around pattern-specific
-    phases so they can read common config (run paths, session, orc branch,
-    worker defaults) without threading 10+ kwargs.
-    """
+    """Shared state and config for one orchestration run."""
 
     # Persistence + Lion objects
     run: RunDir
@@ -333,11 +250,9 @@ class OrchestrationEnv:
     orc_branch: Branch
     builder: OperationGraphBuilder
 
-    # Orchestrator config
     orc_profile: AgentProfile | None
     default_model_spec: str
 
-    # Worker defaults
     bare: bool
     effort: str | None
     theme: str | None
@@ -345,26 +260,14 @@ class OrchestrationEnv:
     bypass: bool
     verbose: bool
     fast: bool
-    cwd: str | None  # user --cwd (falls through to orchestrator); per-worker
-    # artifact dirs override this when writing via build_worker_branch
-
-    # Optional shared features
+    cwd: str | None
     team_data: dict | None = None
-
-    # Time budget: total seconds for the entire flow (from --timeout or
-    # playbook timeout:). None means no budget was configured — workers
-    # will not receive a BUDGET preamble.
     total_budget: int | None = None
-
-    # Live SQLite persist context (set by start_live_persist)
     _live_persist: dict | None = field(default=None, repr=False)
-
-    # Worker name bookkeeping (mutable)
     _name_counts: dict[str, int] = field(default_factory=dict)
     _all_names: list[str] = field(default_factory=list)
 
     def assign_name(self, role: str) -> str:
-        """Allocate a deduplicated name for a role (e.g. ``explorer-2``)."""
         self._name_counts[role] = self._name_counts.get(role, 0) + 1
         n = self._name_counts[role]
         name = f"{role}-{n}" if n > 1 else role
@@ -372,7 +275,6 @@ class OrchestrationEnv:
         return name
 
     def register_name(self, name: str) -> None:
-        """Record a pre-assigned name (fanout pre-computes worker names)."""
         self._all_names.append(name)
 
     @property
@@ -380,12 +282,9 @@ class OrchestrationEnv:
         return list(self._all_names)
 
 
-# ── Phase A: Setup ──────────────────────────────────────────────────────
-
-
-def setup_orchestration(
+async def setup_orchestration(
     *,
-    pattern_name: str,  # "Fanout" | "Flow" | ... — passed to builder name
+    pattern_name: str,
     model_spec: str,
     agent_name: str | None,
     save_dir: str | None,
@@ -399,13 +298,7 @@ def setup_orchestration(
     fast: bool = False,
     total_budget: int | None = None,
 ) -> OrchestrationEnv:
-    """Phase A — resolve orchestrator config, allocate run, build branch+session.
-
-    Returns an ``OrchestrationEnv`` ready for the pattern's planning phase.
-    The caller is responsible for setting up teams (which need worker
-    names computed from the pattern's own plan) and for invoking the
-    planning phase — setup does NOT add any operations to the builder.
-    """
+    """Resolve orchestrator config, allocate run, build branch+session."""
     orc_profile: AgentProfile | None = None
     if agent_name:
         orc_profile = load_agent_profile(agent_name)
@@ -429,8 +322,6 @@ def setup_orchestration(
         theme=theme,
         fast=fast,
     )
-    # Resolve the effort value to persist: captures post-clamp values
-    # (e.g. "max"→"xhigh" for codex) and forces None for no-effort providers.
     _orc_provider = orc_imodel.endpoint.config.provider
     effort = resolve_persisted_effort(_orc_provider, orc_imodel, effort)
     if cwd:
@@ -439,17 +330,27 @@ def setup_orchestration(
     run = allocate_run(save_dir=save_dir)
     run.ensure_artifact_root()
 
-    # Orchestrator identity: user profile if given, else the casts `orchestrator`
-    # role (decompose by dependency boundary, verify before downstream, ...).
-    orc_system = orc_profile.system_prompt if orc_profile else casts_role_system("orchestrator")
-    orc_branch = Branch(
-        chat_model=orc_imodel,
-        system=orc_system,
-        log_config=DataLoggerConfig(auto_save_on_exit=False),
-        name="orchestrator",
-    )
-    # Honour a pre-generated session ID passed by the --background launcher so
-    # `li monitor <id>` works immediately after the parent prints the handle.
+    orc_log_config = DataLoggerConfig(auto_save_on_exit=False)
+    if orc_profile:
+        # User profile supplies a verbatim system prompt (no casts composition).
+        orc_branch = Branch(
+            chat_model=orc_imodel,
+            system=orc_profile.system_prompt,
+            log_config=orc_log_config,
+            name="orchestrator",
+        )
+    else:
+        # Canonical path: the built-in "orchestrator" casts role composed +
+        # built by the factory (LION prepend + policy block), byte-identical to
+        # the old casts_role_system("orchestrator").
+        orc_spec = AgentSpec.compose("orchestrator", grant_emissions=False)
+        orc_branch = await create_agent(
+            orc_spec,
+            load_settings=False,
+            chat_model=orc_imodel,
+            log_config=orc_log_config,
+        )
+        orc_branch.name = "orchestrator"
     _session_id_env = os.environ.get("LIONAGI_SESSION_ID")
     session = (
         Session(id=_session_id_env, default_branch=orc_branch)
@@ -477,10 +378,7 @@ def setup_orchestration(
     )
 
 
-# ── Phase C: build_worker_branch ────────────────────────────────────────
-
-
-def build_worker_branch(
+async def build_worker_branch(
     env: OrchestrationEnv,
     *,
     agent_id: str,
@@ -491,48 +389,16 @@ def build_worker_branch(
     grant_spawn: bool = False,
     modes: list[str] | None = None,
 ) -> tuple[Branch, str, AgentProfile | None]:
-    """Phase C — resolve model/profile/effort/system and build a Branch.
+    """Resolve model/profile/system and build a worker Branch.
 
-    System prompt composition: the base prompt is chosen once
-    (``system_prompt_override`` > profile > BARE), then if the run is in
-    team mode the team coordination section is APPENDED to it. Team mode
-    does not replace the base — workers still need the artifact protocol
-    and tool guidance that BARE (or the profile) provides.
-
-    Parameters
-    ----------
-    agent_id
-        The stable id used for this worker's artifact directory
-        (``run.agent_artifact_dir(agent_id)``) — the per-assignment worker
-        name (e.g. ``researcher-2``).
-    role
-        Role name (a casts role or a user profile) used for system-prompt
-        resolution and name dedup (``researcher``, ``architect``, ...).
-        Ignored if ``env.bare``.
-    model_override
-        If set, overrides the profile/default model.
-    explicit_name
-        If the caller has its own naming scheme (fanout pre-computes),
-        pass the name here; we still register it so ``env.all_names``
-        stays in sync.
-    system_prompt_override
-        Hard override of the base system prompt (tests, special cases).
-        The team coordination section is still appended on top when team
-        mode is active — pass None to let the normal profile/BARE
-        selection happen.
-    grant_spawn
-        When True, grant the worker the ``SpawnRequest`` capability so it may
-        grow the running DAG (reactive self-expansion). Flow grants this to
-        every worker; fanout leaves it off.
-
-    Returns
-    -------
-    (branch, model_string, profile_or_None)
+    Casts-role workers route through ``AgentSpec.compose`` + ``create_agent``
+    (the canonical construction path — factory wires settings/system/model/
+    emissions consistently). Verbatim-prompt workers (explicit override, a user
+    profile's own ``system_prompt``, or ``--bare``) have no casts Role to
+    compose, so their Branch is built directly with the literal prompt.
     """
-    from ._common import BARE_WORKER_SYSTEM  # avoid import cycle
+    from ._common import BARE_WORKER_SYSTEM
 
-    # Pack per-role config (ADR-0074): model/effort/modes defaults for casts
-    # roles. Ignored in bare mode (workers are the raw CLI spec there).
     w_cfg = None if env.bare else role_config(role)
 
     w_profile: AgentProfile | None = None
@@ -540,7 +406,6 @@ def build_worker_branch(
         w_model = model_override or env.default_model_spec
     else:
         resolved_model, w_profile = resolve_worker_spec(role)
-        # model precedence: explicit override > user profile > pack config > default
         if model_override:
             w_model = model_override
         elif w_profile:
@@ -550,7 +415,6 @@ def build_worker_branch(
         else:
             w_model = env.default_model_spec
 
-    # effort precedence (when not forced by env): user profile > pack config
     w_effort = env.effort
     if not env.bare and not env.effort:
         if w_profile and w_profile.effort:
@@ -573,68 +437,75 @@ def build_worker_branch(
         theme=env.theme,
         fast=w_fast,
     )
-    # Per-agent artifact directory: workers write files here; downstream
-    # agents read via relative paths. Overrides env.cwd.
     artifact_dir = env.run.agent_artifact_dir(agent_id)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     w_imodel.endpoint.config.kwargs["repo"] = artifact_dir
-    # Grant write access to the actual project directory so workers can
-    # edit source files, not just their artifact sandbox.
     project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
     w_imodel.endpoint.config.kwargs.setdefault("add_dir", [])
     if project_root not in w_imodel.endpoint.config.kwargs["add_dir"]:
         w_imodel.endpoint.config.kwargs["add_dir"].append(project_root)
 
-    # Name assignment — caller may pre-compute, otherwise we dedupe by role.
     if explicit_name is not None:
         env.register_name(explicit_name)
         wname = explicit_name
     else:
         wname = env.assign_name(role)
 
-    # Base system prompt: explicit override > user profile > casts role+modes > BARE.
-    # The casts layer is the key win — a role body (+ resolved cognitive modes,
-    # ADR-0074) replaces the single hardcoded BARE prompt for a casts assignee.
-    if system_prompt_override is not None:
-        base_system = system_prompt_override
-    elif not env.bare and w_profile and w_profile.system_prompt:
-        base_system = w_profile.system_prompt
-    elif (
-        not env.bare
-        and (role_system := casts_role_system(role, modes=resolve_modes(role, modes))) is not None
-    ):
-        base_system = role_system
-    else:
-        base_system = BARE_WORKER_SYSTEM
-
-    # Team mode APPENDS the coord section — does not replace the base.
+    resolved_modes = [] if env.bare else resolve_modes(role, modes)
     team_section = team_worker_system(env.team_data, wname)
-    w_system = f"{base_system}\n\n{team_section}" if team_section else base_system
 
-    wb = Branch(
-        chat_model=w_imodel,
-        system=w_system,
-        log_config=DataLoggerConfig(auto_save_on_exit=False),
-        name=wname,
-    )
+    # A worker's system is either a casts-role composition or a verbatim string
+    # (explicit override / user-profile prompt / bare default). Only the casts
+    # case routes its prompt through the factory; the verbatim cases have no
+    # casts Role to compose from, so their string is set after construction.
+    verbatim_system: str | None = None
+    if system_prompt_override is not None:
+        verbatim_system = system_prompt_override
+    elif not env.bare and w_profile and w_profile.system_prompt:
+        verbatim_system = w_profile.system_prompt
+    elif env.bare or not _is_casts_role(role):
+        verbatim_system = BARE_WORKER_SYSTEM
+
+    log_config = DataLoggerConfig(auto_save_on_exit=False)
+    if verbatim_system is None:
+        # Casts-role worker: AgentSpec.compose + create_agent is the canonical
+        # construction. The factory prepends LION_SYSTEM and renders the role's
+        # policy block, so the result is byte-identical to the old
+        # casts_role_system(role, modes) + team_section path. grant_emissions is
+        # off — spawn rights (if any) are granted below exactly as before.
+        spec = AgentSpec.compose(
+            role,
+            modes=resolved_modes,
+            grant_emissions=False,
+            system_prompt=team_section,
+        )
+        wb = await create_agent(
+            spec,
+            load_settings=False,
+            chat_model=w_imodel,
+            log_config=log_config,
+        )
+        wb.name = wname
+    else:
+        w_system = f"{verbatim_system}\n\n{team_section}" if team_section else verbatim_system
+        wb = Branch(
+            chat_model=w_imodel,
+            system=w_system,
+            log_config=log_config,
+            name=wname,
+        )
+
     env.session.include_branches(wb)
 
-    # Grant the SpawnRequest capability so this worker can grow the running DAG
-    # (reactive self-expansion). Fresh branch → capability sticks; cloned
-    # children (spawned nodes) do not inherit it, bounding spawn depth.
     if grant_spawn:
         from lionagi.orchestration import grant_spawn as _grant_spawn
 
         _grant_spawn(wb)
 
-    # Register live persist hook on this new branch
     if env._live_persist:
-        _register_branch_hook(env._live_persist, wb)
+        register_branch_hook(env._live_persist, wb)
 
     return wb, w_model, w_profile
-
-
-# ── Phase G: finalize ───────────────────────────────────────────────────
 
 
 def finalize_orchestration(
@@ -645,37 +516,7 @@ def finalize_orchestration(
     extras: dict | None = None,
     emit_hints: bool = True,
 ) -> tuple[list[tuple[str, str, str]], str]:
-    """Phase G — persist branch snapshots + last-branch pointer + hints.
-
-    Branch state persists via the live SQLite hooks during execution (ADR-0004),
-    but the resume hints emitted here say ``li agent -r <id>`` — which routes
-    through ``find_branch()`` and currently looks for
-    ``runs/<run>/branches/<id>.json``. We write one canonical snapshot per
-    branch so the hint resolves. The cost is a single small JSON write per
-    branch at exit; the run-time message stream itself stays SQLite-only.
-
-    Parameters
-    ----------
-    kind
-        Pattern kind (``"fanout"`` | ``"flow"``).
-    prompt
-        Original user prompt.
-    extras
-        Pattern-specific extras (agents, operations). Persisted to SQLite
-        session node_metadata so Studio can render the execution DAG.
-    emit_hints
-        When True, print ``[to resume] li agent -r <id> "..."`` for the
-        orchestrator and each worker branch.
-
-    Returns
-    -------
-    (branch_ids, orc_branch_id) where branch_ids is
-    ``[(provider, branch_id, name), ...]`` derived from the in-memory
-    session.
-    """
-    import logging
-
-    # Ensure branches_dir exists (allocate_run did, but be defensive).
+    """Persist branch snapshots + last-branch pointer + hints."""
     env.run.ensure_state_dirs()
     log = logging.getLogger("lionagi.cli")
 
@@ -713,58 +554,47 @@ def finalize_orchestration(
     return branch_ids, orc_branch_id
 
 
-# ── Live SQLite persist ──────────────────────────────────────────────
+_log_orch = logging.getLogger("lionagi.cli")
 
 
-async def start_live_persist(
-    env: OrchestrationEnv,
+async def setup_orchestration_persist(
+    session: Any,
     *,
     invocation_kind: str | None = None,
     playbook_name: str | None = None,
     agent_name: str | None = None,
     artifacts_path: str | None = None,
-    artifact_contract: dict[str, Any] | None = None,
+    artifact_contract: dict | None = None,
     invocation_id: str | None = None,
     model: str | None = None,
     provider: str | None = None,
     effort: str | None = None,
     project: str | None = None,
-) -> None:
-    """Open state.db, create session row, register hooks on existing branches.
-
-    New branches created via build_worker_branch auto-register via the
-    env._live_persist check there.
-
-    On any setup failure, the DB connection is closed before returning
-    so the aiosqlite background thread does not leak (non-daemon thread
-    leak prevents Python interpreter shutdown — "CLI hangs forever").
-    """
-    import logging
-
+    branches: list[Any] | None = None,
+) -> dict | None:
     from lionagi.state.db import StateDB
 
-    db: StateDB | None = None
+    db = None
     try:
         db = StateDB()
         await db.open()
 
-        session = env.session
         session_id = str(session.id)
         session_dict = session.to_dict(mode="db")
 
         session_prog_id = str(uuid.uuid4())
         await db.create_progression(session_prog_id)
-        if project:
-            _proj, _proj_src = project, "explicit"
-        else:
-            from lionagi.cli._project import detect_project
 
-            _proj, _proj_src = detect_project()
+        _proj, _proj_src = _resolve_project(project)
+        from lionagi.cli.kill import current_pid_markers as _pid_markers
+
+        _identity_markers = _pid_markers()
+        _node_meta = {**(session_dict.get("node_metadata") or {}), **_identity_markers}
         await db.create_session(
             {
                 "id": session_id,
                 "created_at": session_dict["created_at"],
-                "node_metadata": session_dict.get("node_metadata"),
+                "node_metadata": _node_meta,
                 "name": session_dict.get("name"),
                 "user": session_dict.get("user"),
                 "progression_id": session_prog_id,
@@ -777,16 +607,11 @@ async def start_live_persist(
                 "artifact_contract_json": artifact_contract,
                 "status": "running",
                 "started_at": time.time(),
-                # ADR-0020: optional skill orchestration parent
                 "invocation_id": invocation_id,
-                # ADR-0022: orchestrator-level provenance. For multi-model
-                # flows the per-branch model is the actual; this is the
-                # "primary" / "default" that the runs list shows.
-                "model": _resolve_session_model(provider, model),
+                "model": _provenance.resolve_model_spec(provider, model),
                 "provider": provider,
                 "effort": effort,
                 "agent_hash": _provenance.agent_definition_hash(agent_name),
-                # ADR-0026: project detection.
                 "project": _proj,
                 "project_source": _proj_src,
             }
@@ -801,35 +626,32 @@ async def start_live_persist(
             "hooks": [],
             "artifacts_path": artifacts_path,
             "artifact_contract": artifact_contract,
+            "identity_markers": _identity_markers,
         }
-        env._live_persist = ctx
 
-        for branch in session.branches:
-            _register_branch_hook(ctx, branch)
+        for branch in branches or []:
+            register_branch_hook(ctx, branch)
+
+        return ctx
     except Exception as exc:
-        logging.getLogger("lionagi.cli").warning(
+        _log_orch.warning(
             "live persist setup failed (%s) — disabling persistence for this run",
             exc,
             exc_info=True,
         )
-        env._live_persist = None
         if db is not None:
             try:
                 await db.close()
-            except Exception as close_exc:  # noqa: BLE001
-                logging.getLogger("lionagi.cli").warning(
-                    "fallback db.close after setup failure also failed: %s",
-                    close_exc,
+            except Exception as close_exc:
+                _log_orch.warning(
+                    "fallback db.close after setup failure also failed: %s", close_exc
                 )
+        return None
 
 
-def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
-    """Register async message hook on a branch.
+def register_branch_hook(ctx: dict[str, Any], branch: Any) -> None:
+    from lionagi.ln.concurrency import Lock
 
-    Branch row + progression are lazily created on the first message
-    (since this function may be called from sync build_worker_branch
-    where we can't await DB operations).
-    """
     db = ctx["db"]
     session_id = ctx["session_id"]
     session_prog_id = ctx["session_prog_id"]
@@ -841,10 +663,6 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
     init_lock = Lock()
 
     async def _ensure_branch_row():
-        # Serialize concurrent first messages on the same branch so
-        # only one of them runs the DB writes. The flag flips to True
-        # ONLY after the writes commit — a transient failure leaves
-        # initialized=False so the next message retries.
         if initialized["done"]:
             return
         async with init_lock:
@@ -867,25 +685,18 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
                 system_msg_id = sys_dict["id"]
                 await db.insert_message(sys_dict)
 
-            # ADR-0022: per-branch provenance — pulled from the runtime
-            # endpoint config so multi-model flows correctly disclose what
-            # *each* branch actually used, not the orchestrator default.
             br_model: str | None = None
             br_provider: str | None = None
             try:
+                from lionagi.state import provenance as _provenance
+
                 ep_cfg = branch.chat_model.endpoint.config
                 br_provider = getattr(ep_cfg, "provider", None)
                 br_model_raw = (ep_cfg.kwargs or {}).get("model")
                 br_model = _provenance.resolve_model_spec(br_provider, br_model_raw)
-            except Exception as _provenance_exc:  # noqa: BLE001
-                # Provenance is best-effort — never block the branch row.
-                import logging
+            except Exception as _prov_exc:
+                _log_orch.debug("branch provenance lookup failed for %s: %s", branch_id, _prov_exc)
 
-                logging.getLogger("lionagi.cli").debug(
-                    "branch provenance lookup failed for %s: %s",
-                    branch_id,
-                    _provenance_exc,
-                )
             await db.create_branch(
                 {
                     "id": branch_id,
@@ -898,17 +709,12 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
                     "system_msg_id": system_msg_id,
                     "model": br_model,
                     "provider": br_provider,
-                    # branch.name is the agent role within the flow
-                    # ("r1", "critic", "explorer", ...).
                     "agent_name": branch_dict.get("name"),
                 }
             )
             initialized["done"] = True
 
     async def _on_message(msg):
-        # Live-persist failures are logged (not raised) so a DB write
-        # blip cannot abort an in-flight orchestration. The error is
-        # visible in -v runs without crashing the worker.
         try:
             await _ensure_branch_row()
             msg_dict = msg.to_dict(mode="db")
@@ -916,28 +722,52 @@ def _register_branch_hook(ctx: dict[str, Any], branch: Branch) -> None:
             await db.insert_message(msg_dict)
             await db.append_to_progression(branch_prog_id, msg_id)
             await db.append_to_progression(session_prog_id, msg_id)
-            # ADR-0019: activity heartbeat for staleness detection.
             await db.touch_session_activity(session_id, at=msg_dict.get("created_at"))
-            # ADR-0009: keep branches.system_msg_id pointing at the
-            # current system if the runtime replaces it mid-flow.
             if msg_dict.get("role") == "system":
                 await db.update_branch(branch_id, system_msg_id=msg_id)
         except Exception as exc:
-            import logging
-
-            logging.getLogger("lionagi.cli").warning(
+            _log_orch.warning(
                 "live persist write failed for branch %s: %s",
                 branch_id,
                 exc,
                 exc_info=True,
             )
 
-    # ADR-0023b: persistence rides the session hook bus (MESSAGE_ADD) instead of
-    # a parallel on_message_added callback. The _on_message body is unchanged.
     from lionagi.hooks import route_message_persistence
 
     handler = route_message_persistence(ctx["session"], branch, _on_message)
     ctx["hooks"].append((branch, handler))
+
+
+async def start_live_persist(
+    env: OrchestrationEnv,
+    *,
+    invocation_kind: str | None = None,
+    playbook_name: str | None = None,
+    agent_name: str | None = None,
+    artifacts_path: str | None = None,
+    artifact_contract: dict[str, Any] | None = None,
+    invocation_id: str | None = None,
+    model: str | None = None,
+    provider: str | None = None,
+    effort: str | None = None,
+    project: str | None = None,
+) -> None:
+    ctx = await setup_orchestration_persist(
+        env.session,
+        invocation_kind=invocation_kind,
+        playbook_name=playbook_name,
+        agent_name=agent_name,
+        artifacts_path=artifacts_path,
+        artifact_contract=artifact_contract,
+        invocation_id=invocation_id,
+        model=model,
+        provider=provider,
+        effort=effort,
+        project=project,
+        branches=list(env.session.branches),
+    )
+    env._live_persist = ctx
 
 
 async def stop_live_persist(
@@ -946,105 +776,13 @@ async def stop_live_persist(
     status: str = "completed",
     exception: BaseException | None = None,
 ) -> str:
-    """Update session bookmarks, lifecycle columns, and close DB.
-
-    Returns the *effective* terminal status — ADR-0029 §7's verification
-    override can flip a clean ``completed`` into ``failed`` when required
-    artifacts are missing. Callers MUST use the returned status for the
-    process exit code.
-
-    The DB close is in its own ``finally`` so it always runs — even if
-    the bookmark update or hook removal fails. Leaving the DB unclosed
-    leaks the aiosqlite worker (non-daemon thread) and prevents the
-    Python interpreter from shutting down.
-    """
-    import logging
-
     ctx = env._live_persist
-    if ctx is None:
-        return status
-    log = logging.getLogger("lionagi.cli")
-    db = ctx["db"]
-    try:
-        session_prog_id = ctx["session_prog_id"]
-        session_id = ctx["session_id"]
-
-        all_msgs = await db.get_progression(session_prog_id)
-        update_kwargs: dict[str, Any] = {
-            "ended_at": time.time(),
-        }
-        if all_msgs:
-            update_kwargs["first_msg_id"] = all_msgs[0]
-            update_kwargs["last_msg_id"] = all_msgs[-1]
-
-        extras = getattr(env, "_finalize_extras", None)
-        if extras:
-            update_kwargs["node_metadata"] = json.dumps(extras)
-
-        await db.update_session(session_id, **update_kwargs)
-
-        from lionagi.cli.agent import _resolve_run_reason
-
-        reason_code, reason_summary, evidence_refs = _resolve_run_reason(
-            status=status,
-            exception=exception,
-        )
-        metadata: dict[str, Any] | None = None
-        if exception is not None:
-            metadata = {"exception_class": type(exception).__name__}
-
-        session_row = await db.get_session(session_id) or {}
-        verification = verify_artifact_contract(
-            session_row.get("artifact_contract_json"),
-            artifacts_root=session_row.get("artifacts_path"),
-        )
-        await db.update_artifact_verification(session_id, verification)
-
-        final_status = status
-        final_reason_code = reason_code
-        final_reason_summary = reason_summary
-        final_evidence_refs = evidence_refs
-        if verification and verification["status"] == "failed":
-            missing = verification["missing_required"]
-            if status == "completed":
-                from lionagi.state.reasons import RunReasons
-
-                final_status = "failed"
-                final_reason_code = RunReasons.FAILED_MISSING_ARTIFACT
-                final_reason_summary = missing_artifact_summary(missing)
-                final_evidence_refs = missing_artifact_evidence(missing)
-            else:
-                metadata = dict(metadata or {})
-                metadata["artifact_verification_status"] = verification["status"]
-                metadata["missing_required_artifact_ids"] = [
-                    str(entry.get("id", "")) for entry in missing
-                ]
-
-        await db.update_status(
-            "session",
-            session_id,
-            new_status=final_status,
-            reason_code=final_reason_code,
-            reason_summary=final_reason_summary,
-            evidence_refs=final_evidence_refs,
-            source="executor",
-            actor=session_id,
-            metadata=metadata,
-        )
-
-        # Detach each persistence handler from the session hook bus so a
-        # closed-DB handler can't fire on later messages (ADR-0023b).
-        from lionagi.hooks import unroute_message_persistence
-
-        for branch, hook in ctx["hooks"]:
-            unroute_message_persistence(branch, hook)
-    except Exception as exc:
-        log.warning("live persist teardown failed: %s", exc, exc_info=True)
-        return status
-    finally:
-        try:
-            await db.close()
-        except Exception as exc:
-            log.warning("live persist db.close failed: %s", exc, exc_info=True)
-        env._live_persist = None
+    extras = getattr(env, "_finalize_extras", None)
+    final_status = await teardown_persist(
+        ctx,
+        status=status,
+        exception=exception,
+        extras=extras,
+    )
+    env._live_persist = None
     return final_status

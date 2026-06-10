@@ -20,9 +20,9 @@ class TestFuzzyJsonParsing:
             2,
             3,
         ], "Valid JSON array must parse correctly"
-        assert fuzzy_json('{"nested": {"key": "value"}}') == {
-            "nested": {"key": "value"}
-        }, "Nested JSON must parse"
+        assert fuzzy_json('{"nested": {"key": "value"}}') == {"nested": {"key": "value"}}, (
+            "Nested JSON must parse"
+        )
 
     def test_normalization(self):
         """Test: Normalization (Single Quote, Whitespace, Unquoted Keys)
@@ -30,14 +30,12 @@ class TestFuzzyJsonParsing:
         GIVEN input=" {'a': 1, b: '2'} " THEN returns {"a": 1, "b": "2"}.
         """
         # Single quotes
-        assert fuzzy_json("{'a': 1}") == {
-            "a": 1
-        }, "Single quotes must be normalized to double quotes"
+        assert fuzzy_json("{'a': 1}") == {"a": 1}, (
+            "Single quotes must be normalized to double quotes"
+        )
 
         # Extra whitespace
-        assert fuzzy_json('  {  "a"  :  1  }  ') == {
-            "a": 1
-        }, "Extra whitespace must be handled"
+        assert fuzzy_json('  {  "a"  :  1  }  ') == {"a": 1}, "Extra whitespace must be handled"
 
         # Unquoted keys
         assert fuzzy_json("{a: 1, b: 2}") == {
@@ -52,9 +50,9 @@ class TestFuzzyJsonParsing:
         }, "Combined normalization must work"
 
         # Complex case with nested objects
-        assert fuzzy_json("{outer: {'inner': 1}}") == {
-            "outer": {"inner": 1}
-        }, "Nested normalization must work"
+        assert fuzzy_json("{outer: {'inner': 1}}") == {"outer": {"inner": 1}}, (
+            "Nested normalization must work"
+        )
 
     def test_unmatched_brackets_fixing(self):
         """Test: UnmatchedBracketsFixing (CRITICAL)
@@ -73,14 +71,14 @@ class TestFuzzyJsonParsing:
         assert fuzzy_json('{"a": 1') == {"a": 1}, "Missing closing brace must be fixed"
 
         # Multiple missing brackets
-        assert fuzzy_json('[{"a": [1, 2') == [
-            {"a": [1, 2]}
-        ], "Multiple missing brackets must be fixed"
+        assert fuzzy_json('[{"a": [1, 2') == [{"a": [1, 2]}], (
+            "Multiple missing brackets must be fixed"
+        )
 
         # Nested missing brackets
-        assert fuzzy_json('{"outer": {"inner": "value"') == {
-            "outer": {"inner": "value"}
-        }, "Nested missing brackets must be fixed"
+        assert fuzzy_json('{"outer": {"inner": "value"') == {"outer": {"inner": "value"}}, (
+            "Nested missing brackets must be fixed"
+        )
 
     def test_irreparable_input(self):
         """Test: IrreparableInput
@@ -107,9 +105,7 @@ class TestFuzzyJsonParsing:
     def test_complex_malformed_json(self):
         """Test handling of complex malformed JSON scenarios."""
         # Mixed quotes
-        assert fuzzy_json("{\"a\": 'value'}") == {
-            "a": "value"
-        }, "Mixed quotes must be handled"
+        assert fuzzy_json("{\"a\": 'value'}") == {"a": "value"}, "Mixed quotes must be handled"
 
         # Trailing commas (valid in some parsers)
         assert fuzzy_json('{"a": 1,}') == {"a": 1}, "Trailing commas should be handled"
@@ -122,21 +118,19 @@ class TestFuzzyJsonParsing:
     def test_escaped_characters(self):
         """Test handling of escaped characters."""
         # Escaped quotes
-        assert fuzzy_json('{"key": "\\"value\\""}') == {
-            "key": '"value"'
-        }, "Escaped quotes must be preserved"
+        assert fuzzy_json('{"key": "\\"value\\""}') == {"key": '"value"'}, (
+            "Escaped quotes must be preserved"
+        )
 
         # Escaped backslashes
-        assert fuzzy_json('{"path": "C:\\\\Users\\\\file"}') == {
-            "path": "C:\\Users\\file"
-        }, "Escaped backslashes must be handled"
+        assert fuzzy_json('{"path": "C:\\\\Users\\\\file"}') == {"path": "C:\\Users\\file"}, (
+            "Escaped backslashes must be handled"
+        )
 
     def test_msgspec_decoder_efficiency(self):
         """Test that msgspec decoder is used efficiently."""
         # Large JSON should still parse efficiently
-        large_json = (
-            '{"items": [' + ",".join(f'{{"id": {i}}}' for i in range(100)) + "]}"
-        )
+        large_json = '{"items": [' + ",".join(f'{{"id": {i}}}' for i in range(100)) + "]}"
         result = fuzzy_json(large_json)
         assert len(result["items"]) == 100, "Large JSON must parse correctly"
         assert result["items"][0] == {"id": 0}
@@ -168,9 +162,7 @@ class TestExtractJson:
 ```
 Some text after"""
 
-        assert extract_json(input_text) == {
-            "a": 1
-        }, "JSON from markdown block must be extracted"
+        assert extract_json(input_text) == {"a": 1}, "JSON from markdown block must be extracted"
 
         # Test with more whitespace
         input_with_space = """
@@ -182,9 +174,9 @@ Some text after"""
         
         Text after
         """
-        assert extract_json(input_with_space) == {
-            "key": "value"
-        }, "JSON with whitespace must be extracted"
+        assert extract_json(input_with_space) == {"key": "value"}, (
+            "JSON with whitespace must be extracted"
+        )
 
     def test_multiple_code_blocks(self):
         """Test: MultipleCodeBlocks
@@ -256,9 +248,9 @@ Second block:
         input_broken = """```json
 {"items": [1, 2, 3
 ```"""
-        assert extract_json(input_broken, fuzzy_parse=True) == {
-            "items": [1, 2, 3]
-        }, "Broken JSON in markdown must be fixed"
+        assert extract_json(input_broken, fuzzy_parse=True) == {"items": [1, 2, 3]}, (
+            "Broken JSON in markdown must be fixed"
+        )
 
     def test_return_one_if_single_parameter(self):
         """Test the return_one_if_single parameter behavior."""
@@ -267,17 +259,17 @@ Second block:
 ```"""
 
         # Default behavior (return_one_if_single=True)
-        assert extract_json(single_block) == {
-            "single": "value"
-        }, "Single block returns dict by default"
-        assert extract_json(single_block, return_one_if_single=True) == {
-            "single": "value"
-        }, "Explicit True returns dict"
+        assert extract_json(single_block) == {"single": "value"}, (
+            "Single block returns dict by default"
+        )
+        assert extract_json(single_block, return_one_if_single=True) == {"single": "value"}, (
+            "Explicit True returns dict"
+        )
 
         # Force list return
-        assert extract_json(single_block, return_one_if_single=False) == [
-            {"single": "value"}
-        ], "False returns list"
+        assert extract_json(single_block, return_one_if_single=False) == [{"single": "value"}], (
+            "False returns list"
+        )
 
     def test_list_input(self):
         """Test that list of strings is properly joined and processed."""
@@ -289,9 +281,7 @@ Second block:
             "More text",
         ]
 
-        assert extract_json(lines) == {
-            "key": "value"
-        }, "List input must be joined and processed"
+        assert extract_json(lines) == {"key": "value"}, "List input must be joined and processed"
 
         # Multiple blocks in list form
         lines_multi = [
@@ -313,15 +303,15 @@ Second block:
     def test_no_json_found(self):
         """Test behavior when no JSON is found."""
         assert extract_json("No JSON here") == [], "No JSON should return empty list"
-        assert (
-            extract_json("```python\nprint('hello')\n```") == []
-        ), "Non-JSON code block returns empty"
+        assert extract_json("```python\nprint('hello')\n```") == [], (
+            "Non-JSON code block returns empty"
+        )
         assert extract_json("") == [], "Empty string returns empty list"
 
         # Invalid JSON that can't be parsed even with fuzzy
-        assert (
-            extract_json("```json\ncompletely invalid\n```", fuzzy_parse=False) == []
-        ), "Invalid JSON returns empty"
+        assert extract_json("```json\ncompletely invalid\n```", fuzzy_parse=False) == [], (
+            "Invalid JSON returns empty"
+        )
 
     def test_nested_json_in_markdown(self):
         """Test extraction of complex nested JSON from markdown."""
@@ -373,8 +363,7 @@ class TestFixJsonString:
     def test_mixed_bracket_types(self):
         """Test fixing mixed bracket types."""
         assert (
-            fix_json_string('{"array": [1, 2, {"nested": 3')
-            == '{"array": [1, 2, {"nested": 3}]}'
+            fix_json_string('{"array": [1, 2, {"nested": 3') == '{"array": [1, 2, {"nested": 3}]}'
         )
 
     def test_error_conditions(self):

@@ -76,9 +76,7 @@ def test_openai_embed_and_response_payloads_filter_internal_kwargs():
     assert payload == {"model": "text-embedding-3-small", "input": "hello"}
 
     response = EndpointRegistry.match("openai", "response")
-    payload, _ = response.create_payload(
-        {"model": "gpt-5", "input": "hello", "branch": "drop"}
-    )
+    payload, _ = response.create_payload({"model": "gpt-5", "input": "hello", "branch": "drop"})
     assert payload == {"model": "gpt-5", "input": "hello"}
 
 
@@ -103,9 +101,7 @@ def test_openai_response_payload_keeps_current_api_fields_and_prompt_only():
         "prompt_cache_key": "cache-key",
     }
 
-    prompt_payload, _ = response.create_payload(
-        {"model": "gpt-5", "prompt": {"id": "pmpt_123"}}
-    )
+    prompt_payload, _ = response.create_payload({"model": "gpt-5", "prompt": {"id": "pmpt_123"}})
     assert prompt_payload == {"model": "gpt-5", "prompt": {"id": "pmpt_123"}}
 
 
@@ -160,9 +156,7 @@ def test_base_http_stream_lines_convert_to_stream_chunks():
         )
     )
 
-    text_chunk = endpoint._line_to_stream_chunk(
-        'data: {"choices":[{"delta":{"content":"hi"}}]}'
-    )
+    text_chunk = endpoint._line_to_stream_chunk('data: {"choices":[{"delta":{"content":"hi"}}]}')
     done_chunk = endpoint._line_to_stream_chunk("data: [DONE]")
 
     assert isinstance(text_chunk, StreamChunk)

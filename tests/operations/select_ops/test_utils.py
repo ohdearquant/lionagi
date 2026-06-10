@@ -297,14 +297,13 @@ class TestParseToRepresentationEdgeCases:
         assert keys == []
 
     def test_parse_unsupported_type(self):
-        """Test unsupported input type."""
-        with pytest.raises(NotImplementedError):
+        """Test unsupported input type raises TypeError (was NotImplementedError)."""
+        with pytest.raises(TypeError):
             parse_to_representation(12345)
 
     def test_parse_mixed_type_list(self):
-        """Test list with mixed types (not all same dtype)."""
-        # Mixed types should raise NotImplementedError
-        with pytest.raises(NotImplementedError):
+        """Test list with mixed types raises TypeError (was NotImplementedError)."""
+        with pytest.raises(TypeError):
             parse_to_representation([1, "string", 3.14])
 
     def test_parse_empty_dict(self):

@@ -30,24 +30,6 @@ def _inbox_name(sender: UUID) -> str:
     return f"inbox_{sender}"
 
 
-def _add_progression_to_flow(flow: Flow, progression: Progression) -> None:
-    """Add a Progression to a Flow, including empty progressions.
-
-    lionagi's Pile.include() skips falsy (empty) items, so empty Progressions
-    cannot be registered via the normal add_progression() path. This function
-    directly updates the internal Pile storage to support empty progressions,
-    mirroring what Flow.add_progression() does after include() succeeds.
-    """
-    if progression.name and progression.name in flow._progression_names:
-        raise ItemExistsError(
-            f"Progression with name '{progression.name}' already exists."
-        )
-    flow.progressions.collections[progression.id] = progression
-    flow.progressions.progression.append(progression.id)
-    if progression.name:
-        flow._progression_names[progression.name] = progression.id
-
-
 class Exchange(Element):
     """Async message router between entity mailboxes.
 
@@ -87,7 +69,7 @@ class Exchange(Element):
         flow: Flow[Message, Progression] = Flow(
             name=str(owner_id),
         )
-        _add_progression_to_flow(flow, Progression(name=OUTBOX))
+        flow.add_progression(Progression(name=OUTBOX))
 
         self.flows.include(flow)
         self._owner_index[owner_id] = flow.id
@@ -149,17 +131,11 @@ class Exchange(Element):
                             except Exception:
                                 message_copy = message.model_copy()
                             deliveries.append((other_id, message_copy))
-                elif (
-                    message.recipient is not None
-                    and message.recipient in self._owner_index
-                ):
+                elif message.recipient is not None and message.recipient in self._owner_index:
                     deliveries.append((message.recipient, message))
         if deliveries:
             await gather(
-                *[
-                    self._deliver_to(recipient_id, message)
-                    for recipient_id, message in deliveries
-                ],
+                *[self._deliver_to(recipient_id, message) for recipient_id, message in deliveries],
                 return_exceptions=True,
             )
 
@@ -174,7 +150,7 @@ class Exchange(Element):
 
         inbox_name = _inbox_name(message.sender)
         try:
-            _add_progression_to_flow(recipient_flow, Progression(name=inbox_name))
+            recipient_flow.add_progression(Progression(name=inbox_name))
         except ItemExistsError:
             pass
 
@@ -217,9 +193,7 @@ class Exchange(Element):
         if flow is None:
             raise ValueError(f"Sender {sender} not registered")
 
-        message = Message(
-            sender=sender, recipient=recipient, content=content, channel=channel
-        )
+        message = Message(sender=sender, recipient=recipient, content=content, channel=channel)
         flow.add_item(message, progressions=OUTBOX)
         return message
 

@@ -21,15 +21,6 @@ __all__ = ("string_similarity",)
 
 
 def cosine_similarity(s1: str, s2: str) -> float:
-    """Calculate the cosine similarity between two strings.
-
-    Args:
-        s1: First input string
-        s2: Second input string
-
-    Returns:
-        float: Cosine similarity score between 0 and 1
-    """
     if not s1 or not s2:
         return 0.0
 
@@ -43,18 +34,6 @@ def cosine_similarity(s1: str, s2: str) -> float:
 
 
 def hamming_similarity(s1: str, s2: str) -> float:
-    """Calculate the Hamming similarity between two strings.
-
-    The strings must be of equal length. Returns the proportion of positions
-    at which corresponding symbols are the same.
-
-    Args:
-        s1: First input string
-        s2: Second input string
-
-    Returns:
-        float: Hamming similarity score between 0 and 1
-    """
     if not s1 or not s2 or len(s1) != len(s2):
         return 0.0
 
@@ -63,15 +42,6 @@ def hamming_similarity(s1: str, s2: str) -> float:
 
 
 def jaro_distance(s: str, t: str) -> float:
-    """Calculate the Jaro distance between two strings.
-
-    Args:
-        s: First input string
-        t: Second input string
-
-    Returns:
-        float: Jaro distance score between 0 and 1
-    """
     s_len = len(s)
     t_len = len(t)
 
@@ -81,7 +51,7 @@ def jaro_distance(s: str, t: str) -> float:
         return 0.0
 
     match_distance = (max(s_len, t_len) // 2) - 1
-    match_distance = max(0, match_distance)  # Ensure non-negative
+    match_distance = max(0, match_distance)
 
     s_matches = [False] * s_len
     t_matches = [False] * t_len
@@ -89,7 +59,6 @@ def jaro_distance(s: str, t: str) -> float:
     matches = 0
     transpositions = 0
 
-    # Identify matches
     for i in range(s_len):
         start = max(0, i - match_distance)
         end = min(i + match_distance + 1, t_len)
@@ -104,7 +73,6 @@ def jaro_distance(s: str, t: str) -> float:
     if matches == 0:
         return 0.0
 
-    # Count transpositions
     k = 0
     for i in range(s_len):
         if not s_matches[i]:
@@ -117,25 +85,10 @@ def jaro_distance(s: str, t: str) -> float:
 
     transpositions //= 2
 
-    return (
-        matches / s_len + matches / t_len + (matches - transpositions) / matches
-    ) / 3.0
+    return (matches / s_len + matches / t_len + (matches - transpositions) / matches) / 3.0
 
 
 def jaro_winkler_similarity(s: str, t: str, scaling: float = 0.1) -> float:
-    """Calculate the Jaro-Winkler similarity between two strings.
-
-    Args:
-        s: First input string
-        t: Second input string
-        scaling: Scaling factor for common prefix adjustment
-
-    Returns:
-        float: Jaro-Winkler similarity score between 0 and 1
-
-    Raises:
-        ValueError: If scaling factor is not between 0 and 0.25
-    """
     if not 0 <= scaling <= 0.25:
         raise ValueError("Scaling factor must be between 0 and 0.25")
 
@@ -143,8 +96,6 @@ def jaro_winkler_similarity(s: str, t: str, scaling: float = 0.1) -> float:
         return _rf_distance.JaroWinkler.similarity(s, t, prefix_weight=scaling)
 
     jaro_sim = jaro_distance(s, t)
-
-    # Find length of common prefix (up to 4 chars)
     prefix_len = 0
     for s_char, t_char in zip(s, t, strict=False):
         if s_char != t_char:
@@ -157,16 +108,6 @@ def jaro_winkler_similarity(s: str, t: str, scaling: float = 0.1) -> float:
 
 
 def levenshtein_distance(a: str, b: str) -> int:
-    """Calculate the Levenshtein (edit) distance between two strings.
-
-    Args:
-        a: First input string
-        b: Second input string
-
-    Returns:
-        int: Minimum number of single-character edits needed to change one
-             string into the other
-    """
     from itertools import product
 
     if not a:
@@ -185,26 +126,15 @@ def levenshtein_distance(a: str, b: str) -> int:
     for i, j in product(range(1, m + 1), range(1, n + 1)):
         cost = 0 if a[i - 1] == b[j - 1] else 1
         d[i][j] = min(
-            d[i - 1][j] + 1,  # deletion
-            d[i][j - 1] + 1,  # insertion
-            d[i - 1][j - 1] + cost,  # substitution
+            d[i - 1][j] + 1,
+            d[i][j - 1] + 1,
+            d[i - 1][j - 1] + cost,
         )
 
     return d[m][n]
 
 
 def levenshtein_similarity(s1: str, s2: str) -> float:
-    """Calculate the Levenshtein similarity between two strings.
-
-    Converts Levenshtein distance to a similarity score between 0 and 1.
-
-    Args:
-        s1: First input string
-        s2: Second input string
-
-    Returns:
-        float: Levenshtein similarity score between 0 and 1
-    """
     if _HAS_RAPIDFUZZ:
         return _rf_distance.Levenshtein.normalized_similarity(s1, s2)
 
@@ -219,21 +149,11 @@ def levenshtein_similarity(s1: str, s2: str) -> float:
 
 
 def sequence_matcher_similarity(s1: str, s2: str) -> float:
-    """Calculate similarity using Python's SequenceMatcher.
-
-    Args:
-        s1: First input string
-        s2: Second input string
-
-    Returns:
-        float: Similarity score between 0 and 1
-    """
     from difflib import SequenceMatcher
 
     return SequenceMatcher(None, s1, s2).ratio()
 
 
-# Map of available similarity algorithms
 SIMILARITY_ALGO_MAP = {
     "jaro_winkler": jaro_winkler_similarity,
     "levenshtein": levenshtein_similarity,
@@ -251,14 +171,11 @@ SIMILARITY_TYPE = Literal[
     "cosine",
 ]
 
-# Type alias for similarity functions
 SimilarityFunc = Callable[[str, str], float]
 
 
 @dataclass(frozen=True)
 class MatchResult:
-    """Represents a string matching result."""
-
     word: str
     score: float
     index: int
@@ -272,40 +189,21 @@ def string_similarity(
     case_sensitive: bool = False,
     return_most_similar: bool = False,
 ) -> str | list[str] | None:
-    """Find similar strings using specified similarity algorithm.
-
-    Args:
-        word: The input string to find matches for
-        correct_words: List of strings to compare against
-        algorithm: Similarity algorithm to use
-        threshold: Minimum similarity score (0.0 to 1.0)
-        case_sensitive: Whether to consider case when matching
-        return_most_similar: Return only the most similar match
-
-    Returns:
-        Matching string(s) or None if no matches found
-
-    Raises:
-        ValueError: If correct_words is empty or threshold is invalid
-    """
     if not correct_words:
         raise ValueError("correct_words must not be empty")
 
     if not 0.0 <= threshold <= 1.0:
         raise ValueError("threshold must be between 0.0 and 1.0")
 
-    # Convert inputs to strings
     compare_word = str(word)
     original_words = [str(w) for w in correct_words]
 
-    # Handle case sensitivity
     if not case_sensitive:
         compare_word = compare_word.lower()
         compare_words = [w.lower() for w in original_words]
     else:
         compare_words = original_words.copy()
 
-    # Get scoring function
     if isinstance(algorithm, str):
         score_func = SIMILARITY_ALGO_MAP.get(algorithm)
         if score_func is None:
@@ -313,16 +211,10 @@ def string_similarity(
     elif callable(algorithm):
         score_func = algorithm
     else:
-        raise ValueError(
-            "algorithm must be a string specifying a built-in algorithm or a callable"
-        )
+        raise ValueError("algorithm must be a string specifying a built-in algorithm or a callable")
 
-    # Calculate similarities
     results = []
-    for idx, (orig_word, comp_word) in enumerate(
-        zip(original_words, compare_words, strict=False)
-    ):
-        # Skip different length strings for hamming similarity
+    for idx, (orig_word, comp_word) in enumerate(zip(original_words, compare_words, strict=False)):
         if algorithm == "hamming" and len(comp_word) != len(compare_word):
             continue
 
@@ -330,19 +222,15 @@ def string_similarity(
         if score >= threshold:
             results.append(MatchResult(orig_word, score, idx))
 
-    # Return None if no matches
     if not results:
         return None
 
-    # Sort by score (descending) and index (ascending) for stable ordering
     results.sort(key=lambda x: (-x.score, x.index))
 
-    # Filter exact matches for case sensitive comparisons
     if case_sensitive:
         max_score = results[0].score
         results = [r for r in results if r.score == max_score]
 
-    # Return results
     if return_most_similar:
         return results[0].word
 

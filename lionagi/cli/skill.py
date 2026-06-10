@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from lionagi.libs.path_safety import validate_path_component
+
 from ._logging import log_error
 
 
@@ -36,11 +38,10 @@ def resolve_skill_path(name: str) -> tuple[Path | None, str | None]:
     """
     if not name or not isinstance(name, str):
         return None, "skill name must be a non-empty string"
-    if "/" in name or "\\" in name or name.startswith("."):
-        return (
-            None,
-            f"skill NAME must be a bare identifier, got {name!r}.",
-        )
+    try:
+        validate_path_component(name, label="skill NAME")
+    except ValueError:
+        return None, f"skill NAME must be a bare identifier, got {name!r}."
     candidate = _skills_root() / name / "SKILL.md"
     if not candidate.is_file():
         suggestions = list_skill_names()
@@ -60,7 +61,7 @@ def resolve_skill_path(name: str) -> tuple[Path | None, str | None]:
     except (OSError, ValueError):
         return (
             None,
-            f"skill {name!r} resolves outside skills root " "(symlink escape blocked)",
+            f"skill {name!r} resolves outside skills root (symlink escape blocked)",
         )
     return candidate, None
 
@@ -78,21 +79,15 @@ def list_skill_names() -> list[str]:
 
 
 def strip_frontmatter(text: str) -> str:
-    """Return content after YAML frontmatter, or the input unchanged.
-
-    Frontmatter convention: file starts with a line of exactly ``---``,
-    followed by YAML, followed by another ``---`` on its own line. If
-    the file does not open with ``---``, returns the input unchanged.
-    """
-    lines = text.splitlines(keepends=True)
-    if not lines or lines[0].rstrip("\r\n") != "---":
+    text = text.lstrip()
+    if not text.startswith("---"):
         return text
-    # Find the closing --- delimiter
-    for i in range(1, len(lines)):
-        if lines[i].rstrip("\r\n") == "---":
-            return "".join(lines[i + 1 :]).lstrip("\n")
-    # Unterminated frontmatter: return input unchanged to avoid silent drop
-    return text
+    from lionagi.libs.frontmatter import _FM_SPLIT
+
+    parts = _FM_SPLIT.split(text, maxsplit=2)
+    if len(parts) < 3:
+        return text
+    return parts[2].lstrip("\n")
 
 
 def read_skill_body(name: str) -> tuple[str | None, str | None]:

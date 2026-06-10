@@ -12,12 +12,9 @@ try:
     from rich.align import Align
     from rich.box import MINIMAL, ROUNDED
     from rich.console import Console
-    from rich.markdown import Markdown
     from rich.padding import Padding
     from rich.panel import Panel
-    from rich.style import Style
     from rich.syntax import Syntax
-    from rich.text import Text
     from rich.theme import Theme
 
     DARK_THEME = Theme(

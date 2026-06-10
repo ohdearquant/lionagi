@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""DB maintenance helpers for Studio (#1173).
+"""DB maintenance helpers for Studio.
 
 Three capabilities:
 - ``checkpoint_state_db()``: runs ``PRAGMA wal_checkpoint(TRUNCATE)`` and

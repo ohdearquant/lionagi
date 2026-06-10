@@ -34,9 +34,7 @@ class TestLCallFunction(unittest.IsolatedAsyncioTestCase):
 
     async def test_lcall_with_retries(self):
         inputs = [1, 2, 3]
-        results = await alcall(
-            inputs, mock_func_with_error, retry_attempts=1, retry_default=0
-        )
+        results = await alcall(inputs, mock_func_with_error, retry_attempts=1, retry_default=0)
         self.assertEqual(results, [1, 2, 0])
 
     async def test_lcall_with_timeout(self):
@@ -264,9 +262,7 @@ class TestLCallSyncFunction:
         output_flatten=st.booleans(),
     )
     @settings(max_examples=30)
-    def test_lcall_flatten_options_property(
-        self, values, input_flatten, output_flatten
-    ):
+    def test_lcall_flatten_options_property(self, values, input_flatten, output_flatten):
         """Property test: lcall processing options work correctly."""
         result = lcall(
             values,

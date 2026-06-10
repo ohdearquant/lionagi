@@ -54,9 +54,7 @@ class TestFieldModel:
                 raise ValueError("Value must be positive")
             return value
 
-        field = FieldModel(
-            name="test_field", annotation=int, validator=validate_positive
-        )
+        field = FieldModel(name="test_field", annotation=int, validator=validate_positive)
 
         validator_dict = field.field_validator
         assert isinstance(validator_dict, dict)
@@ -122,20 +120,18 @@ class TestFieldModel:
         field = FieldModel(name="test_field", default="test")
 
         # Test that extra fields are allowed
-        field_with_extra = FieldModel(
-            name="test_field", default="test", custom_attr="value"
-        )
+        field_with_extra = FieldModel(name="test_field", default="test", custom_attr="value")
         assert hasattr(field_with_extra, "custom_attr")
 
-    def test_field_to_dict(self):
-        """Test field serialization to dictionary."""
+    def test_field_metadata_dict(self):
+        """Test field serialization to dictionary via metadata_dict."""
         field = FieldModel(
             name="test_field",
             default="default_value",
             title="Test Field",
             description="A test field",
         )
-        dict_repr = field.to_dict()
+        dict_repr = field.metadata_dict()
         assert isinstance(dict_repr, dict)
         assert dict_repr["default"] == "default_value"
         assert dict_repr["title"] == "Test Field"
@@ -189,9 +185,7 @@ def test_both_default_and_default_factory():
     def factory_func():
         return "factory_value"
 
-    with pytest.raises(
-        ValueError, match="Cannot have both default and default_factory"
-    ):
+    with pytest.raises(ValueError, match="Cannot have both default and default_factory"):
         FieldModel(
             name="conflicting_field",
             default="some_value",
@@ -239,9 +233,7 @@ def test_type_mismatch_between_annotation_and_default(annotation, default_value)
     but it may cause an error once integrated in an actual Pydantic model.
     We'll simply confirm the mismatch is stored or accepted at this step.
     """
-    field = FieldModel(
-        name="mismatch_field", annotation=annotation, default=default_value
-    )
+    field = FieldModel(name="mismatch_field", annotation=annotation, default=default_value)
     info = field.create_field()
     # The FieldInfo has the mismatch, but Pydantic doesn't strictly validate here in FieldModel alone.
     # You might consider implementing your own check if you want to raise an error now.

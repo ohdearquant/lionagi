@@ -1,19 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Reactive DAG flow: orchestrator plans TaskAssignments → self-expanding execution.
-
-Clean-break design (no bespoke plan models):
-
-- **Plan** = a ``list[TaskAssignment]`` (casts coordination emission) the
-  orchestrator emits — ``assignee`` names a role, ``depends_on`` (1-based step
-  indices) forms the DAG. No ``FlowPlan``/``FlowAgent``/``FlowOp``.
-- **Workers** are casts roles (``_orchestration.casts_role_system``) granted the
-  ``SpawnRequest`` capability.
-- **Execution** is ``session.flow(reactive=True)``: a worker that finds work
-  beyond its assignment emits a ``SpawnRequest`` and a new op is injected into
-  the *live* DAG — replacing the old halt → critic-verdict → re-plan → re-run
-  loop with continuous self-expansion.
-"""
+"""Reactive DAG flow: orchestrator plans TaskAssignments, self-expanding execution."""
 
 from __future__ import annotations
 
@@ -25,13 +12,19 @@ import time
 from lionagi._errors import LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.casts.emission import SpawnRequest
-from lionagi.ln.concurrency import move_on_after
+from lionagi.ln.concurrency import CancelScope, move_on_after
 from lionagi.orchestration import plan, role_node_builder
 
+from .._lifecycle import classify_exception
 from .._logging import progress
 from .._logging import warn as _warn
 from .._providers import parse_model_spec
-from ._common import _create_fanout_team, _format_result_json, _post_results_to_team
+from ._common import (
+    _create_fanout_team,
+    _format_result_json,
+    _format_result_text,
+    _post_results_to_team,
+)
 from ._orchestration import (
     EFFORT_MAP,
     OrchestrationEnv,
@@ -39,6 +32,7 @@ from ._orchestration import (
     build_worker_branch,
     finalize_orchestration,
     mode_roster,
+    parse_orchestrator_provider,
     resolve_modes,
     resolve_worker_spec,
     role_config,
@@ -53,15 +47,10 @@ logger = logging.getLogger(__name__)
 
 
 class FlowPlanError(LionError):
-    """Orchestrator failed to produce a usable plan (a non-empty TaskAssignment list).
-
-    Surfaced as a non-zero CLI exit with the raw orchestrator response attached,
-    instead of a silent ``return`` that exited 0 with no work done (#1236).
-    """
+    """Orchestrator failed to produce a usable plan."""
 
 
 def _raw_response_snippet(res, limit: int = 800) -> str:
-    """Truncated repr of whatever the planner returned, for diagnostics."""
     text = (str(res).strip() if res is not None else "") or "(empty response)"
     if len(text) > limit:
         text = f"{text[:limit]}… [+{len(text) - limit} chars truncated]"
@@ -69,23 +58,12 @@ def _raw_response_snippet(res, limit: int = 800) -> str:
 
 
 async def _persist_session_phase(env, phase: str) -> None:
-    """Best-effort write of the live execution phase to the session row.
-
-    Surfaced as the PHASE column in ``li monitor`` (#1235). Failures here must
-    never interrupt flow execution — the phase marker is observability.
-    """
+    """Best-effort write of the live execution phase to the session row."""
     ctx = getattr(env, "_live_persist", None)
     if ctx and ctx.get("db"):
         with contextlib.suppress(Exception):
             await ctx["db"].update_session(ctx["session_id"], current_phase=phase)
 
-
-# ── Budget preamble template ──────────────────────────────────────────────
-#
-# Injected at the START of each op's instruction when the orchestrator runs with
-# a total timeout (--timeout / playbook timeout:). Workers see their share of
-# the budget so they can pace reasoning and switch from research to writing
-# before time runs out.
 
 _BUDGET_PREAMBLE_TEMPLATE = """\
 [BUDGET]
@@ -107,7 +85,6 @@ def _format_budget_preamble(
     op_budget_seconds: int,
     deadline_epoch: float,
 ) -> str:
-    """Format the BUDGET preamble for a single op."""
     import datetime
 
     deadline_dt = datetime.datetime.fromtimestamp(deadline_epoch, tz=datetime.timezone.utc)
@@ -125,7 +102,6 @@ async def _resolve_invocation_terminal_flow(
     *,
     fallback_status: str,
 ) -> tuple[str, str, str, list[dict], dict]:
-    """Aggregate child session statuses into a flow invocation terminal reason."""
     from lionagi.state.db import StateDB
     from lionagi.state.reasons import RunReasons
 
@@ -156,8 +132,8 @@ async def _resolve_invocation_terminal_flow(
             if any(s == "aborted" for s in child_statuses):
                 return (
                     "aborted",
-                    RunReasons.ABORTED_USER,
-                    "Flow was aborted because at least one child session was aborted.",
+                    RunReasons.CANCELLED_SIGINT,
+                    "Flow was aborted because at least one child session was aborted (SIGINT).",
                     evidence_refs,
                     metadata,
                 )
@@ -197,8 +173,8 @@ async def _resolve_invocation_terminal_flow(
         if fallback_status == "aborted":
             return (
                 "aborted",
-                RunReasons.ABORTED_USER,
-                "Flow was aborted by the user.",
+                RunReasons.CANCELLED_SIGINT,
+                "Flow was aborted by the user (SIGINT).",
                 evidence_refs,
                 metadata,
             )
@@ -213,15 +189,7 @@ async def _resolve_invocation_terminal_flow(
         return "failed", RunReasons.FAILED_EXCEPTION, "Flow failed.", evidence_refs, metadata
 
 
-# ── depends_on parsing ────────────────────────────────────────────────────
-#
-# TaskAssignment.depends_on carries 1-based step numbers (the orchestrator
-# numbers assignments by list position). Only *earlier* steps can be wired as
-# graph predecessors at build time; forward/invalid refs are dropped.
-
-
 def _earlier_dep_indices(depends_on: list[str] | None, position: int) -> list[int]:
-    """0-based indices of earlier assignments referenced by ``depends_on``."""
     out: list[int] = []
     for ref in depends_on or []:
         try:
@@ -236,15 +204,7 @@ def _earlier_dep_indices(depends_on: list[str] | None, position: int) -> list[in
 
 
 def _parse_reactive(spec: str | None) -> tuple[bool, set[str] | None]:
-    """Parse ``--reactive`` into ``(reactive, spawn_roles)``.
-
-    - ``off`` / ``none`` / ``false``     → ``(False, set())`` — flat batch DAG,
-      no worker may spawn (cheapest, fully deterministic).
-    - ``all`` / ``on`` / ``""`` / None   → ``(True, None)`` — every worker may
-      grow the live DAG (maximally reactive; the default).
-    - ``critic,evaluator`` (role list)   → ``(True, {roles})`` — only those
-      roles are granted the SpawnRequest capability.
-    """
+    """Parse --reactive into (reactive, spawn_roles)."""
     s = (spec or "all").strip().lower()
     if s in ("off", "none", "false", "no", "0"):
         return False, set()
@@ -254,31 +214,11 @@ def _parse_reactive(spec: str | None) -> tuple[bool, set[str] | None]:
     return (True, roles) if roles else (True, None)
 
 
-def _format_flow_result_text(
-    agent_results: list[dict],
-    synthesis_result: dict | None = None,
-) -> str:
-    lines = []
-    for w in agent_results:
-        deps = w.get("depends_on") or []
-        dep_str = f"  deps: {', '.join(deps)}" if deps else ""
-        tag = "  [spawned]" if w.get("spawned") else ""
-        lines.append(f"{'═' * 60}")
-        lines.append(f"  {w['id']} ({w['name']}){tag}  [{w['model']}]{dep_str}")
-        lines.append(f"  {w['time_ms']:.0f}ms")
-        lines.append(f"{'═' * 60}")
-        lines.append(w.get("response", "(no response)"))
-        lines.append("")
-
-    if synthesis_result is not None:
-        lines.append(f"{'═' * 60}")
-        lines.append(f"  Synthesis  [{synthesis_result['model']}]")
-        lines.append(f"  {synthesis_result['time_ms']:.0f}ms")
-        lines.append(f"{'═' * 60}")
-        lines.append(synthesis_result.get("response", "(no response)"))
-        lines.append("")
-
-    return "\n".join(lines)
+def _flow_header_fn(w: dict, i: int, n: int) -> list[str]:
+    deps = w.get("depends_on") or []
+    dep_str = f"  deps: {', '.join(deps)}" if deps else ""
+    tag = "  [spawned]" if w.get("spawned") else ""
+    return [f"  {w['id']} ({w['name']}){tag}  [{w['model']}]{dep_str}"]
 
 
 async def _run_flow(
@@ -313,15 +253,7 @@ async def _run_flow(
     project: str | None = None,
     **legacy_kwargs,
 ) -> tuple[str, str]:
-    """Reactive DAG flow: orchestrator plans TaskAssignments → self-expanding execution.
-
-    Returns ``(output, terminal_status)`` — ADR-0029 §7 lets the artifact
-    contract verifier flip a clean ``completed`` into ``failed`` at teardown, so
-    callers MUST use the returned status for the process exit code.
-
-    ``max_ops`` caps total ops: the initial plan plus reactive spawns share one
-    budget. ``max_agents`` is accepted as a deprecated alias.
-    """
+    """Returns (output, terminal_status)."""
     if "max_agents" in legacy_kwargs and max_ops == 0:
         max_ops = legacy_kwargs.pop("max_agents")
     elif "max_agents" in legacy_kwargs:
@@ -333,7 +265,7 @@ async def _run_flow(
 
     cache_cancelled_exc_class()
 
-    env = setup_orchestration(
+    env = await setup_orchestration(
         pattern_name="Flow",
         model_spec=model_spec,
         agent_name=agent_name,
@@ -349,14 +281,8 @@ async def _run_flow(
         total_budget=timeout,
     )
 
-    # ADR-0012/0022: playbook run → `play`, ad-hoc → `flow`. Surface the
-    # orchestrator's default model + effort on the session row.
-    _orc_ms = parse_model_spec(env.default_model_spec) if env.default_model_spec else None
-    _orc_provider = None
-    if _orc_ms and "/" in _orc_ms.model:
-        _orc_provider = _orc_ms.model.split("/", 1)[0]
+    _orc_model, _orc_provider = parse_orchestrator_provider(env.default_model_spec)
 
-    # ADR-0029 §4-5: resolve the artifact contract (playbook overrides agent).
     artifact_contract = None
     if playbook_artifacts is not None or (
         agent_name is not None and getattr(env.orc_profile, "artifact_defaults", None) is not None
@@ -378,7 +304,7 @@ async def _run_flow(
         agent_name=agent_name,
         artifacts_path=str(env.run.artifact_root),
         invocation_id=invocation_id,
-        model=_orc_ms.model if _orc_ms else None,
+        model=_orc_model,
         provider=_orc_provider,
         effort=env.effort,
         project=project,
@@ -399,7 +325,6 @@ async def _run_flow(
         show_graph=show_graph,
         reactive_spec=reactive_spec,
     )
-    # ADR-0025: distinguish timed_out / aborted / cancelled / failed.
     _terminal_status = "completed"
     result: str = ""
     try:
@@ -411,26 +336,11 @@ async def _run_flow(
                 raise LionTimeoutError(f"Flow timed out after {timeout}s")
         else:
             result = await _run_flow_inner(model_spec, prompt, **inner_kw)
-    except KeyboardInterrupt:
-        _terminal_status = "aborted"
-        raise
-    except (TimeoutError, LionTimeoutError):
-        _terminal_status = "timed_out"
-        raise
     except BaseException as exc:
-        from lionagi.ln.concurrency.errors import cancelled_exc_classes
-
-        if isinstance(exc, cancelled_exc_classes()):
-            _terminal_status = "cancelled"
-        else:
-            _terminal_status = "failed"
+        _terminal_status = classify_exception(exc)
         raise
     finally:
-        # Shield teardown from outer cancellation so iModel executors are always
-        # closed; see lionagi/cli/agent.py for the full rationale.
-        import anyio
-
-        with anyio.CancelScope(shield=True):
+        with CancelScope(shield=True):
             effective_status = await stop_live_persist(env, status=_terminal_status)
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
@@ -491,7 +401,7 @@ async def _run_flow_inner(
     show_graph: bool = False,
     reactive_spec: str = "all",
 ) -> str:
-    """Inner flow logic (no timeout wrapper)."""
+    """Inner flow logic without timeout wrapper."""
     t0 = time.monotonic()
     run = env.run
     session = env.session
@@ -544,12 +454,7 @@ async def _run_flow_inner(
     t_plan = time.monotonic() - t0
 
     # One deduplicated worker name per assignment (researcher, researcher-2, …).
-    name_counts: dict[str, int] = {}
-    agent_ids: list[str] = []
-    for ta in assignments:
-        name_counts[ta.assignee] = name_counts.get(ta.assignee, 0) + 1
-        n = name_counts[ta.assignee]
-        agent_ids.append(f"{ta.assignee}-{n}" if n > 1 else ta.assignee)
+    agent_ids: list[str] = [env.assign_name(ta.assignee) for ta in assignments]
 
     dep_indices = [_earlier_dep_indices(ta.depends_on, i) for i, ta in enumerate(assignments)]
 
@@ -651,7 +556,7 @@ async def _run_flow_inner(
     role_base: dict[str, object] = {}
 
     for i, ta in enumerate(assignments):
-        w_branch, w_model, w_profile = build_worker_branch(
+        w_branch, w_model, w_profile = await build_worker_branch(
             env,
             agent_id=agent_ids[i],
             role=ta.assignee,
@@ -728,8 +633,10 @@ async def _run_flow_inner(
     ctx_lp = getattr(env, "_live_persist", None)
     if ctx_lp and ctx_lp.get("db"):
         with contextlib.suppress(Exception):
+            # Merge kill-identity markers last so this DAG write keeps the PID.
+            _markers = ctx_lp.get("identity_markers") or {}
             await ctx_lp["db"].update_session(
-                ctx_lp["session_id"], node_metadata=json.dumps(early_graph)
+                ctx_lp["session_id"], node_metadata=json.dumps({**early_graph, **_markers})
             )
 
     # ── Progress + segment + branch-status plumbing (Studio) ──────────
@@ -789,7 +696,11 @@ async def _run_flow_inner(
 
         async def _do():
             with contextlib.suppress(Exception):
-                await ctx["db"].update_session(ctx["session_id"], node_metadata=json.dumps(extras))
+                # Merge kill-identity markers last so segment writes keep the PID.
+                _markers = ctx.get("identity_markers") or {}
+                await ctx["db"].update_session(
+                    ctx["session_id"], node_metadata=json.dumps({**extras, **_markers})
+                )
 
         _aio.ensure_future(_do())
 
@@ -986,7 +897,7 @@ async def _run_flow_inner(
     if output_format == "json":
         output = _format_result_json(agent_results, synthesis_result)
     else:
-        output = _format_flow_result_text(agent_results, synthesis_result)
+        output = _format_result_text(agent_results, synthesis_result, header_fn=_flow_header_fn)
 
     if synthesis_result:
         run.synthesis_path.write_text(synthesis_result["response"])

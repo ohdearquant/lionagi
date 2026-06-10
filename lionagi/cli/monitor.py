@@ -17,19 +17,26 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import os
 import signal
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
+from ._process import pid_alive as _pid_alive_int
 from ._runs import RUNS_ROOT
 
 __all__ = (
     "add_monitor_subparser",
     "run_monitor",
 )
+
+
+def _pid_alive(pid: int | None) -> bool | None:
+    if pid is None:
+        return None
+    return _pid_alive_int(pid)
+
 
 # ── ANSI colours (only when stdout is a TTY) ─────────────────────────────────
 
@@ -121,25 +128,6 @@ def _since_timestamp(window: str) -> float:
     if unit not in multipliers:
         raise ValueError(f"Unknown time unit {unit!r} in --since {window!r}")
     return time.time() - value * multipliers[unit]
-
-
-# ── PID liveness check ────────────────────────────────────────────────────────
-
-
-def _pid_alive(pid: int | None) -> bool | None:
-    """Return True/False if the process is alive/dead, None if unknown."""
-    if pid is None:
-        return None
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # Process exists but we can't signal it — treat as alive
-        return True
-    except OSError:
-        return None
 
 
 # ── DB query helpers ─────────────────────────────────────────────────────────

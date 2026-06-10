@@ -352,6 +352,26 @@ class TestRetryConfig:
         assert kwargs["retry_exceptions"] == (ValueError,)
         assert kwargs["exclude_exceptions"] == (KeyError,)
 
+    def test_backoff_factor_exactly_one_accepted(self):
+        """backoff_factor=1.0 (boundary) must be accepted."""
+        config = RetryConfig(backoff_factor=1.0)
+        assert config.backoff_factor == 1.0
+
+    def test_backoff_factor_below_one_rejected(self):
+        """backoff_factor < 1.0 must raise ValueError."""
+        with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
+            RetryConfig(backoff_factor=0.5)
+
+    def test_backoff_factor_zero_rejected(self):
+        """backoff_factor=0 must raise ValueError."""
+        with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
+            RetryConfig(backoff_factor=0)
+
+    def test_backoff_factor_negative_rejected(self):
+        """Negative backoff_factor must raise ValueError."""
+        with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
+            RetryConfig(backoff_factor=-2.0)
+
 
 class TestRetryWithBackoff:
     """Test retry_with_backoff function."""
@@ -446,7 +466,7 @@ class TestRetryWithBackoff:
         async def fake_sleep(d):
             delays.append(d)
 
-        with patch("lionagi.service.resilience.anyio.sleep", side_effect=fake_sleep):
+        with patch("lionagi.ln.concurrency.patterns.anyio.sleep", side_effect=fake_sleep):
             with pytest.raises(ConnectionError):
                 await retry_with_backoff(
                     func_that_tracks_delays,
@@ -473,7 +493,7 @@ class TestRetryWithBackoff:
         async def fake_sleep(d):
             delays.append(d)
 
-        with patch("lionagi.service.resilience.anyio.sleep", side_effect=fake_sleep):
+        with patch("lionagi.ln.concurrency.patterns.anyio.sleep", side_effect=fake_sleep):
             with pytest.raises(ConnectionError):
                 await retry_with_backoff(
                     failing_func,
@@ -486,6 +506,36 @@ class TestRetryWithBackoff:
 
         # All delays should be capped at max_delay
         assert all(d <= 15.0 for d in delays)
+
+    @pytest.mark.asyncio
+    async def test_retry_with_backoff_factor_below_one_rejected(self):
+        """retry_with_backoff with backoff_factor < 1.0 must raise ValueError."""
+
+        async def noop():
+            return "never called"  # pragma: no cover
+
+        with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
+            await retry_with_backoff(
+                noop,
+                max_retries=3,
+                base_delay=1.0,
+                backoff_factor=0.5,
+            )
+
+    @pytest.mark.asyncio
+    async def test_retry_with_backoff_factor_negative_rejected(self):
+        """retry_with_backoff with negative backoff_factor must raise ValueError."""
+
+        async def noop():
+            return "never called"  # pragma: no cover
+
+        with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
+            await retry_with_backoff(
+                noop,
+                max_retries=3,
+                base_delay=1.0,
+                backoff_factor=-2.0,
+            )
 
 
 class TestCircuitBreakerDecorator:
@@ -590,7 +640,9 @@ class TestWithRetryDecorator:
         async def fake_sleep(secs):
             sleep_calls.append(secs)
 
-        with patch.object(resilience_mod.anyio, "sleep", fake_sleep):
+        import lionagi.ln.concurrency.patterns as patterns_mod
+
+        with patch.object(patterns_mod.anyio, "sleep", fake_sleep):
             with pytest.raises(ValueError, match="excluded"):
                 await retry_with_backoff(
                     failing,
@@ -619,7 +671,9 @@ class TestWithRetryDecorator:
         async def fake_sleep(secs):
             sleep_calls.append(secs)
 
-        with patch.object(resilience_mod.anyio, "sleep", fake_sleep):
+        import lionagi.ln.concurrency.patterns as patterns_mod
+
+        with patch.object(patterns_mod.anyio, "sleep", fake_sleep):
             result = await retry_with_backoff(
                 sometimes_failing,
                 retry_exceptions=(APIClientError,),
@@ -630,4 +684,5 @@ class TestWithRetryDecorator:
             )
 
         assert result == "success"
+        # backoff_factor=10.0 with base_delay=2.0: attempt 1 → 2.0*10^0=2.0, attempt 2 → 2.0*10^1=5.0 (capped at max_delay=5.0)
         assert sleep_calls == [2.0, 5.0]

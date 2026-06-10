@@ -1,6 +1,8 @@
 # ADR-0028: Status Reason Model
 
-**Status**: Proposed — extended by [ADR-0033](ADR-0033-unified-entity-state-model.md)
+**Status**: Phase 2 Shipped — extended by [ADR-0033](ADR-0033-unified-entity-state-model.md)
+<!-- Phases 1 (schema + reason codes) and 2 (transitions table, reasons.py) landed on main:
+     lionagi/state/reasons.py, lionagi/state/schema.sql, lionagi/state/db.py. -->
 **Date**: 2026-05-23
 **Extends**: ADR-0024 (session health), ADR-0025 (session status vocabulary), ADR-0017 (session lifecycle)
 

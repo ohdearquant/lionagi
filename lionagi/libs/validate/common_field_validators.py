@@ -60,9 +60,7 @@ def validate_same_dtype_flat_list(
     return value
 
 
-def validate_nullable_string_field(
-    cls, value, field_name: str = None, strict=True
-) -> str | None:
+def validate_nullable_string_field(cls, value, field_name: str = None, strict=True) -> str | None:
     """Validate nullable string field.
 
     Args:
@@ -107,9 +105,7 @@ def validate_dict_kwargs_params(cls, value) -> dict:
     return value
 
 
-def validate_callable(
-    cls, value, undefind_able: bool = True, check_name: bool = False
-) -> callable:
+def validate_callable(cls, value, undefind_able: bool = True, check_name: bool = False) -> callable:
     """Validate strict callable function.
 
     Args:

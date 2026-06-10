@@ -315,14 +315,7 @@ class TestFieldModelProperties:
         fm = FieldModel(base_type=str)
         assert fm.extract_metadata("nonexistent") is None
 
-    def test_to_dict_deprecated(self):
+    def test_metadata_dict_basic(self):
         fm = FieldModel(base_type=str, description="d")
-        import warnings
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            result = fm.to_dict()
-            assert any(
-                issubclass(warning.category, DeprecationWarning) for warning in w
-            )
+        result = fm.metadata_dict()
         assert isinstance(result, dict)

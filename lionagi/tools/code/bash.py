@@ -3,34 +3,27 @@
 
 from __future__ import annotations
 
-import contextlib
-import os
-import re
 import shlex
-import signal
-import subprocess
-import threading
 
 from pydantic import BaseModel, Field
 
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
 
+from .._subprocess import _SHELL_CONTROL
+from .._subprocess import _subprocess_sync as _subprocess_sync_inner
 from ..base import LionTool
-
-# Finding 2/3: shell control operators that bypass argv-safe execution
-_SHELL_CONTROL = re.compile(r"(;|&&|\|\||\||`|\$\(|[<>]|\n)")
-# Finding 5: cap output at 100 KB per stream before storing in memory
-_MAX_OUTPUT_BYTES = 100_000
 
 
 class BashRequest(BaseModel):
     command: str = Field(
         ...,
         description=(
-            "Shell command to execute. Simple commands without shell operators "
-            "(;, &&, ||, |, etc.) run safely via argv. Use absolute paths when "
-            "the working directory matters."
+            "A single shell command to run. Shell control operators are NOT supported "
+            "and will be rejected — no `&&`, `||`, `|`, `;`, redirects (`<`/`>`), "
+            "backticks, or `$(...)`. Run one command per call; to run in a directory "
+            "use cwd= instead of `cd dir && cmd`. For file search/read/edit prefer the "
+            "dedicated reader/editor/search tools over bash."
         ),
     )
     timeout: int | None = Field(
@@ -38,17 +31,18 @@ class BashRequest(BaseModel):
         description=(
             "Maximum execution time in milliseconds. "
             "Defaults to 30000 (30 s). Maximum allowed is 300000 (5 min). "
-            "The process is killed if it exceeds this limit."
+            "The process is killed if it exceeds this limit. "
+            "Increase for long-running builds or tests."
         ),
     )
     cwd: str | None = Field(
         None,
         description=(
             "Working directory for the command. "
-            "If omitted, inherits the current process working directory."
+            "If omitted, inherits the current process working directory. "
+            "Use this instead of a leading `cd` command."
         ),
     )
-    # Finding 3: shell=False by default; only trusted callers set allow_shell=True
     allow_shell: bool = Field(
         False,
         description="Allow shell control operators. Only set via trusted code.",
@@ -76,46 +70,20 @@ class BashResponse(BaseModel):
 
 
 def _command_for_subprocess(request: BashRequest) -> tuple[str | list[str], bool]:
-    """Finding 3: return (cmd, shell) pair. Rejects shell operators unless trusted."""
+    """Rejects shell operators unless trusted."""
     if request.allow_shell:
         return request.command, True
     if _SHELL_CONTROL.search(request.command):
         raise PermissionError(
-            f"Shell control operators require trusted shell mode: {request.command!r}"
+            f"Shell control operators are not supported: {request.command!r}. "
+            "Run one command per call; use cwd= to set the working directory instead of `cd x && cmd`."
         )
     try:
         return shlex.split(request.command), False
     except ValueError as e:
-        raise PermissionError(f"Malformed command: {e}") from e
-
-
-def _drain(stream, buf: bytearray) -> bool:
-    """Finding 5: read stream into buf up to _MAX_OUTPUT_BYTES; return True if truncated.
-
-    Continues reading after the cap is reached to prevent pipe-buffer deadlock.
-    """
-    truncated = False
-    while True:
-        try:
-            chunk = stream.read(8192)
-        except Exception:
-            break
-        if not chunk:
-            break
-        remaining = _MAX_OUTPUT_BYTES - len(buf)
-        if remaining > 0:
-            buf.extend(chunk[:remaining])
-            if len(buf) >= _MAX_OUTPUT_BYTES:
-                truncated = True
-        # keep draining even after cap to avoid deadlocking the child process
-    return truncated
-
-
-def _decode_output(buf: bytearray, truncated: bool) -> str:
-    text = bytes(buf).decode("utf-8", errors="replace")
-    if truncated:
-        text += f"\n\n[... output truncated at {_MAX_OUTPUT_BYTES} bytes ...]\n"
-    return text
+        raise PermissionError(
+            f"Malformed command: {e}. Check quoting — use single quotes for arguments with spaces."
+        ) from e
 
 
 def _subprocess_sync(
@@ -125,63 +93,12 @@ def _subprocess_sync(
     timeout_ms: int,
     cwd: str | None,
 ) -> BashResponse:
-    try:
-        # Finding 4: start_new_session=True so we can kill the entire process group
-        proc = subprocess.Popen(
-            cmd,
-            shell=shell,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=cwd,
-            start_new_session=True,
-        )
-    except Exception as e:
-        return BashResponse(stdout="", stderr=f"Execution error: {e}", return_code=-1)
-
-    stdout_buf = bytearray()
-    stderr_buf = bytearray()
-    stdout_truncated = [False]
-    stderr_truncated = [False]
-
-    def _drain_stdout():
-        stdout_truncated[0] = _drain(proc.stdout, stdout_buf)
-
-    def _drain_stderr():
-        stderr_truncated[0] = _drain(proc.stderr, stderr_buf)
-
-    # Finding 5: read both streams concurrently in threads to cap memory use
-    t_out = threading.Thread(target=_drain_stdout, daemon=True)
-    t_err = threading.Thread(target=_drain_stderr, daemon=True)
-    t_out.start()
-    t_err.start()
-
-    try:
-        proc.wait(timeout=timeout_sec)
-    except subprocess.TimeoutExpired:
-        # Finding 4: kill the entire process group, not just the leader
-        if isinstance(proc.pid, int) and proc.pid > 1:
-            with contextlib.suppress(ProcessLookupError, OSError):
-                os.killpg(proc.pid, signal.SIGKILL)
-        else:
-            proc.kill()
-        proc.wait()
-        t_out.join(timeout=1)
-        t_err.join(timeout=1)
-        return BashResponse(
-            stdout=_decode_output(stdout_buf, True),
-            stderr=f"Command timed out after {timeout_ms} ms",
-            return_code=-1,
-            timed_out=True,
-        )
-
-    t_out.join()
-    t_err.join()
-
+    raw = _subprocess_sync_inner(cmd, shell, timeout_sec, cwd, timeout_ms=timeout_ms)
     return BashResponse(
-        stdout=_decode_output(stdout_buf, stdout_truncated[0]),
-        stderr=_decode_output(stderr_buf, stderr_truncated[0]),
-        return_code=proc.returncode,
-        timed_out=False,
+        stdout=raw["stdout"],
+        stderr=raw["stderr"],
+        return_code=raw["returncode"],
+        timed_out=raw.get("timed_out", False),
     )
 
 
@@ -219,14 +136,22 @@ class BashTool(LionTool):
 
             async def bash_tool(**kwargs):
                 """
-                Execute a shell command and return its output.
+                Execute a single shell command and return its output.
 
-                Runs the command safely without shell interpretation by default.
-                Shell operators (;, &&, ||, |, etc.) are rejected unless the caller
-                sets allow_shell=True via trusted code. Enforces a configurable
-                timeout (default 30 s, max 5 min). Output exceeding 100 KB per
-                stream is truncated. Prefer absolute paths; set cwd when the
-                command depends on a specific working directory.
+                Runs the command safely without shell interpretation. Shell operators
+                (;, &&, ||, |, redirects, backticks, $(...)) are rejected — run one
+                command per call. Use cwd= to set the working directory instead of
+                `cd dir && cmd`. For file search/read/edit, prefer the dedicated
+                reader/editor/search tools.
+
+                Enforces a configurable timeout (default 30 s, max 5 min). Output
+                exceeding 100 KB per stream is truncated — redirect to a file and
+                use the reader tool for large outputs.
+
+                Recovery hints:
+                - 'command not found': check the executable is installed and in PATH
+                - 'timed out': increase timeout= or split into smaller steps
+                - 'operators not supported': use cwd= and separate calls
                 """
                 return (await self.handle_request(BashRequest(**kwargs))).model_dump()
 

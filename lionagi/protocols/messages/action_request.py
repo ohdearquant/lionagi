@@ -37,10 +37,6 @@ class ActionRequestContent(MessageContent):
         }
         return minimal_yaml(doc).strip()
 
-    def render(self, *_args: Any, **_kwargs: Any) -> str:
-        """Render action request.  Delegates to :attr:`rendered` for beta API compat."""
-        return self.rendered
-
     def render_compact(self) -> str:
         """Function-call representation for round summaries."""
         func = self.function or "unknown"

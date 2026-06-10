@@ -1,17 +1,26 @@
-# Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
 
-import subprocess
 from enum import Enum
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
 
+from .._subprocess import _subprocess_sync
 from ..base import LionTool
+
+__all__ = (
+    "SearchAction",
+    "SearchRequest",
+    "SearchResponse",
+    "SearchTool",
+)
 
 
 class SearchAction(str, Enum):
@@ -81,37 +90,43 @@ class SearchResponse(BaseModel):
     )
 
 
+def _validate_search_path(path: str, workspace_root: str | None) -> tuple[str, str | None]:
+    if workspace_root is not None:
+        root = Path(workspace_root).resolve()
+        resolved = _resolve_workspace_path(path, root)
+    else:
+        resolved = Path(path).resolve()
+    return str(resolved), None
+
+
 def _grep_sync(
     pattern: str,
     path: str,
     include: str | None,
     max_results: int,
+    workspace_root: str | None,
 ) -> SearchResponse:
-    cmd = ["grep", "-rn", "-E", pattern, path]
+    resolved_path, err = _validate_search_path(path, workspace_root)
+    if err:
+        return SearchResponse(success=False, error=err, count=0)
+
+    cmd = ["grep", "-rn", "-E", pattern, resolved_path]
     if include:
         cmd += ["--include", include]
 
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired:
+    result = _subprocess_sync(cmd, False, 30.0, None)  # noqa: S603  # argv fixed: [grep, -rn, -E, <pattern>, <validated-path>]; shell=False
+
+    if result.get("timed_out"):
         return SearchResponse(success=False, error="grep timed out", count=0)
-    except FileNotFoundError:
+
+    rc = result["returncode"]
+    # exit code 0 = matches found, 1 = no matches (not an error); anything else is a real error
+    if rc not in (0, 1):
         return SearchResponse(
-            success=False, error="grep not found on this system", count=0
+            success=False, error=result["stderr"].strip() or f"grep exited with code {rc}", count=0
         )
-    except Exception as e:
-        return SearchResponse(success=False, error=f"grep error: {e}", count=0)
 
-    # exit code 1 = no matches (not an error), 2 = real error
-    if result.returncode == 2:
-        return SearchResponse(success=False, error=result.stderr.strip(), count=0)
-
-    lines = [l for l in result.stdout.splitlines() if l][:max_results]
+    lines = [line for line in result["stdout"].splitlines() if line][:max_results]
     return SearchResponse(
         success=True,
         content="\n".join(lines),
@@ -119,29 +134,27 @@ def _grep_sync(
     )
 
 
-def _find_sync(path: str, pattern: str, max_results: int) -> SearchResponse:
-    cmd = ["find", path, "-name", pattern]
+def _find_sync(
+    path: str,
+    pattern: str,
+    max_results: int,
+    workspace_root: str | None,
+) -> SearchResponse:
+    resolved_path, err = _validate_search_path(path, workspace_root)
+    if err:
+        return SearchResponse(success=False, error=err, count=0)
 
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired:
+    cmd = ["find", resolved_path, "-name", pattern]
+
+    result = _subprocess_sync(cmd, False, 30.0, None)  # noqa: S603  # argv fixed: [find, <validated-path>, -name, <glob>]; shell=False
+
+    if result.get("timed_out"):
         return SearchResponse(success=False, error="find timed out", count=0)
-    except FileNotFoundError:
-        return SearchResponse(
-            success=False, error="find not found on this system", count=0
-        )
-    except Exception as e:
-        return SearchResponse(success=False, error=f"find error: {e}", count=0)
 
-    if result.returncode != 0 and result.stderr.strip():
-        return SearchResponse(success=False, error=result.stderr.strip(), count=0)
+    if result["returncode"] != 0 and result["stderr"].strip():
+        return SearchResponse(success=False, error=result["stderr"].strip(), count=0)
 
-    lines = [l for l in result.stdout.splitlines() if l][:max_results]
+    lines = [line for line in result["stdout"].splitlines() if line][:max_results]
     return SearchResponse(
         success=True,
         content="\n".join(lines),
@@ -150,15 +163,44 @@ def _find_sync(path: str, pattern: str, max_results: int) -> SearchResponse:
 
 
 class SearchTool(LionTool):
+    """Filesystem search tool (grep/find) with optional workspace containment.
+
+    When *workspace_root* is supplied at construction time, every search path
+    is resolved and checked to remain within that root before the subprocess
+    is launched.  Paths that escape the root are rejected with a PermissionError
+    (returned as a SearchResponse with success=False).
+
+    If *workspace_root* is None (the default), no containment is applied —
+    callers should pair this with a :class:`lionagi.agent.permissions.PermissionPolicy`
+    allowlist, or set the root via ``create_agent()`` / ``AgentConfig``.
+    """
+
     is_lion_system_tool = True
     system_tool_name = "search_tool"
 
-    def __init__(self):
+    def __init__(self, workspace_root: str | None = None) -> None:
         self._tool = None
+        # Resolve the containment root ONCE, at construction, against the cwd
+        # in effect now. Storing the raw (possibly relative) value would let a
+        # later os.chdir() move the boundary — e.g. a relative "ws" would be
+        # re-resolved against whatever cwd is current when a search runs, so a
+        # search could escape the originally intended root. Resolving here
+        # freezes the boundary to an absolute path; re-resolving it downstream
+        # is then idempotent.
+        self._workspace_root = (
+            str(Path(workspace_root).resolve()) if workspace_root is not None else None
+        )
 
     async def handle_request(self, request: SearchRequest) -> SearchResponse:
         if isinstance(request, dict):
             request = SearchRequest(**request)
+
+        # Validate path before launching subprocess (fail-closed)
+        try:
+            _validate_search_path(request.path, self._workspace_root)
+        except PermissionError as exc:
+            return SearchResponse(success=False, error=str(exc), count=0)
+
         if request.action == SearchAction.grep:
             return await run_sync(
                 _grep_sync,
@@ -166,10 +208,15 @@ class SearchTool(LionTool):
                 request.path,
                 request.include,
                 request.max_results,
+                self._workspace_root,
             )
         if request.action == SearchAction.find:
             return await run_sync(
-                _find_sync, request.path, request.pattern, request.max_results
+                _find_sync,
+                request.path,
+                request.pattern,
+                request.max_results,
+                self._workspace_root,
             )
         return SearchResponse(success=False, error="Unknown action", count=0)
 

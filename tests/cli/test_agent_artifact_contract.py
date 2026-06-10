@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from lionagi import Branch
-from lionagi.cli.agent import _setup_live_persist, _teardown_live_persist
+from lionagi.cli._persist import setup_agent_persist as _setup_live_persist
+from lionagi.cli._persist import teardown_agent_persist as _teardown_live_persist
 from lionagi.state.db import StateDB
 
 

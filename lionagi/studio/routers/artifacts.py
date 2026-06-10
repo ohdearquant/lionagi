@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """ADR-0021 artifacts API.
 
-Skill-produced structured outcomes (ReviewVerdict, GateVerdict,
+Skill-produced structured outcomes (ReviewOutcome, GateVerdict,
 CIResult, ...). Most consumers fetch via /api/invocations/{id} which
 returns the artifact list inline; these endpoints exist for the cases
 where the caller has only a session id, or wants the artifact alone.

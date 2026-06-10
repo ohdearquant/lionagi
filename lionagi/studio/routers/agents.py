@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import Annotated, Any
 
+import anyio
 from fastapi import APIRouter, Body, HTTPException
 
 from ..services import agents as agents_svc
@@ -11,12 +13,13 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 
 @router.get("/")
 async def list_agents() -> dict[str, Any]:
-    return {"agents": agents_svc.list_agents()}
+    agents = await anyio.to_thread.run_sync(agents_svc.list_agents)
+    return {"agents": agents}
 
 
 @router.get("/{name}")
 async def get_agent(name: str) -> dict[str, Any]:
-    agent = agents_svc.get_agent(name)
+    agent = await anyio.to_thread.run_sync(partial(agents_svc.get_agent, name))
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
     return agent
@@ -30,7 +33,7 @@ async def create_agent(name: str) -> dict[str, Any]:
 
 @router.put("/{name}")
 async def update_agent(name: str, body: Annotated[dict[str, Any], Body(...)]) -> dict[str, Any]:
-    updated = agents_svc.update_agent(name, body)
+    updated = await anyio.to_thread.run_sync(partial(agents_svc.update_agent, name, body))
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
     return updated

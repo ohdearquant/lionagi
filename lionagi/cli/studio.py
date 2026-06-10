@@ -1,3 +1,5 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
 import argparse
@@ -7,7 +9,30 @@ import subprocess
 import sys
 from pathlib import Path
 
+from lionagi.cli._logging import warn
+
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
+
+
+def _mount_allowed_roots() -> list[Path]:
+    """Host path prefixes allowed for Docker bind-mounts (home + XDG_CONFIG_HOME)."""
+    roots: list[Path] = [Path.home().resolve()]
+    xdg_config = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config:
+        xdg_path = Path(xdg_config).resolve()
+        if xdg_path not in roots:
+            roots.append(xdg_path)
+    return roots
+
+
+def _is_mount_allowed(resolved_path: Path, allowed_roots: list[Path]) -> bool:
+    for root in allowed_roots:
+        try:
+            if resolved_path.is_relative_to(root):
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 def _add_studio_flags(parser: argparse.ArgumentParser) -> None:
@@ -66,7 +91,6 @@ def run_studio(args: argparse.Namespace) -> int:
 
 
 def _find_repo_root() -> Path | None:
-    """Return the lionagi repo root if we're running from a source checkout."""
     pkg_root = Path(__file__).resolve().parents[1]
     repo_root = pkg_root.parent
     if (repo_root / "apps" / "studio").is_dir():
@@ -85,12 +109,6 @@ def _find_frontend_dir() -> Path | None:
 
 
 def _ensure_apps_importable() -> bool:
-    """Add repo root to sys.path so `apps.studio.server.app` is importable.
-
-    Returns True if the apps package is available (either already on path or
-    we added the repo root). Returns False if running from an installed wheel
-    with no source checkout nearby.
-    """
     repo_root = _find_repo_root()
     if repo_root is None:
         return False
@@ -125,12 +143,6 @@ def _studio_start(args: argparse.Namespace) -> int:
     frontend_port: int = getattr(args, "frontend_port", 3000)
 
     frontend_dir = _find_frontend_dir()
-
-    # Decision tree:
-    # 1. --no-frontend → backend only
-    # 2. --dev or local frontend found → local Node.js
-    # 3. Docker available → pull and run container (serves both)
-    # 4. Fallback → backend only with instructions
 
     if no_frontend:
         return _start_backend_only(host, port)
@@ -188,8 +200,6 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
     print("Press Ctrl+C to stop")
     print()
 
-    # Mount Claude Code's third-party plugin cache (if present) so Studio's
-    # Library tab can enumerate installed plugins beyond the bundled marketplace.
     claude_plugins = Path.home() / ".claude" / "plugins"
     docker_cmd = [
         "docker",
@@ -205,11 +215,7 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
     if claude_plugins.is_dir():
         docker_cmd.extend(["-v", f"{claude_plugins}:/root/.claude/plugins:ro"])
 
-    # Auto-discover symlink targets in ~/.lionagi/{agents,skills,playbooks,teams}
-    # and mount their parent directories read-only so Studio can follow the
-    # symlinks inside the container. Many power-user setups symlink content
-    # from external project dirs (e.g. ~/projects/firm/agents/*) into
-    # ~/.lionagi/agents/ — without these extra mounts the symlinks dangle.
+    allowed_roots = _mount_allowed_roots()
     symlink_mounts: set[Path] = set()
     for subdir_name in ("agents", "skills", "playbooks", "teams"):
         subdir = lionagi_home / subdir_name
@@ -221,17 +227,17 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
             try:
                 target = entry.resolve(strict=True)
             except (OSError, RuntimeError):
-                continue  # broken symlink — skip
-            # Mount the target's parent directory at its real host path so the
-            # symlink resolves identically inside the container. For directory
-            # targets, mount the target itself.
+                continue
             mount_src = target if target.is_dir() else target.parent
+            if not _is_mount_allowed(mount_src, allowed_roots):
+                warn(
+                    f"symlink target {mount_src} is outside the allowed mount "
+                    "roots and will not be mounted."
+                )
+                continue
             symlink_mounts.add(mount_src)
 
     for mount_src in sorted(symlink_mounts):
-        # Same host path inside the container so the symlink target string
-        # in ~/.lionagi/* resolves correctly. Read-only — Studio should
-        # never write to source-of-truth project dirs.
         docker_cmd.extend(["-v", f"{mount_src}:{mount_src}:ro"])
 
     if symlink_mounts:
@@ -306,19 +312,7 @@ def _start_local(
 
 
 def _is_build_stale(frontend_dir: Path) -> bool:
-    """Return True when the production build is absent or older than source files.
-
-    The check compares the mtime of ``.next/BUILD_ID`` — written by Next.js on
-    every successful ``next build`` — against the newest mtime found under the
-    source trees that affect the compiled bundle: ``app/``, ``lib/``,
-    ``components/``, ``package.json``, and ``next.config.mjs``.  Any source file
-    newer than the build marker means the cached bundle is stale.
-
-    Returns True (rebuild required) in three situations:
-    - ``.next/BUILD_ID`` is absent (no prior build).
-    - A source file is newer than ``.next/BUILD_ID``.
-    - ``os.stat`` raises for any path (safe default: rebuild).
-    """
+    """True when .next/BUILD_ID is absent or older than source files."""
     build_marker = frontend_dir / ".next" / "BUILD_ID"
     if not build_marker.exists():
         return True
@@ -326,15 +320,13 @@ def _is_build_stale(frontend_dir: Path) -> bool:
     try:
         marker_mtime = build_marker.stat().st_mtime
     except OSError:
-        return True  # cannot stat marker — rebuild to be safe
+        return True
 
-    # Source subtrees that, when changed, invalidate the compiled bundle.
     source_roots = [
         frontend_dir / "app",
         frontend_dir / "lib",
         frontend_dir / "components",
     ]
-    # Top-level config files that affect the build.
     source_files = [
         frontend_dir / "package.json",
         frontend_dir / "next.config.mjs",
@@ -357,7 +349,7 @@ def _is_build_stale(frontend_dir: Path) -> bool:
                 if p.stat().st_mtime > marker_mtime:
                     return True
             except OSError:
-                return True  # unreadable source file — rebuild to be safe
+                return True
 
     return False
 

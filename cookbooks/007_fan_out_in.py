@@ -72,9 +72,7 @@ async def main():
 
         result = await session.flow(builder.get_graph())
 
-        instruct_model: list[Instruct] = result["operation_results"][
-            root
-        ].instruct_model
+        instruct_model: list[Instruct] = result["operation_results"][root].instruct_model
         research_nodes = []
 
         for i in instruct_model:
@@ -118,9 +116,7 @@ async def main():
         result3 = await session.flow(builder.get_graph())
         result_synthesis = result3["operation_results"][synthesis]
 
-        builder.visualize(
-            "LionAGI codebase investigation: fan-out fan-in pattern with Claude Code"
-        )
+        builder.visualize("LionAGI codebase investigation: fan-out fan-in pattern with Claude Code")
 
         print(f"Flow total cost: ${costs:.4f}")
 

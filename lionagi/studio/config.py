@@ -15,7 +15,7 @@ CORS_ORIGINS: list[str] = (
     else ["http://localhost:5173", "http://localhost:3000", "http://localhost:3765"]
 )
 
-# ── Lifecycle reaper config (#1170 / #1171 / #1172) ──────────────────────────
+# ── Lifecycle reaper config ───────────────────────────────────────────────────
 # Default invocation deadline in seconds (2 hours). Override per action kind
 # via LIONAGI_STUDIO_INVOCATION_DEADLINE_<KIND>_SECONDS (e.g. _AGENT_SECONDS).
 INVOCATION_DEADLINE_SECONDS: int = int(
@@ -30,7 +30,7 @@ PHANTOM_STALE_HOURS: float = float(os.environ.get("LIONAGI_STUDIO_PHANTOM_STALE_
 # Minimum seconds between consecutive periodic reaper runs (throttle).
 REAPER_INTERVAL_SECONDS: int = int(os.environ.get("LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS", "300"))
 
-# ── DB maintenance config (#1173) ─────────────────────────────────────────────
+# ── DB maintenance config ─────────────────────────────────────────────────────
 # Size threshold in bytes above which /api/stats raises a size_alert (500 MB).
 DB_SIZE_ALERT_BYTES: int = int(
     os.environ.get("LIONAGI_STUDIO_DB_SIZE_ALERT_BYTES", str(500 * 1024 * 1024))

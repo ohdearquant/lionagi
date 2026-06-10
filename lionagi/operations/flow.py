@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Dependency-aware flow execution using structured concurrency primitives.
-
-Provides clean dependency management and context inheritance for operation graphs,
-using Events for synchronization and CapacityLimiter for concurrency control.
-"""
+"""Dependency-aware flow execution with structured concurrency."""
 
 import asyncio
 import contextlib
@@ -20,10 +15,14 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import anyio
-from anyio import get_cancelled_exc_class
 
 from lionagi.ln import AlcallParams
-from lionagi.ln.concurrency import CapacityLimiter, ConcurrencyEvent, create_task_group
+from lionagi.ln.concurrency import (
+    CapacityLimiter,
+    ConcurrencyEvent,
+    create_task_group,
+    get_cancelled_exc_class,
+)
 from lionagi.models.note import Note
 from lionagi.operations.node import Operation, create_operation
 from lionagi.protocols.generic.event import Event
@@ -38,18 +37,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Maximum concurrency when None is specified (effectively unlimited)
 UNLIMITED_CONCURRENCY = int(os.environ.get("LIONAGI_MAX_CONCURRENCY", "10000"))
 
-# The Operation a reactive node-task is currently running. Set per task (each
-# anyio task gets its own contextvar copy), so a SpawnRequest arriving on the
-# bus mid-invoke can be attributed to the node that emitted it.
+# Tracks which Operation a reactive task is running (per-task contextvar).
 _CURRENT_OP: contextvars.ContextVar = contextvars.ContextVar("reactive_current_op", default=None)
 
 
 @dataclass(slots=True)
 class FlowEvent:
-    """One operation's completion, yielded by the streaming executor."""
+    """One operation's completion event."""
 
     operation_id: str
     name: str
@@ -75,37 +71,19 @@ class DependencyAwareExecutor:
         default_branch: "Branch" = None,
         alcall_params: AlcallParams | None = None,
     ):
-        """Initialize the executor.
-
-        Args:
-            session: The session for branch management
-            graph: The operation graph to execute
-            context: Initial execution context
-            max_concurrent: Maximum concurrent operations
-            verbose: Enable verbose logging
-            default_branch: Optional default branch for operations
-        """
         self.session = session
         self.graph = graph
-        # Note acts as a typed cognitive workspace for flow-level context that
-        # accumulates across operations.  Callers pass a plain dict; we wrap it
-        # so internal code can use Note's path-indexing and deep-update APIs.
         self.context: Note = Note(**(context or {}))
         self.max_concurrent = max_concurrent
         self.verbose = verbose
         self._alcall = alcall_params or AlcallParams()
         self._default_branch = default_branch
-        self.on_progress = None  # callback(op_id, ref_id, status, elapsed_s)
-
-        # Track results and completion
+        self.on_progress = None
         self.results = {}
-        self.completion_events = {}  # operation_id -> Event
-        self.operation_branches = {}  # operation_id -> Branch
-        self.skipped_operations = set()  # Track skipped operations
-        self._op_start_times = {}  # operation_id -> monotonic start time
-
-        # Initialize completion events for all operations
-        # and check for already completed operations
+        self.completion_events = {}
+        self.operation_branches = {}
+        self.skipped_operations = set()
+        self._op_start_times = {}
         for node in graph.internal_nodes.values():
             if isinstance(node, Operation):
                 self.completion_events[node.id] = ConcurrencyEvent()
@@ -117,7 +95,6 @@ class DependencyAwareExecutor:
                         self.results[node.id] = node.response
 
     async def execute(self) -> dict[str, Any]:
-        """Execute the operation graph."""
         if not self.graph.is_acyclic():
             raise ValueError("Graph must be acyclic for flow execution")
 
@@ -127,15 +104,16 @@ class DependencyAwareExecutor:
         # Pre-allocate ALL branches upfront to avoid any locking during execution
         await self._preallocate_all_branches()
 
-        # Create capacity limiter for concurrency control
-        # None means no limit, use the configured unlimited value
         capacity = self.max_concurrent if self.max_concurrent is not None else UNLIMITED_CONCURRENCY
         limiter = CapacityLimiter(capacity)
 
         nodes = [n for n in self.graph.internal_nodes.values() if isinstance(n, Operation)]
+        if self.on_progress:
+            for node in nodes:
+                _name = node.metadata.get("reference_id", str(node.id)[:8])
+                self.on_progress(str(node.id), _name, "queued", 0.0)
         await self._alcall(nodes, self._execute_operation, limiter=limiter)
 
-        # Return results - only include actually completed operations
         completed_ops = [
             op_id for op_id in self.results.keys() if op_id not in self.skipped_operations
         ]
@@ -143,30 +121,23 @@ class DependencyAwareExecutor:
         result = {
             "completed_operations": completed_ops,
             "operation_results": self.results,
-            # Expose the plain dict so callers can use normal dict operations
-            # (e.g. equality checks, key lookups) without Note wrapping.
             "final_context": self.context.content,
             "skipped_operations": list(self.skipped_operations),
         }
 
-        # Validate results before returning
         self._validate_execution_results(result)
 
         return result
 
     async def _preallocate_all_branches(self):
-        """Pre-allocate ALL branches including for context inheritance to eliminate runtime locking."""
+        """Pre-allocate branches to eliminate runtime locking."""
         operations_needing_branches = []
-
-        # First pass: identify all operations that need branches
         for node in self.graph.internal_nodes.values():
             if not isinstance(node, Operation):
                 continue
 
-            # Skip if operation already has a branch_id
             if node.branch_id:
                 try:
-                    # Ensure the branch exists in our local map
                     branch = self.session.branches[node.branch_id]
                     self.operation_branches[node.id] = branch
                 except Exception:
@@ -178,7 +149,6 @@ class DependencyAwareExecutor:
                     )
                 continue
 
-            # Check if operation needs a new branch
             predecessors = self.graph.get_predecessors(node)
             if predecessors or node.metadata.get("inherit_context"):
                 operations_needing_branches.append(node)
@@ -186,21 +156,11 @@ class DependencyAwareExecutor:
         if not operations_needing_branches:
             return
 
-        # Create all branches in a single lock acquisition
         async with self.session.branches.async_lock:
-            # For context inheritance, we need to create placeholder branches
-            # that will be updated once dependencies complete
             for operation in operations_needing_branches:
-                # Create a fresh branch for now
                 branch_clone = self.session.default_branch.clone(sender=self.session.id)
-
-                # Store in our operation branches map
                 self.operation_branches[operation.id] = branch_clone
-
-                # Add to session branches collection directly
-                # Check if this is a real branch (not a mock)
                 try:
-                    # Try to validate the ID
                     if hasattr(branch_clone, "id"):
                         branch_id = branch_clone.id
                         # Only add to collections if it's a valid ID
@@ -210,12 +170,8 @@ class DependencyAwareExecutor:
                             self.session.branches.collections[branch_id] = branch_clone
                             self.session.branches.progression.append(branch_id)
                 except Exception:
-                    logger.debug(
-                        "Skipping branch clone registration: validation failed "
-                        "(likely a mock object in test context)."
-                    )
+                    logger.debug("Skipping branch clone registration (likely mock in test).")
 
-                # Mark branches that need context inheritance for later update
                 if operation.metadata.get("inherit_context"):
                     branch_clone.metadata = branch_clone.metadata or {}
                     branch_clone.metadata["pending_context_inheritance"] = True
@@ -227,13 +183,6 @@ class DependencyAwareExecutor:
             logger.debug("Pre-allocated %d branches", len(operations_needing_branches))
 
     async def _execute_operation(self, operation: Operation, limiter: CapacityLimiter):
-        """Execute a single operation with dependency waiting.
-
-        The state machine (idempotency, status transitions, error handling)
-        lives in Event.invoke(). This method handles flow-level concerns:
-        dependency waiting, branch assignment, result storage, edge conditions.
-        """
-        # Skip if operation is already in a terminal state
         if operation.execution.status in Event._TERMINAL_STATUSES:
             if self.verbose:
                 logger.debug(
@@ -241,7 +190,6 @@ class DependencyAwareExecutor:
                     operation.execution.status.value,
                     str(operation.id)[:8],
                 )
-            # Ensure results are available for dependencies
             if operation.id not in self.results and operation.response is not None:
                 self.results[operation.id] = operation.response
             # Signal completion for any waiting operations
@@ -249,11 +197,9 @@ class DependencyAwareExecutor:
             return
 
         try:
-            # Check if this operation should be skipped due to edge conditions
             should_execute = await self._check_edge_conditions(operation)
 
             if not should_execute:
-                # Mark as skipped
                 operation.execution.status = EventStatus.SKIPPED
                 self.skipped_operations.add(operation.id)
 
@@ -263,16 +209,18 @@ class DependencyAwareExecutor:
                         str(operation.id)[:8],
                     )
 
-                # Signal completion so dependent operations can proceed
+                if self.on_progress:
+                    ref_id = operation.metadata.get("reference_id", str(operation.id)[:8])
+                    branch = self.operation_branches.get(operation.id, self.session.default_branch)
+                    branch_name = getattr(branch, "name", None) or ref_id
+                    self.on_progress(str(operation.id), branch_name, "failed", 0.0)
+
                 self.completion_events[operation.id].set()
                 return
 
-            # Wait for dependencies
             await self._wait_for_dependencies(operation)
 
-            # Acquire capacity to limit concurrency
             async with limiter:
-                # Prepare operation context
                 self._prepare_operation(operation)
 
                 ref_id = operation.metadata.get("reference_id", str(operation.id)[:8])
@@ -295,7 +243,6 @@ class DependencyAwareExecutor:
                     operation.id, _time.monotonic()
                 )
 
-                # Store results based on status (set by Event.invoke())
                 if operation.execution.status == EventStatus.COMPLETED:
                     self.results[operation.id] = operation.response
 
@@ -606,26 +553,7 @@ def _extract_spawn_requests(response: Any, spawn_type: type) -> list[Any]:
 
 
 class ReactiveExecutor(DependencyAwareExecutor):
-    """Self-expanding DAG executor: a running operation may emit a SpawnRequest
-    that injects a NEW operation into the live graph — no halt, no re-run.
-
-    Reuses the parent's node lifecycle (``_execute_operation``, branch
-    pre-allocation, result collection) and replaces only the *driver*. Instead
-    of a one-shot ``alcall`` over a frozen node list, it runs an anyio task
-    group; each node-task, on completion, extracts any SpawnRequests from its
-    response and schedules the resulting child nodes INTO THE SAME GROUP. The
-    task group is therefore the quiescence detector — it exits when no running
-    task schedules further work, which is sound because a SpawnRequest can only
-    originate from a running node (the emit is awaited inside the node-task
-    before it completes).
-
-    Three safety bounds:
-    - **Cap**: at most ``max_spawn`` dynamic injections; excess is logged, not
-      silently dropped.
-    - **Acyclicity**: each injection is validated; a spawn that would create a
-      cycle is reverted and rejected (would otherwise deadlock).
-    - **Termination**: guaranteed by the task group; no wakeup/poll loop.
-    """
+    """Self-expanding DAG executor: running ops may emit SpawnRequests to grow the graph."""
 
     def __init__(
         self,
@@ -647,17 +575,11 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self._running = False
         self._tg: Any = None
         self._graph_lock = threading.Lock()
-        # SpawnRequest identities already injected — dedups the API path, where
-        # the same instance arrives via both operate()'s return AND the bus
-        # (RunEnd unwrap fires observe()).
         self._seen_reqs: set[int] = set()
-        self._spawned_ids: set[Any] = set()  # node ids that were injected mid-run
-        # When streaming, completed nodes are pushed here for the generator to
-        # yield. None in batch mode.
+        self._spawned_ids: set[Any] = set()
         self._result_sink: Any = None
 
     async def execute(self) -> dict[str, Any]:
-        """Execute the graph, growing it as nodes emit SpawnRequests."""
         if not self.graph.is_acyclic():
             raise ValueError("Graph must be acyclic for flow execution")
         self._validate_edge_conditions()
@@ -675,6 +597,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
             async with create_task_group() as tg:
                 self._tg = tg
                 for node in initial:
+                    if self.on_progress:
+                        _name = node.metadata.get("reference_id", str(node.id)[:8])
+                        self.on_progress(str(node.id), _name, "queued", 0.0)
                     tg.start_soon(self._run_tracked, node)
         finally:
             self._running = False
@@ -696,15 +621,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         return result
 
     async def execute_stream(self):
-        """Yield a :class:`FlowEvent` the instant each operation completes.
-
-        Same engine as :meth:`execute` — downstream ops still auto-run as their
-        deps satisfy, and spawned nodes still grow the live DAG — but results
-        are surfaced incrementally instead of as one dict at the end. A
-        background driver runs the task group and closes the channel on
-        quiescence; this generator drains it. Breaking out early cancels the
-        driver (the channel's ``aclose`` tears down the task group).
-        """
+        """Yield a FlowEvent the instant each operation completes."""
         if not self.graph.is_acyclic():
             raise ValueError("Graph must be acyclic for flow execution")
         self._validate_edge_conditions()
@@ -730,6 +647,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
                 async with create_task_group() as tg:
                     self._tg = tg
                     for node in initial:
+                        if self.on_progress:
+                            _name = node.metadata.get("reference_id", str(node.id)[:8])
+                            self.on_progress(str(node.id), _name, "queued", 0.0)
                         tg.start_soon(self._run_tracked, node)
             finally:
                 await send.aclose()
@@ -756,23 +676,13 @@ class ReactiveExecutor(DependencyAwareExecutor):
                     await driver
 
     async def _run_tracked(self, node: Operation) -> None:
-        """Run one node, then schedule any operations it spawned.
-
-        Spawns reach us two ways: (1) the reactive **bus** — a real agent's
-        ``operate`` emits the SpawnRequest as a capability/RunEnd and
-        ``_on_bus_spawn`` fires *during* invoke; (2) **direct return** — a
-        custom operation that returns a SpawnRequest without going through the
-        bus. ``_CURRENT_OP`` lets the bus handler attribute (1) to this node.
-        """
         token = _CURRENT_OP.set(node)
         try:
             await self._execute_operation(node, self._limiter)
         finally:
             _CURRENT_OP.reset(token)
-        # Stream this node's completion the instant it finishes.
         if self._result_sink is not None:
             self._result_sink.send_nowait(self._make_event(node))
-        # Direct-return path (deduped against anything the bus already took).
         for req in _extract_spawn_requests(self.results.get(node.id), self.spawn_type):
             self._inject_request(req, emitter=node)
 
@@ -792,20 +702,18 @@ class ReactiveExecutor(DependencyAwareExecutor):
         )
 
     async def _on_bus_spawn(self, req: Any, _ctx: Any) -> None:
-        """Bus handler: a running agent emitted a SpawnRequest. Inject it."""
         if not self._running:
             return
         self._inject_request(req, emitter=_CURRENT_OP.get())
 
     def _inject_request(self, req: Any, *, emitter: Operation | None) -> bool:
-        """Build + schedule a node for one SpawnRequest (deduped, role-aware)."""
         if id(req) in self._seen_reqs:
             return False
         self._seen_reqs.add(id(req))
         builder = self.node_builder or _default_node_builder
         try:
             child = builder(req, emitter)
-        except Exception as e:  # a bad builder must not kill the flow
+        except Exception as e:
             logger.warning("spawn node_builder failed: %s", e)
             return False
         if child is None:
@@ -825,12 +733,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         after: Operation | str | None = None,
         independent: bool = False,
     ) -> bool:
-        """Schedule a pre-built operation into the running flow.
-
-        For use from a ``session.observe(...)`` handler that wants to grow the
-        DAG directly. Returns True if accepted, False if the flow is not running
-        or the injection was rejected (cap reached / would create a cycle).
-        """
+        """Schedule a pre-built operation into the running flow."""
         if not self._running or self._tg is None:
             logger.warning("inject() called while flow is not running; dropped")
             return False
@@ -847,7 +750,6 @@ class ReactiveExecutor(DependencyAwareExecutor):
         emitter_id: Any,
         independent: bool,
     ) -> bool:
-        """Add a child node + edge to the live graph under the safety bounds."""
         with self._graph_lock:
             if self._spawn_count >= self.max_spawn:
                 logger.warning(
@@ -881,16 +783,12 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
         if newly_added:
             self._assign_injected_branch(child, emitter_id, independent)
+            if self.on_progress:
+                _name = child.metadata.get("reference_id", str(child.id)[:8])
+                self.on_progress(str(child.id), _name, "queued", 0.0)
         return True
 
     def _assign_injected_branch(self, child: Operation, emitter_id: Any, independent: bool) -> None:
-        """Give an injected node its own (cloned) branch.
-
-        A clone keeps concurrent injected nodes from interleaving messages on a
-        shared branch. The base is the assignee role-branch (if the node carries
-        a ``branch_id``), else the emitter's branch (so dependent work inherits
-        the conversation), else the session default.
-        """
         base = None
         if child.branch_id:
             try:
@@ -909,12 +807,6 @@ class ReactiveExecutor(DependencyAwareExecutor):
 
 
 def _default_node_builder(req: Any, emitter: Operation | None) -> Operation:
-    """Build an operate node from a SpawnRequest (role-agnostic fallback).
-
-    The orchestration layer supplies a richer builder that maps ``assignee`` to
-    a role branch; without one, the child runs as an ``operate`` on a clone of
-    the emitter's branch.
-    """
     return create_operation(
         req.operation or "operate",
         parameters={"instruction": req.instruction},
@@ -937,36 +829,8 @@ async def flow(
     node_builder: Any = None,
     max_spawn: int = 50,
 ) -> dict[str, Any]:
-    """Execute a graph using structured concurrency primitives.
+    """Execute a graph with dependency management and optional reactive self-expansion."""
 
-    This provides clean dependency management and context inheritance
-    using Events and CapacityLimiter for proper coordination.
-
-    Args:
-        session: Session for branch management and multi-branch execution
-        graph: The workflow graph containing Operation nodes
-        branch: Optional specific branch to use for single-branch operations
-        context: Initial context
-        parallel: Whether to execute independent operations in parallel
-        max_concurrent: Max concurrent operations (1 if not parallel)
-        verbose: Enable verbose logging
-        alcall_params: Parameters for async parallel call execution
-        reactive: If True, run the self-expanding executor — operations may
-            emit a ``spawn_type`` payload that injects new operations into the
-            live graph (see :class:`ReactiveExecutor`).
-        spawn_type: The emission type that triggers injection (default
-            ``casts.emission.SpawnRequest``). Only used when ``reactive``.
-        node_builder: ``(spawn_request, emitter_op) -> Operation | None`` that
-            turns a spawn payload into a graph node. Defaults to a role-agnostic
-            ``operate`` node. Only used when ``reactive``.
-        max_spawn: Hard cap on dynamic injections. Only used when ``reactive``.
-
-    Returns:
-        Execution results with completed operations and final context. When
-        ``reactive``, also includes ``spawned_operations`` (count).
-    """
-
-    # Handle concurrency limits
     if not parallel:
         max_concurrent = 1
 
@@ -1012,16 +876,7 @@ async def flow_stream(
     node_builder: Any = None,
     max_spawn: int = 50,
 ):
-    """Stream a graph: yield a :class:`FlowEvent` as each operation completes.
-
-    Always uses the reactive engine, so it is also self-expanding — a node may
-    emit a ``spawn_type`` payload and the injected op streams its own event
-    when it finishes. With no spawns it is simply a normal DAG, streamed: every
-    op surfaces the moment its dependencies are satisfied and it runs.
-
-    Yields ``FlowEvent(operation_id, name, status, result, spawned)`` in
-    completion order. Consume with ``async for``.
-    """
+    """Yield FlowEvents as each operation completes; self-expanding via SpawnRequests."""
     executor = ReactiveExecutor(
         session=session,
         graph=graph,
@@ -1039,31 +894,19 @@ async def flow_stream(
 
 
 def cleanup_flow_results(result: dict[str, Any], keep_only: list[str] = None) -> dict[str, Any]:
-    """
-    Clean up flow execution results to reduce memory usage.
-
-    Args:
-        result: Flow execution result dictionary
-        keep_only: List of operation IDs to keep results for (optional)
-
-    Returns:
-        Modified result dictionary with reduced memory footprint
-    """
+    """Clean up flow results to reduce memory usage."""
     if not isinstance(result, dict) or "operation_results" not in result:
         return result
 
-    # If keep_only is specified, only keep those results
     if keep_only is not None:
         filtered_results = {
             op_id: res for op_id, res in result["operation_results"].items() if op_id in keep_only
         }
         result["operation_results"] = filtered_results
-        # Update completed_operations to match
         result["completed_operations"] = [
             op_id for op_id in result.get("completed_operations", []) if op_id in keep_only
         ]
     else:
-        # Clear all results to free memory
         result["operation_results"] = {}
         result["completed_operations"] = []
 
@@ -1082,25 +925,7 @@ async def flow_with_cleanup(
     cleanup_results: bool = True,
     keep_only: list[str] = None,
 ) -> dict[str, Any]:
-    """
-    Execute flow with automatic cleanup to prevent memory accumulation.
-
-    Args:
-        session: Session instance for branch management
-        graph: Operation graph to execute
-        context: Initial context data
-        parallel: Execute independent operations in parallel
-        max_concurrent: Max concurrent operations (1 if not parallel)
-        verbose: Enable verbose logging
-        branch: Default branch for operations
-        alcall_params: Parameters for async parallel call execution
-        cleanup_results: Whether to clean up operation results after execution
-        keep_only: List of operation IDs to keep results for (if cleanup_results=True)
-
-    Returns:
-        Execution results (potentially with cleaned up memory footprint)
-    """
-    # Execute the flow normally
+    """Execute flow with optional post-run cleanup."""
     result = await flow(
         session=session,
         graph=graph,
@@ -1112,7 +937,6 @@ async def flow_with_cleanup(
         alcall_params=alcall_params,
     )
 
-    # Clean up results if requested
     if cleanup_results:
         result = cleanup_flow_results(result, keep_only=keep_only)
 

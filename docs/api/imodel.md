@@ -43,7 +43,7 @@ model = li.iModel(
 |-------------|---------------------|-------------|
 | `"openai"` | `"chat"` | `OPENAI_API_KEY` |
 | `"anthropic"` | `"chat"` | `ANTHROPIC_API_KEY` |
-| `"gemini"` | `"chat"` | `GOOGLE_API_KEY` |
+| `"gemini"` | `"chat"` | `GEMINI_API_KEY` |
 | `"ollama"` | `"chat"` | — (local) |
 | `"groq"` | `"chat"` | `GROQ_API_KEY` |
 | `"deepseek"` | `"chat"` | `DEEPSEEK_API_KEY` |
@@ -247,7 +247,7 @@ CLI table above for accepted variants).
 |------------------|-----|------------|
 | `"openai"` | OpenAI | `OPENAI_API_KEY` |
 | `"anthropic"` | Anthropic | `ANTHROPIC_API_KEY` |
-| `"gemini"` | Google AI (OpenAI-compat) | `GOOGLE_API_KEY` |
+| `"gemini"` | Google AI (OpenAI-compat) | `GEMINI_API_KEY` |
 | `"ollama"` | Ollama local | — (no key needed) |
 | `"nvidia_nim"` | NVIDIA NIM | `NVIDIA_NIM_API_KEY` |
 | `"perplexity"` | Perplexity Sonar | `PERPLEXITY_API_KEY` |

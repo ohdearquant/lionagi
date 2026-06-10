@@ -4,16 +4,12 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import contextlib
-import inspect
 import json
 import logging
 import shutil
 import warnings
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
-from dataclasses import field as datafield
 from functools import partial
 from pathlib import Path
 from textwrap import shorten
@@ -22,7 +18,21 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
+from lionagi.libs.path_safety import (
+    check_add_dirs_safe as check_add_dir_entries_safe,
+)
+from lionagi.libs.path_safety import (
+    check_path_safe,
+    check_paths_safe,
+)
+from lionagi.libs.path_safety import (
+    contain_paths_in_root as contain_paths_in_repo,
+)
 from lionagi.libs.schema.as_readable import as_readable
+from lionagi.ln.concurrency.utils import maybe_await
+from lionagi.providers._cli_subprocess import build_declarative_cli_args, ndjson_from_cli
+from lionagi.service.types.cli_session import CLISession
+from lionagi.service.types.stream_chunk import StreamChunk
 
 HAS_CODEX_CLI = False
 CODEX_CLI = None
@@ -60,9 +70,7 @@ CodexReasoningEffort = Literal[
 ]
 
 __all__ = (
-    "CodexChunk",
     "CodexCodeRequest",
-    "CodexSession",
     "stream_codex_cli",
 )
 
@@ -93,17 +101,7 @@ def _cli(
 
 # --------------------------------------------------------------------------- request model
 class CodexCodeRequest(BaseModel):
-    """Configuration + prompt for an OpenAI Codex CLI invocation.
-
-    Fields annotated with ``_cli(...)`` metadata are automatically
-    assembled into CLI arguments by :meth:`as_cmd_args`, sorted by
-    ``order``.  Special cases (``bypass_approvals``, ``full_auto``,
-    ``sandbox``, ``config_overrides``, ``images``) are handled
-    explicitly after the declarative pass.
-
-    Adding a new CLI flag is one line: declare the field with ``_cli()``
-    metadata and the builder picks it up automatically.
-    """
+    """Configuration + prompt for an OpenAI Codex CLI invocation."""
 
     # ── prompt (always required) ──────────────────────────────────
     prompt: str = Field(description="The prompt for Codex CLI")
@@ -231,13 +229,12 @@ class CodexCodeRequest(BaseModel):
         description="Plan-mode reasoning effort (emitted as -c plan_mode_reasoning_effort=<val>)",
     )
 
-    # ── fast mode (priority service tier) ────────────────────────
+    # ── fast mode (fast service tier) ────────────────────────────
     fast_mode: bool = Field(
         default=False,
         description=(
-            "Route this request through OpenAI's *priority* service tier for "
-            "lower latency. Emitted as ``-c service_tier=flex``. "
-            "Requires an OpenAI account with priority-tier eligibility. "
+            "Route this request through OpenAI's *fast* service tier for "
+            "lower latency. Emitted as ``-c service_tier=fast``. "
             "Does NOT cap or change ``reasoning_effort`` — "
             "``fast_mode=True`` with ``reasoning_effort='xhigh'`` is valid "
             "and gives maximum reasoning depth on the fast lane."
@@ -282,10 +279,40 @@ class CodexCodeRequest(BaseModel):
             return [v]
         return v
 
+    @field_validator("add_dir", mode="after")
+    @classmethod
+    def _validate_add_dir(cls, v):
+        if v is None:
+            return v
+        return check_add_dir_entries_safe(v, "add_dir")
+
+    @field_validator("images", mode="after")
+    @classmethod
+    def _validate_images(cls, v):
+        return check_paths_safe(v, "images")
+
+    @field_validator("output_schema", "output_last_message", mode="before")
+    @classmethod
+    def _validate_output_paths(cls, v):
+        if v is None:
+            return v
+        check_path_safe(str(v), "output_schema/output_last_message")
+        return v
+
+    @model_validator(mode="after")
+    def _contain_path_fields_in_repo(self):
+        repo_root = self.repo.resolve()
+        if self.images:
+            contain_paths_in_repo(self.images, repo_root, "images")
+        if self.output_schema is not None:
+            contain_paths_in_repo([str(self.output_schema)], repo_root, "output_schema")
+        if self.output_last_message is not None:
+            contain_paths_in_repo([str(self.output_last_message)], repo_root, "output_last_message")
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def _validate_message_prompt(cls, data):
-        """Convert messages format to prompt if needed."""
         if data.get("prompt"):
             return data
 
@@ -308,7 +335,6 @@ class CodexCodeRequest(BaseModel):
 
     @model_validator(mode="after")
     def _warn_dangerous_settings(self):
-        """Emit security warnings for dangerous CLI settings."""
         if self.bypass_approvals:
             warnings.warn(
                 "CodexCodeRequest: bypass_approvals=True skips ALL approval "
@@ -322,7 +348,6 @@ class CodexCodeRequest(BaseModel):
     # ── workspace path ────────────────────────────────────────────
 
     def cwd(self) -> Path:
-        """Get working directory, validating workspace path."""
         if not self.ws:
             return self.repo
 
@@ -350,23 +375,10 @@ class CodexCodeRequest(BaseModel):
     # ── CLI command builder ───────────────────────────────────────
 
     def as_cmd_args(self) -> list[str]:
-        """Build argument list for ``codex exec`` subcommand.
-
-        Flags are assembled in two passes:
-
-        1. **Declarative** – fields with ``_cli()`` metadata, sorted by
-           ``order``.
-        2. **Special cases** – approval/sandbox (mutual exclusivity),
-           images (``-i`` repeat), config overrides (``-c key=val``).
-
-        Structure: ``exec --json [flags] -C <cwd> -- <prompt>``
-        """
+        """Build argument list for ``codex exec`` subcommand."""
         args: list[str] = ["exec", "--json"]
 
-        # ── pass 1: declarative flags ──
         args.extend(self._build_declarative_args())
-
-        # ── pass 2: special cases ──
 
         # Approval & sandbox: mutually exclusive hierarchy
         if self.bypass_approvals:
@@ -402,9 +414,9 @@ class CodexCodeRequest(BaseModel):
                 ]
             )
 
-        # Fast mode → -c service_tier=flex (priority renamed to flex in codex CLI)
+        # Fast mode → -c service_tier=fast
         if self.fast_mode:
-            args.extend(["-c", "service_tier=flex"])
+            args.extend(["-c", "service_tier=fast"])
 
         # Images (repeat -i per image)
         for image in self.images:
@@ -424,158 +436,10 @@ class CodexCodeRequest(BaseModel):
         return args
 
     def _build_declarative_args(self) -> list[str]:
-        """Collect fields with ``_cli()`` metadata and emit flags."""
-        flagged: list[tuple[int, dict, Any]] = []
-        for field_name, field_info in type(self).model_fields.items():
-            extra = field_info.json_schema_extra
-            if not extra or "cli_flag" not in extra:
-                continue
-            val = getattr(self, field_name)
-            if val is None:
-                continue
-            if isinstance(val, list) and not val:
-                continue
-            if val is False:
-                continue
-            flagged.append((extra["cli_order"], extra, val))
-
-        flagged.sort(key=lambda x: x[0])
-
-        args: list[str] = []
-        for _, extra, val in flagged:
-            flag = extra["cli_flag"]
-            kind = extra.get("cli_kind", "value")
-
-            if kind == "bool":
-                if val:
-                    args.append(flag)
-
-            elif kind == "repeat":
-                for v in val:
-                    args.extend([flag, str(v)])
-
-            else:  # "value"
-                args.extend([flag, str(val)])
-
-        return args
+        return build_declarative_cli_args(self)
 
 
-# --------------------------------------------------------------------------- chunks & session
-
-
-@dataclass
-class CodexChunk:
-    """Low-level wrapper around every JSON object from the Codex CLI."""
-
-    raw: dict[str, Any]
-    type: str
-    # convenience views
-    text: str | None = None
-    tool_use: dict[str, Any] | None = None
-    tool_result: dict[str, Any] | None = None
-
-
-@dataclass
-class CodexSession:
-    """Aggregated view of a whole Codex CLI conversation."""
-
-    session_id: str | None = None
-    model: str | None = None
-
-    # chronological log
-    chunks: list[CodexChunk] = datafield(default_factory=list)
-
-    # materialized views
-    messages: list[dict[str, Any]] = datafield(default_factory=list)
-    tool_uses: list[dict[str, Any]] = datafield(default_factory=list)
-    tool_results: list[dict[str, Any]] = datafield(default_factory=list)
-
-    # final summary
-    result: str = ""
-    usage: dict[str, Any] = datafield(default_factory=dict)
-    total_cost_usd: float | None = None
-    num_turns: int | None = None
-    duration_ms: int | None = None
-    is_error: bool = False
-    summary: dict | None = None
-
-    def populate_summary(self) -> None:
-        self.summary = _extract_summary(self)
-
-
-def _extract_summary(session: CodexSession) -> dict[str, Any]:
-    """Extract summary from session data."""
-    tool_counts: dict[str, int] = {}
-    tool_details: list[dict[str, Any]] = []
-    file_operations: dict[str, list[str]] = {
-        "reads": [],
-        "writes": [],
-        "edits": [],
-    }
-    key_actions: list[str] = []
-
-    for tool_use in session.tool_uses:
-        tool_name = tool_use.get("name", "unknown")
-        tool_input = tool_use.get("input", {})
-        tool_id = tool_use.get("id", "")
-
-        tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
-        tool_details.append({"tool": tool_name, "id": tool_id, "input": tool_input})
-
-        if tool_name in ("read_file", "Read", "read"):
-            file_path = tool_input.get("path", tool_input.get("file_path", "unknown"))
-            file_operations["reads"].append(file_path)
-            key_actions.append(f"Read {file_path}")
-
-        elif tool_name in ("write_file", "create_file", "Write", "write"):
-            file_path = tool_input.get("path", tool_input.get("file_path", "unknown"))
-            file_operations["writes"].append(file_path)
-            key_actions.append(f"Wrote {file_path}")
-
-        elif tool_name in ("edit_file", "patch", "Edit", "edit"):
-            file_path = tool_input.get("path", tool_input.get("file_path", "unknown"))
-            file_operations["edits"].append(file_path)
-            key_actions.append(f"Edited {file_path}")
-
-        elif tool_name in (
-            "shell",
-            "terminal",
-            "run_shell_command",
-            "Bash",
-            "bash",
-        ):
-            command = tool_input.get("command", tool_input.get("cmd", ""))
-            command_summary = command[:50] + "..." if len(command) > 50 else command
-            key_actions.append(f"Ran: {command_summary}")
-
-        elif tool_name.startswith("mcp_") or tool_name.startswith("mcp__"):
-            operation = tool_name.replace("mcp__", "").replace("mcp_", "")
-            key_actions.append(f"MCP {operation}")
-
-        else:
-            key_actions.append(f"Used {tool_name}")
-
-    key_actions = list(dict.fromkeys(key_actions)) if key_actions else ["No specific actions"]
-
-    for op_type in file_operations:
-        file_operations[op_type] = list(dict.fromkeys(file_operations[op_type]))
-
-    result_summary = (session.result[:200] + "...") if len(session.result) > 200 else session.result
-
-    return {
-        "tool_counts": tool_counts,
-        "tool_details": tool_details,
-        "file_operations": file_operations,
-        "key_actions": key_actions,
-        "total_tool_calls": sum(tool_counts.values()),
-        "result_summary": result_summary,
-        "usage_stats": {
-            "total_cost_usd": session.total_cost_usd,
-            "num_turns": session.num_turns,
-            "duration_ms": session.duration_ms,
-            **session.usage,
-        },
-    }
+CodexSession = CLISession
 
 
 # --------------------------------------------------------------------------- NDJSON stream
@@ -583,154 +447,15 @@ def _extract_summary(session: CodexSession) -> dict[str, Any]:
 
 # TODO(#1043 Phase 2): migrate create_subprocess_exec + wait_for to anyio
 async def _ndjson_from_cli(request: CodexCodeRequest):
-    """
-    Yields each JSON object emitted by the Codex CLI (JSONL mode).
-
-    Robust against UTF-8 splits and uses json.JSONDecoder.raw_decode.
-    Drains stderr concurrently into a bounded buffer so the subprocess
-    cannot deadlock when it produces large stderr volumes before any
-    stdout output. The codex CLI launches with ``start_new_session=True``,
-    so cancellation terminates the whole process group rather than just
-    the direct child — needed for cleanup when shells, ssh, etc. are
-    spawned beneath the CLI itself.
-    """
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
-
-    proc = await asyncio.create_subprocess_exec(
-        CODEX_CLI,
-        *request.as_cmd_args(),
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,  # isolate from parent's SIGINT
-    )
-    # Capture PGID NOW — if we wait until teardown, the child may have
-    # exited and been reaped, ``os.getpgid(proc.pid)`` would raise
-    # ProcessLookupError, and we'd skip the group kill entirely.
-    # ``start_new_session=True`` makes pgid == proc.pid.
-    # Guard against mocked subprocesses in tests where proc.pid may not
-    # be a real int: a MagicMock.pid coerces to 1 via __int__, and
-    # os.killpg(1, SIGTERM) signals init/the CI runner.
-    _codex_pgid: int | None = proc.pid if isinstance(proc.pid, int) and proc.pid > 1 else None
-
-    decoder = codecs.getincrementaldecoder("utf-8")()
-    json_decoder = json.JSONDecoder()
-    buffer: str = ""
-
-    if proc.stdout is None:
-        raise RuntimeError("Failed to capture stdout from Codex CLI")
-
-    # Bounded stderr capture (256 KiB) — enough for a useful error tail,
-    # bounded so a runaway logger can't consume unlimited memory.
-    stderr_cap = 256 * 1024
-    stderr_chunks: list[bytes] = []
-    stderr_total = 0
-
-    async def _drain_stderr() -> None:
-        nonlocal stderr_total
-        if proc.stderr is None:
-            return
-        try:
-            while True:
-                chunk = await proc.stderr.read(4096)
-                if not chunk:
-                    break
-                remaining = stderr_cap - stderr_total
-                if remaining > 0:
-                    take = chunk[:remaining]
-                    stderr_chunks.append(take)
-                    stderr_total += len(take)
-                # Beyond the cap we keep draining the pipe (so the
-                # subprocess never blocks on a full pipe buffer) but
-                # discard the bytes.
-        except Exception as exc:
-            log.debug("stderr drain ended: %s", exc)
-
-    stderr_task = asyncio.create_task(_drain_stderr())
-
-    try:
-        while True:
-            chunk = await proc.stdout.read(4096)
-            if not chunk:
-                break
-
-            buffer += decoder.decode(chunk)
-
-            while buffer:
-                buffer = buffer.lstrip()
-                if not buffer:
-                    break
-                try:
-                    obj, idx = json_decoder.raw_decode(buffer)
-                    yield obj
-                    buffer = buffer[idx:]
-                except json.JSONDecodeError:
-                    break
-
-        buffer += decoder.decode(b"", final=True)
-        buffer = buffer.strip()
-        if buffer:
-            try:
-                obj, idx = json_decoder.raw_decode(buffer)
-                yield obj
-            except json.JSONDecodeError:
-                log.error("Skipped unrecoverable JSON tail: %.120s...", buffer)
-
-        if await proc.wait() != 0:
-            # Drain task should be done now (stdout EOF + proc exit ⇒
-            # stderr EOF). ``shield`` so wait_for's timeout doesn't
-            # cancel the drain on slow systems — if we hit the timeout
-            # we report what we have and mark it truncated.
-            drain_truncated = False
-            try:
-                await asyncio.wait_for(asyncio.shield(stderr_task), timeout=2.0)
-            except asyncio.TimeoutError:
-                drain_truncated = True
-            except asyncio.CancelledError:
-                # If WE are cancelled, propagate.
-                raise
-            err = b"".join(stderr_chunks).decode(errors="replace").strip()
-            if drain_truncated:
-                err = (err or "") + " [stderr drain timed out]"
-            raise RuntimeError(err or "Codex CLI exited non-zero")
-
-    finally:
-        # Terminate the whole process group (start_new_session=True
-        # above made pgid == proc.pid). Captured up-front so a reap
-        # before teardown doesn't make us skip the group kill.
-        import os
-        import signal
-
-        pgid = _codex_pgid
-        if pgid is not None:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(pgid, signal.SIGTERM)
-        with contextlib.suppress(ProcessLookupError):
-            proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            if pgid is not None:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(pgid, signal.SIGKILL)
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
-
-        # Reap the stderr drain task. ``contextlib.suppress(Exception)``
-        # does NOT catch CancelledError (BaseException) — we have to
-        # suppress it explicitly so the intentional cancel here doesn't
-        # mask the actual generator outcome.
-        stderr_task.cancel()
-        try:
-            await stderr_task
-        except (  # noqa: S110, BLE001
-            asyncio.CancelledError,
-            Exception,
-        ):
-            pass
+    cmd = [CODEX_CLI, *request.as_cmd_args()]
+    # Do NOT pass cwd here: Codex CLI already receives the workspace via the
+    # '-C <repo>' argument emitted by as_cmd_args().  Setting cwd= would cause
+    # the CLI to resolve '-C repo' from inside 'repo', producing 'repo/repo'.
+    async with contextlib.aclosing(ndjson_from_cli(cmd)) as stream:
+        async for obj in stream:
+            yield obj
 
 
 # --------------------------------------------------------------------------- event stream
@@ -744,13 +469,6 @@ async def stream_codex_cli_events(request: CodexCodeRequest):
         async for obj in stream:
             yield obj
     yield {"type": "done"}
-
-
-async def _maybe_await(func, *args, **kw):
-    """Call func which may be sync or async."""
-    res = func(*args, **kw) if func else None
-    if inspect.iscoroutine(res):
-        await res
 
 
 print_readable = partial(as_readable, md=True, display_str=True)
@@ -777,7 +495,7 @@ def _pp_tool_result(tr: dict[str, Any], theme: str = "light") -> None:
     print_readable(body, border=False, panel=False, theme=theme)
 
 
-def _pp_final(sess: CodexSession, theme: str = "light") -> None:
+def _pp_final(sess: CLISession, theme: str = "light") -> None:
     usage = sess.usage or {}
     cost_str = f"${sess.total_cost_usd:.4f}" if sess.total_cost_usd else "N/A"
     txt = (
@@ -796,22 +514,21 @@ def _pp_final(sess: CodexSession, theme: str = "light") -> None:
 
 async def stream_codex_cli(
     request: CodexCodeRequest,
-    session: CodexSession | None = None,
+    session: CLISession | None = None,
     *,
     on_text: Callable[[str], None] | None = None,
     on_tool_use: Callable[[dict[str, Any]], None] | None = None,
     on_tool_result: Callable[[dict[str, Any]], None] | None = None,
-    on_final: Callable[[CodexSession], None] | None = None,
-) -> AsyncIterator[CodexChunk | dict | CodexSession]:
-    """
-    Consume the JSONL stream from Codex CLI and return a populated
-    CodexSession.
+    on_final: Callable[[CLISession], None] | None = None,
+) -> AsyncIterator[StreamChunk | CLISession]:
+    """Consume the JSONL stream from Codex CLI, yield StreamChunks, and
+    populate a CodexSession accumulator.
 
-    Handles flexible event type names since Codex CLI output format
-    may vary.
+    Yields ``StreamChunk`` for every content-bearing event so the endpoint
+    can pass them straight through without conversion.
     """
     if session is None:
-        session = CodexSession()
+        session = CLISession()
     theme = request.cli_display_theme or "light"
     _start_monotonic = asyncio.get_running_loop().time()
 
@@ -819,8 +536,6 @@ async def stream_codex_cli(
     try:
         async for obj in stream:
             typ = obj.get("type", "unknown")
-            chunk = CodexChunk(raw=obj, type=typ)
-            session.chunks.append(chunk)
 
             # -- thread / session start --
             if typ in ("thread.started", "system", "init", "session.start"):
@@ -829,7 +544,9 @@ async def stream_codex_cli(
                     obj.get("session_id", obj.get("id")),
                 )
                 session.model = obj.get("model")
-                yield obj
+                sc = StreamChunk(type="system", metadata=obj)
+                session.chunks.append(sc)
+                yield sc
 
             # -- item.completed (agent_message, reasoning, tool calls) --
             elif typ == "item.completed":
@@ -838,12 +555,14 @@ async def stream_codex_cli(
 
                 if item_type == "agent_message":
                     text = item.get("text", "")
-                    chunk.text = text
                     session.messages.append(item)
-                    await _maybe_await(on_text, text)
+                    if on_text:
+                        await maybe_await(on_text(text))
                     if request.verbose_output:
                         _pp_text(text, theme)
-                    yield chunk
+                    sc = StreamChunk(type="text", content=text, metadata=obj)
+                    session.chunks.append(sc)
+                    yield sc
 
                 elif item_type in ("function_call", "tool_call"):
                     tu = {
@@ -854,18 +573,22 @@ async def stream_codex_cli(
                             item.get("input", item.get("args", {})),
                         ),
                     }
-                    chunk.tool_use = tu
                     session.tool_uses.append(tu)
-                    await _maybe_await(on_tool_use, tu)
+                    if on_tool_use:
+                        await maybe_await(on_tool_use(tu))
                     if request.verbose_output:
                         _pp_tool_use(tu, theme)
-                    yield chunk
+                    sc = StreamChunk(
+                        type="tool_use",
+                        tool_name=tu["name"],
+                        tool_id=tu["id"],
+                        tool_input=tu["input"],
+                        metadata=obj,
+                    )
+                    session.chunks.append(sc)
+                    yield sc
 
                 elif item_type == "command_execution":
-                    # Codex CLI emits command_execution items with command +
-                    # aggregated_output + exit_code. Treat as a paired
-                    # tool_use + tool_result so downstream message routing
-                    # records both the request and the result.
                     item_id = item.get("id", "")
                     command = item.get("command", "")
                     output = item.get("aggregated_output", "")
@@ -874,51 +597,59 @@ async def stream_codex_cli(
                     is_error = status == "failed" or (exit_code is not None and exit_code != 0)
 
                     tu = {"id": item_id, "name": "Bash", "input": {"command": command}}
-                    chunk.tool_use = tu
                     session.tool_uses.append(tu)
-                    await _maybe_await(on_tool_use, tu)
+                    if on_tool_use:
+                        await maybe_await(on_tool_use(tu))
                     if request.verbose_output:
                         _pp_tool_use(tu, theme)
-                    yield chunk
+                    sc = StreamChunk(
+                        type="tool_use",
+                        tool_name="Bash",
+                        tool_id=item_id,
+                        tool_input={"command": command},
+                        metadata=obj,
+                    )
+                    session.chunks.append(sc)
+                    yield sc
 
-                    # Emit paired tool_result on a fresh chunk so the caller
-                    # always sees both halves of the exchange.
-                    result_chunk = CodexChunk(raw=obj, type=typ)
-                    tr = {
-                        "tool_use_id": item_id,
-                        "content": output,
-                        "is_error": is_error,
-                    }
-                    result_chunk.tool_result = tr
+                    tr = {"tool_use_id": item_id, "content": output, "is_error": is_error}
                     session.tool_results.append(tr)
-                    session.chunks.append(result_chunk)
-                    await _maybe_await(on_tool_result, tr)
+                    if on_tool_result:
+                        await maybe_await(on_tool_result(tr))
                     if request.verbose_output:
                         _pp_tool_result(tr, theme)
-                    yield result_chunk
+                    sc = StreamChunk(
+                        type="tool_result",
+                        tool_id=item_id,
+                        tool_output=output,
+                        is_error=is_error,
+                        metadata=obj,
+                    )
+                    session.chunks.append(sc)
+                    yield sc
 
                 elif item_type == "file_change":
-                    # Codex CLI emits file_change items with a `changes` list.
-                    # Surface each change as a single Edit tool call so the
-                    # branch records what files were touched.
                     item_id = item.get("id", "")
                     changes = item.get("changes", [])
                     status = item.get("status", "")
                     is_error = status == "failed"
 
-                    tu = {
-                        "id": item_id,
-                        "name": "Edit",
-                        "input": {"changes": changes},
-                    }
-                    chunk.tool_use = tu
+                    tu = {"id": item_id, "name": "Edit", "input": {"changes": changes}}
                     session.tool_uses.append(tu)
-                    await _maybe_await(on_tool_use, tu)
+                    if on_tool_use:
+                        await maybe_await(on_tool_use(tu))
                     if request.verbose_output:
                         _pp_tool_use(tu, theme)
-                    yield chunk
+                    sc = StreamChunk(
+                        type="tool_use",
+                        tool_name="Edit",
+                        tool_id=item_id,
+                        tool_input={"changes": changes},
+                        metadata=obj,
+                    )
+                    session.chunks.append(sc)
+                    yield sc
 
-                    result_chunk = CodexChunk(raw=obj, type=typ)
                     summary_parts = [
                         f"{c.get('kind', 'change')}: {c.get('path', '?')}"
                         for c in changes
@@ -929,13 +660,20 @@ async def stream_codex_cli(
                         "content": "; ".join(summary_parts) or status,
                         "is_error": is_error,
                     }
-                    result_chunk.tool_result = tr
                     session.tool_results.append(tr)
-                    session.chunks.append(result_chunk)
-                    await _maybe_await(on_tool_result, tr)
+                    if on_tool_result:
+                        await maybe_await(on_tool_result(tr))
                     if request.verbose_output:
                         _pp_tool_result(tr, theme)
-                    yield result_chunk
+                    sc = StreamChunk(
+                        type="tool_result",
+                        tool_id=item_id,
+                        tool_output=tr["content"],
+                        is_error=is_error,
+                        metadata=obj,
+                    )
+                    session.chunks.append(sc)
+                    yield sc
 
                 elif item_type == "function_call_output":
                     tr = {
@@ -943,18 +681,25 @@ async def stream_codex_cli(
                         "content": item.get("output", item.get("content", "")),
                         "is_error": item.get("is_error", False),
                     }
-                    chunk.tool_result = tr
                     session.tool_results.append(tr)
-                    await _maybe_await(on_tool_result, tr)
+                    if on_tool_result:
+                        await maybe_await(on_tool_result(tr))
                     if request.verbose_output:
                         _pp_tool_result(tr, theme)
-                    yield chunk
+                    sc = StreamChunk(
+                        type="tool_result",
+                        tool_id=tr["tool_use_id"],
+                        tool_output=tr["content"],
+                        is_error=tr["is_error"],
+                        metadata=obj,
+                    )
+                    session.chunks.append(sc)
+                    yield sc
 
                 elif item_type == "reasoning":
-                    yield chunk
-
-                else:
-                    yield chunk
+                    sc = StreamChunk(type="thinking", content=item.get("text"), metadata=obj)
+                    session.chunks.append(sc)
+                    yield sc
 
             # -- turn.completed (usage stats) --
             elif typ == "turn.completed":
@@ -966,11 +711,49 @@ async def stream_codex_cli(
             elif typ in ("turn.failed", "error"):
                 session.is_error = True
                 err = obj.get("error", {})
+                # The CLI puts the human-readable message in different spots
+                # depending on event type: "error" events carry a TOP-LEVEL
+                # "message" with no "error" key (e.g. usage-limit errors), while
+                # "turn.failed" nests it under error.message.  Check both —
+                # otherwise a top-level-message error renders as the useless
+                # str() of an empty dict and the actionable text is discarded.
                 session.result = (
-                    err.get("message", str(err))
+                    (err.get("message") or obj.get("message") or str(err))
                     if isinstance(err, dict)
                     else obj.get("message", str(err))
                 )
+                # Detect a benign end-of-stream sentinel: some codex CLI versions
+                # emit ``{"type": "error", "error": {}}`` when a resumed session
+                # ends normally rather than with a real failure.  Tag these
+                # explicitly so run() can treat them as clean EOS rather than
+                # propagating them as RunFailed.
+                #
+                # Narrowing criteria (must ALL hold):
+                #   1. Event type is "error" — "turn.failed" events are NEVER benign
+                #      regardless of their error payload, because they signal an
+                #      explicit model-side failure (e.g. rate_limit, context_overflow).
+                #   2. The error payload is EXACTLY the empty dict.  A structured
+                #      payload with falsy values ({"message": ""}, {"message": None})
+                #      is a real failure whose detail happens to be empty — only the
+                #      bare {} sentinel is produced by a resumed-session EOF.
+                #   3. The top-level event carries no failure indicators beyond the
+                #      known EOF envelope (no "code", "message", or "status" keys).
+                _is_benign_eos = (
+                    typ == "error"
+                    and "error" in obj  # a bare {"type": "error"} is malformed, not EOF
+                    and err == {}
+                    and not any(k in obj for k in ("code", "message", "status"))
+                )
+                chunk_meta = dict(obj)
+                if _is_benign_eos:
+                    chunk_meta["benign_eos"] = True
+                    session.is_error = False  # retract: not a real error
+                else:
+                    if request.verbose_output:
+                        log.error("Codex error: %s", session.result)
+                sc = StreamChunk(type="error", content=session.result, metadata=chunk_meta)
+                session.chunks.append(sc)
+                yield sc
 
             # -- legacy event types (older CLI versions) --
             elif typ in ("message", "assistant", "agent"):
@@ -979,41 +762,47 @@ async def stream_codex_cli(
 
                 content = msg.get("content", "")
                 if isinstance(content, str):
-                    chunk.text = content
-                    await _maybe_await(on_text, content)
+                    if on_text:
+                        await maybe_await(on_text(content))
                     if request.verbose_output:
                         _pp_text(content, theme)
+                    sc = StreamChunk(type="text", content=content, metadata=obj)
+                    session.chunks.append(sc)
+                    yield sc
                 elif isinstance(content, list):
                     for blk in content:
-                        if isinstance(blk, dict):
-                            btype = blk.get("type")
-                            if btype == "text":
-                                text = blk.get("text", "")
-                                chunk.text = text
-                                await _maybe_await(on_text, text)
-                                if request.verbose_output:
-                                    _pp_text(text, theme)
-                            elif btype in (
-                                "tool_use",
-                                "function_call",
-                            ):
-                                tu = {
-                                    "id": blk.get("id", ""),
-                                    "name": blk.get(
-                                        "name",
-                                        blk.get("function", {}).get("name", ""),
-                                    ),
-                                    "input": blk.get(
-                                        "input",
-                                        blk.get("arguments", {}),
-                                    ),
-                                }
-                                chunk.tool_use = tu
-                                session.tool_uses.append(tu)
-                                await _maybe_await(on_tool_use, tu)
-                                if request.verbose_output:
-                                    _pp_tool_use(tu, theme)
-                yield chunk
+                        if not isinstance(blk, dict):
+                            continue
+                        btype = blk.get("type")
+                        if btype == "text":
+                            text = blk.get("text", "")
+                            if on_text:
+                                await maybe_await(on_text(text))
+                            if request.verbose_output:
+                                _pp_text(text, theme)
+                            sc = StreamChunk(type="text", content=text, metadata=obj)
+                            session.chunks.append(sc)
+                            yield sc
+                        elif btype in ("tool_use", "function_call"):
+                            tu = {
+                                "id": blk.get("id", ""),
+                                "name": blk.get("name", blk.get("function", {}).get("name", "")),
+                                "input": blk.get("input", blk.get("arguments", {})),
+                            }
+                            session.tool_uses.append(tu)
+                            if on_tool_use:
+                                await maybe_await(on_tool_use(tu))
+                            if request.verbose_output:
+                                _pp_tool_use(tu, theme)
+                            sc = StreamChunk(
+                                type="tool_use",
+                                tool_name=tu["name"],
+                                tool_id=tu["id"],
+                                tool_input=tu["input"],
+                                metadata=obj,
+                            )
+                            session.chunks.append(sc)
+                            yield sc
 
             elif typ in ("result", "response", "session.end"):
                 session.result = obj.get(
@@ -1031,11 +820,8 @@ async def stream_codex_cli(
     finally:
         await stream.aclose()
 
-    # Reconstruct session.result from chunk texts when the CLI didn't emit a
-    # dedicated "response"/"result" event. CodexChunk has no delta flag, so all
-    # text chunks are treated as independent parts.
     if not session.result:
-        parts = [c.text for c in session.chunks if c.text is not None]
+        parts = [c.content for c in session.chunks if c.type == "text" and c.content]
         if parts:
             session.result = "\n".join(parts)
     if session.num_turns is None and session.messages:
@@ -1043,7 +829,8 @@ async def stream_codex_cli(
     if session.duration_ms is None:
         session.duration_ms = int((asyncio.get_running_loop().time() - _start_monotonic) * 1000)
 
-    await _maybe_await(on_final, session)
+    if on_final:
+        await maybe_await(on_final(session))
     if request.verbose_output:
         _pp_final(session, theme)
 

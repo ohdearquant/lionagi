@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Studio self-healing lifecycle reapers (#1170, #1171, #1172).
+"""Studio self-healing lifecycle reapers.
 
 Three reapers, all writing through the sanctioned StateDB.update_status()
 path so reason history is always written atomically with status changes.
@@ -35,7 +35,7 @@ _PHANTOM_REASON_CODES: dict[str, str] = {
 }
 
 
-# ── #1170: invocation deadline + zero-session reaper ─────────────────────────
+# ── invocation deadline + zero-session reaper ────────────────────────────────
 
 
 def _deadline_for_kind(action_kind: str | None, global_default: int) -> int:
@@ -163,7 +163,7 @@ async def reap_stale_invocations(
     return reaped
 
 
-# ── #1171: null-status session detector ──────────────────────────────────────
+# ── null-status session detector ─────────────────────────────────────────────
 
 
 async def reap_null_status_sessions() -> int:
@@ -226,7 +226,7 @@ async def reap_null_status_sessions() -> int:
     return reaped
 
 
-# ── #1172: automatic phantom reaper ──────────────────────────────────────────
+# ── automatic phantom reaper ─────────────────────────────────────────────────
 
 
 async def reap_phantom_sessions(

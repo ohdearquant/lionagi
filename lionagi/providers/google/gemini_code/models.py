@@ -4,11 +4,9 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import contextlib
-import inspect
-import json
 import logging
+import os
 import shutil
 import warnings
 from collections.abc import AsyncIterator, Callable
@@ -19,10 +17,14 @@ from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
+from lionagi.libs.path_safety import check_paths_safe
+from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
 from lionagi.libs.schema.as_readable import as_readable
+from lionagi.ln.concurrency.utils import maybe_await
+from lionagi.providers._cli_subprocess import _INHERIT_STDIN, ndjson_from_cli
 
 HAS_GEMINI_CLI = False
 GEMINI_CLI = None
@@ -43,7 +45,7 @@ __all__ = (
 
 
 class GeminiCodeRequest(BaseModel):
-    """Request model for Gemini CLI execution."""
+    """Configuration + prompt for a Gemini CLI invocation."""
 
     # -- conversational bits -------------------------------------------------
     prompt: str = Field(description="The prompt for Gemini CLI")
@@ -56,8 +58,14 @@ class GeminiCodeRequest(BaseModel):
 
     # -- runtime & safety ----------------------------------------------------
     model: str | None = Field(
-        default="gemini-2.5-pro",
-        description="Gemini model to use (gemini-2.5-pro, gemini-2.5-flash, gemini-3-pro, etc.)",
+        default="gemini-3-flash-preview",
+        description=(
+            "Gemini model to use. OAuth (gemini-cli) supports: "
+            "gemini-3-flash-preview, gemini-3-pro-preview, "
+            "gemini-2.5-flash, gemini-2.5-pro. "
+            "Note: gemini-3.5-flash and gemini-3.5-flash-preview are not valid "
+            "OAuth model IDs and will return a 404."
+        ),
     )
     yolo: bool = Field(
         default=False,
@@ -81,7 +89,6 @@ class GeminiCodeRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _validate_message_prompt(cls, data):
-        """Convert messages format to prompt if needed."""
         if data.get("prompt"):
             return data
 
@@ -92,7 +99,7 @@ class GeminiCodeRequest(BaseModel):
         for message in msg:
             if message["role"] != "system":
                 content = message["content"]
-                if isinstance(content, (dict, list)):
+                if isinstance(content, dict | list):
                     prompts.append(ln.json_dumps(content))
                 else:
                     prompts.append(content)
@@ -102,9 +109,20 @@ class GeminiCodeRequest(BaseModel):
         data["prompt"] = "\n".join(prompts)
         return data
 
+    @field_validator("include_directories", mode="after")
+    @classmethod
+    def _validate_include_directories(cls, v):
+        return check_paths_safe(v, "include_directories")
+
+    @model_validator(mode="after")
+    def _contain_directories_in_repo(self):
+        if self.include_directories:
+            repo_root = self.repo.resolve()
+            contain_paths_in_repo(self.include_directories, repo_root, "include_directories")
+        return self
+
     @model_validator(mode="after")
     def _warn_dangerous_settings(self):
-        """Emit security warnings for dangerous CLI settings."""
         if self.yolo:
             warnings.warn(
                 "GeminiCodeRequest: yolo=True enables auto-approval of ALL actions "
@@ -128,21 +146,16 @@ class GeminiCodeRequest(BaseModel):
         return self
 
     def cwd(self) -> Path:
-        """Get working directory, validating workspace path."""
         if not self.ws:
             return self.repo
 
         ws_path = Path(self.ws)
 
         if ws_path.is_absolute():
-            raise ValueError(
-                f"Workspace path must be relative, got absolute: {self.ws}"
-            )
+            raise ValueError(f"Workspace path must be relative, got absolute: {self.ws}")
 
         if ".." in ws_path.parts:
-            raise ValueError(
-                f"Directory traversal detected in workspace path: {self.ws}"
-            )
+            raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
 
         repo_resolved = self.repo.resolve()
         result = (self.repo / ws_path).resolve()
@@ -158,7 +171,6 @@ class GeminiCodeRequest(BaseModel):
         return result
 
     def as_cmd_args(self) -> list[str]:
-        """Build argument list for the Gemini CLI."""
         args: list[str] = ["-p", self.prompt, "--output-format", "stream-json"]
 
         if self.model:
@@ -184,8 +196,6 @@ class GeminiCodeRequest(BaseModel):
 
 @dataclass
 class GeminiChunk:
-    """Low-level wrapper around every JSON object from the CLI."""
-
     raw: dict[str, Any]
     type: str
     # convenience views
@@ -197,8 +207,6 @@ class GeminiChunk:
 
 @dataclass
 class GeminiSession:
-    """Aggregated view of a whole CLI conversation."""
-
     session_id: str | None = None
     model: str | None = None
 
@@ -224,7 +232,6 @@ class GeminiSession:
 
 
 def _extract_summary(session: GeminiSession) -> dict[str, Any]:
-    """Extract summary from session data."""
     tool_counts: dict[str, int] = {}
     tool_details: list[dict[str, Any]] = []
     file_operations: dict[str, list[str]] = {
@@ -269,16 +276,12 @@ def _extract_summary(session: GeminiSession) -> dict[str, Any]:
         else:
             key_actions.append(f"Used {tool_name}")
 
-    key_actions = (
-        list(dict.fromkeys(key_actions)) if key_actions else ["No specific actions"]
-    )
+    key_actions = list(dict.fromkeys(key_actions)) if key_actions else ["No specific actions"]
 
     for op_type in file_operations:
         file_operations[op_type] = list(dict.fromkeys(file_operations[op_type]))
 
-    result_summary = (
-        (session.result[:200] + "...") if len(session.result) > 200 else session.result
-    )
+    result_summary = (session.result[:200] + "...") if len(session.result) > 200 else session.result
 
     return {
         "tool_counts": tool_counts,
@@ -298,77 +301,27 @@ def _extract_summary(session: GeminiSession) -> dict[str, Any]:
 
 # TODO(#1043 Phase 2): migrate create_subprocess_exec + wait_for to anyio
 async def _ndjson_from_cli(request: GeminiCodeRequest):
-    """
-    Yields each JSON object emitted by the Gemini CLI.
-
-    Robust against UTF-8 splits and uses json.JSONDecoder.raw_decode.
-    """
     if GEMINI_CLI is None:
         raise RuntimeError("Gemini CLI not found. Please install the gemini CLI tool.")
-
     workspace = request.cwd()
     workspace.mkdir(parents=True, exist_ok=True)
-
-    proc = await asyncio.create_subprocess_exec(
-        GEMINI_CLI,
-        *request.as_cmd_args(),
-        cwd=str(workspace),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,  # isolate from parent's SIGINT
-    )
-
-    decoder = codecs.getincrementaldecoder("utf-8")()
-    json_decoder = json.JSONDecoder()
-    buffer: str = ""
-
-    if proc.stdout is None:
-        raise RuntimeError("Failed to capture stdout from Gemini CLI")
-
-    try:
-        while True:
-            chunk = await proc.stdout.read(4096)
-            if not chunk:
-                break
-
-            buffer += decoder.decode(chunk)
-
-            while buffer:
-                buffer = buffer.lstrip()
-                if not buffer:
-                    break
-                try:
-                    obj, idx = json_decoder.raw_decode(buffer)
-                    yield obj
-                    buffer = buffer[idx:]
-                except json.JSONDecodeError:
-                    break
-
-        buffer += decoder.decode(b"", final=True)
-        buffer = buffer.strip()
-        if buffer:
-            try:
-                obj, idx = json_decoder.raw_decode(buffer)
-                yield obj
-            except json.JSONDecodeError:
-                log.error("Skipped unrecoverable JSON tail: %.120s...", buffer)
-
-        if await proc.wait() != 0:
-            err = ""
-            if proc.stderr is not None:
-                err = (await proc.stderr.read()).decode().strip()
-            raise RuntimeError(err or "Gemini CLI exited non-zero")
-
-    finally:
-        with contextlib.suppress(ProcessLookupError):
-            proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
+    cmd = [GEMINI_CLI, *request.as_cmd_args()]
+    # Gemini CLI 0.46+ refuses to run headless in untrusted directories unless
+    # GEMINI_CLI_TRUST_WORKSPACE=true is set in the subprocess environment.
+    # Without it the process exits nonzero and stderr carries:
+    #   "Gemini CLI is not running in a trusted directory. To proceed, either
+    #    use --skip-trust, set the GEMINI_CLI_TRUST_WORKSPACE=true environment
+    #    variable, or trust this directory in interactive mode."
+    # We prefer the env-var approach over --skip-trust because the flag may not
+    # exist on older CLI versions. Inherit the full parent env so that OAuth
+    # credentials (~/.config/gemini/) remain accessible to the subprocess.
+    env = {**os.environ, "GEMINI_CLI_TRUST_WORKSPACE": "true"}
+    # Old Gemini subprocess did not set stdin; pass _INHERIT_STDIN to preserve that.
+    async with contextlib.aclosing(
+        ndjson_from_cli(cmd, cwd=workspace, env=env, stdin=_INHERIT_STDIN)
+    ) as stream:
+        async for obj in stream:
+            yield obj
 
 
 async def stream_gemini_cli_events(request: GeminiCodeRequest):
@@ -379,13 +332,6 @@ async def stream_gemini_cli_events(request: GeminiCodeRequest):
         async for obj in stream:
             yield obj
     yield {"type": "done"}
-
-
-async def _maybe_await(func, *args, **kw):
-    """Call func which may be sync or async."""
-    res = func(*args, **kw) if func else None
-    if inspect.iscoroutine(res):
-        await res
 
 
 print_readable = partial(as_readable, md=True, display_str=True)
@@ -455,13 +401,25 @@ async def stream_gemini_cli(
 
             elif typ in ("message", "assistant"):
                 msg = obj.get("message", obj)
-                session.messages.append(msg)
                 chunk.is_delta = bool(obj.get("delta"))
+
+                # The gemini CLI echoes the user prompt as a role=user message
+                # event before emitting the assistant reply.  Skip it so the echo
+                # does not pollute session.messages or the result accumulation.
+                # Note: this treats all role=user events as prompt echoes, which
+                # matches the current single-user stream shape of the gemini CLI.
+                role = msg.get("role", "assistant")
+                if role == "user":
+                    yield chunk
+                    continue
+
+                session.messages.append(msg)
 
                 content = msg.get("content", "")
                 if isinstance(content, str):
                     chunk.text = content
-                    await _maybe_await(on_text, content)
+                    if on_text:
+                        await maybe_await(on_text(content))
                     if request.verbose_output:
                         _pp_text(content, theme)
                 elif isinstance(content, list):
@@ -471,44 +429,66 @@ async def stream_gemini_cli(
                             if btype == "text":
                                 text = blk.get("text", "")
                                 chunk.text = text
-                                await _maybe_await(on_text, text)
+                                if on_text:
+                                    await maybe_await(on_text(text))
                                 if request.verbose_output:
                                     _pp_text(text, theme)
-                            elif btype == "tool_use":
+                            elif btype in ("tool_use", "tool_call"):
                                 tu = {
-                                    "id": blk.get("id", ""),
-                                    "name": blk.get("name", ""),
-                                    "input": blk.get("input", {}),
+                                    "id": blk.get(
+                                        "tool_id",
+                                        blk.get("tool_use_id", blk.get("id", "")),
+                                    ),
+                                    "name": blk.get("tool_name", blk.get("name", "")),
+                                    "input": blk.get(
+                                        "parameters",
+                                        blk.get("input", blk.get("args", {})),
+                                    ),
                                 }
                                 chunk.tool_use = tu
                                 session.tool_uses.append(tu)
-                                await _maybe_await(on_tool_use, tu)
+                                if on_tool_use:
+                                    await maybe_await(on_tool_use(tu))
                                 if request.verbose_output:
                                     _pp_tool_use(tu, theme)
                 yield chunk
 
             elif typ in ("tool_call", "tool_use"):
+                # Real gemini CLI event keys (observed from --output-format stream-json):
+                #   id    → "tool_id"   (not "id" or "tool_use_id")
+                #   name  → "tool_name" (not "name")
+                #   args  → "parameters" (not "input" or "args")
                 tu = {
-                    "id": obj.get("id", obj.get("tool_use_id", "")),
-                    "name": obj.get("name", obj.get("tool_name", "")),
-                    "input": obj.get("input", obj.get("args", {})),
+                    "id": obj.get("tool_id", obj.get("tool_use_id", obj.get("id", ""))),
+                    "name": obj.get("tool_name", obj.get("name", "")),
+                    "input": obj.get("parameters", obj.get("input", obj.get("args", {}))),
                 }
                 chunk.tool_use = tu
                 session.tool_uses.append(tu)
-                await _maybe_await(on_tool_use, tu)
+                if on_tool_use:
+                    await maybe_await(on_tool_use(tu))
                 if request.verbose_output:
                     _pp_tool_use(tu, theme)
                 yield chunk
 
             elif typ == "tool_result":
+                # Real gemini CLI event keys (observed from --output-format stream-json):
+                #   tool_use_id → "tool_id"   (not "tool_use_id" or "id")
+                #   content     → "output"    (not "content" or "result")
+                #   is_error    → status != "success" OR explicit is_error flag
+                #   Note: any status other than "success" is treated as an error;
+                #   this is correct for current CLI versions which emit only
+                #   "success" or "error" in the status field of tool_result events.
+                _status = obj.get("status", "")
                 tr = {
-                    "tool_use_id": obj.get("tool_use_id", obj.get("id", "")),
-                    "content": obj.get("content", obj.get("result", "")),
-                    "is_error": obj.get("is_error", False),
+                    "tool_use_id": obj.get("tool_id", obj.get("tool_use_id", obj.get("id", ""))),
+                    "content": obj.get("output", obj.get("content", obj.get("result", ""))),
+                    "is_error": obj.get("is_error", _status not in ("", "success")),
                 }
                 chunk.tool_result = tr
                 session.tool_results.append(tr)
-                await _maybe_await(on_tool_result, tr)
+                if on_tool_result:
+                    await maybe_await(on_tool_result(tr))
                 if request.verbose_output:
                     _pp_tool_result(tr, theme)
                 yield chunk
@@ -562,11 +542,10 @@ async def stream_gemini_cli(
     if session.num_turns is None and session.messages:
         session.num_turns = len(session.messages)
     if session.duration_ms is None:
-        session.duration_ms = int(
-            (asyncio.get_running_loop().time() - _start_monotonic) * 1000
-        )
+        session.duration_ms = int((asyncio.get_running_loop().time() - _start_monotonic) * 1000)
 
-    await _maybe_await(on_final, session)
+    if on_final:
+        await maybe_await(on_final(session))
     if request.verbose_output:
         _pp_final(session, theme)
 

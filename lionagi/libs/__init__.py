@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .nested import (
+    deep_merge,
     deep_update,
     flatten,
     get_target_container,
@@ -19,4 +20,5 @@ __all__ = [
     "flatten",
     "unflatten",
     "deep_update",
+    "deep_merge",
 ]

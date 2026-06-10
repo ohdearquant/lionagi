@@ -24,6 +24,8 @@ ordered/blocking dispatch *discipline* over the observer's single event
 *transport*, not a parallel bus.
 """
 
+from __future__ import annotations
+
 from .bus import HookBus, HookPoint, HookSignal, StopHook, hook
 from .loader import (
     DEFAULT_HOOKS,

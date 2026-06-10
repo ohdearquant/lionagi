@@ -3,7 +3,6 @@
 
 """Tests for AgentConfig: defaults, presets, hooks, and YAML roundtrip."""
 
-
 from lionagi.agent.config import AgentConfig
 
 
@@ -169,3 +168,38 @@ def test_from_yaml_extra_keys_collected(tmp_path):
 
     loaded = AgentConfig.from_yaml(yaml_path)
     assert loaded.extra.get("custom_key") == "hello"
+
+
+def test_from_yaml_emits_deprecation_warning(tmp_path):
+    """AgentConfig.from_yaml() must emit a DeprecationWarning."""
+    import warnings
+
+    import yaml
+
+    yaml_path = tmp_path / "dep.yaml"
+    with open(yaml_path, "w") as f:
+        yaml.dump({"name": "x"}, f)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        AgentConfig.from_yaml(yaml_path)
+
+    depr = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+    assert depr, "Expected a DeprecationWarning from AgentConfig.from_yaml()"
+    assert "AgentSpec.from_yaml" in str(depr[0].message)
+
+
+def test_to_yaml_emits_deprecation_warning(tmp_path):
+    """AgentConfig.to_yaml() must emit a DeprecationWarning."""
+    import warnings
+
+    yaml_path = tmp_path / "dep.yaml"
+    config = AgentConfig(name="x")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        config.to_yaml(yaml_path)
+
+    depr = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+    assert depr, "Expected a DeprecationWarning from AgentConfig.to_yaml()"
+    assert "AgentSpec.to_yaml" in str(depr[0].message)

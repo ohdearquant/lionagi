@@ -10,9 +10,13 @@ bare worker prompt.
 
 from __future__ import annotations
 
-from lionagi import json_dumps
+from collections.abc import Callable
 
-from ..team import _now_iso, _save_team
+from lionagi import json_dumps
+from lionagi.ln._utils import now_utc
+
+from .. import team as _team_module
+from ..team import _locked_team
 
 # ── Output formatting ─────────────────────────────────────────────────────
 
@@ -20,12 +24,17 @@ from ..team import _now_iso, _save_team
 def _format_result_text(
     worker_results: list[dict],
     synthesis_result: dict | None = None,
+    *,
+    header_fn: Callable[[dict, int, int], list[str]] | None = None,
 ) -> str:
     lines = []
+    n = len(worker_results)
     for i, w in enumerate(worker_results, 1):
-        n = len(worker_results)
         lines.append(f"{'═' * 60}")
-        lines.append(f"  Worker {i}/{n}  [{w['model']}]")
+        if header_fn is not None:
+            lines.extend(header_fn(w, i, n))
+        else:
+            lines.append(f"  Worker {i}/{n}  [{w['model']}]")
         lines.append(f"  {w['time_ms']:.0f}ms")
         lines.append(f"{'═' * 60}")
         lines.append(w.get("response", "(no response)"))
@@ -142,15 +151,19 @@ def _create_fanout_team(
 
     team_id = uuid4().hex[:12]
     members = ["orchestrator"] + worker_names
-    data = {
+    teams_dir = _team_module.TEAMS_DIR
+    teams_dir.mkdir(parents=True, exist_ok=True)
+    path = teams_dir / f"{team_id}.json"
+    team_dict = {
         "id": team_id,
         "name": team_name,
         "members": members,
         "messages": [],
-        "created_at": _now_iso(),
+        "created_at": now_utc().isoformat(),
     }
-    _save_team(data)
-    return data
+    with _locked_team(team_id, create_path=path) as data:
+        data.update(team_dict)
+    return team_dict
 
 
 def _post_results_to_team(
@@ -167,8 +180,6 @@ def _post_results_to_team(
     ops)."""
     from uuid import uuid4
 
-    from ..team import _locked_team
-
     with _locked_team(team_data["id"]) as data:
         messages = data.setdefault("messages", [])
         for wr, name in zip(worker_results, worker_names, strict=False):
@@ -179,7 +190,7 @@ def _post_results_to_team(
                     "from_op": wr.get("id"),
                     "to": ["*"],
                     "content": wr.get("response", "(no response)"),
-                    "timestamp": _now_iso(),
+                    "timestamp": now_utc().isoformat(),
                     "read_by": {},
                 }
             )
@@ -192,7 +203,7 @@ def _post_results_to_team(
                     "from_op": "synthesis",
                     "to": ["*"],
                     "content": f"[SYNTHESIS]\n{synthesis_result.get('response', '')}",
-                    "timestamp": _now_iso(),
+                    "timestamp": now_utc().isoformat(),
                     "read_by": {},
                 }
             )
