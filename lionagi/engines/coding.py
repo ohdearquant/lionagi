@@ -49,7 +49,7 @@ from lionagi.casts.emission import Verdict
 from lionagi.ln.concurrency import run_sync
 from lionagi.tools._subprocess import _SHELL_CONTROL, _subprocess_sync
 
-from .engine import Engine, EngineEvent, EngineRun, _event_dict, _safe_event_dict
+from .engine import ChainRun, Engine, EngineEvent, EngineRun
 
 logger = logging.getLogger("lionagi.engines")
 
@@ -300,21 +300,26 @@ def _verify_instruction(plan: WorkPlanned, change: ChangeProposed, t: TestsRan, 
 # ---------------------------------------------------------------------------
 
 
-class CodingRun(EngineRun):
+class CodingRun(ChainRun):
     """Per-run state: typed event store, eid counters, the workspace + declared
-    test command, and the captured diff."""
+    test command, and the captured diff.
+
+    Inherits collect/emit/find/events_of from :class:`ChainRun`; adds the
+    coding-specific fields (workspace, test command, diff, workspace snapshot)
+    and the :meth:`last`, :meth:`to_hypothesis_seeds`, and :meth:`export`
+    methods."""
+
+    _chain_event_cls = CodingChainEvent
+    _event_prefix_map = _EVENT_PREFIX  # filled after class definition below
 
     def __init__(self, engine: Engine, **kwargs: Any) -> None:
         super().__init__(engine, **kwargs)
-        self.store: dict[type, list[Any]] = {t: [] for t in _EVENT_PREFIX}
         self.workspace: str = str(Path.cwd())
         self.test_cmd: str | list[str] = ""
         self.task_text: str = ""
         self.experiment_ref: str = ""
         self.diff: str = ""
         self.export_dir: Path | None = None
-        self._eid_counts: dict[str, int] = {}
-        self._index: dict[str, CodingChainEvent] = {}
         self._test_runs: int = 0
         # Pre-implement workspace snapshot: maps path → porcelain XY status.
         # None means the snapshot could not be taken (non-git or spawn failure).
@@ -322,35 +327,10 @@ class CodingRun(EngineRun):
         # Paths newly changed/added since the baseline (populated by _run).
         self._ws_delta: list[str] = []
 
+    # -- typed overrides (narrower signatures than the Any base) ---------------
+
     def collect(self, event: CodingChainEvent) -> CodingChainEvent:
-        """Stamp the engine-assigned eid, store the event, and fan it to on_event.
-
-        Every chain event — whether it arrives via run.emit() or directly from
-        an agent on the session bus — is stamped here.  Notifying here (rather
-        than relying on EngineRun.emit's trailing notify) is the only path that
-        reaches all three agent-emitted kinds: WorkPlanned, ChangeProposed, and
-        VerifyResult.  emit() is overridden below to skip its own notify call for
-        CodingChainEvent so there is no double-delivery for the two events that
-        also pass through run.emit() (TestsRan, CodeResultRecorded)."""
-        prefix = _EVENT_PREFIX.get(type(event), "N")
-        n = self._eid_counts.get(prefix, 0) + 1
-        self._eid_counts[prefix] = n
-        event.eid = f"{prefix}-{n}"
-        self.store.setdefault(type(event), []).append(event)
-        self._index[event.eid] = event
-        self.notify(type(event).__name__, **_safe_event_dict(event))
-        return event
-
-    async def emit(self, event: Any) -> list[Any]:
-        """Emit onto the session bus; skip the base notify for chain events.
-
-        CodingChainEvent instances are already notified by collect() (triggered
-        by the observer registered in _run).  The base EngineRun.emit() would
-        call notify() a second time — this override suppresses that duplicate."""
-        results = await self.session.emit(event)
-        if not isinstance(event, CodingChainEvent):
-            self.notify(type(event).__name__, **_event_dict(event))
-        return results
+        return super().collect(event)  # type: ignore[return-value]
 
     def find(self, eid: str) -> CodingChainEvent | None:
         return self._index.get(eid)

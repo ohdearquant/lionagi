@@ -494,6 +494,72 @@ class EngineRun:
         return result
 
 
+class ChainRun(EngineRun):
+    """Intermediate base for chain-style run contexts (CodingRun, HypothesisRun).
+
+    Encapsulates the three pieces of state and four methods that are
+    byte-identical across both engines:
+
+    - ``store`` / ``_eid_counts`` / ``_index`` — the typed event registry.
+    - :meth:`collect` — stamp an eid, store, and fan to ``on_event``.
+    - :meth:`emit` — bus-emit, skipping the duplicate notify for chain events.
+    - :meth:`find` — eid → event lookup.
+    - :meth:`events_of` — typed slice of the store.
+
+    Subclasses MUST set ``_chain_event_cls`` to the sentinel base class whose
+    ``isinstance`` check guards the ``emit`` override (``CodingChainEvent`` for
+    ``CodingRun``, ``ChainEvent`` for ``HypothesisRun``).  They also supply the
+    ``_EVENT_PREFIX`` mapping via ``_event_prefix_map`` — a class attribute
+    pointing to the module-level dict — so ``store`` is initialised with the
+    right keys.
+    """
+
+    #: Set by each subclass: the chain-event base class for this pipeline.
+    _chain_event_cls: type = object
+    #: Set by each subclass: the ``_EVENT_PREFIX`` dict for this pipeline.
+    _event_prefix_map: dict = {}
+
+    def __init__(self, engine: Engine, **kwargs: Any) -> None:
+        super().__init__(engine, **kwargs)
+        self.store: dict[type, list[Any]] = {t: [] for t in self._event_prefix_map}
+        self._eid_counts: dict[str, int] = {}
+        self._index: dict[str, Any] = {}
+
+    def collect(self, event: Any) -> Any:
+        """Stamp the engine-assigned eid, store the event, and fan to on_event.
+
+        Every chain event — whether it arrives via run.emit() or directly from
+        an agent on the session bus — is stamped here.  Notifying here is the
+        only path that reaches all agent-emitted kinds.  emit() is overridden
+        below to skip its own notify call for chain events so there is no
+        double-delivery for events that also pass through run.emit()."""
+        prefix = self._event_prefix_map.get(type(event), "N")
+        n = self._eid_counts.get(prefix, 0) + 1
+        self._eid_counts[prefix] = n
+        event.eid = f"{prefix}-{n}"
+        self.store.setdefault(type(event), []).append(event)
+        self._index[event.eid] = event
+        self.notify(type(event).__name__, **_safe_event_dict(event))
+        return event
+
+    async def emit(self, event: Any) -> list[Any]:
+        """Emit onto the session bus; skip the base notify for chain events.
+
+        Chain-event instances are already notified by collect() (triggered by
+        the observer registered in _run).  The base EngineRun.emit() would call
+        notify() a second time — this override suppresses that duplicate."""
+        results = await self.session.emit(event)
+        if not isinstance(event, self._chain_event_cls):
+            self.notify(type(event).__name__, **_event_dict(event))
+        return results
+
+    def find(self, eid: str) -> Any | None:
+        return self._index.get(eid)
+
+    def events_of(self, event_type: type) -> list[Any]:
+        return self.store.get(event_type, [])
+
+
 class Engine:
     """Stateless event-driven engine base; subclasses implement _run().
 

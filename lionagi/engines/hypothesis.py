@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 
 from lionagi.casts.emission import Finding, Gap, Verdict
 
-from .engine import Engine, EngineEvent, EngineRun, _event_dict, _safe_event_dict
+from .engine import ChainRun, Engine, EngineEvent, EngineRun
 
 logger = logging.getLogger("lionagi.engines")
 
@@ -426,46 +426,25 @@ def _synthesis_instruction(run: HypothesisRun) -> str:
 # ---------------------------------------------------------------------------
 
 
-class HypothesisRun(EngineRun):
-    """Per-run state: typed event store, eid counters, pending experiments."""
+class HypothesisRun(ChainRun):
+    """Per-run state: typed event store, eid counters, pending experiments.
+
+    Inherits collect/emit/find/events_of from :class:`ChainRun`; adds the
+    hypothesis-specific fields (pending experiments, decisions text) and the
+    :meth:`export` method."""
+
+    _chain_event_cls = ChainEvent
+    _event_prefix_map = _EVENT_PREFIX
 
     def __init__(self, engine: Engine, **kwargs: Any) -> None:
         super().__init__(engine, **kwargs)
-        self.store: dict[type, list[Any]] = {t: [] for t in _EVENT_PREFIX}
         self.pending: list[ExperimentDesigned] = []
         self.decisions: str = ""
-        self._eid_counts: dict[str, int] = {}
-        self._index: dict[str, ChainEvent] = {}
+
+    # -- typed overrides (narrower signatures than the Any base) ---------------
 
     def collect(self, event: ChainEvent) -> ChainEvent:
-        """Stamp the engine-assigned eid, store the event, and fan it to on_event.
-
-        Every chain event — whether it arrives via run.emit() (seed FindingPosted)
-        or from an agent on the session bus — is stamped here.  Notifying here is
-        the only path that reaches agent-emitted kinds like QuestionRaised,
-        EvidenceCollected, HypothesisFormed, etc.  emit() is overridden below to
-        skip its own notify for ChainEvent so there is no double-delivery for
-        the seed findings that also pass through run.emit()."""
-        prefix = _EVENT_PREFIX.get(type(event), "N")
-        n = self._eid_counts.get(prefix, 0) + 1
-        self._eid_counts[prefix] = n
-        event.eid = f"{prefix}-{n}"
-        self.store.setdefault(type(event), []).append(event)
-        self._index[event.eid] = event
-        self.notify(type(event).__name__, **_safe_event_dict(event))
-        return event
-
-    async def emit(self, event: Any) -> list[Any]:
-        """Emit onto the session bus; skip the base notify for chain events.
-
-        ChainEvent instances are already notified by collect() (triggered by the
-        observer registered in _run).  The base EngineRun.emit() would call
-        notify() a second time for seed FindingPosted events — this override
-        suppresses that duplicate."""
-        results = await self.session.emit(event)
-        if not isinstance(event, ChainEvent):
-            self.notify(type(event).__name__, **_event_dict(event))
-        return results
+        return super().collect(event)  # type: ignore[return-value]
 
     def find(self, eid: str) -> ChainEvent | None:
         return self._index.get(eid)

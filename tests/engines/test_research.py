@@ -87,22 +87,26 @@ async def test_depth_requested_spawns():
 
 @pytest.mark.asyncio
 async def test_explore_dedups_normalized_topics():
+    """_explore must deduplicate topics that are identical after normalisation.
+
+    The dedup lives in _explore (seen() check), not in _drive_node.  Track via
+    _drive_node rather than run_team because _drive_node now drives stages
+    directly via operate_with_repair instead of delegating to run_team."""
     eng = ResearchEngine()
     run = eng.new_run()
-    teams_run: list[str] = []
+    nodes_driven: list[str] = []
 
     async def fake_team(_run, depth):
         return []
 
-    async def fake_run_team(team, instruction, **kw):
-        teams_run.append(instruction)
-        return ""
+    async def fake_drive_node(_run, team, instruction):
+        nodes_driven.append(instruction)
 
     eng._team_for = fake_team
-    run.run_team = fake_run_team
+    eng._drive_node = fake_drive_node
     await eng._explore(run, "Quantum Error Correction", 1)
     await eng._explore(run, "quantum error correction", 1)  # same after normalize
-    assert len(teams_run) == 1
+    assert len(nodes_driven) == 1
 
 
 @pytest.mark.asyncio
@@ -138,10 +142,11 @@ async def test_synthesis_reads_findings_from_store():
 
 class _ProseTeamMember:
     """A node's team member that returns prose until ``emit_on_call``, then
-    emits — the weak-model failure the repair loop recovers (mirrors the
-    ``_ProseBranch`` in test_engine_protection.py)."""
+    emits — the weak-model failure the per-stage repair loop recovers (mirrors
+    the ``_ProseBranch`` in test_engine_protection.py)."""
 
     name = "researcher-d0"
+    chat_model = None  # no is_cli → falls back to API repair template
 
     def __init__(self, run, emit_on_call: int, event):
         self._run = run
@@ -158,21 +163,26 @@ class _ProseTeamMember:
 
 @pytest.mark.asyncio
 async def test_drive_node_repairs_when_team_emits_nothing():
-    """A node whose whole team returned prose gets re-prompted; the repair turn
-    lands the finding and an ``emission_repair`` notify fires."""
+    """A stage that returned prose on the first call gets a repair turn; the
+    repair turn lands the finding and an ``emission_repair`` notify fires.
+
+    Per-stage repair call sequence (repair_retries=1, 1-member team):
+      call 1: per-stage first operate (original instruction) — no emit
+      call 2: per-stage repair turn (repair instruction)    — emits finding
+    Total: 2 calls; the repair instruction is in calls[1]."""
     eng = ResearchEngine(repair_retries=1)
     run = eng.new_run()
     events: list[dict] = []
     run.on_event = events.append
-    # emit only on the 3rd call: run_team(1) → repair first-operate(2) → repair turn(3).
-    member = _ProseTeamMember(run, 3, FindingEmitted(description="late finding", novelty=0.1))
+    # emit on call 2: per-stage first(1) → per-stage repair(2, emits).
+    member = _ProseTeamMember(run, 2, FindingEmitted(description="late finding", novelty=0.1))
 
     await eng._drive_node(run, [member], "Research topic (depth 0/1): X")
     await run.wait_quiescence()
 
-    assert len(member.calls) == 3
-    assert "produced no valid emission" in member.calls[2]
-    assert "finding_emitted" in member.calls[2]  # repair names the expected key
+    assert len(member.calls) == 2
+    assert "produced no valid emission" in member.calls[1]
+    assert "finding_emitted" in member.calls[1]  # repair names the expected key
     assert any(e["type"] == "emission_repair" for e in events)
     assert len(run.by_type(FindingEmitted)) == 1
 
@@ -190,24 +200,20 @@ async def test_drive_node_no_repair_when_team_emits():
     await eng._drive_node(run, [member], "Research topic (depth 0/1): X")
     await run.wait_quiescence()
 
-    assert len(member.calls) == 1  # run_team only; no repair operate
+    assert len(member.calls) == 1  # per-stage first call emits; no repair needed
     assert not any(e["type"] == "emission_repair" for e in events)
     assert len(run.by_type(FindingEmitted)) == 1
 
 
 @pytest.mark.asyncio
 async def test_drive_node_empty_team_is_noop():
-    """An empty team (e.g. a budget-declined node) drives run_team once and never
-    attempts repair — preserves the dedup/budget contracts."""
+    """An empty team (e.g. a budget-declined node) must be a no-op: no stages
+    run, no findings emitted, no repair attempted — preserves the dedup/budget
+    contracts."""
     eng = ResearchEngine(repair_retries=2)
     run = eng.new_run()
-    teams_run: list[str] = []
-
-    async def fake_run_team(team, instruction, **kw):
-        teams_run.append(instruction)
-        return ""
-
-    run.run_team = fake_run_team
+    events: list[dict] = []
+    run.on_event = events.append
     await eng._drive_node(run, [], "Research topic (depth 0/1): X")
-    assert teams_run == ["Research topic (depth 0/1): X"]
     assert len(run.by_type(FindingEmitted)) == 0
+    assert not any(e["type"] == "emission_repair" for e in events)

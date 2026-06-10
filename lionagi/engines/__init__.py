@@ -30,6 +30,7 @@ from .coding import (
     VerifyResult as CodeVerifyResult,
 )
 from .engine import (
+    ChainRun,
     Engine,
     EngineBudgetError,
     EngineEvent,
@@ -69,6 +70,7 @@ from .review import (
 __all__ = (
     "Engine",
     "EngineRun",
+    "ChainRun",
     "EngineEvent",
     "EngineBudgetError",
     "JudgeVerdict",
