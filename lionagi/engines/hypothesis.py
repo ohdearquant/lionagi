@@ -562,6 +562,43 @@ class HypothesisEngine(Engine):
 
     # -- lifecycle ------------------------------------------------------------
 
+    async def _partial_export(  # type: ignore[override]
+        self,
+        run: HypothesisRun,
+        findings: str | list[str],
+        *,
+        decisions: str = "",
+        export_dir: str | Path | None = None,
+    ) -> str:
+        """Synthesize and export whatever the pipeline collected before the
+        budget/deadline cut in.
+
+        Called by Engine.run() when the engine's own watchdog cancels the run
+        and at least some state exists.  Runs outside the cancelled scope
+        (asyncio.shield in Engine.run) so awaiting is safe.
+
+        The report carries ``status: budget_exhausted`` in the evidence trail
+        header so consumers know this is a partial result.  If no events were
+        collected at all, returns an empty string without writing files.
+        """
+        events_collected = sum(len(v) for v in run.store.values())
+        if events_collected == 0:
+            return ""
+        report = await self._synthesize(run)
+        # Prepend the budget-exhausted status marker so the report is
+        # self-describing even without the events.jsonl context.
+        status_header = (
+            "**status: budget_exhausted** — "
+            f"run terminated by deadline/budget before completion "
+            f"({run.agents_made} agents, "
+            f"{events_collected} events collected)\n\n"
+        )
+        report = status_header + (report or "")
+        if export_dir is not None:
+            paths = run.export(export_dir, report=report)
+            run.notify("exported", **paths)
+        return report
+
     async def _run(
         self,
         run: HypothesisRun,

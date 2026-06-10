@@ -180,6 +180,28 @@ class ResearchEngine(Engine):
 
     # -- lifecycle ------------------------------------------------------------
 
+    async def _partial_export(  # type: ignore[override]
+        self,
+        run: EngineRun,
+        topic: str,
+    ) -> str:
+        """Synthesize whatever findings were collected before the budget cut in.
+
+        Called by Engine.run() when the engine's own watchdog cancels the run.
+        Returns an empty string if no findings exist yet.
+        """
+        findings = run.by_type(FindingEmitted)
+        if not findings:
+            return ""
+        status_header = (
+            "**status: budget_exhausted** — "
+            f"run terminated by deadline/budget before completion "
+            f"({run.agents_made} agents, "
+            f"{len(findings)} findings collected)\n\n"
+        )
+        report = await self._synthesize(run, topic)
+        return status_header + (report or "")
+
     async def _run(self, run: EngineRun, topic: str) -> str:
         """Explore *topic* recursively, then synthesize. Returns the synthesis text."""
         topic = topic.strip()
