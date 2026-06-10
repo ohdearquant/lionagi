@@ -718,6 +718,150 @@ async def test_workspace_check_failure_fails_open_to_test_gate(tmp_path, monkeyp
     assert not any("emitted no change" in c for c in result.caveats)
 
 
+@pytest.mark.asyncio
+async def test_baseline_capture_failure_triggers_workspace_check_failed_not_no_change(
+    tmp_path, monkeypatch
+):
+    """Regression for codex r2 finding 1: when the PRE-implement status fails
+    (run._ws_baseline is None), _workspace_changed must return check_failed=True
+    immediately — the engine must emit workspace_check_failed and fail open, NOT
+    take the no-change conclusion.
+
+    Setup: git workspace for the test, but _capture_ws_baseline is patched to
+    return None (simulating a spawn failure or timeout on the first git call).
+    The implementer emits nothing and writes nothing.  Without the fix, the None
+    baseline collapsed to {} and the clean post-status produced an empty delta →
+    wrong no-change conclusion."""
+    _make_git_workspace(tmp_path)
+
+    eng = CodingEngine(repair_retries=0)
+    run = eng.new_run()
+
+    plan_ev = WorkPlanned(approach="x")
+    verdict_ev = VerifyResult(verdict="APPROVE", rationale="gate passed", meets_acceptance=True)
+    branches = {
+        "plan": _ScriptedBranch(run, [plan_ev], name="plan"),
+        # Emits nothing, writes nothing — but baseline capture fails.
+        "implement": _ScriptedBranch(run, [], name="implement"),
+        "verify": _ScriptedBranch(run, [verdict_ev], name="verify"),
+    }
+
+    async def fake_make(role, *, name=None, **kw):
+        return branches[name]
+
+    monkeypatch.setattr(run, "make_agent", fake_make)
+    monkeypatch.setattr(eng, "_capture_diff", lambda r: _async(""))
+    # Simulate baseline capture failure.
+    monkeypatch.setattr(eng, "_capture_ws_baseline", lambda r: _async(None))
+
+    events: list[dict] = []
+    run.on_event = events.append
+
+    result = await eng._run(
+        run,
+        "do nothing",
+        test_cmd=[sys.executable, "-c", "exit(0)"],
+        workspace=str(tmp_path),
+    )
+
+    # Baseline failure → workspace_check_failed, NOT no-change.
+    assert any(e["type"] == "workspace_check_failed" for e in events), (
+        f"workspace_check_failed missing; got: {[e['type'] for e in events]}"
+    )
+    assert not any("emitted no change" in c for c in result.caveats), (
+        "no-change verdict taken despite baseline failure — should have been workspace_check_failed"
+    )
+    # Fail open: test gate ran.
+    assert len(run.events_of(TestsRan)) >= 1, "test gate did not run after baseline failure"
+    # Test gate exits 0 → passed.
+    assert result.passed is True
+
+
+@pytest.mark.asyncio
+async def test_fix_round_untracked_file_reaches_verify_diff(tmp_path, monkeypatch):
+    """Regression for codex r2 finding 2: an untracked file created during a
+    FIX ROUND (not the initial implement stage) must appear in the verify diff.
+
+    Setup: initial implement emits a ChangeProposed with test_cmd that fails
+    (exit 1), fix round 1 writes a new untracked file and emits a new
+    ChangeProposed, test now passes (exit 0).  The verify diff must contain
+    the fix-round file's content.
+
+    Without the fix, _capture_diff only consulted run._ws_delta (set once in
+    the initial emission-failure branch), so fix-round-created untracked files
+    were silently omitted."""
+    _make_git_workspace(tmp_path)
+
+    fix_file = tmp_path / "fix_output.py"
+    fix_content = "def fixed(): return 'repaired'\n"
+
+    eng = CodingEngine(max_fix_rounds=2, repair_retries=0)
+    run = eng.new_run()
+
+    plan_ev = WorkPlanned(approach="fix it", acceptance_criteria=["passes"])
+    # First change: emits but test fails (flip-style: flag absent → exit 1).
+    flag = tmp_path / "flip.flag"
+    change1 = ChangeProposed(summary="attempt 1", plan_ref="W-1")
+    # Fix-round change: writes a new untracked file, emits ChangeProposed.
+    change2 = ChangeProposed(
+        summary="attempt 2 — wrote fix_output.py", files_touched=["fix_output.py"], plan_ref="W-1"
+    )
+
+    class _FixRoundBranch:
+        """First operate() emits change1; second (fix round) writes the file
+        and emits change2."""
+
+        name = "implement"
+        _calls = 0
+
+        async def operate(self, *, instruction):
+            self._calls += 1
+            if self._calls == 1:
+                await run.emit(change1)
+            else:
+                fix_file.write_text(fix_content, encoding="utf-8")
+                await run.emit(change2)
+            return "ok"
+
+    verify_instruction_holder: list[str] = []
+
+    class _CapturingVerifyBranch:
+        name = "verify"
+
+        async def operate(self, *, instruction):
+            verify_instruction_holder.append(instruction)
+            await run.emit(
+                VerifyResult(verdict="APPROVE", rationale="fix present", meets_acceptance=True)
+            )
+            return "ok"
+
+    branches = {
+        "plan": _ScriptedBranch(run, [plan_ev], name="plan"),
+        "implement": _FixRoundBranch(),
+        "verify": _CapturingVerifyBranch(),
+    }
+
+    async def fake_make(role, *, name=None, **kw):
+        return branches[name]
+
+    monkeypatch.setattr(run, "make_agent", fake_make)
+
+    result = await eng._run(
+        run,
+        "fix it",
+        test_cmd=_flip_test_cmd(flag),
+        workspace=str(tmp_path),
+    )
+
+    assert result.passed is True, f"expected passed=True; caveats={result.caveats}"
+    assert verify_instruction_holder, "verify stage never ran"
+    verify_instruction = verify_instruction_holder[0]
+    assert "fixed" in verify_instruction or "repaired" in verify_instruction, (
+        f"fix-round untracked file content missing from verify diff; "
+        f"got: {verify_instruction[:400]!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pending-experiment ingestion + hypothesis seed round-trip
 # ---------------------------------------------------------------------------

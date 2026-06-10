@@ -786,8 +786,15 @@ class CodingEngine(Engine):
         post-implement output and either (a) was absent from the baseline or
         (b) its XY status string differs from the baseline value.
 
-        *check_failed* is ``True`` when ``git status`` itself failed — the
-        caller must treat this as unknown state, not no-work."""
+        *check_failed* is ``True`` when the workspace state is unknown — either
+        the pre-implement baseline capture failed (``run._ws_baseline is None``)
+        or the post-implement status call fails.  The no-change verdict requires
+        both captures to succeed and the delta to be empty; anything unknown
+        fails open to the test gate."""
+        if run._ws_baseline is None:
+            # Baseline capture failed before _implement — state is unknown.
+            # Do not run the post-status call; return check_failed immediately.
+            return [], True
         result = await run_sync(
             _subprocess_sync,
             ["git", "status", "--porcelain"],
@@ -798,8 +805,11 @@ class CodingEngine(Engine):
         if int(result.get("returncode", -1)) != 0:
             return [], True
         after = _parse_porcelain(result.get("stdout", ""))
-        baseline = run._ws_baseline or {}
-        delta = [path for path, xy in after.items() if path not in baseline or baseline[path] != xy]
+        delta = [
+            path
+            for path, xy in after.items()
+            if path not in run._ws_baseline or run._ws_baseline[path] != xy
+        ]
         return sorted(delta), False
 
     async def _capture_diff(self, run: CodingRun) -> str:
@@ -807,15 +817,25 @@ class CodingEngine(Engine):
 
         Combines ``git diff`` (tracked changes) with per-file
         ``git diff --no-index /dev/null <file>`` output for any untracked paths
-        in ``run._ws_delta`` — so the verifier sees the full content of newly
-        written files, not just an empty diff.  No index mutation: the no-index
-        form compares directly and leaves the git index unchanged."""
+        that appear in either the final ``ChangeProposed.files_touched`` or
+        ``run._ws_delta``.  Candidates are computed fresh at capture time by
+        intersecting that union with ``git ls-files --others`` so the verify
+        diff is complete for: (a) initial emission-failure writes, (b) files
+        created during fix rounds, and (c) emission-ok runs that include
+        untracked files.  No index mutation — ``--no-index`` reads directly."""
         result = await run_sync(_subprocess_sync, ["git", "diff"], False, 30.0, run.workspace)
         tracked = result.get("stdout", "") if int(result.get("returncode", -1)) == 0 else ""
 
-        # Untracked paths that the implementer added (from the delta).  Only
-        # include paths that are still untracked after the implement stage so
-        # we don't double-count files that were staged between stages.
+        # Candidate set: union of all files any ChangeProposed claimed to touch
+        # plus the initial workspace delta (covers emission-failure rewrites).
+        # This is evaluated at verify time so fix-round additions are included.
+        candidate_paths: set[str] = set(run._ws_delta)
+        final_change = run.last(ChangeProposed)
+        if final_change is not None:
+            candidate_paths.update(final_change.files_touched)
+
+        # Intersect with currently-untracked files to avoid double-counting
+        # paths that were later staged or committed during the run.
         untracked_result = await run_sync(
             _subprocess_sync,
             ["git", "ls-files", "--others", "--exclude-standard"],
@@ -827,9 +847,9 @@ class CodingEngine(Engine):
         if int(untracked_result.get("returncode", -1)) == 0:
             untracked_set = set(untracked_result.get("stdout", "").splitlines())
 
-        untracked_in_delta = [p for p in run._ws_delta if p in untracked_set]
+        untracked_candidates = sorted(candidate_paths & untracked_set)
         parts = [tracked] if tracked else []
-        for rel_path in untracked_in_delta:
+        for rel_path in untracked_candidates:
             abs_path = str(Path(run.workspace) / rel_path)
             r = await run_sync(
                 _subprocess_sync,
@@ -838,8 +858,8 @@ class CodingEngine(Engine):
                 30.0,
                 run.workspace,
             )
-            # --no-index exits 1 when files differ (which is always here); that
-            # is the normal success case, not an error.
+            # --no-index exits 1 when files differ (always true here); that is
+            # the normal success case, not an error.
             content = r.get("stdout", "")
             if content:
                 parts.append(content)
