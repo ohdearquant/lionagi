@@ -164,3 +164,16 @@ async def test_error_event_with_toplevel_code_and_empty_error_is_not_benign():
     assert len(chunks) == 1
     assert chunks[0].type == "error"
     assert not chunks[0].metadata.get("benign_eos")
+
+
+@pytest.mark.asyncio
+async def test_error_event_without_error_key_is_not_benign():
+    """A bare {"type": "error"} with no error key at all is malformed, not the
+    EOF sentinel — the sentinel is an explicit empty error object (codex
+    round-4 suggestion)."""
+    events = [{"type": "error"}]
+    chunks = await _chunks_from_events(events)
+
+    assert len(chunks) == 1
+    assert chunks[0].type == "error"
+    assert not chunks[0].metadata.get("benign_eos")

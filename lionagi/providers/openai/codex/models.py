@@ -734,6 +734,7 @@ async def stream_codex_cli(
                 #      known EOF envelope (no "code", "message", or "status" keys).
                 _is_benign_eos = (
                     typ == "error"
+                    and "error" in obj  # a bare {"type": "error"} is malformed, not EOF
                     and err == {}
                     and not any(k in obj for k in ("code", "message", "status"))
                 )
