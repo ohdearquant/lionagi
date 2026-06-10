@@ -6,10 +6,12 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
 
@@ -102,8 +104,31 @@ class CodeCheckResponse(BaseModel):
     tool: str = Field("ruff", description="Name of the tool that produced these results.")
 
 
+def _resolve_check_paths(
+    paths: list[str], workspace_root: Path
+) -> tuple[list[str], CodeCheckResponse | None]:
+    """Resolve each path against workspace_root; return (resolved_strs, None) on success
+    or ([], error_response) on the first violation.
+
+    resolve_workspace_path already handles: expanduser, symlink pre-resolve,
+    containment check, and denied-name check.
+    """
+    resolved: list[str] = []
+    for raw in paths:
+        try:
+            p = _resolve_workspace_path(raw, workspace_root)
+        except PermissionError as exc:
+            return [], CodeCheckResponse(
+                status="error",
+                summary=str(exc),
+                tool="ruff",
+            )
+        resolved.append(str(p))
+    return resolved, None
+
+
 def _ruff_check_sync(paths: list[str], max_diagnostics: int) -> CodeCheckResponse:
-    """Run `ruff check --output-format=json`; return a structured CodeCheckResponse."""
+    """Run `ruff check --output-format=json` on pre-resolved paths; return a structured CodeCheckResponse."""
     ruff_bin = shutil.which("ruff")
     if ruff_bin is None:
         return CodeCheckResponse(
@@ -215,14 +240,19 @@ class CodeCheckTool(LionTool):
     is_lion_system_tool = True
     system_tool_name = "code_check"
 
-    def __init__(self) -> None:
+    def __init__(self, workspace_root: str | Path | None = None) -> None:
         self._tool: Tool | None = None
+        self.workspace_root = Path(workspace_root or Path.cwd()).expanduser().resolve()
 
     async def handle_request(self, request: CodeCheckRequest) -> CodeCheckResponse:
         if isinstance(request, dict):
             request = CodeCheckRequest(**request)
+        # Enforce workspace containment before any subprocess call.
+        resolved_paths, err = _resolve_check_paths(request.paths, self.workspace_root)
+        if err is not None:
+            return err
         if request.tool == "ruff":
-            return await run_sync(_ruff_check_sync, request.paths, request.max_diagnostics)
+            return await run_sync(_ruff_check_sync, resolved_paths, request.max_diagnostics)
         return CodeCheckResponse(
             status="unavailable",
             summary=(f"Tool '{request.tool}' is not yet supported. Currently supported: 'ruff'."),
