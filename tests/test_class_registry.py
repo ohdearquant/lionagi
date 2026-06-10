@@ -100,13 +100,37 @@ class _LenBefore(Node):
 
 
 # ---------------------------------------------------------------------------
-# Autouse fixture: registry isolation
+# Autouse fixtures: registry isolation
 #
-# All Node subclasses defined at module import time pollute LION_CLASS_REGISTRY
-# and would cross-contaminate tests if a mid-test failure left mutated state.
-# This fixture snapshots both registries before each test and restores them
-# on teardown, regardless of whether the test passed or failed.
+# Two layers, because pollution happens at two times:
+#
+# 1. Import time — the module-level Node subclasses above are registered by
+#    Node.__pydantic_init_subclass__ the moment this file is imported, BEFORE
+#    any fixture runs.  A per-test snapshot can't see a pre-import state, so a
+#    module-scoped finalizer removes every registry entry whose class was
+#    defined in this module once the module's tests finish.  Without it, all
+#    test-only keys leak to later test modules on the same xdist worker.
+#
+# 2. Test time — individual tests mutate the registries (deleting keys,
+#    registering type()-created collisions).  A per-test snapshot/restore
+#    guarantees those mutations never outlive the test, even on failure.
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _purge_module_test_classes():
+    """Remove this module's import-time Node subclasses from the registry
+    after the last test in this file runs."""
+    from lionagi._class_registry import LION_CLASS_REGISTRY
+
+    try:
+        yield
+    finally:
+        stale = [
+            k for k, v in LION_CLASS_REGISTRY.items() if getattr(v, "__module__", None) == __name__
+        ]
+        for k in stale:
+            del LION_CLASS_REGISTRY[k]
 
 
 @pytest.fixture(autouse=True)
@@ -349,6 +373,7 @@ class TestGetClassFileRegistryFallback:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=ValueError,
         reason=(
             "LATENT BUG: get_class_objects() executes modules via a bare spec "
             "('module.name') with no parent package context.  Any module that "
@@ -403,11 +428,12 @@ class TestGetClassFileRegistryFallback:
 # (their full-qualified name derives from __module__ + __qualname__).
 # The second registration silently overwrites the first — last-writer-wins.
 #
-# NOTE: classes created with type() inside a test function have __module__
-# set to the test module and __qualname__ equal to their __name__ (no class
-# nesting), so class_name(full=True) = "<test_module>.<ClassName>".  Two
-# distinct type() calls that happen to share the same __name__ will therefore
-# collide on exactly the same registry key — exactly the scenario we want.
+# NOTE: classes created with bare type() get __module__ == "abc" (pydantic's
+# ModelMetaclass construction runs through abc machinery, and the frame-based
+# module detection lands there), producing keys like "abc._DupCollisionNode".
+# Two distinct type() calls sharing the same __name__ still collide on exactly
+# the same registry key — exactly the scenario we want.  The per-test snapshot
+# fixture restores these keys afterwards.
 # ---------------------------------------------------------------------------
 
 
