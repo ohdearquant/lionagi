@@ -862,6 +862,80 @@ async def test_fix_round_untracked_file_reaches_verify_diff(tmp_path, monkeypatc
     )
 
 
+@pytest.mark.asyncio
+async def test_absolute_files_touched_reaches_verify_diff(tmp_path, monkeypatch):
+    """Regression for codex r3: when ChangeProposed.files_touched carries an
+    ABSOLUTE path (as the coding tool emits), the verify diff must still contain
+    the file's content.
+
+    Without the normalization fix, the absolute path was intersected directly
+    with the repo-relative git ls-files output → empty intersection → no diff."""
+    _make_git_workspace(tmp_path)
+
+    eng = CodingEngine(repair_retries=0)
+    run = eng.new_run()
+
+    plan_ev = WorkPlanned(approach="write abs.py")
+    abs_file = tmp_path / "abs.py"
+    abs_content = "def absolute(): return 'abs'\n"
+
+    class _AbsPathBranch:
+        """Writes a file and emits ChangeProposed with the ABSOLUTE path."""
+
+        name = "implement"
+
+        async def operate(self, *, instruction):
+            abs_file.write_text(abs_content, encoding="utf-8")
+            # Emit with the absolute path — as the coding tool would.
+            await run.emit(
+                ChangeProposed(
+                    summary="wrote abs.py",
+                    files_touched=[str(abs_file)],  # absolute path
+                    plan_ref="W-1",
+                )
+            )
+            return "ok"
+
+    verify_instruction_holder: list[str] = []
+
+    class _CapturingVerifyBranch:
+        name = "verify"
+
+        async def operate(self, *, instruction):
+            verify_instruction_holder.append(instruction)
+            await run.emit(
+                VerifyResult(verdict="APPROVE", rationale="content present", meets_acceptance=True)
+            )
+            return "ok"
+
+    branches = {
+        "plan": _ScriptedBranch(run, [plan_ev], name="plan"),
+        "implement": _AbsPathBranch(),
+        "verify": _CapturingVerifyBranch(),
+    }
+
+    async def fake_make(role, *, name=None, **kw):
+        return branches[name]
+
+    monkeypatch.setattr(run, "make_agent", fake_make)
+
+    test_cmd = [
+        sys.executable,
+        "-c",
+        f"import sys; sys.exit(0 if __import__('os').path.exists(r'{abs_file}') else 1)",
+    ]
+    result = await eng._run(run, "write abs.py", test_cmd=test_cmd, workspace=str(tmp_path))
+
+    assert result.passed is True
+    assert verify_instruction_holder, "verify stage never ran"
+    verify_instruction = verify_instruction_holder[0]
+    assert "absolute" in verify_instruction, (
+        f"absolute-path untracked file content missing from verify diff; "
+        f"got: {verify_instruction[:400]!r}"
+    )
+    assert "(no diff captured" not in verify_instruction
+
+
 # ---------------------------------------------------------------------------
 # Pending-experiment ingestion + hypothesis seed round-trip
 # ---------------------------------------------------------------------------

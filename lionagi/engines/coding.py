@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shlex
 from pathlib import Path
 from typing import Any
@@ -829,10 +830,29 @@ class CodingEngine(Engine):
         # Candidate set: union of all files any ChangeProposed claimed to touch
         # plus the initial workspace delta (covers emission-failure rewrites).
         # This is evaluated at verify time so fix-round additions are included.
-        candidate_paths: set[str] = set(run._ws_delta)
+        #
+        # Normalize to workspace-relative POSIX before intersecting: the coding
+        # tool schema asks for absolute file_path values, so files_touched often
+        # carries absolute paths while git ls-files --others returns repo-relative
+        # ones.  Absolute paths under workspace are stripped to relative; relative
+        # paths are normalized (resolve ./.. components); absolute paths that
+        # escape the workspace are dropped — they cannot be untracked files here.
+        raw_candidates: set[str] = set(run._ws_delta)
         final_change = run.last(ChangeProposed)
         if final_change is not None:
-            candidate_paths.update(final_change.files_touched)
+            raw_candidates.update(final_change.files_touched)
+        ws = Path(run.workspace)
+        candidate_paths: set[str] = set()
+        for p in raw_candidates:
+            try:
+                rel = Path(p)
+                if rel.is_absolute():
+                    rel = rel.relative_to(ws)
+                else:
+                    rel = Path(os.path.normpath(ws / rel)).relative_to(ws)
+                candidate_paths.add(rel.as_posix())
+            except ValueError:
+                pass  # absolute path outside workspace — drop
 
         # Intersect with currently-untracked files to avoid double-counting
         # paths that were later staged or committed during the run.
