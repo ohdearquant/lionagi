@@ -8,6 +8,7 @@ import argparse
 import sys
 
 from lionagi._errors import TimeoutError as LionTimeoutError
+from lionagi.libs.path_safety import validate_path_component as validate_path_component
 from lionagi.ln.concurrency import is_cancelled, run_async
 
 from .._lifecycle import EXIT_CODE_BY_STATUS
