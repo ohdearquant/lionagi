@@ -364,3 +364,32 @@ def test_coding_toolkit_registers_code_check_with_workspace_root(tmp_path):
     assert result["status"] == "error", (
         f"CodingToolkit code_check must reject out-of-workspace paths; got status={result['status']!r}"
     )
+
+
+@ruff_required
+@pytest.mark.asyncio
+async def test_empty_paths_list_stays_inside_workspace(tmp_path, monkeypatch):
+    """An empty paths list must scan the workspace root, not the process cwd.
+
+    ruff's default behavior with no path arguments is to scan the current
+    working directory; if that leaks through, a tool restricted to a
+    sub-workspace can read diagnostics for the entire surrounding tree.
+    """
+    workspace = tmp_path / "restricted_sub"
+    workspace.mkdir()
+    (workspace / "inside.py").write_text("import os\nx = 1\n")
+    outside_file = tmp_path / "outside_secret.py"
+    outside_file.write_text("import sys\ny = 2\n")
+
+    monkeypatch.chdir(tmp_path)
+    checker = CodeCheckTool(workspace_root=str(workspace))
+    resp = await checker.handle_request(CodeCheckRequest(paths=[]))
+
+    assert resp.status in ("ok", "diagnostics"), f"unexpected status {resp.status!r}"
+    files_seen = {d.file for d in resp.diagnostics}
+    assert not any("outside_secret" in f for f in files_seen), (
+        f"empty paths list leaked diagnostics from outside the workspace: {files_seen}"
+    )
+    assert any("inside" in f for f in files_seen), (
+        f"workspace-root default should have scanned inside.py; saw {files_seen}"
+    )

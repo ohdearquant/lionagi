@@ -127,8 +127,15 @@ def _resolve_check_paths(
     return resolved, None
 
 
-def _ruff_check_sync(paths: list[str], max_diagnostics: int) -> CodeCheckResponse:
-    """Run `ruff check --output-format=json` on pre-resolved paths; return a structured CodeCheckResponse."""
+def _ruff_check_sync(
+    paths: list[str], max_diagnostics: int, cwd: str | None = None
+) -> CodeCheckResponse:
+    """Run `ruff check --output-format=json` on pre-resolved paths; return a structured CodeCheckResponse.
+
+    ``cwd`` pins the subprocess working directory so ruff's own defaults
+    (scanning the current directory when given no paths) can never reach
+    outside the intended root.
+    """
     ruff_bin = shutil.which("ruff")
     if ruff_bin is None:
         return CodeCheckResponse(
@@ -147,6 +154,7 @@ def _ruff_check_sync(paths: list[str], max_diagnostics: int) -> CodeCheckRespons
             capture_output=True,
             text=True,
             timeout=30,
+            cwd=cwd,
         )
     except subprocess.TimeoutExpired:
         return CodeCheckResponse(
@@ -247,12 +255,21 @@ class CodeCheckTool(LionTool):
     async def handle_request(self, request: CodeCheckRequest) -> CodeCheckResponse:
         if isinstance(request, dict):
             request = CodeCheckRequest(**request)
-        # Enforce workspace containment before any subprocess call.
-        resolved_paths, err = _resolve_check_paths(request.paths, self.workspace_root)
+        # Enforce workspace containment before any subprocess call.  An empty
+        # paths list would let ruff fall back to scanning the process working
+        # directory, which may lie outside the workspace — default it to the
+        # workspace root instead.
+        paths = request.paths or [str(self.workspace_root)]
+        resolved_paths, err = _resolve_check_paths(paths, self.workspace_root)
         if err is not None:
             return err
         if request.tool == "ruff":
-            return await run_sync(_ruff_check_sync, resolved_paths, request.max_diagnostics)
+            return await run_sync(
+                _ruff_check_sync,
+                resolved_paths,
+                request.max_diagnostics,
+                str(self.workspace_root),
+            )
         return CodeCheckResponse(
             status="unavailable",
             summary=(f"Tool '{request.tool}' is not yet supported. Currently supported: 'ruff'."),
