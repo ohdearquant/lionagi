@@ -716,9 +716,36 @@ async def stream_codex_cli(
                     if isinstance(err, dict)
                     else obj.get("message", str(err))
                 )
-                if request.verbose_output:
-                    log.error("Codex error: %s", session.result)
-                sc = StreamChunk(type="error", content=session.result, metadata=obj)
+                # Detect a benign end-of-stream sentinel: some codex CLI versions
+                # emit ``{"type": "error", "error": {}}`` when a resumed session
+                # ends normally rather than with a real failure.  Tag these
+                # explicitly so run() can treat them as clean EOS rather than
+                # propagating them as RunFailed.
+                #
+                # Narrowing criteria (must ALL hold):
+                #   1. Event type is "error" — "turn.failed" events are NEVER benign
+                #      regardless of their error payload, because they signal an
+                #      explicit model-side failure (e.g. rate_limit, context_overflow).
+                #   2. The error payload is EXACTLY the empty dict.  A structured
+                #      payload with falsy values ({"message": ""}, {"message": None})
+                #      is a real failure whose detail happens to be empty — only the
+                #      bare {} sentinel is produced by a resumed-session EOF.
+                #   3. The top-level event carries no failure indicators beyond the
+                #      known EOF envelope (no "code", "message", or "status" keys).
+                _is_benign_eos = (
+                    typ == "error"
+                    and "error" in obj  # a bare {"type": "error"} is malformed, not EOF
+                    and err == {}
+                    and not any(k in obj for k in ("code", "message", "status"))
+                )
+                chunk_meta = dict(obj)
+                if _is_benign_eos:
+                    chunk_meta["benign_eos"] = True
+                    session.is_error = False  # retract: not a real error
+                else:
+                    if request.verbose_output:
+                        log.error("Codex error: %s", session.result)
+                sc = StreamChunk(type="error", content=session.result, metadata=chunk_meta)
                 session.chunks.append(sc)
                 yield sc
 
