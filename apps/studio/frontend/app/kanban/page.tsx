@@ -29,11 +29,11 @@ import { errors } from "@/lib/copy";
 // QUEUED        → pending, prepared            (no rows in current data)
 // IN PROGRESS   → running                      (11 rows)
 // REVIEW        → (none) — play-level statuses running_complete/gated/blocked
-//                  are not surfaced by /api/runs/; will populate after #1251
-//                  lifecycle-signal enrichment is merged.
+//                  are not surfaced by /api/runs/; will populate once
+//                  lifecycle-signal enrichment lands.
 // DONE          → completed, done, success, finished
-// FAILED        → failed, timed_out
-// CANCELLED     → cancelled, aborted
+// FAILED        → failed, timed_out, timeout
+// CANCELLED     → cancelled, canceled, aborted
 //
 // Drag-to-transition is NOT implemented: no status-transition endpoint exists
 // on /api/runs/ (only /api/admin/transition, which is gated and terminal-only).
@@ -66,7 +66,8 @@ const LANES: Lane[] = [
   {
     key: "review",
     label: "Review / Waiting",
-    // No canonical session statuses map here. Requires #1251 lifecycle signals.
+    // No canonical session statuses map here; populated once lifecycle-signal
+    // enrichment surfaces awaiting/gated states through the runs API.
     statuses: [],
     headerBg: "bg-status-selected-bg",
   },
@@ -79,13 +80,13 @@ const LANES: Lane[] = [
   {
     key: "failed",
     label: "Failed",
-    statuses: ["failed", "timed_out"],
+    statuses: ["failed", "timed_out", "timeout"],
     headerBg: "bg-status-error-bg",
   },
   {
     key: "cancelled",
     label: "Cancelled",
-    statuses: ["cancelled", "aborted"],
+    statuses: ["cancelled", "canceled", "aborted"],
     headerBg: "bg-surface-overlay",
   },
 ];
@@ -168,7 +169,7 @@ function LaneColumn({ lane, runs, now }: { lane: Lane; runs: RunSummary[]; now: 
     <div className="flex min-w-[210px] max-w-[260px] flex-1 flex-col rounded border border-edge">
       {/* Lane header */}
       <div className={`flex items-center justify-between rounded-t px-3 py-2 ${lane.headerBg}`}>
-        <span className="text-label font-medium text-content-primary">{lane.label}</span>
+        <h2 className="text-label font-medium text-content-primary">{lane.label}</h2>
         <span className="ml-2 rounded-full border border-edge bg-surface-raised px-1.5 py-0.5 font-mono text-meta text-content-muted tabular-nums">
           {runs.length}
         </span>
@@ -181,7 +182,7 @@ function LaneColumn({ lane, runs, now }: { lane: Lane; runs: RunSummary[]; now: 
       >
         {runs.length === 0 ? (
           <div className="py-6 text-center text-meta text-content-muted/60">
-            {lane.statuses.length === 0 ? "Requires #1251 lifecycle signals." : "No runs."}
+            {lane.statuses.length === 0 ? "Awaiting lifecycle-signal enrichment." : "No runs."}
           </div>
         ) : (
           runs.map((run) => <KanbanCard key={run.run_id} run={run} now={now} />)
@@ -197,7 +198,7 @@ function SkeletonLane({ lane }: { lane: Lane }) {
   return (
     <div className="flex min-w-[210px] max-w-[260px] flex-1 flex-col rounded border border-edge">
       <div className={`flex items-center justify-between rounded-t px-3 py-2 ${lane.headerBg}`}>
-        <span className="text-label font-medium text-content-primary">{lane.label}</span>
+        <h2 className="text-label font-medium text-content-primary">{lane.label}</h2>
         <span className="ml-2 rounded-full border border-edge bg-surface-raised px-1.5 py-0.5 font-mono text-meta text-content-muted">
           …
         </span>
@@ -223,11 +224,16 @@ export default function KanbanPage() {
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
-  // Mirror the 3-second polling pattern from app/runs/page.tsx exactly.
+  // Mirror the 3-second polling pattern from app/runs/page.tsx, plus an
+  // in-flight guard: at per_page=5000 a fetch can outlast the 3s interval,
+  // and stacked overlapping requests would hammer the API.
   useEffect(() => {
     let active = true;
+    let inFlight = false;
 
     async function load() {
+      if (inFlight) return;
+      inFlight = true;
       try {
         // Fetch all runs without status filter to populate every lane at once.
         // per_page=5000 matches the invocations-mode fetch in runs/page.tsx.
@@ -240,6 +246,7 @@ export default function KanbanPage() {
       } catch {
         if (active) setError(errors.loadRuns);
       } finally {
+        inFlight = false;
         if (active) setLoading(false);
       }
     }
