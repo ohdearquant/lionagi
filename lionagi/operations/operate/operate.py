@@ -105,25 +105,6 @@ def prepare_operate_kw(
         if action_strategy:
             instruct.action_strategy = action_strategy
 
-    fields_dict = _specs_from_fields(field_models)
-
-    # Build Operative if needed
-    operative = None
-    if instruct.reason or instruct.actions or response_format or fields_dict:
-        from .step import Step
-
-        operative = Step.request_operative(
-            base_type=response_format,
-            reason=instruct.reason,
-            actions=instruct.actions or actions,
-            fields=fields_dict,
-        )
-
-        # Create response model
-        operative = Step.respond_operative(operative)
-
-    final_response_format = operative.response_type if operative else response_format
-
     # Choose ChatParam vs RunParam. RunParam is required when the middle
     # streams via run() (CLI endpoints, explicit stream_persist, or when
     # caller passes a middle that needs persist_dir). Defaulting to
@@ -137,7 +118,7 @@ def prepare_operate_kw(
         context=instruct.context,
         sender=sender or branch.user or "user",
         recipient=recipient or branch.id,
-        response_format=final_response_format,
+        response_format=response_format,
         progression=progression,
         tool_schemas=tool_schemas,
         images=images,
@@ -157,11 +138,11 @@ def prepare_operate_kw(
     chat_param = param_cls(**param_kw)
 
     parse_param = None
-    if final_response_format and not skip_validation:
+    if response_format and not skip_validation:
         from ..parse.parse import get_default_call
 
         parse_param = ParseParam(
-            response_format=final_response_format,
+            response_format=response_format,
             fuzzy_match_params=FuzzyMatchKeysParams(),
             handle_validation=handle_validation,
             alcall_params=get_default_call(),
@@ -190,8 +171,16 @@ def prepare_operate_kw(
         "invoke_actions": invoke_actions,
         "skip_validation": skip_validation,
         "clear_messages": clear_messages,
-        "operative": operative,
+        # The public Branch.operate() path has always discarded a caller
+        # supplied operative (main set `operative = None` before building its
+        # own).  Forwarding it would skip the single-construction block below
+        # and merge results through a model that may not match the requested
+        # response/action shape, silently dropping response fields.  Only
+        # direct operate() callers (e.g. ReAct) may supply an operative.
+        "operative": None,
         "middle": middle,
+        "field_models": field_models,
+        "reason": instruct.reason,
     }
 
 
@@ -262,8 +251,11 @@ async def operate(
 
     fields_dict = _specs_from_fields(field_models)
 
-    # Create operative if needed
-    if not operative and (model_class or action_param or fields_dict):
+    # Create operative if needed. This is the single construction path for all
+    # callers — both Branch.operate (via prepare_operate_kw) and direct callers
+    # such as ReAct. prepare_operate_kw forwards field_models and reason so
+    # that this block has full information regardless of call path.
+    if not operative and (model_class or action_param or fields_dict or reason):
         from .step import Step
 
         operative = Step.request_operative(
@@ -274,7 +266,8 @@ async def operate(
         )
         operative = Step.respond_operative(operative)
 
-        # Update contexts
+        # Update contexts with the derived response type so the API call
+        # and the parse step use the materialized Pydantic model.
         response_fmt = operative.response_type or model_class
         if response_fmt:
             _cctx = _cctx.with_updates(response_format=response_fmt)
@@ -324,7 +317,11 @@ async def operate(
     # Handle actions. Middle may return a BaseModel (structured), a dict
     # (fuzzy-parsed), or a raw str (CLI text path with no response_format).
     # Only dicts and BaseModels can carry action_requests — raw text can't.
-    if model_class:
+    # Inspect ANY BaseModel result, not just model_class matches: actions=True
+    # with no caller response_format materializes a generated operative type
+    # while model_class stays None, and gating on model_class silently
+    # skipped tool invocation for that path (codex round-2 regression).
+    if isinstance(result, BaseModel):
         requests = getattr(result, "action_requests", None)
     elif isinstance(result, dict):
         requests = result.get("action_requests")
@@ -346,16 +343,20 @@ async def operate(
     if not action_response_models:
         return result
 
-    if not model_class:
-        # Dict response: merge action_responses in. Raw-text results stay
-        # untouched (text has no structured slot for action_responses).
-        if isinstance(result, dict):
-            result["action_responses"] = action_response_models
-        return result
+    # Structured results merge through the operative (single construction
+    # path above).  Gate on the operative + a BaseModel result rather than
+    # model_class: actions=True with no caller response_format constructs an
+    # operative while model_class stays None, and gating on model_class
+    # returned the result with action_responses unmerged (codex round-2).
+    if operative is not None and isinstance(result, BaseModel):
+        # First set the response_model to the existing result
+        operative.response_model = result
+        # Then update it with action_responses
+        operative.update_response_model(data={"action_responses": action_response_models})
+        return operative.response_model
 
-    # If we have model_class, we must have operative (created at line 268)
-    # First set the response_model to the existing result
-    operative.response_model = result
-    # Then update it with action_responses
-    operative.update_response_model(data={"action_responses": action_response_models})
-    return operative.response_model
+    # Dict response: merge action_responses in. Raw-text results stay
+    # untouched (text has no structured slot for action_responses).
+    if isinstance(result, dict):
+        result["action_responses"] = action_response_models
+    return result
