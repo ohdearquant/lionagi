@@ -711,8 +711,14 @@ async def stream_codex_cli(
             elif typ in ("turn.failed", "error"):
                 session.is_error = True
                 err = obj.get("error", {})
+                # The CLI puts the human-readable message in different spots
+                # depending on event type: "error" events carry a TOP-LEVEL
+                # "message" with no "error" key (e.g. usage-limit errors), while
+                # "turn.failed" nests it under error.message.  Check both —
+                # otherwise a top-level-message error renders as the useless
+                # str() of an empty dict and the actionable text is discarded.
                 session.result = (
-                    err.get("message", str(err))
+                    (err.get("message") or obj.get("message") or str(err))
                     if isinstance(err, dict)
                     else obj.get("message", str(err))
                 )
