@@ -117,10 +117,15 @@ from lionagi.operations.operate.operate import prepare_operate_kw
 
 
 def test_prepare_operate_kw_rejects_invalid_field_model_entry():
-    """field_models list containing a non-FieldModel/Spec raises TypeError."""
+    """field_models containing a non-FieldModel/Spec is passed through to
+    operate() where _specs_from_fields raises TypeError. prepare_operate_kw
+    no longer validates field_models itself (single-construction path is in
+    operate()). Verify the invalid entry is forwarded in the returned dict."""
     branch = Branch()
-    with pytest.raises(TypeError, match="Expected FieldModel or Spec"):
-        prepare_operate_kw(branch, field_models=[object()])
+    result = prepare_operate_kw(branch, field_models=[object()])
+    # field_models is forwarded unchanged; error surfaces later in operate()
+    assert result["field_models"] is not None
+    assert len(result["field_models"]) == 1
 
 
 @pytest.mark.asyncio
@@ -166,28 +171,34 @@ def test_prepare_operate_kw_instruct_as_dict():
 
 
 def test_prepare_operate_kw_reason_flag_sets_instruct_reason():
-    """reason=True sets instruct.reason=True (line 116)."""
+    """reason=True is forwarded to operate() via the return dict (reason key)
+    so the single construction path in operate() can build the Operative.
+    prepare_operate_kw no longer constructs the Operative itself."""
     branch = Branch()
     result = prepare_operate_kw(branch, reason=True)
-    # operative is built because reason=True
-    assert result["operative"] is not None
+    # operative construction is deferred to operate(); reason is forwarded
+    assert result["reason"] is True
+    assert result["operative"] is None
 
 
 def test_prepare_operate_kw_field_models_with_fieldmodel():
-    """FieldModel in field_models is converted to Spec (line 129)."""
+    """FieldModel in field_models is forwarded as-is to operate() where
+    _specs_from_fields converts it to a Spec for Operative construction."""
     branch = Branch()
     fm = FieldModel(name="score", annotation=float)
     result = prepare_operate_kw(branch, field_models=[fm])
-    # operative is built because fields_dict is non-empty
-    assert result["operative"] is not None
+    # field_models forwarded; Operative built lazily in operate()
+    assert result["field_models"] == [fm]
+    assert result["operative"] is None
 
 
 def test_prepare_operate_kw_field_models_with_spec():
-    """Spec in field_models is used directly (line 131)."""
+    """Spec in field_models is forwarded unchanged to operate()."""
     branch = Branch()
     spec = Spec(name="label", annotation=str)
     result = prepare_operate_kw(branch, field_models=[spec])
-    assert result["operative"] is not None
+    assert result["field_models"] == [spec]
+    assert result["operative"] is None
 
 
 def test_prepare_operate_kw_persist_dir_sets_run_param():

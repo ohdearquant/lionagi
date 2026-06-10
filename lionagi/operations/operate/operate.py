@@ -105,25 +105,6 @@ def prepare_operate_kw(
         if action_strategy:
             instruct.action_strategy = action_strategy
 
-    fields_dict = _specs_from_fields(field_models)
-
-    # Build Operative if needed
-    operative = None
-    if instruct.reason or instruct.actions or response_format or fields_dict:
-        from .step import Step
-
-        operative = Step.request_operative(
-            base_type=response_format,
-            reason=instruct.reason,
-            actions=instruct.actions or actions,
-            fields=fields_dict,
-        )
-
-        # Create response model
-        operative = Step.respond_operative(operative)
-
-    final_response_format = operative.response_type if operative else response_format
-
     # Choose ChatParam vs RunParam. RunParam is required when the middle
     # streams via run() (CLI endpoints, explicit stream_persist, or when
     # caller passes a middle that needs persist_dir). Defaulting to
@@ -137,7 +118,7 @@ def prepare_operate_kw(
         context=instruct.context,
         sender=sender or branch.user or "user",
         recipient=recipient or branch.id,
-        response_format=final_response_format,
+        response_format=response_format,
         progression=progression,
         tool_schemas=tool_schemas,
         images=images,
@@ -157,11 +138,11 @@ def prepare_operate_kw(
     chat_param = param_cls(**param_kw)
 
     parse_param = None
-    if final_response_format and not skip_validation:
+    if response_format and not skip_validation:
         from ..parse.parse import get_default_call
 
         parse_param = ParseParam(
-            response_format=final_response_format,
+            response_format=response_format,
             fuzzy_match_params=FuzzyMatchKeysParams(),
             handle_validation=handle_validation,
             alcall_params=get_default_call(),
@@ -192,6 +173,8 @@ def prepare_operate_kw(
         "clear_messages": clear_messages,
         "operative": operative,
         "middle": middle,
+        "field_models": field_models,
+        "reason": instruct.reason,
     }
 
 
@@ -262,8 +245,11 @@ async def operate(
 
     fields_dict = _specs_from_fields(field_models)
 
-    # Create operative if needed
-    if not operative and (model_class or action_param or fields_dict):
+    # Create operative if needed. This is the single construction path for all
+    # callers — both Branch.operate (via prepare_operate_kw) and direct callers
+    # such as ReAct. prepare_operate_kw forwards field_models and reason so
+    # that this block has full information regardless of call path.
+    if not operative and (model_class or action_param or fields_dict or reason):
         from .step import Step
 
         operative = Step.request_operative(
@@ -274,7 +260,8 @@ async def operate(
         )
         operative = Step.respond_operative(operative)
 
-        # Update contexts
+        # Update contexts with the derived response type so the API call
+        # and the parse step use the materialized Pydantic model.
         response_fmt = operative.response_type or model_class
         if response_fmt:
             _cctx = _cctx.with_updates(response_format=response_fmt)
@@ -353,7 +340,7 @@ async def operate(
             result["action_responses"] = action_response_models
         return result
 
-    # If we have model_class, we must have operative (created at line 268)
+    # If we have model_class, operative was constructed above (single path).
     # First set the response_model to the existing result
     operative.response_model = result
     # Then update it with action_responses
