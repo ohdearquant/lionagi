@@ -506,6 +506,34 @@ class CodingEngine(Engine):
 
     # -- lifecycle ------------------------------------------------------------
 
+    async def run(  # type: ignore[override]
+        self,
+        spec: str | dict[str, Any],
+        *,
+        test_cmd: str | list[str],
+        workspace: str | None = None,
+        export_dir: str | Path | None = None,
+        session: Any = None,
+        on_event: Any = None,
+    ) -> CodeResultRecorded:
+        """Validate *spec* before creating any run state, then delegate to _run.
+
+        ``_normalize_spec`` raises ``ValueError`` / ``TypeError`` for malformed
+        specs.  Without this gate those errors surface after the session and
+        observers are already initialized — callers cannot distinguish a setup
+        error from a mid-run failure.  Validating here keeps ``_run`` clean and
+        ensures the error is raised before any side-effectful state is created.
+        """
+        _normalize_spec(spec)  # raises ValueError/TypeError for bad input
+        return await super().run(
+            spec,
+            test_cmd=test_cmd,
+            workspace=workspace,
+            export_dir=export_dir,
+            session=session,
+            on_event=on_event,
+        )
+
     async def _run(
         self,
         run: CodingRun,

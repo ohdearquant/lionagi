@@ -91,6 +91,32 @@ def _repair_instruction(schema_hint: str) -> str:
     )
 
 
+def _cli_repair_instruction(schema_hint: str, emits: tuple[type, ...]) -> str:
+    """Repair instruction for CLI workers (claude_code, codex).
+
+    CLI workers stream free-form output — their failure mode is prose with no
+    fenced JSON block, not a malformed schema.  The repair turn supplies a
+    complete fenced-JSON example so the worker can copy the structure exactly,
+    since CLI endpoints may not receive the Operable schema the same way API
+    workers do.
+    """
+    from lionagi.casts.emission import field_name_for
+
+    example_lines: list[str] = []
+    for m in emits:
+        key = field_name_for(m)
+        # Produce a minimal placeholder object keyed by the emission field name.
+        example_lines.append(f'  "{key}": {{...fields...}}')
+    example = "```json\n{{\n" + ",\n".join(example_lines) + "\n}}\n```" if example_lines else ""
+    return (
+        "Your previous response contained no fenced JSON block, so the pipeline "
+        "received nothing. Reply with ONLY a fenced ```json block containing the "
+        "emission object — no prose, no tool calls, no other text.\n\n"
+        f"{schema_hint}\n\n"
+        f"Example structure:\n{example}"
+    ).strip()
+
+
 def emission_keys(emits: tuple[type, ...]) -> str:
     """Render the top-level emission key(s) for a repair hint."""
     from lionagi.casts.emission import field_name_for
@@ -235,19 +261,33 @@ class EngineRun:
         retries: int = 1,
     ) -> Any:
         """Operate, then re-prompt up to *retries* times while *arrived*() is
-        false — the repair loop that keeps weak models in the pipeline. The
-        repair turn names the expected emission keys so the model can fix
-        fence/field mistakes instead of being silently dropped."""
+        false — the repair loop that keeps weak models in the pipeline.
+
+        For API workers the repair turn names the expected emission keys so the
+        model can fix fence/field mistakes.  For CLI workers (claude_code, codex)
+        the failure mode is different — the entire turn arrives as prose with no
+        fenced block — so the repair turn supplies a complete fenced-JSON example
+        instead of just key hints.  CLI workers are detected via
+        ``branch.chat_model.is_cli`` so no string-prefix matching is needed.
+        """
         res = await branch.operate(instruction=instruction)
         attempt = 0
+        # Determine repair template once: CLI workers need the full example form.
+        is_cli = bool(getattr(getattr(branch, "chat_model", None), "is_cli", False))
+        hint = emission_keys(emits)
         while not arrived() and attempt < retries:
             attempt += 1
             self.notify(
                 "emission_repair",
                 agent=getattr(branch, "name", "") or "",
                 attempt=attempt,
+                cli_worker=is_cli,
             )
-            res = await branch.operate(instruction=_repair_instruction(emission_keys(emits)))
+            if is_cli:
+                repair_msg = _cli_repair_instruction(hint, emits)
+            else:
+                repair_msg = _repair_instruction(hint)
+            res = await branch.operate(instruction=repair_msg)
         if retries and not arrived():
             self.notify(
                 "emission_missing",
@@ -287,6 +327,28 @@ class EngineRun:
         await gather(*list(self._active), return_exceptions=True)
         # Callbacks remove tasks from _active as they settle.
         self._active.clear()
+
+    async def _deadline_watchdog(self) -> None:
+        """Sleep until the run deadline, then cancel all spawned tasks.
+
+        Bounds the wall-clock duration of spawned background tasks.  Direct
+        sequential worker calls (``branch.operate()`` inside ``_implement``,
+        ``_fix_loop``, etc.) are cooperative-cancel only — they can be
+        interrupted only at their next ``await`` point when a
+        ``CancelledError`` propagates up from ``Engine.run()``.
+
+        The watchdog is scheduled by ``Engine.run()`` around ``_run()`` and
+        cancelled when ``_run()`` completes (or raises), so the watchdog never
+        outlives the run.
+        """
+        if self._deadline is None:
+            return
+        delay = self._deadline - monotonic()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        if not self.budget_left():
+            self._notify_budget_once("deadline_watchdog")
+            await self.cancel_active()
 
     async def wait_quiescence(self) -> None:
         """Block until no spawned task remains; re-raise accumulated failures."""
@@ -490,7 +552,16 @@ class Engine:
         **kwargs: Any,
     ) -> Any:
         run = self.new_run(session=session, on_event=on_event)
-        return await self._run(run, *args, **kwargs)
+        watchdog: asyncio.Task | None = None
+        if run._deadline is not None:
+            watchdog = asyncio.ensure_future(run._deadline_watchdog())
+        try:
+            return await self._run(run, *args, **kwargs)
+        finally:
+            if watchdog is not None and not watchdog.done():
+                watchdog.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watchdog
 
     async def _run(self, run: EngineRun, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("Engine subclass must implement _run(run, ...)")
