@@ -42,8 +42,8 @@ class ReaderRequest(BaseModel):
             "- 'list_dir': List files in a directory."
         ),
     )
-    path: str | None = Field(
-        None,
+    path: str = Field(
+        ...,
         description=("File path, directory path, or URL. Required for all actions."),
     )
     offset: int | None = Field(

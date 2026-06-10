@@ -20,7 +20,8 @@ from lionagi.protocols.action.tool import Tool
 from ._subprocess import _SHELL_CONTROL, _subprocess_sync
 from .base import LionTool
 from .context.context import ContextRequest, ContextTool
-from .file.editor import _write_text_no_follow
+from .file.editor import EditorRequest, _write_text_no_follow
+from .file.reader import ReaderRequest, _evict_expired, _open_sync, _read_cached
 from .file.reader import _list_dir_sync as _file_list_dir_sync
 from .file.reader import _read_sync as _file_read_sync
 
@@ -31,88 +32,10 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Request models (LLM-facing schemas)
 # ---------------------------------------------------------------------------
-
-
-class ReaderAction(str, Enum):
-    read = "read"
-    list_dir = "list_dir"
-
-
-class ReaderRequest(BaseModel):
-    action: ReaderAction = Field(
-        ...,
-        description=(
-            "Action to perform. One of:\n"
-            "- 'read': Read a file. Each line is returned as `<number>\\t<code>`; the "
-            "line-number prefix is for your reference only — strip it (and the tab) "
-            "before using any text as an editor old_string.\n"
-            "- 'list_dir': List files in a directory."
-        ),
-    )
-    path: str = Field(
-        ...,
-        description="Absolute path to a file (for 'read') or directory (for 'list_dir').",
-    )
-    offset: int | None = Field(
-        None,
-        description="Zero-indexed line number to start reading from. Defaults to 0.",
-    )
-    limit: int | None = Field(
-        None,
-        description="Maximum number of lines to return. Defaults to 2000.",
-    )
-    recursive: bool | None = Field(
-        None,
-        description="Whether to list subdirectories recursively. Only for 'list_dir'.",
-    )
-    file_types: list[str] | None = Field(
-        None,
-        description="Filter by extensions (e.g. ['.py', '.rs']). Only for 'list_dir'.",
-    )
-
-
-class EditorAction(str, Enum):
-    write = "write"
-    edit = "edit"
-
-
-class EditorRequest(BaseModel):
-    action: EditorAction = Field(
-        ...,
-        description=(
-            "Action to perform. One of:\n"
-            "- 'write': Create or overwrite a file. Creates parent dirs automatically.\n"
-            "- 'edit': Exact string replacement. Fails if old_string not found or ambiguous."
-        ),
-    )
-    file_path: str = Field(
-        ...,
-        description="Absolute path to the target file.",
-    )
-    content: str | None = Field(
-        None,
-        description="Full file content. Required for 'write'.",
-    )
-    old_string: str | None = Field(
-        None,
-        description=(
-            "Exact text to find. Required for 'edit'. Must match the file byte-for-byte. "
-            "IMPORTANT: the reader returns lines as `<number>\\t<code>` — do NOT include "
-            "the leading line-number + tab prefix here; match only the actual code, "
-            "preserving its exact indentation. Use the smallest snippet that is unique "
-            "(usually 2-4 adjacent lines); if it is not unique the edit fails — add a "
-            "little more surrounding context, or set replace_all=True to change every "
-            "occurrence."
-        ),
-    )
-    new_string: str | None = Field(
-        None,
-        description="Replacement text. Required for 'edit'. Empty string = deletion.",
-    )
-    replace_all: bool = Field(
-        default=False,
-        description="Replace all occurrences. If False and multiple matches, edit fails.",
-    )
+# ReaderRequest and EditorRequest are imported from file/reader.py and
+# file/editor.py — those are the canonical definitions. BashRequest,
+# SearchRequest, SandboxRequest, and SubagentRequest have no standalone
+# equivalent and are defined here.
 
 
 class BashRequest(BaseModel):
@@ -534,6 +457,12 @@ class CodingToolkit(LionTool):
             if resolved and mtime is not None:
                 file_state[resolved] = mtime
 
+        # Cache for documents opened via action='open' (docling conversion).
+        # Keyed by path; values are (text, cached_at) tuples — same layout as
+        # the standalone ReaderTool cache so _read_cached/_evict_expired work
+        # without modification.
+        _open_cache: dict[str, tuple[str, float]] = {}
+
         async def reader(
             action: str,
             path: str,
@@ -542,14 +471,33 @@ class CodingToolkit(LionTool):
             recursive: bool = None,
             file_types: list[str] = None,
         ) -> dict:
-            """Read files or list directory contents.
+            """Read files, convert documents, or list directory contents.
 
             Use action='read' to get file contents with line numbers.
+            Use action='open' to convert a document (PDF, PPTX, DOCX, HTML) to
+            text via docling — the result is cached by path so you can then use
+            action='read' with offset/limit on the same path to paginate it.
             Use action='list_dir' to list files. Always read a file before editing it.
             """
+            # Canonical empty-path contract: every reader action requires path,
+            # matching ReaderTool.handle_request's pre-dispatch guard.
+            if not path:
+                return {"success": False, "content": None, "error": "'path' is required"}
+            if action == "open":
+                _evict_expired(_open_cache)
+                resp = await run_sync(_open_sync, path, _open_cache, workspace_root, frozenset())
+                return {"success": resp.success, "content": resp.content, "error": resp.error}
             if action == "read":
                 start = max(0, offset or 0)
                 max_lines = limit if (limit and limit > 0) else 2000
+                # Serve from docling cache if the path was previously opened.
+                cached = _read_cached(path, start, max_lines, _open_cache)
+                if cached is not None:
+                    return {
+                        "success": cached.success,
+                        "content": cached.content,
+                        "error": cached.error,
+                    }
                 result = await run_sync(_read_file_sync, path, start, max_lines, workspace_root)
                 _track(result)
                 return result
