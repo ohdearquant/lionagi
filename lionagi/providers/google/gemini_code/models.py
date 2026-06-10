@@ -406,6 +406,8 @@ async def stream_gemini_cli(
                 # The gemini CLI echoes the user prompt as a role=user message
                 # event before emitting the assistant reply.  Skip it so the echo
                 # does not pollute session.messages or the result accumulation.
+                # Note: this treats all role=user events as prompt echoes, which
+                # matches the current single-user stream shape of the gemini CLI.
                 role = msg.get("role", "assistant")
                 if role == "user":
                     yield chunk
@@ -434,8 +436,8 @@ async def stream_gemini_cli(
                             elif btype == "tool_use":
                                 tu = {
                                     "id": blk.get("id", ""),
-                                    "name": blk.get("name", ""),
-                                    "input": blk.get("input", {}),
+                                    "name": blk.get("tool_name", blk.get("name", "")),
+                                    "input": blk.get("parameters", blk.get("input", {})),
                                 }
                                 chunk.tool_use = tu
                                 session.tool_uses.append(tu)
@@ -452,8 +454,8 @@ async def stream_gemini_cli(
                 #   args  → "parameters" (not "input" or "args")
                 tu = {
                     "id": obj.get("tool_id", obj.get("id", obj.get("tool_use_id", ""))),
-                    "name": obj.get("name", obj.get("tool_name", "")),
-                    "input": obj.get("input", obj.get("parameters", obj.get("args", {}))),
+                    "name": obj.get("tool_name", obj.get("name", "")),
+                    "input": obj.get("parameters", obj.get("input", obj.get("args", {}))),
                 }
                 chunk.tool_use = tu
                 session.tool_uses.append(tu)
@@ -468,10 +470,13 @@ async def stream_gemini_cli(
                 #   tool_use_id → "tool_id"   (not "tool_use_id" or "id")
                 #   content     → "output"    (not "content" or "result")
                 #   is_error    → status != "success" OR explicit is_error flag
+                #   Note: any status other than "success" is treated as an error;
+                #   this is correct for current CLI versions which emit only
+                #   "success" or "error" in the status field of tool_result events.
                 _status = obj.get("status", "")
                 tr = {
-                    "tool_use_id": obj.get("tool_use_id", obj.get("tool_id", obj.get("id", ""))),
-                    "content": obj.get("content", obj.get("output", obj.get("result", ""))),
+                    "tool_use_id": obj.get("tool_id", obj.get("tool_use_id", obj.get("id", ""))),
+                    "content": obj.get("output", obj.get("content", obj.get("result", ""))),
                     "is_error": obj.get("is_error", _status not in ("", "success")),
                 }
                 chunk.tool_result = tr

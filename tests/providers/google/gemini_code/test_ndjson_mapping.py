@@ -220,6 +220,115 @@ async def test_multi_delta_assistant_chunks_joined():
 
 
 # ---------------------------------------------------------------------------
+# Real-key-wins: when both real and legacy keys are present, real key wins
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_real_key_beats_legacy_key_on_tool_use():
+    """When both the real gemini CLI key and a legacy alias are present on the
+    same event, the real key must win for every field.
+
+    Regression: the original probe chains put legacy keys first, so a dummy
+    `name` or `input` field emitted alongside the real `tool_name`/`parameters`
+    would be captured instead of the actual payload.
+    """
+    events = [
+        {"type": "init", "session_id": "s1", "model": "gemini-3-flash-preview"},
+        {
+            "type": "tool_use",
+            # Real keys (gemini CLI --output-format stream-json)
+            "tool_id": "real-id",
+            "tool_name": "real_tool",
+            "parameters": {"real": True},
+            # Legacy / alias keys that must NOT win
+            "id": "legacy-id",
+            "name": "legacy_tool",
+            "input": {"legacy": True},
+        },
+        {"type": "result", "status": "success", "stats": {}},
+    ]
+    session = await _run_events(events)
+
+    assert len(session.tool_uses) == 1
+    tu = session.tool_uses[0]
+    assert tu["id"] == "real-id", f"tool_id must win over id; got {tu['id']!r}"
+    assert tu["name"] == "real_tool", f"tool_name must win over name; got {tu['name']!r}"
+    assert tu["input"] == {"real": True}, f"parameters must win over input; got {tu['input']!r}"
+
+
+@pytest.mark.asyncio
+async def test_real_key_beats_legacy_key_on_tool_result():
+    """When both the real gemini CLI key and a legacy alias are present on a
+    tool_result event, the real key must win for id and content.
+    """
+    events = [
+        {"type": "init", "session_id": "s1", "model": "gemini-3-flash-preview"},
+        {
+            "type": "tool_result",
+            # Real keys
+            "tool_id": "real-id",
+            "output": "real output",
+            "status": "success",
+            # Legacy keys that must NOT win
+            "tool_use_id": "legacy-id",
+            "content": "legacy content",
+        },
+        {"type": "result", "status": "success", "stats": {}},
+    ]
+    session = await _run_events(events)
+
+    assert len(session.tool_results) == 1
+    tr = session.tool_results[0]
+    assert tr["tool_use_id"] == "real-id", (
+        f"tool_id must win over tool_use_id; got {tr['tool_use_id']!r}"
+    )
+    assert tr["content"] == "real output", f"output must win over content; got {tr['content']!r}"
+
+
+@pytest.mark.asyncio
+async def test_nested_tool_call_in_message_content_real_keys():
+    """A tool_use block nested inside a message content list must use the same
+    real-keys-first probe chains as top-level tool_use events.
+
+    Real gemini CLI tool-use blocks inside content lists may carry
+    `tool_name`/`parameters` rather than `name`/`input`.
+    """
+    events = [
+        {"type": "init", "session_id": "s1", "model": "gemini-3-flash-preview"},
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    # Real keys
+                    "id": "nested-id",
+                    "tool_name": "nested_tool",
+                    "parameters": {"nested": True},
+                    # Legacy key that must NOT win
+                    "name": "legacy_nested",
+                    "input": {"legacy": True},
+                }
+            ],
+        },
+        {"type": "result", "status": "success", "stats": {}},
+    ]
+    session = await _run_events(events)
+
+    assert len(session.tool_uses) == 1, (
+        f"expected 1 tool_use from nested block; got {session.tool_uses}"
+    )
+    tu = session.tool_uses[0]
+    assert tu["name"] == "nested_tool", (
+        f"tool_name must win over name in nested block; got {tu['name']!r}"
+    )
+    assert tu["input"] == {"nested": True}, (
+        f"parameters must win over input in nested block; got {tu['input']!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Combined: tool call + answer, no echo contamination
 # ---------------------------------------------------------------------------
 
