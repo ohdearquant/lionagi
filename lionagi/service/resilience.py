@@ -290,6 +290,7 @@ async def retry_with_backoff(
                 attempts=max_retries + 1,
                 base_delay=base_delay,
                 max_delay=max_delay,
+                backoff_factor=backoff_factor,
                 retry_on=retry_exceptions,
                 jitter=jitter_factor if jitter else 0.0,
             )
@@ -301,6 +302,7 @@ async def retry_with_backoff(
         attempts=max_retries + 1,
         base_delay=base_delay,
         max_delay=max_delay,
+        backoff_factor=backoff_factor,
         retry_on=retry_exceptions,
         jitter=jitter_factor if jitter else 0.0,
     )

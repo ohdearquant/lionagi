@@ -481,3 +481,38 @@ async def test_retry_deadline_expired_immediately(anyio_backend):
 
     # Verify we made at least one attempt
     assert calls["n"] >= 1
+
+
+@pytest.mark.anyio
+async def test_retry_backoff_factor_honored(anyio_backend):
+    """backoff_factor param is used; non-default values change the delay sequence."""
+    from unittest.mock import patch
+
+    import lionagi.ln.concurrency.patterns as patterns_mod
+
+    sleep_calls = []
+    attempt_count = [0]
+
+    async def fail_twice():
+        attempt_count[0] += 1
+        if attempt_count[0] < 3:
+            raise TimeoutError("x")
+        return "ok"
+
+    async def fake_sleep(secs):
+        sleep_calls.append(secs)
+
+    with patch.object(patterns_mod.anyio, "sleep", fake_sleep):
+        result = await retry(
+            fail_twice,
+            attempts=3,
+            base_delay=1.0,
+            max_delay=100.0,
+            backoff_factor=5.0,
+            retry_on=(TimeoutError,),
+            jitter=0.0,
+        )
+
+    assert result == "ok"
+    # With backoff_factor=5.0: attempt 1 → 1.0*5^0=1.0, attempt 2 → 1.0*5^1=5.0
+    assert sleep_calls == [1.0, 5.0], f"Expected [1.0, 5.0] but got {sleep_calls}"

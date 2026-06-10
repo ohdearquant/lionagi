@@ -281,6 +281,7 @@ async def retry(
     attempts: int = 3,
     base_delay: float = 0.1,
     max_delay: float = 2.0,
+    backoff_factor: float = 2.0,
     retry_on: tuple[type[BaseException], ...] = (Exception,),
     jitter: float = 0.1,
 ) -> T:
@@ -294,6 +295,7 @@ async def retry(
         attempts: Maximum attempts (>= 1).
         base_delay: Initial delay in seconds (> 0).
         max_delay: Maximum delay cap in seconds (>= 0).
+        backoff_factor: Exponential base for delay growth (default 2.0).
         retry_on: Exception types to retry on (must not include CancelledError).
         jitter: Random jitter factor (0.1 = up to 10% extra delay).
 
@@ -327,7 +329,7 @@ async def retry(
             if attempt >= attempts:
                 raise
 
-            delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+            delay = min(max_delay, base_delay * (backoff_factor ** (attempt - 1)))
             if jitter:
                 delay *= 1 + random.random() * jitter  # noqa: S311  # non-crypto: jitter for backoff timing
 

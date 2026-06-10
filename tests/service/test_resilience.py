@@ -634,5 +634,5 @@ class TestWithRetryDecorator:
             )
 
         assert result == "success"
-        # canonical retry uses base 2 exponentiation: 2.0*2^0=2.0, 2.0*2^1=4.0 (capped at 5.0)
-        assert sleep_calls == [2.0, 4.0]
+        # backoff_factor=10.0 with base_delay=2.0: attempt 1 → 2.0*10^0=2.0, attempt 2 → 2.0*10^1=5.0 (capped at max_delay=5.0)
+        assert sleep_calls == [2.0, 5.0]
