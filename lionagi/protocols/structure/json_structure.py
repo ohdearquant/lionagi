@@ -5,6 +5,8 @@
 # The extra names below mirror the old module's top-level namespace so that
 # pre-relocation imports keep working; __all__ stays byte-equivalent to the
 # old module (class-only) so star-import behavior is unchanged.
+from __future__ import annotations
+
 import logging as logging
 from typing import Any as Any
 

@@ -211,3 +211,14 @@ def test_deprecated_shim_all_matches_old_modules():
 
     assert shim_base.__all__ == ("Structure",)
     assert shim_json.__all__ == ("JsonStructure",)
+
+
+def test_deprecated_shim_annotations_binding_preserved():
+    """The old modules' `from __future__ import annotations` made
+    `annotations` an importable top-level name; the shims keep it."""
+    from lionagi.protocols.structure.base import annotations as base_ann
+    from lionagi.protocols.structure.json_structure import (
+        annotations as json_ann,
+    )
+
+    assert base_ann is json_ann  # both are the same __future__ feature object
