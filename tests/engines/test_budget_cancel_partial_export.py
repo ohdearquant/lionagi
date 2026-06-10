@@ -227,6 +227,92 @@ async def test_external_cancellation_propagates_as_cancelled_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_external_cancel_during_partial_export_propagates() -> None:
+    """Regression: if the caller cancels Engine.run() while it is executing the
+    shielded partial export phase, CancelledError must still propagate to the
+    caller — the engine must not swallow it and return a result.
+
+    Repro: a _partial_export override that signals when it has started, then
+    sleeps; the caller cancels after the signal; Engine.run() must raise.
+    """
+    eng = _StubEngine()
+    partial_entered = asyncio.Event()
+
+    async def slow_partial_export(run_obj: EngineRun, *a: Any, **kw: Any) -> Any:
+        partial_entered.set()
+        await asyncio.sleep(30)  # long enough for the caller cancel to arrive
+        return "should never reach"
+
+    eng._partial_export = slow_partial_export  # type: ignore[method-assign]
+
+    async def simulated_run_internal_cancel(run_obj: EngineRun, *a: Any, **kw: Any) -> Any:
+        run_obj._budget_notified = True
+        assert run_obj._run_task is not None
+        run_obj._run_task.cancel()
+        await asyncio.sleep(10)
+        return "never"
+
+    eng._run = simulated_run_internal_cancel  # type: ignore[method-assign]
+
+    outer = asyncio.ensure_future(eng.run())
+    # Wait until partial export has started, then cancel from the caller side.
+    await asyncio.wait_for(partial_entered.wait(), timeout=5)
+    outer.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await outer
+
+
+@pytest.mark.asyncio
+async def test_active_tasks_cancelled_before_partial_export() -> None:
+    """Regression: spawned background tasks (run._active) must be cancelled
+    BEFORE _partial_export starts so synthesis sees a stable snapshot and no
+    tokens are burned past budget exhaustion.
+
+    The test plants a spawned task that appends to a list if it survives past
+    the budget cancel, and a _partial_export override that records whether any
+    active tasks remain on entry.  After the fix, _active must be empty when
+    _partial_export is called.
+    """
+    eng = _StubEngine()
+    active_on_entry: list[int] = []  # count of _active tasks when partial export started
+    survived_appends: list[str] = []  # appended if a spawned task ran past cancel
+
+    async def leaky_worker() -> None:
+        try:
+            await asyncio.sleep(30)
+            survived_appends.append("leaked")
+        except asyncio.CancelledError:
+            raise
+
+    async def recording_partial_export(run_obj: EngineRun, *a: Any, **kw: Any) -> Any:
+        active_on_entry.append(len(run_obj._active))
+        return "partial"
+
+    eng._partial_export = recording_partial_export  # type: ignore[method-assign]
+
+    async def simulated_run_with_spawn(run_obj: EngineRun, *a: Any, **kw: Any) -> Any:
+        run_obj.spawn(leaky_worker())
+        run_obj._budget_notified = True
+        assert run_obj._run_task is not None
+        run_obj._run_task.cancel()
+        await asyncio.sleep(10)
+        return "never"
+
+    eng._run = simulated_run_with_spawn  # type: ignore[method-assign]
+
+    result = await eng.run()
+    assert result == "partial"
+    # No background tasks must remain active when partial export runs.
+    assert active_on_entry == [0], (
+        f"_active must be empty when _partial_export starts; had {active_on_entry[0]} tasks"
+    )
+    # Give the loop a tick and verify the worker did not survive.
+    await asyncio.sleep(0)
+    assert not survived_appends, "spawned task must not have run to completion past budget cancel"
+
+
+@pytest.mark.asyncio
 async def test_budget_cancel_without_export_dir_does_not_crash() -> None:
     """Budget cancellation without an export_dir still returns the partial
     report string and does not crash.
