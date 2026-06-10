@@ -516,3 +516,128 @@ async def test_retry_backoff_factor_honored(anyio_backend):
     assert result == "ok"
     # With backoff_factor=5.0: attempt 1 → 1.0*5^0=1.0, attempt 2 → 1.0*5^1=5.0
     assert sleep_calls == [1.0, 5.0], f"Expected [1.0, 5.0] but got {sleep_calls}"
+
+
+@pytest.mark.anyio
+async def test_retry_backoff_factor_exactly_one_accepted(anyio_backend):
+    """backoff_factor=1.0 is the boundary and must be accepted (constant delay)."""
+    from unittest.mock import patch
+
+    import lionagi.ln.concurrency.patterns as patterns_mod
+
+    sleep_calls = []
+    attempt_count = [0]
+
+    async def fail_twice():
+        attempt_count[0] += 1
+        if attempt_count[0] < 3:
+            raise TimeoutError("x")
+        return "ok"
+
+    async def fake_sleep(secs):
+        sleep_calls.append(secs)
+
+    with patch.object(patterns_mod.anyio, "sleep", fake_sleep):
+        result = await retry(
+            fail_twice,
+            attempts=3,
+            base_delay=1.0,
+            max_delay=100.0,
+            backoff_factor=1.0,
+            retry_on=(TimeoutError,),
+            jitter=0.0,
+        )
+
+    assert result == "ok"
+    # With backoff_factor=1.0: all delays are base_delay*1^n = 1.0 (constant)
+    assert sleep_calls == [1.0, 1.0], f"Expected [1.0, 1.0] but got {sleep_calls}"
+
+
+@pytest.mark.anyio
+async def test_retry_backoff_factor_below_one_rejected(anyio_backend):
+    """backoff_factor < 1.0 must raise ValueError immediately."""
+
+    async def noop():
+        return "never called"  # pragma: no cover
+
+    with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
+        await retry(
+            noop,
+            attempts=3,
+            base_delay=1.0,
+            max_delay=100.0,
+            backoff_factor=0.5,
+            retry_on=(TimeoutError,),
+        )
+
+
+@pytest.mark.anyio
+async def test_retry_backoff_factor_zero_rejected(anyio_backend):
+    """backoff_factor=0 must raise ValueError."""
+
+    async def noop():
+        return "never called"  # pragma: no cover
+
+    with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
+        await retry(
+            noop,
+            attempts=3,
+            base_delay=1.0,
+            max_delay=100.0,
+            backoff_factor=0,
+            retry_on=(TimeoutError,),
+        )
+
+
+@pytest.mark.anyio
+async def test_retry_backoff_factor_negative_rejected(anyio_backend):
+    """Negative backoff_factor must raise ValueError."""
+
+    async def noop():
+        return "never called"  # pragma: no cover
+
+    with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
+        await retry(
+            noop,
+            attempts=3,
+            base_delay=1.0,
+            max_delay=100.0,
+            backoff_factor=-2.0,
+            retry_on=(TimeoutError,),
+        )
+
+
+@pytest.mark.anyio
+async def test_retry_backoff_factor_large_capped_by_max_delay(anyio_backend):
+    """Large backoff_factor still gets capped by max_delay."""
+    from unittest.mock import patch
+
+    import lionagi.ln.concurrency.patterns as patterns_mod
+
+    sleep_calls = []
+    attempt_count = [0]
+
+    async def fail_three_times():
+        attempt_count[0] += 1
+        if attempt_count[0] < 4:
+            raise TimeoutError("x")
+        return "ok"
+
+    async def fake_sleep(secs):
+        sleep_calls.append(secs)
+
+    with patch.object(patterns_mod.anyio, "sleep", fake_sleep):
+        result = await retry(
+            fail_three_times,
+            attempts=4,
+            base_delay=1.0,
+            max_delay=5.0,
+            backoff_factor=100.0,
+            retry_on=(TimeoutError,),
+            jitter=0.0,
+        )
+
+    assert result == "ok"
+    # Without cap: 1.0, 100.0, 10000.0 — all should be capped to 5.0
+    assert all(d <= 5.0 for d in sleep_calls), f"Expected all <= 5.0, got {sleep_calls}"
+    assert len(sleep_calls) == 3

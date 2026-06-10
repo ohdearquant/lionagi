@@ -215,6 +215,8 @@ class RetryConfig:
         ),
         exclude_exceptions: tuple[type[Exception], ...] = (),
     ):
+        if backoff_factor < 1.0:
+            raise ValueError("backoff_factor must be >= 1.0")
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.max_delay = max_delay

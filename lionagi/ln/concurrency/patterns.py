@@ -314,6 +314,8 @@ async def retry(
         raise ValueError("max_delay must be >= 0")
     if jitter < 0:
         raise ValueError("jitter must be >= 0")
+    if backoff_factor < 1.0:
+        raise ValueError("backoff_factor must be >= 1.0")
 
     cancelled_exc = anyio.get_cancelled_exc_class()
     if any(issubclass(cancelled_exc, t) for t in retry_on):
