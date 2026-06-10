@@ -716,9 +716,21 @@ async def stream_codex_cli(
                     if isinstance(err, dict)
                     else obj.get("message", str(err))
                 )
-                if request.verbose_output:
-                    log.error("Codex error: %s", session.result)
-                sc = StreamChunk(type="error", content=session.result, metadata=obj)
+                # Detect a benign end-of-stream sentinel: some codex CLI versions
+                # emit ``{"type": "error", "error": {}}`` (or an error with no
+                # "message" key) when a resumed session ends normally rather than
+                # with a real failure.  Tag these explicitly so run() can treat
+                # them as clean EOS rather than propagating them as RunFailed.
+                # An error with a non-empty "message" is never benign.
+                _is_benign_eos = isinstance(err, dict) and not err.get("message")
+                chunk_meta = dict(obj)
+                if _is_benign_eos:
+                    chunk_meta["benign_eos"] = True
+                    session.is_error = False  # retract: not a real error
+                else:
+                    if request.verbose_output:
+                        log.error("Codex error: %s", session.result)
+                sc = StreamChunk(type="error", content=session.result, metadata=chunk_meta)
                 session.chunks.append(sc)
                 yield sc
 

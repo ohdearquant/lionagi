@@ -104,6 +104,11 @@ class Branch(Element, Relational):
     _capabilities: Any = PrivateAttr(None)
     _loop_control: "LoopControl | None" = PrivateAttr(None)
     _signal_tasks: list = PrivateAttr(default_factory=list)
+    # When True, run() suppresses its own RunStart/RunEnd/RunFailed emission.
+    # Branch.ReAct() sets this before delegating so the single outer lifecycle
+    # signals it emits are the only ones observers see — no N+1 RunStart from
+    # internal run_and_collect calls inside the ReAct loop.
+    _suppress_run_lifecycle: bool = PrivateAttr(False)
 
     def __init__(
         self,
@@ -824,6 +829,10 @@ class Branch(Element, Relational):
             from .signal import RunStart
 
             await self.emit(RunStart())
+        # Suppress nested lifecycle emission from run() calls inside ReActStream
+        # so observers receive exactly ONE RunStart/RunEnd per Branch.ReAct() call
+        # rather than N+1 (one outer + one per internal operate/run_and_collect).
+        self._suppress_run_lifecycle = True
         try:
             result = await ReAct(
                 self,
@@ -853,12 +862,14 @@ class Branch(Element, Relational):
                 **kwargs_filtered,
             )
         except BaseException as exc:
+            self._suppress_run_lifecycle = False
             await self.drain_signals()
             if has_observer:
                 from .signal import RunFailed
 
                 await self.emit(RunFailed(data=exc))
             raise
+        self._suppress_run_lifecycle = False
         await self.drain_signals()
         if has_observer:
             from .signal import RunEnd
