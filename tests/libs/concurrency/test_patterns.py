@@ -638,6 +638,7 @@ async def test_retry_backoff_factor_large_capped_by_max_delay(anyio_backend):
         )
 
     assert result == "ok"
-    # Without cap: 1.0, 100.0, 10000.0 — all should be capped to 5.0
-    assert all(d <= 5.0 for d in sleep_calls), f"Expected all <= 5.0, got {sleep_calls}"
-    assert len(sleep_calls) == 3
+    # Without cap: 1.0, 100.0, 10000.0.  The exact sequence proves the large
+    # factor was actually applied then capped — a base-2 implementation would
+    # produce [1.0, 2.0, 4.0], which an `all(d <= 5.0)` check cannot catch.
+    assert sleep_calls == [1.0, 5.0, 5.0]
