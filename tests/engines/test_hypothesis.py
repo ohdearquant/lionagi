@@ -264,3 +264,88 @@ async def test_empty_findings_raises():
     eng = HypothesisEngine()
     with pytest.raises(ValueError):
         await eng.run("   ")
+
+
+# ---------------------------------------------------------------------------
+# Regression: #1361 — chain events must reach on_event exactly once
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chain_events_reach_on_event_exactly_once_no_double_delivery():
+    """Regression for #1361: every chain event collected by HypothesisRun must
+    reach on_event exactly once — regardless of whether it arrived via run.emit()
+    (seed FindingPosted) or the session bus (agent-emitted Q/E/H/etc.).
+
+    Contract: set(eids delivered to on_event) == set(eids in run store)
+    and no eid is delivered twice."""
+    eng = HypothesisEngine()
+    run = eng.new_run()
+    # Mute all reactive stages so we control exactly which events land
+    _mute(eng, "extract", "research", "hypothesize", "design", "validate", "conclude", "apply")
+    _wire(eng, run)
+
+    delivered_types: list[str] = []
+    run.on_event = lambda e: delivered_types.append(e["type"])
+
+    # Emit a mix via run.emit() (seed path) and session bus (agent path)
+    await run.emit(FindingPosted(description="seed finding"))  # run.emit path
+    await run.session.emit(QuestionRaised(area="a", what_is_unknown="why X over Y?"))  # bus path
+    await run.session.emit(EvidenceCollected(question_ref="Q-1", description="ev", kind="analysis"))
+    await run.session.emit(
+        HypothesisFormed(question_ref="Q-1", statement="X is faster", metric="ms")
+    )
+    await run.wait_quiescence()
+
+    # Every stored eid must appear in the delivered stream exactly once
+    stored_eids = {e.eid for evs in run.store.values() for e in evs if e.eid}
+    chain_types_seen = {
+        e["type"]
+        for e in [{"type": t} for t in delivered_types]
+        if e["type"]
+        in {
+            "FindingPosted",
+            "QuestionRaised",
+            "EvidenceCollected",
+            "HypothesisFormed",
+            "ExperimentDesigned",
+            "ResultRecorded",
+            "ConclusionDrawn",
+            "ApplicationMapped",
+        }
+    }
+    expected_types = {"FindingPosted", "QuestionRaised", "EvidenceCollected", "HypothesisFormed"}
+    assert expected_types <= chain_types_seen, (
+        f"Missing from on_event stream: {expected_types - chain_types_seen}"
+    )
+
+    # No double delivery: each chain event type should appear exactly once here
+    # (we emitted exactly one of each)
+    from collections import Counter
+
+    counts = Counter(delivered_types)
+    doubled = [k for k, v in counts.items() if k in expected_types and v > 1]
+    assert not doubled, f"Double-delivered chain event types: {doubled}"
+
+    # The stored eids match what was stamped (sanity check)
+    assert len(stored_eids) == 4, f"Expected 4 chain events stored, got {len(stored_eids)}"
+
+
+@pytest.mark.asyncio
+async def test_seed_finding_no_double_delivery_via_run_emit():
+    """Seed FindingPosted goes through run.emit(); the emit() override must not
+    cause a second on_event call for the same event (regression: collect()
+    notifies once, emit() override skips its own call for ChainEvent)."""
+    eng = HypothesisEngine()
+    run = eng.new_run()
+    _mute(eng, "extract")
+    _wire(eng, run)
+
+    delivered: list[dict] = []
+    run.on_event = lambda e: delivered.append(e)
+
+    await run.emit(FindingPosted(description="only seed"))
+    await run.wait_quiescence()
+
+    fp_events = [e for e in delivered if e["type"] == "FindingPosted"]
+    assert len(fp_events) == 1, f"Expected 1 FindingPosted delivery, got {len(fp_events)}"

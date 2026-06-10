@@ -56,6 +56,18 @@ def _event_dict(event: Any) -> dict[str, Any]:
     return {}
 
 
+def _safe_event_dict(event: Any) -> dict[str, Any]:
+    """Like _event_dict but renames keys that clash with notify(kind, **data).
+
+    The ``kind`` parameter name is reserved by ``EngineRun.notify``; any event
+    field named ``kind`` (e.g. ``EvidenceCollected.kind``) must be renamed to
+    avoid a TypeError when the dict is splatted into the call."""
+    d = _event_dict(event)
+    if "kind" in d:
+        d["event_kind"] = d.pop("kind")
+    return d
+
+
 def _judge_instruction(eid: str, subject: str, context: str) -> str:
     return (
         "You are the quality gate of an autonomous pipeline. Decide whether this "

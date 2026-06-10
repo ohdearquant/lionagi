@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 
 from lionagi.casts.emission import Finding, Gap, Verdict
 
-from .engine import Engine, EngineEvent, EngineRun
+from .engine import Engine, EngineEvent, EngineRun, _event_dict, _safe_event_dict
 
 logger = logging.getLogger("lionagi.engines")
 
@@ -438,14 +438,34 @@ class HypothesisRun(EngineRun):
         self._index: dict[str, ChainEvent] = {}
 
     def collect(self, event: ChainEvent) -> ChainEvent:
-        """Stamp the engine-assigned eid and store the event (first observer)."""
+        """Stamp the engine-assigned eid, store the event, and fan it to on_event.
+
+        Every chain event — whether it arrives via run.emit() (seed FindingPosted)
+        or from an agent on the session bus — is stamped here.  Notifying here is
+        the only path that reaches agent-emitted kinds like QuestionRaised,
+        EvidenceCollected, HypothesisFormed, etc.  emit() is overridden below to
+        skip its own notify for ChainEvent so there is no double-delivery for
+        the seed findings that also pass through run.emit()."""
         prefix = _EVENT_PREFIX.get(type(event), "N")
         n = self._eid_counts.get(prefix, 0) + 1
         self._eid_counts[prefix] = n
         event.eid = f"{prefix}-{n}"
         self.store.setdefault(type(event), []).append(event)
         self._index[event.eid] = event
+        self.notify(type(event).__name__, **_safe_event_dict(event))
         return event
+
+    async def emit(self, event: Any) -> list[Any]:
+        """Emit onto the session bus; skip the base notify for chain events.
+
+        ChainEvent instances are already notified by collect() (triggered by the
+        observer registered in _run).  The base EngineRun.emit() would call
+        notify() a second time for seed FindingPosted events — this override
+        suppresses that duplicate."""
+        results = await self.session.emit(event)
+        if not isinstance(event, ChainEvent):
+            self.notify(type(event).__name__, **_event_dict(event))
+        return results
 
     def find(self, eid: str) -> ChainEvent | None:
         return self._index.get(eid)

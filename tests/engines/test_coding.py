@@ -524,3 +524,142 @@ async def test_judge_can_stop_fix_loop_early(tmp_path, monkeypatch):
     assert result.passed is False
     assert len(run.events_of(TestsRan)) == 1  # judge stopped before any fix round
     assert any(e["type"] == "fix_gated" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# Regression: #1361 — chain events must reach on_event exactly once
+# ---------------------------------------------------------------------------
+
+
+class _BusBranch:
+    """Emits events via the raw session bus only (no run.emit()) — the exact
+    path a real LLM agent uses.  This is the path that was broken before the
+    fix: collect() was triggered by the observer but notify() was never called,
+    so WorkPlanned/ChangeProposed/VerifyResult never reached on_event."""
+
+    def __init__(self, run, events: list, *, name: str = "agent"):
+        self._run = run
+        self._events = list(events)
+        self.name = name
+
+    async def operate(self, *, instruction):
+        if self._events:
+            await self._run.session.emit(self._events.pop(0))
+        return "ok"
+
+
+@pytest.mark.asyncio
+async def test_chain_events_reach_on_event_exactly_once_bus_path(tmp_path, monkeypatch):
+    """Regression for #1361: WorkPlanned, ChangeProposed, and VerifyResult that
+    arrive via the session bus (the real agent path, not run.emit()) must reach
+    on_event exactly once each.  The contract: set of eids delivered to on_event
+    equals set of eids in the run store, and no eid is delivered twice."""
+    eng = CodingEngine(repair_retries=0)
+    run = eng.new_run()
+
+    plan_ev = WorkPlanned(approach="add foo", acceptance_criteria=["foo exists"])
+    change_ev = ChangeProposed(summary="added foo", files_touched=["foo.py"], plan_ref="W-1")
+    verdict_ev = VerifyResult(
+        verdict="APPROVE", rationale="meets criteria", meets_acceptance=True, tests_ref="T-1"
+    )
+
+    # _BusBranch emits via the raw session bus — the bug path
+    branches = {
+        "plan": _BusBranch(run, [plan_ev], name="plan"),
+        "implement": _BusBranch(run, [change_ev], name="implement"),
+        "verify": _BusBranch(run, [verdict_ev], name="verify"),
+    }
+
+    async def fake_make(role, *, name=None, **kw):
+        return branches[name]
+
+    monkeypatch.setattr(run, "make_agent", fake_make)
+    monkeypatch.setattr(eng, "_capture_diff", lambda r: _async(""))
+
+    delivered: list[str] = []
+    run.on_event = lambda e: delivered.append(e["type"])
+
+    result = await eng._run(
+        run,
+        "add a foo function",
+        test_cmd=[sys.executable, "-c", "exit(0)"],
+        workspace=str(tmp_path),
+    )
+
+    assert result.passed is True
+
+    # Every stored chain event kind must be in the delivered stream
+    chain_types = {
+        "WorkPlanned",
+        "ChangeProposed",
+        "TestsRan",
+        "VerifyResult",
+        "CodeResultRecorded",
+    }
+    delivered_set = set(delivered)
+    assert chain_types <= delivered_set, (
+        f"Missing from on_event stream: {chain_types - delivered_set}"
+    )
+
+    # No eid delivered twice (no double-delivery)
+    from collections import Counter
+
+    counts = Counter(delivered)
+    doubled = [k for k, v in counts.items() if k in chain_types and v > 1]
+    assert not doubled, f"Double-delivered chain event types: {doubled}"
+
+
+@pytest.mark.asyncio
+async def test_chain_events_reach_on_event_exactly_once_emit_path(tmp_path, monkeypatch):
+    """Same contract as above but events arrive via run.emit() (the _ScriptedBranch
+    path).  Verifies the emit() override does not suppress delivery for chain events
+    that go through run.emit() (TestsRan, CodeResultRecorded) and that the agent-emit
+    path does not double-deliver WorkPlanned/ChangeProposed/VerifyResult."""
+    eng = CodingEngine(repair_retries=0)
+    run = eng.new_run()
+
+    plan_ev = WorkPlanned(approach="add bar")
+    change_ev = ChangeProposed(summary="added bar", plan_ref="W-1")
+    verdict_ev = VerifyResult(verdict="APPROVE", rationale="ok", meets_acceptance=True)
+
+    branches = {
+        "plan": _ScriptedBranch(run, [plan_ev], name="plan"),
+        "implement": _ScriptedBranch(run, [change_ev], name="implement"),
+        "verify": _ScriptedBranch(run, [verdict_ev], name="verify"),
+    }
+
+    async def fake_make(role, *, name=None, **kw):
+        return branches[name]
+
+    monkeypatch.setattr(run, "make_agent", fake_make)
+    monkeypatch.setattr(eng, "_capture_diff", lambda r: _async(""))
+
+    delivered: list[str] = []
+    run.on_event = lambda e: delivered.append(e["type"])
+
+    result = await eng._run(
+        run,
+        "add a bar function",
+        test_cmd=[sys.executable, "-c", "exit(0)"],
+        workspace=str(tmp_path),
+    )
+
+    assert result.passed is True
+
+    chain_types = {
+        "WorkPlanned",
+        "ChangeProposed",
+        "TestsRan",
+        "VerifyResult",
+        "CodeResultRecorded",
+    }
+    delivered_set = set(delivered)
+    assert chain_types <= delivered_set, (
+        f"Missing from on_event stream: {chain_types - delivered_set}"
+    )
+
+    from collections import Counter
+
+    counts = Counter(delivered)
+    doubled = [k for k, v in counts.items() if k in chain_types and v > 1]
+    assert not doubled, f"Double-delivered chain event types: {doubled}"
