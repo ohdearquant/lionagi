@@ -205,9 +205,7 @@ class TestFunctionToSchema:
             "x": "Custom description for x.",
             "y": "Custom description for y.",
         }
-        schema = function_to_schema(
-            func_with_params, parametert_description=custom_params
-        )
+        schema = function_to_schema(func_with_params, parametert_description=custom_params)
 
         params = schema["function"]["parameters"]
         assert params["properties"]["x"]["description"] == "Custom description for x."
@@ -301,9 +299,7 @@ class TestFunctionToSchema:
     def test_multiple_parameters_all_types(self):
         """Test function with multiple parameters of different types."""
 
-        def multi_type_func(
-            a: int, b: str, c: float, d: bool, e: list, f: dict, g: tuple
-        ):
+        def multi_type_func(a: int, b: str, c: float, d: bool, e: list, f: dict, g: tuple):
             """Function with multiple parameter types.
 
             Args:

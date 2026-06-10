@@ -33,9 +33,7 @@ def _init_git_repo(path: Path) -> None:
         subprocess.run(cmd, cwd=str(path), capture_output=True, check=True)
     (path / "README.md").write_text("initial\n")
     subprocess.run(["git", "add", "."], cwd=str(path), capture_output=True, check=True)
-    subprocess.run(
-        ["git", "commit", "-m", "init"], cwd=str(path), capture_output=True, check=True
-    )
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(path), capture_output=True, check=True)
 
 
 @pytest.fixture
@@ -198,9 +196,23 @@ async def test_sandbox_merge_cleans_up_worktree(git_repo):
     assert not os.path.exists(worktree_path)
 
 
+async def test_sandbox_merge_sets_is_active_false(git_repo):
+    session = await create_sandbox(str(git_repo))
+    assert session.is_active is True
+    await sandbox_merge(session)
+    assert session.is_active is False
+
+
 # ---------------------------------------------------------------------------
 # sandbox_discard
 # ---------------------------------------------------------------------------
+
+
+async def test_sandbox_discard_sets_is_active_false(git_repo):
+    session = await create_sandbox(str(git_repo))
+    assert session.is_active is True
+    await sandbox_discard(session)
+    assert session.is_active is False
 
 
 async def test_sandbox_discard_removes_worktree(git_repo):
@@ -215,9 +227,7 @@ async def test_sandbox_discard_deletes_branch(git_repo):
     session = await create_sandbox(str(git_repo))
     branch_name = session.branch_name
     await sandbox_discard(session)
-    out = subprocess.run(
-        ["git", "branch"], cwd=str(git_repo), capture_output=True, text=True
-    )
+    out = subprocess.run(["git", "branch"], cwd=str(git_repo), capture_output=True, text=True)
     assert branch_name not in out.stdout
 
 

@@ -128,7 +128,9 @@ function StepCard({
         <div className="mt-4 flex flex-col gap-3">
           {/* Role */}
           <div className="flex flex-col gap-1">
-            <label htmlFor={`${stepKey}-role`} className={LABEL_CLS}>Role</label>
+            <label htmlFor={`${stepKey}-role`} className={LABEL_CLS}>
+              Role
+            </label>
             {roles.length > 0 ? (
               <select
                 id={`${stepKey}-role`}
@@ -191,7 +193,9 @@ function StepCard({
 
           {/* Assignment */}
           <div className="flex flex-col gap-1">
-            <label htmlFor={`${stepKey}-assignment`} className={LABEL_CLS}>Assignment</label>
+            <label htmlFor={`${stepKey}-assignment`} className={LABEL_CLS}>
+              Assignment
+            </label>
             <input
               id={`${stepKey}-assignment`}
               type="text"
@@ -204,7 +208,9 @@ function StepCard({
 
           {/* Prompt template */}
           <div className="flex flex-col gap-1">
-            <label htmlFor={`${stepKey}-prompt`} className={LABEL_CLS}>Prompt Template</label>
+            <label htmlFor={`${stepKey}-prompt`} className={LABEL_CLS}>
+              Prompt Template
+            </label>
             <textarea
               id={`${stepKey}-prompt`}
               value={data.prompt}
@@ -220,7 +226,9 @@ function StepCard({
           {/* Capacity + Timeout row */}
           <div className="flex gap-3">
             <div className="flex flex-1 flex-col gap-1">
-              <label htmlFor={`${stepKey}-capacity`} className={LABEL_CLS}>Capacity</label>
+              <label htmlFor={`${stepKey}-capacity`} className={LABEL_CLS}>
+                Capacity
+              </label>
               <input
                 id={`${stepKey}-capacity`}
                 type="number"
@@ -235,7 +243,9 @@ function StepCard({
             </div>
 
             <div className="flex flex-1 flex-col gap-1">
-              <label htmlFor={`${stepKey}-timeout`} className={LABEL_CLS}>Timeout (s)</label>
+              <label htmlFor={`${stepKey}-timeout`} className={LABEL_CLS}>
+                Timeout (s)
+              </label>
               <input
                 id={`${stepKey}-timeout`}
                 type="number"

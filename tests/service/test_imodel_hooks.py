@@ -28,9 +28,7 @@ class TestiModelHooks:
             hook_params = kwargs
             return None
 
-        hook_registry = HookRegistry(
-            hooks={HookEventTypes.PreInvocation: pre_invoke_hook}
-        )
+        hook_registry = HookRegistry(hooks={HookEventTypes.PreInvocation: pre_invoke_hook})
 
         imodel = iModel(
             provider="openai",
@@ -44,9 +42,7 @@ class TestiModelHooks:
             "call",
             return_value=mock_response.json.return_value,
         ):
-            result = await imodel.invoke(
-                messages=[{"role": "user", "content": "Hello"}]
-            )
+            result = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 
         assert hook_called
         assert result.status == EventStatus.COMPLETED
@@ -63,9 +59,7 @@ class TestiModelHooks:
             captured_event = event
             return None
 
-        hook_registry = HookRegistry(
-            hooks={HookEventTypes.PostInvocation: post_invoke_hook}
-        )
+        hook_registry = HookRegistry(hooks={HookEventTypes.PostInvocation: post_invoke_hook})
 
         imodel = iModel(
             provider="openai",
@@ -79,9 +73,7 @@ class TestiModelHooks:
             "call",
             return_value=mock_response.json.return_value,
         ):
-            result = await imodel.invoke(
-                messages=[{"role": "user", "content": "Hello"}]
-            )
+            result = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 
         assert hook_called
         assert captured_event is not None
@@ -99,9 +91,7 @@ class TestiModelHooks:
             event_type_captured = event_type
             return None
 
-        hook_registry = HookRegistry(
-            hooks={HookEventTypes.PreEventCreate: pre_create_hook}
-        )
+        hook_registry = HookRegistry(hooks={HookEventTypes.PreEventCreate: pre_create_hook})
 
         imodel = iModel(
             provider="openai",
@@ -115,9 +105,7 @@ class TestiModelHooks:
             "call",
             return_value=mock_response.json.return_value,
         ):
-            result = await imodel.invoke(
-                messages=[{"role": "user", "content": "Hello"}]
-            )
+            result = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 
         assert hook_called
         assert event_type_captured == APICalling or event_type_captured is not None
@@ -183,9 +171,7 @@ class TestiModelHooks:
         async def exit_requesting_hook(event, **kwargs):
             raise RuntimeError("Exit requested by hook")
 
-        hook_registry = HookRegistry(
-            hooks={HookEventTypes.PreInvocation: exit_requesting_hook}
-        )
+        hook_registry = HookRegistry(hooks={HookEventTypes.PreInvocation: exit_requesting_hook})
 
         imodel = iModel(
             provider="openai",
@@ -241,18 +227,14 @@ class TestiModelHooks:
             "call",
             return_value=mock_response.json.return_value,
         ):
-            result = await imodel.invoke(
-                messages=[{"role": "user", "content": "Hello"}]
-            )
+            result = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 
         # Verify hooks executed in correct order
         assert "pre_create" in execution_order
         assert "pre_invoke" in execution_order
         assert "post_invoke" in execution_order
         assert execution_order.index("pre_create") < execution_order.index("pre_invoke")
-        assert execution_order.index("pre_invoke") < execution_order.index(
-            "post_invoke"
-        )
+        assert execution_order.index("pre_invoke") < execution_order.index("post_invoke")
         assert result.status == EventStatus.COMPLETED
 
     @pytest.mark.asyncio
@@ -267,9 +249,7 @@ class TestiModelHooks:
             state_accumulator.append(f"call_{call_count}")
             return None
 
-        hook_registry = HookRegistry(
-            hooks={HookEventTypes.PreInvocation: stateful_hook}
-        )
+        hook_registry = HookRegistry(hooks={HookEventTypes.PreInvocation: stateful_hook})
 
         imodel = iModel(
             provider="openai",
@@ -285,9 +265,7 @@ class TestiModelHooks:
         ):
             # Make multiple calls
             for i in range(3):
-                await imodel.invoke(
-                    messages=[{"role": "user", "content": f"Message {i}"}]
-                )
+                await imodel.invoke(messages=[{"role": "user", "content": f"Message {i}"}])
 
         # Verify state accumulated across calls
         assert call_count == 3
@@ -304,9 +282,7 @@ class TestiModelHooks:
             received_params = kwargs
             return None
 
-        hook_registry = HookRegistry(
-            hooks={HookEventTypes.PreInvocation: param_receiving_hook}
-        )
+        hook_registry = HookRegistry(hooks={HookEventTypes.PreInvocation: param_receiving_hook})
 
         imodel = iModel(
             provider="openai",
@@ -348,9 +324,7 @@ class TestiModelHooks:
                 nonlocal cleanup_called
                 cleanup_called = True
 
-        hook_registry = HookRegistry(
-            hooks={HookEventTypes.PreInvocation: hook_with_cleanup}
-        )
+        hook_registry = HookRegistry(hooks={HookEventTypes.PreInvocation: hook_with_cleanup})
 
         imodel = iModel(
             provider="openai",
@@ -395,9 +369,7 @@ class TestiModelHooks:
 
         with patch.object(imodel.endpoint, "stream", return_value=mock_stream()):
             chunks = []
-            async for chunk in imodel.stream(
-                messages=[{"role": "user", "content": "Hello"}]
-            ):
+            async for chunk in imodel.stream(messages=[{"role": "user", "content": "Hello"}]):
                 if chunk and not isinstance(chunk, APICalling):
                     chunks.append(chunk)
 
@@ -417,9 +389,7 @@ class TestiModelHooks:
                 await asyncio.sleep(0.001)
             return None
 
-        hook_registry = HookRegistry(
-            hooks={HookEventTypes.PreInvocation: thread_safe_hook}
-        )
+        hook_registry = HookRegistry(hooks={HookEventTypes.PreInvocation: thread_safe_hook})
 
         imodel = iModel(
             provider="openai",
@@ -437,9 +407,7 @@ class TestiModelHooks:
             tasks = []
             for i in range(5):
                 task = asyncio.create_task(
-                    imodel.invoke(
-                        messages=[{"role": "user", "content": f"Concurrent {i}"}]
-                    )
+                    imodel.invoke(messages=[{"role": "user", "content": f"Concurrent {i}"}])
                 )
                 tasks.append(task)
 
@@ -471,9 +439,7 @@ class TestiModelHooks:
             runtime_error_hook,
             generic_error_hook,
         ]:
-            hook_registry = HookRegistry(
-                hooks={HookEventTypes.PreInvocation: hook_func}
-            )
+            hook_registry = HookRegistry(hooks={HookEventTypes.PreInvocation: hook_func})
 
             imodel = iModel(
                 provider="openai",
@@ -483,9 +449,7 @@ class TestiModelHooks:
                 exit_hook=False,
             )
 
-            with patch.object(
-                imodel.endpoint, "call", return_value={"test": "response"}
-            ):
+            with patch.object(imodel.endpoint, "call", return_value={"test": "response"}):
                 result = await imodel.invoke(
                     messages=[{"role": "user", "content": "Hello"}],
                     pre_invoke_event_hook_timeout=0.05,  # Short timeout for testing
@@ -620,7 +584,5 @@ class TestProcessChunkExitTuple:
                 ),
             ),
         ):
-            with pytest.raises(
-                RuntimeError, match="Streaming hook requested exit without a cause"
-            ):
+            with pytest.raises(RuntimeError, match="Streaming hook requested exit without a cause"):
                 await imodel.process_chunk(_FakeChunk())

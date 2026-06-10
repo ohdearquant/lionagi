@@ -76,9 +76,7 @@ def test_load_agent_profile_flat_layout_still_works(
 ) -> None:
     agents_dir = isolated_home / ".lionagi" / "agents"
     agents_dir.mkdir(parents=True)
-    (agents_dir / "legacy.md").write_text(
-        "---\nmodel: codex/gpt-5.4\n---\n\nLegacy profile.\n"
-    )
+    (agents_dir / "legacy.md").write_text("---\nmodel: codex/gpt-5.4\n---\n\nLegacy profile.\n")
 
     profile = load_agent_profile("legacy")
     assert profile.name == "legacy"

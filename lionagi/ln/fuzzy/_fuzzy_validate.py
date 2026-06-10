@@ -27,26 +27,18 @@ def fuzzy_validate_pydantic(
     try:
         model_data = extract_json(text, fuzzy_parse=fuzzy_parse)
     except Exception as e:
-        raise ValidationError(
-            f"Failed to extract valid JSON from model response: {e}"
-        ) from e
+        raise ValidationError(f"Failed to extract valid JSON from model response: {e}") from e
 
     d = model_data
     if fuzzy_match:
         if fuzzy_match_params is None:
-            model_data = fuzzy_match_keys(
-                d, model_type.model_fields, handle_unmatched="remove"
-            )
+            model_data = fuzzy_match_keys(d, model_type.model_fields, handle_unmatched="remove")
         elif isinstance(fuzzy_match_params, dict):
-            model_data = fuzzy_match_keys(
-                d, model_type.model_fields, **fuzzy_match_params
-            )
+            model_data = fuzzy_match_keys(d, model_type.model_fields, **fuzzy_match_params)
         elif isinstance(fuzzy_match_params, FuzzyMatchKeysParams):
             model_data = fuzzy_match_params(d, model_type.model_fields)
         else:
-            raise TypeError(
-                "fuzzy_keys_params must be a dict or FuzzyMatchKeysParams instance"
-            )
+            raise TypeError("fuzzy_keys_params must be a dict or FuzzyMatchKeysParams instance")
 
     try:
         return model_type.model_validate(model_data)
@@ -107,28 +99,18 @@ def fuzzy_validate_mapping(
     try:
         if isinstance(d, str):
             try:
-                json_result = extract_json(
-                    d, fuzzy_parse=True, return_one_if_single=True
-                )
-                dict_input = (
-                    json_result[0] if isinstance(json_result, list) else json_result
-                )
+                json_result = extract_json(d, fuzzy_parse=True, return_one_if_single=True)
+                dict_input = json_result[0] if isinstance(json_result, list) else json_result
             except Exception:
-                dict_input = to_dict(
-                    d, str_type="json", fuzzy_parse=True, suppress=True
-                )
+                dict_input = to_dict(d, str_type="json", fuzzy_parse=True, suppress=True)
         else:
-            dict_input = to_dict(
-                d, use_model_dump=True, fuzzy_parse=True, suppress=True
-            )
+            dict_input = to_dict(d, use_model_dump=True, fuzzy_parse=True, suppress=True)
 
         if not isinstance(dict_input, dict):
             if suppress_conversion_errors:
                 dict_input = {}
             else:
-                raise ValueError(
-                    f"Failed to convert input to dictionary: {type(dict_input)}"
-                )
+                raise ValueError(f"Failed to convert input to dictionary: {type(dict_input)}")
 
     except Exception as e:
         if suppress_conversion_errors:

@@ -50,6 +50,12 @@ class TestRoleNodeBuilder:
         node = nb(SpawnRequest(instruction="x"), None)
         assert node.branch_id is None
 
+    def test_unknown_assignee_raises(self):
+        session, roles = _roles("researcher")
+        nb = role_node_builder(roles)
+        with pytest.raises(ValueError, match="not a recognized role"):
+            nb(SpawnRequest(instruction="x", assignee="ghost"), None)
+
     def test_custom_operation_preserved(self):
         session, roles = _roles("researcher")
         nb = role_node_builder(roles)
@@ -177,6 +183,38 @@ class TestBuildDagGraph:
         node = graph.internal_nodes[ids[0]]
         assert node.branch_id != roles["researcher"].id
         assert node.branch_id in session.branches
+
+    def test_return_annotation_allows_none_in_node_ids(self):
+        """Return annotation must be list[str | None] to match runtime."""
+        import types
+        import typing
+
+        import lionagi.orchestration.patterns as _mod
+
+        # Session/Branch are TYPE_CHECKING-only; inject them so
+        # get_type_hints can resolve the full signature.
+        ns = dict(vars(_mod))
+        ns.setdefault("Session", Session)
+        ns.setdefault("Branch", Branch)
+        hints = typing.get_type_hints(build_dag_graph, globalns=ns, include_extras=True)
+        ret = hints["return"]
+        # tuple[Graph, list[str | None]]
+        assert typing.get_origin(ret) is tuple
+        _, list_type = typing.get_args(ret)
+        assert typing.get_origin(list_type) is list
+        (elem_type,) = typing.get_args(list_type)
+        assert typing.get_origin(elem_type) is types.UnionType
+        assert set(typing.get_args(elem_type)) == {str, type(None)}
+
+        # Verify runtime: a dropped assignee produces None in the list
+        session, roles = _roles("researcher")
+        assignments = [
+            TaskAssignment(task="ok", assignee="researcher"),
+            TaskAssignment(task="ghost", assignee="nobody"),
+        ]
+        _, ids = build_dag_graph(session, assignments, roles)
+        assert ids[0] is not None
+        assert ids[1] is None
 
 
 class _FakeOrc:

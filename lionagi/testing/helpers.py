@@ -17,6 +17,7 @@ from typing import Any, TypeVar
 
 from pydantic import Field as _Field
 
+from lionagi.ln import fail_after, gather, move_on_after
 from lionagi.protocols.generic.element import UUID, Element
 from lionagi.protocols.generic.event import EventStatus
 from lionagi.protocols.graph.node import Node
@@ -47,30 +48,41 @@ class AsyncTestHelpers:
         limit: int = 100,
         timeout: float = 10.0,
     ) -> list[T]:
+        """Collect up to *limit* items from an async generator within *timeout* seconds.
+
+        Uses ``lionagi.ln.move_on_after`` for Python 3.10-compatible timeout handling
+        (``asyncio.timeout`` requires Python 3.11+).
+        """
         results: list[T] = []
-        try:
-            async with asyncio.timeout(timeout):
-                async for item in async_gen:
-                    results.append(item)
-                    if len(results) >= limit:
-                        break
-        except asyncio.TimeoutError:
-            pass
+        with move_on_after(timeout):
+            async for item in async_gen:
+                results.append(item)
+                if len(results) >= limit:
+                    break
         return results
 
     @staticmethod
     async def run_with_timeout(
         coro: Callable[..., Any], timeout: float = 5.0, *args: Any, **kwargs: Any
     ) -> Any:
-        async with asyncio.timeout(timeout):
+        """Run *coro* with a hard timeout, raising ``TimeoutError`` on expiry.
+
+        Uses ``lionagi.ln.fail_after`` for Python 3.10-compatible timeout handling.
+        """
+        with fail_after(timeout):
             return await coro(*args, **kwargs)
 
     @staticmethod
     async def wait_for_all(tasks: list[asyncio.Task], timeout: float = 10.0) -> list[Any]:
+        """Await all *tasks* within *timeout* seconds.
+
+        Cancels any incomplete tasks on timeout and re-raises ``TimeoutError``.
+        Uses ``lionagi.ln.fail_after`` for Python 3.10-compatible timeout handling.
+        """
         try:
-            async with asyncio.timeout(timeout):
-                return await asyncio.gather(*tasks)
-        except asyncio.TimeoutError:
+            with fail_after(timeout):
+                return list(await gather(*tasks))
+        except TimeoutError:
             for task in tasks:
                 if not task.done():
                     task.cancel()

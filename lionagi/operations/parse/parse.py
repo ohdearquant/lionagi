@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import contextlib
-import warnings
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
@@ -15,17 +14,15 @@ from lionagi.ln import (
     to_list,
 )
 from lionagi.ln.fuzzy import FuzzyMatchKeysParams
-from lionagi.protocols.structure.base import Structure
+from lionagi.operations.schema.structure import Structure
 from lionagi.protocols.types import AssistantResponse
 
+from .._defaults import get_default_parse_call as get_default_call
 from ..types import HandleValidation, ParseParam
 
 if TYPE_CHECKING:
     from lionagi.ln.types import Operable
     from lionagi.session.branch import Branch
-
-
-_CALL = None  # type: ignore
 
 
 def prepare_parse_kws(
@@ -42,21 +39,12 @@ def prepare_parse_kws(
     fill_value: Any = None,
     fill_mapping: dict[str, Any] | None = None,
     strict: bool = False,
-    suppress_conversion_errors: bool = False,
     response_format=None,
     request_fields=None,
     structure=None,
     return_res_message: bool = False,
     **kw,
 ):
-    if suppress_conversion_errors:
-        warnings.warn(
-            "Parameter 'suppress_conversion_errors' is deprecated and no longer used. "
-            "It will be removed in v0.21.0.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
     response_format = operative.request_type if operative else response_format or request_type
     _alcall_params = get_default_call()
     max_retries = operative.max_retries if operative else max_retries or 3
@@ -122,6 +110,10 @@ async def parse(
             response_format=(
                 parse_param.response_format
                 if isinstance(parse_param.response_format, BaseModel)
+                or (
+                    isinstance(parse_param.response_format, type)
+                    and issubclass(parse_param.response_format, BaseModel)
+                )
                 else None
             ),
             imodel=parse_param.imodel or branch.parse_model,
@@ -231,16 +223,3 @@ def _validate_dict_or_model(
 
     except Exception as e:
         raise ValueError(f"Failed to parse text: {e}") from e
-
-
-def get_default_call() -> AlcallParams:
-    global _CALL
-    if _CALL is None:
-        _CALL = AlcallParams(
-            retry_initial_delay=1,
-            retry_backoff=1.85,
-            retry_attempts=3,
-            max_concurrent=1,
-            throttle_period=1,
-        )
-    return _CALL

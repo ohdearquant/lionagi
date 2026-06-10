@@ -18,6 +18,13 @@ import logging
 import re
 from pathlib import Path
 
+__all__ = (
+    "auto_format_python",
+    "guard_destructive",
+    "guard_paths",
+    "log_tool_use",
+)
+
 logger = logging.getLogger(__name__)
 
 _DESTRUCTIVE_PATTERNS = [
@@ -59,51 +66,70 @@ def guard_paths(
         config.pre("editor", guard_paths(denied_paths=[".env", "credentials"]))
     """
 
-    allowed_roots = [
-        Path(p).expanduser().resolve(strict=False) for p in (allowed_paths or [])
-    ]
+    allowed_roots = [Path(p).expanduser().resolve(strict=False) for p in (allowed_paths or [])]
 
     async def _guard(tool_name: str, action: str, args: dict) -> dict | None:
         raw_path = args.get("path") or args.get("file_path") or ""
         if not raw_path:
             return None
 
-        resolved = Path(raw_path).expanduser().resolve(strict=False)
+        expanded = Path(raw_path).expanduser()
+        if not expanded.is_absolute() and allowed_roots:
+            # Resolve relative paths against the workspace root so that
+            # "src/foo.py" is treated as workspace-relative, not process-cwd-
+            # relative.  Without this a relative in-workspace path would
+            # resolve to <process_cwd>/src/foo.py which almost never equals the
+            # configured allowed root and would be wrongly blocked.
+            resolved = (allowed_roots[0] / expanded).resolve(strict=False)
+        else:
+            resolved = expanded.resolve(strict=False)
 
         if allowed_roots:
-            if not any(
-                resolved == root or root in resolved.parents for root in allowed_roots
-            ):
+            if not any(resolved == root or root in resolved.parents for root in allowed_roots):
                 raise PermissionError(f"Path not in allowed list: {raw_path}")
         if denied_paths:
             for denied in denied_paths:
                 denied_path = Path(denied).expanduser()
                 if denied_path.is_absolute():
                     denied_resolved = denied_path.resolve(strict=False)
-                    if (
-                        resolved == denied_resolved
-                        or denied_resolved in resolved.parents
-                    ):
+                    # Match exact path or any path under the denied directory.
+                    if resolved == denied_resolved or denied_resolved in resolved.parents:
                         raise PermissionError(f"Path matches deny rule: {raw_path}")
-                elif denied in raw_path or denied in resolved.name:
-                    raise PermissionError(f"Path matches deny rule: {raw_path}")
+                else:
+                    # Relative deny pattern — two matching strategies:
+                    #
+                    # 1. Glob patterns (contain *, ?, or [): apply fnmatch to each
+                    #    resolved path component.  This fixes LIONAGI-AUDIT-001 where
+                    #    "*.key" was treated as a literal string and never matched
+                    #    "/tmp/api.key".
+                    #
+                    # 2. Plain-text patterns (no glob chars): retain the original
+                    #    substring check against raw_path and resolved.name so that
+                    #    documented examples like ".env" still block ".env.local".
+                    import fnmatch
+
+                    _glob_chars = frozenset("*?[")
+                    if any(c in denied for c in _glob_chars):
+                        # Glob mode: match against each resolved path component.
+                        parts = resolved.parts
+                        if any(fnmatch.fnmatch(part, denied) for part in parts):
+                            raise PermissionError(f"Path matches deny rule: {raw_path}")
+                    elif denied in raw_path or denied in resolved.name:
+                        # Plain-text mode: substring containment (original behaviour).
+                        raise PermissionError(f"Path matches deny rule: {raw_path}")
         return None
 
     return _guard
 
 
-async def log_tool_use(
-    tool_name: str, action: str, args: dict, result: dict
-) -> dict | None:
+async def log_tool_use(tool_name: str, action: str, args: dict, result: dict) -> dict | None:
     """Post-hook: log tool usage for observability."""
     success = result.get("success", result.get("return_code") == 0)
     logger.info("tool=%s action=%s success=%s", tool_name, action, success)
     return None
 
 
-async def auto_format_python(
-    tool_name: str, action: str, args: dict, result: dict
-) -> dict | None:
+async def auto_format_python(tool_name: str, action: str, args: dict, result: dict) -> dict | None:
     """Post-hook: run ruff format on edited Python files."""
     if not result.get("success"):
         return None

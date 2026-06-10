@@ -59,15 +59,25 @@ def _from_config_toml(cwd: Path) -> tuple[str | None, str | None]:
 
 
 def _read_project_from_toml(path: Path) -> str | None:
-    """Parse [project].name from a TOML file without tomllib on < 3.11."""
-    try:
-        import tomllib
-    except ModuleNotFoundError:
-        import tomli as tomllib  # type: ignore[no-redef]
+    """Parse [project].name from a TOML file.
 
+    Uses stdlib ``tomllib`` on Python 3.11+; falls back to the declared
+    ``toml`` runtime dependency on Python 3.10.  ``tomli`` is NOT a
+    declared dependency and must not be imported here.
+    """
     try:
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
+        try:
+            import tomllib
+
+            with open(path, "rb") as f:
+                data = tomllib.load(f)
+        except ModuleNotFoundError:
+            # Python 3.10: use the declared `toml` dependency (pyproject.toml
+            # declares toml>=0.10.2).  `toml.load` accepts a text-mode file.
+            import toml  # type: ignore[import-untyped]
+
+            with open(path) as f:
+                data = toml.load(f)
         project = data.get("project", {})
         if isinstance(project, dict):
             name = project.get("name")
@@ -77,9 +87,7 @@ def _read_project_from_toml(path: Path) -> str | None:
     return None
 
 
-def _from_global_overrides(
-    cwd: Path, remote_slug: str | None
-) -> tuple[str | None, str | None]:
+def _from_global_overrides(cwd: Path, remote_slug: str | None) -> tuple[str | None, str | None]:
     """Check ~/.lionagi/settings.yaml project_overrides."""
     global_path = Path.home() / ".lionagi" / "settings.yaml"
     if not global_path.is_file():

@@ -56,9 +56,7 @@ class AG2BetaEndpoint(AgenticEndpoint):
         self._tool_registry: dict[str, Any] = kwargs.get("tool_registry", {})
 
     async def _call(self, payload, headers, **kwargs):
-        raise NotImplementedError(
-            "AG2 beta Agent is stream-only. Use stream() to iterate events."
-        )
+        raise NotImplementedError("AG2 beta Agent is stream-only. Use stream() to iterate events.")
 
     def create_payload(self, request: dict | BaseModel, **kwargs):
         from .models import AG2AgentRequest
@@ -77,9 +75,7 @@ class AG2BetaEndpoint(AgenticEndpoint):
             )
         }, {}
 
-    async def stream(
-        self, request: dict | BaseModel, **kwargs
-    ) -> AsyncIterator[StreamChunk]:
+    async def stream(self, request: dict | BaseModel, **kwargs) -> AsyncIterator[StreamChunk]:
         from .models import AgentConfig, run_beta_agent
 
         if isinstance(request, dict) and "request" in request:
@@ -92,9 +88,7 @@ class AG2BetaEndpoint(AgenticEndpoint):
             request_obj.messages[-1]["content"] if request_obj.messages else ""
         )
         if not prompt:
-            raise ValueError(
-                "AG2BetaEndpoint requires a non-empty prompt or at least one message."
-            )
+            raise ValueError("AG2BetaEndpoint requires a non-empty prompt or at least one message.")
 
         # Resolve the pre-built agent (if any) and the agent_config.
         # Pre-built agent takes precedence; agent_config is the fallback.
@@ -103,9 +97,7 @@ class AG2BetaEndpoint(AgenticEndpoint):
         if prebuilt_agent is None:
             agent_config = request_obj.agent_config
             if agent_config is None:
-                agent_config = AgentConfig(
-                    **kwargs.get("agent_config", self._agent_config)
-                )
+                agent_config = AgentConfig(**kwargs.get("agent_config", self._agent_config))
         else:
             # Pre-built agent path: agent_config may be None; that's fine.
             agent_config = request_obj.agent_config  # kept for metadata only
@@ -116,9 +108,7 @@ class AG2BetaEndpoint(AgenticEndpoint):
         if llm_config is None and prebuilt_agent is None:
             raise ValueError("AG2BetaEndpoint requires llm_config")
 
-        model_config = (
-            _resolve_model_config(llm_config) if llm_config is not None else None
-        )
+        model_config = _resolve_model_config(llm_config) if llm_config is not None else None
 
         # Build system chunk metadata. When a pre-built agent is used the
         # config fields are not authoritative; surface what we know.

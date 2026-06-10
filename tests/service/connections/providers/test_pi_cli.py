@@ -166,6 +166,139 @@ async def test_stream_pi_cli_handles_nested_and_top_level_errors(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_top_level_start_event_updates_session_model(monkeypatch):
+    """Top-level start AssistantMessageEvent populates model from partial."""
+    events = [
+        {
+            "type": "start",
+            "partial": {
+                "role": "assistant",
+                "content": [],
+                "model": "gemini-2.5-flash",
+                "usage": {"input": 0, "output": 0},
+            },
+        },
+    ]
+
+    async def fake_events(_request):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(pi_models, "stream_pi_cli_events", fake_events)
+
+    session = None
+    async for item in pi_models.stream_pi_cli(PiCodeRequest(prompt="hello")):
+        if isinstance(item, PiSession):
+            session = item
+
+    assert session is not None
+    assert session.model == "gemini-2.5-flash"
+
+
+@pytest.mark.asyncio
+async def test_top_level_done_event_updates_session_and_stops(monkeypatch):
+    """Top-level done AssistantMessageEvent populates session result/model/usage."""
+    events = [
+        {
+            "type": "done",
+            "reason": "endTurn",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "finished"}],
+                "model": "gemini-2.5-flash",
+                "usage": {"input": 5, "output": 3, "totalTokens": 8},
+            },
+        },
+        # This event must NOT be processed — done should stop the loop.
+        {"type": "error", "errorMessage": "should not reach here"},
+    ]
+
+    async def fake_events(_request):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(pi_models, "stream_pi_cli_events", fake_events)
+
+    session = None
+    async for item in pi_models.stream_pi_cli(PiCodeRequest(prompt="hello")):
+        if isinstance(item, PiSession):
+            session = item
+
+    assert session is not None
+    assert session.model == "gemini-2.5-flash"
+    assert session.result == "finished"
+    assert session.usage == {"input": 5, "output": 3, "totalTokens": 8}
+    assert session.is_error is False
+
+
+@pytest.mark.asyncio
+async def test_text_end_sets_session_result_from_content_field(monkeypatch):
+    """text_end event uses the 'content' field (not 'text' or 'delta')."""
+    events = [
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "text_end",
+                "contentIndex": 0,
+                "content": "accumulated text",
+            },
+        },
+    ]
+
+    async def fake_events(_request):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(pi_models, "stream_pi_cli_events", fake_events)
+
+    session = None
+    async for item in pi_models.stream_pi_cli(PiCodeRequest(prompt="hello")):
+        if isinstance(item, PiSession):
+            session = item
+
+    assert session is not None
+    assert session.result == "accumulated text"
+
+
+@pytest.mark.asyncio
+async def test_toolcall_end_reads_nested_tool_call_payload(monkeypatch):
+    """toolcall_end uses nested toolCall.{id,name,arguments} structure."""
+    events = [
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_end",
+                "contentIndex": 0,
+                "toolCall": {
+                    "type": "toolCall",
+                    "id": "tc_42",
+                    "name": "write_file",
+                    "arguments": {"path": "out.py", "content": "pass"},
+                },
+            },
+        },
+    ]
+
+    async def fake_events(_request):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(pi_models, "stream_pi_cli_events", fake_events)
+
+    session = None
+    async for item in pi_models.stream_pi_cli(PiCodeRequest(prompt="hello")):
+        if isinstance(item, PiSession):
+            session = item
+
+    assert session is not None
+    assert len(session.tool_uses) == 1
+    tu = session.tool_uses[0]
+    assert tu["id"] == "tc_42"
+    assert tu["name"] == "write_file"
+    assert tu["input"] == {"path": "out.py", "content": "pass"}
+
+
+@pytest.mark.asyncio
 async def test_pi_cli_endpoint_stream_maps_pi_chunks_to_stream_chunks(monkeypatch):
     async def fake_stream(_request_obj, _session=None):
         yield PiChunk(raw={}, type="message_update", text="hello")
@@ -210,3 +343,89 @@ async def test_pi_cli_endpoint_stream_maps_pi_chunks_to_stream_chunks(monkeypatc
     assert chunks[2].tool_input == {"path": "a.py"}
     assert chunks[3].tool_output == {"ok": True}
     assert chunks[4].content == "done"
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-006 regression: Pi file_args path validation (fail-closed)
+# ---------------------------------------------------------------------------
+
+
+class TestPiFileArgsValidation:
+    """AUDIT-006: Pi file_args must reject absolute paths and ``..`` traversal.
+
+    Without validation, PiCodeRequest(file_args=["../../secrets.txt"]) would
+    cause the CLI to emit ``@../../secrets.txt`` and read an arbitrary file.
+    The validator must raise ValueError at model construction time (fail-closed)
+    before any subprocess is launched.
+    """
+
+    def test_absolute_path_is_rejected(self):
+        """Absolute path in file_args must raise ValueError (AUDIT-006)."""
+        with pytest.raises(ValueError, match="absolute path"):
+            PiCodeRequest(prompt="hello", file_args=["/etc/passwd"])
+
+    def test_absolute_path_with_at_prefix_is_rejected(self):
+        """Absolute path with @ prefix in file_args must raise ValueError."""
+        with pytest.raises(ValueError, match="absolute path"):
+            PiCodeRequest(prompt="hello", file_args=["@/etc/passwd"])
+
+    def test_dotdot_traversal_is_rejected(self):
+        """Directory traversal (``..``) in file_args must raise ValueError (AUDIT-006)."""
+        with pytest.raises(ValueError, match="traversal"):
+            PiCodeRequest(prompt="hello", file_args=["../../secrets.txt"])
+
+    def test_dotdot_with_at_prefix_is_rejected(self):
+        """``@../../secrets.txt`` traversal must be caught before CLI launch."""
+        with pytest.raises(ValueError, match="traversal"):
+            PiCodeRequest(prompt="hello", file_args=["@../../secrets.txt"])
+
+    def test_relative_path_is_allowed(self):
+        """Safe relative paths inside the repo must be accepted."""
+        req = PiCodeRequest(prompt="hello", file_args=["README.md", "src/main.py"])
+        assert "@README.md" in req.as_cmd_args()
+        assert "@src/main.py" in req.as_cmd_args()
+
+    def test_at_prefixed_relative_path_is_allowed(self):
+        """``@``-prefixed relative paths must pass validation unchanged."""
+        req = PiCodeRequest(prompt="hello", file_args=["@pyproject.toml"])
+        args = req.as_cmd_args()
+        # The builder should not double-prefix already-@-prefixed entries.
+        assert "@pyproject.toml" in args
+
+    def test_empty_file_args_is_allowed(self):
+        """An empty file_args list must not raise."""
+        req = PiCodeRequest(prompt="hello", file_args=[])
+        assert req.file_args == []
+
+    def test_mixed_valid_and_invalid_raises_on_invalid(self):
+        """If any entry is invalid the whole list must be rejected."""
+        with pytest.raises(ValueError):
+            PiCodeRequest(
+                prompt="hello",
+                file_args=["safe.txt", "/absolute/path.txt"],
+            )
+
+    def test_symlink_escape_rejected(self, tmp_path):
+        """A repo-local symlink to outside the repo must be rejected.
+
+        ``repo/link -> /outside`` with file_args=["link/secret.txt"] is
+        lexically clean (no abs path, no ``..``) but resolves outside the repo.
+        The model-level validator resolves against repo.resolve() and rejects it.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("secret")
+        (repo / "link").symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(ValueError, match="outside the repository"):
+            PiCodeRequest(prompt="hi", repo=repo, file_args=["link/secret.txt"])
+
+    def test_real_relative_path_inside_repo_allowed(self, tmp_path):
+        """A genuine relative path inside the repo passes the symlink check."""
+        repo = tmp_path / "repo"
+        (repo / "src").mkdir(parents=True)
+        (repo / "src" / "main.py").write_text("x = 1")
+        req = PiCodeRequest(prompt="hi", repo=repo, file_args=["src/main.py"])
+        assert "@src/main.py" in req.as_cmd_args()

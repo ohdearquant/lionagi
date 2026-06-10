@@ -16,11 +16,42 @@ ADR-NNNN-kebab-case-slug.md
 ## Lifecycle
 
 ```text
-Proposed → Accepted → Superseded (→ Deprecated, optional)
+Proposed → Accepted → Phase-N Shipped → Superseded (→ Deprecated, optional)
 ```
 
+## Status Taxonomy
+
+An ADR's status answers two distinct questions: *is the decision ratified?* and
+*how much of it is built?* A design can be ratified but unbuilt, or built ahead
+of formal ratification. The taxonomy below keeps both legible so good work is
+visible in the registry and unstarted drafts are not mistaken for shipped code.
+
+| Status | Meaning | Implementation |
+|--------|---------|----------------|
+| **Proposed** | Design draft, under discussion. Not yet ratified. | None started. |
+| **Accepted** | Design locked and in effect. Phase N may be planned. | None-to-partial; the decision governs new code. |
+| **Phase N Shipped** | Implementation through phase N has landed on `main`. | Phases 1..N shipped; later phases may remain planned. |
+| **Superseded by ADR-NNNN** | Replaced by a newer decision. Record kept for history. | Frozen; see the superseding ADR. |
+| **Deprecated** | No longer relevant; not replaced by a newer decision. | Abandoned or removed. |
+
+Notes:
+
+- **Use "Phase N Shipped" once code lands** for any ADR that defines a
+  multi-phase rollout. `Accepted` alone cannot distinguish a ratified-but-unbuilt
+  design from one whose first phases are in production. Example:
+  `**Status**: Phase 2 Shipped` means phases 1 and 2 are on `main` and any
+  phase 3+ is still planned.
+- **Verify before relabeling.** A change to "Phase N Shipped" must be backed by
+  code on `main` (a module, table, or test that implements the phase), not by
+  intent. Conversely, an ADR whose feature has no implementation belongs in
+  **Proposed** even if foundational/shared code that it references exists.
+- **Amended (...)** is a free-form annotation a few early ADRs use to note a
+  later revision that did not warrant a new ADR number; treat it as a flavour of
+  Accepted.
+
 - **Proposed**: decision drafted, not yet ratified.
-- **Accepted**: decision is in effect.
+- **Accepted**: decision is ratified and in effect.
+- **Phase N Shipped**: implementation through phase N has landed on `main`.
 - **Superseded by ADR-NNNN**: replaced; the old record stays for history.
 - **Deprecated**: no longer relevant; not superseded by a newer decision.
 
@@ -83,7 +114,7 @@ Numbers 0036–0038 and 0040 were reserved for future use and have no correspond
 | [ADR-0025](ADR-0025-session-status-vocabulary.md) | Session status vocabulary | Proposed |
 | [ADR-0026](ADR-0026-project-detection.md) | Project detection for session organization | Accepted |
 | [ADR-0027](ADR-0027-scheduled-runs.md) | Scheduled runs and event-triggered invocations | Proposed |
-| [ADR-0028](ADR-0028-status-reason-model.md) | Status reason model | Proposed |
+| [ADR-0028](ADR-0028-status-reason-model.md) | Status reason model | Phase 2 Shipped |
 | [ADR-0029](ADR-0029-artifact-contract.md) | Artifact contract | Proposed |
 | [ADR-0030](ADR-0030-attention-queue.md) | Attention queue | Proposed |
 | [ADR-0031](ADR-0031-entity-header-pattern.md) | Entity header pattern | Proposed |

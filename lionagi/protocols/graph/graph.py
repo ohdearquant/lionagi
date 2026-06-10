@@ -3,7 +3,6 @@
 
 import threading
 from collections import deque
-from functools import wraps
 from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import (
@@ -16,6 +15,7 @@ from pydantic import (
 from typing_extensions import Self
 
 from lionagi._errors import ItemExistsError, RelationError
+from lionagi.ln._utils import synchronized as _graph_synchronized
 
 from .._concepts import Relational
 from ..generic.element import ID, Element
@@ -30,29 +30,8 @@ _MATPLIB_AVAILABLE = None
 __all__ = ("Graph",)
 
 
-def _graph_synchronized(func):
-    """Synchronize a Graph mutation method using its reentrant lock."""
-
-    @wraps(func)
-    def wrapper(self, *args, **kwargs):
-        with self._lock:
-            return func(self, *args, **kwargs)
-
-    return wrapper
-
-
 class Graph(Element, Relational, Generic[T]):
-    """Directed graph of Nodes and Edges with adjacency mapping.
-
-    Thread Safety:
-        Mutation methods (``add_node``, ``add_edge``, ``remove_node``,
-        ``remove_edge``) are protected by ``@_graph_synchronized``
-        using an ``RLock``.  Read-only traversal methods
-        (``get_tails``, ``topological_sort``, ``find_path``) are **not**
-        synchronized — if the graph may be mutated concurrently,
-        callers should hold ``graph._lock`` or use external
-        synchronization during reads.
-    """
+    """Directed graph of Nodes and Edges with adjacency mapping."""
 
     _lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
 
@@ -84,10 +63,6 @@ class Graph(Element, Relational, Generic[T]):
 
     @field_serializer("internal_nodes", "internal_edges")
     def _serialize_nodes_edges(self, value: Pile):
-        """
-        Serialize the internal nodes and edges to a dictionary format.
-        This is used for serialization purposes.
-        """
         return value.to_dict()
 
     @field_validator("internal_nodes", "internal_edges", mode="before")
@@ -96,11 +71,8 @@ class Graph(Element, Relational, Generic[T]):
 
     @_graph_synchronized
     def add_node(self, node: Relational) -> None:
-        """Add a node to the graph."""
         if not isinstance(node, Relational):
-            raise RelationError(
-                "Failed to add node: Invalid node type: not a <Relational> entity."
-            )
+            raise RelationError("Failed to add node: Invalid node type: not a <Relational> entity.")
         _id = ID.get_id(node)
         try:
             self.internal_nodes.insert(len(self.internal_nodes), node)
@@ -110,7 +82,6 @@ class Graph(Element, Relational, Generic[T]):
 
     @_graph_synchronized
     def add_edge(self, edge: Edge, /) -> None:
-        """Add an edge to the graph, linking two existing nodes."""
         if not isinstance(edge, Edge):
             raise RelationError("Failed to add edge: Invalid edge type.")
         if edge.head not in self.internal_nodes or edge.tail not in self.internal_nodes:
@@ -126,17 +97,6 @@ class Graph(Element, Relational, Generic[T]):
 
     @_graph_synchronized
     def remove_node(self, node: ID[Node].Ref, /) -> None:
-        """
-        Remove a node from the graph.
-
-        This method removes a node and all connected edges from the graph.
-
-        Args:
-            node (Node | str): The node or node ID to remove.
-
-        Raises:
-            RelationError: If the node does not exist in the graph.
-        """
         _id = ID.get_id(node)
         if _id not in self.internal_nodes:
             raise RelationError(f"Node {node} not found in the graph nodes.")
@@ -156,15 +116,6 @@ class Graph(Element, Relational, Generic[T]):
 
     @_graph_synchronized
     def remove_edge(self, edge: Edge | str, /) -> None:
-        """
-        Remove an edge from the graph.
-
-        Args:
-            edge (Edge | str): The edge or edge ID to remove.
-
-        Raises:
-            RelationError: If the edge does not exist in the graph.
-        """
         _id = ID.get_id(edge)
         if _id not in self.internal_edges:
             raise RelationError(f"Edge {edge} not found in the graph edges.")
@@ -181,20 +132,6 @@ class Graph(Element, Relational, Generic[T]):
         /,
         direction: Literal["both", "in", "out"] = "both",
     ) -> list[Edge]:
-        """
-        Find edges associated with a node by direction (in, out, or both).
-
-        Args:
-            node (ID[Node].Ref): The node or node ID.
-            direction: 'in', 'out', or 'both' to filter the edges.
-
-        Returns:
-            list[Edge]: The matching edges.
-
-        Raises:
-            ValueError: If direction is invalid.
-            RelationError: If node is not in the graph.
-        """
         if direction not in {"both", "in", "out"}:
             raise ValueError("The direction should be 'both', 'in', or 'out'.")
 
@@ -214,7 +151,6 @@ class Graph(Element, Relational, Generic[T]):
         return Pile(result, item_type={Edge}, strict_type=False)
 
     def get_heads(self) -> Pile[Node]:
-        """Return nodes with no incoming edges (head nodes)."""
         result = []
         for node_id in self.node_edge_mapping.keys():
             if self.node_edge_mapping[node_id]["in"] == {}:
@@ -222,7 +158,6 @@ class Graph(Element, Relational, Generic[T]):
         return Pile(result, item_type={Node}, strict_type=False)
 
     def get_predecessors(self, node: Node, /) -> Pile[Node]:
-        """Return all nodes that have outbound edges to the given node."""
         edges = self.find_node_edge(node, direction="in")
         result = []
         for edge in edges:
@@ -230,17 +165,6 @@ class Graph(Element, Relational, Generic[T]):
         return Pile(result, item_type={Node}, strict_type=False)
 
     def get_successors(self, node: Node, /) -> Pile[Node]:
-        """
-        Get all successor nodes of a given node.
-
-        Successors are nodes that have incoming edges from the given node.
-
-        Args:
-            node (Node): The node to find successors for.
-
-        Returns:
-            Pile: A Pile containing all successor nodes.
-        """
         edges = self.find_node_edge(node, direction="out")
         result = []
         for edge in edges:
@@ -248,7 +172,6 @@ class Graph(Element, Relational, Generic[T]):
         return Pile(result, item_type={Node}, strict_type=False)
 
     def to_networkx(self, **kwargs) -> Any:
-        """Convert the graph to a NetworkX graph object."""
         global _NETWORKX_AVAILABLE
         if _NETWORKX_AVAILABLE is None:
             from lionagi.ln import is_import_installed
@@ -285,7 +208,6 @@ class Graph(Element, Relational, Generic[T]):
         draw_kwargs=None,
         **kwargs,
     ):
-        """Display the graph using NetworkX and Matplotlib."""
         if draw_kwargs is None:
             draw_kwargs = {}
         g = self.to_networkx(**kwargs)
@@ -321,11 +243,9 @@ class Graph(Element, Relational, Generic[T]):
         plt.show()
 
     def is_acyclic(self) -> bool:
-        """Check if the graph is acyclic (contains no cycles)."""
         node_ids = list(self.internal_nodes.progression)
         check_deque = deque(node_ids)
 
-        # 0: unvisited, 1: visiting, 2: visited
         check_dict = {nid: 0 for nid in node_ids}
 
         def visit(nid):
@@ -349,7 +269,6 @@ class Graph(Element, Relational, Generic[T]):
         return True
 
     def get_tails(self) -> Pile[Node]:
-        """Return nodes with no outgoing edges (tail/sink nodes)."""
         result = []
         for node_id in self.node_edge_mapping:
             if self.node_edge_mapping[node_id]["out"] == {}:
@@ -357,14 +276,6 @@ class Graph(Element, Relational, Generic[T]):
         return Pile(result, item_type={Node}, strict_type=False)
 
     def topological_sort(self) -> list[Node]:
-        """Topological sort via Kahn's algorithm.
-
-        Returns:
-            list[Node]: Nodes in topological order.
-
-        Raises:
-            ValueError: If graph contains cycles.
-        """
         in_degree = {}
         for node_id in self.node_edge_mapping:
             in_degree[node_id] = len(self.node_edge_mapping[node_id]["in"])
@@ -394,19 +305,6 @@ class Graph(Element, Relational, Generic[T]):
         end: Any,
         check_conditions: bool = False,
     ) -> list[Edge] | None:
-        """Find path between two nodes via BFS.
-
-        Args:
-            start: Source node or node ID.
-            end: Target node or node ID.
-            check_conditions: If True, respect edge conditions during traversal.
-
-        Returns:
-            list[Edge] if path exists, None otherwise.
-
-        Raises:
-            RelationError: If start or end node not in graph.
-        """
         start_id = ID.get_id(start)
         end_id = ID.get_id(end)
 
@@ -437,7 +335,6 @@ class Graph(Element, Relational, Generic[T]):
                     queue.append(neighbor_id)
 
                     if neighbor_id == end_id:
-                        # Reconstruct path
                         path = []
                         node_id = end_id
                         while node_id in parent:
@@ -450,20 +347,6 @@ class Graph(Element, Relational, Generic[T]):
 
     @_graph_synchronized
     def replace_node(self, old: Any, new_node: "Node") -> "Node":
-        """Replace a node, transferring all edges to the new node.
-
-        The new node inherits the old node's exact graph position —
-        all incoming edges now point to ``new_node``, all outgoing
-        edges now originate from ``new_node``. The old node is
-        removed from the graph and returned.
-
-        Args:
-            old: The node or node ID to replace.
-            new_node: The replacement node (must not already be in the graph).
-
-        Returns:
-            The removed old node.
-        """
         old_id = ID.get_id(old)
         if old_id not in self.internal_nodes:
             raise RelationError(f"Node {old_id} not found in graph")
@@ -494,25 +377,6 @@ class Graph(Element, Relational, Generic[T]):
 
     @_graph_synchronized
     def splice_after(self, anchor: Any, new_node: "Node") -> list[Edge]:
-        """Insert a node between ``anchor`` and all of its successors.
-
-        Before: ``anchor -> s1``, ``anchor -> s2``
-        After:  ``anchor -> new_node -> s1``, ``new_node -> s2``
-
-        The original edges from ``anchor`` to its successors are
-        removed; new edges are created to route through ``new_node``.
-        Edge ``condition``, ``label``, and any extra custom
-        ``properties`` on the original edges are preserved.
-
-        Args:
-            anchor: The node or node ID to splice after.
-            new_node: The node to insert (must not already be in the graph).
-
-        Returns:
-            List of newly created edges. The first entry is the
-            ``anchor -> new_node`` link; the rest are the
-            ``new_node -> successor`` edges.
-        """
         anchor_id = ID.get_id(anchor)
         if anchor_id not in self.internal_nodes:
             raise RelationError(f"Node {anchor_id} not found in graph")
@@ -530,9 +394,7 @@ class Graph(Element, Relational, Generic[T]):
         for edge_id, tail_id in out_edges:
             old_edge = self.internal_edges[edge_id]
             extra_properties = {
-                k: v
-                for k, v in old_edge.properties.items()
-                if k not in {"condition", "label"}
+                k: v for k, v in old_edge.properties.items() if k not in {"condition", "label"}
             }
 
             replacement = Edge(

@@ -36,7 +36,9 @@ def _tool_fn(tools, name):
 
 def test_bind_returns_lean_default(tmp_path):
     _, _, tools = _make_toolkit(tmp_path)
-    assert len(tools) == 4  # reader/editor/bash/search; extras are opt-in
+    assert (
+        len(tools) == 5
+    )  # reader/editor/bash/search/code_check; context/sandbox/subagent are opt-in
 
 
 def test_bind_all_tools_async(tmp_path):
@@ -48,13 +50,14 @@ def test_bind_all_tools_async(tmp_path):
 
 
 def test_bind_tool_names(tmp_path):
-    """Default registers the lean core only — context/sandbox/subagent are opt-in."""
+    """Default registers the lean core — context/sandbox/subagent are opt-in."""
     _, _, tools = _make_toolkit(tmp_path)
     assert {t.func_callable.__name__ for t in tools} == {
         "reader",
         "editor",
         "bash",
         "search",
+        "code_check",
     }
 
 
@@ -309,3 +312,254 @@ async def test_coding_toolkit_editor_reports_ambiguous_replacement_without_writi
     assert result["success"] is False
     # File must be unchanged
     assert target.read_text() == "a\na\n"
+
+
+# ---------------------------------------------------------------------------
+# Schema equivalence: CodingToolkit uses canonical file/ schemas (anti-divergence)
+# ---------------------------------------------------------------------------
+
+
+def test_reader_request_schema_is_canonical():
+    """CodingToolkit's reader tool_def must reference the canonical ReaderRequest."""
+    from lionagi.tools.coding import CodingToolkit
+    from lionagi.tools.file.reader import ReaderRequest as CanonicalReaderRequest
+
+    b = Branch()
+    tk = CodingToolkit(notify=False, workspace_root="/tmp", tools=["reader"])
+    tools = tk.bind(b)
+    reader_tool = tools[0]
+    assert reader_tool.request_options is CanonicalReaderRequest, (
+        "CodingToolkit reader must use the canonical ReaderRequest from tools/file/reader.py"
+    )
+
+
+def test_editor_request_schema_is_canonical():
+    """CodingToolkit's editor tool_def must reference the canonical EditorRequest."""
+    from lionagi.tools.coding import CodingToolkit
+    from lionagi.tools.file.editor import EditorRequest as CanonicalEditorRequest
+
+    b = Branch()
+    tk = CodingToolkit(notify=False, workspace_root="/tmp", tools=["editor"])
+    tools = tk.bind(b)
+    editor_tool = tools[0]
+    assert editor_tool.request_options is CanonicalEditorRequest, (
+        "CodingToolkit editor must use the canonical EditorRequest from tools/file/editor.py"
+    )
+
+
+def test_canonical_reader_request_has_open_action():
+    """Canonical ReaderRequest must enumerate the 'open' action so CodingToolkit exposes it."""
+    from lionagi.tools.file.reader import ReaderAction
+
+    assert hasattr(ReaderAction, "open"), "ReaderAction must include the 'open' member"
+    assert ReaderAction.open.value == "open"
+
+
+# ---------------------------------------------------------------------------
+# Reader: open action (docling not required — validate error path without it)
+# ---------------------------------------------------------------------------
+
+
+async def test_reader_open_unsupported_extension_fails(tmp_path):
+    """open action on a non-document file returns a descriptive failure."""
+    f = tmp_path / "code.py"
+    f.write_text("x = 1\n")
+    _, _, tools = _make_toolkit(tmp_path)
+    result = await _tool_fn(tools, "reader")(action="open", path=str(f))
+    # Either unsupported extension or docling-not-installed — both are informative failures
+    assert result["success"] is False
+    assert result.get("error")
+
+
+async def test_reader_open_missing_path_fails(tmp_path):
+    """open action with empty/None path returns failure immediately."""
+    _, _, tools = _make_toolkit(tmp_path)
+    result = await _tool_fn(tools, "reader")(action="open", path="")
+    assert result["success"] is False
+
+
+async def test_reader_open_caches_and_read_serves_from_cache(tmp_path, monkeypatch):
+    """After a successful open, subsequent read on the same path uses the cache."""
+    import time
+
+    import lionagi.tools.coding as _coding_mod
+    from lionagi.tools.file.reader import ReaderResponse
+
+    cached_text = "line one\nline two\nline three\n"
+
+    # Patch _open_sync in the coding module namespace (that's where the closure
+    # captures it) so we don't need docling installed in CI.
+    def _fake_open_sync(path, cache, workspace_root, allowed_url_hosts):
+        cache[path] = (cached_text, time.time())
+        lines = cached_text.split("\n")
+        return ReaderResponse(
+            success=True,
+            content=f"Opened: {path} ({len(lines)} lines). Use read to view.",
+        )
+
+    monkeypatch.setattr(_coding_mod, "_open_sync", _fake_open_sync)
+
+    f = tmp_path / "report.pdf"
+    f.write_bytes(b"%PDF-1.4 fake")
+
+    _, _, tools = _make_toolkit(tmp_path)
+    reader_fn = _tool_fn(tools, "reader")
+
+    open_result = await reader_fn(action="open", path=str(f))
+    assert open_result["success"] is True, open_result.get("error")
+
+    # Now read should serve from cache (not from disk bytes)
+    read_result = await reader_fn(action="read", path=str(f), offset=0, limit=2)
+    assert read_result["success"] is True
+    assert "line one" in read_result["content"]
+    assert "line two" in read_result["content"]
+
+
+# ---------------------------------------------------------------------------
+# Schema validation: path is required in LLM-facing schema (anti-drift)
+# ---------------------------------------------------------------------------
+
+
+def test_coding_toolkit_reader_schema_requires_path(tmp_path):
+    """CodingToolkit reader bind — LLM-facing schema must mark 'path' as required.
+
+    This guards against schema drift where path reverts to Optional: an LLM
+    that omits path would pass JSON schema validation but fail at runtime.
+    """
+    _, _, tools = _make_toolkit(tmp_path)
+    reader_tool = next(t for t in tools if t.func_callable.__name__ == "reader")
+    required = reader_tool.tool_schema["function"]["parameters"]["required"]
+    assert "path" in required, (
+        f"'path' must be in required fields of reader schema, got: {required}"
+    )
+
+
+def test_coding_toolkit_reader_request_options_raises_without_path(tmp_path):
+    """request_options(action='read') without path must raise ValidationError."""
+    from pydantic import ValidationError
+
+    _, _, tools = _make_toolkit(tmp_path)
+    reader_tool = next(t for t in tools if t.func_callable.__name__ == "reader")
+    with pytest.raises(ValidationError):
+        reader_tool.request_options(action="read")
+
+
+# ---------------------------------------------------------------------------
+# Error shape equivalence: CodingToolkit open vs ReaderTool for empty path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("action", ["open", "read", "list_dir"])
+async def test_empty_path_exactly_matches_reader_tool(tmp_path, action):
+    """Every reader action with an empty path returns byte-identical output to
+    ReaderTool's canonical pre-dispatch guard:
+    {'success': False, 'content': None, 'error': "'path' is required"}.
+
+    Codex round-1/round-2 findings: the wrapper omitted 'content' and used a
+    divergent error string for open, and list_dir fell through the guard
+    entirely, listing the workspace root instead of erroring.
+    """
+    from lionagi.tools.file.reader import ReaderTool
+
+    (tmp_path / "a.py").write_text("x")
+
+    _, _, tools = _make_toolkit(tmp_path)
+    reader_fn = _tool_fn(tools, "reader")
+    actual = await reader_fn(action=action, path="")
+
+    expected = (
+        await ReaderTool(workspace_root=str(tmp_path)).handle_request(
+            {"action": action, "path": ""}
+        )
+    ).model_dump()
+
+    assert actual == expected
+
+
+# ---------------------------------------------------------------------------
+# Docling smoke: real import path for 'open' action is reachable
+# ---------------------------------------------------------------------------
+
+
+def test_docling_import_is_available():
+    """Confirm docling is installed so the 'open' action's real code path is exercisable."""
+    from docling.document_converter import DocumentConverter  # noqa: F401
+
+
+async def test_reader_open_real_html_fixture(tmp_path):
+    """Real docling open path: convert a minimal HTML file, no mocking."""
+    html_file = tmp_path / "page.html"
+    html_file.write_text("<html><body><p>Hello lion</p></body></html>", encoding="utf-8")
+
+    _, _, tools = _make_toolkit(tmp_path)
+    reader_fn = _tool_fn(tools, "reader")
+
+    result = await reader_fn(action="open", path=str(html_file))
+    assert result["success"] is True, f"open failed: {result.get('error')}"
+    assert result["content"] is not None
+
+    # Cache populated — subsequent read should serve from cache
+    read_result = await reader_fn(action="read", path=str(html_file), offset=0, limit=10)
+    assert read_result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Equivalence: nonexistent PDF and offset-beyond-cache for CodingToolkit vs ReaderTool
+# ---------------------------------------------------------------------------
+
+
+async def test_open_nonexistent_pdf_equivalence(tmp_path):
+    """nonexistent .pdf path: CodingToolkit output is byte-identical to ReaderTool."""
+    from lionagi.tools.file.reader import ReaderRequest, ReaderTool
+
+    fake_pdf = str(tmp_path / "nope.pdf")
+
+    standalone = ReaderTool(workspace_root=str(tmp_path))
+    rt_resp = await standalone.handle_request(ReaderRequest(action="open", path=fake_pdf))
+    assert rt_resp.success is False
+
+    _, _, tools = _make_toolkit(tmp_path)
+    reader_fn = _tool_fn(tools, "reader")
+    ct_result = await reader_fn(action="open", path=fake_pdf)
+    assert ct_result == rt_resp.model_dump()
+
+
+async def test_read_offset_beyond_cached_doc_equivalence(tmp_path, monkeypatch):
+    """Offset beyond end of cached doc: both tools return success=True with empty/minimal content."""
+    import time
+
+    import lionagi.tools.coding as _coding_mod
+    from lionagi.tools.file.reader import ReaderResponse, ReaderTool
+
+    cached_text = "only one line"
+
+    def _fake_open_sync(path, cache, workspace_root, allowed_url_hosts):
+        cache[path] = (cached_text, time.time())
+        return ReaderResponse(success=True, content=f"Opened: {path}")
+
+    monkeypatch.setattr(_coding_mod, "_open_sync", _fake_open_sync)
+
+    # Also patch the standalone ReaderTool's module-level _open_sync
+    import lionagi.tools.file.reader as _reader_mod
+
+    monkeypatch.setattr(_reader_mod, "_open_sync", _fake_open_sync)
+
+    f = tmp_path / "report.pdf"
+    f.write_bytes(b"%PDF-1.4 fake")
+
+    # CodingToolkit: open then read with offset=9999
+    _, _, tools = _make_toolkit(tmp_path)
+    reader_fn = _tool_fn(tools, "reader")
+    await reader_fn(action="open", path=str(f))
+    ct_result = await reader_fn(action="read", path=str(f), offset=9999, limit=10)
+    assert ct_result["success"] is True  # empty slice is still a success
+
+    # ReaderTool standalone: same scenario must produce byte-identical output
+    standalone = ReaderTool(workspace_root=str(tmp_path))
+    from lionagi.tools.file.reader import ReaderRequest
+
+    await standalone.handle_request(ReaderRequest(action="open", path=str(f)))
+    rt_resp = await standalone.handle_request(
+        ReaderRequest(action="read", path=str(f), offset=9999, limit=10)
+    )
+    assert ct_result == rt_resp.model_dump()

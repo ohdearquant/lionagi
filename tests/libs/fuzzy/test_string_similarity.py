@@ -58,9 +58,7 @@ def test_string_similarity_threshold():
 
 def test_string_similarity_most_similar():
     """Test return_most_similar option"""
-    result = string_similarity(
-        "hello", ["hello", "help", "world"], return_most_similar=True
-    )
+    result = string_similarity("hello", ["hello", "help", "world"], return_most_similar=True)
     assert isinstance(result, str)
 
 
@@ -106,9 +104,7 @@ def test_string_similarity_hamming():
 
 def test_string_similarity_no_matches():
     """Test when no matches found"""
-    result = string_similarity(
-        "hello", ["xyz", "abc"], threshold=0.9, algorithm="levenshtein"
-    )
+    result = string_similarity("hello", ["xyz", "abc"], threshold=0.9, algorithm="levenshtein")
     assert result is None
 
 

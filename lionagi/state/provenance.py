@@ -10,12 +10,10 @@ easy to audit (every CLI entry point should pass through here).
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
-# Length matches what the ADR pins for the column comment: 16 chars is
-# enough for "same or different" comparisons without storing the whole
-# 64-char digest.
+from lionagi.ln._hash import compute_hash
+
 _AGENT_HASH_LEN = 16
 
 
@@ -31,9 +29,10 @@ def agent_definition_hash(agent_name: str | None) -> str | None:
     """
     if not agent_name:
         return None
-    from lionagi.cli._agents import _find_lionagi_dirs, _resolve_profile_path
+    from lionagi._paths import find_lionagi_dirs
+    from lionagi.cli._agents import _resolve_profile_path
 
-    for d in _find_lionagi_dirs():
+    for d in find_lionagi_dirs():
         path = _resolve_profile_path(d / "agents", agent_name)
         if path is not None:
             return _hash_file(path)
@@ -45,12 +44,10 @@ def _hash_file(path: Path) -> str:
         data = path.read_bytes()
     except OSError:
         return ""
-    return hashlib.sha256(data).hexdigest()[:_AGENT_HASH_LEN]
+    return compute_hash(data)[:_AGENT_HASH_LEN]
 
 
-def resolve_model_spec(
-    provider: str | None, model: str | None
-) -> str | None:
+def resolve_model_spec(provider: str | None, model: str | None) -> str | None:
     """Produce the canonical ``"provider/model"`` string for storage.
 
     ADR-0022 requires the stored value to be the resolved spec, not the

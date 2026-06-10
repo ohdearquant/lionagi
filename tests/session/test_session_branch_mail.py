@@ -279,7 +279,7 @@ class TestBranchManagement:
         session = Session()
 
         custom_model = iModel(provider="openai", model="gpt-4o", api_key="test")
-        new_branch = session.new_branch(name="CustomModelBranch", imodel=custom_model)
+        new_branch = session.new_branch(name="CustomModelBranch", chat_model=custom_model)
 
         assert new_branch.chat_model.model_name == "gpt-4o"
 

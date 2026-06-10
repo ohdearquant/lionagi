@@ -32,9 +32,11 @@ import pytest
 from lionagi import Branch, Session
 from lionagi.cli.orchestrate._orchestration import (
     OrchestrationEnv,
-    _register_branch_hook,
     start_live_persist,
     stop_live_persist,
+)
+from lionagi.cli.orchestrate._orchestration import (
+    register_branch_hook as _register_branch_hook,
 )
 from lionagi.state.db import StateDB
 
@@ -612,6 +614,18 @@ def dag_extras() -> dict:
     }
 
 
+def assert_dag_and_identity(node_metadata: dict) -> None:
+    """node_metadata must carry the DAG extras AND the kill-identity markers.
+
+    Live-persist seeds pid/pid_create_time at session creation; every later DAG
+    metadata write merges them back so `li kill` keeps a verifiable PID (CWE-362).
+    """
+    for k, v in dag_extras().items():
+        assert node_metadata[k] == v
+    assert node_metadata.get("pid")
+    assert node_metadata.get("pid_create_time")
+
+
 def configure_run_for_finalize(env, tmp_path: Path) -> None:
     from unittest.mock import MagicMock
 
@@ -809,7 +823,7 @@ async def test_stop_persists_finalize_extras_as_session_node_metadata_without_me
 
     assert s is not None
     assert s["status"] == "completed"
-    assert s["node_metadata"] == dag_extras()
+    assert_dag_and_identity(s["node_metadata"])
     assert s["first_msg_id"] is None
     assert s["last_msg_id"] is None
     assert s["ended_at"] is not None
@@ -851,7 +865,7 @@ async def test_stop_persists_dag_metadata_and_message_bookmarks_together(
     async with StateDB() as db:
         s = await db.get_session(ctx["session_id"])
 
-    assert s["node_metadata"] == dag_extras()
+    assert_dag_and_identity(s["node_metadata"])
     assert s["first_msg_id"] == str(m1.id)
     assert s["last_msg_id"] == str(m2.id)
     assert all(h is not hook for h in worker.on_message_added)
@@ -955,7 +969,7 @@ async def test_stop_persists_cancelled_status_with_dag_metadata(
         s = await db.get_session(ctx["session_id"])
 
     assert s["status"] == "cancelled"
-    assert s["node_metadata"] == dag_extras()
+    assert_dag_and_identity(s["node_metadata"])
     assert s["ended_at"] is not None
 
 

@@ -26,12 +26,8 @@ def message_manager():
 
 def test_clear_messages_no_system(message_manager):
     """Test clearing messages when no system message exists"""
-    message_manager.add_message(
-        instruction="Test", sender="user", recipient="assistant"
-    )
-    message_manager.add_message(
-        assistant_response="Response", sender="assistant", recipient="user"
-    )
+    message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
+    message_manager.add_message(assistant_response="Response", sender="assistant", recipient="user")
 
     assert len(message_manager.messages) == 2
     message_manager.clear_messages()
@@ -41,12 +37,8 @@ def test_clear_messages_no_system(message_manager):
 def test_clear_messages_preserves_system(message_manager):
     """Test clearing messages preserves system message"""
     system = message_manager.add_message(system="Test system")
-    message_manager.add_message(
-        instruction="Test", sender="user", recipient="assistant"
-    )
-    message_manager.add_message(
-        assistant_response="Response", sender="assistant", recipient="user"
-    )
+    message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
+    message_manager.add_message(assistant_response="Response", sender="assistant", recipient="user")
 
     assert len(message_manager.messages) == 3
     message_manager.clear_messages()
@@ -65,9 +57,7 @@ async def test_async_add_message(message_manager):
 
 async def test_async_clear_messages(message_manager):
     """Test async clear messages"""
-    message_manager.add_message(
-        instruction="Test", sender="user", recipient="assistant"
-    )
+    message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
     assert len(message_manager.messages) == 1
 
     await message_manager.aclear_messages()
@@ -80,9 +70,7 @@ def test_last_response(message_manager):
     assert message_manager.last_response is None
 
     # Add an instruction
-    message_manager.add_message(
-        instruction="Test", sender="user", recipient="assistant"
-    )
+    message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
     assert message_manager.last_response is None
 
     # Add first response
@@ -110,9 +98,7 @@ def test_last_instruction(message_manager):
     assert message_manager.last_instruction == instruction1
 
     # Add a response
-    message_manager.add_message(
-        assistant_response="Response", sender="assistant", recipient="user"
-    )
+    message_manager.add_message(assistant_response="Response", sender="assistant", recipient="user")
     assert message_manager.last_instruction == instruction1
 
     # Add second instruction
@@ -127,9 +113,7 @@ def test_assistant_responses_property(message_manager):
     assert len(message_manager.assistant_responses) == 0
 
     # Add instruction (not included)
-    message_manager.add_message(
-        instruction="Test", sender="user", recipient="assistant"
-    )
+    message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
     assert len(message_manager.assistant_responses) == 0
 
     # Add responses
@@ -160,9 +144,7 @@ def test_instructions_property(message_manager):
     )
 
     # Add response (not included)
-    message_manager.add_message(
-        assistant_response="Response", sender="assistant", recipient="user"
-    )
+    message_manager.add_message(assistant_response="Response", sender="assistant", recipient="user")
 
     instructions = message_manager.instructions
     assert isinstance(instructions, Pile)

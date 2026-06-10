@@ -17,7 +17,41 @@ review, …) subclass it.
 
 from __future__ import annotations
 
-from .engine import Engine, EngineEvent, EngineRun
+from .coding import (
+    ChangeProposed,
+    CodeResultRecorded,
+    CodingChainEvent,
+    CodingEngine,
+    CodingRun,
+    TestsRan,
+    WorkPlanned,
+)
+from .coding import (
+    VerifyResult as CodeVerifyResult,
+)
+from .engine import (
+    ChainRun,
+    Engine,
+    EngineBudgetError,
+    EngineEvent,
+    EngineRun,
+    JudgeVerdict,
+)
+from .hypothesis import (
+    ApplicationMapped,
+    ChainEvent,
+    ConclusionDrawn,
+    EvidenceCollected,
+    ExperimentDesigned,
+    FindingPosted,
+    HypothesisEngine,
+    HypothesisFormed,
+    HypothesisRun,
+    QuestionRaised,
+    ResultRecorded,
+    render_evidence,
+    trace_chains,
+)
 from .planning import PlanError, PlanningEngine
 from .research import (
     ContradictionFound,
@@ -36,7 +70,10 @@ from .review import (
 __all__ = (
     "Engine",
     "EngineRun",
+    "ChainRun",
     "EngineEvent",
+    "EngineBudgetError",
+    "JudgeVerdict",
     # planning (Planned-DAG shape — li o flow as an engine)
     "PlanningEngine",
     "PlanError",
@@ -51,4 +88,29 @@ __all__ = (
     "VerifyResult",
     "ReviewVerdict",
     "DEFAULT_DIMENSIONS",
+    # hypothesis (Chain shape — evidence chains for decisions)
+    "HypothesisEngine",
+    "HypothesisRun",
+    "ChainEvent",
+    "FindingPosted",
+    "QuestionRaised",
+    "EvidenceCollected",
+    "HypothesisFormed",
+    "ExperimentDesigned",
+    "ResultRecorded",
+    "ConclusionDrawn",
+    "ApplicationMapped",
+    "trace_chains",
+    "render_evidence",
+    # coding (Gated-Loop shape — plan/implement/test/fix/verify with a
+    # ground-truth subprocess test runner; CodeVerifyResult disambiguates the
+    # review engine's VerifyResult at the package level)
+    "CodingEngine",
+    "CodingRun",
+    "CodingChainEvent",
+    "WorkPlanned",
+    "ChangeProposed",
+    "TestsRan",
+    "CodeVerifyResult",
+    "CodeResultRecorded",
 )

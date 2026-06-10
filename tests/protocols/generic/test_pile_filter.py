@@ -63,6 +63,11 @@ pandas_missing = importlib.util.find_spec("pandas") is None
 
 
 class TestIsHomogenous:
+    """is_homogenous previously iterated over dict_values directly, causing
+    TypeError in is_same_dtype which requires a list or Mapping, not
+    dict_values. Fixed by materialising list(self.collections.values())
+    before the call."""
+
     def test_empty_is_homogenous(self):
         p = Pile()
         assert p.is_homogenous() is True
@@ -71,12 +76,28 @@ class TestIsHomogenous:
         p = Pile(collections=[Item(value=0)])
         assert p.is_homogenous() is True
 
-    def test_single_type_multiple_items_is_homogenous_fast_path(self):
-        # With 2+ items, is_homogenous calls is_same_dtype which expects a list,
-        # but collections.values() is dict_values — this exercises the known bug.
-        # For now assert the fast-path (size < 2) returns True correctly.
-        p = Pile(collections=[Item(value=0)])
+    def test_same_type_two_items_is_homogenous(self):
+        """Two items of the same type must return True (exercises the fixed path)."""
+        p = Pile(collections=[Item(value=0), Item(value=1)])
         assert p.is_homogenous() is True
+
+    def test_same_type_five_items_is_homogenous(self):
+        """Five items of the same type must return True."""
+        items = [Item(value=i) for i in range(5)]
+        p = Pile(collections=items)
+        assert p.is_homogenous() is True
+
+    def test_mixed_types_is_not_homogenous(self):
+        """A pile with two different concrete types is not homogenous."""
+        items = [Item(value=0), OtherItem(name="x")]
+        p = Pile(collections=items)
+        assert p.is_homogenous() is False
+
+    def test_mixed_types_three_items_is_not_homogenous(self):
+        """Mixed-type pile with 3 items is not homogenous."""
+        items = [Item(value=0), Item(value=1), OtherItem(name="x")]
+        p = Pile(collections=items)
+        assert p.is_homogenous() is False
 
     def test_empty_pile_homogenous(self):
         assert Pile().is_homogenous() is True

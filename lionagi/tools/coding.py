@@ -4,141 +4,39 @@
 from __future__ import annotations
 
 import base64
-import contextlib
-import os
 import re
 import shlex
-import signal
-import subprocess
-import threading
 from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
-from lionagi.service.token_calculator import TokenCalculator
 
+from ._subprocess import _SHELL_CONTROL, _subprocess_sync
 from .base import LionTool
+from .code.check import CodeCheckRequest, _resolve_check_paths, _ruff_check_sync
+from .context.context import ContextRequest, ContextTool
+from .file.editor import EditorRequest, _write_text_no_follow
+from .file.reader import ReaderRequest, _evict_expired, _open_sync, _read_cached
+from .file.reader import _list_dir_sync as _file_list_dir_sync
+from .file.reader import _read_sync as _file_read_sync
 
 if TYPE_CHECKING:
     from lionagi.session.branch import Branch
 
 
 # ---------------------------------------------------------------------------
-# Workspace path validation (Finding 14)
-# ---------------------------------------------------------------------------
-
-_DENIED_NAMES: frozenset[str] = frozenset(
-    {".env", ".netrc", "id_rsa", "id_ed25519", "id_ecdsa", ".htpasswd"}
-)
-
-
-def _resolve_workspace_path(path: str, workspace_root: Path) -> Path:
-    """Finding 14: resolve path under workspace_root; raise PermissionError if it escapes."""
-    raw = Path(path).expanduser()
-    candidate = raw if raw.is_absolute() else workspace_root / raw
-    # GAP B: check symlink on candidate BEFORE resolve() follows it
-    if candidate.is_symlink():
-        raise PermissionError(f"Refusing to access symlink: {path!r}")
-    resolved = candidate.resolve(strict=False)
-    try:
-        resolved.relative_to(workspace_root)
-    except ValueError as e:
-        raise PermissionError(f"Path escapes workspace root: {path!r}") from e
-    if resolved.name in _DENIED_NAMES:
-        raise PermissionError(f"Refusing to access protected path: {resolved.name!r}")
-    return resolved
-
-
-# ---------------------------------------------------------------------------
 # Request models (LLM-facing schemas)
 # ---------------------------------------------------------------------------
-
-
-class ReaderAction(str, Enum):
-    read = "read"
-    list_dir = "list_dir"
-
-
-class ReaderRequest(BaseModel):
-    action: ReaderAction = Field(
-        ...,
-        description=(
-            "Action to perform. One of:\n"
-            "- 'read': Read a file. Each line is returned as `<number>\\t<code>`; the "
-            "line-number prefix is for your reference only — strip it (and the tab) "
-            "before using any text as an editor old_string.\n"
-            "- 'list_dir': List files in a directory."
-        ),
-    )
-    path: str = Field(
-        ...,
-        description="Absolute path to a file (for 'read') or directory (for 'list_dir').",
-    )
-    offset: int | None = Field(
-        None,
-        description="Zero-indexed line number to start reading from. Defaults to 0.",
-    )
-    limit: int | None = Field(
-        None,
-        description="Maximum number of lines to return. Defaults to 2000.",
-    )
-    recursive: bool | None = Field(
-        None,
-        description="Whether to list subdirectories recursively. Only for 'list_dir'.",
-    )
-    file_types: list[str] | None = Field(
-        None,
-        description="Filter by extensions (e.g. ['.py', '.rs']). Only for 'list_dir'.",
-    )
-
-
-class EditorAction(str, Enum):
-    write = "write"
-    edit = "edit"
-
-
-class EditorRequest(BaseModel):
-    action: EditorAction = Field(
-        ...,
-        description=(
-            "Action to perform. One of:\n"
-            "- 'write': Create or overwrite a file. Creates parent dirs automatically.\n"
-            "- 'edit': Exact string replacement. Fails if old_string not found or ambiguous."
-        ),
-    )
-    file_path: str = Field(
-        ...,
-        description="Absolute path to the target file.",
-    )
-    content: str | None = Field(
-        None,
-        description="Full file content. Required for 'write'.",
-    )
-    old_string: str | None = Field(
-        None,
-        description=(
-            "Exact text to find. Required for 'edit'. Must match the file byte-for-byte. "
-            "IMPORTANT: the reader returns lines as `<number>\\t<code>` — do NOT include "
-            "the leading line-number + tab prefix here; match only the actual code, "
-            "preserving its exact indentation. Use the smallest snippet that is unique "
-            "(usually 2-4 adjacent lines); if it is not unique the edit fails — add a "
-            "little more surrounding context, or set replace_all=True to change every "
-            "occurrence."
-        ),
-    )
-    new_string: str | None = Field(
-        None,
-        description="Replacement text. Required for 'edit'. Empty string = deletion.",
-    )
-    replace_all: bool = Field(
-        default=False,
-        description="Replace all occurrences. If False and multiple matches, edit fails.",
-    )
+# ReaderRequest and EditorRequest are imported from file/reader.py and
+# file/editor.py — those are the canonical definitions. BashRequest,
+# SearchRequest, SandboxRequest, and SubagentRequest have no standalone
+# equivalent and are defined here.
 
 
 class BashRequest(BaseModel):
@@ -190,32 +88,6 @@ class SearchRequest(BaseModel):
     max_results: int | None = Field(
         None,
         description="Max results to return. Default 50 for grep, 100 for find.",
-    )
-
-
-class ContextAction(str, Enum):
-    status = "status"
-    get_messages = "get_messages"
-    evict = "evict"
-    evict_action_results = "evict_action_results"
-
-
-class ContextRequest(BaseModel):
-    action: ContextAction = Field(
-        ...,
-        description=(
-            "Action to perform. One of:\n"
-            "- 'status': Context usage — message count, types, token estimate.\n"
-            "- 'get_messages': List messages with index, role, preview.\n"
-            "- 'evict': Remove messages by index range (protects system message).\n"
-            "- 'evict_action_results': Remove old tool outputs, keep last N."
-        ),
-    )
-    start: int | None = Field(None, description="Start index (inclusive, 0-based).")
-    end: int | None = Field(None, description="End index (exclusive, 0-based).")
-    keep_last: int | None = Field(
-        None,
-        description="For 'evict_action_results': keep N most recent. Default 5.",
     )
 
 
@@ -291,7 +163,6 @@ _IMAGE_MEDIA_TYPES = {
 
 
 def _read_image_sync(path: str, workspace_root: Path) -> dict:
-    # Finding 14: validate path before reading image bytes
     try:
         p = _resolve_workspace_path(path, workspace_root)
     except PermissionError as e:
@@ -313,36 +184,17 @@ def _read_image_sync(path: str, workspace_root: Path) -> dict:
 
 
 def _read_file_sync(path: str, offset: int, max_lines: int, workspace_root: Path) -> dict:
-    # Finding 14: validate path under workspace root
     try:
         p = _resolve_workspace_path(path, workspace_root)
     except PermissionError as e:
         return {"success": False, "error": str(e)}
 
-    if not p.exists():
-        return {"success": False, "error": f"File not found: {path}"}
-    if not p.is_file():
-        return {"success": False, "error": f"Not a file: {path}"}
-
     if p.suffix.lower() in _IMAGE_EXTENSIONS:
         return _read_image_sync(path, workspace_root)
 
-    try:
-        with open(p, "rb") as f:
-            chunk = f.read(8192)
-        if b"\x00" in chunk:
-            return {"success": False, "error": f"Binary file: {path}"}
-    except OSError as e:
-        return {"success": False, "error": str(e)}
-
-    try:
-        with open(p, encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-    except OSError as e:
-        return {"success": False, "error": str(e)}
-
-    selected = lines[offset : offset + max_lines]
-    numbered = "".join(f"{offset + i + 1}\t{line}" for i, line in enumerate(selected))
+    resp = _file_read_sync(path, offset, max_lines, workspace_root)
+    if not resp.success:
+        return {"success": False, "error": resp.error}
 
     try:
         mtime = p.stat().st_mtime
@@ -351,7 +203,7 @@ def _read_file_sync(path: str, offset: int, max_lines: int, workspace_root: Path
 
     return {
         "success": True,
-        "content": numbered,
+        "content": resp.content,
         "_resolved": str(p.resolve()),
         "_mtime": mtime,
     }
@@ -360,23 +212,15 @@ def _read_file_sync(path: str, offset: int, max_lines: int, workspace_root: Path
 def _list_dir_sync(
     path: str, recursive: bool, file_types: list[str] | None, workspace_root: Path
 ) -> dict:
-    # Finding 14: validate directory path
-    try:
-        base = _resolve_workspace_path(path, workspace_root)
-    except PermissionError as e:
-        return {"success": False, "error": str(e)}
-
-    from lionagi.libs.file.process import dir_to_files
-
-    try:
-        files = dir_to_files(str(base), recursive=recursive, file_types=file_types)
-        return {"success": True, "content": "\n".join(str(f) for f in files)}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    resp = _file_list_dir_sync(path, recursive, file_types, workspace_root)
+    return (
+        {"success": resp.success, "content": resp.content}
+        if resp.success
+        else {"success": False, "error": resp.error}
+    )
 
 
 def _write_file_sync(file_path: str, content: str, workspace_root: Path) -> dict:
-    # Finding 14: validate path before writing
     try:
         p = _resolve_workspace_path(file_path, workspace_root)
     except PermissionError as e:
@@ -408,7 +252,6 @@ def _edit_file_sync(
     replace_all: bool,
     workspace_root: Path,
 ) -> dict:
-    # Finding 14: validate path before reading or writing
     try:
         p = _resolve_workspace_path(file_path, workspace_root)
     except PermissionError as e:
@@ -422,9 +265,6 @@ def _edit_file_sync(
     count = original.count(old_string)
     if count == 0:
         hint = ""
-        # Most common cause on a fresh read: the model copied the reader's
-        # `<number>\t` line-number prefix into old_string. If stripping a
-        # leading "<digits><tab>" from each line WOULD match, say so.
         stripped = re.sub(r"(?m)^\s*\d+\t", "", old_string)
         if stripped != old_string and stripped in original:
             hint = (
@@ -433,17 +273,26 @@ def _edit_file_sync(
             )
         elif old_string.strip() and old_string.strip() in original:
             hint = " — a match exists ignoring surrounding whitespace; check indentation."
-        return {"success": False, "error": f"old_string not found in {file_path}{hint}"}
+        return {
+            "success": False,
+            "error": (
+                f"old_string not found in {file_path}{hint}. "
+                "Re-read the file and copy the exact text including all whitespace."
+            ),
+        }
     if count > 1 and not replace_all:
         return {
             "success": False,
-            "error": f"old_string appears {count} times. Set replace_all=True.",
+            "error": (
+                f"old_string appears {count} times. "
+                "Either set replace_all=True or expand old_string with more surrounding context."
+            ),
         }
 
     updated = original.replace(old_string, new_string, -1 if replace_all else 1)
 
     try:
-        p.write_text(updated, encoding="utf-8")
+        _write_text_no_follow(p, updated)
     except OSError as e:
         return {"success": False, "error": str(e)}
 
@@ -465,168 +314,32 @@ def _edit_file_sync(
     }
 
 
-# GAP A: shell control operators — same pattern as bash.py
-_SHELL_CONTROL = re.compile(r"(;|&&|\|\||\||`|\$\(|[<>]|\n)")
-
-_MAX_OUTPUT_BYTES = 100_000
-
-
-def _drain_stream(stream, buf: bytearray) -> bool:
-    """Finding 5: read stream into buf up to _MAX_OUTPUT_BYTES; return True if truncated.
-
-    Continues reading even after cap to prevent pipe-buffer deadlock.
-    """
-    truncated = False
-    while True:
-        try:
-            chunk = stream.read(8192)
-        except Exception:
-            break
-        if not chunk:
-            break
-        remaining = _MAX_OUTPUT_BYTES - len(buf)
-        if remaining > 0:
-            buf.extend(chunk[:remaining])
-            if len(buf) >= _MAX_OUTPUT_BYTES:
-                truncated = True
-    return truncated
-
-
-def _subprocess_sync(cmd, shell: bool, timeout_s: float, cwd: str | None) -> dict:
-    # Finding 5: use Popen + threads for bounded memory capture and child-group kill
-    try:
-        proc = subprocess.Popen(  # noqa: S603
-            cmd,
-            shell=shell,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=cwd or None,
-            start_new_session=True,
-        )
-    except FileNotFoundError as e:
-        return {"stdout": "", "stderr": str(e), "returncode": -1}
-    except Exception as e:
-        return {"stdout": "", "stderr": str(e), "returncode": -1}
-
-    stdout_buf = bytearray()
-    stderr_buf = bytearray()
-    stdout_truncated = [False]
-    stderr_truncated = [False]
-
-    def _drain_out():
-        stdout_truncated[0] = _drain_stream(proc.stdout, stdout_buf)
-
-    def _drain_err():
-        stderr_truncated[0] = _drain_stream(proc.stderr, stderr_buf)
-
-    t_out = threading.Thread(target=_drain_out, daemon=True)
-    t_err = threading.Thread(target=_drain_err, daemon=True)
-    t_out.start()
-    t_err.start()
-
-    timed_out = False
-    try:
-        proc.wait(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        if isinstance(proc.pid, int) and proc.pid > 1:
-            with contextlib.suppress(ProcessLookupError, OSError):
-                os.killpg(proc.pid, signal.SIGKILL)
-        else:
-            proc.kill()
-        proc.wait()
-        t_out.join(timeout=1)
-        t_err.join(timeout=1)
-        timed_out = True
-
-    if not timed_out:
-        t_out.join()
-        t_err.join()
-
-    def _decode(buf: bytearray, truncated: bool) -> str:
-        text = bytes(buf).decode("utf-8", errors="replace")
-        if truncated:
-            text += f"\n\n[... truncated at {_MAX_OUTPUT_BYTES} bytes ...]\n"
-        return text
-
-    if timed_out:
-        return {
-            "stdout": _decode(stdout_buf, True),
-            "stderr": f"Timed out after {timeout_s}s",
-            "returncode": -1,
-            "timed_out": True,
-        }
-
-    return {
-        "stdout": _decode(stdout_buf, stdout_truncated[0]),
-        "stderr": _decode(stderr_buf, stderr_truncated[0]),
-        "returncode": proc.returncode,
-    }
-
-
 # ---------------------------------------------------------------------------
 # CodingToolkit
 # ---------------------------------------------------------------------------
 
 
-#: Every tool the coding toolkit can build.
 ALL_CODING_TOOLS: tuple[str, ...] = (
     "reader",
     "editor",
     "bash",
     "search",
+    "code_check",
     "context",
     "sandbox",
     "subagent",
 )
 
-#: Tools registered by default — the proven, in-use core. ``context`` (manual
-#: context eviction), ``sandbox`` (git-worktree sessions), and ``subagent``
-#: (delegation) are opt-in: they add capability surface the agent rarely uses,
-#: and delegation in particular shouldn't be advertised before a single agent is
-#: solid. Enable extras explicitly via ``CodingToolkit(tools=[...])``.
-DEFAULT_CODING_TOOLS: tuple[str, ...] = ("reader", "editor", "bash", "search")
+DEFAULT_CODING_TOOLS: tuple[str, ...] = ("reader", "editor", "bash", "search", "code_check")
 
 
 class CodingToolkit(LionTool):
-    """Coding tools bound to a Branch with shared file state and hooks.
-
-    Usage::
-
-        toolkit = CodingToolkit()
-
-        # Register hooks before binding
-        async def guard_destructive(tool_name, action, args):
-            cmd = args.get("command", "")
-            if "rm -rf" in cmd:
-                raise PermissionError(f"Blocked: {cmd}")
-
-        async def auto_format(tool_name, action, args, result):
-            if result.get("success") and args.get("file_path", "").endswith(".py"):
-                # run formatter...
-                pass
-            return result
-
-        toolkit.pre("bash", guard_destructive)
-        toolkit.post("editor", auto_format)
-
-        tools = toolkit.bind(branch)
-        branch.register_tools(tools)
-
-    Hook signatures:
-        pre:  async def handler(tool_name: str, action: str, args: dict) -> dict | None
-              - Return modified args dict to override, or None to pass through.
-              - Raise to abort the tool call (exception propagates as error result).
-        post: async def handler(tool_name: str, action: str, args: dict, result: dict) -> dict | None
-              - Return modified result dict to override, or None to pass through.
-        on_error: async def handler(tool_name: str, action: str, args: dict, error: Exception) -> dict | None
-              - Return a result dict to suppress the error, or None to propagate.
-    """
+    """Coding tools (reader, editor, bash, search, etc.) bound to a Branch."""
 
     is_lion_system_tool = True
     system_tool_name = "coding_toolkit"
 
     def security_pre(self, tool_name: str, handler: Callable) -> CodingToolkit:
-        """Finding 13: register a security hook that runs before user pre-hooks."""
         self._security_pre_hooks.setdefault(tool_name, []).append(handler)
         return self
 
@@ -643,12 +356,9 @@ class CodingToolkit(LionTool):
         return self
 
     def _build_preprocessor(self, tool_name: str) -> Callable | None:
-        """Build a chained preprocessor from registered hooks for this tool.
+        from lionagi.agent.factory import _chain_pre_hooks
 
-        Finding 13: security_pre hooks run before user pre hooks.
-        """
         security_hooks = [
-            # Finding 13: security hooks first, then user hooks
             *self._security_pre_hooks.get("*", []),
             *self._security_pre_hooks.get(tool_name, []),
         ]
@@ -656,41 +366,16 @@ class CodingToolkit(LionTool):
             *self._pre_hooks.get(tool_name, []),
             *self._pre_hooks.get("*", []),
         ]
-        hooks = [*security_hooks, *user_hooks]
-        if user_hooks:
-            # User pre-hooks may rewrite args; validate the final args too.
-            hooks.extend(security_hooks)
-        if not hooks:
-            return None
-
-        async def chained_pre(args: dict, **_kw) -> dict:
-            for handler in hooks:
-                result = await handler(tool_name, args.get("action", ""), args)
-                if isinstance(result, dict):
-                    args = result
-            return args
-
-        return chained_pre
+        return _chain_pre_hooks(tool_name, security_hooks, user_hooks)
 
     def _build_postprocessor(self, tool_name: str) -> Callable | None:
-        """Build a chained postprocessor from registered post-hooks for this tool."""
+        from lionagi.agent.factory import _chain_post_hooks
+
         hooks = [
             *self._post_hooks.get(tool_name, []),
             *self._post_hooks.get("*", []),
         ]
-        if not hooks:
-            return None
-
-        async def chained_post(result: Any, **_kw) -> Any:
-            if not isinstance(result, dict):
-                return result
-            for handler in hooks:
-                modified = await handler(tool_name, "", {}, result)
-                if isinstance(modified, dict):
-                    result = modified
-            return result
-
-        return chained_post
+        return _chain_post_hooks(tool_name, hooks)
 
     def __init__(
         self,
@@ -700,17 +385,14 @@ class CodingToolkit(LionTool):
         workspace_root: str | Path | None = None,
         tools: Sequence[str] | None = None,
     ):
-        self._security_pre_hooks: dict[str, list[Callable]] = {}  # Finding 13
+        self._security_pre_hooks: dict[str, list[Callable]] = {}
         self._pre_hooks: dict[str, list[Callable]] = {}
         self._post_hooks: dict[str, list[Callable]] = {}
         self._error_hooks: dict[str, list[Callable]] = {}
         self.notify = notify
         self.notify_threshold = notify_threshold
         self.notify_max_tokens = notify_max_tokens
-        # Finding 14: workspace root for path containment checks
         self.workspace_root = Path(workspace_root or Path.cwd()).expanduser().resolve()
-        # Which tools to register. None -> the lean default core; pass an explicit
-        # list to opt into context/sandbox/subagent.
         selected = tuple(tools) if tools is not None else DEFAULT_CODING_TOOLS
         unknown = [t for t in selected if t not in ALL_CODING_TOOLS]
         if unknown:
@@ -724,7 +406,6 @@ class CodingToolkit(LionTool):
         call_count = [0]
         msgs = branch.msgs
         notify = self.notify
-        # Finding 14: capture workspace root for use in all sync file helpers
         workspace_root = self.workspace_root
 
         def _system_status() -> str | None:
@@ -787,7 +468,11 @@ class CodingToolkit(LionTool):
             if resolved and mtime is not None:
                 file_state[resolved] = mtime
 
-        # -- Reader ----------------------------------------------------------
+        # Cache for documents opened via action='open' (docling conversion).
+        # Keyed by path; values are (text, cached_at) tuples — same layout as
+        # the standalone ReaderTool cache so _read_cached/_evict_expired work
+        # without modification.
+        _open_cache: dict[str, tuple[str, float]] = {}
 
         async def reader(
             action: str,
@@ -797,15 +482,37 @@ class CodingToolkit(LionTool):
             recursive: bool = None,
             file_types: list[str] = None,
         ) -> dict:
-            """Read files or list directory contents.
+            """Read files, convert documents, or list directory contents.
 
             Use action='read' to get file contents with line numbers.
+            Use action='open' to convert a document (PDF, PPTX, DOCX, HTML) to
+            text via docling — the result is cached by path so you can then use
+            action='read' with offset/limit on the same path to paginate it.
             Use action='list_dir' to list files. Always read a file before editing it.
             """
+            # Canonical empty-path contract: every reader action requires path,
+            # matching ReaderTool.handle_request's pre-dispatch guard.
+            if not path:
+                return {
+                    "success": False,
+                    "content": None,
+                    "error": "'path' is required. Provide a file path for 'read'/'open' or a directory path for 'list_dir'.",
+                }
+            if action == "open":
+                _evict_expired(_open_cache)
+                resp = await run_sync(_open_sync, path, _open_cache, workspace_root, frozenset())
+                return {"success": resp.success, "content": resp.content, "error": resp.error}
             if action == "read":
                 start = max(0, offset or 0)
                 max_lines = limit if (limit and limit > 0) else 2000
-                # Finding 14: pass workspace_root to enforce path containment
+                # Serve from docling cache if the path was previously opened.
+                cached = _read_cached(path, start, max_lines, _open_cache)
+                if cached is not None:
+                    return {
+                        "success": cached.success,
+                        "content": cached.content,
+                        "error": cached.error,
+                    }
                 result = await run_sync(_read_file_sync, path, start, max_lines, workspace_root)
                 _track(result)
                 return result
@@ -814,8 +521,6 @@ class CodingToolkit(LionTool):
                     _list_dir_sync, path, bool(recursive), file_types, workspace_root
                 )
             return {"success": False, "error": f"Unknown action: {action}"}
-
-        # -- Editor ----------------------------------------------------------
 
         async def editor(
             action: str,
@@ -843,7 +548,6 @@ class CodingToolkit(LionTool):
                     guard = _check_read_guard(file_path)
                     if guard:
                         return {"success": False, "error": guard}
-                # Finding 14: pass workspace_root to enforce path containment
                 result = await run_sync(_write_file_sync, file_path, content, workspace_root)
                 _track(result)
                 return result
@@ -855,7 +559,6 @@ class CodingToolkit(LionTool):
                 guard = _check_read_guard(file_path)
                 if guard:
                     return {"success": False, "error": guard}
-                # Finding 14: pass workspace_root to enforce path containment
                 result = await run_sync(
                     _edit_file_sync,
                     file_path,
@@ -867,8 +570,6 @@ class CodingToolkit(LionTool):
                 _track(result)
                 return result
             return {"success": False, "error": f"Unknown action: {action}"}
-
-        # -- Bash ------------------------------------------------------------
 
         async def bash(
             command: str,
@@ -885,11 +586,13 @@ class CodingToolkit(LionTool):
             timeout_ms = max(1, min(timeout or 30000, 300000))
             timeout_s = timeout_ms / 1000.0
 
-            # GAP A: reject shell control operators (same filter as standalone BashTool)
             if _SHELL_CONTROL.search(command):
                 return {
                     "stdout": "",
-                    "stderr": f"Shell control operators rejected: {command!r}",
+                    "stderr": (
+                        f"Shell control operators are not supported: {command!r}. "
+                        "Run one command per call; use cwd= instead of `cd x && cmd`."
+                    ),
                     "return_code": -1,
                     "timed_out": False,
                 }
@@ -908,8 +611,6 @@ class CodingToolkit(LionTool):
             result.setdefault("timed_out", False)
             result["return_code"] = result.pop("returncode", -1)
             return result
-
-        # -- Search ----------------------------------------------------------
 
         async def search(
             action: str,
@@ -963,24 +664,17 @@ class CodingToolkit(LionTool):
                 }
             return {"success": False, "error": f"Unknown action: {action}"}
 
-        # -- Context ---------------------------------------------------------
-
-        def _ensure_current_progression():
-            """Lazily copy full progression into metadata on first evict."""
-            if "current_progression" not in branch.metadata:
-                from lionagi.protocols.generic.progression import Progression
-
-                cp = Progression()
-                for uid in msgs.progression:
-                    cp.append(uid)
-                branch.metadata["current_progression"] = cp
-            return branch.metadata["current_progression"]
+        _ctx_tool = ContextTool()
+        _ctx_func = _ctx_tool.bind(branch).func_callable
 
         async def context(
             action: str,
             start: int = None,
             end: int = None,
             keep_last: int = None,
+            summary: str = None,
+            mode: str = None,
+            scope: str = None,
         ) -> dict:
             """Manage your conversation context — check usage, list messages, evict old ones.
 
@@ -988,100 +682,18 @@ class CodingToolkit(LionTool):
             tool outputs you no longer need to free space for new work.
             Evicted messages are hidden from the LLM but preserved in conversation record.
             """
-            progression = branch.progression
-            pile = msgs.messages
-
-            if action == "status":
-                full_len = len(msgs.progression)
-                active_len = len(progression)
-                by_type: dict[str, int] = {}
-                total_tokens = 0
-                for uid in progression:
-                    if uid in pile:
-                        msg = pile[uid]
-                        role = msg.role if hasattr(msg, "role") else type(msg).__name__
-                        by_type[role] = by_type.get(role, 0) + 1
-                        c = msg.content if hasattr(msg, "content") else ""
-                        if c:
-                            total_tokens += TokenCalculator.tokenize(
-                                str(c) if not isinstance(c, str) else c
-                            )
-                return {
-                    "success": True,
-                    "active_messages": active_len,
-                    "total_messages": full_len,
-                    "evicted": full_len - active_len,
-                    "by_type": by_type,
-                    "estimated_tokens": total_tokens,
-                    "files_tracked": len(file_state),
-                }
-
-            elif action == "get_messages":
-                s = max(0, start or 0)
-                e = min(len(progression), end or len(progression))
-                summaries = []
-                for i in range(s, e):
-                    uid = progression[i]
-                    if uid in pile:
-                        msg = pile[uid]
-                        role = msg.role if hasattr(msg, "role") else type(msg).__name__
-                        c = ""
-                        if hasattr(msg, "content") and msg.content:
-                            raw = (
-                                str(msg.content)
-                                if not isinstance(msg.content, str)
-                                else msg.content
-                            )
-                            c = raw[:120].replace("\n", " ")
-                            if len(raw) > 120:
-                                c += "..."
-                        summaries.append(f"[{i}] {role}: {c}")
-                return {
-                    "success": True,
-                    "range": f"[{s}:{e}] of {len(progression)}",
-                    "messages": summaries,
-                }
-
-            elif action == "evict":
-                cp = _ensure_current_progression()
-                s = max(1, start or 1)
-                e = end if end is not None else s + 1
-                e = min(len(cp), e)
-                if s >= e:
-                    return {"success": False, "error": f"Invalid range [{s}:{e})"}
-                uids = [cp[i] for i in range(s, e) if i < len(cp)]
-                cp.exclude(uids)
-                return {
-                    "success": True,
-                    "removed": len(uids),
-                    "active": len(cp),
-                    "total": len(msgs.progression),
-                }
-
-            elif action == "evict_action_results":
-                cp = _ensure_current_progression()
-                keep = keep_last if keep_last is not None else 5
-                ar_uids = [
-                    uid for uid in cp if uid in pile and isinstance(pile[uid], ActionResponse)
-                ]
-                if len(ar_uids) <= keep:
-                    return {
-                        "success": True,
-                        "removed": 0,
-                        "message": f"Only {len(ar_uids)} action results, keeping all.",
-                    }
-                to_evict = ar_uids[:-keep] if keep > 0 else ar_uids
-                cp.exclude(to_evict)
-                return {
-                    "success": True,
-                    "removed": len(to_evict),
-                    "active": len(cp),
-                    "total": len(msgs.progression),
-                }
-
-            return {"success": False, "error": f"Unknown action: {action}"}
-
-        # -- System notification as built-in post-hook -----------------------
+            result = await _ctx_func(
+                action=action,
+                start=start,
+                end=end,
+                keep_last=keep_last,
+                summary=summary,
+                mode=mode,
+                scope=scope,
+            )
+            if action == "status" and isinstance(result, dict) and result.get("success"):
+                result["files_tracked"] = len(file_state)
+            return result
 
         async def _notify_post(
             tool_name: str, action: str, args: dict, result: dict
@@ -1094,9 +706,7 @@ class CodingToolkit(LionTool):
         if notify:
             self.post("*", _notify_post)
 
-        # -- Sandbox ---------------------------------------------------------
-
-        _sandbox_session = [None]  # mutable ref for closure
+        _sandbox_session = [None]
 
         async def sandbox(
             action: str,
@@ -1164,8 +774,6 @@ class CodingToolkit(LionTool):
                 return {"success": True, **result}
 
             return {"success": False, "error": f"Unknown action: {action}"}
-
-        # -- Subagent --------------------------------------------------------
 
         async def subagent(
             instruction: str,
@@ -1236,13 +844,38 @@ class CodingToolkit(LionTool):
             except Exception as e:
                 return {"success": False, "error": str(e)}
 
-        # -- Assemble (hooks wired via Tool's native pre/postprocessor) ------
+        async def code_check(
+            paths: list,
+            tool: str = "ruff",
+            max_diagnostics: int = 50,
+        ) -> dict:
+            """Run static analysis on Python files and return structured diagnostics.
+
+            Call this after editing a file to get immediate IDE-grade feedback.
+            Each diagnostic is returned as file:line:col with code and message so
+            the agent can locate and fix the issue without re-reading the file.
+
+            Composability (edit -> check workflow):
+              1. editor(action='edit', file_path=..., old_string=..., new_string=...)
+              2. code_check(paths=[<same file_path>])
+              3. Diagnostics list gives actionable file:line:col entries to fix next.
+
+            Supported tools:
+            - 'ruff': fast Python linter (default). Requires ruff in PATH.
+              Returns status='unavailable' if the binary is absent — not an error.
+            """
+            resolved_paths, err = _resolve_check_paths(paths, workspace_root)
+            if err is not None:
+                return err.model_dump()
+            resp = await run_sync(_ruff_check_sync, resolved_paths, max_diagnostics)
+            return resp.model_dump()
 
         tool_defs = [
             ("reader", reader, ReaderRequest),
             ("editor", editor, EditorRequest),
             ("bash", bash, BashRequest),
             ("search", search, SearchRequest),
+            ("code_check", code_check, CodeCheckRequest),
             ("context", context, ContextRequest),
             ("sandbox", sandbox, SandboxRequest),
             ("subagent", subagent, SubagentRequest),

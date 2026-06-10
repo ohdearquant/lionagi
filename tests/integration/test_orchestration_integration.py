@@ -335,12 +335,12 @@ def test_flow_aggregation_wait_reads_metadata():
 
 
 def test_error_handler_uses_cached_exc_class():
-    """The CLI orchestrate module must import cancelled_exc_classes, not
-    get_cancelled_exc_class.
+    """The CLI orchestrate module must detect cancellation with a loop-safe
+    helper (is_cancelled or cancelled_exc_classes), not get_cancelled_exc_class.
 
     get_cancelled_exc_class() (anyio) requires a running event loop and raises
     NoEventLoopError in exception handlers that run after the loop exits.
-    cancelled_exc_classes() is the loop-safe cached variant.
+    cancelled_exc_classes() returns the cached classes; is_cancelled() wraps it.
     """
     import ast
     from pathlib import Path
@@ -350,18 +350,24 @@ def test_error_handler_uses_cached_exc_class():
 
     tree = ast.parse(source)
 
-    # Collect all names imported from lionagi.ln.concurrency.errors
-    imported_from_errors: set[str] = set()
+    # Collect names imported from any lionagi.ln.concurrency module — the
+    # package re-exports the loop-safe helpers from its .errors submodule.
+    imported_concurrency: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             module = node.module or ""
-            if "concurrency" in module and "errors" in module:
+            if "ln.concurrency" in module:
                 for alias in node.names:
-                    imported_from_errors.add(alias.asname or alias.name)
+                    imported_concurrency.add(alias.asname or alias.name)
 
-    assert "cancelled_exc_classes" in imported_from_errors, (
-        "CLI orchestrate __init__ must import cancelled_exc_classes "
-        "(the loop-safe cached variant), not get_cancelled_exc_class"
+    # The error handler must detect cancellation via a loop-safe helper:
+    # is_cancelled() (which wraps the cached classes) or cancelled_exc_classes()
+    # directly. Both read the module-level cache and never require a running
+    # loop, so they stay safe in handlers that run after the loop exits.
+    loop_safe = {"is_cancelled", "cancelled_exc_classes"}
+    assert imported_concurrency & loop_safe, (
+        "CLI orchestrate __init__ must import a loop-safe cancellation check "
+        "(is_cancelled or cancelled_exc_classes), not get_cancelled_exc_class"
     )
 
     # Confirm the dangerous variant is NOT directly called (it may be imported

@@ -34,7 +34,7 @@ def _strip_sentinels(obj: Any, none_as_sentinel=False, empty_as_sentinel=False) 
 
 def _to_indices(key: IndicesType) -> list[str | int]:
     """Normalize a single key or tuple of keys to a list of indices."""
-    if isinstance(key, (str, int)):
+    if isinstance(key, str | int):
         return [key]
     return list(key)
 
@@ -52,11 +52,7 @@ class Note(BaseModel):
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__()
-        if (
-            len(kwargs) == 1
-            and "content" in kwargs
-            and isinstance(kwargs["content"], dict)
-        ):
+        if len(kwargs) == 1 and "content" in kwargs and isinstance(kwargs["content"], dict):
             self.content = kwargs["content"]
         else:
             self.content = kwargs
@@ -67,9 +63,7 @@ class Note(BaseModel):
 
     # --- core path operations ---
 
-    def get(
-        self, indices: list[str | int] | str | int, /, default: Any = UNDEFINED
-    ) -> Any:
+    def get(self, indices: list[str | int] | str | int, /, default: Any = UNDEFINED) -> Any:
         """Get value at path; return default if missing (raise KeyError if no default)."""
         return nget(self.content, _to_indices(indices), default)
 
@@ -77,9 +71,7 @@ class Note(BaseModel):
         """Deep set value at path; auto-creates intermediate containers."""
         nset(self.content, _to_indices(indices), value)
 
-    def pop(
-        self, indices: list[str | int] | str | int, /, default: Any = UNDEFINED
-    ) -> Any:
+    def pop(self, indices: list[str | int] | str | int, /, default: Any = UNDEFINED) -> Any:
         """Remove and return value at path."""
         return npop(self.content, _to_indices(indices), default)
 
@@ -87,7 +79,7 @@ class Note(BaseModel):
         """Update nested structure at path (list: extend/append; dict: merge)."""
         existing = self.get(indices, None)
         if existing is None:
-            if not isinstance(value, (list, dict)):
+            if not isinstance(value, list | dict):
                 value = [value]
             self.set(indices, value)
         elif isinstance(existing, list):
@@ -104,8 +96,7 @@ class Note(BaseModel):
                 raise ValueError("Cannot update a dict with a non-dict value.")
         else:
             raise TypeError(
-                f"Cannot update {type(existing).__name__} at {indices!r}; "
-                f"use set() to overwrite"
+                f"Cannot update {type(existing).__name__} at {indices!r}; use set() to overwrite"
             )
 
     # --- flatten / unflatten ---
@@ -159,9 +150,7 @@ class Note(BaseModel):
             return flatten(self.content, sep=sep, **kwargs).keys()
         return self.content.keys()
 
-    def values(
-        self, /, flat: bool = False, sep: str = "|", **kwargs: Any
-    ) -> ValuesView:
+    def values(self, /, flat: bool = False, sep: str = "|", **kwargs: Any) -> ValuesView:
         """Return top-level values, or flattened values when flat=True."""
         if flat:
             return flatten(self.content, sep=sep, **kwargs).values()
