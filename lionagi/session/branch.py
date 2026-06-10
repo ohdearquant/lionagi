@@ -104,11 +104,6 @@ class Branch(Element, Relational):
     _capabilities: Any = PrivateAttr(None)
     _loop_control: "LoopControl | None" = PrivateAttr(None)
     _signal_tasks: list = PrivateAttr(default_factory=list)
-    # When True, run() suppresses its own RunStart/RunEnd/RunFailed emission.
-    # Branch.ReAct() sets this before delegating so the single outer lifecycle
-    # signals it emits are the only ones observers see — no N+1 RunStart from
-    # internal run_and_collect calls inside the ReAct loop.
-    _suppress_run_lifecycle: bool = PrivateAttr(False)
 
     def __init__(
         self,
@@ -286,6 +281,22 @@ class Branch(Element, Relational):
             return []
         return await self._observer.emit(event)
 
+    async def _safe_emit(self, event: Any) -> None:
+        """Emit a lifecycle event, swallowing observer exceptions.
+
+        Policy: lifecycle observer failures must never alter run outcomes.
+        Exceptions are logged but not re-raised.
+        """
+        import logging as _logging
+
+        try:
+            await self.emit(event)
+        except Exception:
+            _logging.getLogger(__name__).exception(
+                "branch: observer raised during lifecycle emission of %s; run outcome is preserved",
+                type(event).__name__,
+            )
+
     async def authorize(self, action: Any) -> bool:
         """Pre-invoke governance gate. Standalone branches always allow."""
         if self._observer is None:
@@ -329,7 +340,7 @@ class Branch(Element, Relational):
         if has_observer:
             from .signal import RunStart
 
-            await self.emit(RunStart())
+            await self._safe_emit(RunStart())
         try:
             result = await coro
         except BaseException as exc:
@@ -337,13 +348,13 @@ class Branch(Element, Relational):
             if has_observer:
                 from .signal import RunFailed
 
-                await self.emit(RunFailed(data=exc))
+                await self._safe_emit(RunFailed(data=exc))
             raise
         await self.drain_signals()
         if has_observer:
             from .signal import RunEnd
 
-            await self.emit(RunEnd(data=result))
+            await self._safe_emit(RunEnd(data=result))
         return result
 
     async def emit_and_log(self, event: Any) -> list[Any]:
@@ -828,11 +839,13 @@ class Branch(Element, Relational):
         if has_observer:
             from .signal import RunStart
 
-            await self.emit(RunStart())
+            await self._safe_emit(RunStart())
         # Suppress nested lifecycle emission from run() calls inside ReActStream
-        # so observers receive exactly ONE RunStart/RunEnd per Branch.ReAct() call
-        # rather than N+1 (one outer + one per internal operate/run_and_collect).
-        self._suppress_run_lifecycle = True
+        # using a task-scoped ContextVar so that concurrent runs on the SAME
+        # branch are never affected — each asyncio task carries its own copy.
+        from ._lifecycle_ctx import suppress_lifecycle_var
+
+        _token = suppress_lifecycle_var.set(True)
         try:
             result = await ReAct(
                 self,
@@ -862,19 +875,19 @@ class Branch(Element, Relational):
                 **kwargs_filtered,
             )
         except BaseException as exc:
-            self._suppress_run_lifecycle = False
+            suppress_lifecycle_var.reset(_token)
             await self.drain_signals()
             if has_observer:
                 from .signal import RunFailed
 
-                await self.emit(RunFailed(data=exc))
+                await self._safe_emit(RunFailed(data=exc))
             raise
-        self._suppress_run_lifecycle = False
+        suppress_lifecycle_var.reset(_token)
         await self.drain_signals()
         if has_observer:
             from .signal import RunEnd
 
-            await self.emit(RunEnd(data=result))
+            await self._safe_emit(RunEnd(data=result))
         return result
 
     async def ReActStream(  # noqa: N802

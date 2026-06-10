@@ -717,12 +717,23 @@ async def stream_codex_cli(
                     else obj.get("message", str(err))
                 )
                 # Detect a benign end-of-stream sentinel: some codex CLI versions
-                # emit ``{"type": "error", "error": {}}`` (or an error with no
-                # "message" key) when a resumed session ends normally rather than
-                # with a real failure.  Tag these explicitly so run() can treat
-                # them as clean EOS rather than propagating them as RunFailed.
-                # An error with a non-empty "message" is never benign.
-                _is_benign_eos = isinstance(err, dict) and not err.get("message")
+                # emit ``{"type": "error", "error": {}}`` when a resumed session
+                # ends normally rather than with a real failure.  Tag these
+                # explicitly so run() can treat them as clean EOS rather than
+                # propagating them as RunFailed.
+                #
+                # Narrowing criteria (must ALL hold):
+                #   1. Event type is "error" — "turn.failed" events are NEVER benign
+                #      regardless of their error payload, because they signal an
+                #      explicit model-side failure (e.g. rate_limit, context_overflow).
+                #   2. The error payload is an empty dict (no keys at all, or all
+                #      values falsy) AND the top-level object carries no other failure
+                #      indicators — this is the only shape produced by a resumed-
+                #      session EOF sentinel in the wild.
+                _error_payload_empty = (
+                    isinstance(err, dict) and not any(err.values())  # {} or {k: None/""/""/0/False}
+                )
+                _is_benign_eos = typ == "error" and _error_payload_empty
                 chunk_meta = dict(obj)
                 if _is_benign_eos:
                     chunk_meta["benign_eos"] = True

@@ -80,10 +80,13 @@ async def run(
       - ``RunFailed`` on any other exception (including ``TimeoutError``).
     * ``GeneratorExit`` is always re-raised after cleanup so the runtime can
       finish generator teardown — it is never swallowed.
-    * Lifecycle emission is suppressed when ``branch._suppress_run_lifecycle``
-      is ``True``; ``Branch.ReAct()`` sets this flag so that the multiple
-      nested ``run()`` calls inside a ReAct turn do not emit extra signals on
-      top of the single outer ``RunStart`` / ``RunEnd`` the ReAct wrapper emits.
+    * Lifecycle emission is suppressed when the task-scoped
+      ``suppress_lifecycle_var`` ContextVar is ``True``; ``Branch.ReAct()``
+      sets this via ``ContextVar.set()`` so that the multiple nested ``run()``
+      calls inside a ReAct turn do not emit extra signals on top of the single
+      outer ``RunStart`` / ``RunEnd`` the ReAct wrapper emits.  Because asyncio
+      copies the context per task, concurrent runs on the same branch are not
+      affected by each other's suppression state.
     """
     if not param._is_sentinel(param.imodel):
         branch.chat_model = param.imodel
@@ -100,10 +103,14 @@ async def run(
     ins, kw = _prepare_run_kwargs(branch, instruction, param)
     await branch.msgs.a_add_message(instruction=ins)
 
-    # Lifecycle emission: honour the suppress flag set by Branch.ReAct() so
-    # that nested run() calls inside a ReAct turn do not emit extra RunStart /
-    # RunEnd signals on top of the outer ones the ReAct wrapper already emits.
-    _suppress_lifecycle = getattr(branch, "_suppress_run_lifecycle", False)
+    # Lifecycle emission: honour the task-scoped suppression flag set by
+    # Branch.ReAct() so that nested run() calls inside a ReAct turn do not emit
+    # extra RunStart / RunEnd signals on top of the outer ones the ReAct wrapper
+    # already emits.  Using a ContextVar (copied per asyncio task) ensures
+    # concurrent runs on the same branch never suppress each other's signals.
+    from lionagi.session._lifecycle_ctx import suppress_lifecycle_var
+
+    _suppress_lifecycle = suppress_lifecycle_var.get()
     has_observer = branch._observer is not None and not _suppress_lifecycle
 
     # _run_exc captures the exception (if any) so the outer finally can emit
@@ -115,7 +122,10 @@ async def run(
     if has_observer:
         from lionagi.session.signal import RunStart
 
-        await branch.emit(RunStart())
+        try:
+            await branch.emit(RunStart())
+        except Exception:
+            logger.exception("run: observer raised during RunStart emission; run proceeds normally")
 
     # The entire observable lifetime — from after RunStart through the terminal
     # signal — is protected by this outer try/finally so consumer abandonment

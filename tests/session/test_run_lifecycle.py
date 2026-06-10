@@ -449,39 +449,46 @@ async def test_run_aclose_before_first_yield_no_signals():
 async def test_react_cli_backed_emits_single_run_start():
     """CLI-backed Branch.ReAct() must emit exactly one RunStart across all internal rounds.
 
-    This test drives the real run_and_collect path via a fake CLI model instead of
-    patching operate() entirely, so it exercises the N+1 regression path where nested
-    run() calls previously each emitted their own RunStart.
+    This test patches operate() with a fake that calls run_and_collect() directly
+    (using the branch's fake CLI model) so it exercises the actual suppression path
+    through run() rather than bypassing it entirely.  The N+1 regression was that each
+    nested run() call emitted its own RunStart on top of the outer ReAct wrapper's.
     """
-    s = Session()
-    # The fake CLI model yields one text chunk per round; ReActStream calls
-    # operate() -> run_and_collect -> run() for each round.
-    # With suppress_run_lifecycle the nested run() calls must stay silent.
+    import asyncio
+
     from lionagi.operations.ReAct.utils import Analysis, ReActAnalysis
+    from lionagi.operations.run.run import RunParam, run_and_collect
 
-    # We still patch operate() at the ReAct layer so the test doesn't need a
-    # real codex binary — but we make the patch call run_and_collect itself to
-    # exercise the CLI path, using a fake CLI model.
-    cli_model = _make_fake_cli_model([StreamChunk(type="text", content='{"answer": "done"}')])
-    s.default_branch.chat_model = cli_model
-
+    s = Session()
     starts, ends, failures = [], [], []
     s.observe(RunStart, lambda sig, _: starts.append(sig))
     s.observe(RunEnd, lambda sig, _: ends.append(sig))
     s.observe(RunFailed, lambda sig, _: failures.append(sig))
 
+    # Fake CLI model: each call returns a minimal text chunk so run_and_collect
+    # completes without needing a real CLI binary.
     call_count = 0
 
-    async def mock_operate(*args, **kw):
+    async def mock_operate_via_run_and_collect(*args, **kw):
+        """Call the real run_and_collect path through the fake CLI model so the
+        suppression ContextVar is actually exercised, then return a ReAct analysis
+        result so the loop terminates."""
         nonlocal call_count
         call_count += 1
-        if call_count < 3:
-            return ReActAnalysis(analysis="thinking", extension_needed=False)
+        branch = args[0] if args else kw.get("branch")
+
+        # Build a fresh fake CLI model for this inner call
+        cli_model = _make_fake_cli_model([StreamChunk(type="text", content="intermediate answer")])
+        if branch is not None:
+            branch.chat_model = cli_model
+            await run_and_collect(branch, "inner", RunParam(), skip_validation=True)
+
+        # Final round: return a terminal Analysis so ReAct exits
         return Analysis(answer="done")
 
     with patch(
         "lionagi.operations.operate.operate.operate",
-        new=AsyncMock(side_effect=mock_operate),
+        new=AsyncMock(side_effect=mock_operate_via_run_and_collect),
     ):
         await s.default_branch.ReAct(
             instruct={"instruction": "solve it"},
@@ -489,10 +496,127 @@ async def test_react_cli_backed_emits_single_run_start():
         )
 
     assert len(starts) == 1, (
-        f"CLI-backed ReAct emitted {len(starts)} RunStart (expected 1); N+1 regression present"
+        f"CLI-backed ReAct emitted {len(starts)} RunStart (expected 1); "
+        "N+1 regression: nested run() calls emitted their own lifecycle signals"
     )
     assert len(ends) == 1, f"expected 1 RunEnd, got {len(ends)}"
-    assert len(failures) == 0
+    assert len(failures) == 0, f"unexpected RunFailed signals: {failures}"
+
+
+async def test_concurrent_runs_on_same_branch_not_suppressed():
+    """Two concurrent run() calls on the same branch must each emit their own
+    RunStart / RunEnd — the ContextVar-based suppression must NOT leak between
+    concurrent asyncio tasks (MAJOR 1 regression).
+
+    Scenario: a ReAct is in flight (suppression active in its task); an
+    independent run() started in a separate task must still emit lifecycle signals.
+    """
+    import asyncio
+
+    from lionagi.session._lifecycle_ctx import suppress_lifecycle_var
+
+    s = Session()
+    starts = []
+    s.observe(RunStart, lambda sig, _: starts.append(sig))
+
+    # Simulate a task where suppression is active (like inside ReAct)
+    async def suppressed_task():
+        token = suppress_lifecycle_var.set(True)
+        try:
+            # This task has suppression on — but we want to verify the
+            # independent_task below is NOT affected.
+            await asyncio.sleep(0)  # yield so independent_task can run
+        finally:
+            suppress_lifecycle_var.reset(token)
+
+    # Independent run() — started as a separate task so it has its own context copy
+    async def independent_run_task():
+        model = _make_fake_cli_model([StreamChunk(type="text", content="hello")])
+        s.default_branch.chat_model = model
+        await _drain(run(s.default_branch, "go", RunParam()))
+
+    # Run both concurrently
+    await asyncio.gather(suppressed_task(), independent_run_task())
+
+    assert len(starts) >= 1, (
+        "Independent run() in a separate task must emit RunStart even when "
+        "another task has suppress_lifecycle_var=True; ContextVar leak detected"
+    )
+
+
+async def test_run_start_observer_exception_does_not_abort_run():
+    """A raising RunStart observer must not prevent the run from proceeding or
+    emitting a terminal signal (MAJOR 3: RunStart emission unprotected).
+
+    Previously an exception in the RunStart observer propagated directly out of
+    run(), aborting the stream before any content was produced and without a
+    RunFailed signal (the terminal signal requires RunStart to have completed).
+    """
+    import asyncio
+
+    s = Session()
+    model = _make_fake_cli_model([StreamChunk(type="text", content="answer")])
+    s.default_branch.chat_model = model
+
+    boom_raised = False
+
+    def boom_on_run_start(sig, _ctx):
+        nonlocal boom_raised
+        if isinstance(sig, RunStart):
+            boom_raised = True
+            raise RuntimeError("RunStart observer boom")
+
+    s.observe(RunStart, boom_on_run_start)
+
+    ends = []
+    s.observe(RunEnd, lambda sig, _: ends.append(sig))
+
+    from lionagi.protocols.messages import AssistantResponse
+
+    # Should NOT raise despite RunStart observer boom
+    msgs = await _drain(run(s.default_branch, "go", RunParam()))
+
+    assert boom_raised, "RunStart boom observer was never invoked"
+    text_msgs = [m for m in msgs if isinstance(m, AssistantResponse)]
+    assert len(text_msgs) >= 1, (
+        "run() must proceed and yield content even when RunStart observer raises"
+    )
+
+
+async def test_react_run_start_observer_exception_does_not_abort_react():
+    """A raising RunStart observer must not abort Branch.ReAct() (MAJOR 3 ReAct path).
+
+    The ReAct wrapper now uses _safe_emit for RunStart; an observer raising there
+    must be swallowed so the ReAct call still returns a result.
+    """
+    s = Session()
+    boom_raised = False
+
+    def boom_on_run_start(sig, _ctx):
+        nonlocal boom_raised
+        if isinstance(sig, RunStart):
+            boom_raised = True
+            raise RuntimeError("ReAct RunStart observer boom")
+
+    s.observe(RunStart, boom_on_run_start)
+
+    from lionagi.operations.ReAct.utils import Analysis
+
+    async def mock_operate(*args, **kw):
+        return Analysis(answer="despite observer boom")
+
+    with patch(
+        "lionagi.operations.operate.operate.operate",
+        new=AsyncMock(side_effect=mock_operate),
+    ):
+        # Must NOT raise
+        result = await s.default_branch.ReAct(
+            instruct={"instruction": "test"},
+            extension_allowed=False,
+        )
+
+    assert boom_raised, "RunStart boom observer was never invoked on ReAct"
+    assert result is not None, "ReAct must return a result despite RunStart observer boom"
 
 
 # ---------------------------------------------------------------------------
