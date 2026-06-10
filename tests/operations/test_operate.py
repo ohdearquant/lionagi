@@ -151,6 +151,51 @@ async def test_operate_actions_only_invokes_tools_without_response_format():
     assert result.action_responses[0].output == 3
 
 
+async def test_branch_operate_ignores_caller_supplied_operative():
+    """Regression (codex round-3): Branch.operate() discards a caller-supplied
+    operative, matching main's prepare-time `operative = None`.
+
+    Forwarding it would skip single construction and merge through a
+    mismatched model, silently dropping the requested response fields."""
+    from lionagi.operations.operate.step import Step
+
+    class ResponseModel(BaseModel):
+        answer: str
+
+    def add(a: int, b: int) -> int:
+        """Add two numbers."""
+        return a + b
+
+    mismatched = Step.respond_operative(Step.request_operative(reason=True))
+
+    branch = LionAGIMockFactory.create_mocked_branch(
+        name="OperativeIgnoreTest",
+        user="tester",
+        response="""{
+            "answer": "42",
+            "action_required": true,
+            "action_requests": [
+                {"function": "add", "arguments": {"a": 1, "b": 2}}
+            ]
+        }""",
+        model="gpt-4.1-mini",
+        tools=[add],
+    )
+
+    result = await branch.operate(
+        instruction="Calculate something",
+        response_format=ResponseModel,
+        actions=True,
+        invoke_actions=True,
+        operative=mismatched,
+    )
+
+    # The requested response shape wins; the mismatched operative is ignored.
+    assert result.answer == "42"
+    assert len(result.action_responses) == 1
+    assert result.action_responses[0].output == 3
+
+
 # ---------------------------------------------------------------------------
 # Edge cases for prepare_operate_kw (P0)
 # ---------------------------------------------------------------------------

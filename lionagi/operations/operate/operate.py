@@ -171,7 +171,13 @@ def prepare_operate_kw(
         "invoke_actions": invoke_actions,
         "skip_validation": skip_validation,
         "clear_messages": clear_messages,
-        "operative": operative,
+        # The public Branch.operate() path has always discarded a caller
+        # supplied operative (main set `operative = None` before building its
+        # own).  Forwarding it would skip the single-construction block below
+        # and merge results through a model that may not match the requested
+        # response/action shape, silently dropping response fields.  Only
+        # direct operate() callers (e.g. ReAct) may supply an operative.
+        "operative": None,
         "middle": middle,
         "field_models": field_models,
         "reason": instruct.reason,
