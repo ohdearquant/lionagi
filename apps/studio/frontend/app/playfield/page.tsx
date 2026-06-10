@@ -3,7 +3,7 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import Button from "@/components/Button";
 import Duration from "@/components/Duration";
 import PageHeader from "@/components/PageHeader";
@@ -104,13 +104,12 @@ function ProjectSection({
   return (
     <>
       <tr className="bg-surface-overlay border-b border-edge">
-        <td
-          colSpan={5}
-          className="px-3 py-1.5 font-medium text-meta uppercase tracking-[0.06em] text-content-muted"
-        >
-          {project}
+        <td colSpan={5} className="px-3 py-1.5">
+          <h2 className="inline font-medium text-meta uppercase tracking-[0.06em] text-content-muted">
+            {project}
+          </h2>
           <span className="ml-2 font-mono font-normal text-[10px] text-content-muted/60">
-            {runs.length} running
+            {runs.length} active
           </span>
         </td>
       </tr>
@@ -131,26 +130,36 @@ function PlayfieldPageInner() {
 
   useEffect(() => {
     let active = true;
+    // In-flight guard: at per_page=5000 a fetch can outlast the 3s interval,
+    // and stacked overlapping requests would hammer the API.
+    let inFlight = false;
 
     async function load() {
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const result = await listRuns({ page: 1, per_page: 5000, status: ["running"] });
+        // "pending" expands server-side to pending+prepared — queued work an
+        // operator screen should surface alongside what's already running.
+        const result = await listRuns({
+          page: 1,
+          per_page: 5000,
+          status: ["running", "pending"],
+        });
         if (active) {
           setRuns(result.runs);
           setError(null);
-          // Collect all distinct project names across fetches.
+          // Derive chips from the live result so finished projects don't
+          // linger as ghost filters that select an empty table.
           const projects = new Set<string>();
           for (const r of result.runs) {
-            if (r.project) projects.add(r.project);
+            projects.add(r.project ?? "Unassigned");
           }
-          setKnownProjects((prev) => {
-            const merged = new Set([...prev, ...Array.from(projects)]);
-            return merged.size === prev.length ? prev : Array.from(merged).sort();
-          });
+          setKnownProjects(Array.from(projects).sort());
         }
       } catch {
         if (active) setError(errors.loadRuns);
       } finally {
+        inFlight = false;
         if (active) setLoading(false);
       }
     }
@@ -165,7 +174,7 @@ function PlayfieldPageInner() {
 
   // Clock tick for elapsed duration display.
   useEffect(() => {
-    const tick = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 30000);
+    const tick = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 10000);
     return () => clearInterval(tick);
   }, []);
 
@@ -179,11 +188,11 @@ function PlayfieldPageInner() {
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 animate-page-enter">
       <PageHeader
         title="Playfield"
-        subtitle="All currently running plays and sessions across projects"
+        subtitle="All running and queued plays and sessions across projects"
         density="tight"
         badges={
           !loading ? (
-            <span className="text-meta text-content-muted tabular-nums">{total} running</span>
+            <span className="text-meta text-content-muted tabular-nums">{total} active</span>
           ) : null
         }
       />
@@ -241,7 +250,7 @@ function PlayfieldPageInner() {
               <tr>
                 <td colSpan={5} className="px-3 py-14 text-center text-body text-content-muted">
                   <span className="block mb-1 text-[11px]">{empty.runs}</span>
-                  <span className="text-meta">No sessions are currently running.</span>
+                  <span className="text-meta">No sessions are currently running or queued.</span>
                 </td>
               </tr>
             ) : (
@@ -257,9 +266,5 @@ function PlayfieldPageInner() {
 }
 
 export default function PlayfieldPage() {
-  return (
-    <Suspense>
-      <PlayfieldPageInner />
-    </Suspense>
-  );
+  return <PlayfieldPageInner />;
 }
