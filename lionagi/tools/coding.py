@@ -272,11 +272,20 @@ def _edit_file_sync(
             )
         elif old_string.strip() and old_string.strip() in original:
             hint = " — a match exists ignoring surrounding whitespace; check indentation."
-        return {"success": False, "error": f"old_string not found in {file_path}{hint}"}
+        return {
+            "success": False,
+            "error": (
+                f"old_string not found in {file_path}{hint}. "
+                "Re-read the file and copy the exact text including all whitespace."
+            ),
+        }
     if count > 1 and not replace_all:
         return {
             "success": False,
-            "error": f"old_string appears {count} times. Set replace_all=True.",
+            "error": (
+                f"old_string appears {count} times. "
+                "Either set replace_all=True or expand old_string with more surrounding context."
+            ),
         }
 
     updated = original.replace(old_string, new_string, -1 if replace_all else 1)
@@ -482,7 +491,11 @@ class CodingToolkit(LionTool):
             # Canonical empty-path contract: every reader action requires path,
             # matching ReaderTool.handle_request's pre-dispatch guard.
             if not path:
-                return {"success": False, "content": None, "error": "'path' is required"}
+                return {
+                    "success": False,
+                    "content": None,
+                    "error": "'path' is required. Provide a file path for 'read'/'open' or a directory path for 'list_dir'.",
+                }
             if action == "open":
                 _evict_expired(_open_cache)
                 resp = await run_sync(_open_sync, path, _open_cache, workspace_root, frozenset())
@@ -574,7 +587,10 @@ class CodingToolkit(LionTool):
             if _SHELL_CONTROL.search(command):
                 return {
                     "stdout": "",
-                    "stderr": f"Shell control operators rejected: {command!r}",
+                    "stderr": (
+                        f"Shell control operators are not supported: {command!r}. "
+                        "Run one command per call; use cwd= instead of `cd x && cmd`."
+                    ),
                     "return_code": -1,
                     "timed_out": False,
                 }

@@ -19,9 +19,11 @@ class BashRequest(BaseModel):
     command: str = Field(
         ...,
         description=(
-            "Shell command to execute. Simple commands without shell operators "
-            "(;, &&, ||, |, etc.) run safely via argv. Use absolute paths when "
-            "the working directory matters."
+            "A single shell command to run. Shell control operators are NOT supported "
+            "and will be rejected — no `&&`, `||`, `|`, `;`, redirects (`<`/`>`), "
+            "backticks, or `$(...)`. Run one command per call; to run in a directory "
+            "use cwd= instead of `cd dir && cmd`. For file search/read/edit prefer the "
+            "dedicated reader/editor/search tools over bash."
         ),
     )
     timeout: int | None = Field(
@@ -29,14 +31,16 @@ class BashRequest(BaseModel):
         description=(
             "Maximum execution time in milliseconds. "
             "Defaults to 30000 (30 s). Maximum allowed is 300000 (5 min). "
-            "The process is killed if it exceeds this limit."
+            "The process is killed if it exceeds this limit. "
+            "Increase for long-running builds or tests."
         ),
     )
     cwd: str | None = Field(
         None,
         description=(
             "Working directory for the command. "
-            "If omitted, inherits the current process working directory."
+            "If omitted, inherits the current process working directory. "
+            "Use this instead of a leading `cd` command."
         ),
     )
     allow_shell: bool = Field(
@@ -71,12 +75,15 @@ def _command_for_subprocess(request: BashRequest) -> tuple[str | list[str], bool
         return request.command, True
     if _SHELL_CONTROL.search(request.command):
         raise PermissionError(
-            f"Shell control operators require trusted shell mode: {request.command!r}"
+            f"Shell control operators are not supported: {request.command!r}. "
+            "Run one command per call; use cwd= to set the working directory instead of `cd x && cmd`."
         )
     try:
         return shlex.split(request.command), False
     except ValueError as e:
-        raise PermissionError(f"Malformed command: {e}") from e
+        raise PermissionError(
+            f"Malformed command: {e}. Check quoting — use single quotes for arguments with spaces."
+        ) from e
 
 
 def _subprocess_sync(
@@ -129,14 +136,22 @@ class BashTool(LionTool):
 
             async def bash_tool(**kwargs):
                 """
-                Execute a shell command and return its output.
+                Execute a single shell command and return its output.
 
-                Runs the command safely without shell interpretation by default.
-                Shell operators (;, &&, ||, |, etc.) are rejected unless the caller
-                sets allow_shell=True via trusted code. Enforces a configurable
-                timeout (default 30 s, max 5 min). Output exceeding 100 KB per
-                stream is truncated. Prefer absolute paths; set cwd when the
-                command depends on a specific working directory.
+                Runs the command safely without shell interpretation. Shell operators
+                (;, &&, ||, |, redirects, backticks, $(...)) are rejected — run one
+                command per call. Use cwd= to set the working directory instead of
+                `cd dir && cmd`. For file search/read/edit, prefer the dedicated
+                reader/editor/search tools.
+
+                Enforces a configurable timeout (default 30 s, max 5 min). Output
+                exceeding 100 KB per stream is truncated — redirect to a file and
+                use the reader tool for large outputs.
+
+                Recovery hints:
+                - 'command not found': check the executable is installed and in PATH
+                - 'timed out': increase timeout= or split into smaller steps
+                - 'operators not supported': use cwd= and separate calls
                 """
                 return (await self.handle_request(BashRequest(**kwargs))).model_dump()
 
