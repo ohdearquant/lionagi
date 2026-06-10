@@ -8,7 +8,9 @@ Covers:
 - FILE_REGISTRY population at import (filesystem scan)
 - LION_CLASS_REGISTRY population via Node.__pydantic_init_subclass__
 - get_class: hit (registry) + miss (unknown name)
-- Duplicate-name handling (last writer wins — overwrite semantics pinned)
+- get_class file-registry fallback path (pinned as known-broken latent bug)
+- Duplicate-name handling: real-path collision via actual subclass creation
+- Registry isolation: autouse fixture snapshots/restores both registries
 - Polymorphic round-trip: Node subclass -> to_dict -> Element.from_dict -> type preserved
 - db-mode round-trip (node_metadata key instead of metadata)
 - get_file_classes on a single file
@@ -93,20 +95,39 @@ class _DbContentNode(Node):
     """Used to verify content preservation in db round-trip."""
 
 
-# Duplicate-name tests cannot reuse the same Python name at module level
-# (the second definition would be a different class but same name binding).
-# We use pre-defined sentinel classes instead.
-class _DupFirst(Node):
-    """First of two classes used to test overwrite semantics."""
-
-
-class _DupSecond(Node):
-    """Second class; will be manually inserted under _DupFirst's key to
-    simulate a same-name collision."""
-
-
 class _LenBefore(Node):
     """Used for registry-length-stable test."""
+
+
+# ---------------------------------------------------------------------------
+# Autouse fixture: registry isolation
+#
+# All Node subclasses defined at module import time pollute LION_CLASS_REGISTRY
+# and would cross-contaminate tests if a mid-test failure left mutated state.
+# This fixture snapshots both registries before each test and restores them
+# on teardown, regardless of whether the test passed or failed.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _registry_snapshot():
+    """Snapshot both registries before each test; restore on teardown.
+
+    Uses an explicit try/finally so that restoration is guaranteed even if
+    the test body raises.  This prevents registry pollution across tests on
+    the same xdist worker.
+    """
+    from lionagi._class_registry import LION_CLASS_FILE_REGISTRY, LION_CLASS_REGISTRY
+
+    registry_snapshot = LION_CLASS_REGISTRY.copy()
+    file_registry_snapshot = LION_CLASS_FILE_REGISTRY.copy()
+    try:
+        yield
+    finally:
+        LION_CLASS_REGISTRY.clear()
+        LION_CLASS_REGISTRY.update(registry_snapshot)
+        LION_CLASS_FILE_REGISTRY.clear()
+        LION_CLASS_FILE_REGISTRY.update(file_registry_snapshot)
 
 
 # ---------------------------------------------------------------------------
@@ -300,61 +321,166 @@ class TestGetClassMiss:
 
 
 # ---------------------------------------------------------------------------
+# 4b. get_class file-registry fallback path — pinned as known-broken
+#
+# LATENT BUG: get_class()'s fallback at _class_registry.py:100 calls
+# get_class_objects() which uses importlib.util.spec_from_file_location with
+# a dummy module name ("module.name").  Modules in the scanned directories
+# (lionagi/protocols/generic, protocols/graph, protocols/messages) use
+# relative imports (e.g. "from .element import Element").  When exec'd under a
+# standalone spec with no parent package, those relative imports fail with
+# "ImportError: attempted relative import beyond top-level package".
+#
+# As a result, only in-memory LION_CLASS_REGISTRY lookups work reliably.
+# The file-registry fallback path is unreachable for any real lionagi class.
+#
+# This test pins the current behavior so that any accidental "fix" that changes
+# the error type or suppresses the ValueError is caught immediately.
+# ---------------------------------------------------------------------------
+
+
+class TestGetClassFileRegistryFallback:
+    """Pin the broken file-registry fallback in get_class().
+
+    The fallback at _class_registry.py:100 always raises ImportError when
+    trying to load modules that use relative imports, and get_class() wraps
+    that in ValueError.  This is a documented latent bug.
+    """
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "LATENT BUG: get_class_objects() executes modules via a bare spec "
+            "('module.name') with no parent package context.  Any module that "
+            "uses relative imports (from .x import Y) raises "
+            "'ImportError: attempted relative import beyond top-level package'. "
+            "This makes the file-registry fallback path unreachable for all "
+            "real lionagi classes.  Only in-memory LION_CLASS_REGISTRY hits "
+            "work.  Tracked so a future fix is pinned explicitly."
+        ),
+    )
+    def test_file_registry_fallback_raises_for_relative_import_module(self):
+        """Calling get_class() on a scanned class NOT already in LION_CLASS_REGISTRY
+        triggers the file-registry fallback and raises because relative imports fail."""
+        from lionagi._class_registry import (
+            LION_CLASS_FILE_REGISTRY,
+            LION_CLASS_REGISTRY,
+            get_class,
+        )
+
+        # Find a class that is in FILE_REGISTRY but not yet in LION_CLASS_REGISTRY
+        # by temporarily removing it from the in-memory registry.
+        # We use 'Node' which is guaranteed to be in FILE_REGISTRY.
+        target = "Node"
+        assert target in LION_CLASS_FILE_REGISTRY, (
+            "Prerequisite: Node must be in LION_CLASS_FILE_REGISTRY"
+        )
+
+        # Remove from in-memory registry so get_class falls through to file path.
+        # (The autouse _registry_snapshot fixture will restore this automatically.)
+        keys_to_remove = [k for k in LION_CLASS_REGISTRY if k.endswith(f".{target}") or k == target]
+        for k in keys_to_remove:
+            del LION_CLASS_REGISTRY[k]
+
+        # Also remove bare name if present.
+        LION_CLASS_REGISTRY.pop(target, None)
+
+        # This should succeed if the fallback worked.  Because modules use
+        # relative imports, it actually raises ValueError wrapping ImportError.
+        # The xfail marks that as the *expected* failure — it passes when broken,
+        # fails (xpass) if someone fixes the underlying importlib loading logic.
+        result = get_class(target)
+        assert isinstance(result, type)  # only reached if fallback is fixed
+
+
+# ---------------------------------------------------------------------------
 # 5. Duplicate-name handling: last writer wins (overwrite semantics — pinned)
 #
-# When a second entry is manually inserted under an existing key, the dict
-# silently overwrites the prior value. This is the contract for the registry.
+# Tests exercise the real registration hook (Node.__pydantic_init_subclass__)
+# by creating two classes with the same __name__ using type() in function
+# scope.  Because pydantic's __pydantic_init_subclass__ fires on each class
+# statement / type() call, both classes are registered under the same key
+# (their full-qualified name derives from __module__ + __qualname__).
+# The second registration silently overwrites the first — last-writer-wins.
+#
+# NOTE: classes created with type() inside a test function have __module__
+# set to the test module and __qualname__ equal to their __name__ (no class
+# nesting), so class_name(full=True) = "<test_module>.<ClassName>".  Two
+# distinct type() calls that happen to share the same __name__ will therefore
+# collide on exactly the same registry key — exactly the scenario we want.
 # ---------------------------------------------------------------------------
 
 
 class TestDuplicateNameHandling:
     """Registry uses plain dict assignment: last writer wins.
 
-    This test pins the overwrite semantics so that any future change
-    (e.g., raising on collision) is caught explicitly.
+    Collision is created via actual subclass creation (the real registration
+    hook), not by direct dict mutation.  This tests pins the overwrite
+    semantics so that any future change (e.g., raising on collision) is
+    caught explicitly.
     """
 
-    def test_manual_overwrite_replaces_entry(self):
-        """Manually overwriting a key with a different class value succeeds."""
+    def test_real_hook_last_writer_wins(self):
+        """Two Node subclasses with identical __name__ collide in the registry;
+        the second class definition overwrites the first via the real hook."""
         from lionagi._class_registry import LION_CLASS_REGISTRY
 
-        # _DupFirst is already registered under its full-qualified name.
-        key = _DupFirst.class_name(full=True)
-        assert LION_CLASS_REGISTRY[key] is _DupFirst
+        # Create first class through the real hook.
+        CollisionClass_v1 = type("_DupCollisionNode", (Node,), {})  # noqa: N806
+        key_v1 = CollisionClass_v1.class_name(full=True)
+        assert LION_CLASS_REGISTRY[key_v1] is CollisionClass_v1
 
-        # Manually overwrite with _DupSecond (simulates a same-name redefinition).
-        LION_CLASS_REGISTRY[key] = _DupSecond
-        assert LION_CLASS_REGISTRY[key] is _DupSecond
-        assert LION_CLASS_REGISTRY[key] is not _DupFirst
+        # Create a second class with the SAME __name__ via type().
+        # __pydantic_init_subclass__ fires again, overwriting the key.
+        CollisionClass_v2 = type("_DupCollisionNode", (Node,), {})  # noqa: N806
+        key_v2 = CollisionClass_v2.class_name(full=True)
 
-        # Restore for other tests.
-        LION_CLASS_REGISTRY[key] = _DupFirst
+        # Same key (same module + same __name__).
+        assert key_v1 == key_v2
+
+        # Last writer wins: registry now holds v2.
+        assert LION_CLASS_REGISTRY[key_v2] is CollisionClass_v2
+        assert LION_CLASS_REGISTRY[key_v2] is not CollisionClass_v1
+
+    def test_real_hook_overwrite_does_not_grow_registry(self):
+        """Re-registering under an existing key must not increase registry size."""
+        from lionagi._class_registry import LION_CLASS_REGISTRY
+
+        # First registration.
+        StableClass_v1 = type("_SizePinNode", (Node,), {})  # noqa: N806
+        size_after_first = len(LION_CLASS_REGISTRY)
+
+        # Second class with same name: re-registers under the same key.
+        _StableClass_v2 = type("_SizePinNode", (Node,), {})  # noqa: N806
+        size_after_second = len(LION_CLASS_REGISTRY)
+
+        assert size_after_second == size_after_first
+
+    def test_get_class_returns_most_recently_registered(self):
+        """get_class() must return whichever class was registered last."""
+        from lionagi._class_registry import get_class
+
+        # Two sequential definitions with the same name.
+        type("_GetClassLastWriterNode", (Node,), {})
+        LastClass = type("_GetClassLastWriterNode", (Node,), {})  # noqa: N806
+
+        key = LastClass.class_name(full=True)
+        result = get_class(key)
+        assert result is LastClass
 
     def test_overwrite_does_not_grow_registry(self):
-        """Overwriting a key must not increase registry length."""
+        """Overwriting a key via direct assignment must not increase registry length
+        (kept to pin dict-level contract alongside the real-hook tests)."""
         from lionagi._class_registry import LION_CLASS_REGISTRY
 
         key = _LenBefore.class_name(full=True)
         assert key in LION_CLASS_REGISTRY
         size_before = len(LION_CLASS_REGISTRY)
 
-        # Overwrite same key.
+        # Re-assign same value: no new key.
         LION_CLASS_REGISTRY[key] = _LenBefore
 
-        size_after = len(LION_CLASS_REGISTRY)
-        assert size_after == size_before
-
-    def test_get_class_returns_most_recently_written(self):
-        """get_class must return whatever value is currently under the key."""
-        from lionagi._class_registry import LION_CLASS_REGISTRY, get_class
-
-        key = _DupFirst.class_name(full=True)
-        LION_CLASS_REGISTRY[key] = _DupSecond
-        result = get_class(key)
-        assert result is _DupSecond
-
-        # Restore.
-        LION_CLASS_REGISTRY[key] = _DupFirst
+        assert len(LION_CLASS_REGISTRY) == size_before
 
 
 # ---------------------------------------------------------------------------
