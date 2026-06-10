@@ -46,7 +46,13 @@ async def run(
         branch.chat_model = param.imodel
 
     if not branch.chat_model.is_cli:
-        raise ValueError("run operation only supports CLI endpoints")
+        provider = getattr(branch.chat_model.endpoint.config, "provider", "unknown")
+        raise ValueError(
+            f"run operation only supports CLI endpoints, but got provider={provider!r}. "
+            "Use one of the CLI endpoint prefixes: claude_code, codex, gemini-cli, pi. "
+            "Did you mean 'gemini-cli/<model>' instead of 'gemini/<model>'? "
+            "The 'gemini' prefix routes to the REST API, not the local Gemini CLI."
+        )
 
     ins, kw = _prepare_run_kwargs(branch, instruction, param)
     await branch.msgs.a_add_message(instruction=ins)
