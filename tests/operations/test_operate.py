@@ -404,3 +404,85 @@ async def test_operate_with_field_models_builds_operative():
         middle=fake_middle,
     )
     assert result == {"label": "test_value"}
+
+
+# ---------------------------------------------------------------------------
+# Finding 3 replacement: TypeError raised at new boundary (_specs_from_fields)
+# before any model call is reached.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_operate_invalid_field_models_raises_before_model_call():
+    """operate() raises TypeError('Expected FieldModel or Spec') for invalid
+    field_models entries at _specs_from_fields() (operate.py:246), i.e. BEFORE
+    the middle/model layer is invoked.  A mock middle is injected that fails
+    loudly if called — ensuring a missed raise would be detected."""
+    branch = Branch()
+
+    async def _should_not_be_called(*args, **kwargs):
+        pytest.fail("middle was called — TypeError was NOT raised before the model call")
+
+    chat_param = ChatParam(imodel=branch.chat_model)
+
+    with pytest.raises(TypeError, match="Expected FieldModel or Spec"):
+        await operate(
+            branch,
+            "test_invalid_field_models",
+            chat_param,
+            field_models=[object()],  # invalid entry — not FieldModel or Spec
+            skip_validation=False,
+            invoke_actions=False,
+            middle=_should_not_be_called,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Lock-in: reason=True alone (no response_format / actions / field_models)
+# takes the Operative-construction branch (operate.py:252).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_operate_reason_only_constructs_operative_with_reason_field():
+    """operate(..., reason=True) with no response_format/actions/field_models
+    must enter the Operative-construction branch (operate.py:252) and produce
+    a response_format that includes a 'reason' field.  The generated response
+    type is injected into _cctx before middle is called, so we capture it."""
+    branch = Branch()
+
+    captured_response_format = {}
+
+    async def capturing_middle(b, ins, cctx, pctx, clear, **kw):
+        # Capture the response_format that operate() materialised for this call.
+        captured_response_format["fmt"] = cctx.response_format
+        # Return a minimal instance of the captured model so downstream code
+        # does not raise on type checks.
+        if cctx.response_format is not None:
+            try:
+                return cctx.response_format()
+            except Exception:
+                pass
+        return {}
+
+    chat_param = ChatParam(imodel=branch.chat_model)
+    await operate(
+        branch,
+        "reason only test",
+        chat_param,
+        reason=True,
+        skip_validation=True,
+        invoke_actions=False,
+        middle=capturing_middle,
+    )
+
+    fmt = captured_response_format.get("fmt")
+    assert fmt is not None, (
+        "reason=True should have triggered Operative construction and set a "
+        "response_format on the chat context"
+    )
+    # The materialised model must have a 'reason' field.
+    assert "reason" in fmt.model_fields, (
+        f"'reason' field missing from generated response_format {fmt}; "
+        "Operative was not constructed or reason spec was dropped"
+    )
