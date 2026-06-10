@@ -188,6 +188,7 @@ def test_deprecated_shim_json_structure_full_surface():
         fuzzy_validate_mapping as ShimFuzzyValidate,
     )
     from lionagi.protocols.structure.json_structure import logger as ShimLogger
+    from lionagi.protocols.structure.json_structure import logging as ShimLogging
     from lionagi.protocols.structure.json_structure import orjson as ShimOrjson
 
     assert ShimJsonStructure is NewJsonStructure
@@ -195,7 +196,18 @@ def test_deprecated_shim_json_structure_full_surface():
     assert ShimFuzzyMatchKeysParams is LnFuzzyMatchKeysParams
     assert ShimDefaultFuzzy is NewDefaultFuzzy
     assert isinstance(ShimLogger, logging.Logger)
+    assert ShimLogging is logging
     assert ShimOrjson is real_orjson
     # callable identity for the function re-exports
     assert callable(ShimExtractJson)
     assert callable(ShimFuzzyValidate)
+
+
+def test_deprecated_shim_all_matches_old_modules():
+    """__all__ of both shims stays byte-equivalent to the pre-relocation
+    modules (class-only), so star-import behavior is unchanged."""
+    from lionagi.protocols.structure import base as shim_base
+    from lionagi.protocols.structure import json_structure as shim_json
+
+    assert shim_base.__all__ == ("Structure",)
+    assert shim_json.__all__ == ("JsonStructure",)
