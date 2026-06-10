@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shlex
 from pathlib import Path
 from typing import Any
@@ -315,6 +316,11 @@ class CodingRun(EngineRun):
         self._eid_counts: dict[str, int] = {}
         self._index: dict[str, CodingChainEvent] = {}
         self._test_runs: int = 0
+        # Pre-implement workspace snapshot: maps path → porcelain XY status.
+        # None means the snapshot could not be taken (non-git or spawn failure).
+        self._ws_baseline: dict[str, str] | None = {}
+        # Paths newly changed/added since the baseline (populated by _run).
+        self._ws_delta: list[str] = []
 
     def collect(self, event: CodingChainEvent) -> CodingChainEvent:
         """Stamp the engine-assigned eid, store the event, and fan it to on_event.
@@ -534,11 +540,43 @@ class CodingEngine(Engine):
         run.observe(CodingChainEvent, lambda e, _c: run.collect(e))
 
         plan = await self._plan(run)
+        # Snapshot workspace state before the implementer runs so the post-
+        # implement check computes a delta, not an absolute status read.
+        run._ws_baseline = await self._capture_ws_baseline(run)
         change = await self._implement(run, plan)
         if change is None:
-            return await self._conclude(
-                run, plan, passed=False, caveat="implementer emitted no change"
-            )
+            # Emission is metadata; the workspace delta is ground truth.  Three
+            # outcomes after _implement returns None:
+            #   (a) delta non-empty  → work detected; proceed to test gate.
+            #   (b) delta empty      → no work; preserve no-change verdict.
+            #   (c) check failed     → unknown; fail open to test gate.
+            delta, check_failed = await self._workspace_changed(run)
+            run._ws_delta = delta
+            if check_failed:
+                # Cannot prove workspace unchanged — treat as unknown, not no-work.
+                run.notify("workspace_check_failed")
+                change = run.collect(
+                    ChangeProposed(
+                        summary="(synthesized — workspace check failed; test gate is authoritative)",
+                        files_touched=[],
+                        plan_ref=plan.eid,
+                    )
+                )
+            elif not delta:
+                return await self._conclude(
+                    run, plan, passed=False, caveat="implementer emitted no change"
+                )
+            else:
+                # Work detected in workspace despite emission failure.  Synthesize
+                # a minimal ChangeProposed and proceed; emission failure is a warning.
+                run.notify("metadata_missing", work_detected=True, files=delta)
+                change = run.collect(
+                    ChangeProposed(
+                        summary="(synthesized from workspace — implementer emitted no structured change)",
+                        files_touched=delta,
+                        plan_ref=plan.eid,
+                    )
+                )
 
         tests = await self._test(run, change, round_no=0)
         change, tests = await self._fix_loop(run, plan, change, tests)
@@ -723,13 +761,129 @@ class CodingEngine(Engine):
 
     # -- ground-truth helpers -------------------------------------------------
 
-    async def _capture_diff(self, run: CodingRun) -> str:
-        """Capture ``git diff`` in the workspace for the verify stage. Best-effort
-        — a non-git workspace simply yields an empty diff."""
-        result = await run_sync(_subprocess_sync, ["git", "diff"], False, 30.0, run.workspace)
+    async def _capture_ws_baseline(self, run: CodingRun) -> dict[str, str] | None:
+        """Snapshot ``git status --porcelain`` before the implement stage.
+
+        Returns a ``{path: xy_status}`` dict so the post-implement call can
+        compute a true delta.  Returns ``None`` when the workspace is not a git
+        repo or the subprocess fails — callers treat ``None`` as unknown state."""
+        result = await run_sync(
+            _subprocess_sync,
+            ["git", "status", "--porcelain"],
+            False,
+            30.0,
+            run.workspace,
+        )
         if int(result.get("returncode", -1)) != 0:
-            return ""
-        return result.get("stdout", "")
+            return None
+        return _parse_porcelain(result.get("stdout", ""))
+
+    async def _workspace_changed(self, run: CodingRun) -> tuple[list[str], bool]:
+        """Return ``(delta_paths, check_failed)`` after the implement stage.
+
+        *delta_paths* is the list of paths whose porcelain status is new or
+        changed relative to the pre-implement baseline captured in
+        ``run._ws_baseline``.  A path counts as changed when it appears in the
+        post-implement output and either (a) was absent from the baseline or
+        (b) its XY status string differs from the baseline value.
+
+        *check_failed* is ``True`` when the workspace state is unknown — either
+        the pre-implement baseline capture failed (``run._ws_baseline is None``)
+        or the post-implement status call fails.  The no-change verdict requires
+        both captures to succeed and the delta to be empty; anything unknown
+        fails open to the test gate."""
+        if run._ws_baseline is None:
+            # Baseline capture failed before _implement — state is unknown.
+            # Do not run the post-status call; return check_failed immediately.
+            return [], True
+        result = await run_sync(
+            _subprocess_sync,
+            ["git", "status", "--porcelain"],
+            False,
+            30.0,
+            run.workspace,
+        )
+        if int(result.get("returncode", -1)) != 0:
+            return [], True
+        after = _parse_porcelain(result.get("stdout", ""))
+        delta = [
+            path
+            for path, xy in after.items()
+            if path not in run._ws_baseline or run._ws_baseline[path] != xy
+        ]
+        return sorted(delta), False
+
+    async def _capture_diff(self, run: CodingRun) -> str:
+        """Capture the diff for the verify stage.
+
+        Combines ``git diff`` (tracked changes) with per-file
+        ``git diff --no-index /dev/null <file>`` output for any untracked paths
+        that appear in either the final ``ChangeProposed.files_touched`` or
+        ``run._ws_delta``.  Candidates are computed fresh at capture time by
+        intersecting that union with ``git ls-files --others`` so the verify
+        diff is complete for: (a) initial emission-failure writes, (b) files
+        created during fix rounds, and (c) emission-ok runs that include
+        untracked files.  No index mutation — ``--no-index`` reads directly."""
+        result = await run_sync(_subprocess_sync, ["git", "diff"], False, 30.0, run.workspace)
+        tracked = result.get("stdout", "") if int(result.get("returncode", -1)) == 0 else ""
+
+        # Candidate set: union of all files any ChangeProposed claimed to touch
+        # plus the initial workspace delta (covers emission-failure rewrites).
+        # This is evaluated at verify time so fix-round additions are included.
+        #
+        # Normalize to workspace-relative POSIX before intersecting: the coding
+        # tool schema asks for absolute file_path values, so files_touched often
+        # carries absolute paths while git ls-files --others returns repo-relative
+        # ones.  Absolute paths under workspace are stripped to relative; relative
+        # paths are normalized (resolve ./.. components); absolute paths that
+        # escape the workspace are dropped — they cannot be untracked files here.
+        raw_candidates: set[str] = set(run._ws_delta)
+        final_change = run.last(ChangeProposed)
+        if final_change is not None:
+            raw_candidates.update(final_change.files_touched)
+        ws = Path(run.workspace)
+        candidate_paths: set[str] = set()
+        for p in raw_candidates:
+            try:
+                rel = Path(p)
+                if rel.is_absolute():
+                    rel = rel.relative_to(ws)
+                else:
+                    rel = Path(os.path.normpath(ws / rel)).relative_to(ws)
+                candidate_paths.add(rel.as_posix())
+            except ValueError:
+                pass  # absolute path outside workspace — drop
+
+        # Intersect with currently-untracked files to avoid double-counting
+        # paths that were later staged or committed during the run.
+        untracked_result = await run_sync(
+            _subprocess_sync,
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            False,
+            30.0,
+            run.workspace,
+        )
+        untracked_set: set[str] = set()
+        if int(untracked_result.get("returncode", -1)) == 0:
+            untracked_set = set(untracked_result.get("stdout", "").splitlines())
+
+        untracked_candidates = sorted(candidate_paths & untracked_set)
+        parts = [tracked] if tracked else []
+        for rel_path in untracked_candidates:
+            abs_path = str(Path(run.workspace) / rel_path)
+            r = await run_sync(
+                _subprocess_sync,
+                ["git", "diff", "--no-index", "--", "/dev/null", abs_path],
+                False,
+                30.0,
+                run.workspace,
+            )
+            # --no-index exits 1 when files differ (always true here); that is
+            # the normal success case, not an error.
+            content = r.get("stdout", "")
+            if content:
+                parts.append(content)
+        return "\n".join(parts)
 
     def _write_output(self, run: CodingRun, output: str) -> str:
         """Write the full captured test output to the export dir, returning the
@@ -742,6 +896,26 @@ class CodingEngine(Engine):
         path = run.export_dir / f"test_output_{run._test_runs}.txt"
         path.write_text(output, encoding="utf-8")
         return str(path)
+
+
+def _parse_porcelain(output: str) -> dict[str, str]:
+    """Parse ``git status --porcelain`` output into a ``{path: xy}`` map.
+
+    Each line is ``XY path`` or ``XY old -> new`` (rename).  We record the
+    rightmost path token (the destination for renames) mapped to its two-
+    character XY status.  Used to compute a pre/post delta without relying on
+    absolute porcelain counts."""
+    mapping: dict[str, str] = {}
+    for line in output.splitlines():
+        if len(line) < 4:
+            continue
+        xy = line[:2]
+        rest = line[3:]
+        # Rename lines: "old -> new" — track the destination path.
+        path = rest.split(" -> ", 1)[-1].strip()
+        if path:
+            mapping[path] = xy
+    return mapping
 
 
 def _resolve_cmd(test_cmd: str | list[str]) -> tuple[str | list[str], bool]:
