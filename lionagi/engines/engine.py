@@ -91,6 +91,71 @@ def _repair_instruction(schema_hint: str) -> str:
     )
 
 
+def _minimal_valid_json(m: type) -> dict:
+    """Build a minimal valid serialised dict for a Pydantic model *m*.
+
+    Fills required fields with type-appropriate placeholder values so the
+    returned dict passes ``m.model_validate()``.  Optional fields retain their
+    defaults.  Used to produce a syntactically-valid JSON example in the CLI
+    repair instruction."""
+    from pydantic import BaseModel
+
+    kwargs: dict = {}
+    for fname, field in m.model_fields.items():
+        if not field.is_required():
+            continue
+        ann = field.annotation
+        origin = getattr(ann, "__origin__", None)
+        if ann is str:
+            kwargs[fname] = "string"
+        elif ann is int:
+            kwargs[fname] = 0
+        elif ann is float:
+            kwargs[fname] = 0.0
+        elif ann is bool:
+            kwargs[fname] = False
+        elif origin is list:
+            kwargs[fname] = []
+        elif origin is dict:
+            kwargs[fname] = {}
+        else:
+            kwargs[fname] = "value"
+    if issubclass(m, BaseModel):
+        return m(**kwargs).model_dump()
+    return kwargs  # pragma: no cover
+
+
+def _cli_repair_instruction(schema_hint: str, emits: tuple[type, ...]) -> str:
+    """Repair instruction for CLI workers (claude_code, codex).
+
+    CLI workers stream free-form output — their failure mode is prose with no
+    fenced JSON block, not a malformed schema.  The repair turn supplies a
+    complete syntactically-valid fenced-JSON example so the worker can copy the
+    structure exactly, since CLI endpoints may not receive the Operable schema
+    the same way API workers do.
+
+    The example object uses single braces and real field values so that a
+    worker who copies it literally produces a block that ``json.loads()``
+    accepts without modification.
+    """
+    import json as _json
+
+    from lionagi.casts.emission import field_name_for
+
+    obj: dict = {}
+    for m in emits:
+        key = field_name_for(m)
+        obj[key] = _minimal_valid_json(m)
+    example = f"```json\n{_json.dumps(obj, indent=2)}\n```" if obj else ""
+    return (
+        "Your previous response contained no fenced JSON block, so the pipeline "
+        "received nothing. Reply with ONLY a fenced ```json block containing the "
+        "emission object — no prose, no tool calls, no other text.\n\n"
+        f"{schema_hint}\n\n"
+        f"Example structure:\n{example}"
+    ).strip()
+
+
 def emission_keys(emits: tuple[type, ...]) -> str:
     """Render the top-level emission key(s) for a repair hint."""
     from lionagi.casts.emission import field_name_for
@@ -122,6 +187,11 @@ class EngineRun:
         self._t0 = monotonic()
         self._deadline = None if engine.deadline_s is None else self._t0 + engine.deadline_s
         self._budget_notified = False
+        # Holds the asyncio.Task wrapping the engine's _run() coroutine.
+        # Set by Engine.run() before awaiting; the deadline watchdog cancels it
+        # so in-flight sequential work (operate_with_repair, branch.operate) is
+        # interrupted promptly rather than continuing past the deadline.
+        self._run_task: asyncio.Task | None = None
 
     @property
     def events(self) -> Pile:
@@ -235,19 +305,33 @@ class EngineRun:
         retries: int = 1,
     ) -> Any:
         """Operate, then re-prompt up to *retries* times while *arrived*() is
-        false — the repair loop that keeps weak models in the pipeline. The
-        repair turn names the expected emission keys so the model can fix
-        fence/field mistakes instead of being silently dropped."""
+        false — the repair loop that keeps weak models in the pipeline.
+
+        For API workers the repair turn names the expected emission keys so the
+        model can fix fence/field mistakes.  For CLI workers (claude_code, codex)
+        the failure mode is different — the entire turn arrives as prose with no
+        fenced block — so the repair turn supplies a complete fenced-JSON example
+        instead of just key hints.  CLI workers are detected via
+        ``branch.chat_model.is_cli`` so no string-prefix matching is needed.
+        """
         res = await branch.operate(instruction=instruction)
         attempt = 0
+        # Determine repair template once: CLI workers need the full example form.
+        is_cli = bool(getattr(getattr(branch, "chat_model", None), "is_cli", False))
+        hint = emission_keys(emits)
         while not arrived() and attempt < retries:
             attempt += 1
             self.notify(
                 "emission_repair",
                 agent=getattr(branch, "name", "") or "",
                 attempt=attempt,
+                cli_worker=is_cli,
             )
-            res = await branch.operate(instruction=_repair_instruction(emission_keys(emits)))
+            if is_cli:
+                repair_msg = _cli_repair_instruction(hint, emits)
+            else:
+                repair_msg = _repair_instruction(hint)
+            res = await branch.operate(instruction=repair_msg)
         if retries and not arrived():
             self.notify(
                 "emission_missing",
@@ -287,6 +371,34 @@ class EngineRun:
         await gather(*list(self._active), return_exceptions=True)
         # Callbacks remove tasks from _active as they settle.
         self._active.clear()
+
+    async def _deadline_watchdog(self) -> None:
+        """Sleep until the run deadline, then cancel all in-flight work.
+
+        Cancels both the task wrapping ``_run()`` (``_run_task``) and any
+        spawned background tasks (``_active``).  Cancelling ``_run_task``
+        first propagates ``CancelledError`` into whatever ``_run`` is
+        awaiting — including sequential ``branch.operate()`` calls inside
+        ``operate_with_repair``, ``_plan``, ``_implement``, ``_fix_loop``,
+        and ``_verify`` — so the deadline bounds the *entire* in-flight
+        pipeline, not just background-spawned tasks.  Spawned tasks in
+        ``_active`` are cleaned up by ``Engine.run()``'s finally block.
+
+        The watchdog is scheduled by ``Engine.run()`` around ``_run()`` and
+        is cancelled when ``_run()`` completes (or raises), so the watchdog
+        never outlives the run.
+        """
+        if self._deadline is None:
+            return
+        delay = self._deadline - monotonic()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        self._notify_budget_once("deadline_watchdog")
+        # Cancel _run_task first so the in-flight sequential stage
+        # (branch.operate / operate_with_repair) is interrupted promptly.
+        # Spawned tasks (_active) are drained in Engine.run()'s finally block.
+        if self._run_task is not None and not self._run_task.done():
+            self._run_task.cancel()
 
     async def wait_quiescence(self) -> None:
         """Block until no spawned task remains; re-raise accumulated failures."""
@@ -490,7 +602,51 @@ class Engine:
         **kwargs: Any,
     ) -> Any:
         run = self.new_run(session=session, on_event=on_event)
-        return await self._run(run, *args, **kwargs)
+        watchdog: asyncio.Task | None = None
+        if run._deadline is not None:
+            watchdog = asyncio.ensure_future(run._deadline_watchdog())
+        # Wrap _run() in a task so the deadline watchdog can cancel it.
+        # This is what makes the deadline bound *all* in-flight work — not just
+        # spawned background tasks, but also sequential awaits inside _run().
+        run_task = asyncio.ensure_future(self._run(run, *args, **kwargs))
+        run._run_task = run_task
+        try:
+            return await run_task
+        finally:
+            if watchdog is not None and not watchdog.done():
+                watchdog.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watchdog
+            # Drain any tasks still in _active so nothing leaks past run().
+            # Runs whether _run() succeeded, failed, or was cancelled by the
+            # deadline watchdog.  The drain is shielded so it completes even
+            # if the caller cancels run() mid-cleanup, but that external
+            # CancelledError is re-raised — swallowing it would hand the
+            # caller a stale _run() result and break structured cancellation.
+            if run._active:
+                drain = asyncio.ensure_future(run.cancel_active())
+                try:
+                    await asyncio.shield(drain)
+                except asyncio.CancelledError:
+                    if drain.cancelled():
+                        raise
+                    # External cancellation of run() itself.  The drain keeps
+                    # running under shield — wait it out (absorbing repeated
+                    # cancellations) so no run-owned task outlives run() from
+                    # the caller's perspective, then surface the cancellation.
+                    while not drain.done():
+                        try:
+                            await asyncio.shield(drain)
+                        except asyncio.CancelledError:
+                            continue
+                    if not drain.cancelled() and drain.exception() is not None:
+                        logger.exception(
+                            "engine active-task drain failed",
+                            exc_info=drain.exception(),
+                        )
+                    raise
+                except Exception:
+                    logger.exception("engine active-task drain failed")
 
     async def _run(self, run: EngineRun, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("Engine subclass must implement _run(run, ...)")
