@@ -414,7 +414,14 @@ class TestGetClassFileRegistryFallback:
         # relative imports, it actually raises ValueError wrapping ImportError.
         # The xfail marks that as the *expected* failure — it passes when broken,
         # fails (xpass) if someone fixes the underlying importlib loading logic.
-        result = get_class(target)
+        # A *different* ValueError would fail the inner message assertion with
+        # AssertionError, which raises=ValueError does not absorb — keeping the
+        # xfail pinned to exactly this latent bug.
+        try:
+            result = get_class(target)
+        except ValueError as exc:
+            assert "attempted relative import" in str(exc)
+            raise
         assert isinstance(result, type)  # only reached if fallback is fixed
 
 
@@ -650,24 +657,22 @@ class TestGetFileClasses:
         for name, path in result.items():
             assert path == element_py_path
 
-    def test_empty_file_returns_empty_dict(self):
+    def test_empty_file_returns_empty_dict(self, tmp_path):
         from lionagi._class_registry import get_file_classes
 
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
-            f.write("# no classes here\nx = 1\n")
-            tmp_path = f.name
+        py_file = tmp_path / "no_classes.py"
+        py_file.write_text("# no classes here\nx = 1\n")
 
-        result = get_file_classes(tmp_path)
+        result = get_file_classes(str(py_file))
         assert result == {}
 
-    def test_file_with_multiple_classes(self):
+    def test_file_with_multiple_classes(self, tmp_path):
         from lionagi._class_registry import get_file_classes
 
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
-            f.write("class Foo:\n    pass\nclass Bar:\n    pass\n")
-            tmp_path = f.name
+        py_file = tmp_path / "two_classes.py"
+        py_file.write_text("class Foo:\n    pass\nclass Bar:\n    pass\n")
 
-        result = get_file_classes(tmp_path)
+        result = get_file_classes(str(py_file))
         assert "Foo" in result
         assert "Bar" in result
         assert len(result) == 2
