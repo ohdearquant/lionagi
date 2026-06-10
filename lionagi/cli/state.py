@@ -50,6 +50,9 @@ __all__ = [
     "_vacuum",
     "_prune",
     "_doctor",
+    # CLI entrypoints
+    "add_state_subparser",
+    "run_state",
 ]
 
 
