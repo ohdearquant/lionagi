@@ -328,7 +328,9 @@ function RunsPageInner() {
     });
   }
 
-  const runs = data?.runs ?? [];
+  // Memoized so the [] fallback keeps a stable reference while loading —
+  // otherwise every render re-runs the memos hanging off `runs`.
+  const runs = useMemo(() => data?.runs ?? [], [data]);
   const total = data?.total ?? 0;
   const totalPages = data?.total_pages ?? 1;
 
@@ -445,7 +447,10 @@ function RunsPageInner() {
               <StatusFilterChip
                 key={s}
                 value={s}
-                count={loading ? undefined : statusCounts[s]}
+                // Counts come from the loaded result set, so with a status
+                // filter active the other chips' true counts are unknowable
+                // client-side — hide them rather than show zeros.
+                count={loading || statuses.length > 0 ? undefined : statusCounts[s]}
                 active={statuses.includes(s)}
                 onClick={() => toggleStatus(s)}
               />
