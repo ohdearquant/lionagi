@@ -13,6 +13,7 @@ e2e (the live emission path) lives in test_engines_scripted_e2e.py.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 
 import pytest
@@ -399,6 +400,152 @@ async def test_no_change_proposed_concludes_failed(tmp_path, monkeypatch):
     assert any("emitted no change" in c for c in result.caveats)
     # no test ran (nothing to test)
     assert run.events_of(TestsRan) == []
+
+
+# ---------------------------------------------------------------------------
+# Regression: #1364 — workspace is ground truth when emission fails
+# ---------------------------------------------------------------------------
+
+
+def _make_git_workspace(path) -> None:
+    """Initialise a bare git repo so ``git status --porcelain`` works."""
+    subprocess.run(["git", "init", str(path)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=str(path),
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=str(path),
+        check=True,
+        capture_output=True,
+    )
+    # Commit a placeholder so HEAD exists and status works cleanly.
+    readme = path / "README"
+    readme.write_text("placeholder\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README"], cwd=str(path), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init", "--no-gpg-sign"],
+        cwd=str(path),
+        check=True,
+        capture_output=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_emission_failure_with_workspace_changes_runs_test_gate(tmp_path, monkeypatch):
+    """Regression for #1364: when the implementer emits no ChangeProposed but
+    the workspace shows file changes, the engine MUST run the test gate and
+    reflect its outcome — not record a no-change failure.
+
+    Setup: a git workspace with a new file written by the ``implement`` agent
+    (simulated by a side-effect in the branch's operate, standing in for the
+    worker writing real files).  The test command verifies the file exists, so
+    ground truth governs passed/failed, not the emission."""
+    _make_git_workspace(tmp_path)
+
+    eng = CodingEngine(repair_retries=0)
+    run = eng.new_run()
+
+    plan_ev = WorkPlanned(approach="add module.py")
+    target_file = tmp_path / "module.py"
+
+    class _WritingBranch:
+        """Emits nothing but DOES write a file to the workspace — the production
+        failure mode: real work, prose (non-structured) final response."""
+
+        name = "implement"
+        calls: list[str] = []
+
+        async def operate(self, *, instruction):
+            self.calls.append(instruction)
+            target_file.write_text("def answer(): return 42\n", encoding="utf-8")
+            return "I wrote module.py."  # prose, no structured emission
+
+    impl = _WritingBranch()
+    verdict_ev = VerifyResult(
+        verdict="APPROVE", rationale="file present and gate passed", meets_acceptance=True
+    )
+    branches = {
+        "plan": _ScriptedBranch(run, [plan_ev], name="plan"),
+        "implement": impl,
+        "verify": _ScriptedBranch(run, [verdict_ev], name="verify"),
+    }
+
+    async def fake_make(role, *, name=None, **kw):
+        return branches[name]
+
+    monkeypatch.setattr(run, "make_agent", fake_make)
+    monkeypatch.setattr(eng, "_capture_diff", lambda r: _async(""))
+
+    events: list[dict] = []
+    run.on_event = events.append
+
+    # Test command: exits 0 iff the file exists.
+    test_cmd = [
+        sys.executable,
+        "-c",
+        f"import sys; sys.exit(0 if __import__('os').path.exists(r'{target_file}') else 1)",
+    ]
+
+    result = await eng._run(run, "add module.py", test_cmd=test_cmd, workspace=str(tmp_path))
+
+    # The test gate ran and the file was there → passed=True.
+    assert result.passed is True, f"expected passed=True; caveats={result.caveats}"
+    # At least one TestsRan event — the test stage MUST have executed.
+    assert len(run.events_of(TestsRan)) >= 1, "test stage never ran"
+    assert run.events_of(TestsRan)[0].passed is True
+    # A synthetic ChangeProposed must be in the store (from the workspace scan).
+    synth = run.last(ChangeProposed)
+    assert synth is not None
+    assert "synthesized" in synth.summary.lower() or synth.files_touched
+    # The metadata_missing warning must have fired.
+    assert any(e["type"] == "metadata_missing" for e in events), (
+        f"metadata_missing event not found in: {[e['type'] for e in events]}"
+    )
+    assert any(e.get("work_detected") for e in events if e["type"] == "metadata_missing")
+    # The no-change caveat must NOT appear.
+    assert not any("emitted no change" in c for c in result.caveats)
+
+
+@pytest.mark.asyncio
+async def test_emission_failure_no_workspace_changes_preserves_no_change_verdict(
+    tmp_path, monkeypatch
+):
+    """Regression for #1364 (inverse case): when the implementer emits nothing
+    AND the workspace shows no changes, the original no-change failure is
+    preserved — we do not proceed to the test gate with an empty workspace."""
+    _make_git_workspace(tmp_path)
+
+    eng = CodingEngine(repair_retries=0)
+    run = eng.new_run()
+
+    plan_ev = WorkPlanned(approach="do nothing")
+    branches = {
+        "plan": _ScriptedBranch(run, [plan_ev], name="plan"),
+        # Emits nothing and writes nothing — both emission and workspace are empty.
+        "implement": _ScriptedBranch(run, [], name="implement"),
+    }
+
+    async def fake_make(role, *, name=None, **kw):
+        return branches[name]
+
+    monkeypatch.setattr(run, "make_agent", fake_make)
+
+    result = await eng._run(
+        run,
+        "do nothing",
+        test_cmd=[sys.executable, "-c", "exit(0)"],
+        workspace=str(tmp_path),
+    )
+
+    # No work → no-change verdict preserved.
+    assert result.passed is False
+    assert any("emitted no change" in c for c in result.caveats)
+    # The test gate must NOT have run.
+    assert run.events_of(TestsRan) == [], "test stage ran despite no workspace changes"
 
 
 # ---------------------------------------------------------------------------

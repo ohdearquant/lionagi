@@ -536,8 +536,25 @@ class CodingEngine(Engine):
         plan = await self._plan(run)
         change = await self._implement(run, plan)
         if change is None:
-            return await self._conclude(
-                run, plan, passed=False, caveat="implementer emitted no change"
+            # Emission is metadata; the workspace is ground truth.  Check for
+            # actual file changes before declaring no-work.  A worker that wrote
+            # files but failed to emit structured output should still reach the
+            # test gate — the test command is the authority, not the emission.
+            ws_files = await self._workspace_changed(run)
+            if not ws_files:
+                return await self._conclude(
+                    run, plan, passed=False, caveat="implementer emitted no change"
+                )
+            # Work detected in workspace despite emission failure.  Synthesize a
+            # minimal ChangeProposed from `git status` and proceed to the test
+            # stage.  The emission failure is downgraded to a warning event.
+            run.notify("metadata_missing", work_detected=True, files=ws_files)
+            change = run.collect(
+                ChangeProposed(
+                    summary="(synthesized from workspace — implementer emitted no structured change)",
+                    files_touched=ws_files,
+                    plan_ref=plan.eid,
+                )
             )
 
         tests = await self._test(run, change, round_no=0)
@@ -722,6 +739,31 @@ class CodingEngine(Engine):
         return result
 
     # -- ground-truth helpers -------------------------------------------------
+
+    async def _workspace_changed(self, run: CodingRun) -> list[str]:
+        """Return the list of changed/untracked paths from ``git status --porcelain``
+        in the workspace.  Empty list means no changes detected (or the workspace
+        is not a git repo).  Used as the fallback ground-truth check when the
+        implementer did not emit a structured ``ChangeProposed``."""
+        result = await run_sync(
+            _subprocess_sync,
+            ["git", "status", "--porcelain"],
+            False,
+            30.0,
+            run.workspace,
+        )
+        if int(result.get("returncode", -1)) != 0:
+            return []
+        lines = result.get("stdout", "").splitlines()
+        # Each porcelain line is "XY path" or "XY path -> renamed".  Extract
+        # the rightmost path token (after " -> " when present).
+        files: list[str] = []
+        for line in lines:
+            if not line.strip():
+                continue
+            parts = line[3:].split(" -> ", 1)
+            files.append(parts[-1].strip())
+        return files
 
     async def _capture_diff(self, run: CodingRun) -> str:
         """Capture ``git diff`` in the workspace for the verify stage. Best-effort
