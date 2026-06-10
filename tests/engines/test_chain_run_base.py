@@ -42,6 +42,28 @@ from lionagi.engines.research import (
 # ---------------------------------------------------------------------------
 
 
+class _EmittingFake:
+    """Mixin giving a fake branch the REAL research arrival contract: the
+    emission Operable a real agent gets, and a message log carrying a fenced
+    capability block (the surface ``_branch_emitted`` inspects)."""
+
+    def _init_emitter(self):
+        from lionagi.casts.emission import build_emission_operable
+
+        self.messages: list = []
+        self._capabilities = build_emission_operable((FindingEmitted, DepthRequested))
+
+    def _record_emission(self, event) -> None:
+        from lionagi.protocols.messages import AssistantResponse
+
+        payload = event.model_dump_json(exclude_none=True)
+        self.messages.append(
+            AssistantResponse(
+                content={"assistant_response": f'```json\n{{"finding_emitted": {payload}}}\n```'}
+            )
+        )
+
+
 class _StubEngine(Engine):
     async def _run(self, run: EngineRun, *a: Any, **kw: Any) -> str:
         return ""
@@ -300,12 +322,17 @@ async def test_research_per_stage_repair_fires_when_stage_emits_nothing():
         async def operate(self, *, instruction):
             return "no json here"
 
-    class _TalkativeBranch:
+    class _TalkativeBranch(_EmittingFake):
         name = "talkative"
         chat_model = SimpleNamespace(is_cli=False)
 
+        def __init__(self):
+            self._init_emitter()
+
         async def operate(self, *, instruction):
-            await run.emit(FindingEmitted(description="real finding", novelty=0.5))
+            event = FindingEmitted(description="real finding", novelty=0.5)
+            self._record_emission(event)
+            await run.emit(event)
             return "ok"
 
     team = [_SilentBranch(), _TalkativeBranch()]
@@ -333,12 +360,17 @@ async def test_research_per_stage_repair_arriving_stage_needs_no_repair():
     events: list[dict] = []
     run.on_event = events.append
 
-    class _GoodBranch:
+    class _GoodBranch(_EmittingFake):
         name = "good"
         chat_model = SimpleNamespace(is_cli=False)
 
+        def __init__(self):
+            self._init_emitter()
+
         async def operate(self, *, instruction):
-            await run.emit(FindingEmitted(description="good finding", novelty=0.6))
+            event = FindingEmitted(description="good finding", novelty=0.6)
+            self._record_emission(event)
+            await run.emit(event)
             return "ok"
 
     team = [_GoodBranch()]

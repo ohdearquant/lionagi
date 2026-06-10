@@ -143,21 +143,40 @@ async def test_synthesis_reads_findings_from_store():
 class _ProseTeamMember:
     """A node's team member that returns prose until ``emit_on_call``, then
     emits — the weak-model failure the per-stage repair loop recovers (mirrors
-    the ``_ProseBranch`` in test_engine_protection.py)."""
+    the ``_ProseBranch`` in test_engine_protection.py).
+
+    Faithful to the real arrival contract: the member carries the same
+    emission ``Operable`` a real research agent gets, and an "emission" is a
+    fenced-JSON capability block recorded in the member's own message log (the
+    surface ``_branch_emitted`` inspects) — plus the bus event, matching what
+    ``_observe`` produces for a real agent."""
 
     name = "researcher-d0"
     chat_model = None  # no is_cli → falls back to API repair template
 
     def __init__(self, run, emit_on_call: int, event):
+        from lionagi.casts.emission import build_emission_operable
+
         self._run = run
         self._event = event
         self._emit_on = emit_on_call
         self.calls: list[str] = []
+        self.messages: list = []
+        self._capabilities = build_emission_operable((FindingEmitted, DepthRequested))
+
+    def _record(self, text: str) -> None:
+        from lionagi.protocols.messages import AssistantResponse
+
+        self.messages.append(AssistantResponse(content={"assistant_response": text}))
 
     async def operate(self, *, instruction):
         self.calls.append(instruction)
         if len(self.calls) == self._emit_on:
+            payload = self._event.model_dump_json(exclude_none=True)
+            self._record(f'```json\n{{"finding_emitted": {payload}}}\n```')
             await self._run.emit(self._event)
+        else:
+            self._record("prose")
         return "prose"
 
 
@@ -217,3 +236,50 @@ async def test_drive_node_empty_team_is_noop():
     await eng._drive_node(run, [], "Research topic (depth 0/1): X")
     assert len(run.by_type(FindingEmitted)) == 0
     assert not any(e["type"] == "emission_repair" for e in events)
+
+
+class _SilentMemberWithChildNoise(_ProseTeamMember):
+    """A silent member whose turn coincides with a CHILD node's emission
+    landing on the run bus — the recursive-research interleaving where
+    ``_on_finding`` spawned a deeper exploration mid-node.  The child's
+    emission belongs to the run, NOT to this member's messages."""
+
+    async def operate(self, *, instruction):
+        self.calls.append(instruction)
+        if len(self.calls) == self._emit_on:
+            payload = self._event.model_dump_json(exclude_none=True)
+            self._record(f'```json\n{{"finding_emitted": {payload}}}\n```')
+            await self._run.emit(self._event)
+        else:
+            # Unrelated child-node finding arrives while this member is
+            # mid-turn; the member itself produces only prose.
+            await self._run.emit(
+                FindingEmitted(description="child node finding", novelty=0.1, depth=1)
+            )
+            self._record("prose")
+        return "prose"
+
+
+@pytest.mark.asyncio
+async def test_drive_node_child_emission_does_not_mask_silent_stage():
+    """A concurrent child node's emission must not satisfy another stage's
+    repair check.  The silent member still gets its repair turn even though
+    the run-level FindingEmitted count rose during its first call — arrival is
+    judged from the member's OWN messages, not global store deltas."""
+    eng = ResearchEngine(repair_retries=1)
+    run = eng.new_run()
+    events: list[dict] = []
+    run.on_event = events.append
+    # First call: child noise + prose. Second call (repair): real emission.
+    member = _SilentMemberWithChildNoise(
+        run, 2, FindingEmitted(description="repaired finding", novelty=0.1)
+    )
+
+    await eng._drive_node(run, [member], "Research topic (depth 0/1): X")
+    await run.wait_quiescence()
+
+    assert len(member.calls) == 2, "silent stage must receive a repair turn"
+    assert "produced no valid emission" in member.calls[1]
+    assert any(e["type"] == "emission_repair" for e in events)
+    # Both the child's and the repaired member's findings are on the bus.
+    assert len(run.by_type(FindingEmitted)) == 2

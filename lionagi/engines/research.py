@@ -114,6 +114,34 @@ def _synthesis_instruction(topic: str, findings: list[FindingEmitted], contradic
     return "".join(parts)
 
 
+def _branch_emitted(branch: Any) -> bool:
+    """True when *branch*'s own assistant responses carry a ``FindingEmitted``
+    or ``DepthRequested`` emission.
+
+    Stage-local by construction: only THIS member's messages are inspected, so
+    a concurrent child node's emission (spawned by ``_on_finding`` mid-stage)
+    can never satisfy another stage's repair check.  Run-store deltas cannot
+    give this guarantee — the bus does not attribute signals to branches."""
+    caps = getattr(branch, "_capabilities", None)
+    if caps is None:
+        return False
+    from lionagi.ln.types.filters import field_values
+    from lionagi.operations._observe import attempt_extract
+    from lionagi.protocols.messages import AssistantResponse
+
+    kinds = (FindingEmitted, DepthRequested)
+    for msg in branch.messages:
+        if not isinstance(msg, AssistantResponse):
+            continue
+        bundles, _, _ = attempt_extract(msg.response, caps)
+        for b in bundles:
+            if isinstance(b, kinds):
+                return True
+            if any(isinstance(v, kinds) for v in field_values(b).values()):
+                return True
+    return False
+
+
 class ResearchEngine(Engine):
     """Recursive, reaction-driven research engine (stateless config).
 
@@ -211,10 +239,10 @@ class ResearchEngine(Engine):
         Each member runs sequentially via ``operate_with_repair``, so a stage
         that emits nothing (weak model, pure prose) gets up to
         ``repair_retries`` extra turns before the next member runs.  This is
-        the per-stage repair pattern from coding/hypothesis — each stage has
-        its own ``arrived`` closure that checks whether *any new* emission
-        arrived from that stage, so a later member's successful emit does not
-        mask an earlier member's silence.
+        the per-stage repair pattern from coding/hypothesis — each stage's
+        ``arrived`` closure inspects the member branch's OWN messages
+        (:func:`_branch_emitted`), so an emission from a concurrently running
+        child node can never mask this member's silence.
 
         After all members have run, a node-level guard fires if the *whole*
         node still produced nothing — the outer repair that was already present
@@ -226,10 +254,9 @@ class ResearchEngine(Engine):
         last = ""
         for i, branch in enumerate(team):
             turn = instruction if i == 0 else f"Build on the prior work and continue:\n\n{last}"
-            stage_before = len(run.by_type(FindingEmitted)) + len(run.by_type(DepthRequested))
 
-            def _arrived(snap: int = stage_before) -> bool:
-                return len(run.by_type(FindingEmitted)) + len(run.by_type(DepthRequested)) > snap
+            def _arrived(b: Any = branch) -> bool:
+                return _branch_emitted(b)
 
             name = getattr(branch, "name", None) or f"agent-{i}"
             run.notify("agent_start", agent=name)
