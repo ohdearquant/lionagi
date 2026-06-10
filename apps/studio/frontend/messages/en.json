@@ -1,0 +1,60 @@
+{
+  "nav": {
+    "theme": {
+      "toggle": "Toggle theme"
+    },
+    "brand": {
+      "name": "Lion Studio",
+      "subtitle": "Orchestration"
+    },
+    "dashboard": {
+      "title": "Dashboard"
+    },
+    "primary": {
+      "ariaLabel": "Primary"
+    },
+    "mobile": {
+      "open": "Open navigation menu"
+    },
+    "breadcrumb": {
+      "ariaLabel": "Breadcrumb"
+    },
+    "groups": {
+      "dashboard": "Dashboard",
+      "work": "Work",
+      "library": "Library",
+      "admin": "Admin"
+    },
+    "items": {
+      "dashboard": "Dashboard",
+      "shows": "Shows",
+      "runs": "Runs",
+      "projects": "Projects",
+      "teams": "Teams",
+      "invocations": "Invocations",
+      "schedules": "Schedules",
+      "playbooks": "Playbooks",
+      "agents": "Agents",
+      "plugins": "Plugins",
+      "skills": "Skills",
+      "health": "Health",
+      "maintenance": "Maintenance"
+    },
+    "projectChip": {
+      "selected": "[project: {name} ▾]",
+      "allShort": "[All projects ▾]",
+      "ariaLabel": "Filter by project",
+      "all": "All projects",
+      "viewAll": "View all projects"
+    },
+    "localeSwitcher": {
+      "switchToZh": "切換到中文",
+      "switchToEn": "Switch to English",
+      "labelZh": "中文",
+      "labelEn": "EN"
+    }
+  },
+  "common": {
+    "skipToMain": "Skip to main content"
+  }
+}

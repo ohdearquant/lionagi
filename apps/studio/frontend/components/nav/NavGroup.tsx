@@ -2,7 +2,31 @@
 
 import Link from "next/link";
 import { useId, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { type NavGroupDef, isRouteActive } from "./types";
+
+const GROUP_KEY: Record<string, string> = {
+  Dashboard: "groups.dashboard",
+  Work: "groups.work",
+  Library: "groups.library",
+  Admin: "groups.admin",
+};
+
+const ITEM_KEY: Record<string, string> = {
+  Dashboard: "items.dashboard",
+  Shows: "items.shows",
+  Runs: "items.runs",
+  Projects: "items.projects",
+  Teams: "items.teams",
+  Invocations: "items.invocations",
+  Schedules: "items.schedules",
+  Playbooks: "items.playbooks",
+  Agents: "items.agents",
+  Plugins: "items.plugins",
+  Skills: "items.skills",
+  Health: "items.health",
+  Maintenance: "items.maintenance",
+};
 
 interface NavGroupProps {
   group: NavGroupDef;
@@ -12,7 +36,18 @@ interface NavGroupProps {
 }
 
 export default function NavGroup({ group, pathname, mobile = false, onNavigate }: NavGroupProps) {
+  const t = useTranslations("nav");
   const [open, setOpen] = useState(false);
+
+  const tGroup = (label: string) => {
+    const key = GROUP_KEY[label];
+    return key ? t(key as Parameters<typeof t>[0]) : label;
+  };
+
+  const tItem = (label: string) => {
+    const key = ITEM_KEY[label];
+    return key ? t(key as Parameters<typeof t>[0]) : label;
+  };
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // closeTimerRef must be declared unconditionally at the top (React
   // rules-of-hooks) even though only the desktop dropdown branch uses it.
@@ -36,7 +71,7 @@ export default function NavGroup({ group, pathname, mobile = false, onNavigate }
               active ? "font-semibold text-content-primary" : "text-content-secondary",
             ].join(" ")}
           >
-            {group.label}
+            {tGroup(group.label)}
           </Link>
         </div>
       );
@@ -51,7 +86,7 @@ export default function NavGroup({ group, pathname, mobile = false, onNavigate }
             active ? "text-content-primary" : "text-content-muted hover:text-content-secondary",
           ].join(" ")}
         >
-          {group.label}
+          {tGroup(group.label)}
           {active && (
             <span className="absolute inset-x-2.5 bottom-0 h-[2px] rounded-t bg-interactive-primary" />
           )}
@@ -75,7 +110,7 @@ export default function NavGroup({ group, pathname, mobile = false, onNavigate }
               groupActive ? "font-semibold text-content-primary" : "text-content-secondary"
             }
           >
-            {group.label}
+            {tGroup(group.label)}
           </span>
           <span
             className={["transition-transform duration-150", open ? "rotate-180" : ""].join(" ")}
@@ -99,7 +134,7 @@ export default function NavGroup({ group, pathname, mobile = false, onNavigate }
                       : "text-content-secondary hover:text-content-primary",
                   ].join(" ")}
                 >
-                  {item.label}
+                  {tItem(item.label)}
                 </Link>
               );
             })}
@@ -193,7 +228,7 @@ export default function NavGroup({ group, pathname, mobile = false, onNavigate }
             : "text-content-muted hover:text-content-secondary",
         ].join(" ")}
       >
-        {group.label} ▾
+        {tGroup(group.label)} ▾
         {(groupActive || open) && (
           <span className="absolute inset-x-2.5 bottom-0 h-[2px] rounded-t bg-interactive-primary" />
         )}
@@ -222,7 +257,7 @@ export default function NavGroup({ group, pathname, mobile = false, onNavigate }
                   active ? "font-semibold text-content-primary" : "text-content-secondary",
                 ].join(" ")}
               >
-                {item.label}
+                {tItem(item.label)}
               </Link>
             );
           })}

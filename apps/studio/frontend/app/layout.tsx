@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { NextIntlClientProvider } from "next-intl";
+import { getLocale, getMessages } from "next-intl/server";
 import Shell from "@/components/Shell";
 import { ToastProvider } from "@/components/Toast";
 import "./globals.css";
@@ -9,13 +11,16 @@ export const metadata: Metadata = {
   description: "Lion Studio orchestration observability",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: ReactNode;
 }>) {
+  const locale = await getLocale();
+  const messages = await getMessages();
+
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang={locale} suppressHydrationWarning>
       <head>
         {/* Prevent FOUC: read localStorage before paint, default to light */}
         <script
@@ -31,9 +36,11 @@ export default function RootLayout({
         >
           Skip to main content
         </a>
-        <ToastProvider>
-          <Shell>{children}</Shell>
-        </ToastProvider>
+        <NextIntlClientProvider messages={messages}>
+          <ToastProvider>
+            <Shell>{children}</Shell>
+          </ToastProvider>
+        </NextIntlClientProvider>
       </body>
     </html>
   );

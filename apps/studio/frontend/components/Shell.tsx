@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useLocale, useTranslations } from "next-intl";
 import { Suspense, useEffect, useState, type ReactNode } from "react";
 import Breadcrumb from "@/components/nav/Breadcrumb";
 import NavGroup from "@/components/nav/NavGroup";
@@ -12,7 +13,34 @@ export interface ShellProps {
   children: ReactNode;
 }
 
+function LocaleSwitcher() {
+  const t = useTranslations("nav");
+  const locale = useLocale();
+
+  function switchLocale(newLocale: string) {
+    document.cookie = `NEXT_LOCALE=${newLocale};path=/;max-age=31536000;SameSite=Lax`;
+    window.location.reload();
+  }
+
+  const nextLocale = locale === "en" ? "zh" : "en";
+  const buttonLabel = locale === "en" ? t("localeSwitcher.labelZh") : t("localeSwitcher.labelEn");
+  const ariaLabel =
+    locale === "en" ? t("localeSwitcher.switchToZh") : t("localeSwitcher.switchToEn");
+
+  return (
+    <button
+      type="button"
+      onClick={() => switchLocale(nextLocale)}
+      aria-label={ariaLabel}
+      className="ml-1 flex h-6 items-center justify-center rounded border border-edge px-1.5 text-[11px] text-content-secondary hover:border-edge-strong hover:text-content-primary transition-colors cursor-pointer"
+    >
+      {buttonLabel}
+    </button>
+  );
+}
+
 function ThemeToggle() {
+  const t = useTranslations("nav");
   const [dark, setDark] = useState(false);
 
   useEffect(() => {
@@ -36,7 +64,7 @@ function ThemeToggle() {
     <button
       type="button"
       onClick={toggle}
-      aria-label="Toggle theme"
+      aria-label={t("theme.toggle")}
       aria-pressed={dark}
       className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-content-muted hover:bg-interactive-secondary hover:text-content-primary transition-colors"
     >
@@ -84,6 +112,7 @@ function ThemeToggle() {
 }
 
 export default function Shell({ children }: ShellProps) {
+  const t = useTranslations("nav");
   const pathname = usePathname() ?? "/";
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -104,7 +133,7 @@ export default function Shell({ children }: ShellProps) {
           {/* Brand: monogram + wordmark */}
           <Link
             href="/"
-            title="Dashboard"
+            title={t("dashboard.title")}
             className="group flex shrink-0 items-center gap-2 self-center"
           >
             <span
@@ -116,16 +145,16 @@ export default function Shell({ children }: ShellProps) {
             </span>
             <span className="flex flex-col leading-tight">
               <span className="text-[13px] font-semibold tracking-tight text-content-primary">
-                Lion Studio
+                {t("brand.name")}
               </span>
               <span className="hidden text-[9px] font-medium uppercase tracking-[0.12em] text-content-muted sm:inline">
-                Orchestration
+                {t("brand.subtitle")}
               </span>
             </span>
           </Link>
 
           {/* Desktop: 4-group primary nav */}
-          <nav aria-label="Primary" className="hidden items-stretch gap-0.5 md:flex">
+          <nav aria-label={t("primary.ariaLabel")} className="hidden items-stretch gap-0.5 md:flex">
             {NAV_GROUPS.map((group) => (
               <NavGroup key={group.label} group={group} pathname={pathname} />
             ))}
@@ -139,11 +168,12 @@ export default function Shell({ children }: ShellProps) {
             <Suspense fallback={null}>
               <ProjectChip />
             </Suspense>
+            <LocaleSwitcher />
             <ThemeToggle />
             {/* Hamburger: visible below 768px */}
             <button
               type="button"
-              aria-label="Open navigation menu"
+              aria-label={t("mobile.open")}
               aria-expanded={mobileOpen}
               onClick={() => setMobileOpen((v) => !v)}
               className="flex h-8 w-8 items-center justify-center rounded text-content-muted transition-colors hover:bg-interactive-secondary hover:text-content-primary md:hidden"
