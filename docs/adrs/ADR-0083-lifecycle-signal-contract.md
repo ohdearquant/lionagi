@@ -65,6 +65,14 @@ the state from any terminal (`succeeded | failed | escalated`) back to
 `NodeStarted / NodeCompleted / NodeFailed` (existing) cover `running /
 succeeded / failed` and require no changes.
 
+**`op_id` is the only stable key.** The `name` field is an informational
+display label and is NOT normative for grouping or identity: emitters may
+derive it from the node's `reference_id` (queue time, before a branch is
+assigned) or from the executing branch's name (execution time — the existing
+contract consumed by the CLI heartbeat display). Observers MUST group and
+project by `op_id`; a node's `name` may legitimately differ across its own
+lifecycle signals.
+
 ### 3. Projection helper: `lane_for`
 
 ```python
