@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { NextIntlClientProvider } from "next-intl";
-import { getLocale, getMessages } from "next-intl/server";
+import { getLocale, getMessages, getTranslations } from "next-intl/server";
 import Shell from "@/components/Shell";
 import { ToastProvider } from "@/components/Toast";
 import "./globals.css";
@@ -18,6 +18,7 @@ export default async function RootLayout({
 }>) {
   const locale = await getLocale();
   const messages = await getMessages();
+  const t = await getTranslations("common");
 
   return (
     <html lang={locale} suppressHydrationWarning>
@@ -34,7 +35,7 @@ export default async function RootLayout({
           href="#main-content"
           className="sr-only focus:not-sr-only focus:absolute focus:z-[100] focus:m-2 focus:rounded focus:border focus:border-edge focus:bg-surface-nav focus:px-4 focus:py-2 focus:text-content-primary"
         >
-          Skip to main content
+          {t("skipToMain")}
         </a>
         <NextIntlClientProvider messages={messages}>
           <ToastProvider>

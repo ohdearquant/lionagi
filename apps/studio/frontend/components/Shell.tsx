@@ -118,13 +118,6 @@ export default function Shell({ children }: ShellProps) {
 
   return (
     <div className="min-h-screen bg-surface-base text-content-primary">
-      {/* Skip-to-main: sr-only by default; visible on keyboard focus */}
-      <a
-        href="#main-content"
-        className="sr-only focus:not-sr-only focus:fixed focus:left-2 focus:top-2 focus:z-[9999] focus:rounded focus:bg-surface-raised focus:px-3 focus:py-1.5 focus:text-body focus:text-content-primary focus:shadow-card-hover focus:outline-none focus:ring-2 focus:ring-interactive-primary"
-      >
-        Skip to main content
-      </a>
       <header
         className="sticky top-0 z-40 border-b border-edge bg-surface-nav"
         style={{ boxShadow: "var(--shadow-header)" }}

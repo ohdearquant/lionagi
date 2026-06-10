@@ -6,6 +6,8 @@ const withNextIntl = createNextIntlPlugin("./i18n/request.ts");
 const nextConfig = {
   // Next.js 16 moved turbopack config out of experimental; manually wire the
   // next-intl/config alias since next-intl's plugin still writes experimental.turbo.
+  // Remove once next-intl's plugin writes the top-level turbopack key natively
+  // (it would then shadow this manual alias).
   turbopack: {
     resolveAlias: {
       "next-intl/config": "./i18n/request.ts",
