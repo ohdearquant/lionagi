@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for studio self-healing lifecycle reapers (#1170, #1171, #1172)."""
+"""Tests for studio self-healing lifecycle reapers."""
 
 from __future__ import annotations
 
@@ -123,7 +123,7 @@ async def _count_transitions(db_path: Path, entity_id: str) -> int:
         return row["n"] if row else 0
 
 
-# ── #1170: invocation deadline reaper ────────────────────────────────────────
+# ── invocation deadline reaper ────────────────────────────────────────────────
 
 
 def test_reap_stale_invocations_deadline(tmp_path, monkeypatch):
@@ -210,7 +210,7 @@ def test_reap_stale_invocations_zero_session_within_grace(tmp_path, monkeypatch)
     assert inv["status"] == "running"
 
 
-# ── #1170: per-action-kind deadline override (MAJ-1) ─────────────────────────
+# ── per-action-kind deadline override ────────────────────────────────────────
 
 
 def test_deadline_for_kind_uses_env_var(monkeypatch):
@@ -273,7 +273,7 @@ def test_reap_stale_invocations_per_kind_override(tmp_path, monkeypatch):
     assert run_async(_count_transitions(db_path, flow_iid)) == 0
 
 
-# ── #1171: null-status session detector ──────────────────────────────────────
+# ── null-status session detector ─────────────────────────────────────────────
 
 
 def test_reap_null_status_sessions_dead_process(tmp_path, monkeypatch):
@@ -341,7 +341,7 @@ def test_reap_null_status_sessions_skips_terminal(tmp_path, monkeypatch):
     assert sess["status"] == "completed"
 
 
-# ── #1172: automatic phantom reaper ──────────────────────────────────────────
+# ── automatic phantom reaper ─────────────────────────────────────────────────
 
 
 def test_reap_phantom_sessions_missing_artifacts(tmp_path, monkeypatch):
@@ -439,7 +439,7 @@ def test_reap_phantom_sessions_skips_healthy_running(tmp_path, monkeypatch):
     assert sess["status"] == "running"
 
 
-# ── #1172: admin prune delegates to transition-based reaper ──────────────────
+# ── admin prune delegates to transition-based reaper ─────────────────────────
 
 
 def test_admin_prune_all_phantom_transitions_not_deletes(tmp_path, monkeypatch):
@@ -484,7 +484,7 @@ def test_admin_prune_all_phantom_transitions_not_deletes(tmp_path, monkeypatch):
     assert run_async(_count_transitions(db_path, sid)) >= 1
 
 
-# ── #1172: phantom_count in stats ────────────────────────────────────────────
+# ── phantom_count in stats ───────────────────────────────────────────────────
 
 
 def test_stats_includes_phantom_count(tmp_path, monkeypatch):

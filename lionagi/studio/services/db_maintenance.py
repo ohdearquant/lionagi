@@ -143,6 +143,24 @@ async def prune_old_data(
             )
             sessions_pruned = cur.rowcount
 
+            # ── orphan cleanup ────────────────────────────────────────────
+            # After sessions (and their branches via CASCADE) are gone, clean up
+            # progressions that are no longer referenced by any session or branch,
+            # then messages that are no longer listed in any progression's JSON
+            # collection array.
+            await db.db.execute(
+                "DELETE FROM progressions WHERE id NOT IN ("  # noqa: S608
+                "  SELECT progression_id FROM sessions"
+                "  UNION"
+                "  SELECT progression_id FROM branches"
+                ")"
+            )
+            await db.db.execute(
+                "DELETE FROM messages WHERE id NOT IN ("  # noqa: S608
+                "  SELECT value FROM progressions, json_each(progressions.collection)"
+                ")"
+            )
+
         # ── prune old terminal schedule_runs ─────────────────────────────
         # Nullify chain_parent_id for child runs whose parent will be deleted.
         await db.db.execute(

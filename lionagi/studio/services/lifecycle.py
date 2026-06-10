@@ -116,7 +116,7 @@ async def reap_stale_invocations(
                         effective_deadline,
                     )
                     await db.update_invocation(inv_id, ended_at=now)
-                    await db.update_status(
+                    transitioned = await db.update_status(
                         "invocation",
                         inv_id,
                         new_status="timed_out",
@@ -130,8 +130,12 @@ async def reap_stale_invocations(
                             "action_kind": action_kind,
                             "started_at": started_at,
                         },
+                        expected_statuses={"running"},
                     )
-                    reaped += 1
+                    if transitioned:
+                        reaped += 1
+                    else:
+                        _log.debug("Invocation %s skipped (status changed before CAS lock)", inv_id)
                     continue
 
                 # Condition 2: zero sessions and past grace period.
@@ -142,7 +146,7 @@ async def reap_stale_invocations(
                         zero_session_grace_seconds,
                     )
                     await db.update_invocation(inv_id, ended_at=now)
-                    await db.update_status(
+                    transitioned = await db.update_status(
                         "invocation",
                         inv_id,
                         new_status="timed_out",
@@ -155,8 +159,12 @@ async def reap_stale_invocations(
                             "zero_session_grace_seconds": zero_session_grace_seconds,
                             "updated_at": updated_at,
                         },
+                        expected_statuses={"running"},
                     )
-                    reaped += 1
+                    if transitioned:
+                        reaped += 1
+                    else:
+                        _log.debug("Invocation %s skipped (status changed before CAS lock)", inv_id)
     except Exception:
         _log.exception("reap_stale_invocations error")
 
@@ -203,7 +211,7 @@ async def reap_null_status_sessions() -> int:
                     # Set ended_at if missing before the status transition.
                     if row["ended_at"] is None:
                         await db.update_session(sid, ended_at=now)
-                    await db.update_status(
+                    transitioned = await db.update_status(
                         "session",
                         sid,
                         new_status="failed",
@@ -213,8 +221,12 @@ async def reap_null_status_sessions() -> int:
                         source="system",
                         actor="studio_lifecycle_reaper",
                         metadata={"detector": "null_status_dead_process"},
+                        expected_statuses={None},
                     )
-                reaped += 1
+                if transitioned:
+                    reaped += 1
+                else:
+                    _log.debug("Session %s skipped (status changed before CAS lock)", sid)
             except LookupError:
                 # Session deleted between the query and the update — harmless.
                 pass
@@ -273,7 +285,7 @@ async def reap_phantom_sessions(
                     continue
                 if current.get("ended_at") is None:
                     await db.update_session(sid, ended_at=now)
-                await db.update_status(
+                transitioned = await db.update_status(
                     "session",
                     sid,
                     new_status="failed",
@@ -289,9 +301,13 @@ async def reap_phantom_sessions(
                     source="system",
                     actor=actor,
                     metadata={"phantom_reaped": True, "phantom_reason": phantom_reason},
+                    expected_statuses={"running"},
                 )
-            _log.info("Phantom session %s reaped (reason=%s)", sid, phantom_reason)
-            reaped += 1
+            if transitioned:
+                _log.info("Phantom session %s reaped (reason=%s)", sid, phantom_reason)
+                reaped += 1
+            else:
+                _log.debug("Session %s skipped (status changed before CAS lock)", sid)
         except LookupError:
             pass
         except Exception:

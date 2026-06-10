@@ -6,10 +6,10 @@ Focus: confirm each mechanism fires for the RIGHT reason by temporarily
 neutralising the trigger condition and asserting the row is NOT reaped.
 
 Coverage:
-  #1170 — invocation deadline reaper (false-positive guard)
-  #1171 — null-status session detector (double-write guard)
-  #1172 — phantom reaper (detection reuse + no regression on admin prune)
-  #1173 — prune old data (FK integrity, recent-data preservation)
+  - invocation deadline reaper (false-positive guard)
+  - null-status session detector (double-write guard)
+  - phantom reaper (detection reuse + no regression on admin prune)
+  - prune old data (FK integrity, recent-data preservation)
 """
 
 from __future__ import annotations
@@ -128,7 +128,7 @@ async def _count_transitions(db_path: Path, entity_id: str) -> int:
         return row["n"] if row else 0
 
 
-# ── #1170 adversarial: false-positive guards ──────────────────────────────────
+# ── adversarial: invocation deadline false-positive guards ───────────────────
 
 
 def test_1170_inv_with_live_sessions_not_reaped_by_zero_session_path(tmp_path, monkeypatch):
@@ -207,7 +207,7 @@ def test_1170_neutralize_condition_row_stays_running(tmp_path, monkeypatch):
     assert run_async(_get_inv_status(db_path, iid)) == "running"
 
 
-# ── #1171 adversarial: double-write guard ────────────────────────────────────
+# ── adversarial: null-status session double-write guard ──────────────────────
 
 
 def test_1171_terminal_session_never_overwritten(tmp_path, monkeypatch):
@@ -284,7 +284,7 @@ def test_1171_neutralize_condition_null_session_stays_null(tmp_path, monkeypatch
     assert run_async(_get_session_status(db_path, sid)) is None
 
 
-# ── #1172 adversarial: phantom detection reuse + no regression ───────────────
+# ── adversarial: phantom detection reuse + no regression ─────────────────────
 
 
 def test_1172_phantom_reaper_driven_by_list_phantom_sessions(tmp_path, monkeypatch):
@@ -383,7 +383,7 @@ def test_1172_phantom_reaper_skips_already_terminal_even_if_detected(tmp_path, m
     assert run_async(_count_transitions(db_path, sid)) == 0
 
 
-# ── #1173 adversarial: FK integrity and data preservation ────────────────────
+# ── adversarial: prune FK integrity and data preservation ────────────────────
 
 
 def test_1173_prune_does_not_touch_running_old_sessions(tmp_path, monkeypatch):

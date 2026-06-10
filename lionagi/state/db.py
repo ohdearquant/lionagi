@@ -743,8 +743,19 @@ class StateDB:
         source: str = "executor",
         actor: str | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> None:
-        """Atomically transition an entity's status and record the reason."""
+        expected_statuses: set[str | None] | frozenset[str | None] | None = None,
+    ) -> bool:
+        """Atomically transition an entity's status and record the reason.
+
+        When *expected_statuses* is provided, the transition is only performed
+        if the current status is a member of that set.  Pass ``None`` inside
+        the set to match a SQL NULL status (e.g. ``{None}`` for null-status
+        sessions, ``{"running", None}`` to accept either).
+
+        Returns ``True`` when the transition was applied, ``False`` when it was
+        skipped because the current status was not in *expected_statuses*.  All
+        existing callers that ignore the return value are unaffected.
+        """
         if source not in _VALID_STATUS_SOURCES:
             raise ValueError(
                 f"update_status() called with source={source!r}; "
@@ -767,6 +778,11 @@ class StateDB:
             if row is None:
                 raise LookupError(f"{canonical_type} {entity_id!r} not found (table={table})")
             previous_status = row["status"] if "status" in row.keys() else None
+
+            if expected_statuses is not None and previous_status not in expected_statuses:
+                # CAS guard: current status is not in the expected set — skip.
+                await self.db.rollback()
+                return False
 
             await self.db.execute(
                 f"UPDATE {table} SET "  # noqa: S608
@@ -811,6 +827,7 @@ class StateDB:
         except BaseException:
             await self.db.rollback()
             raise
+        return True
 
     async def list_sessions(
         self,
