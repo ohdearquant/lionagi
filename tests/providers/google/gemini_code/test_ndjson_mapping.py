@@ -303,10 +303,11 @@ async def test_nested_tool_call_in_message_content_real_keys():
                 {
                     "type": "tool_use",
                     # Real keys
-                    "id": "nested-id",
+                    "tool_id": "nested-real-id",
                     "tool_name": "nested_tool",
                     "parameters": {"nested": True},
-                    # Legacy key that must NOT win
+                    # Legacy keys that must NOT win
+                    "id": "legacy-id",
                     "name": "legacy_nested",
                     "input": {"legacy": True},
                 }
@@ -320,12 +321,46 @@ async def test_nested_tool_call_in_message_content_real_keys():
         f"expected 1 tool_use from nested block; got {session.tool_uses}"
     )
     tu = session.tool_uses[0]
+    assert tu["id"] == "nested-real-id", (
+        f"tool_id must win over id in nested block; got {tu['id']!r}"
+    )
     assert tu["name"] == "nested_tool", (
         f"tool_name must win over name in nested block; got {tu['name']!r}"
     )
     assert tu["input"] == {"nested": True}, (
         f"parameters must win over input in nested block; got {tu['input']!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_nested_tool_call_btype_is_recognized():
+    """A nested block typed "tool_call" (not "tool_use") must be captured —
+    the CLI uses both type strings for tool invocations."""
+    events = [
+        {"type": "init", "session_id": "s1", "model": "gemini-3-flash-preview"},
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_call",
+                    "tool_id": "tc-1",
+                    "tool_name": "called_tool",
+                    "parameters": {"x": 1},
+                }
+            ],
+        },
+        {"type": "result", "status": "success", "stats": {}},
+    ]
+    session = await _run_events(events)
+
+    assert len(session.tool_uses) == 1, (
+        f"nested tool_call block must be captured; got {session.tool_uses}"
+    )
+    tu = session.tool_uses[0]
+    assert tu["id"] == "tc-1"
+    assert tu["name"] == "called_tool"
+    assert tu["input"] == {"x": 1}
 
 
 # ---------------------------------------------------------------------------

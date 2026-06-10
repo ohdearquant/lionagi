@@ -433,11 +433,17 @@ async def stream_gemini_cli(
                                     await maybe_await(on_text(text))
                                 if request.verbose_output:
                                     _pp_text(text, theme)
-                            elif btype == "tool_use":
+                            elif btype in ("tool_use", "tool_call"):
                                 tu = {
-                                    "id": blk.get("id", ""),
+                                    "id": blk.get(
+                                        "tool_id",
+                                        blk.get("tool_use_id", blk.get("id", "")),
+                                    ),
                                     "name": blk.get("tool_name", blk.get("name", "")),
-                                    "input": blk.get("parameters", blk.get("input", {})),
+                                    "input": blk.get(
+                                        "parameters",
+                                        blk.get("input", blk.get("args", {})),
+                                    ),
                                 }
                                 chunk.tool_use = tu
                                 session.tool_uses.append(tu)
@@ -453,7 +459,7 @@ async def stream_gemini_cli(
                 #   name  → "tool_name" (not "name")
                 #   args  → "parameters" (not "input" or "args")
                 tu = {
-                    "id": obj.get("tool_id", obj.get("id", obj.get("tool_use_id", ""))),
+                    "id": obj.get("tool_id", obj.get("tool_use_id", obj.get("id", ""))),
                     "name": obj.get("tool_name", obj.get("name", "")),
                     "input": obj.get("parameters", obj.get("input", obj.get("args", {}))),
                 }
