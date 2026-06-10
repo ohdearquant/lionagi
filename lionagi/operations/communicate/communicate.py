@@ -125,10 +125,9 @@ async def communicate(
 
     # Handle response_format with parse
     if parse_param and chat_param.response_format:
-        from lionagi.protocols.messages.assistant_response import AssistantResponse
-
         # Pull structure from the instruction message
-        from lionagi.protocols.structure.base import Structure
+        from lionagi.operations.schema.structure import Structure
+        from lionagi.protocols.messages.assistant_response import AssistantResponse
 
         from ..parse.parse import parse
 

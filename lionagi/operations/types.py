@@ -10,8 +10,8 @@ from pydantic import BaseModel, JsonValue
 from lionagi.ln import AlcallParams
 from lionagi.ln.fuzzy import FuzzyMatchKeysParams
 from lionagi.ln.types import ModelConfig, Params
+from lionagi.operations.schema.structure import Structure
 from lionagi.protocols.action.tool import ToolRef
-from lionagi.protocols.structure.base import Structure
 from lionagi.protocols.types import ID, SenderRecipient
 from lionagi.service.imodel import iModel
 from lionagi.utils import LIONAGI_HOME
