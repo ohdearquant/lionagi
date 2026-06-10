@@ -3,7 +3,7 @@
 
 """Regression tests for budget/deadline cancellation exporting partial results.
 
-Acceptance criteria (issue #1391):
+Acceptance criteria:
 - A run that exhausts its budget with >=1 conclusion-equivalent collected exits
   normally (no CancelledError raised), writes report.md + chains.json, and the
   report states it was budget-bounded.
