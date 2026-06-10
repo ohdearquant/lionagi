@@ -16,10 +16,63 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
+from typing import Any
+
+import aiosqlite
 
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
 _log = logging.getLogger(__name__)
+
+_CHUNK = 500  # max placeholders per IN-list statement
+
+
+async def _exec_chunked(
+    conn: aiosqlite.Connection,
+    sql_prefix: str,
+    ids: Sequence[str],
+    extra_params: Sequence[Any] = (),
+) -> int:
+    """Execute *sql_prefix* + ' IN (?,?,...)' for *ids* in chunks of _CHUNK.
+
+    *sql_prefix* must end just before the IN clause, e.g.
+        'DELETE FROM foo WHERE id'
+    or
+        'UPDATE foo SET x=NULL WHERE x'
+
+    Returns total rowcount across all chunks.
+    """
+    total = 0
+    for i in range(0, len(ids), _CHUNK):
+        chunk = ids[i : i + _CHUNK]
+        ph = ", ".join("?" * len(chunk))
+        cur = await conn.execute(
+            f"{sql_prefix} IN ({ph})",  # noqa: S608
+            (*extra_params, *chunk),
+        )
+        total += cur.rowcount
+    return total
+
+
+async def _fetch_chunked(
+    conn: aiosqlite.Connection,
+    sql_prefix: str,
+    ids: Sequence[str],
+    extra_params: Sequence[Any] = (),
+) -> list[Any]:
+    """SELECT *sql_prefix* + ' IN (?,?,...)' for *ids* in chunks; returns flat list."""
+    results: list[Any] = []
+    for i in range(0, len(ids), _CHUNK):
+        chunk = ids[i : i + _CHUNK]
+        ph = ", ".join("?" * len(chunk))
+        cur = await conn.execute(
+            f"{sql_prefix} IN ({ph})",  # noqa: S608
+            (*extra_params, *chunk),
+        )
+        results.extend(await cur.fetchall())
+    return results
+
 
 # Statuses that are safe to prune (process is definitively done).
 _TERMINAL_SESSION_STATUSES = ("completed", "failed", "timed_out", "aborted", "cancelled")
@@ -117,60 +170,89 @@ async def prune_old_data(
         session_ids = [r[0] for r in rows]
 
         if session_ids:
-            id_ph = ", ".join("?" * len(session_ids))
+            # Dedup + sort for determinism; chunk all IN-lists at _CHUNK (500).
+            session_ids = sorted(set(session_ids))
 
             # ── Capture child ids BEFORE deleting anything ────────────────
-            # progressions referenced by the pruned sessions
-            cur = await db.db.execute(
-                f"SELECT progression_id FROM sessions WHERE id IN ({id_ph}) AND progression_id IS NOT NULL",  # noqa: S608
+            # Progressions referenced by the pruned sessions.
+            rows = await _fetch_chunked(
+                db.db,
+                "SELECT progression_id FROM sessions WHERE id",
                 session_ids,
             )
-            session_prog_ids = [r[0] for r in await cur.fetchall()]
+            session_prog_ids = [r[0] for r in rows if r[0] is not None]
 
-            # progressions referenced by the branches that will cascade-delete
-            cur = await db.db.execute(
-                f"SELECT progression_id FROM branches WHERE session_id IN ({id_ph}) AND progression_id IS NOT NULL",  # noqa: S608
+            # Progressions referenced by the branches that will cascade-delete.
+            rows = await _fetch_chunked(
+                db.db,
+                "SELECT progression_id FROM branches WHERE session_id",
                 session_ids,
             )
-            branch_prog_ids = [r[0] for r in await cur.fetchall()]
+            branch_prog_ids = [r[0] for r in rows if r[0] is not None]
 
-            candidate_prog_ids = list({*session_prog_ids, *branch_prog_ids})
+            candidate_prog_ids = sorted({*session_prog_ids, *branch_prog_ids})
 
-            # messages referenced by those candidate progressions' collection arrays
-            candidate_msg_ids: list[str] = []
+            # Messages from candidate progressions' collection arrays.
+            coll_msg_ids: list[str] = []
             if candidate_prog_ids:
-                prog_ph = ", ".join("?" * len(candidate_prog_ids))
-                cur = await db.db.execute(
-                    f"SELECT value FROM progressions, json_each(progressions.collection)"  # noqa: S608
-                    f" WHERE progressions.id IN ({prog_ph}) AND value IS NOT NULL",
+                rows = await _fetch_chunked(
+                    db.db,
+                    "SELECT value FROM progressions, json_each(progressions.collection)"
+                    " WHERE value IS NOT NULL AND progressions.id",
                     candidate_prog_ids,
                 )
-                candidate_msg_ids = [r[0] for r in await cur.fetchall()]
+                coll_msg_ids = [r[0] for r in rows]
+
+            # Direct-FK message refs on pruned sessions: first_msg_id, last_msg_id.
+            # (schema.sql:104-105: sessions.first_msg_id, sessions.last_msg_id)
+            rows = await _fetch_chunked(
+                db.db,
+                "SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL AND id",
+                session_ids,
+            )
+            session_first_ids = [r[0] for r in rows]
+            rows = await _fetch_chunked(
+                db.db,
+                "SELECT last_msg_id FROM sessions WHERE last_msg_id IS NOT NULL AND id",
+                session_ids,
+            )
+            session_last_ids = [r[0] for r in rows]
+
+            # Direct-FK message refs on pruned branches: system_msg_id.
+            # (schema.sql:206: branches.system_msg_id)
+            rows = await _fetch_chunked(
+                db.db,
+                "SELECT system_msg_id FROM branches WHERE system_msg_id IS NOT NULL AND session_id",
+                session_ids,
+            )
+            branch_sys_ids = [r[0] for r in rows]
+
+            candidate_msg_ids = sorted(
+                {*coll_msg_ids, *session_first_ids, *session_last_ids, *branch_sys_ids}
+            )
 
             # Nullify soft FKs (no CASCADE) before deleting sessions.
-            await db.db.execute(
-                f"UPDATE artifacts SET session_id = NULL WHERE session_id IN ({id_ph})",  # noqa: S608
-                session_ids,
+            await _exec_chunked(
+                db.db, "UPDATE artifacts SET session_id = NULL WHERE session_id", session_ids
             )
-            await db.db.execute(
-                f"UPDATE plays SET session_id = NULL WHERE session_id IN ({id_ph})",  # noqa: S608
-                session_ids,
+            await _exec_chunked(
+                db.db, "UPDATE plays SET session_id = NULL WHERE session_id", session_ids
             )
-            await db.db.execute(
-                f"UPDATE team_messages SET session_id = NULL WHERE session_id IN ({id_ph})",  # noqa: S608
+            await _exec_chunked(
+                db.db,
+                "UPDATE team_messages SET session_id = NULL WHERE session_id",
                 session_ids,
             )
             # Delete audit trail for these sessions (no FK; good hygiene).
-            await db.db.execute(
-                f"DELETE FROM status_transitions WHERE entity_type = 'session' AND entity_id IN ({id_ph})",  # noqa: S608
+            await _exec_chunked(
+                db.db,
+                "DELETE FROM status_transitions WHERE entity_type = 'session' AND entity_id",
                 session_ids,
             )
             # Delete sessions; branches cascade automatically via FK ON DELETE CASCADE.
-            cur = await db.db.execute(
-                f"DELETE FROM sessions WHERE id IN ({id_ph})",  # noqa: S608
-                session_ids,
+            sessions_pruned = await _exec_chunked(
+                db.db, "DELETE FROM sessions WHERE id", session_ids
             )
-            sessions_pruned = cur.rowcount
 
             # ── Targeted orphan cleanup (scoped to pruned lineage only) ───
             # Only delete progressions/messages that were part of the pruned
@@ -178,35 +260,46 @@ async def prune_old_data(
             # outside that lineage — this prevents a newborn-orphan race where
             # _persist.py commits a progression before the session row exists.
             if candidate_prog_ids:
-                prog_ph = ", ".join("?" * len(candidate_prog_ids))
-                # Delete progressions in the candidate set that are no longer
-                # referenced by any surviving session or branch.  The NOT IN
-                # subquery is scoped to the candidate set, so newborn progressions
-                # (not in candidate_prog_ids) are never touched.
-                await db.db.execute(
-                    f"DELETE FROM progressions WHERE id IN ({prog_ph})"  # noqa: S608
-                    " AND id NOT IN ("
-                    "  SELECT progression_id FROM sessions WHERE progression_id IS NOT NULL"
-                    "  UNION"
-                    "  SELECT progression_id FROM branches WHERE progression_id IS NOT NULL"
-                    ")",
-                    candidate_prog_ids,
-                )
+                # Delete progressions in the candidate set still unreferenced by
+                # any surviving session or branch.
+                for i in range(0, len(candidate_prog_ids), _CHUNK):
+                    chunk = candidate_prog_ids[i : i + _CHUNK]
+                    ph = ", ".join("?" * len(chunk))
+                    await db.db.execute(
+                        f"DELETE FROM progressions WHERE id IN ({ph})"  # noqa: S608
+                        " AND id NOT IN ("
+                        "  SELECT progression_id FROM sessions WHERE progression_id IS NOT NULL"
+                        "  UNION"
+                        "  SELECT progression_id FROM branches WHERE progression_id IS NOT NULL"
+                        ")",
+                        chunk,
+                    )
 
             if candidate_msg_ids:
-                msg_ph = ", ".join("?" * len(candidate_msg_ids))
-                # Delete messages in the candidate set that no longer appear in
-                # any progression's collection array.  Scoped to candidate_msg_ids
-                # so newborn messages (not yet referenced by their progression) are
-                # never touched.
-                await db.db.execute(
-                    f"DELETE FROM messages WHERE id IN ({msg_ph})"  # noqa: S608
-                    " AND id NOT IN ("
-                    "  SELECT value FROM progressions, json_each(progressions.collection)"
-                    "  WHERE value IS NOT NULL"
-                    ")",
-                    candidate_msg_ids,
-                )
+                # Delete messages in the candidate set that are no longer held by
+                # any surviving reference: progression collection arrays OR the
+                # direct FK columns first_msg_id / last_msg_id (sessions) and
+                # system_msg_id (branches).
+                # schema.sql:104 sessions.first_msg_id REFERENCES messages(id)
+                # schema.sql:105 sessions.last_msg_id  REFERENCES messages(id)
+                # schema.sql:206 branches.system_msg_id REFERENCES messages(id)
+                for i in range(0, len(candidate_msg_ids), _CHUNK):
+                    chunk = candidate_msg_ids[i : i + _CHUNK]
+                    ph = ", ".join("?" * len(chunk))
+                    await db.db.execute(
+                        f"DELETE FROM messages WHERE id IN ({ph})"  # noqa: S608
+                        " AND id NOT IN ("
+                        "  SELECT value FROM progressions, json_each(progressions.collection)"
+                        "  WHERE value IS NOT NULL"
+                        "  UNION"
+                        "  SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL"
+                        "  UNION"
+                        "  SELECT last_msg_id FROM sessions WHERE last_msg_id IS NOT NULL"
+                        "  UNION"
+                        "  SELECT system_msg_id FROM branches WHERE system_msg_id IS NOT NULL"
+                        ")",
+                        chunk,
+                    )
 
         # ── prune old terminal schedule_runs ─────────────────────────────
         # Nullify chain_parent_id for child runs whose parent will be deleted.

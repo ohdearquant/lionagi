@@ -711,3 +711,206 @@ def test_null_in_collection_does_not_stall_message_cleanup(tmp_path, monkeypatch
     assert run_async(_count_msgs()) == 0, (
         "NULL in collection must not stall message cleanup via NOT IN NULL trap"
     )
+
+
+# ── shared-message protection ─────────────────────────────────────────────────
+#
+# Scenario: message M appears in pruned session P's progression collection AND
+# is also referenced by a surviving session's first_msg_id / last_msg_id FK
+# column (or a surviving branch's system_msg_id).
+#
+# Old code (collection-only survivor check): M would be spuriously deleted
+# because the NOT IN subquery only scanned progressions.collection, not the
+# direct FK columns.
+#
+# Fixed code: survivor subquery UNIONs first_msg_id, last_msg_id (sessions)
+# and system_msg_id (branches), so M is retained.
+
+
+async def _seed_shared_message_scenario(db_path: Path) -> tuple[str, str, str, str]:
+    """Seed the shared-message scenario.
+
+    Creates:
+    - pruned_session (old, terminal) whose progression contains shared_msg and unshared_msg
+    - surviving_branch (recent) whose system_msg_id = shared_msg
+
+    The surviving branch belongs to a surviving session that is NOT being pruned.
+    shared_msg is in the pruned progression's collection AND referenced by
+    surviving_branch.system_msg_id.  unshared_msg is only in the pruned progression.
+
+    Note: first_msg_id / last_msg_id on sessions have a real FK REFERENCES messages(id),
+    so SQLite with foreign_keys=ON prevents deletion while the FK is live.  To demonstrate
+    the bug plainly we use system_msg_id on a branch of a DIFFERENT (surviving) session,
+    which also has the FK — but the FAIL-before test disables foreign_keys first, showing
+    what the old collection-only check would have done without the constraint.
+
+    Returns (pruned_sid, surviving_sid, shared_msg_id, unshared_msg_id).
+    """
+    import json
+
+    old_ts = time.time() - 40 * 86400
+    recent_ts = time.time() - 1 * 86400
+
+    async with StateDB(db_path) as db:
+        # ── shared message ─────────────────────────────────────────────────
+        shared_msg_id = str(uuid.uuid4())
+        await db.db.execute(
+            "INSERT INTO messages (id, content, created_at, role, lion_class)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (shared_msg_id, '{"content":"shared"}', old_ts, "user", 2),
+        )
+        await db.db.commit()
+
+        # ── unshared message (only in pruned progression) ──────────────────
+        unshared_msg_id = str(uuid.uuid4())
+        await db.db.execute(
+            "INSERT INTO messages (id, content, created_at, role, lion_class)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (unshared_msg_id, '{"content":"unshared"}', old_ts, "user", 2),
+        )
+        await db.db.commit()
+
+        # ── pruned session ─────────────────────────────────────────────────
+        pruned_pid = str(uuid.uuid4())
+        pruned_sid = str(uuid.uuid4())
+        await db.create_progression(pruned_pid)
+        await db.create_session(
+            {
+                "id": pruned_sid,
+                "progression_id": pruned_pid,
+                "name": "pruned-session",
+                "status": "completed",
+                "started_at": old_ts,
+            }
+        )
+        # Both shared and unshared messages in the pruned progression.
+        await db.db.execute(
+            "UPDATE progressions SET collection = ? WHERE id = ?",
+            (json.dumps([shared_msg_id, unshared_msg_id]), pruned_pid),
+        )
+        await db.db.commit()
+
+        # ── surviving session + branch — system_msg_id = shared_msg ───────
+        surviving_pid = str(uuid.uuid4())
+        surviving_sid = str(uuid.uuid4())
+        await db.create_progression(surviving_pid)
+        await db.create_session(
+            {
+                "id": surviving_sid,
+                "progression_id": surviving_pid,
+                "name": "surviving-session",
+                "status": "running",
+                "started_at": recent_ts,
+            }
+        )
+        branch_pid = str(uuid.uuid4())
+        branch_id = str(uuid.uuid4())
+        await db.create_progression(branch_pid)
+        await db.db.execute(
+            "INSERT INTO branches"
+            " (id, session_id, progression_id, system_msg_id, created_at, started_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (branch_id, surviving_sid, branch_pid, shared_msg_id, recent_ts, recent_ts),
+        )
+        await db.db.commit()
+
+    return pruned_sid, surviving_sid, shared_msg_id, unshared_msg_id
+
+
+def test_shared_message_collection_only_check_deletes_it(tmp_path, monkeypatch):
+    """FAIL-before: collection-only survivor check spuriously deletes shared message.
+
+    Simulates the old code path with foreign_keys=OFF to expose the bug:
+    NOT IN only checks progressions.collection.  After the pruned session's
+    progression is deleted, shared_msg_id no longer appears in any collection
+    — so it is deleted even though surviving_branch.system_msg_id holds it.
+
+    foreign_keys=OFF is used here to bypass the FK constraint that would
+    ordinarily prevent the delete; this is the exact failure mode in any
+    runtime that doesn't enforce FKs (e.g. a migration path, or prior to
+    the PRAGMA being applied) or if the message is held by a table without
+    a FK constraint (hypothetical future table).
+    """
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    _, _, shared_msg_id, unshared_msg_id = run_async(_seed_shared_message_scenario(db_path))
+
+    async def _old_cleanup_fk_off(db_path: Path, candidate_msg_ids: list[str]) -> None:
+        """Reproduce the old collection-only NOT IN check with FK enforcement off."""
+        async with StateDB(db_path) as db:
+            # Disable FK enforcement to expose the logic bug, not the constraint.
+            await db.db.execute("PRAGMA foreign_keys = OFF")
+            # Delete the pruned session (and orphan its progression).
+            await db.db.execute("DELETE FROM sessions WHERE status = 'completed'")
+            await db.db.execute(
+                "DELETE FROM progressions WHERE id NOT IN ("
+                "  SELECT progression_id FROM sessions"
+                "  UNION SELECT progression_id FROM branches"
+                ")"
+            )
+            # Old cleanup: only checks collection, not system_msg_id.
+            if candidate_msg_ids:
+                ph = ", ".join("?" * len(candidate_msg_ids))
+                await db.db.execute(
+                    f"DELETE FROM messages WHERE id IN ({ph})"  # noqa: S608
+                    " AND id NOT IN ("
+                    "  SELECT value FROM progressions, json_each(progressions.collection)"
+                    "  WHERE value IS NOT NULL"
+                    ")",
+                    candidate_msg_ids,
+                )
+            await db.db.commit()
+            await db.db.execute("PRAGMA foreign_keys = ON")
+
+    run_async(_old_cleanup_fk_off(db_path, [shared_msg_id, unshared_msg_id]))
+
+    async def _exists_msg(mid: str) -> bool:
+        async with StateDB(db_path) as db:
+            cur = await db.db.execute("SELECT id FROM messages WHERE id = ?", (mid,))
+            return await cur.fetchone() is not None
+
+    # FAIL-before: shared message is spuriously deleted because system_msg_id
+    # was not in the survivor subquery.
+    assert not run_async(_exists_msg(shared_msg_id)), (
+        "FAIL-before confirmed: collection-only check deletes the shared message"
+    )
+    assert not run_async(_exists_msg(unshared_msg_id))
+
+
+def test_shared_message_fk_survivor_check_preserves_it(tmp_path, monkeypatch):
+    """PASS-after: full survivor check (collection + FK columns) preserves shared message.
+
+    prune_old_data() UNIONs first_msg_id / last_msg_id (sessions) and
+    system_msg_id (branches) in the NOT IN subquery.  shared_msg_id is held
+    by surviving_branch.system_msg_id, so it survives even though the pruned
+    progression's collection no longer exists.
+    The unshared message (only in the pruned progression) is correctly deleted.
+    """
+    import lionagi.state.db as state_db_mod
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(maint, "DEFAULT_DB_PATH", db_path)
+
+    _, _, shared_msg_id, unshared_msg_id = run_async(_seed_shared_message_scenario(db_path))
+
+    result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
+    assert result["sessions_pruned"] == 1
+
+    async def _exists_msg(mid: str) -> bool:
+        async with StateDB(db_path) as db:
+            cur = await db.db.execute("SELECT id FROM messages WHERE id = ?", (mid,))
+            return await cur.fetchone() is not None
+
+    # PASS-after: shared message survives because surviving_branch.system_msg_id holds it.
+    assert run_async(_exists_msg(shared_msg_id)), (
+        "PASS-after: message held by surviving branch.system_msg_id must not be deleted"
+    )
+    # Unshared message is correctly pruned (only referenced by the now-deleted progression).
+    assert not run_async(_exists_msg(unshared_msg_id)), (
+        "Unshared message (pruned lineage only) must be deleted"
+    )
