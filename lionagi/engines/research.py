@@ -114,6 +114,34 @@ def _synthesis_instruction(topic: str, findings: list[FindingEmitted], contradic
     return "".join(parts)
 
 
+def _branch_emitted(branch: Any) -> bool:
+    """True when *branch*'s own assistant responses carry a ``FindingEmitted``
+    or ``DepthRequested`` emission.
+
+    Stage-local by construction: only THIS member's messages are inspected, so
+    a concurrent child node's emission (spawned by ``_on_finding`` mid-stage)
+    can never satisfy another stage's repair check.  Run-store deltas cannot
+    give this guarantee — the bus does not attribute signals to branches."""
+    caps = getattr(branch, "_capabilities", None)
+    if caps is None:
+        return False
+    from lionagi.ln.types.filters import field_values
+    from lionagi.operations._observe import attempt_extract
+    from lionagi.protocols.messages import AssistantResponse
+
+    kinds = (FindingEmitted, DepthRequested)
+    for msg in branch.messages:
+        if not isinstance(msg, AssistantResponse):
+            continue
+        bundles, _, _ = attempt_extract(msg.response, caps)
+        for b in bundles:
+            if isinstance(b, kinds):
+                return True
+            if any(isinstance(v, kinds) for v in field_values(b).values()):
+                return True
+    return False
+
+
 class ResearchEngine(Engine):
     """Recursive, reaction-driven research engine (stateless config).
 
@@ -206,23 +234,60 @@ class ResearchEngine(Engine):
             await self._drive_node(run, team, _node_instruction(topic, depth, self.max_depth))
 
     async def _drive_node(self, run: EngineRun, team: list, instruction: str) -> None:
-        """Run an exploration team, then repair if the whole node emitted nothing.
+        """Run an exploration team with per-stage repair, then node-level repair.
 
-        The team runs as before (sequential, build-on-prior); repair only fires
-        when no ``FindingEmitted``/``DepthRequested`` arrived from this node — the
-        weak-model case where every member returned prose. It re-prompts the
-        consolidating (last) member; a node with real findings costs no extra
-        call (early return). An empty team has nothing to drive or repair."""
-        before = len(run.by_type(FindingEmitted)) + len(run.by_type(DepthRequested))
-        await run.run_team(team, instruction)
+        Each member runs sequentially via ``operate_with_repair``, so a stage
+        that emits nothing (weak model, pure prose) gets up to
+        ``repair_retries`` extra turns before the next member runs.  This is
+        the per-stage repair pattern from coding/hypothesis — each stage's
+        ``arrived`` closure inspects the member branch's OWN messages
+        (:func:`_branch_emitted`), so an emission from a concurrently running
+        child node can never mask this member's silence.
+
+        After all members have run, a node-level guard fires if the *whole*
+        node still produced nothing — the outer repair that was already present
+        — to keep the global count moving even when every per-stage repair
+        turn also failed.  An empty team has nothing to drive or repair."""
         if not team:
             return
+        before = len(run.by_type(FindingEmitted)) + len(run.by_type(DepthRequested))
+        last = ""
+        for i, branch in enumerate(team):
+            turn = instruction if i == 0 else f"Build on the prior work and continue:\n\n{last}"
+
+            def _arrived(b: Any = branch) -> bool:
+                return _branch_emitted(b)
+
+            name = getattr(branch, "name", None) or f"agent-{i}"
+            run.notify("agent_start", agent=name)
+            try:
+                async with run._sem:
+                    res = await run.operate_with_repair(
+                        branch,
+                        turn,
+                        arrived=_arrived,
+                        emits=(FindingEmitted,),
+                        retries=self.repair_retries,
+                    )
+                last = str(res) if res is not None else ""
+                run.notify("agent_done", agent=name, chars=len(last))
+            except Exception as exc:
+                import logging as _log
+
+                _log.getLogger("lionagi.engines").warning(
+                    "research node agent %s failed: %s", name, exc
+                )
+                run.notify("agent_error", agent=name, error=str(exc))
+                last = f"[{name} failed: {exc}]"
+            run.drain_pending()
 
         def arrived() -> bool:
             return len(run.by_type(FindingEmitted)) + len(run.by_type(DepthRequested)) > before
 
         if arrived():
             return
+        # Node-level backstop: every per-stage repair turn failed — try once
+        # more with the last member before giving up on this node entirely.
         await run.operate_with_repair(
             team[-1],
             instruction,
