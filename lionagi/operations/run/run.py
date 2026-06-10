@@ -56,6 +56,15 @@ async def run(
 
     ins, kw = _prepare_run_kwargs(branch, instruction, param)
     await branch.msgs.a_add_message(instruction=ins)
+
+    # Emit RunStart so observers see the streaming path the same way they see
+    # the coroutine path wrapped by _observed_run in branch.operate/communicate.
+    has_observer = branch._observer is not None
+    if has_observer:
+        from lionagi.session.signal import RunStart
+
+        await branch.emit(RunStart())
+
     yield ins
 
     if branch.chat_model.provider_session_id is not None:
@@ -158,6 +167,11 @@ async def run(
     api_call = await model.create_event(**kw)
     await model.executor.append(api_call)
 
+    # Track whether the generator completed cleanly so RunEnd vs RunFailed can
+    # be emitted in the finally block.  We also capture any raised exception so
+    # RunFailed.data carries it, matching _observed_run's convention.
+    _run_exc: BaseException | None = None
+
     try:
         try:
             # ``anyio.fail_after(None)`` is a no-op context, so we can wrap
@@ -225,7 +239,18 @@ async def run(
                                 result_meta.update(chunk.metadata)
 
                         case "error":
-                            raise RuntimeError(chunk.content or "Stream error from CLI endpoint")
+                            # A CLI provider may emit an "error" chunk with an empty
+                            # or empty-dict content string when it ends a resumed session
+                            # normally (e.g. codex sending ``{}``).  Treat that as a
+                            # clean end-of-stream rather than a hard error so that
+                            # ``li agent -r`` resume sessions are not silently truncated.
+                            content = chunk.content
+                            if not content or content.strip() in ("", "{}"):
+                                logger.debug(
+                                    "run: ignoring empty error chunk (provider end-of-stream)"
+                                )
+                                break
+                            raise RuntimeError(content)
 
                 if res := await _flush_response():
                     if hasattr(api_call, "to_dict"):
@@ -236,10 +261,25 @@ async def run(
                     yield res
         except _StopStream:
             pass
+        except BaseException as _exc:
+            _run_exc = _exc
+            raise
     finally:
         # Drain background signal emissions before returning so handler
         # results and exceptions are not silently lost.
         await branch.drain_signals()
+
+        # Emit run lifecycle signals so observers see the streaming path the
+        # same way they see the coroutine path (via _observed_run).
+        if has_observer:
+            if _run_exc is None:
+                from lionagi.session.signal import RunEnd
+
+                await branch.emit(RunEnd())
+            else:
+                from lionagi.session.signal import RunFailed
+
+                await branch.emit(RunFailed(data=_run_exc))
 
         # Restore original streaming func
         model.streaming_process_func = prev_stream_func

@@ -813,8 +813,19 @@ class Branch(Element, Relational):
             k: v for k, v in kwargs.items() if k not in {"verbose_analysis", "verbose_action"}
         }
 
-        return await self._observed_run(
-            ReAct(
+        # Emit lifecycle signals directly rather than through _observed_run so
+        # that exactly ONE RunStart is emitted per ReAct call.  Using
+        # _observed_run would be correct today, but if operate() inside
+        # ReActStream were ever wrapped with its own _observed_run, the outer
+        # wrapper here would produce N+1 RunStart events.  Inlining the
+        # emission removes that coupling.
+        has_observer = self._observer is not None
+        if has_observer:
+            from .signal import RunStart
+
+            await self.emit(RunStart())
+        try:
+            result = await ReAct(
                 self,
                 instruct,
                 interpret=interpret,
@@ -841,7 +852,19 @@ class Branch(Element, Relational):
                 include_token_usage_to_model=include_token_usage_to_model,
                 **kwargs_filtered,
             )
-        )
+        except BaseException as exc:
+            await self.drain_signals()
+            if has_observer:
+                from .signal import RunFailed
+
+                await self.emit(RunFailed(data=exc))
+            raise
+        await self.drain_signals()
+        if has_observer:
+            from .signal import RunEnd
+
+            await self.emit(RunEnd(data=result))
+        return result
 
     async def ReActStream(  # noqa: N802
         self,
