@@ -110,3 +110,57 @@ async def test_error_event_with_empty_error_dict_is_benign_eos():
         "empty-error 'error' event must be tagged benign_eos=True; "
         f"metadata={error_chunks[0].metadata}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Round-3 shapes: structured-but-falsy error payloads are REAL failures
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_error_event_with_empty_message_is_not_benign():
+    """{"error": {"message": ""}} is a real failure whose detail happens to be
+    empty — the payload is not the bare {} sentinel, so it must surface."""
+    events = [{"type": "error", "error": {"message": ""}}]
+    chunks = await _chunks_from_events(events)
+
+    assert len(chunks) == 1
+    assert chunks[0].type == "error"
+    assert not chunks[0].metadata.get("benign_eos")
+
+
+@pytest.mark.asyncio
+async def test_error_event_with_empty_message_and_toplevel_code_is_not_benign():
+    """{"error": {"message": ""}, "code": "rate_limit"} — falsy payload plus a
+    top-level failure indicator must surface as a real error (codex round-3
+    repro: this shape was previously tagged benign_eos)."""
+    events = [{"type": "error", "error": {"message": ""}, "code": "rate_limit"}]
+    chunks = await _chunks_from_events(events)
+
+    assert len(chunks) == 1
+    assert chunks[0].type == "error"
+    assert not chunks[0].metadata.get("benign_eos")
+
+
+@pytest.mark.asyncio
+async def test_error_event_with_none_message_is_not_benign():
+    """{"error": {"message": None}} is structured (non-empty dict) and must
+    surface as a real error."""
+    events = [{"type": "error", "error": {"message": None}}]
+    chunks = await _chunks_from_events(events)
+
+    assert len(chunks) == 1
+    assert chunks[0].type == "error"
+    assert not chunks[0].metadata.get("benign_eos")
+
+
+@pytest.mark.asyncio
+async def test_error_event_with_toplevel_code_and_empty_error_is_not_benign():
+    """Bare {} error payload but a top-level failure indicator ("code") —
+    outside the known EOF envelope, must surface as a real error."""
+    events = [{"type": "error", "error": {}, "code": "rate_limit"}]
+    chunks = await _chunks_from_events(events)
+
+    assert len(chunks) == 1
+    assert chunks[0].type == "error"
+    assert not chunks[0].metadata.get("benign_eos")

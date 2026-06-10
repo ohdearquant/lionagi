@@ -726,14 +726,17 @@ async def stream_codex_cli(
                 #   1. Event type is "error" — "turn.failed" events are NEVER benign
                 #      regardless of their error payload, because they signal an
                 #      explicit model-side failure (e.g. rate_limit, context_overflow).
-                #   2. The error payload is an empty dict (no keys at all, or all
-                #      values falsy) AND the top-level object carries no other failure
-                #      indicators — this is the only shape produced by a resumed-
-                #      session EOF sentinel in the wild.
-                _error_payload_empty = (
-                    isinstance(err, dict) and not any(err.values())  # {} or {k: None/""/""/0/False}
+                #   2. The error payload is EXACTLY the empty dict.  A structured
+                #      payload with falsy values ({"message": ""}, {"message": None})
+                #      is a real failure whose detail happens to be empty — only the
+                #      bare {} sentinel is produced by a resumed-session EOF.
+                #   3. The top-level event carries no failure indicators beyond the
+                #      known EOF envelope (no "code", "message", or "status" keys).
+                _is_benign_eos = (
+                    typ == "error"
+                    and err == {}
+                    and not any(k in obj for k in ("code", "message", "status"))
                 )
-                _is_benign_eos = typ == "error" and _error_payload_empty
                 chunk_meta = dict(obj)
                 if _is_benign_eos:
                     chunk_meta["benign_eos"] = True
