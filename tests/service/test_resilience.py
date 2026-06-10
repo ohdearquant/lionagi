@@ -352,6 +352,26 @@ class TestRetryConfig:
         assert kwargs["retry_exceptions"] == (ValueError,)
         assert kwargs["exclude_exceptions"] == (KeyError,)
 
+    def test_backoff_factor_exactly_one_accepted(self):
+        """backoff_factor=1.0 (boundary) must be accepted."""
+        config = RetryConfig(backoff_factor=1.0)
+        assert config.backoff_factor == 1.0
+
+    def test_backoff_factor_below_one_rejected(self):
+        """backoff_factor < 1.0 must raise ValueError."""
+        with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
+            RetryConfig(backoff_factor=0.5)
+
+    def test_backoff_factor_zero_rejected(self):
+        """backoff_factor=0 must raise ValueError."""
+        with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
+            RetryConfig(backoff_factor=0)
+
+    def test_backoff_factor_negative_rejected(self):
+        """Negative backoff_factor must raise ValueError."""
+        with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
+            RetryConfig(backoff_factor=-2.0)
+
 
 class TestRetryWithBackoff:
     """Test retry_with_backoff function."""
@@ -486,6 +506,36 @@ class TestRetryWithBackoff:
 
         # All delays should be capped at max_delay
         assert all(d <= 15.0 for d in delays)
+
+    @pytest.mark.asyncio
+    async def test_retry_with_backoff_factor_below_one_rejected(self):
+        """retry_with_backoff with backoff_factor < 1.0 must raise ValueError."""
+
+        async def noop():
+            return "never called"  # pragma: no cover
+
+        with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
+            await retry_with_backoff(
+                noop,
+                max_retries=3,
+                base_delay=1.0,
+                backoff_factor=0.5,
+            )
+
+    @pytest.mark.asyncio
+    async def test_retry_with_backoff_factor_negative_rejected(self):
+        """retry_with_backoff with negative backoff_factor must raise ValueError."""
+
+        async def noop():
+            return "never called"  # pragma: no cover
+
+        with pytest.raises(ValueError, match="backoff_factor must be >= 1.0"):
+            await retry_with_backoff(
+                noop,
+                max_retries=3,
+                base_delay=1.0,
+                backoff_factor=-2.0,
+            )
 
 
 class TestCircuitBreakerDecorator:
@@ -634,5 +684,5 @@ class TestWithRetryDecorator:
             )
 
         assert result == "success"
-        # canonical retry uses base 2 exponentiation: 2.0*2^0=2.0, 2.0*2^1=4.0 (capped at 5.0)
-        assert sleep_calls == [2.0, 4.0]
+        # backoff_factor=10.0 with base_delay=2.0: attempt 1 → 2.0*10^0=2.0, attempt 2 → 2.0*10^1=5.0 (capped at max_delay=5.0)
+        assert sleep_calls == [2.0, 5.0]

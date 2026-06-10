@@ -215,6 +215,8 @@ class RetryConfig:
         ),
         exclude_exceptions: tuple[type[Exception], ...] = (),
     ):
+        if backoff_factor < 1.0:
+            raise ValueError("backoff_factor must be >= 1.0")
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.max_delay = max_delay
@@ -290,6 +292,7 @@ async def retry_with_backoff(
                 attempts=max_retries + 1,
                 base_delay=base_delay,
                 max_delay=max_delay,
+                backoff_factor=backoff_factor,
                 retry_on=retry_exceptions,
                 jitter=jitter_factor if jitter else 0.0,
             )
@@ -301,6 +304,7 @@ async def retry_with_backoff(
         attempts=max_retries + 1,
         base_delay=base_delay,
         max_delay=max_delay,
+        backoff_factor=backoff_factor,
         retry_on=retry_exceptions,
         jitter=jitter_factor if jitter else 0.0,
     )
