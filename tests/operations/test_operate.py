@@ -109,6 +109,48 @@ async def test_operate_with_actions_preserves_response_data():
     assert result.action_responses[0].function == "add"
 
 
+async def test_operate_actions_only_invokes_tools_without_response_format():
+    """Regression (codex round-2): actions=True with NO caller response_format
+    must still invoke tools.
+
+    The single-construction refactor extracted model_class only from the
+    original chat_param.response_format; for action-only calls that left
+    model_class None, so action_requests on the generated operative BaseModel
+    were never extracted and act() was silently skipped.
+    """
+
+    def add(a: int, b: int) -> int:
+        """Add two numbers."""
+        return a + b
+
+    branch = LionAGIMockFactory.create_mocked_branch(
+        name="ActionOnlyTest",
+        user="tester",
+        response="""{
+            "action_required": true,
+            "action_requests": [
+                {"function": "add", "arguments": {"a": 1, "b": 2}}
+            ]
+        }""",
+        model="gpt-4.1-mini",
+        tools=[add],
+    )
+
+    result = await branch.operate(
+        instruction="Calculate something",
+        actions=True,
+        invoke_actions=True,
+    )
+
+    assert hasattr(result, "action_responses"), (
+        "action_responses missing — act() was skipped for the "
+        "actions-only (no response_format) path"
+    )
+    assert len(result.action_responses) == 1
+    assert result.action_responses[0].function == "add"
+    assert result.action_responses[0].output == 3
+
+
 # ---------------------------------------------------------------------------
 # Edge cases for prepare_operate_kw (P0)
 # ---------------------------------------------------------------------------

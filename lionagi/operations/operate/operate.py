@@ -311,7 +311,11 @@ async def operate(
     # Handle actions. Middle may return a BaseModel (structured), a dict
     # (fuzzy-parsed), or a raw str (CLI text path with no response_format).
     # Only dicts and BaseModels can carry action_requests — raw text can't.
-    if model_class:
+    # Inspect ANY BaseModel result, not just model_class matches: actions=True
+    # with no caller response_format materializes a generated operative type
+    # while model_class stays None, and gating on model_class silently
+    # skipped tool invocation for that path (codex round-2 regression).
+    if isinstance(result, BaseModel):
         requests = getattr(result, "action_requests", None)
     elif isinstance(result, dict):
         requests = result.get("action_requests")
@@ -333,16 +337,20 @@ async def operate(
     if not action_response_models:
         return result
 
-    if not model_class:
-        # Dict response: merge action_responses in. Raw-text results stay
-        # untouched (text has no structured slot for action_responses).
-        if isinstance(result, dict):
-            result["action_responses"] = action_response_models
-        return result
+    # Structured results merge through the operative (single construction
+    # path above).  Gate on the operative + a BaseModel result rather than
+    # model_class: actions=True with no caller response_format constructs an
+    # operative while model_class stays None, and gating on model_class
+    # returned the result with action_responses unmerged (codex round-2).
+    if operative is not None and isinstance(result, BaseModel):
+        # First set the response_model to the existing result
+        operative.response_model = result
+        # Then update it with action_responses
+        operative.update_response_model(data={"action_responses": action_response_models})
+        return operative.response_model
 
-    # If we have model_class, operative was constructed above (single path).
-    # First set the response_model to the existing result
-    operative.response_model = result
-    # Then update it with action_responses
-    operative.update_response_model(data={"action_responses": action_response_models})
-    return operative.response_model
+    # Dict response: merge action_responses in. Raw-text results stay
+    # untouched (text has no structured slot for action_responses).
+    if isinstance(result, dict):
+        result["action_responses"] = action_response_models
+    return result
