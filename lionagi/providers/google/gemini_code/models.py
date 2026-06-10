@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import shutil
 import warnings
 from collections.abc import AsyncIterator, Callable
@@ -57,8 +58,14 @@ class GeminiCodeRequest(BaseModel):
 
     # -- runtime & safety ----------------------------------------------------
     model: str | None = Field(
-        default="gemini-2.5-pro",
-        description="Gemini model to use (gemini-2.5-pro, gemini-2.5-flash, gemini-3-pro, etc.)",
+        default="gemini-3-flash-preview",
+        description=(
+            "Gemini model to use. OAuth (gemini-cli) supports: "
+            "gemini-3-flash-preview, gemini-3-pro-preview, "
+            "gemini-2.5-flash, gemini-2.5-pro. "
+            "Note: gemini-3.5-flash and gemini-3.5-flash-preview are not valid "
+            "OAuth model IDs and will return a 404."
+        ),
     )
     yolo: bool = Field(
         default=False,
@@ -299,9 +306,19 @@ async def _ndjson_from_cli(request: GeminiCodeRequest):
     workspace = request.cwd()
     workspace.mkdir(parents=True, exist_ok=True)
     cmd = [GEMINI_CLI, *request.as_cmd_args()]
+    # Gemini CLI 0.46+ refuses to run headless in untrusted directories unless
+    # GEMINI_CLI_TRUST_WORKSPACE=true is set in the subprocess environment.
+    # Without it the process exits nonzero and stderr carries:
+    #   "Gemini CLI is not running in a trusted directory. To proceed, either
+    #    use --skip-trust, set the GEMINI_CLI_TRUST_WORKSPACE=true environment
+    #    variable, or trust this directory in interactive mode."
+    # We prefer the env-var approach over --skip-trust because the flag may not
+    # exist on older CLI versions. Inherit the full parent env so that OAuth
+    # credentials (~/.config/gemini/) remain accessible to the subprocess.
+    env = {**os.environ, "GEMINI_CLI_TRUST_WORKSPACE": "true"}
     # Old Gemini subprocess did not set stdin; pass _INHERIT_STDIN to preserve that.
     async with contextlib.aclosing(
-        ndjson_from_cli(cmd, cwd=workspace, stdin=_INHERIT_STDIN)
+        ndjson_from_cli(cmd, cwd=workspace, env=env, stdin=_INHERIT_STDIN)
     ) as stream:
         async for obj in stream:
             yield obj

@@ -66,7 +66,19 @@ def _clamp_claude_effort(effort: str, model: str) -> str:
 # subscription), so their api_key is an irrelevant placeholder. API providers
 # (openai, deepseek, anthropic, …) resolve a real key from settings — passing a
 # placeholder there OVERRIDES that resolution and breaks auth.
-CLI_PROVIDERS: frozenset[str] = frozenset({"claude_code", "claude-code", "claude", "codex"})
+CLI_PROVIDERS: frozenset[str] = frozenset(
+    {
+        "claude_code",
+        "claude-code",
+        "claude",
+        "codex",
+        "gemini_code",
+        "gemini-code",
+        "gemini_cli",
+        "gemini-cli",
+        "pi",
+    }
+)
 
 
 # provider name → kwarg name for effort
@@ -141,10 +153,10 @@ BACKENDS: dict[str, str] = {
     "claude-code": "claude_code/sonnet",
     "claude_code": "claude_code/sonnet",
     "codex": "codex/gpt-5.3-codex-spark",
-    "gemini-code": "gemini_code/gemini-3.1-flash-lite-preview",
-    "gemini_code": "gemini_code/gemini-3.1-flash-lite-preview",
-    "gemini-cli": "gemini_code/gemini-3.1-flash-lite-preview",
-    "gemini_cli": "gemini_code/gemini-3.1-flash-lite-preview",
+    "gemini-code": "gemini_code/gemini-3-flash-preview",
+    "gemini_code": "gemini_code/gemini-3-flash-preview",
+    "gemini-cli": "gemini_code/gemini-3-flash-preview",
+    "gemini_cli": "gemini_code/gemini-3-flash-preview",
     "pi": "pi/gemini-2.5-flash",
     "pi-code": "pi/gemini-2.5-flash",
     "pi_code": "pi/gemini-2.5-flash",
