@@ -19,7 +19,7 @@ from lionagi.agent import AgentSpec, create_agent
 from lionagi.ln.concurrency import Semaphore, gather
 from lionagi.ln.types import TypeFilter
 from lionagi.session.session import Session
-from lionagi.session.signal import NodeCompleted, NodeFailed, NodeStarted, Signal
+from lionagi.session.signal import NodeCompleted, NodeFailed, NodeQueued, NodeStarted, Signal
 
 if TYPE_CHECKING:
     from lionagi.protocols.generic.pile import Pile
@@ -464,8 +464,10 @@ class EngineRun:
         emits: list[asyncio.Future] = []
 
         def _on_progress(op_id: str, name: str, status: str, elapsed: float) -> None:
-            if status == "started":
-                sig: Any = NodeStarted(op_id=op_id, name=name)
+            if status == "queued":
+                sig: Any = NodeQueued(op_id=op_id, name=name)
+            elif status == "started":
+                sig = NodeStarted(op_id=op_id, name=name)
             elif status == "completed":
                 sig = NodeCompleted(op_id=op_id, name=name, elapsed=elapsed)
             elif status == "failed":
