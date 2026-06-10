@@ -17,9 +17,7 @@ class TavilySearchEndpoint(Endpoint):
         if config is None:
             from lionagi.config import settings
 
-            kwargs.setdefault(
-                "api_key", settings.TAVILY_API_KEY or "dummy-key-for-testing"
-            )
+            kwargs.setdefault("api_key", settings.TAVILY_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("timeout", 120)
             kwargs.setdefault("max_retries", 3)
         super().__init__(config=config, **kwargs)
@@ -31,9 +29,7 @@ class TavilyExtractEndpoint(Endpoint):
         if config is None:
             from lionagi.config import settings
 
-            kwargs.setdefault(
-                "api_key", settings.TAVILY_API_KEY or "dummy-key-for-testing"
-            )
+            kwargs.setdefault("api_key", settings.TAVILY_API_KEY or "dummy-key-for-testing")
             kwargs.setdefault("timeout", 120)
             kwargs.setdefault("max_retries", 3)
         super().__init__(config=config, **kwargs)

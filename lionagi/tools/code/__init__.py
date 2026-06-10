@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .bash import BashTool
+from .check import CodeCheckTool
 from .search import SearchTool
 
-__all__ = ("BashTool", "SearchTool")
+__all__ = ("BashTool", "CodeCheckTool", "SearchTool")

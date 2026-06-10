@@ -268,10 +268,7 @@ class TestGraphAdvancedOperations:
         assert len(graph.internal_nodes) == 1
         assert len(graph.internal_edges) == 1
         assert len(graph.internal_nodes[node.id].content["large_property"]) == 1000000
-        assert (
-            len(graph.internal_edges[edge.id].properties.get("large_property"))
-            == 1000000
-        )
+        assert len(graph.internal_edges[edge.id].properties.get("large_property")) == 1000000
 
     def test_graph_stress(self):
         """Test graph under stress conditions"""

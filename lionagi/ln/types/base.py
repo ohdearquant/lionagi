@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum as _Enum
 from typing import Any, ClassVar
@@ -117,9 +116,7 @@ class Params:
         """Return the keys of the parameters."""
         if "_allowed_keys" in cls.__dict__ and cls.__dict__["_allowed_keys"]:
             return cls._allowed_keys
-        cls._allowed_keys = {
-            i for i in cls.__dataclass_fields__.keys() if not i.startswith("_")
-        }
+        cls._allowed_keys = {i for i in cls.__dataclass_fields__.keys() if not i.startswith("_")}
         return cls._allowed_keys
 
     @override
@@ -200,9 +197,7 @@ class DataClass:
         """Return the keys of the parameters."""
         if "_allowed_keys" in cls.__dict__ and cls.__dict__["_allowed_keys"]:
             return cls._allowed_keys
-        cls._allowed_keys = {
-            i for i in cls.__dataclass_fields__.keys() if not i.startswith("_")
-        }
+        cls._allowed_keys = {i for i in cls.__dataclass_fields__.keys() if not i.startswith("_")}
         return cls._allowed_keys
 
     @override
@@ -266,7 +261,11 @@ class DataClass:
         return hash(self) == hash(other)
 
 
-KeysLike = Sequence[str] | KeysDict
+# Concrete key-container types accepted by fuzzy_match_keys.
+# Bare ``str`` is intentionally excluded: iterating a str yields individual
+# characters, not key names.  Generic Sequences other than list/tuple are also
+# excluded because the runtime guard rejects them.
+KeysLike = list[str] | tuple[str, ...] | set[str] | frozenset[str] | KeysDict
 
 
 @dataclass(slots=True, frozen=True)

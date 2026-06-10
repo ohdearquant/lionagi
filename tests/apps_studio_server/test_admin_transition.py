@@ -85,7 +85,7 @@ def test_transition_refused_when_heartbeat_changes_health(tmp_path, monkeypatch)
        SessionHealth.STALE.  The sync constraint is load-bearing: transition_sessions()
        calls classify_session_health() synchronously (line 338 admin.py); an async
        fake would return an un-awaited coroutine — the bump would never fire and the
-       health guard would be skipped entirely (MAJOR-1 codex finding).
+       health guard would be skipped entirely.
     3. Asserting the session ends up in skipped with reason='changed_since_snapshot'
        (not transitioned), because last_message_at changed between snapshot and UPDATE.
     """

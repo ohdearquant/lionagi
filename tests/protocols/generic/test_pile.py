@@ -320,11 +320,13 @@ def test_pile_with_custom_hash_elements():
     assert elements[2] in p
 
 
+@pytest.mark.performance
 @pytest.mark.parametrize("n", [100, 1000, 10000])
 def test_pile_scaling_performance(n):
-    # Coverage instrumentation adds 5-10x overhead, making wall-clock
-    # thresholds unreliable. Skip when coverage is active — perf is
-    # validated by the benchmarks workflow, not the coverage suite.
+    # Wall-clock thresholds are unreliable under CI load and coverage (5-10x
+    # overhead). The `performance` marker excludes this from CI runs; the
+    # in-body guard additionally skips it under coverage if the marker filter
+    # is bypassed. Real perf regression detection lives in benchmarks.yml.
     if sys.gettrace() is not None or "coverage" in sys.modules:
         pytest.skip("perf thresholds unreliable under coverage/tracing")
 

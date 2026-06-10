@@ -1,6 +1,8 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import logging
 import os
 from typing import Any, TypeVar
@@ -45,6 +47,7 @@ class EndpointConfig(BaseModel):
     context_window: int | None = None
     kwargs: dict = Field(default_factory=dict)
     client_kwargs: dict = Field(default_factory=dict)
+    allow_local_network: bool = False
     _api_key: str | None = PrivateAttr(None)
 
     @model_validator(mode="before")
@@ -109,9 +112,7 @@ class EndpointConfig(BaseModel):
                 return load_pydantic_model_from_schema(v)
         except Exception as e:
             raise ValueError("Invalid request options") from e
-        raise ValueError(
-            "Invalid request options: must be a Pydantic model or a schema dict"
-        )
+        raise ValueError("Invalid request options: must be a Pydantic model or a schema dict")
 
     @field_serializer("request_options")
     def _serialize_request_options(self, v: B | None):

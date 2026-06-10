@@ -300,9 +300,7 @@ class TestAsReadable:
 
     def test_multiline_string_values(self):
         """Test handling of multiline string values."""
-        data = {
-            "description": "This is a long description\nwith multiple lines\nof text."
-        }
+        data = {"description": "This is a long description\nwith multiple lines\nof text."}
         result = as_readable(data, format_curly=True)
 
         assert "description:" in result

@@ -17,9 +17,7 @@ class TestRegistrySelection:
     async def test_call_fails_when_no_hook_or_chunk_type(self):
         """Test that call() fails when both hook_type and chunk_type are None."""
         registry = HookRegistry()
-        with pytest.raises(
-            ValueError, match="Either method or chunk_type must be provided"
-        ):
+        with pytest.raises(ValueError, match="Either method or chunk_type must be provided"):
             await registry.call(FakeEvent())
 
     @pytest.mark.anyio
@@ -187,9 +185,7 @@ class TestMetadataContract:
         event = FakeEvent()
         registry = HookRegistry(hooks={HookEventTypes.PreInvocation: dummy_hook})
 
-        (res, se, st), meta = await registry.call(
-            event, hook_type=HookEventTypes.PreInvocation
-        )
+        (res, se, st), meta = await registry.call(event, hook_type=HookEventTypes.PreInvocation)
 
         # Must use 'lion_class' to align with AssociatedEventInfo
         assert "lion_class" in meta
@@ -219,18 +215,14 @@ class TestMetadataContract:
         assert len(meta) == 1  # Only lion_class
 
         # Pre invocation - all fields
-        (res, se, st), meta = await registry.call(
-            event, hook_type=HookEventTypes.PreInvocation
-        )
+        (res, se, st), meta = await registry.call(event, hook_type=HookEventTypes.PreInvocation)
         assert meta["lion_class"] == "tests.service.hooks.conftest.FakeEvent"
         assert meta["event_id"] == "TEST"
         assert meta["event_created_at"] == 123.456
         assert len(meta) == 3
 
         # Post invocation - all fields
-        (res, se, st), meta = await registry.call(
-            event, hook_type=HookEventTypes.PostInvocation
-        )
+        (res, se, st), meta = await registry.call(event, hook_type=HookEventTypes.PostInvocation)
         assert meta["lion_class"] == "tests.service.hooks.conftest.FakeEvent"
         assert meta["event_id"] == "TEST"
         assert meta["event_created_at"] == 123.456
@@ -297,9 +289,7 @@ class TestDictConstructorStringKeys:
     async def test_stream_handler_missing_key_raises_runtime_error_not_validation(self):
         """A missing stream handler key must raise RuntimeError, not ValidationError."""
         registry = HookRegistry()
-        with pytest.raises(
-            RuntimeError, match="No stream handler registered for missing"
-        ):
+        with pytest.raises(RuntimeError, match="No stream handler registered for missing"):
             await registry._call_stream_handler("missing", "data", None)
 
     def test_constructor_accepts_raw_enum_values(self):

@@ -136,8 +136,8 @@ def _make_agent_mocks(monkeypatch, tmp_path, captured_instruction):
     async def fake_teardown(ctx, *, status="completed", exception=None):
         return status
 
-    monkeypatch.setattr(agent_mod, "_setup_live_persist", fake_setup)
-    monkeypatch.setattr(agent_mod, "_teardown_live_persist", fake_teardown)
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
     monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
 
     fake_run = SimpleNamespace(

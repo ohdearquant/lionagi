@@ -125,12 +125,9 @@ class TestFieldModelMethods:
         fi = f.create_field()
         assert fi.annotation is int
 
-    def test_to_dict_deprecated_but_works(self):
+    def test_metadata_dict_works(self):
         f = FieldModel(base_type=int, description="x")
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            d = f.to_dict()
-            assert any(issubclass(warning.category, DeprecationWarning) for warning in w)
+        d = f.metadata_dict()
         assert isinstance(d, dict)
 
     def test_metadata_dict_returns_dict(self):

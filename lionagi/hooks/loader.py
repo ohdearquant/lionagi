@@ -33,6 +33,14 @@ from .bus import HookBus, HookHandler, HookPoint
 
 logger = logging.getLogger("lionagi.hooks.loader")
 
+__all__ = (
+    "DEFAULT_HOOKS",
+    "register_handler",
+    "resolve_handler",
+    "load_hooks_for_agent",
+    "build_session_bus",
+)
+
 # Default wiring per ADR-0023 §"Default hooks (no configuration needed)".
 DEFAULT_HOOKS: dict[HookPoint, list[HookHandler]] = {
     HookPoint.SESSION_START: [_builtins.persist_session_start],

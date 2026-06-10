@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from lionagi.agent.config import HooksMixin, _wire_secure_guards
 from lionagi.casts.pack import Pack
 from lionagi.casts.profile import Profile
 
@@ -20,7 +21,7 @@ __all__ = ("AgentSpec",)
 
 
 @dataclass
-class AgentSpec:
+class AgentSpec(HooksMixin):
     """Universal runtime agent spec: Profile (identity) + runtime concerns.
 
     This is the orchestration-facing composition surface. Every entry point
@@ -34,6 +35,7 @@ class AgentSpec:
     tools: tuple[str, ...] = ()
     permissions: PermissionPolicy | None = None
     grant_emissions: bool = True
+    emits: tuple | None = None
     pack: str | Pack | None = "default"
     lion_system: bool = True
     extra_prompt: str | None = None
@@ -42,18 +44,6 @@ class AgentSpec:
     yolo: bool = False
     mcp_servers: list[str] | None = None
     mcp_config_path: str | None = None
-
-    def pre(self, tool_name: str, handler: Callable) -> AgentSpec:
-        self.hook_handlers.setdefault(f"pre:{tool_name}", []).append(handler)
-        return self
-
-    def post(self, tool_name: str, handler: Callable) -> AgentSpec:
-        self.hook_handlers.setdefault(f"post:{tool_name}", []).append(handler)
-        return self
-
-    def on_error(self, tool_name: str, handler: Callable) -> AgentSpec:
-        self.hook_handlers.setdefault(f"error:{tool_name}", []).append(handler)
-        return self
 
     @classmethod
     def compose(
@@ -67,11 +57,17 @@ class AgentSpec:
         permissions: Any = None,
         pack: str | Pack | None = "default",
         grant_emissions: bool = True,
+        emits: tuple | None = None,
         system_prompt: str | None = None,
         cwd: str | None = None,
         yolo: bool = False,
     ) -> AgentSpec:
-        """Build an AgentSpec from a role name/object + optional overrides."""
+        """Build an AgentSpec from a role name/object + optional overrides.
+
+        ``emits`` overrides *what* capability models are granted: ``None`` uses
+        the role's declared contract; a tuple grants exactly those models (plus
+        EscalationRequest). Engines pass it for stage-specific event types.
+        """
         prof = Profile.compose(role, modes=modes)
         perm = _resolve_permissions(permissions)
         return cls(
@@ -82,6 +78,7 @@ class AgentSpec:
             permissions=perm,
             pack=pack,
             grant_emissions=grant_emissions,
+            emits=emits,
             extra_prompt=system_prompt or None,
             cwd=cwd,
             yolo=yolo,
@@ -95,10 +92,22 @@ class AgentSpec:
         effort: str | None = "high",
         system_prompt: str | None = None,
         cwd: str | None = None,
+        secure: bool = True,
         **kwargs: Any,
     ) -> AgentSpec:
-        """Preset for a coding agent — implementer role + coding tools."""
-        return cls.compose(
+        """Preset for a coding agent — implementer role + coding tools.
+
+        By default (``secure=True``), wires two guards:
+
+        - ``guard_destructive`` as a pre-hook on ``bash`` — blocks destructive
+          shell commands (rm -rf, force-push, etc.).
+        - ``guard_paths`` as a pre-hook on ``reader`` and ``editor`` — restricts
+          file access to the workspace root (``cwd`` if provided, else
+          ``Path.cwd()`` at call time).
+
+        Set ``secure=False`` to disable these defaults and manage hooks manually.
+        """
+        spec = cls.compose(
             "implementer",
             model=model,
             effort=effort,
@@ -107,6 +116,9 @@ class AgentSpec:
             cwd=cwd,
             **kwargs,
         )
+        if secure:
+            _wire_secure_guards(spec, cwd)
+        return spec
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> AgentSpec:
@@ -115,7 +127,7 @@ class AgentSpec:
 
         p = Path(path)
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        return cls.compose(
+        spec = cls.compose(
             role=data.get("role", "implementer"),
             modes=data.get("modes"),
             model=data.get("model"),
@@ -127,6 +139,11 @@ class AgentSpec:
             cwd=data.get("cwd"),
             yolo=data.get("yolo", False),
         )
+        # Restore lion_system from YAML when explicitly set; compose() defaults
+        # to True so a saved False would be silently dropped (LIONAGI-AUDIT-005).
+        if "lion_system" in data:
+            spec.lion_system = bool(data["lion_system"])
+        return spec
 
     def build_system_message(self) -> str:
         """Compose role + modes + RolePolicy block + any extra literal prompt."""
@@ -136,9 +153,21 @@ class AgentSpec:
         return "\n\n".join(parts)
 
     def emission_operable(self) -> Operable | None:
-        """Return the role's Operable for emission granting, or None."""
+        """Return the Operable for emission granting, or None.
+
+        ``grant_emissions=False`` disables granting entirely. Otherwise an
+        explicit ``emits`` tuple overrides *what* is granted (empty tuple ⇒
+        grant nothing, since ``build_emission_operable(())`` is None); ``None``
+        falls back to the role's declared contract.
+        """
         if not self.grant_emissions:
             return None
+        if self.emits is not None:
+            from lionagi.casts import build_emission_operable
+
+            return build_emission_operable(
+                tuple(self.emits), name=f"{self.profile.role.name}_emissions"
+            )
         return self.profile.emission_operable()
 
     def to_yaml(self, path: str | Path) -> None:

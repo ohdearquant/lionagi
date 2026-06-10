@@ -373,7 +373,7 @@ class TestTeardownReasonResolution:
     """
 
     def test_each_terminal_status_maps_to_a_valid_reason_code(self):
-        from lionagi.cli.agent import _resolve_run_reason
+        from lionagi.cli._persist import resolve_run_reason as _resolve_run_reason
 
         cases = [
             ("completed", None),
@@ -395,7 +395,7 @@ class TestTeardownReasonResolution:
             assert isinstance(summary, str) and summary, "summary must be non-empty"
 
     def test_failed_with_exception_embeds_class_name(self):
-        from lionagi.cli.agent import _resolve_run_reason
+        from lionagi.cli._persist import resolve_run_reason as _resolve_run_reason
 
         _, summary, _ = _resolve_run_reason(
             status="failed",
@@ -524,3 +524,132 @@ class TestInvocationTransition:
             (inv_id,),
         )
         assert (await cur.fetchone())["n"] == 0
+
+
+# ── LIONAGI-AUDIT-002: update_session routes status through update_status ──
+
+
+class TestUpdateSessionRoutesStatusThroughHistory:
+    """Regression: update_session(status=...) must write a status_transitions row."""
+
+    async def test_status_update_writes_transition_row(self, db: StateDB):
+        sid = await _create_session(db)
+        await db.update_session(
+            sid,
+            status="failed",
+            reason_code=RunReasons.FAILED_EXCEPTION,
+            reason_summary="Crashed during execution.",
+        )
+        cur = await db.db.execute(
+            "SELECT status, status_reason_code, status_reason_summary FROM sessions WHERE id = ?",
+            (sid,),
+        )
+        row = dict(await cur.fetchone())
+        assert row["status"] == "failed"
+        assert row["status_reason_code"] == RunReasons.FAILED_EXCEPTION
+        assert "Crashed" in row["status_reason_summary"]
+
+        cur = await db.db.execute(
+            "SELECT entity_type, previous_status, status, reason_code "
+            "FROM status_transitions WHERE entity_id = ?",
+            (sid,),
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+        assert len(rows) == 1, "must write exactly one status_transitions row"
+        assert rows[0]["entity_type"] == "session"
+        assert rows[0]["previous_status"] == "running"
+        assert rows[0]["status"] == "failed"
+        assert rows[0]["reason_code"] == RunReasons.FAILED_EXCEPTION
+
+    async def test_status_without_reason_code_emits_deprecation_warning(self, db: StateDB):
+        import warnings
+
+        sid = await _create_session(db)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            await db.update_session(sid, status="completed")
+            deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert "reason_code" in str(deprecations[0].message)
+
+        # Transition row still recorded.
+        cur = await db.db.execute(
+            "SELECT COUNT(*) AS n FROM status_transitions WHERE entity_id = ?",
+            (sid,),
+        )
+        assert (await cur.fetchone())["n"] == 1
+
+    async def test_non_status_fields_still_written(self, db: StateDB):
+        """Non-status fields (e.g. name) still update via the legacy path."""
+        sid = await _create_session(db)
+        await db.update_session(sid, name="new-name")
+        cur = await db.db.execute("SELECT name FROM sessions WHERE id = ?", (sid,))
+        row = dict(await cur.fetchone())
+        assert row["name"] == "new-name"
+
+        # No transition row for a non-status update.
+        cur = await db.db.execute(
+            "SELECT COUNT(*) AS n FROM status_transitions WHERE entity_id = ?",
+            (sid,),
+        )
+        assert (await cur.fetchone())["n"] == 0
+
+
+# ── LIONAGI-AUDIT-004: update_status rejects invalid source values ──────────
+
+
+class TestUpdateStatusSourceValidation:
+    """Regression: update_status() must reject source values outside the
+    closed vocabulary ('executor', 'agent', 'admin', 'system')."""
+
+    async def test_invalid_source_raises_valueerror(self, db: StateDB):
+        sid = await _create_session(db)
+        with pytest.raises(ValueError, match="source"):
+            await db.update_status(
+                "session",
+                sid,
+                new_status="failed",
+                reason_code=RunReasons.FAILED_EXCEPTION,
+                source="not-a-source",
+            )
+
+    async def test_invalid_source_does_not_write_row(self, db: StateDB):
+        """No entity or transition row must change when source is invalid."""
+        sid = await _create_session(db)
+        try:
+            await db.update_status(
+                "session",
+                sid,
+                new_status="failed",
+                reason_code=RunReasons.FAILED_EXCEPTION,
+                source="badactor",
+            )
+        except ValueError:
+            pass
+
+        cur = await db.db.execute(
+            "SELECT status, status_reason_code FROM sessions WHERE id = ?", (sid,)
+        )
+        row = dict(await cur.fetchone())
+        assert row["status"] == "running", "entity row must be unchanged on invalid source"
+        assert row["status_reason_code"] is None
+
+        cur = await db.db.execute(
+            "SELECT COUNT(*) AS n FROM status_transitions WHERE entity_id = ?", (sid,)
+        )
+        assert (await cur.fetchone())["n"] == 0
+
+    @pytest.mark.parametrize("source", ["executor", "agent", "admin", "system"])
+    async def test_valid_sources_accepted(self, db: StateDB, source: str):
+        sid = await _create_session(db)
+        await db.update_status(
+            "session",
+            sid,
+            new_status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+            source=source,
+        )
+        cur = await db.db.execute(
+            "SELECT source FROM status_transitions WHERE entity_id = ?", (sid,)
+        )
+        assert (await cur.fetchone())["source"] == source

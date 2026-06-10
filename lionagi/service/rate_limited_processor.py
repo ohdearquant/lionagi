@@ -65,6 +65,15 @@ class RateLimitedAPIProcessor(Processor):
                     if self.limit_tokens is not None:
                         self._available_tokens = self.limit_tokens
 
+                # Re-drive deferred work. process() re-enqueues rate-limited
+                # events (instead of dropping them); without re-driving here,
+                # nothing would retry them after the budget replenishes —
+                # forward() is one-shot — and they would sit PENDING until the
+                # caller's invoke() safety timeout. Draining on each refresh is
+                # what makes the deferral actually complete.
+                if not self.queue.empty():
+                    await self.process()
+
         except get_cancelled_exc_class():
             logging.debug("Rate limit replenisher task cancelled.")
         except Exception as e:
@@ -110,15 +119,11 @@ class RateLimitedAPIProcessor(Processor):
             concurrency_limit=concurrency_limit,
         )
         # TODO(#1043 Phase 2): migrate to anyio task group (structured concurrency)
-        self._rate_limit_replenisher_task = asyncio.create_task(
-            self.start_replenishing()
-        )
+        self._rate_limit_replenisher_task = asyncio.create_task(self.start_replenishing())
         return self
 
     @override
-    async def request_permission(
-        self, required_tokens: int = None, **kwargs: Any
-    ) -> bool:
+    async def request_permission(self, required_tokens: int = None, **kwargs: Any) -> bool:
         # No limits configured, just check queue capacity
         if self._available_requests is None and self._available_tokens is None:
             return self.queue.qsize() < self.queue_capacity
@@ -141,6 +146,18 @@ class RateLimitedAPIProcessor(Processor):
                 self._available_tokens -= required_tokens
 
         return True
+
+    @override
+    async def handle_denied(self, event: Any) -> bool:
+        """Rate-limit denial is a DEFERRAL, not a rejection.
+
+        Return ``False`` so the base ``process()`` re-enqueues the event
+        (leaving it ``PENDING``) instead of terminalizing it — the call is
+        retried on a later cycle once the rate limit replenishes. Returning
+        ``True`` (as the base does for permission rejections) would silently
+        drop rate-limited work.
+        """
+        return False
 
 
 class RateLimitedAPIExecutor(Executor):

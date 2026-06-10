@@ -258,3 +258,110 @@ async def test_non_strict_mode_missing_required_argument():
     with pytest.raises(ValueError) as exc_info:
         FunctionCalling(func_tool=tool, arguments={})
     assert "must match the function schema" in str(exc_info.value)
+
+
+##################################################
+#   Regression: is_coro_func-gated behavior      #
+##################################################
+
+
+@pytest.mark.asyncio
+async def test_sync_func_callable_returning_coroutine_is_not_awaited():
+    """Sync func_callable that returns a coroutine must NOT be awaited.
+
+    Old origin/main only awaited when is_coro_func(func_callable) is True.
+    A sync function that happens to return a coroutine object must hand that
+    coroutine back to the caller as-is, not resolve it.
+    """
+    import asyncio
+
+    async def _inner():
+        return 7
+
+    def sync_returns_coro(x: int = 0):
+        # Sync callable that constructs and returns a coroutine — intentionally.
+        return _inner()
+
+    tool = Tool(func_callable=sync_returns_coro)
+    func_call = FunctionCalling(func_tool=tool, arguments={"x": 1})
+    await func_call.invoke()
+
+    # The response must be the coroutine object itself, not the resolved value 7.
+    assert asyncio.iscoroutine(func_call.execution.response), (
+        "Expected response to be a coroutine object because sync callable; "
+        f"got {type(func_call.execution.response)!r} = {func_call.execution.response!r}"
+    )
+    # Clean up the unawaited coroutine to avoid ResourceWarning.
+    func_call.execution.response.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_preprocessor_returning_coroutine_is_not_awaited():
+    """Sync preprocessor that returns a coroutine must NOT be awaited.
+
+    The sync preprocessor's return value is stored as self.arguments without
+    being awaited.  A coroutine is not a valid kwargs dict, so func_callable
+    receives a coroutine and raises TypeError — the event ends FAILED and
+    self.arguments still holds the coroutine object.
+    """
+    import asyncio
+
+    async def _inner(v):
+        return v + 10
+
+    def sync_pre_returns_coro(kwargs, **kw):
+        # Sync preprocessor that returns a coroutine — intentionally.
+        return _inner(kwargs.get("x", 0))
+
+    tool = Tool(
+        func_callable=helper_sync_func,
+        preprocessor=sync_pre_returns_coro,
+    )
+    func_call = FunctionCalling(func_tool=tool, arguments={"x": 1, "y": "t"})
+    await func_call.invoke()
+
+    # The coroutine was NOT awaited → stored as arguments → TypeError → FAILED.
+    assert func_call.status == EventStatus.FAILED, (
+        "Expected FAILED because a coroutine cannot be unpacked as kwargs; "
+        f"got status={func_call.status!r}"
+    )
+    assert asyncio.iscoroutine(func_call.arguments), (
+        "Expected func_call.arguments to be the unawaited coroutine object; "
+        f"got {type(func_call.arguments)!r}"
+    )
+    # Close the coroutine to avoid ResourceWarning about unawaited coroutines.
+    func_call.arguments.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_postprocessor_returning_coroutine_is_not_awaited():
+    """Sync postprocessor that returns a coroutine must NOT be awaited.
+
+    The response stored in execution is the coroutine object itself, not the
+    resolved value — matching origin/main is_coro_func-gated behavior.
+    """
+    import asyncio
+
+    async def _inner(v):
+        return f"resolved:{v}"
+
+    def sync_post_returns_coro(result, **kw):
+        # Sync postprocessor that returns a coroutine — intentionally.
+        return _inner(result)
+
+    tool = Tool(
+        func_callable=helper_sync_func,
+        postprocessor=sync_post_returns_coro,
+    )
+    func_call = FunctionCalling(func_tool=tool, arguments={"x": 1, "y": "t"})
+    await func_call.invoke()
+
+    assert func_call.status == EventStatus.COMPLETED, (
+        f"Expected COMPLETED; got {func_call.status!r} error={func_call.execution.error!r}"
+    )
+    assert asyncio.iscoroutine(func_call.execution.response), (
+        "Expected response to be a coroutine object because sync postprocessor; "
+        f"got {type(func_call.execution.response)!r} = {func_call.execution.response!r}"
+    )
+    # Close the coroutine to avoid ResourceWarning.
+    func_call.execution.response.close()

@@ -83,9 +83,7 @@ async def test_completion_stream_with_limit(anyio_backend):
         return x
 
     LIMIT = 3
-    async with CompletionStream(
-        [tracked_task(i) for i in range(10)], limit=LIMIT
-    ) as stream:
+    async with CompletionStream([tracked_task(i) for i in range(10)], limit=LIMIT) as stream:
         async for idx, result in stream:
             pass
 
@@ -106,9 +104,7 @@ async def test_completion_stream_limit_none_allows_all_concurrent(
         return x
 
     NUM_TASKS = 8
-    async with CompletionStream(
-        [tracked_task(i) for i in range(NUM_TASKS)], limit=None
-    ) as stream:
+    async with CompletionStream([tracked_task(i) for i in range(NUM_TASKS)], limit=None) as stream:
         async for idx, result in stream:
             pass
 
@@ -177,16 +173,13 @@ async def test_completion_stream_exception_propagation(anyio_backend):
 
     # Exceptions in tasks are wrapped in ExceptionGroup by task group
     with pytest.raises(ExceptionGroup) as exc_info:
-        async with CompletionStream(
-            [failing_task(i) for i in range(10)], limit=5
-        ) as stream:
+        async with CompletionStream([failing_task(i) for i in range(10)], limit=5) as stream:
             async for idx, result in stream:
                 pass
 
     # Verify the ValueError is in the exception group
     assert any(
-        isinstance(e, ValueError) and "Task 3 failed" in str(e)
-        for e in exc_info.value.exceptions
+        isinstance(e, ValueError) and "Task 3 failed" in str(e) for e in exc_info.value.exceptions
     )
 
 
@@ -411,9 +404,7 @@ async def test_completion_stream_realistic_workload(anyio_backend):
     TASKS = 20
     LIMIT = 5
 
-    async with CompletionStream(
-        [mixed_speed_task(i) for i in range(TASKS)], limit=LIMIT
-    ) as stream:
+    async with CompletionStream([mixed_speed_task(i) for i in range(TASKS)], limit=LIMIT) as stream:
         async for idx, result in stream:
             results.append(result)
 

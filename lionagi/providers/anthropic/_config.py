@@ -8,7 +8,6 @@ from lionagi.service.connections.registry import EndpointType
 
 
 class AnthropicConfigs(ProviderConfig, Enum):
-
     MESSAGES = (
         "messages",
         ["chat"],
@@ -24,7 +23,6 @@ AnthropicConfigs._PROVIDER_ALIASES = []
 
 
 class ClaudeCodeConfigs(ProviderConfig, Enum):
-
     CLI = (
         "query_cli",
         ["cli", "code"],

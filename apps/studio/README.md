@@ -59,8 +59,8 @@ uv run uvicorn apps.studio.server.app:app --reload --host 127.0.0.1 --port 8765
 **Frontend** (separate terminal):
 ```bash
 cd apps/studio/frontend
-pnpm install
-pnpm dev
+npm install
+npm run dev
 ```
 
 Open the URL printed by Next.js (default `http://localhost:3000`).

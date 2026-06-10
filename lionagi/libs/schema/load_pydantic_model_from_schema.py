@@ -1,15 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build Pydantic models from JSON Schema dicts/strings.
-
-Primary approach uses ``pydantic.create_model()`` which constructs models
-programmatically without code generation -- eliminating the CWE-94 code
-injection vector present in the previous ``exec_module()`` approach.
-
-Falls back to ``datamodel-code-generator`` + ``exec_module()`` only when
-``create_model()`` cannot handle a schema (raises ``_CreateModelUnsupportedError``).
-"""
+"""Build Pydantic models from JSON Schema dicts/strings."""
 
 from __future__ import annotations
 
@@ -24,6 +16,7 @@ from typing import Any, Optional, TypeVar, Union
 
 from pydantic import BaseModel, Field, PydanticUserError, create_model
 
+from lionagi.libs.nested import deep_merge as _deep_merge
 from lionagi.utils import is_import_installed
 
 logger = logging.getLogger(__name__)
@@ -68,7 +61,6 @@ class _CreateModelUnsupportedError(Exception):
 
 
 def _sanitize_model_name(raw: str) -> str | None:
-    """Return a valid Python identifier from *raw*, or ``None``."""
     valid_chars = string.ascii_letters + string.digits + "_"
     sanitized = "".join(c for c in raw.replace(" ", "") if c in valid_chars)
     if sanitized and sanitized[0].isalpha():
@@ -77,7 +69,6 @@ def _sanitize_model_name(raw: str) -> str | None:
 
 
 def _resolve_model_name(schema_dict: dict[str, Any], default: str) -> str:
-    """Pick a model name from the schema title or fall back to *default*."""
     title = schema_dict.get("title")
     if title and isinstance(title, str):
         name = _sanitize_model_name(title)
@@ -87,7 +78,6 @@ def _resolve_model_name(schema_dict: dict[str, Any], default: str) -> str:
 
 
 def _make_enum(name: str, values: list[Any]) -> type:
-    """Build a stdlib ``Enum`` for JSON Schema ``enum`` constraints."""
     members: dict[str, Any] = {}
     for v in values:
         member_name = str(v).upper().replace(" ", "_").replace("-", "_")
@@ -102,7 +92,6 @@ def _make_enum(name: str, values: list[Any]) -> type:
 
 
 def _resolve_ref(ref: str, root_schema: dict[str, Any]) -> dict[str, Any]:
-    """Resolve a ``$ref`` pointer (only local ``#/...`` refs supported)."""
     if not ref.startswith("#/"):
         raise _CreateModelUnsupportedError(f"Non-local $ref not supported: {ref}")
 
@@ -127,67 +116,47 @@ def _schema_to_type(
     models_cache: dict[str, type[BaseModel]],
     parent_name: str,
 ) -> type:
-    """Convert a single JSON-Schema property definition to a Python type.
-
-    Handles: primitives, ``$ref``, ``enum``, ``array``, nested ``object``,
-    ``anyOf``/``oneOf``, ``allOf``, and ``const``.
-
-    Raises ``_CreateModelUnsupportedError`` for constructs we cannot map.
-    """
-    # --- $ref ---
     if "$ref" in prop_schema:
         resolved = _resolve_ref(prop_schema["$ref"], root_schema)
         ref_name = prop_schema["$ref"].rsplit("/", 1)[-1]
         return _build_model_from_object(resolved, ref_name, root_schema, models_cache)
 
-    # --- enum ---
     if "enum" in prop_schema:
         enum_name = f"{parent_name}_{prop_name}_enum".replace(" ", "")
         return _make_enum(enum_name, prop_schema["enum"])
 
-    # --- const ---
     if "const" in prop_schema:
         enum_name = f"{parent_name}_{prop_name}_const".replace(" ", "")
         return _make_enum(enum_name, [prop_schema["const"]])
 
-    # --- anyOf / oneOf ---
     for combo_key in ("anyOf", "oneOf"):
         if combo_key in prop_schema:
             variants = prop_schema[combo_key]
             py_types: list[type] = []
             for variant in variants:
                 py_types.append(
-                    _schema_to_type(
-                        variant, prop_name, root_schema, models_cache, parent_name
-                    )
+                    _schema_to_type(variant, prop_name, root_schema, models_cache, parent_name)
                 )
             if len(py_types) == 1:
                 return py_types[0]
             return Union[tuple(py_types)]  # type: ignore[return-value]
 
-    # --- allOf (merge into single object) ---
     if "allOf" in prop_schema:
         merged: dict[str, Any] = {}
         for sub in prop_schema["allOf"]:
             if "$ref" in sub:
                 sub = _resolve_ref(sub["$ref"], root_schema)
             merged = _deep_merge(merged, sub)
-        return _schema_to_type(
-            merged, prop_name, root_schema, models_cache, parent_name
-        )
+        return _schema_to_type(merged, prop_name, root_schema, models_cache, parent_name)
 
     schema_type = prop_schema.get("type")
 
-    # --- no type specified ---
     if schema_type is None:
-        # If it has properties, treat as object
         if "properties" in prop_schema:
             schema_type = "object"
         else:
-            # Permissive fallback
             return Any  # type: ignore[return-value]
 
-    # --- type as list (e.g. ["string", "null"]) ---
     if isinstance(schema_type, list):
         py_types_list: list[type] = []
         for t in schema_type:
@@ -195,9 +164,7 @@ def _schema_to_type(
             if mapped is None:
                 if t == "object":
                     if "properties" in prop_schema:
-                        nested_name = (
-                            prop_schema.get("title") or f"{parent_name}_{prop_name}"
-                        )
+                        nested_name = prop_schema.get("title") or f"{parent_name}_{prop_name}"
                         py_types_list.append(
                             _build_model_from_object(
                                 prop_schema,
@@ -226,25 +193,17 @@ def _schema_to_type(
             return py_types_list[0]
         return Union[tuple(py_types_list)]  # type: ignore[return-value]
 
-    # --- primitive types ---
     mapped = _JSON_TYPE_MAP.get(schema_type)
     if mapped is not None:
         return mapped
 
-    # --- array ---
     if schema_type == "array":
-        return _array_type(
-            prop_schema, prop_name, root_schema, models_cache, parent_name
-        )
+        return _array_type(prop_schema, prop_name, root_schema, models_cache, parent_name)
 
-    # --- object ---
     if schema_type == "object":
         if "properties" in prop_schema:
             nested_name = prop_schema.get("title") or f"{parent_name}_{prop_name}"
-            return _build_model_from_object(
-                prop_schema, nested_name, root_schema, models_cache
-            )
-        # Generic dict if no properties defined
+            return _build_model_from_object(prop_schema, nested_name, root_schema, models_cache)
         additional = prop_schema.get("additionalProperties")
         if isinstance(additional, dict):
             val_type = _schema_to_type(
@@ -263,25 +222,11 @@ def _array_type(
     models_cache: dict[str, type[BaseModel]],
     parent_name: str,
 ) -> type:
-    """Return the Python type for a JSON Schema ``array``."""
     items = prop_schema.get("items")
     if items is None:
         return list  # type: ignore[return-value]
-    item_type = _schema_to_type(
-        items, f"{prop_name}_item", root_schema, models_cache, parent_name
-    )
+    item_type = _schema_to_type(items, f"{prop_name}_item", root_schema, models_cache, parent_name)
     return list[item_type]  # type: ignore[valid-type]
-
-
-def _deep_merge(base: dict, override: dict) -> dict:
-    """Recursively merge *override* into *base* (shallow copy)."""
-    merged = dict(base)
-    for k, v in override.items():
-        if k in merged and isinstance(merged[k], dict) and isinstance(v, dict):
-            merged[k] = _deep_merge(merged[k], v)
-        else:
-            merged[k] = v
-    return merged
 
 
 def _build_model_from_object(
@@ -290,11 +235,8 @@ def _build_model_from_object(
     root_schema: dict[str, Any],
     models_cache: dict[str, type[BaseModel]],
 ) -> type[BaseModel]:
-    """Recursively build a Pydantic model from an ``object``-typed schema."""
-    # Sanitize name
     safe_name = _sanitize_model_name(model_name) or "DynamicModel"
 
-    # Return cached model if already built (handles circular-ish refs)
     if safe_name in models_cache:
         return models_cache[safe_name]
 
@@ -351,26 +293,17 @@ def _create_model_from_schema(
     schema_dict: dict[str, Any],
     model_name: str,
 ) -> type[BaseModel]:
-    """Build a Pydantic model via ``create_model()`` from *schema_dict*.
-
-    Raises ``_CreateModelUnsupportedError`` if the schema uses constructs that
-    cannot be mapped.
-    """
-    # Resolve $defs / definitions into the root schema so $ref works
     root_schema = dict(schema_dict)
 
     models_cache: dict[str, type[BaseModel]] = {}
 
-    # Pre-build $defs / definitions models
     for defs_key in ("$defs", "definitions"):
         defs = root_schema.get(defs_key, {})
         if isinstance(defs, dict):
             for def_name, def_schema in defs.items():
                 if isinstance(def_schema, dict):
                     try:
-                        _build_model_from_object(
-                            def_schema, def_name, root_schema, models_cache
-                        )
+                        _build_model_from_object(def_schema, def_name, root_schema, models_cache)
                     except _CreateModelUnsupportedError:
                         raise
 
@@ -389,10 +322,6 @@ def _load_via_codegen(
     pydantic_version: Any,
     python_version: Any,
 ) -> type[BaseModel]:
-    """Original implementation using datamodel-code-generator.
-
-    Kept as fallback for schemas that ``create_model()`` cannot handle.
-    """
     with tempfile.TemporaryDirectory() as temporary_directory_name:
         temporary_directory = Path(temporary_directory_name)
         output_file = (
@@ -459,13 +388,9 @@ def _load_via_codegen(
                 ) from e
 
         try:
-            model_class.model_rebuild(
-                _types_namespace=generated_module.__dict__, force=True
-            )
+            model_class.model_rebuild(_types_namespace=generated_module.__dict__, force=True)
         except (PydanticUserError, NameError) as e:
-            raise RuntimeError(
-                f"Error during model_rebuild for {resolved_model_name}"
-            ) from e
+            raise RuntimeError(f"Error during model_rebuild for {resolved_model_name}") from e
         except Exception as e:
             raise RuntimeError(
                 f"Unexpected error during model_rebuild for {resolved_model_name}"
@@ -485,32 +410,9 @@ def load_pydantic_model_from_schema(
     /,
     pydantic_version: Any = None,
     python_version: Any = None,
+    allow_codegen: bool = False,
 ) -> type[BaseModel]:
-    """Build a Pydantic model class from a JSON schema string or dict.
-
-    Uses ``pydantic.create_model()`` to construct models programmatically --
-    no code generation and no ``exec_module()``.  Falls back to
-    ``datamodel-code-generator`` (if installed) for schemas too complex for
-    the ``create_model`` approach.
-
-    Args:
-        schema: The JSON schema as a string or a Python dictionary.
-        model_name: The desired base name for the generated Pydantic model.
-            If the schema has a ``title``, that will be preferred.
-        pydantic_version: (Fallback only) The Pydantic model type for
-            ``datamodel-code-generator``.
-        python_version: (Fallback only) The target Python version for
-            ``datamodel-code-generator``.
-
-    Returns:
-        The dynamically created Pydantic ``BaseModel`` subclass.
-
-    Raises:
-        ValueError: If the schema string is not valid JSON.
-        TypeError: If *schema* is neither ``str`` nor ``dict``.
-        RuntimeError: If both ``create_model`` and the codegen fallback fail.
-    """
-    # --- 1. Parse / validate schema input ---
+    """Build a Pydantic model class from a JSON schema string or dict."""
     schema_dict: dict[str, Any]
 
     if isinstance(schema, dict):
@@ -525,18 +427,25 @@ def load_pydantic_model_from_schema(
 
     resolved_model_name = _resolve_model_name(schema_dict, model_name)
 
-    # --- 2. Primary path: pydantic.create_model ---
     create_model_error: _CreateModelUnsupportedError | None = None
     try:
         return _create_model_from_schema(schema_dict, resolved_model_name)
     except _CreateModelUnsupportedError as exc:
         create_model_error = exc
         logger.debug(
-            "create_model could not handle schema (%s); trying codegen fallback.",
+            "create_model could not handle schema (%s); codegen fallback=%s.",
             exc,
+            allow_codegen,
         )
 
-    # --- 3. Fallback: datamodel-code-generator ---
+    # Codegen fallback executes generated Python; opt-in only for trusted input.
+    if not allow_codegen:
+        raise RuntimeError(
+            f"create_model could not handle this schema ({create_model_error}). "
+            "The datamodel-code-generator fallback is disabled for untrusted input. "
+            "Pass allow_codegen=True only for schemas from fully trusted sources."
+        )
+
     if not _HAS_DATAMODEL_CODE_GENERATOR:
         raise RuntimeError(
             f"create_model could not handle this schema ({create_model_error}), and "

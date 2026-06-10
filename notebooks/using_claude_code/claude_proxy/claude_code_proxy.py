@@ -14,12 +14,11 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
-from loguru import logger
-
 from lionagi.service.connections.providers.claude_code_cli import (
     ClaudeCodeCLIEndpoint,
     ClaudeCodeRequest,
 )
+from loguru import logger
 
 # Configure logging
 logger.remove()
@@ -49,9 +48,7 @@ def check_claude_code():
     try:
         from lionagi.service.third_party.claude_code import CLAUDE_CLI
 
-        result = subprocess.run(
-            [CLAUDE_CLI, "--version"], capture_output=True, text=True
-        )
+        result = subprocess.run([CLAUDE_CLI, "--version"], capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError("Claude Code not found, please install it first:\n")
         logger.info(f"Claude Code found: {result.stdout.strip()}")

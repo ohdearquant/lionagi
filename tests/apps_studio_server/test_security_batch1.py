@@ -315,13 +315,13 @@ class TestBearerTokenAuth:
         assert resp.status_code == 200
 
     def test_readonly_api_open_when_token_set(self, monkeypatch, tmp_path):
-        """GET /api/stats must remain accessible (read-only) when auth token is set."""
+        """GET /api/stats requires auth when a token is configured."""
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
         fake_db = tmp_path / "state.db"
         client = self._get_client(monkeypatch, fake_db=fake_db)
 
         resp = client.get("/api/stats")
-        assert resp.status_code == 200
+        assert resp.status_code == 401
 
     def test_no_auth_when_token_unset(self, monkeypatch):
         """When LIONAGI_STUDIO_AUTH_TOKEN is not set, all routes are open."""

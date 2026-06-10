@@ -12,18 +12,15 @@ import logging
 
 from pydantic import BaseModel
 
+from lionagi.ln.concurrency import run_sync
 from lionagi.service.connections.endpoint import Endpoint
-from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.utils import is_import_installed
 
 from .._config import OllamaConfigs
 
 logger = logging.getLogger(__name__)
 
-__all__ = (
-    "OllamaChatEndpoint",
-    "OLLAMA_CHAT_ENDPOINT_CONFIG",
-)
+__all__ = ("OllamaChatEndpoint",)
 
 _HAS_OLLAMA = is_import_installed("ollama")
 
@@ -42,6 +39,9 @@ class OllamaChatEndpoint(Endpoint):
 
         # Ollama does not need an API key
         kwargs.pop("api_key", None)
+        # Ollama runs on the local machine; allow loopback addresses in the SSRF
+        # guard while keeping all other blocked ranges (IMDS etc.) enforced.
+        kwargs.setdefault("allow_local_network", True)
         super().__init__(config, **kwargs)
 
         from ollama import list as ollama_list  # type: ignore[import]
@@ -64,15 +64,14 @@ class OllamaChatEndpoint(Endpoint):
 
         return (payload, headers)
 
-    async def call(
-        self, request: dict | BaseModel, cache_control: bool = False, **kwargs
-    ):
+    async def call(self, request: dict | BaseModel, cache_control: bool = False, **kwargs):
         payload, headers = self.create_payload(request, **kwargs)
 
-        # Check if model exists and pull if needed
+        # Check if model exists and pull if needed (off the event loop to avoid
+        # blocking: both _list() and _pull() are synchronous Ollama SDK calls).
         model = payload.get("model")
         if model:
-            self._check_model(model)
+            await run_sync(self._check_model, model)
 
         # Pass the already-created payload directly to avoid double create_payload
         return await super().call(
