@@ -2,6 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Deprecated: use lionagi.operations.schema.structure instead.
+from typing import Any
+
+from pydantic import BaseModel
+
+from lionagi.ln.types import Operable, Spec
 from lionagi.operations.schema.structure import Structure
 
-__all__ = ("Structure",)
+__all__ = ("Any", "BaseModel", "Operable", "Spec", "Structure")

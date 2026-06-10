@@ -135,3 +135,67 @@ def test_deprecated_shim_package():
 
     assert old_pkg.Structure is Structure
     assert old_pkg.JsonStructure is JsonStructure
+
+
+def test_deprecated_shim_base_full_surface():
+    """protocols.structure.base re-exports every name the old module had."""
+    from typing import Any as TypingAny
+
+    from pydantic import BaseModel as PydanticBaseModel
+
+    from lionagi.ln.types import Operable as LnOperable
+    from lionagi.ln.types import Spec as LnSpec
+    from lionagi.operations.schema.structure import Structure as NewStructure
+    from lionagi.protocols.structure.base import Any as ShimAny
+    from lionagi.protocols.structure.base import BaseModel as ShimBaseModel
+    from lionagi.protocols.structure.base import Operable as ShimOperable
+    from lionagi.protocols.structure.base import Spec as ShimSpec
+    from lionagi.protocols.structure.base import Structure as ShimStructure
+
+    assert ShimStructure is NewStructure
+    assert ShimOperable is LnOperable
+    assert ShimSpec is LnSpec
+    assert ShimBaseModel is PydanticBaseModel
+    assert ShimAny is TypingAny
+
+
+def test_deprecated_shim_json_structure_full_surface():
+    """protocols.structure.json_structure re-exports every name the old module had."""
+    import logging
+
+    import orjson as real_orjson
+
+    from lionagi.ln.fuzzy import FuzzyMatchKeysParams as LnFuzzyMatchKeysParams
+    from lionagi.operations.schema.json_structure import _DEFAULT_FUZZY as NewDefaultFuzzy
+    from lionagi.operations.schema.json_structure import (
+        JsonStructure as NewJsonStructure,
+    )
+    from lionagi.operations.schema.structure import Structure as NewStructure
+    from lionagi.protocols.structure.json_structure import (
+        _DEFAULT_FUZZY as ShimDefaultFuzzy,
+    )
+    from lionagi.protocols.structure.json_structure import (
+        FuzzyMatchKeysParams as ShimFuzzyMatchKeysParams,
+    )
+    from lionagi.protocols.structure.json_structure import (
+        JsonStructure as ShimJsonStructure,
+    )
+    from lionagi.protocols.structure.json_structure import (
+        Structure as ShimStructure,
+    )
+    from lionagi.protocols.structure.json_structure import extract_json as ShimExtractJson
+    from lionagi.protocols.structure.json_structure import (
+        fuzzy_validate_mapping as ShimFuzzyValidate,
+    )
+    from lionagi.protocols.structure.json_structure import logger as ShimLogger
+    from lionagi.protocols.structure.json_structure import orjson as ShimOrjson
+
+    assert ShimJsonStructure is NewJsonStructure
+    assert ShimStructure is NewStructure
+    assert ShimFuzzyMatchKeysParams is LnFuzzyMatchKeysParams
+    assert ShimDefaultFuzzy is NewDefaultFuzzy
+    assert isinstance(ShimLogger, logging.Logger)
+    assert ShimOrjson is real_orjson
+    # callable identity for the function re-exports
+    assert callable(ShimExtractJson)
+    assert callable(ShimFuzzyValidate)
