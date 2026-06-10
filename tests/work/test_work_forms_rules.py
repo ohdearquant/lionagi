@@ -4,20 +4,25 @@
 """Tests for lionagi.work: WorkForm, FieldSpec, Rule, RuleSet.
 
 Covers the public API exported by lionagi.work.__init__:
-  - FieldSpec declaration and type coercion
+  - FieldSpec declaration, type coercion, and default validation
+  - WorkForm Element inheritance (UUID id, created_at, form_id alias)
   - WorkForm lifecycle and transition logic
-  - fill_form / validate_form functional helpers
+  - fill_form / validate_form functional helpers (including ruleset param)
   - Rule (required, type, range, pattern, custom) apply()
-  - RuleSet composition (add, remove, get, apply_all)
+  - RuleSet composition (add, remove, get, apply_all, duplicate prevention)
+  - Bool-as-int subclass behaviour (pinned)
+  - ReDoS: length cap enforced; no phantom timeout claim
 """
 
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 import pytest
 
 from lionagi.work import (
+    REGEX_MAX_INPUT_LENGTH,
     VALID_TRANSITIONS,
     FieldSpec,
     FormStatus,
@@ -36,7 +41,6 @@ from lionagi.work import (
 def _make_form(
     fields: dict[str, dict[str, Any]] | None = None,
     values: dict[str, Any] | None = None,
-    form_id: str = "test_form",
     status: FormStatus = "draft",
 ) -> WorkForm:
     """Build a WorkForm for testing from compact field dicts."""
@@ -44,12 +48,56 @@ def _make_form(
         name: FieldSpec(name=name, **spec_kwargs) for name, spec_kwargs in (fields or {}).items()
     }
     return WorkForm(
-        form_id=form_id,
         title="Test Form",
         fields=specs,
         values=values or {},
         status=status,
     )
+
+
+# ---------------------------------------------------------------------------
+# WorkForm — Element inheritance
+# ---------------------------------------------------------------------------
+
+
+class TestWorkFormElement:
+    def test_has_uuid_id(self):
+        form = WorkForm()
+        assert isinstance(form.id, UUID)
+
+    def test_form_id_is_str_alias_of_id(self):
+        form = WorkForm()
+        assert form.form_id == str(form.id)
+
+    def test_has_created_at_timestamp(self):
+        form = WorkForm()
+        assert form.created_at > 0
+
+    def test_has_metadata(self):
+        form = WorkForm()
+        assert isinstance(form.metadata, dict)
+
+    def test_two_forms_have_distinct_ids(self):
+        f1 = WorkForm()
+        f2 = WorkForm()
+        assert f1.id != f2.id
+
+    def test_model_copy_preserves_id(self):
+        form = WorkForm(title="original")
+        copy = form.model_copy(update={"title": "copy"})
+        assert copy.id == form.id
+
+    def test_element_equality_by_id(self):
+        form = WorkForm()
+        # Two distinct instances with same id compare equal
+        copy = form.model_copy(update={})
+        assert form == copy
+
+    def test_element_hash_by_id(self):
+        form = WorkForm()
+        # Should be hashable
+        s = {form}
+        assert form in s
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +112,11 @@ class TestFieldSpec:
         assert spec.required is True
         assert spec.default is None
         assert spec.description == ""
+
+    def test_fieldspec_also_has_element_id(self):
+        """FieldSpec inherits Element — each spec is a tracked object."""
+        spec = FieldSpec(name="x")
+        assert isinstance(spec.id, UUID)
 
     def test_name_valid_letter_start(self):
         FieldSpec(name="my_field_1")  # should not raise
@@ -82,6 +135,29 @@ class TestFieldSpec:
     def test_name_invalid_hyphen(self):
         with pytest.raises(Exception):
             FieldSpec(name="bad-field")
+
+    # Default value type validation (Fix 4)
+    def test_valid_int_default(self):
+        spec = FieldSpec(name="n", type="int", required=False, default=5)
+        assert spec.default == 5
+
+    def test_invalid_default_rejected_at_construction(self):
+        with pytest.raises(Exception, match="not compatible"):
+            FieldSpec(name="n", type="int", required=False, default="not_an_int")
+
+    def test_invalid_list_default_for_str_rejected(self):
+        with pytest.raises(Exception):
+            FieldSpec(name="x", type="str", required=False, default=[1, 2, 3])
+
+    def test_float_field_accepts_int_default(self):
+        """int default for float field is valid (numeric widening)."""
+        spec = FieldSpec(name="f", type="float", required=False, default=3)
+        assert spec.default == 3
+
+    def test_none_default_always_valid(self):
+        """None means 'no default', not a value — skips type check."""
+        spec = FieldSpec(name="x", type="int", required=False, default=None)
+        assert spec.default is None
 
     # Coerce: same type passthrough
     def test_coerce_str_passthrough(self):
@@ -141,6 +217,19 @@ class TestFieldSpec:
         with pytest.raises(TypeError):
             spec.coerce("not_a_number")
 
+    # Bool-as-int subclass behaviour (pinned — see reviewer request)
+    def test_bool_is_accepted_by_int_type(self):
+        """Python bool is a subclass of int. Pinned: type='int' accepts True/False."""
+        spec = FieldSpec(name="flag", type="int")
+        # isinstance(True, int) is True, so coerce returns True as-is
+        assert spec.coerce(True) is True
+        assert spec.coerce(False) is False
+
+    def test_bool_coerce_to_bool_type_passthrough(self):
+        spec = FieldSpec(name="flag", type="bool")
+        assert spec.coerce(True) is True
+        assert spec.coerce(False) is False
+
 
 # ---------------------------------------------------------------------------
 # WorkForm
@@ -149,24 +238,24 @@ class TestFieldSpec:
 
 class TestWorkForm:
     def test_creation_defaults(self):
-        form = WorkForm(form_id="f1", title="My Form")
-        assert form.form_id == "f1"
+        form = WorkForm(title="My Form")
         assert form.title == "My Form"
         assert form.fields == {}
         assert form.values == {}
         assert form.status == "draft"
         assert form.validation_errors == []
 
-    def test_form_id_required(self):
-        with pytest.raises(Exception):
-            WorkForm()  # type: ignore[call-arg]
+    def test_no_args_creates_valid_form(self):
+        form = WorkForm()
+        assert form.status == "draft"
+        assert isinstance(form.id, UUID)
 
     def test_field_names(self):
         form = _make_form({"a": {"type": "str"}, "b": {"type": "int"}})
         assert set(form.field_names()) == {"a", "b"}
 
     def test_field_names_empty(self):
-        form = WorkForm(form_id="f")
+        form = WorkForm()
         assert form.field_names() == []
 
     def test_get_value_present(self):
@@ -259,7 +348,7 @@ class TestWorkFormTransitions:
 
 
 # ---------------------------------------------------------------------------
-# validate_form
+# validate_form — FieldSpec checks
 # ---------------------------------------------------------------------------
 
 
@@ -333,8 +422,97 @@ class TestValidateForm:
         assert len(result.validation_errors) == 2
 
     def test_no_fields_validates_ok(self):
-        form = WorkForm(form_id="empty")
+        form = WorkForm()
         result = validate_form(form)
+        assert result.status == "validated"
+
+
+# ---------------------------------------------------------------------------
+# validate_form — ruleset integration (Fix 2)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateFormWithRuleset:
+    def test_ruleset_failure_blocks_validated_status(self):
+        """Spec passes but rule fails → status must be 'error'."""
+        form = _make_form(
+            fields={"age": {"type": "int"}},
+            values={"age": 200},
+            status="filled",
+        )
+        rs = RuleSet()
+        rs.add(Rule(rule_id="age_range", field="age", check="range", params={"min": 0, "max": 120}))
+        result = validate_form(form, ruleset=rs)
+        assert result.status == "error"
+        assert any("maximum" in e for e in result.validation_errors)
+
+    def test_ruleset_pass_and_spec_pass_yields_validated(self):
+        """Spec passes AND all rules pass → status is 'validated'."""
+        form = _make_form(
+            fields={"age": {"type": "int"}},
+            values={"age": 30},
+            status="filled",
+        )
+        rs = RuleSet()
+        rs.add(Rule(rule_id="age_range", field="age", check="range", params={"min": 0, "max": 120}))
+        result = validate_form(form, ruleset=rs)
+        assert result.status == "validated"
+        assert result.validation_errors == []
+
+    def test_spec_failure_plus_ruleset_errors_all_collected(self):
+        """Both spec errors and rule errors are reported together."""
+        form = _make_form(
+            fields={
+                "name": {"type": "str", "required": True},
+                "age": {"type": "int"},
+            },
+            values={"age": 200},
+            status="filled",
+        )
+        rs = RuleSet()
+        rs.add(Rule(rule_id="age_range", field="age", check="range", params={"max": 120}))
+        result = validate_form(form, ruleset=rs)
+        assert result.status == "error"
+        # both 'name' missing and 'age' range errors should appear
+        texts = " ".join(result.validation_errors)
+        assert "name" in texts
+        assert "maximum" in texts
+
+    def test_ruleset_sees_coerced_values(self):
+        """Rules run after coercion — '25' is coerced to 25 before range check."""
+        form = _make_form(
+            fields={"age": {"type": "int"}},
+            values={"age": "25"},  # string
+            status="filled",
+        )
+        rs = RuleSet()
+        rs.add(Rule(rule_id="r", field="age", check="range", params={"min": 0, "max": 120}))
+        result = validate_form(form, ruleset=rs)
+        assert result.status == "validated"
+
+    def test_no_ruleset_path_unchanged(self):
+        """validate_form without ruleset behaves exactly as before."""
+        form = _make_form(
+            fields={"x": {"type": "str"}},
+            values={"x": "hello"},
+        )
+        result = validate_form(form)
+        assert result.status == "validated"
+
+    def test_fill_form_accepts_ruleset_kwarg(self):
+        """fill_form forwards ruleset to validate_form."""
+        form = _make_form(fields={"score": {"type": "int"}})
+        rs = RuleSet()
+        rs.add(Rule(rule_id="r", field="score", check="range", params={"max": 100}))
+        result = fill_form(form, {"score": 150}, ruleset=rs)
+        assert result.status == "error"
+        assert any("maximum" in e for e in result.validation_errors)
+
+    def test_fill_form_ruleset_pass(self):
+        form = _make_form(fields={"score": {"type": "int"}})
+        rs = RuleSet()
+        rs.add(Rule(rule_id="r", field="score", check="range", params={"max": 100}))
+        result = fill_form(form, {"score": 80}, ruleset=rs)
         assert result.status == "validated"
 
 
@@ -404,157 +582,184 @@ class TestFillForm:
 class TestRuleRequired:
     def test_passes_when_value_present(self):
         rule = Rule(rule_id="r1", field="name", check="required")
-        form = WorkForm(form_id="f", values={"name": "Alice"})
+        form = WorkForm(values={"name": "Alice"})
         assert rule.apply(form) is None
 
     def test_fails_when_value_absent(self):
         rule = Rule(rule_id="r1", field="name", check="required")
-        form = WorkForm(form_id="f", values={})
+        form = WorkForm(values={})
         assert rule.apply(form) is not None
 
     def test_fails_when_value_is_none(self):
         rule = Rule(rule_id="r1", field="name", check="required")
-        form = WorkForm(form_id="f", values={"name": None})
+        form = WorkForm(values={"name": None})
         assert rule.apply(form) is not None
 
     def test_custom_message_used(self):
         rule = Rule(rule_id="r1", field="x", check="required", message="x is absolutely required")
-        form = WorkForm(form_id="f", values={})
+        form = WorkForm(values={})
         assert rule.apply(form) == "x is absolutely required"
 
     def test_disabled_rule_skipped(self):
         rule = Rule(rule_id="r1", field="name", check="required", enabled=False)
-        form = WorkForm(form_id="f", values={})
+        form = WorkForm(values={})
         assert rule.apply(form) is None
 
 
 class TestRuleType:
     def test_passes_correct_type(self):
         rule = Rule(rule_id="r", field="n", check="type", params={"type": "int"})
-        form = WorkForm(form_id="f", values={"n": 5})
+        form = WorkForm(values={"n": 5})
         assert rule.apply(form) is None
 
     def test_passes_int_for_float(self):
         rule = Rule(rule_id="r", field="f", check="type", params={"type": "float"})
-        form = WorkForm(form_id="f", values={"f": 3})
+        form = WorkForm(values={"f": 3})
         assert rule.apply(form) is None  # int widened to float
 
     def test_fails_wrong_type(self):
         rule = Rule(rule_id="r", field="n", check="type", params={"type": "int"})
-        form = WorkForm(form_id="f", values={"n": "not_int"})
+        form = WorkForm(values={"n": "not_int"})
         err = rule.apply(form)
         assert err is not None
         assert "int" in err
 
     def test_absent_value_passes(self):
         rule = Rule(rule_id="r", field="n", check="type", params={"type": "int"})
-        form = WorkForm(form_id="f", values={})
+        form = WorkForm(values={})
         assert rule.apply(form) is None
 
     def test_unknown_type_returns_error(self):
         rule = Rule(rule_id="r", field="n", check="type", params={"type": "uuid"})
-        form = WorkForm(form_id="f", values={"n": "some-uuid"})
+        form = WorkForm(values={"n": "some-uuid"})
         err = rule.apply(form)
         assert err is not None
         assert "unknown type" in err
+
+    def test_bool_value_passes_int_type_check(self):
+        """Pinned: bool is a subclass of int; type='int' rule accepts True/False."""
+        rule = Rule(rule_id="r", field="flag", check="type", params={"type": "int"})
+        form = WorkForm(values={"flag": True})
+        # isinstance(True, int) is True in Python — this should PASS
+        assert rule.apply(form) is None
+
+    def test_bool_type_check_accepts_false(self):
+        rule = Rule(rule_id="r", field="flag", check="type", params={"type": "int"})
+        form = WorkForm(values={"flag": False})
+        assert rule.apply(form) is None
 
 
 class TestRuleRange:
     def test_passes_within_range(self):
         rule = Rule(rule_id="r", field="age", check="range", params={"min": 0, "max": 120})
-        form = WorkForm(form_id="f", values={"age": 30})
+        form = WorkForm(values={"age": 30})
         assert rule.apply(form) is None
 
     def test_passes_at_min_boundary(self):
         rule = Rule(rule_id="r", field="age", check="range", params={"min": 0})
-        form = WorkForm(form_id="f", values={"age": 0})
+        form = WorkForm(values={"age": 0})
         assert rule.apply(form) is None
 
     def test_passes_at_max_boundary(self):
         rule = Rule(rule_id="r", field="score", check="range", params={"max": 100})
-        form = WorkForm(form_id="f", values={"score": 100})
+        form = WorkForm(values={"score": 100})
         assert rule.apply(form) is None
 
     def test_fails_below_min(self):
         rule = Rule(rule_id="r", field="age", check="range", params={"min": 18})
-        form = WorkForm(form_id="f", values={"age": 5})
+        form = WorkForm(values={"age": 5})
         err = rule.apply(form)
         assert err is not None
         assert "minimum" in err
 
     def test_fails_above_max(self):
         rule = Rule(rule_id="r", field="score", check="range", params={"max": 100})
-        form = WorkForm(form_id="f", values={"score": 150})
+        form = WorkForm(values={"score": 150})
         err = rule.apply(form)
         assert err is not None
         assert "maximum" in err
 
     def test_absent_value_skipped(self):
         rule = Rule(rule_id="r", field="n", check="range", params={"min": 0})
-        form = WorkForm(form_id="f", values={})
+        form = WorkForm(values={})
         assert rule.apply(form) is None
 
     def test_non_numeric_value_error(self):
         rule = Rule(rule_id="r", field="n", check="range", params={"min": 0})
-        form = WorkForm(form_id="f", values={"n": "five"})
+        form = WorkForm(values={"n": "five"})
         err = rule.apply(form)
         assert err is not None
         assert "numeric" in err
 
     def test_float_in_range(self):
         rule = Rule(rule_id="r", field="x", check="range", params={"min": 0.0, "max": 1.0})
-        form = WorkForm(form_id="f", values={"x": 0.5})
+        form = WorkForm(values={"x": 0.5})
         assert rule.apply(form) is None
 
     def test_only_min_bound(self):
         rule = Rule(rule_id="r", field="x", check="range", params={"min": 10})
-        form = WorkForm(form_id="f", values={"x": 100})
+        form = WorkForm(values={"x": 100})
         assert rule.apply(form) is None
 
     def test_only_max_bound(self):
         rule = Rule(rule_id="r", field="x", check="range", params={"max": 10})
-        form = WorkForm(form_id="f", values={"x": 0})
+        form = WorkForm(values={"x": 0})
         assert rule.apply(form) is None
 
 
 class TestRulePattern:
     def test_passes_matching_pattern(self):
         rule = Rule(rule_id="r", field="email", check="pattern", params={"pattern": r".+@.+"})
-        form = WorkForm(form_id="f", values={"email": "a@b.com"})
+        form = WorkForm(values={"email": "a@b.com"})
         assert rule.apply(form) is None
 
     def test_fails_non_matching(self):
         rule = Rule(rule_id="r", field="email", check="pattern", params={"pattern": r".+@.+"})
-        form = WorkForm(form_id="f", values={"email": "notanemail"})
+        form = WorkForm(values={"email": "notanemail"})
         assert rule.apply(form) is not None
 
     def test_absent_value_skipped(self):
         rule = Rule(rule_id="r", field="email", check="pattern", params={"pattern": r".+@.+"})
-        form = WorkForm(form_id="f", values={})
+        form = WorkForm(values={})
         assert rule.apply(form) is None
 
     def test_non_string_value_error(self):
         rule = Rule(rule_id="r", field="x", check="pattern", params={"pattern": r"\d+"})
-        form = WorkForm(form_id="f", values={"x": 42})
+        form = WorkForm(values={"x": 42})
         err = rule.apply(form)
         assert err is not None
         assert "str" in err
 
     def test_invalid_regex_returns_error(self):
         rule = Rule(rule_id="r", field="x", check="pattern", params={"pattern": r"[invalid"})
-        form = WorkForm(form_id="f", values={"x": "hello"})
+        form = WorkForm(values={"x": "hello"})
         err = rule.apply(form)
         assert err is not None
         assert "invalid regex" in err
 
     def test_input_too_long_rejected(self):
-        from lionagi.work import REGEX_MAX_INPUT_LENGTH
-
+        """Length cap (REGEX_MAX_INPUT_LENGTH) is enforced before re engine."""
         rule = Rule(rule_id="r", field="x", check="pattern", params={"pattern": r".*"})
-        form = WorkForm(form_id="f", values={"x": "a" * (REGEX_MAX_INPUT_LENGTH + 1)})
+        form = WorkForm(values={"x": "a" * (REGEX_MAX_INPUT_LENGTH + 1)})
         err = rule.apply(form)
         assert err is not None
         assert "length" in err
+
+    def test_input_at_exact_limit_accepted(self):
+        """Input at exactly the limit is allowed (limit is exclusive)."""
+        rule = Rule(rule_id="r", field="x", check="pattern", params={"pattern": r"a+"})
+        form = WorkForm(values={"x": "a" * REGEX_MAX_INPUT_LENGTH})
+        err = rule.apply(form)
+        assert err is None  # matches the pattern, within limit
+
+    def test_no_timeout_mechanism_exists(self):
+        """Confirm the removed threat: REGEX_MATCH_TIMEOUT is not exported."""
+        import lionagi.work as work_module
+
+        assert not hasattr(work_module, "REGEX_MATCH_TIMEOUT"), (
+            "REGEX_MATCH_TIMEOUT was removed because thread-join timeout cannot "
+            "interrupt the GIL-holding C re engine.  Do not re-add it."
+        )
 
     def test_custom_message_on_mismatch(self):
         rule = Rule(
@@ -564,7 +769,7 @@ class TestRulePattern:
             params={"pattern": r"^\d{4}$"},
             message="Must be 4 digits",
         )
-        form = WorkForm(form_id="f", values={"code": "abc"})
+        form = WorkForm(values={"code": "abc"})
         assert rule.apply(form) == "Must be 4 digits"
 
 
@@ -576,7 +781,7 @@ class TestRuleCustom:
             check="custom",
             params={"callable": lambda v: v is not None and v > 0},
         )
-        form = WorkForm(form_id="f", values={"val": 5})
+        form = WorkForm(values={"val": 5})
         assert rule.apply(form) is None
 
     def test_fails_when_callable_returns_false(self):
@@ -586,7 +791,7 @@ class TestRuleCustom:
             check="custom",
             params={"callable": lambda v: v is not None and v > 0},
         )
-        form = WorkForm(form_id="f", values={"val": -1})
+        form = WorkForm(values={"val": -1})
         assert rule.apply(form) is not None
 
     def test_uses_params_error_message(self):
@@ -599,7 +804,7 @@ class TestRuleCustom:
                 "error": "Must be positive",
             },
         )
-        form = WorkForm(form_id="f", values={"val": -1})
+        form = WorkForm(values={"val": -1})
         err = rule.apply(form)
         assert "Must be positive" in err
 
@@ -611,12 +816,12 @@ class TestRuleCustom:
             params={"callable": lambda v: False, "error": "params error"},
             message="rule message",
         )
-        form = WorkForm(form_id="f", values={"val": 1})
+        form = WorkForm(values={"val": 1})
         assert rule.apply(form) == "rule message"
 
     def test_missing_callable_returns_error(self):
         rule = Rule(rule_id="r", field="val", check="custom", params={})
-        form = WorkForm(form_id="f", values={"val": 1})
+        form = WorkForm(values={"val": 1})
         err = rule.apply(form)
         assert err is not None
         assert "callable" in err
@@ -631,7 +836,7 @@ class TestRuleCustom:
             check="custom",
             params={"callable": bad_fn},
         )
-        form = WorkForm(form_id="f", values={"val": 1})
+        form = WorkForm(values={"val": 1})
         err = rule.apply(form)
         assert err is not None
         assert "RuntimeError" in err
@@ -646,20 +851,20 @@ class TestRuleSet:
     def test_add_and_apply_all_no_errors(self):
         rs = RuleSet()
         rs.add(Rule(rule_id="r1", field="name", check="required"))
-        form = WorkForm(form_id="f", values={"name": "Bob"})
+        form = WorkForm(values={"name": "Bob"})
         assert rs.apply_all(form) == []
 
     def test_apply_all_collects_all_errors(self):
         rs = RuleSet()
         rs.add(Rule(rule_id="r1", field="a", check="required"))
         rs.add(Rule(rule_id="r2", field="b", check="required"))
-        form = WorkForm(form_id="f", values={})
+        form = WorkForm(values={})
         errors = rs.apply_all(form)
         assert len(errors) == 2
 
     def test_apply_all_no_rules_returns_empty(self):
         rs = RuleSet()
-        form = WorkForm(form_id="f", values={})
+        form = WorkForm(values={})
         assert rs.apply_all(form) == []
 
     def test_remove_existing_rule(self):
@@ -707,7 +912,7 @@ class TestRuleSet:
         rs = RuleSet()
         rs.add(Rule(rule_id="r1", field="a", check="required"))
         rs.add(Rule(rule_id="r2", field="b", check="required", enabled=False))
-        form = WorkForm(form_id="f", values={})
+        form = WorkForm(values={})
         errors = rs.apply_all(form)
         assert len(errors) == 1  # only r1 fires
 
@@ -715,7 +920,7 @@ class TestRuleSet:
         rs = RuleSet()
         rs.add(Rule(rule_id="first", field="a", check="required"))
         rs.add(Rule(rule_id="second", field="b", check="required"))
-        form = WorkForm(form_id="f", values={})
+        form = WorkForm(values={})
         errors = rs.apply_all(form)
         assert "a" in errors[0]
         assert "b" in errors[1]
@@ -724,25 +929,43 @@ class TestRuleSet:
         rs = RuleSet()
         rs.add(Rule(rule_id="r1", field="x", check="required"))
         rs.remove("r1")
-        form = WorkForm(form_id="f", values={})
+        form = WorkForm(values={})
         assert rs.apply_all(form) == []
 
     def test_mixed_pass_and_fail(self):
         rs = RuleSet()
         rs.add(Rule(rule_id="r1", field="age", check="range", params={"min": 0, "max": 120}))
         rs.add(Rule(rule_id="r2", field="email", check="pattern", params={"pattern": r".+@.+"}))
-        form = WorkForm(form_id="f", values={"age": 30, "email": "notanemail"})
+        form = WorkForm(values={"age": 30, "email": "notanemail"})
         errors = rs.apply_all(form)
         assert len(errors) == 1
         assert "email" in errors[0]
 
+    # Duplicate rule_id prevention (Fix 5)
+    def test_add_duplicate_rule_id_raises(self):
+        """add() must reject a rule_id already in the set."""
+        rs = RuleSet()
+        rs.add(Rule(rule_id="r1", field="x", check="required"))
+        with pytest.raises(ValueError, match="r1"):
+            rs.add(Rule(rule_id="r1", field="y", check="required"))
+
+    def test_add_duplicate_after_remove_is_ok(self):
+        """After removing a rule, its id can be reused."""
+        rs = RuleSet()
+        rs.add(Rule(rule_id="r1", field="x", check="required"))
+        rs.remove("r1")
+        # Should not raise
+        rs.add(Rule(rule_id="r1", field="y", check="required"))
+        assert rs.get("r1") is not None
+        assert rs.get("r1").field == "y"
+
 
 # ---------------------------------------------------------------------------
-# Integration: fill_form + RuleSet
+# Integration: fill_form + RuleSet (standalone apply)
 # ---------------------------------------------------------------------------
 
 
-class TestFillFormWithRuleSet:
+class TestFillFormWithRuleSetStandalone:
     def test_filled_validated_form_passes_ruleset(self):
         form = _make_form(fields={"age": {"type": "int"}})
         filled = fill_form(form, {"age": 25})
@@ -753,10 +976,11 @@ class TestFillFormWithRuleSet:
         errors = rs.apply_all(filled)
         assert errors == []
 
-    def test_filled_form_fails_ruleset_range(self):
+    def test_filled_form_fails_standalone_ruleset_range(self):
+        """apply_all is a diagnostic tool; it doesn't change form status."""
         form = _make_form(fields={"age": {"type": "int"}})
         filled = fill_form(form, {"age": 200})
-        assert filled.status == "validated"  # type check passes
+        assert filled.status == "validated"  # type check passes, no ruleset used
 
         rs = RuleSet()
         rs.add(Rule(rule_id="age_range", field="age", check="range", params={"min": 0, "max": 120}))
@@ -764,8 +988,8 @@ class TestFillFormWithRuleSet:
         assert len(errors) == 1
         assert "maximum" in errors[0]
 
-    def test_ruleset_on_error_form(self):
-        """A form in error state can still have rules applied for diagnostics."""
+    def test_ruleset_on_error_form_for_diagnostics(self):
+        """A form in error state can still have rules applied independently."""
         form = _make_form(fields={"name": {"type": "str", "required": True}})
         error_form = fill_form(form, {})
         assert error_form.status == "error"

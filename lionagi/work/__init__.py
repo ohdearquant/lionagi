@@ -17,7 +17,6 @@ Public surface::
         RuleSet,
         CheckKind,
         REGEX_MAX_INPUT_LENGTH,
-        REGEX_MATCH_TIMEOUT,
     )
 """
 
@@ -31,7 +30,6 @@ from .form import (
     validate_form,
 )
 from .rules import (
-    REGEX_MATCH_TIMEOUT,
     REGEX_MAX_INPUT_LENGTH,
     CheckKind,
     Rule,
@@ -52,5 +50,4 @@ __all__ = (
     "RuleSet",
     "CheckKind",
     "REGEX_MAX_INPUT_LENGTH",
-    "REGEX_MATCH_TIMEOUT",
 )

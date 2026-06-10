@@ -17,9 +17,14 @@ validation status of those values.  The lifecycle is:
 from __future__ import annotations
 
 import re
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
+
+from lionagi.protocols.generic.element import Element
+
+if TYPE_CHECKING:
+    from .rules import RuleSet
 
 __all__ = (
     "FieldSpec",
@@ -56,8 +61,11 @@ VALID_TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 
-class FieldSpec(BaseModel):
+class FieldSpec(Element):
     """Declaration of a single field inside a WorkForm.
+
+    FieldSpec is a plain value object (no lifecycle, no graph identity needed),
+    but inherits from Element for UUID tracking and created_at timestamps.
 
     Attributes:
         name: Machine-readable field name (alphanumeric + underscores,
@@ -66,8 +74,17 @@ class FieldSpec(BaseModel):
         required: When True, the form cannot be validated with this
             field absent or None.
         default: Value used when the field is absent and not required.
+            Must be compatible with the declared ``type`` at construction
+            time (validated eagerly).
         description: Human-readable explanation of this field's purpose.
     """
+
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        use_enum_values=True,
+        populate_by_name=True,
+        extra="forbid",
+    )
 
     name: str = Field(..., description="Field identifier (alphanumeric + underscores).")
     type: FieldType = Field("str", description="Expected value type.")
@@ -76,12 +93,26 @@ class FieldSpec(BaseModel):
     description: str = Field("", description="Human-readable description.")
 
     @model_validator(mode="after")
-    def _validate_name(self) -> FieldSpec:
+    def _validate_name_and_default(self) -> FieldSpec:
+        # Name must be a valid Python identifier (letters/digits/underscores,
+        # starting with a letter or underscore).
         if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", self.name):
             raise ValueError(
                 f"Field name {self.name!r} must start with a letter or underscore "
                 "and contain only alphanumeric characters and underscores."
             )
+
+        # Default value must be type-compatible when provided.
+        if self.default is not None:
+            target = _PYTHON_TYPE_MAP[self.type]
+            # Allow int default for float field (numeric widening).
+            if self.type == "float" and isinstance(self.default, int):
+                return self
+            if not isinstance(self.default, target):
+                raise ValueError(
+                    f"FieldSpec {self.name!r}: default {self.default!r} is not "
+                    f"compatible with declared type {self.type!r}."
+                )
         return self
 
     def coerce(self, value: Any) -> Any:
@@ -116,24 +147,36 @@ class FieldSpec(BaseModel):
         )
 
 
-class WorkForm(BaseModel):
+class WorkForm(Element):
     """A structured data container for a single worker invocation.
+
+    WorkForm inherits from :class:`~lionagi.protocols.generic.element.Element`,
+    gaining a UUID ``id``, ``created_at`` timestamp, and ``metadata`` dict
+    consistent with the rest of the lionagi ecosystem.
+
+    The string ``form_id`` property is a convenience alias over ``str(self.id)``
+    for human-readable references.
 
     WorkForm instances are *immutable by convention* — mutation helpers
     (:func:`fill_form`, :func:`validate_form`, :meth:`transition_to`)
     always return a *new* copy via ``model_copy``.
 
     Attributes:
-        form_id: Unique string identifier (template name + optional suffix).
         title: Human-readable label shown in UI and logs.
-        fields: Ordered mapping from field name to its FieldSpec.
+        fields: Ordered mapping from field name to its :class:`FieldSpec`.
         values: Mutable mapping from field name to its current value.
         status: Lifecycle status of this form instance.
         validation_errors: List of human-readable error messages from the
             last call to :func:`validate_form`.
     """
 
-    form_id: str = Field(..., description="Unique form identifier.")
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        use_enum_values=True,
+        populate_by_name=True,
+        extra="forbid",
+    )
+
     title: str = Field("", description="Human-readable form title.")
     fields: dict[str, FieldSpec] = Field(
         default_factory=dict,
@@ -149,7 +192,10 @@ class WorkForm(BaseModel):
         description="Errors from the most recent validation pass.",
     )
 
-    model_config = {"arbitrary_types_allowed": True}
+    @property
+    def form_id(self) -> str:
+        """Convenience alias: string representation of the Element UUID id."""
+        return str(self.id)
 
     def get(self, name: str, default: Any = None) -> Any:
         """Return the value for *name*, falling back to *default*."""
@@ -191,7 +237,12 @@ class WorkForm(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def fill_form(form: WorkForm, values: dict[str, Any]) -> WorkForm:
+def fill_form(
+    form: WorkForm,
+    values: dict[str, Any],
+    *,
+    ruleset: RuleSet | None = None,
+) -> WorkForm:
     """Return a *new* WorkForm with *values* merged into it.
 
     Missing fields whose FieldSpec declares a non-None ``default`` are
@@ -202,6 +253,8 @@ def fill_form(form: WorkForm, values: dict[str, Any]) -> WorkForm:
     Args:
         form: Source form (not mutated).
         values: Key/value pairs to set on the form.
+        ruleset: Optional :class:`~lionagi.work.rules.RuleSet` to apply as
+            part of validation.  Forwarded to :func:`validate_form`.
 
     Returns:
         A new WorkForm instance with merged values and updated status.
@@ -220,10 +273,14 @@ def fill_form(form: WorkForm, values: dict[str, Any]) -> WorkForm:
             merged[k] = v
 
     filled = form.model_copy(update={"values": merged, "status": "filled", "validation_errors": []})
-    return validate_form(filled)
+    return validate_form(filled, ruleset=ruleset)
 
 
-def validate_form(form: WorkForm) -> WorkForm:
+def validate_form(
+    form: WorkForm,
+    *,
+    ruleset: RuleSet | None = None,
+) -> WorkForm:
     """Validate *form* values against its FieldSpec declarations.
 
     Returns a *new* WorkForm with status ``validated`` when all checks pass,
@@ -235,8 +292,16 @@ def validate_form(form: WorkForm) -> WorkForm:
     2. Present values must be coercible to the declared type; coerced
        values are stored in the returned form's ``values``.
 
+    When *ruleset* is provided, its rules are evaluated **after** the
+    FieldSpec checks.  Any rule failures prevent ``validated`` status —
+    the form will be ``error`` and rule error messages are appended to
+    ``validation_errors``.
+
     Args:
         form: Form to validate (not mutated).
+        ruleset: Optional :class:`~lionagi.work.rules.RuleSet`.  When
+            supplied, rules run as part of this validation pass and
+            failures are treated identically to spec failures.
 
     Returns:
         New WorkForm with updated ``status`` and ``validation_errors``.
@@ -258,6 +323,13 @@ def validate_form(form: WorkForm) -> WorkForm:
                 coerced_values[name] = spec.coerce(value)
             except TypeError as exc:
                 errors.append(str(exc))
+
+    # Run ruleset against a form that carries the coerced values, so rules
+    # see the post-coercion state (e.g., "7" already became 7).
+    if ruleset is not None:
+        coerced_form = form.model_copy(update={"values": coerced_values})
+        rule_errors = ruleset.apply_all(coerced_form)
+        errors.extend(rule_errors)
 
     new_status: FormStatus = "error" if errors else "validated"
     return form.model_copy(
