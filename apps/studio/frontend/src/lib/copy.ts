@@ -72,6 +72,7 @@ export const empty = {
   shows: "No shows found.",
   runs: "No runs found.",
   engineRuns: "No engine runs found.",
+  engineDefs: "No engine definitions yet.",
   teamsNotFound: "No teams found.",
 
   // Filter results — user typed a filter and nothing matched.
@@ -109,6 +110,11 @@ export const errors = {
   teamNotFound: "Team not found.",
 
   // Action failures — operator tried to do something, it failed.
+  loadEngineDefs: "Failed to load engine definitions.",
+  deleteEngineDef: "Failed to delete engine definition.",
+  createEngineDef: "Failed to create engine definition.",
+  updateEngineDef: "Failed to update engine definition.",
+  launchEngine: "Failed to launch engine.",
   prune: "Failed to prune sessions.",
   pruneAll: "Failed to prune all phantom sessions.",
   maintenanceVacuum: "Failed to run vacuum.",

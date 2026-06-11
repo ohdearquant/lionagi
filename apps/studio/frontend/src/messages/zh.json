@@ -35,6 +35,7 @@
       "teams": "团队",
       "invocations": "调用",
       "schedules": "调度",
+      "engines": "引擎",
       "playbooks": "剧本",
       "agents": "智能体",
       "plugins": "插件",
@@ -172,5 +173,48 @@
     "loadError": "加载引擎运行失败。",
     "noSession": "—",
     "noExportDir": "—"
+  },
+  "engineDefs": {
+    "title": "引擎",
+    "subtitle": "已保存的引擎定义，可按需启动",
+    "createButton": "新建引擎定义",
+    "empty": "暂无引擎定义。",
+    "form": {
+      "name": "名称",
+      "kind": "类型",
+      "model": "模型",
+      "maxDepth": "最大深度",
+      "maxAgents": "最大智能体数",
+      "testCmd": "测试命令",
+      "exportDir": "导出目录",
+      "description": "描述",
+      "options": "选项",
+      "save": "保存",
+      "cancel": "取消"
+    },
+    "run": {
+      "button": "运行",
+      "specLabel": "引擎规格",
+      "specPlaceholder": "描述该引擎的主题、工件或任务。",
+      "launch": "启动",
+      "launching": "启动中...",
+      "launched": "已启动：{id}"
+    },
+    "table": {
+      "name": "名称",
+      "kind": "类型",
+      "model": "模型",
+      "updated": "更新时间"
+    },
+    "confirm": {
+      "delete": "删除引擎定义？\n\n此操作将移除已保存的配置。\n无法撤销。"
+    },
+    "kindLabels": {
+      "research": "研究",
+      "review": "审阅",
+      "coding": "编程",
+      "hypothesis": "假设",
+      "planning": "规划"
+    }
   }
 }

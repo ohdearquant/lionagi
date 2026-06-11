@@ -1134,3 +1134,85 @@ export async function listEngineRuns(params?: EngineRunListParams): Promise<Engi
 export async function getEngineRun(runId: string): Promise<EngineRunSummary> {
   return fetchJson<EngineRunSummary>(`/api/engine-runs/${encodeURIComponent(runId)}`);
 }
+
+// ─── Engine definitions ───────────────────────────────────────────────────────
+
+export interface EngineDef {
+  id: string;
+  name: string;
+  kind: string;
+  model: string | null;
+  max_depth: number | null;
+  max_agents: number | null;
+  options: Record<string, string> | null;
+  description: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface CreateEngineDefRequest {
+  name: string;
+  kind: string;
+  model?: string;
+  max_depth?: number;
+  max_agents?: number;
+  options?: Record<string, string>;
+  description?: string;
+}
+
+export interface UpdateEngineDefRequest {
+  name?: string;
+  kind?: string;
+  model?: string;
+  max_depth?: number;
+  max_agents?: number;
+  options?: Record<string, string>;
+  description?: string;
+}
+
+export interface LaunchResult {
+  invocation_id: string;
+  engine_def_id: string;
+  engine_def_name: string;
+  kind: string;
+  argv: string[];
+}
+
+export async function listEngineDefs(params?: { kind?: string }): Promise<EngineDef[]> {
+  const query = new URLSearchParams();
+  if (params?.kind) query.set("kind", params.kind);
+  const qs = query.toString();
+  return fetchJson<EngineDef[]>(`/api/engine-defs/${qs ? `?${qs}` : ""}`);
+}
+
+export async function getEngineDef(defId: string): Promise<EngineDef> {
+  return fetchJson<EngineDef>(`/api/engine-defs/${encodeURIComponent(defId)}`);
+}
+
+export async function createEngineDef(
+  body: CreateEngineDefRequest,
+): Promise<{ id: string; name: string; created_at: number }> {
+  return fetchJson(`/api/engine-defs/`, { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function updateEngineDef(
+  defId: string,
+  body: UpdateEngineDefRequest,
+): Promise<{ ok: boolean }> {
+  return fetchJson(`/api/engine-defs/${encodeURIComponent(defId)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteEngineDef(defId: string): Promise<{ ok: boolean }> {
+  return fetchJson(`/api/engine-defs/${encodeURIComponent(defId)}`, { method: "DELETE" });
+}
+
+export async function launchEngine(body: {
+  action_kind: "engine";
+  action_engine_def: string;
+  action_prompt: string;
+}): Promise<LaunchResult> {
+  return fetchJson(`/api/launches/`, { method: "POST", body: JSON.stringify(body) });
+}
