@@ -222,3 +222,53 @@ async def test_turn_failed_with_nested_message_still_preferred_over_toplevel():
     assert chunks[0].type == "error"
     assert not chunks[0].metadata.get("benign_eos")
     assert chunks[0].content == "inner detail"
+
+
+# ---------------------------------------------------------------------------
+# Round-3 regression: "error": null must NOT be treated as benign EOS
+# (fix/cli-worker-error-surfacing codex round-2 finding)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_error_event_null_payload_is_not_benign():
+    """{"type": "error", "error": null} must NOT be tagged benign_eos=True.
+
+    Regression for the round-2 null-normalisation fix: normalising null→{} before
+    the benign predicate caused this shape to match the empty-dict sentinel and be
+    swallowed silently.  null is a malformed/unexpected provider envelope; it must
+    surface as a real error with a self-describing message.
+    """
+    events = [{"type": "error", "error": None}]
+    chunks = await _chunks_from_events(events)
+
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    assert chunk.type == "error"
+    assert not chunk.metadata.get("benign_eos"), (
+        "error:null must NOT be tagged benign_eos — it is a malformed envelope, "
+        f"not the resume-EOF sentinel; metadata={chunk.metadata}"
+    )
+    # The content must be self-describing (null normalised to {} hits the empty-
+    # payload branch), not the raw string "None".
+    assert chunk.content != "None", (
+        f"null error payload must not render as the string 'None'; got: {chunk.content!r}"
+    )
+    assert "turn.failed" not in chunk.content or "error" in chunk.content, (
+        "self-describing fallback message should name the event type"
+    )
+
+
+@pytest.mark.asyncio
+async def test_error_event_empty_dict_is_still_benign_after_null_fix():
+    """Confirm {"type": "error", "error": {}} remains benign EOS after the null
+    fix — the original sentinel behavior must not be broken."""
+    events = [{"type": "error", "error": {}}]
+    chunks = await _chunks_from_events(events)
+
+    error_chunks = [c for c in chunks if c.type == "error"]
+    assert len(error_chunks) == 1
+    assert error_chunks[0].metadata.get("benign_eos") is True, (
+        "explicit empty-dict error payload must still be tagged benign_eos=True; "
+        f"metadata={error_chunks[0].metadata}"
+    )

@@ -717,8 +717,26 @@ async def stream_codex_cli(
                 # "turn.failed" nests it under error.message.  Check both —
                 # otherwise a top-level-message error renders as the useless
                 # str() of an empty dict and the actionable text is discarded.
+                # Normalise null/missing error payloads: JSON "error": null
+                # arrives as None here (obj.get returns the default only when the
+                # key is absent, not when it is explicitly null).
+                # IMPORTANT: capture the raw value BEFORE normalising.  The
+                # benign-EOS predicate below must see the original value; a null
+                # payload normalised to {} would otherwise match the empty-dict
+                # sentinel and silently swallow a real (malformed) provider error.
+                _raw_err = err
+                if err is None:
+                    err = {}
                 session.result = (
-                    (err.get("message") or obj.get("message") or str(err))
+                    (
+                        err.get("message")
+                        or obj.get("message")
+                        or (
+                            f"CLI failure (empty error payload; event type={typ!r})"
+                            if err == {}
+                            else str(err)
+                        )
+                    )
                     if isinstance(err, dict)
                     else obj.get("message", str(err))
                 )
@@ -732,16 +750,20 @@ async def stream_codex_cli(
                 #   1. Event type is "error" — "turn.failed" events are NEVER benign
                 #      regardless of their error payload, because they signal an
                 #      explicit model-side failure (e.g. rate_limit, context_overflow).
-                #   2. The error payload is EXACTLY the empty dict.  A structured
-                #      payload with falsy values ({"message": ""}, {"message": None})
-                #      is a real failure whose detail happens to be empty — only the
-                #      bare {} sentinel is produced by a resumed-session EOF.
+                #   2. The error payload is EXACTLY the empty dict in the RAW event.
+                #      A structured payload with falsy values ({"message": ""},
+                #      {"message": None}) is a real failure whose detail happens to be
+                #      empty — only the bare {} sentinel is produced by a resumed-session
+                #      EOF.  Crucially, ``"error": null`` (raw value = None) is NOT the
+                #      sentinel: it indicates a malformed/unexpected provider envelope
+                #      and must surface as a real error.  We test _raw_err (the value
+                #      before null-normalisation) to preserve this distinction.
                 #   3. The top-level event carries no failure indicators beyond the
                 #      known EOF envelope (no "code", "message", or "status" keys).
                 _is_benign_eos = (
                     typ == "error"
                     and "error" in obj  # a bare {"type": "error"} is malformed, not EOF
-                    and err == {}
+                    and _raw_err == {}  # null normalised to {} must NOT qualify
                     and not any(k in obj for k in ("code", "message", "status"))
                 )
                 chunk_meta = dict(obj)

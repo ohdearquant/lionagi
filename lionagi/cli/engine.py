@@ -308,6 +308,13 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     ended_at = time.time()
     progress(f"engine[{kind}] completed  elapsed={ended_at - started_at:.1f}s")
 
+    # Collect emission-missing diagnostics from the engine run object so they
+    # can be written to engine_runs.error even when status stays "completed".
+    emission_error: str | None = None
+    _emission_failures: list[str] = getattr(engine, "_emission_failures", [])
+    if _emission_failures:
+        emission_error = "emission_missing: " + "; ".join(_emission_failures)
+
     # Serialise result to stdout as JSON.
     # export_dir: the CLI knows what directory it passed; neither CodeResultRecorded
     # (lionagi/engines/coding.py:153 — fields: passed, measurements, caveats,
@@ -337,6 +344,7 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
         "completed",
         ended_at=ended_at,
         export_dir=export_dir_for_db,
+        error=emission_error,
     )
     if db is not None:
         await db.close()

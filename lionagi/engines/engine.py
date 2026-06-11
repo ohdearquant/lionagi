@@ -200,6 +200,10 @@ class EngineRun:
         # so in-flight sequential work (operate_with_repair, branch.operate) is
         # interrupted promptly rather than continuing past the deadline.
         self._run_task: asyncio.Task | None = None
+        # Collects emission-missing diagnostics so the CLI can write them to
+        # the engine_runs.error column even when the overall status is "completed".
+        # Each entry is a string like "<agent> x<attempts>".
+        self._emission_failures: list[str] = []
 
     @property
     def events(self) -> Pile:
@@ -341,10 +345,15 @@ class EngineRun:
                 repair_msg = _repair_instruction(hint)
             res = await branch.operate(instruction=repair_msg)
         if retries and not arrived():
+            _agent_name = getattr(branch, "name", "") or ""
+            _attempts = attempt + 1
             self.notify(
                 "emission_missing",
-                agent=getattr(branch, "name", "") or "",
-                attempts=attempt + 1,
+                agent=_agent_name,
+                attempts=_attempts,
+            )
+            self._emission_failures.append(
+                f"{_agent_name} x{_attempts}" if _agent_name else f"x{_attempts}"
             )
         return res
 
@@ -691,6 +700,9 @@ class Engine:
         ``CancelledError`` — asyncio structured-concurrency rules are upheld.
         """
         run = self.new_run(session=session, on_event=on_event)
+        # Reset per-run diagnostics on the engine instance so a reused engine
+        # never carries emission failures from a previous run into the next one.
+        self._emission_failures: list[str] = []
         watchdog: asyncio.Task | None = None
         if run._deadline is not None:
             watchdog = asyncio.ensure_future(run._deadline_watchdog())
@@ -757,6 +769,11 @@ class Engine:
                 # External cancellation — surface it after cleanup (below).
                 raise
         finally:
+            # Copy per-run emission diagnostics back onto the engine instance so
+            # the CLI read site (getattr(engine, "_emission_failures", [])) sees
+            # the real list regardless of which return/exception path was taken.
+            # Uses a fresh list copy so no shared-reference aliasing between runs.
+            self._emission_failures = list(run._emission_failures)
             if watchdog is not None and not watchdog.done():
                 watchdog.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
