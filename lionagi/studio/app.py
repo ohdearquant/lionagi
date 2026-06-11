@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Any
@@ -27,6 +28,8 @@ from .routers import (
 )
 from .services import stats as stats_svc
 
+_log = logging.getLogger(__name__)
+
 # Paths that remain reachable without a bearer token regardless of whether
 # LIONAGI_STUDIO_AUTH_TOKEN is set.  This is intentionally a very small set:
 # only pure liveness probes that carry no application state belong here.
@@ -36,8 +39,15 @@ _PUBLIC_PATHS = frozenset({"/health"})
 @asynccontextmanager
 async def lifespan(app_instance):
     from .scheduler.engine import scheduler
+    from .services.db_maintenance import checkpoint_state_db
+    from .services.lifecycle import run_startup_reconciliation
 
     await scheduler.start()
+    await run_startup_reconciliation()
+    try:
+        await checkpoint_state_db(actor="startup")
+    except Exception:  # noqa: BLE001
+        _log.warning("Startup WAL checkpoint failed (non-fatal)", exc_info=True)
     yield
     await scheduler.stop()
 

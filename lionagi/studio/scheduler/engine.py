@@ -152,6 +152,8 @@ class SchedulerEngine:
         self._running: dict[str, str] = {}  # schedule_id -> run_id
         self._stopping = False
         self._fire_tasks: set[asyncio.Task] = set()
+        self._last_reaper_run: float = 0.0  # epoch; 0 means never
+        self._last_checkpoint_run: float = 0.0  # epoch; 0 means never
 
     async def start(self) -> None:
         _log.info("Scheduler engine starting")
@@ -277,6 +279,28 @@ class SchedulerEngine:
 
     async def _tick(self) -> None:
         now = time.time()
+
+        # Throttled periodic lifecycle reapers.
+        from lionagi.studio.config import REAPER_INTERVAL_SECONDS
+        from lionagi.studio.services.lifecycle import run_periodic_reapers
+
+        if now - self._last_reaper_run >= REAPER_INTERVAL_SECONDS:
+            try:
+                await run_periodic_reapers(now=now)
+            except Exception:
+                _log.exception("Periodic reaper error")
+            self._last_reaper_run = now
+
+        from lionagi.studio.config import CHECKPOINT_INTERVAL_SECONDS
+        from lionagi.studio.services.db_maintenance import checkpoint_state_db
+
+        if now - self._last_checkpoint_run >= CHECKPOINT_INTERVAL_SECONDS:
+            try:
+                await checkpoint_state_db(actor="scheduler_tick")
+            except Exception:
+                _log.exception("Periodic checkpoint error")
+            self._last_checkpoint_run = now
+
         async with StateDB() as db:
             schedules = await db.list_schedules(enabled=True)
 

@@ -27,6 +27,12 @@ class PruneBody(BaseModel):
     all_phantom: bool = False
 
 
+class PruneOldDataBody(BaseModel):
+    keep_days: int | None = Field(
+        default=None, ge=1, description="Retain sessions newer than this many days"
+    )
+
+
 class TransitionBody(BaseModel):
     """ADR-0024/ADR-0028 admin session transition.
 
@@ -105,6 +111,14 @@ async def admin_events(
 ) -> dict[str, Any]:
     events = await admin_svc.list_admin_events(action=action, target_id=target_id, limit=limit)
     return {"events": events}
+
+
+@router.post("/prune-old-data")
+async def prune_old_data(body: PruneOldDataBody) -> dict[str, int]:
+    """Remove terminal sessions/runs older than keep_days (default from config)."""
+    from ..services.db_maintenance import prune_old_data as _prune
+
+    return await _prune(keep_days=body.keep_days, actor="admin")
 
 
 @router.post("/prune")
