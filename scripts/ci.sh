@@ -42,9 +42,13 @@ fmt-python() {
 # Override with PYTEST_MARKEXPR=performance (or "") to run them locally.
 test-python() {
   echo "==> pytest"
+  # --max-worker-restart=0: a hard-crashed xdist worker ("node down") otherwise
+  # wedges the session for ~15 minutes before the job dies with no test name;
+  # failing fast prints "crashed while running <nodeid>" instead.
   uv run pytest \
     --asyncio-mode=auto \
     --maxfail="${MAXFAIL:-3}" \
+    --max-worker-restart="${MAX_WORKER_RESTART:-0}" \
     -m "${PYTEST_MARKEXPR:-not performance}" \
     --disable-warnings \
     "${@:-tests/}"
@@ -55,6 +59,7 @@ test-python-cov() {
   uv run pytest \
     --asyncio-mode=auto \
     --maxfail="${MAXFAIL:-1}" \
+    --max-worker-restart="${MAX_WORKER_RESTART:-0}" \
     -m "${PYTEST_MARKEXPR:-not performance}" \
     --disable-warnings \
     --cov=lionagi --cov-report=xml --cov-report=term \
