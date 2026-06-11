@@ -20,6 +20,7 @@ from .routers import (
     definitions,
     engine_runs,
     invocations,
+    launches,
     playbooks,
     plugins,
     projects,
@@ -110,6 +111,9 @@ async def lifespan(app_instance):
     except Exception:  # noqa: BLE001
         _log.warning("Startup WAL checkpoint failed (non-fatal)", exc_info=True)
     yield
+    from .services.launches import shutdown_launches
+
+    await shutdown_launches()
     await scheduler.stop()
 
 
@@ -157,6 +161,7 @@ app.include_router(plugins.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(teams.router, prefix="/api")
 app.include_router(invocations.router, prefix="/api")
+app.include_router(launches.router, prefix="/api")
 app.include_router(artifacts.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
 app.include_router(schedules.router, prefix="/api")
