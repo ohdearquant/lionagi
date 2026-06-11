@@ -589,3 +589,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_session_signals_seq
   ON session_signals(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_session_signals_session_ts
   ON session_signals(session_id, ts);
+
+-- ── Engine runs (Phase C Move 2) ─────────────────────────────────────────────
+-- One row per `li engine run` invocation.  Tracks the kind, spec, lifecycle
+-- status, and optional link to the Session that ran inside the engine.
+-- session_id is a nullable FK: populated after the engine creates its Session
+-- so the row exists from the moment the CLI is invoked.
+
+CREATE TABLE IF NOT EXISTS engine_runs (
+  id          TEXT    PRIMARY KEY,         -- uuid4 hex
+  kind        TEXT    NOT NULL,            -- 'research' | 'review' | 'coding' | 'hypothesis' | 'planning'
+  spec_json   JSON    NOT NULL,            -- serialised CLI spec (prompt / artifact / findings …)
+  status      TEXT    NOT NULL DEFAULT 'running'
+              CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
+  started_at  REAL    NOT NULL,            -- Unix epoch seconds
+  ended_at    REAL,                        -- NULL while running
+  session_id  TEXT    REFERENCES sessions(id) ON DELETE SET NULL,
+  export_dir  TEXT,                        -- filesystem path when --save used
+  error       TEXT                         -- last exception message on failure
+);
+
+CREATE INDEX IF NOT EXISTS idx_engine_runs_kind
+  ON engine_runs(kind);
+CREATE INDEX IF NOT EXISTS idx_engine_runs_status
+  ON engine_runs(status);
+CREATE INDEX IF NOT EXISTS idx_engine_runs_started
+  ON engine_runs(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_engine_runs_session
+  ON engine_runs(session_id) WHERE session_id IS NOT NULL;

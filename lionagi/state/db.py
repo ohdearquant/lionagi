@@ -2056,6 +2056,133 @@ class StateDB:
             )
         return result
 
+    # ── Engine runs (Phase C Move 2) ──────────────────────────────────
+
+    async def insert_engine_run(
+        self,
+        *,
+        run_id: str,
+        kind: str,
+        spec_json: dict[str, Any],
+        started_at: float,
+        session_id: str | None = None,
+    ) -> None:
+        """Insert a new engine run row with status='running'.
+
+        Serialised through ``self._write_lock`` (same pattern as
+        ``insert_session_signal``) to prevent concurrent INSERT conflicts on
+        the shared connection.
+        """
+        async with self._write_lock:
+            await self.db.execute("BEGIN IMMEDIATE")
+            try:
+                await self.db.execute(
+                    "INSERT INTO engine_runs "
+                    "(id, kind, spec_json, status, started_at, session_id) "
+                    "VALUES (?, ?, ?, 'running', ?, ?)",
+                    (
+                        run_id,
+                        kind,
+                        _to_json_column(spec_json),
+                        started_at,
+                        session_id,
+                    ),
+                )
+                await self.db.commit()
+            except BaseException:
+                await self.db.rollback()
+                raise
+
+    async def update_engine_run(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        ended_at: float | None = None,
+        export_dir: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Update the mutable fields of an engine run row.
+
+        *status* must be one of ``completed``, ``failed``, or ``cancelled``.
+        Serialised through ``self._write_lock``.
+        """
+        async with self._write_lock:
+            await self.db.execute("BEGIN IMMEDIATE")
+            try:
+                await self.db.execute(
+                    "UPDATE engine_runs "
+                    "SET status = ?, ended_at = ?, export_dir = ?, error = ? "
+                    "WHERE id = ?",
+                    (status, ended_at, export_dir, error, run_id),
+                )
+                await self.db.commit()
+            except BaseException:
+                await self.db.rollback()
+                raise
+
+    async def get_engine_run(self, run_id: str) -> dict[str, Any] | None:
+        """Return a single engine run row as a dict, or None if not found."""
+        cur = await self.db.execute(
+            "SELECT id, kind, spec_json, status, started_at, ended_at, "
+            "session_id, export_dir, error "
+            "FROM engine_runs WHERE id = ?",
+            (run_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        if isinstance(d.get("spec_json"), str):
+            try:
+                d["spec_json"] = json.loads(d["spec_json"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return d
+
+    async def list_engine_runs(
+        self,
+        *,
+        kind: str | None = None,
+        status: str | None = None,
+        session_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Return engine run rows, newest-first, with optional filters."""
+        conditions: list[str] = []
+        params: list[Any] = []
+        if kind is not None:
+            conditions.append("kind = ?")
+            params.append(kind)
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(status)
+        if session_id is not None:
+            conditions.append("session_id = ?")
+            params.append(session_id)
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        params.extend([limit, offset])
+        sql = (
+            f"SELECT id, kind, spec_json, status, started_at, ended_at, "  # noqa: S608
+            f"session_id, export_dir, error "
+            f"FROM engine_runs {where} "
+            f"ORDER BY started_at DESC "
+            f"LIMIT ? OFFSET ?"
+        )
+        cur = await self.db.execute(sql, params)
+        rows = await cur.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            if isinstance(d.get("spec_json"), str):
+                try:
+                    d["spec_json"] = json.loads(d["spec_json"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            result.append(d)
+        return result
+
     # ── Helpers ────────────────────────────────────────────────────────
 
     @staticmethod
