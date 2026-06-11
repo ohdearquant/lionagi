@@ -207,22 +207,31 @@ async def test_engine_failure_returns_1(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Pydantic model result (CodingEngine-like)
+# Pydantic model result — CodeResultRecorded real shape
 # ---------------------------------------------------------------------------
 
 
-async def test_pydantic_result_serialized_to_json(monkeypatch, capsys):
-    """A result that has .model_dump() is serialised via model_dump, not str()."""
+async def test_code_result_recorded_shape_serialized(monkeypatch, capsys):
+    """CodingEngine returns CodeResultRecorded (passed/measurements/caveats/
+    experiment_ref/verdict_ref) — NOT a dict with export_dir.  Verify the CLI
+    serialises that real shape and does NOT crash when export_dir is absent."""
     import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
 
     monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
     monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
 
+    # Simulate the real CodeResultRecorded.model_dump() output — no export_dir field.
+    real_coding_dump = {
+        "passed": True,
+        "measurements": {"rounds": 1, "test_runs": 1, "returncode": 0},
+        "caveats": [],
+        "experiment_ref": "",
+        "verdict_ref": "",
+    }
+
     pydantic_result = MagicMock()
-    pydantic_result.model_dump = MagicMock(
-        return_value={"status": "success", "files": ["main.py"], "export_dir": "/tmp/out"}
-    )
+    pydantic_result.model_dump = MagicMock(return_value=real_coding_dump)
 
     async def _mock_run(spec, *, on_event=None, **kwargs):
         return pydantic_result
@@ -243,8 +252,282 @@ async def test_pydantic_result_serialized_to_json(monkeypatch, capsys):
     assert result == 0
     captured = capsys.readouterr()
     output = json.loads(captured.out)
-    assert output["status"] == "success"
-    assert output["files"] == ["main.py"]
+    assert output["passed"] is True
+    assert "measurements" in output
+    # No export_dir in CodeResultRecorded, no args.export_dir → None in DB (verified
+    # in export_dir persistence tests below).
+
+
+# ---------------------------------------------------------------------------
+# export_dir persistence — sourced from args, not result model
+# ---------------------------------------------------------------------------
+
+
+async def test_export_dir_persisted_from_args_coding(monkeypatch, capsys):
+    """--export-dir must be written to the DB for 'coding' even though
+    CodeResultRecorded has no export_dir field (confirmed real shape above)."""
+    import lionagi.cli._logging as log_mod
+    import lionagi.cli.engine as engine_mod
+    import lionagi.state.db as db_mod
+
+    monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
+    monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
+
+    # Real CodeResultRecorded dump — NO export_dir key.
+    real_coding_dump = {
+        "passed": True,
+        "measurements": {"rounds": 1},
+        "caveats": [],
+        "experiment_ref": "",
+        "verdict_ref": "",
+    }
+    pydantic_result = MagicMock()
+    pydantic_result.model_dump = MagicMock(return_value=real_coding_dump)
+
+    async def _mock_run(spec, *, on_event=None, **kwargs):
+        return pydantic_result
+
+    mock_engine = MagicMock()
+    mock_engine.run = _mock_run
+    MockEngineClass = MagicMock(return_value=mock_engine)
+    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+
+    update_calls: list[dict] = []
+
+    class MockStateDB:
+        async def open(self):
+            pass
+
+        async def close(self):
+            pass
+
+        async def insert_engine_run(self, *, run_id, kind, spec_json, started_at, session_id=None):
+            pass
+
+        async def update_engine_run(
+            self, run_id, *, status, ended_at=None, export_dir=None, error=None
+        ):
+            update_calls.append({"status": status, "export_dir": export_dir})
+
+    monkeypatch.setattr(db_mod, "StateDB", MockStateDB)
+
+    args = _build_args(
+        kind="coding",
+        spec="impl BFS",
+        test_cmd="pytest tests/",
+        export_dir="/tmp/real-export",
+        no_persist=False,
+    )
+    rc = await engine_mod._do_engine_run(args)
+
+    assert rc == 0
+    completed = [c for c in update_calls if c["status"] == "completed"]
+    assert completed, "no completed update call"
+    assert completed[0]["export_dir"] == "/tmp/real-export", (
+        f"expected /tmp/real-export, got {completed[0]['export_dir']!r}"
+    )
+
+
+async def test_export_dir_persisted_from_args_hypothesis(monkeypatch, capsys):
+    """--export-dir must be written to the DB for 'hypothesis'; the hypothesis
+    engine returns a plain string, not a Pydantic model."""
+    import lionagi.cli._logging as log_mod
+    import lionagi.cli.engine as engine_mod
+    import lionagi.state.db as db_mod
+
+    monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
+    monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
+
+    async def _mock_run(spec, *, on_event=None, **kwargs):
+        # Hypothesis engine returns a plain string report.
+        return "Hypothesis: X causes Y because Z."
+
+    mock_engine = MagicMock()
+    mock_engine.run = _mock_run
+    MockEngineClass = MagicMock(return_value=mock_engine)
+    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+
+    update_calls: list[dict] = []
+
+    class MockStateDB:
+        async def open(self):
+            pass
+
+        async def close(self):
+            pass
+
+        async def insert_engine_run(self, *, run_id, kind, spec_json, started_at, session_id=None):
+            pass
+
+        async def update_engine_run(
+            self, run_id, *, status, ended_at=None, export_dir=None, error=None
+        ):
+            update_calls.append({"status": status, "export_dir": export_dir})
+
+    monkeypatch.setattr(db_mod, "StateDB", MockStateDB)
+
+    args = _build_args(
+        kind="hypothesis",
+        spec="Finding: X causes Y",
+        export_dir="/tmp/hypo-export",
+        no_persist=False,
+    )
+    rc = await engine_mod._do_engine_run(args)
+
+    assert rc == 0
+    completed = [c for c in update_calls if c["status"] == "completed"]
+    assert completed, "no completed update call"
+    assert completed[0]["export_dir"] == "/tmp/hypo-export", (
+        f"expected /tmp/hypo-export, got {completed[0]['export_dir']!r}"
+    )
+
+
+async def test_export_dir_none_when_not_passed(monkeypatch, capsys):
+    """No --export-dir → export_dir=None in the DB update (not a stale string)."""
+    import lionagi.cli._logging as log_mod
+    import lionagi.cli.engine as engine_mod
+    import lionagi.state.db as db_mod
+
+    monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
+    monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
+
+    async def _mock_run(spec, *, on_event=None, **kwargs):
+        return "Research findings."
+
+    mock_engine = MagicMock()
+    mock_engine.run = _mock_run
+    MockEngineClass = MagicMock(return_value=mock_engine)
+    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+
+    update_calls: list[dict] = []
+
+    class MockStateDB:
+        async def open(self):
+            pass
+
+        async def close(self):
+            pass
+
+        async def insert_engine_run(self, *, run_id, kind, spec_json, started_at, session_id=None):
+            pass
+
+        async def update_engine_run(
+            self, run_id, *, status, ended_at=None, export_dir=None, error=None
+        ):
+            update_calls.append({"status": status, "export_dir": export_dir})
+
+    monkeypatch.setattr(db_mod, "StateDB", MockStateDB)
+
+    args = _build_args(kind="research", spec="GQA", no_persist=False, export_dir=None)
+    rc = await engine_mod._do_engine_run(args)
+
+    assert rc == 0
+    completed = [c for c in update_calls if c["status"] == "completed"]
+    assert completed[0]["export_dir"] is None
+
+
+# ---------------------------------------------------------------------------
+# Cancellation handling — BaseException paths
+# ---------------------------------------------------------------------------
+
+
+async def test_cancelled_error_marks_row_cancelled(monkeypatch):
+    """asyncio.CancelledError → row status='cancelled', db closed, error re-raised."""
+    import lionagi.cli._logging as log_mod
+    import lionagi.cli.engine as engine_mod
+    import lionagi.state.db as db_mod
+
+    monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
+    monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
+    monkeypatch.setattr(log_mod, "log_error", lambda *a, **kw: None)
+
+    async def _mock_run_cancel(spec, *, on_event=None, **kwargs):
+        raise asyncio.CancelledError("test cancel")
+
+    mock_engine = MagicMock()
+    mock_engine.run = _mock_run_cancel
+    MockEngineClass = MagicMock(return_value=mock_engine)
+    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+
+    insert_calls: list[dict] = []
+    update_calls: list[dict] = []
+    close_count = [0]
+
+    class MockStateDB:
+        async def open(self):
+            pass
+
+        async def close(self):
+            close_count[0] += 1
+
+        async def insert_engine_run(self, *, run_id, kind, spec_json, started_at, session_id=None):
+            insert_calls.append({"run_id": run_id, "kind": kind})
+
+        async def update_engine_run(
+            self, run_id, *, status, ended_at=None, export_dir=None, error=None
+        ):
+            update_calls.append({"run_id": run_id, "status": status, "error": error})
+
+    monkeypatch.setattr(db_mod, "StateDB", MockStateDB)
+
+    args = _build_args(kind="research", spec="test", no_persist=False)
+    with pytest.raises(asyncio.CancelledError):
+        await engine_mod._do_engine_run(args)
+
+    # Row must be marked 'cancelled', not left as 'running'.
+    assert len(insert_calls) == 1
+    cancelled_updates = [c for c in update_calls if c["status"] == "cancelled"]
+    assert cancelled_updates, f"expected a 'cancelled' update; got {update_calls}"
+    assert cancelled_updates[0]["error"] is not None
+    # DB must be closed.
+    assert close_count[0] == 1
+
+
+async def test_keyboard_interrupt_marks_row_cancelled(monkeypatch):
+    """KeyboardInterrupt → row status='cancelled', db closed, re-raised."""
+    import lionagi.cli._logging as log_mod
+    import lionagi.cli.engine as engine_mod
+    import lionagi.state.db as db_mod
+
+    monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
+    monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
+    monkeypatch.setattr(log_mod, "log_error", lambda *a, **kw: None)
+
+    async def _mock_run_interrupt(spec, *, on_event=None, **kwargs):
+        raise KeyboardInterrupt("SIGINT simulation")
+
+    mock_engine = MagicMock()
+    mock_engine.run = _mock_run_interrupt
+    MockEngineClass = MagicMock(return_value=mock_engine)
+    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+
+    update_calls: list[dict] = []
+    close_count = [0]
+
+    class MockStateDB:
+        async def open(self):
+            pass
+
+        async def close(self):
+            close_count[0] += 1
+
+        async def insert_engine_run(self, *, run_id, kind, spec_json, started_at, session_id=None):
+            pass
+
+        async def update_engine_run(
+            self, run_id, *, status, ended_at=None, export_dir=None, error=None
+        ):
+            update_calls.append({"status": status})
+
+    monkeypatch.setattr(db_mod, "StateDB", MockStateDB)
+
+    args = _build_args(kind="planning", spec="test", no_persist=False)
+    with pytest.raises(KeyboardInterrupt):
+        await engine_mod._do_engine_run(args)
+
+    cancelled = [c for c in update_calls if c["status"] == "cancelled"]
+    assert cancelled, f"expected 'cancelled' update; got {update_calls}"
+    assert close_count[0] == 1
 
 
 # ---------------------------------------------------------------------------

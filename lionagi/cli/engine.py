@@ -269,6 +269,8 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
 
     # Instantiate and run the engine.
     progress(f"engine[{kind}] starting  spec={spec!r}")
+    result = None
+    ended_at: float | None = None
     try:
         engine = engine_class(**engine_kwargs)
         # CodingEngine has its own .run() signature (positional spec + keyword
@@ -282,17 +284,41 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
         if db is not None:
             await db.close()
         return 1
+    except BaseException as exc:
+        # asyncio.CancelledError and KeyboardInterrupt are BaseException paths that
+        # bypass the `except Exception` handler above.  Mark the row cancelled before
+        # re-raising so Studio doesn't show it as permanently 'running'.
+        # run_async() in lionagi/ln/concurrency/utils.py:86 cancels the task on
+        # SIGINT and then raises KeyboardInterrupt at :108; we re-raise here to
+        # preserve that exit-code behaviour (interpreter default for SIGINT).
+        ended_at = time.time()
+        await _maybe_update_db(
+            db,
+            run_id,
+            "cancelled",
+            ended_at=ended_at,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        if db is not None:
+            await db.close()
+        raise
 
     ended_at = time.time()
     progress(f"engine[{kind}] completed  elapsed={ended_at - started_at:.1f}s")
 
     # Serialise result to stdout as JSON.
-    export_dir_for_db: str | None = None
+    # export_dir: the CLI knows what directory it passed; neither CodeResultRecorded
+    # (lionagi/engines/coding.py:153 — fields: passed, measurements, caveats,
+    # experiment_ref, verdict_ref) nor the hypothesis string echo it back.  Source
+    # export_dir from args directly for kinds that accept the flag, falling back to
+    # result_data for any future engine model that does include it.
+    export_dir_from_args: str | None = args.export_dir if kind in ("coding", "hypothesis") else None
+    export_dir_for_db: str | None = export_dir_from_args
     try:
         if hasattr(result, "model_dump"):
             # Pydantic model (e.g. CodingEngine returns CodeResultRecorded).
             result_data = result.model_dump(mode="json")
-            export_dir_for_db = result_data.get("export_dir")
+            export_dir_for_db = result_data.get("export_dir") or export_dir_from_args
         elif isinstance(result, str):
             result_data = {"result": result}
         else:
