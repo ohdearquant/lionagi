@@ -61,6 +61,22 @@ def _svc_validate_extra_args(extra: list | None) -> None:
     _validate_extra_args(extra)
 
 
+def _svc_validate_github_repo(repo: str | None) -> None:
+    """Service-boundary check: reject github_repo values that would manipulate the API path.
+
+    Delegates to github._validate_github_repo so the owner/name regex is defined
+    in exactly one place (CWE-918 — path manipulation in URL construction).
+
+    None means the field was not supplied (no-op); an empty string is an
+    explicit invalid value and is forwarded to the validator for rejection.
+    """
+    if repo is None:
+        return
+    from lionagi.studio.scheduler.github import _validate_github_repo
+
+    _validate_github_repo(repo)
+
+
 def _svc_validate_prompt(prompt: str | None) -> None:
     """Service-boundary check: reject action_prompt == '--'.
 
@@ -249,6 +265,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     _svc_validate_identifier(data.get("action_project"), "action_project")
     _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
     _svc_validate_extra_args(data.get("action_extra_args"))
+    _svc_validate_github_repo(data.get("github_repo"))
 
     if data.get("action_kind") == "flow_yaml":
         yaml_text = data.get("action_flow_yaml") or ""
@@ -294,6 +311,8 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_identifier(fields["action_playbook"], "action_playbook")
         if "action_extra_args" in fields:
             _svc_validate_extra_args(fields["action_extra_args"])
+        if "github_repo" in fields:
+            _svc_validate_github_repo(fields["github_repo"])
 
         # Merge proposed fields over the existing schedule and re-validate
         # flow_yaml constraints so a PATCH cannot create invalid state that

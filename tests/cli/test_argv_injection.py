@@ -903,3 +903,274 @@ class TestBuildArgvTemplateInjection:
 
         with pytest.raises(ValueError, match="'--'"):
             build_argv(_schedule(action_prompt="--"), {})
+
+
+# ---------------------------------------------------------------------------
+# CWE-918 github_repo path manipulation — validator unit tests (closes #1413)
+# ---------------------------------------------------------------------------
+
+
+class TestGithubRepoValidatorUnit:
+    """_validate_github_repo rejects values that would manipulate the API path."""
+
+    def test_path_traversal_raises(self):
+        """'../../other-endpoint' must raise ValueError."""
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        with pytest.raises(ValueError, match="owner/name"):
+            _validate_github_repo("../../other-endpoint")
+
+    def test_extra_slash_segment_raises(self):
+        """'owner/name/extra' (more than one slash) must raise ValueError."""
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        with pytest.raises(ValueError, match="owner/name"):
+            _validate_github_repo("owner/name/extra")
+
+    def test_no_slash_raises(self):
+        """'owner' (missing slash) must raise ValueError."""
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        with pytest.raises(ValueError, match="owner/name"):
+            _validate_github_repo("owner")
+
+    def test_leading_dash_in_owner_raises(self):
+        """'-owner/repo' (leading dash in owner segment) must raise ValueError."""
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        with pytest.raises(ValueError, match="owner/name"):
+            _validate_github_repo("-owner/repo")
+
+    def test_percent_encoded_traversal_raises(self):
+        """'%2e%2e/repo' (URL-encoded dots) must raise ValueError."""
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        with pytest.raises(ValueError, match="owner/name"):
+            _validate_github_repo("%2e%2e/repo")
+
+    def test_empty_string_raises(self):
+        """Empty string must raise ValueError (no owner/name structure)."""
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        with pytest.raises(ValueError, match="owner/name"):
+            _validate_github_repo("")
+
+    def test_valid_repo_accepted(self):
+        """'owner/repo.name-x_1' is a legitimate GitHub repo and must pass."""
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        _validate_github_repo("owner/repo.name-x_1")  # must not raise
+
+    def test_valid_simple_repo_accepted(self):
+        """'octocat/hello-world' is a common GitHub repo and must pass."""
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        _validate_github_repo("octocat/hello-world")  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# CWE-918 github_repo — service boundary (create and update) (closes #1413)
+# ---------------------------------------------------------------------------
+
+
+class TestGithubRepoServiceValidation:
+    """create_schedule and update_schedule must reject invalid github_repo at write time."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    # -- create_schedule --
+
+    def test_create_path_traversal_raises(self):
+        """create_schedule raises ValueError for '../../other-endpoint'."""
+        from lionagi.studio.services.schedules import create_schedule
+
+        with pytest.raises(ValueError, match="owner/name"):
+            self._run(
+                create_schedule(
+                    {
+                        "name": "bad-repo-traversal",
+                        "trigger_type": "github_poll",
+                        "action_kind": "agent",
+                        "action_model": "sonnet",
+                        "github_repo": "../../other-endpoint",
+                    }
+                )
+            )
+
+    def test_create_extra_slash_raises(self):
+        """create_schedule raises ValueError for 'owner/name/extra'."""
+        from lionagi.studio.services.schedules import create_schedule
+
+        with pytest.raises(ValueError, match="owner/name"):
+            self._run(
+                create_schedule(
+                    {
+                        "name": "bad-repo-extra-slash",
+                        "trigger_type": "github_poll",
+                        "action_kind": "agent",
+                        "action_model": "sonnet",
+                        "github_repo": "owner/name/extra",
+                    }
+                )
+            )
+
+    def test_create_no_slash_raises(self):
+        """create_schedule raises ValueError for 'owner' (no slash)."""
+        from lionagi.studio.services.schedules import create_schedule
+
+        with pytest.raises(ValueError, match="owner/name"):
+            self._run(
+                create_schedule(
+                    {
+                        "name": "bad-repo-no-slash",
+                        "trigger_type": "github_poll",
+                        "action_kind": "agent",
+                        "action_model": "sonnet",
+                        "github_repo": "owner",
+                    }
+                )
+            )
+
+    def test_create_leading_dash_raises(self):
+        """create_schedule raises ValueError for '-owner/repo'."""
+        from lionagi.studio.services.schedules import create_schedule
+
+        with pytest.raises(ValueError, match="owner/name"):
+            self._run(
+                create_schedule(
+                    {
+                        "name": "bad-repo-dash",
+                        "trigger_type": "github_poll",
+                        "action_kind": "agent",
+                        "action_model": "sonnet",
+                        "github_repo": "-owner/repo",
+                    }
+                )
+            )
+
+    def test_create_percent_encoded_raises(self):
+        """create_schedule raises ValueError for '%2e%2e/repo'."""
+        from lionagi.studio.services.schedules import create_schedule
+
+        with pytest.raises(ValueError, match="owner/name"):
+            self._run(
+                create_schedule(
+                    {
+                        "name": "bad-repo-pct",
+                        "trigger_type": "github_poll",
+                        "action_kind": "agent",
+                        "action_model": "sonnet",
+                        "github_repo": "%2e%2e/repo",
+                    }
+                )
+            )
+
+    def test_create_empty_string_raises(self):
+        """create_schedule raises ValueError for empty github_repo string."""
+        from lionagi.studio.services.schedules import create_schedule
+
+        with pytest.raises(ValueError, match="owner/name"):
+            self._run(
+                create_schedule(
+                    {
+                        "name": "bad-repo-empty",
+                        "trigger_type": "github_poll",
+                        "action_kind": "agent",
+                        "action_model": "sonnet",
+                        "github_repo": "",
+                    }
+                )
+            )
+
+    def test_create_valid_repo_does_not_raise(self):
+        """create_schedule with 'owner/repo.name-x_1' passes validation."""
+        from unittest.mock import AsyncMock, patch
+
+        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+            mock_db = AsyncMock()
+            mock_db.create_schedule = AsyncMock()
+            MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+            MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = self._run(
+                __import__(
+                    "lionagi.studio.services.schedules", fromlist=["create_schedule"]
+                ).create_schedule(
+                    {
+                        "name": "good-repo",
+                        "trigger_type": "github_poll",
+                        "action_kind": "agent",
+                        "action_model": "sonnet",
+                        "github_repo": "owner/repo.name-x_1",
+                    }
+                )
+            )
+        assert "id" in result
+
+    # -- update_schedule --
+
+    def _mock_db(self, existing: dict):
+        class _MockDB:
+            async def __aenter__(self_inner):
+                return self_inner
+
+            async def __aexit__(self_inner, *a):
+                return False
+
+            async def get_schedule(self_inner, sid):
+                return existing
+
+            async def update_schedule(self_inner, sid, **kw):
+                pass
+
+        return _MockDB()
+
+    def _run_update(self, existing: dict, fields: dict):
+        from lionagi.studio.services.schedules import update_schedule
+
+        async def _go():
+            with patch(
+                "lionagi.studio.services.schedules.StateDB",
+                return_value=self._mock_db(existing),
+            ):
+                return await update_schedule(existing["id"], fields)
+
+        return asyncio.run(_go())
+
+    def _existing(self, **over) -> dict:
+        base = {
+            "id": "sid-gh",
+            "name": "gh-test",
+            "trigger_type": "github_poll",
+            "action_kind": "agent",
+            "action_model": "sonnet",
+            "action_extra_args": [],
+        }
+        base.update(over)
+        return base
+
+    def test_patch_path_traversal_raises(self):
+        """PATCH github_repo='../../other-endpoint' raises ValueError."""
+        with pytest.raises(ValueError, match="owner/name"):
+            self._run_update(self._existing(), {"github_repo": "../../other-endpoint"})
+
+    def test_patch_extra_slash_raises(self):
+        """PATCH github_repo='owner/name/extra' raises ValueError."""
+        with pytest.raises(ValueError, match="owner/name"):
+            self._run_update(self._existing(), {"github_repo": "owner/name/extra"})
+
+    def test_patch_no_slash_raises(self):
+        """PATCH github_repo='owner' (no slash) raises ValueError."""
+        with pytest.raises(ValueError, match="owner/name"):
+            self._run_update(self._existing(), {"github_repo": "owner"})
+
+    def test_patch_leading_dash_raises(self):
+        """PATCH github_repo='-owner/repo' raises ValueError."""
+        with pytest.raises(ValueError, match="owner/name"):
+            self._run_update(self._existing(), {"github_repo": "-owner/repo"})
+
+    def test_patch_valid_repo_does_not_raise(self):
+        """PATCH github_repo='octocat/hello-world' passes validation."""
+        result = self._run_update(self._existing(), {"github_repo": "octocat/hello-world"})
+        assert result is True

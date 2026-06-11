@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -15,6 +16,35 @@ from lionagi.state.db import StateDB
 _log = logging.getLogger(__name__)
 
 _client: httpx.AsyncClient | None = None
+
+# CWE-918 defense-in-depth: github_repo must be exactly "owner/name" — one
+# slash, no path traversal sequences, no URL-special chars.  Both segments
+# follow GitHub's documented naming rules: start with an alphanumeric, then
+# allow alphanumerics, dots, hyphens, and underscores.  Leading dashes are
+# rejected both because GitHub disallows them and because they would be
+# ambiguous with CLI flags in contexts where the repo name is forwarded.
+# This regex is the single source of truth; the service layer imports and
+# delegates to this function rather than duplicating it.
+_GITHUB_REPO_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+
+
+def _validate_github_repo(repo: str) -> None:
+    """Raise ValueError if *repo* does not match the owner/name format.
+
+    Enforced here (at URL-construction time) as a defense-in-depth check and
+    also at the service write boundary via services/schedules._svc_validate_github_repo.
+
+    A value like ``../../other-endpoint`` would retarget the GitHub API path
+    even though the host is hardcoded (CWE-918 path manipulation).  The regex
+    ``^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$`` permits exactly one slash and
+    restricts both segments to the characters GitHub allows in owner/repo names.
+    """
+    if not _GITHUB_REPO_RE.match(repo):
+        raise ValueError(
+            f"github_repo {repo!r} is not a valid owner/name identifier. "
+            "Expected format: 'owner/repo' where both segments contain only "
+            "letters, digits, '.', '_', or '-' (no path traversal or URL-special chars)."
+        )
 
 
 def _get_client() -> httpx.AsyncClient:
@@ -51,6 +81,16 @@ async def github_poll(schedule: dict) -> list[dict[str, Any]]:
     """Poll GitHub for new/updated PRs. Returns list of new PR dicts."""
     repo = schedule.get("github_repo")
     if not repo:
+        return []
+
+    # Defense-in-depth: validate format before interpolating into the API URL.
+    # The service write boundary applies the same check via _svc_validate_github_repo
+    # in services/schedules.py, but we re-check here so that any schedule dict
+    # that reaches this function (regardless of origin) cannot retarget the path.
+    try:
+        _validate_github_repo(repo)
+    except ValueError:
+        _log.error("github_poll: rejecting invalid github_repo %r — must be 'owner/name'", repo)
         return []
 
     token = await _get_gh_token()
