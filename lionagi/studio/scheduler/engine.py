@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
 import time
 import uuid
 from typing import Any
@@ -457,48 +459,53 @@ class SchedulerEngine:
                 await db.update_schedule(sid, **update_fields)
             return
 
-        async with StateDB() as db:
-            await db.create_schedule_run(
-                {
-                    "id": run_id,
-                    "schedule_id": sid,
-                    "invocation_id": inv_id,
-                    "trigger_context": trigger_context,
-                    "action_kind": schedule["action_kind"],
-                    "action_args": argv,
-                    "status": "running",
-                    "chain_parent_id": chain_parent_id,
-                    "chain_depth": chain_depth,
-                    "fired_at": now,
-                }
-            )
-            await db.update_status(
-                "schedule_run",
-                run_id,
-                new_status="running",
-                reason_code=ScheduleReasons.FIRED_DUE,
-                reason_summary="Schedule run fired because the trigger was due.",
-                evidence_refs=[{"kind": "schedule", "id": sid}],
-                source="system",
-                actor=sid,
-                metadata={"trigger_context": trigger_context, "chain_depth": chain_depth},
-            )
-
-        if chain_depth == 0:
-            self._running[sid] = run_id
-
-        next_at = self._compute_next_fire(schedule, now)
-        update_fields: dict[str, Any] = {"last_fired_at": now}
-        if next_at:
-            update_fields["next_fire_at"] = next_at
-        async with StateDB() as db:
-            await db.update_schedule(sid, **update_fields)
-
-        _log.info(
-            "Firing schedule %s (run %s, chain_depth=%d)", schedule["name"], run_id, chain_depth
-        )
-
+        # Guard: ensure any tmp file created by build_argv is removed even
+        # if an exception or scheduler-shutdown cancellation fires in the DB
+        # operations below, before spawn_and_wait() has a chance to run its
+        # own cleanup finally.  contextlib.suppress(OSError) makes the unlink
+        # harmless if spawn_and_wait already deleted it (double-unlink safe).
         try:
+            async with StateDB() as db:
+                await db.create_schedule_run(
+                    {
+                        "id": run_id,
+                        "schedule_id": sid,
+                        "invocation_id": inv_id,
+                        "trigger_context": trigger_context,
+                        "action_kind": schedule["action_kind"],
+                        "action_args": argv,
+                        "status": "running",
+                        "chain_parent_id": chain_parent_id,
+                        "chain_depth": chain_depth,
+                        "fired_at": now,
+                    }
+                )
+                await db.update_status(
+                    "schedule_run",
+                    run_id,
+                    new_status="running",
+                    reason_code=ScheduleReasons.FIRED_DUE,
+                    reason_summary="Schedule run fired because the trigger was due.",
+                    evidence_refs=[{"kind": "schedule", "id": sid}],
+                    source="system",
+                    actor=sid,
+                    metadata={"trigger_context": trigger_context, "chain_depth": chain_depth},
+                )
+
+            if chain_depth == 0:
+                self._running[sid] = run_id
+
+            next_at = self._compute_next_fire(schedule, now)
+            update_fields: dict[str, Any] = {"last_fired_at": now}
+            if next_at:
+                update_fields["next_fire_at"] = next_at
+            async with StateDB() as db:
+                await db.update_schedule(sid, **update_fields)
+
+            _log.info(
+                "Firing schedule %s (run %s, chain_depth=%d)", schedule["name"], run_id, chain_depth
+            )
+
             exit_code, stderr_tail = await spawn_and_wait(argv, inv_id, tmp_path=_tmp_path)
             end_time = time.time()
             status = "completed" if exit_code == 0 else "failed"
@@ -656,6 +663,13 @@ class SchedulerEngine:
         finally:
             if chain_depth == 0:
                 self._running.pop(sid, None)
+            # Clean up the flow_yaml temp file if spawn_and_wait never ran
+            # (exception or cancellation in the pre-spawn DB ops).
+            # OSError is suppressed so a double-unlink (spawn_and_wait already
+            # cleaned up in its own finally) is harmless.
+            if _tmp_path is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(_tmp_path)
 
     def _compute_next_fire(self, schedule: dict, ref_time: float) -> float | None:
         if schedule["trigger_type"] == "cron":

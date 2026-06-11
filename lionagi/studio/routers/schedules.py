@@ -95,7 +95,10 @@ async def create_schedule(body: CreateScheduleRequest) -> dict[str, Any]:
 @router.patch("/{schedule_id}")
 async def update_schedule(schedule_id: str, body: UpdateScheduleRequest) -> dict[str, Any]:
     fields = body.model_dump(exclude_none=True)
-    ok = await sched_svc.update_schedule(schedule_id, fields)
+    try:
+        ok = await sched_svc.update_schedule(schedule_id, fields)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
     return {"ok": True}

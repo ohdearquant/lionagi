@@ -211,6 +211,21 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         schedule = await db.get_schedule(schedule_id)
         if not schedule:
             return False
+
+        # Merge proposed fields over the existing schedule and re-validate
+        # flow_yaml constraints so a PATCH cannot create invalid state that
+        # would only surface as a silent empty-YAML write at fire time.
+        effective = {**schedule, **fields}
+        if effective.get("action_kind") == "flow_yaml":
+            yaml_text = effective.get("action_flow_yaml") or ""
+            if not yaml_text.strip():
+                raise ValueError(
+                    "action_flow_yaml is required and must not be empty for action_kind='flow_yaml'"
+                )
+            spec_err = _validate_flow_yaml_spec(yaml_text)
+            if spec_err:
+                raise ValueError(f"Invalid flow_yaml spec: {spec_err}")
+
         await db.update_schedule(schedule_id, **fields)
     return True
 
