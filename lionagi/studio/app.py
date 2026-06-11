@@ -23,6 +23,7 @@ from .routers import (
     schedules,
     sessions,
     shows,
+    signals,
     skills,
     teams,
 )
@@ -83,6 +84,7 @@ async def require_studio_bearer_token(request: Request, call_next):
 
 app.include_router(runs.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
+app.include_router(signals.router, prefix="/api")
 app.include_router(definitions.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")
 app.include_router(playbooks.router, prefix="/api")

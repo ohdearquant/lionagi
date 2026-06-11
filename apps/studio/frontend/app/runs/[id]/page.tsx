@@ -6,8 +6,8 @@ import { use, useEffect, useMemo, useRef, useState } from "react";
 import Badge from "@/components/Badge";
 import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
 import RunStepCard from "@/components/RunStepCard";
-import { getSession, streamSession } from "@/lib/api";
-import type { SessionDetail, SessionBranch, SessionMessage } from "@/lib/api";
+import { getSession, streamSession, streamSignals } from "@/lib/api";
+import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
 import type { RunMessage, RunStep, WorkerGraph } from "@/lib/types";
 import { empty } from "@/lib/copy";
 
@@ -468,6 +468,177 @@ function FilesSection({ files }: { files: string[] }) {
   );
 }
 
+// ── Events section (Phase C Move 1) ──────────────────────────────────────────
+
+// Maps a signal kind to a short label and tone for the badge.
+const KIND_BADGE: Record<string, { label: string; tone: string }> = {
+  NodeQueued: { label: "queued", tone: "bg-surface-overlay text-content-muted" },
+  NodeStarted: { label: "started", tone: "bg-status-running-bg text-status-running" },
+  NodeCompleted: { label: "done", tone: "bg-status-success-bg text-status-success" },
+  NodeFailed: { label: "failed", tone: "bg-status-error-bg text-status-error" },
+  NodeAwaitingApproval: { label: "approval", tone: "bg-status-warn-bg text-status-warn" },
+  NodeEscalated: { label: "escalated", tone: "bg-status-error-bg text-status-error" },
+  GateDenied: { label: "gate-denied", tone: "bg-status-error-bg text-status-error" },
+  RunStart: { label: "run-start", tone: "bg-status-running-bg text-status-running" },
+  RunEnd: { label: "run-end", tone: "bg-status-success-bg text-status-success" },
+  RunFailed: { label: "run-failed", tone: "bg-status-error-bg text-status-error" },
+  MessageAdded: { label: "message", tone: "bg-surface-overlay text-content-muted" },
+  HookSignal: { label: "hook", tone: "bg-surface-overlay text-content-muted" },
+  StructuredOutput: { label: "output", tone: "bg-surface-overlay text-content-secondary" },
+};
+
+type LaneState = "queued" | "running" | "awaiting_approval" | "succeeded" | "failed" | "escalated";
+
+const LANE_TONE: Record<LaneState, string> = {
+  queued: "bg-surface-overlay text-content-muted",
+  running: "bg-status-running-bg text-status-running",
+  awaiting_approval: "bg-status-warn-bg text-status-warn",
+  succeeded: "bg-status-success-bg text-status-success",
+  failed: "bg-status-error-bg text-status-error",
+  escalated: "bg-status-error-bg text-status-error",
+};
+
+// Minimal client-side lane_for projection (mirrors signal.py:lane_for).
+function laneFor(kinds: string[]): LaneState {
+  const TERMINAL = new Set(["succeeded", "failed", "escalated"]);
+  const KIND_TO_STATE: Record<string, LaneState> = {
+    NodeQueued: "queued",
+    NodeStarted: "running",
+    RunStart: "running",
+    NodeAwaitingApproval: "awaiting_approval",
+    NodeCompleted: "succeeded",
+    RunEnd: "succeeded",
+    NodeFailed: "failed",
+    RunFailed: "failed",
+    NodeEscalated: "escalated",
+  };
+  let state: LaneState = "queued";
+  let inTerminal = false;
+  for (const k of kinds) {
+    const newState = KIND_TO_STATE[k];
+    if (!newState) continue;
+    if (inTerminal && newState !== "queued" && newState !== "running") continue;
+    state = newState;
+    inTerminal = TERMINAL.has(state);
+  }
+  return state;
+}
+
+interface LaneSummary {
+  op_id: string;
+  lane: LaneState;
+  count: number;
+}
+
+function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean }) {
+  // Per-op_id lane summary strip: group node-bearing events by op_id.
+  const laneSummaries = useMemo((): LaneSummary[] => {
+    const byOp = new Map<string, string[]>();
+    for (const ev of events) {
+      if (!ev.op_id) continue;
+      const list = byOp.get(ev.op_id) ?? [];
+      list.push(ev.kind);
+      byOp.set(ev.op_id, list);
+    }
+    return Array.from(byOp.entries()).map(([op_id, kinds]) => ({
+      op_id,
+      lane: laneFor(kinds),
+      count: kinds.length,
+    }));
+  }, [events]);
+
+  return (
+    <div id="events" className="scroll-mt-24">
+      <SectionHeader label="Events" count={events.length} />
+
+      {/* Per-node lane summary strip */}
+      {laneSummaries.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {laneSummaries.map(({ op_id, lane, count }) => (
+            <div
+              key={op_id}
+              className="flex items-center gap-1 rounded border border-edge bg-surface-raised px-2 py-0.5"
+            >
+              <span className="font-mono text-[10px] text-content-secondary">{op_id}</span>
+              <span
+                className={`rounded px-1.5 py-0 font-mono text-[9px] font-semibold ${LANE_TONE[lane]}`}
+              >
+                {lane}
+              </span>
+              <span className="font-mono text-[9px] text-content-muted">×{count}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Event log */}
+      {events.length === 0 ? (
+        <div className="rounded border border-edge bg-surface-base px-3 py-10 text-center text-sm text-content-muted">
+          {live ? (
+            <span className="flex items-center justify-center gap-2">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-status-running opacity-75" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-status-running" />
+              </span>
+              Waiting for lifecycle events…
+            </span>
+          ) : (
+            "No lifecycle events recorded"
+          )}
+        </div>
+      ) : (
+        <div className="rounded border border-edge bg-surface-raised">
+          <div className="flex flex-col divide-y divide-edge-subtle">
+            {events.map((ev) => {
+              const badge = KIND_BADGE[ev.kind] ?? {
+                label: ev.kind,
+                tone: "bg-surface-overlay text-content-muted",
+              };
+              const hasPayload = ev.payload && Object.keys(ev.payload).length > 0;
+              return (
+                <div
+                  key={ev.id}
+                  className="flex items-start gap-2 px-3 py-1.5 hover:bg-surface-overlay"
+                >
+                  <span className="mt-0.5 shrink-0 font-mono text-[9px] tabular-nums text-content-muted">
+                    {new Date(ev.ts * 1000).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
+                  </span>
+                  <span
+                    className={`mt-0.5 shrink-0 rounded px-1.5 py-0 font-mono text-[9px] font-semibold ${badge.tone}`}
+                  >
+                    {badge.label}
+                  </span>
+                  {ev.op_id && (
+                    <span className="mt-0.5 shrink-0 font-mono text-[10px] text-content-secondary">
+                      {ev.op_id}
+                    </span>
+                  )}
+                  {hasPayload && (
+                    <span className="min-w-0 truncate font-mono text-[10px] text-content-muted">
+                      {Object.entries(ev.payload)
+                        .filter(([k]) => k !== "op_id")
+                        .slice(0, 3)
+                        .map(([k, v]) => {
+                          const s = String(v ?? "");
+                          return `${k}=${s.length > 40 ? s.slice(0, 40) + "…" : s}`;
+                        })
+                        .join("  ")}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Shared section header ─────────────────────────────────────────────────────
 
 function SectionHeader({
@@ -510,6 +681,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
   const bottomRef = useRef<HTMLDivElement>(null);
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   const [activeSection, setActiveSection] = useState("overview");
+  const [signalEvents, setSignalEvents] = useState<SignalEvent[]>([]);
 
   useEffect(() => {
     if (!id) return;
@@ -590,13 +762,38 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
     return stop;
   }, [id]);
 
+  // Stream lifecycle signals for this session.
+  useEffect(() => {
+    if (!id) return;
+
+    const stop = streamSignals(id, (event) => {
+      if ("type" in event) return; // heartbeat or done control frames
+      const sig = event as SignalEvent;
+      setSignalEvents((prev) => {
+        // Deduplicate by id in case of reconnect replay.
+        if (prev.some((e) => e.id === sig.id)) return prev;
+        return [...prev, sig];
+      });
+    });
+
+    return stop;
+  }, [id]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [session?.branches]);
 
   // Track active section on scroll
   useEffect(() => {
-    const sectionIds = ["overview", "expected-artifacts", "dag", "branches", "errors", "files"];
+    const sectionIds = [
+      "overview",
+      "expected-artifacts",
+      "dag",
+      "branches",
+      "errors",
+      "files",
+      "events",
+    ];
     const onScroll = () => {
       for (const sid of [...sectionIds].reverse()) {
         const el = document.getElementById(sid);
@@ -787,6 +984,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
     { id: "branches", label: "Branches", count: session.branches.length },
     { id: "errors", label: "Errors", count: errors.length, errorTone: errors.length > 0 },
     { id: "files", label: "Files", count: files.length },
+    { id: "events", label: "Events", count: signalEvents.length },
   ];
 
   return (
@@ -893,6 +1091,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
             />
             <ErrorsSection errors={errors} />
             <FilesSection files={files} />
+            <EventsSection events={signalEvents} live={live && !done} />
           </div>
           <div ref={bottomRef} />
         </main>

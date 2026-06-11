@@ -428,6 +428,39 @@ export function streamSession(
   return () => source.close();
 }
 
+// ─── Session lifecycle signals (Phase C Move 1) ───────────────────────────────
+
+export interface SignalEvent {
+  id: string;
+  session_id: string;
+  seq: number;
+  kind: string;
+  op_id: string;
+  ts: number;
+  payload: Record<string, unknown>;
+}
+
+export function streamSignals(
+  id: string,
+  onEvent: (event: SignalEvent | { type: string }) => void,
+): () => void {
+  const source = new EventSource(`${API_BASE}/api/sessions/${encodeURIComponent(id)}/signals`);
+  source.onmessage = (msg) => {
+    let event: SignalEvent | { type: string };
+    try {
+      event = JSON.parse(msg.data) as SignalEvent | { type: string };
+    } catch {
+      /* malformed chunk */
+      return;
+    }
+    if ("type" in event && event.type === "done") {
+      source.close();
+    }
+    onEvent(event);
+  };
+  return () => source.close();
+}
+
 // ─── Invocations (ADR-0020) ───────────────────────────────────────────────────
 
 export interface InvocationSummary {

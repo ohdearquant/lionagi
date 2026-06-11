@@ -1850,6 +1850,81 @@ class StateDB:
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    # ── Session signals (Phase C Move 1) ─────────────────────────────
+
+    async def insert_session_signal(
+        self,
+        *,
+        session_id: str,
+        kind: str,
+        op_id: str = "",
+        ts: float,
+        payload: dict[str, Any],
+    ) -> int:
+        """Append one lifecycle signal row; returns the assigned seq number.
+
+        seq is MAX(seq)+1 for the session, assigned in the same write so
+        concurrent inserts from different processes (WAL mode) do not
+        collide — SQLite serialises IMMEDIATE transactions.
+        """
+        sig_id = uuid.uuid4().hex
+        await self.db.execute("BEGIN IMMEDIATE")
+        try:
+            cur = await self.db.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM session_signals WHERE session_id = ?",
+                (session_id,),
+            )
+            row = await cur.fetchone()
+            seq: int = (row[0] if row else 0) + 1
+            await self.db.execute(
+                "INSERT INTO session_signals (id, session_id, seq, kind, op_id, ts, payload) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (sig_id, session_id, seq, kind, op_id, ts, _to_json_column(payload)),
+            )
+            await self.db.commit()
+        except BaseException:
+            await self.db.rollback()
+            raise
+        return seq
+
+    async def get_session_signals_after(
+        self,
+        session_id: str,
+        after_seq: int,
+        *,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Return signals for *session_id* with seq > *after_seq*, ordered by seq."""
+        cur = await self.db.execute(
+            "SELECT id, session_id, seq, kind, op_id, ts, payload "
+            "FROM session_signals "
+            "WHERE session_id = ? AND seq > ? "
+            "ORDER BY seq "
+            "LIMIT ?",
+            (session_id, after_seq, limit),
+        )
+        rows = await cur.fetchall()
+        result = []
+        for r in rows:
+            payload = r["payload"]
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except (json.JSONDecodeError, TypeError):
+                    payload = {}
+            result.append(
+                {
+                    "id": r["id"],
+                    "session_id": r["session_id"],
+                    "seq": r["seq"],
+                    "kind": r["kind"],
+                    "op_id": r["op_id"],
+                    "ts": r["ts"],
+                    "payload": payload,
+                }
+            )
+        return result
+
     # ── Helpers ────────────────────────────────────────────────────────
 
     @staticmethod

@@ -190,5 +190,73 @@ class SessionObserver(Observer):
             self.flow.add_progression(prog)
             return prog
 
+    def bind_db_persistence(self, session_id: str) -> None:
+        """Register a subscription that persists every emitted Signal to StateDB.
+
+        Wires an async handler onto self so that each call to :meth:`emit`
+        appends a row to ``session_signals`` via :meth:`StateDB.insert_session_signal`.
+        Calling this more than once for the same session_id is idempotent only
+        if the caller holds a reference and calls :meth:`unbind_db_persistence`
+        first; otherwise a second handler is added and each signal is written twice.
+        The handler is stored on ``self._db_persist_handler`` so the caller can
+        detach it at teardown.
+        """
+        import time as _time
+
+        from lionagi.state.db import DEFAULT_DB_PATH, StateDB  # noqa: PLC0415
+
+        async def _persist(event: Any, _ctx: Any = None) -> None:
+            from lionagi.session.signal import Signal  # noqa: PLC0415
+
+            sig = event if isinstance(event, Signal) else None
+            if sig is None:
+                return
+            kind = type(sig).__name__
+            op_id = getattr(sig, "op_id", "") or ""
+            ts = _time.time()
+            # Build compact payload from the signal's non-base fields.
+            payload: dict[str, Any] = {}
+            for field in type(sig).model_fields:
+                if field in ("id", "ln_id", "timestamp", "data", "emitter_role"):
+                    continue
+                val = getattr(sig, field, None)
+                if val is not None and val != "":
+                    payload[field] = val
+            if sig.data is not None:
+                try:
+                    from pydantic import BaseModel  # noqa: PLC0415
+
+                    payload["data"] = (
+                        sig.data.model_dump() if isinstance(sig.data, BaseModel) else str(sig.data)
+                    )
+                except Exception:  # noqa: BLE001
+                    payload["data"] = str(sig.data)
+
+            if not DEFAULT_DB_PATH.exists():
+                return
+            try:
+                async with StateDB(DEFAULT_DB_PATH) as db:
+                    await db.insert_session_signal(
+                        session_id=session_id,
+                        kind=kind,
+                        op_id=op_id,
+                        ts=ts,
+                        payload=payload,
+                    )
+            except Exception:  # noqa: BLE001, S110
+                pass  # persistence is best-effort — never break the session bus
+
+        from lionagi.session.signal import Signal  # noqa: PLC0415
+
+        handler = self.observe(Signal, handler=_persist)
+        self._db_persist_handler = handler
+
+    def unbind_db_persistence(self) -> None:
+        """Remove the handler registered by :meth:`bind_db_persistence`."""
+        handler = getattr(self, "_db_persist_handler", None)
+        if handler is not None:
+            self.unobserve(handler)
+            self._db_persist_handler = None
+
     def __repr__(self) -> str:
         return f"SessionObserver(events={len(self.flow.items)}, subscriptions={len(self._subs)})"
