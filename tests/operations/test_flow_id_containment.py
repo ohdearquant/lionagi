@@ -1,17 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Security regression tests for artifact-dir path containment.
-
-PR review 2026-04-24 flagged a HIGH finding: agent ids become filesystem path
-segments via ``RunDir.agent_artifact_dir``. After the orchestrate clean break,
-agent ids are CLI-generated from roster-validated role names (``{assignee}-{i}``)
-rather than free-form model output — but ``RunDir.agent_artifact_dir`` remains
-the authoritative, defense-in-depth guard and is what these tests pin: it
-rejects components containing path separators, leading dots, or resolved paths
-outside the artifact root.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,8 +8,6 @@ from pathlib import Path
 import pytest
 
 from lionagi.cli._runs import RunDir
-
-# ── RunDir.agent_artifact_dir containment ───────────────────────────
 
 
 class TestAgentArtifactDirContainment:

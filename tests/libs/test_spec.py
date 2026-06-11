@@ -246,6 +246,65 @@ class TestSpec:
             spec.base_type = int
 
 
+class TestCommonMetaFalsyValueHandling:
+    """Attack-driven tests: falsy-but-valid values must not bypass validation."""
+
+    def test_default_zero_and_factory_conflict_raises(self):
+        """default=0 (falsy) alongside default_factory must still be detected as a conflict.
+
+        Previously, truthiness on kw.get('default') treated 0 as absent, silently
+        accepting an invalid combination that would produce undefined behaviour at
+        instantiation time.
+        """
+        with pytest.raises(ValueError, match="both 'default' and 'default_factory'"):
+            CommonMeta._validate_common_metas(default=0, default_factory=list)
+
+    def test_default_false_and_factory_conflict_raises(self):
+        """default=False (falsy) alongside default_factory must be detected as a conflict."""
+        with pytest.raises(ValueError, match="both 'default' and 'default_factory'"):
+            CommonMeta._validate_common_metas(default=False, default_factory=list)
+
+    def test_default_factory_zero_non_callable_raises(self):
+        """default_factory=0 is not callable and must be rejected.
+
+        Previously the walrus assignment ``if _df := kw.get('default_factory')``
+        skipped the callable check for falsy non-callables, silently producing a
+        broken Spec that would fail at runtime when the factory was invoked.
+        """
+        with pytest.raises(ValueError, match="must be callable"):
+            CommonMeta._validate_common_metas(default_factory=0)
+
+    def test_validator_zero_non_callable_raises(self):
+        """validator=0 is not callable and must be rejected.
+
+        Previously the walrus assignment ``if _val := kw.get('validator')`` skipped
+        validator-callability checks when the value was falsy, allowing invalid
+        validators to be stored without error.
+        """
+        with pytest.raises(ValueError, match="must be a list of functions or a function"):
+            CommonMeta._validate_common_metas(validator=0)
+
+    def test_default_zero_alone_is_valid(self):
+        """default=0 without default_factory must succeed; 0 is a legitimate default."""
+        CommonMeta._validate_common_metas(default=0)  # must not raise
+
+    def test_default_false_alone_is_valid(self):
+        """default=False without default_factory must succeed."""
+        CommonMeta._validate_common_metas(default=False)  # must not raise
+
+    def test_spec_default_zero_is_stored(self):
+        """Spec(int, default=0) must store 0 and return it as the default."""
+        spec = Spec(int, name="count", default=0)
+        assert spec.default == 0
+        assert spec.create_default_value() == 0
+
+    def test_spec_default_false_is_stored(self):
+        """Spec(bool, default=False) must store False and return it as the default."""
+        spec = Spec(bool, name="flag", default=False)
+        assert spec.default is False
+        assert spec.create_default_value() is False
+
+
 class TestSpecDefaultValueEdgeCases:
     def test_spec_create_default_value_errors_without_default(self):
         """Spec with no default or factory raises ValueError."""

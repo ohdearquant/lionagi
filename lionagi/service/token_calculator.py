@@ -41,8 +41,7 @@ class TokenCalculator:
             ).encode
 
             return sum(
-                TokenCalculator._calculate_embed_item(i, tokenizer=tokenizer)
-                for i in inputs
+                TokenCalculator._calculate_embed_item(i, tokenizer=tokenizer) for i in inputs
             )
         except Exception:
             return 0
@@ -83,9 +82,7 @@ class TokenCalculator:
     def _calculate_chatitem(i_, tokenizer: Callable, model_name: str) -> int:
         try:
             if isinstance(i_, str):
-                return TokenCalculator.tokenize(
-                    i_, encoding_name=model_name, tokenizer=tokenizer
-                )
+                return TokenCalculator.tokenize(i_, encoding_name=model_name, tokenizer=tokenizer)
 
             if isinstance(i_, dict):
                 if "text" in i_:
@@ -97,8 +94,7 @@ class TokenCalculator:
 
             if isinstance(i_, list):
                 return sum(
-                    TokenCalculator._calculate_chatitem(x, tokenizer, model_name)
-                    for x in i_
+                    TokenCalculator._calculate_chatitem(x, tokenizer, model_name) for x in i_
                 )
         except Exception:
             return 0
@@ -110,8 +106,6 @@ class TokenCalculator:
                 return TokenCalculator.tokenize(s_, tokenizer=tokenizer)
 
             if isinstance(s_, list):
-                return sum(
-                    TokenCalculator._calculate_embed_item(x, tokenizer) for x in s_
-                )
+                return sum(TokenCalculator._calculate_embed_item(x, tokenizer) for x in s_)
         except Exception:
             return 0

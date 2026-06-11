@@ -1,5 +1,6 @@
 """Tests for lionagi.providers.ollama.chat.endpoint module."""
 
+import contextlib
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -385,3 +386,107 @@ class TestOllamaConfig:
 
         assert OLLAMA_CHAT_ENDPOINT_CONFIG is not None
         assert OLLAMA_CHAT_ENDPOINT_CONFIG.provider == "ollama"
+
+
+class TestOllamaPublicSurface:
+    """AUDIT-002 regression: __all__ must not export undefined names (F822).
+
+    The stale ``OLLAMA_CHAT_ENDPOINT_CONFIG`` entry was removed from ``__all__``
+    because no such symbol is defined in the module.  A star-import must succeed
+    and the resulting namespace must only contain names that actually exist.
+    """
+
+    @patch("lionagi.providers.ollama.chat.endpoint._HAS_OLLAMA", True)
+    def test_star_import_succeeds(self):
+        """``from lionagi.providers.ollama.chat.endpoint import *`` must not raise."""
+        import importlib
+
+        mod = importlib.import_module("lionagi.providers.ollama.chat.endpoint")
+        namespace = {}
+        # Simulate star-import by executing each exported name.
+        for name in mod.__all__:
+            assert hasattr(mod, name), (
+                f"__all__ exports {name!r} but module has no such attribute — "
+                "remove the stale name or define the symbol (AUDIT-002 / F822)"
+            )
+            namespace[name] = getattr(mod, name)
+
+    @patch("lionagi.providers.ollama.chat.endpoint._HAS_OLLAMA", True)
+    def test_all_does_not_contain_ollama_chat_endpoint_config(self):
+        """Stale OLLAMA_CHAT_ENDPOINT_CONFIG must be absent from __all__."""
+        import importlib
+
+        mod = importlib.import_module("lionagi.providers.ollama.chat.endpoint")
+        assert "OLLAMA_CHAT_ENDPOINT_CONFIG" not in mod.__all__, (
+            "OLLAMA_CHAT_ENDPOINT_CONFIG is in __all__ but not defined in the module; "
+            "remove it from __all__ to fix AUDIT-002 / F822"
+        )
+
+
+class TestOllamaAsyncCheckModel:
+    """AUDIT-003 regression: _check_model must not block the event loop.
+
+    The fix wraps the synchronous Ollama SDK calls in ``run_sync`` so they run
+    in a thread pool.  We verify that calling ``call()`` does NOT block by
+    confirming a concurrent ticker task keeps ticking while the (mocked) slow
+    model-check executes.
+    """
+
+    @pytest.mark.asyncio
+    @patch("lionagi.providers.ollama.chat.endpoint._HAS_OLLAMA", True)
+    async def test_call_check_model_runs_in_thread_not_blocking(self):
+        """A slow _check_model must not block concurrent async tasks (AUDIT-003).
+
+        We measure how many ticks a short-interval counter task completes while
+        ``call()`` is waiting on a "slow" (sleep-based) _check_model.  If the
+        event loop is blocked, the ticker gets zero ticks; if the fix is correct
+        it gets at least a few.
+        """
+        import asyncio
+
+        from lionagi.providers.ollama.chat.endpoint import OllamaChatEndpoint
+
+        mock_ollama.reset_mock()
+        mock_ollama.list = MagicMock()
+        mock_ollama.pull = MagicMock()
+
+        endpoint = OllamaChatEndpoint()
+
+        tick_count = 0
+
+        async def ticker():
+            nonlocal tick_count
+            while True:
+                await asyncio.sleep(0.01)
+                tick_count += 1
+
+        def slow_check(model: str) -> None:
+            """Simulates a slow sync check — sleeps in the current thread."""
+            import time
+
+            time.sleep(0.1)
+
+        with (
+            patch.object(endpoint, "_check_model", side_effect=slow_check),
+            patch.object(
+                endpoint.__class__.__bases__[0],
+                "call",
+                new_callable=AsyncMock,
+                return_value={"response": "ok"},
+            ),
+        ):
+            ticker_task = asyncio.create_task(ticker())
+            try:
+                await endpoint.call({"model": "llama2", "messages": []})
+            finally:
+                ticker_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await ticker_task
+
+        # If the event loop was blocked, tick_count would be 0.
+        # With run_sync the event loop stays alive, so we get ≥ 2 ticks during
+        # the 100 ms wait (10 ms interval).
+        assert tick_count >= 2, (
+            f"tick_count={tick_count}: event loop appears blocked during _check_model "
+            "— ensure _check_model is wrapped in run_sync (AUDIT-003)"
+        )

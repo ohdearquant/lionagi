@@ -8,6 +8,16 @@ small orchestration-level framings that sit on top — how to plan, synthesize,
 and grow the DAG. Kept here so they are curated in one place rather than inlined.
 """
 
+from __future__ import annotations
+
+__all__ = (
+    "DECOMPOSE_INSTRUCTION",
+    "DECOMPOSE_DAG_INSTRUCTION",
+    "DECOMPOSE_DISCIPLINE",
+    "SPAWN_GUIDANCE",
+    "SYNTHESIS_INSTRUCTION",
+)
+
 # ── Planning (orchestrator emits a list[TaskAssignment]) ──────────────────────
 #
 # The orchestrator decomposes the task into TaskAssignments — the casts

@@ -67,7 +67,7 @@ def test_get_agent_surfaces_yolo_and_fast_mode(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 1b: lion_system surfaces in get_agent() response (MEDIUM-2 codex finding)
+# Test 1b: lion_system surfaces in get_agent() response
 # ---------------------------------------------------------------------------
 
 
@@ -106,7 +106,7 @@ def test_get_agent_surfaces_lion_system(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Tests 1c/1d/1e: absent bool fields emit CLI defaults (round-2 MEDIUM finding)
+# Tests 1c/1d/1e: absent bool fields emit CLI defaults
 # ---------------------------------------------------------------------------
 
 
@@ -231,7 +231,7 @@ def test_update_agent_writes_yolo_field(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 2b: update_agent() writes lion_system field to disk (MEDIUM-2 codex finding)
+# Test 2b: update_agent() writes lion_system field to disk
 # ---------------------------------------------------------------------------
 
 

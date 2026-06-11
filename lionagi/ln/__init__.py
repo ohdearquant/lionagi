@@ -1,4 +1,5 @@
 from ._async_call import AlcallParams, BcallParams, alcall, bcall
+from ._cache import BoundedLRUCache
 from ._hash import (
     GENESIS_HASH,
     MAX_HASH_INPUT_BYTES,
@@ -61,6 +62,7 @@ from .types import is_sentinel, not_sentinel
 __all__ = (
     "alcall",
     "bcall",
+    "BoundedLRUCache",
     "GENESIS_HASH",
     "HashAlgorithm",
     "MAX_HASH_INPUT_BYTES",

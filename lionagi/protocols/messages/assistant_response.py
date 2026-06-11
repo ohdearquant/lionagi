@@ -109,10 +109,6 @@ class AssistantResponseContent(MessageContent):
         """Render assistant response as plain text."""
         return self.assistant_response
 
-    def render(self, *_args: Any, **_kwargs: Any) -> str:
-        """Render assistant response.  Delegates to :attr:`rendered` for beta API compat."""
-        return self.rendered
-
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AssistantResponseContent":
         """Construct AssistantResponseContent from dictionary."""

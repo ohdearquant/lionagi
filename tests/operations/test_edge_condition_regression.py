@@ -54,14 +54,10 @@ async def test_edge_condition_controls_traversal():
     graph.add_node(path_false)
 
     # Path with true condition
-    graph.add_edge(
-        Edge(head=start.id, tail=path_true.id, condition=CustomCondition(True))
-    )
+    graph.add_edge(Edge(head=start.id, tail=path_true.id, condition=CustomCondition(True)))
 
     # Path with false condition
-    graph.add_edge(
-        Edge(head=start.id, tail=path_false.id, condition=CustomCondition(False))
-    )
+    graph.add_edge(Edge(head=start.id, tail=path_false.id, condition=CustomCondition(False)))
 
     # Create session
     session = Session()
@@ -75,26 +71,24 @@ async def test_edge_condition_controls_traversal():
     # Verify correct behavior
     assert start.id in result["completed_operations"], "Start should complete"
     assert path_true.id in result["completed_operations"], "True path should complete"
-    assert (
-        path_false.id not in result["completed_operations"]
-    ), "False path should NOT be in completed"
+    assert path_false.id not in result["completed_operations"], (
+        "False path should NOT be in completed"
+    )
 
     # Key regression check: false path should be skipped, not failed
-    assert path_false.id in result.get(
-        "skipped_operations", []
-    ), "False path should be skipped"
+    assert path_false.id in result.get("skipped_operations", []), "False path should be skipped"
 
     # Verify no error for skipped operation
     if path_false.id in result["operation_results"]:
         result_value = result["operation_results"][path_false.id]
-        assert (
-            not isinstance(result_value, dict) or "error" not in result_value
-        ), "Skipped operation should not have error result"
+        assert not isinstance(result_value, dict) or "error" not in result_value, (
+            "Skipped operation should not have error result"
+        )
 
     # Verify status is SKIPPED
-    assert (
-        path_false.execution.status == EventStatus.SKIPPED
-    ), "False path should have SKIPPED status"
+    assert path_false.execution.status == EventStatus.SKIPPED, (
+        "False path should have SKIPPED status"
+    )
 
 
 @pytest.mark.asyncio

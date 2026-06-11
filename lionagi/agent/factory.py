@@ -13,7 +13,7 @@ from .spec import AgentSpec
 if TYPE_CHECKING:
     from .config import AgentConfig
 
-__all__ = ("create_agent",)
+__all__ = ("create_agent", "_chain_pre_hooks", "_chain_post_hooks")
 
 
 async def create_agent(
@@ -23,6 +23,8 @@ async def create_agent(
     project_dir: str | None = None,
     trust_project_settings: bool = False,
     trusted_hook_modules: set[str] | frozenset[str] | None = None,
+    chat_model: Any = None,
+    log_config: Any = None,
 ) -> Branch:
     """Create a fully configured Branch from an AgentSpec (or legacy AgentConfig).
 
@@ -35,6 +37,13 @@ async def create_agent(
         project_dir: Project root for settings resolution. Auto-detected if None.
         trust_project_settings: If True, load project-local settings.
         trusted_hook_modules: Python module paths allowed for import-based hooks.
+        chat_model: Prebuilt ``iModel`` to use verbatim. When provided, the
+            ``spec.model`` string-parsing path is skipped — callers that build a
+            richer iModel (CLI flag routing: bypass/yolo/fast/theme/repo) inject
+            it here so the factory stays the single construction site.
+        log_config: Optional ``DataLoggerConfig`` (or dict) forwarded to the
+            Branch. Lets a caller pin log behavior (e.g. ``auto_save_on_exit``)
+            without a second Branch builder.
 
     Returns:
         A Branch ready to use with tools registered and hooks applied.
@@ -61,10 +70,13 @@ async def create_agent(
 
     branch_kwargs = {}
 
-    if spec.model:
-        from lionagi.cli._providers import (
+    if chat_model is not None:
+        branch_kwargs["chat_model"] = chat_model
+    elif spec.model:
+        from lionagi.service.providers import (
             CLI_PROVIDERS,
             PROVIDER_EFFORT_KWARG,
+            PROVIDER_YOLO_KWARGS,
             parse_model_spec,
         )
 
@@ -81,8 +93,6 @@ async def create_agent(
             if kwarg:
                 extra[kwarg] = effort
         if spec.yolo:
-            from lionagi.cli._providers import PROVIDER_YOLO_KWARGS
-
             extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
 
         # CLI providers (codex/claude_code) auth via subprocess — a placeholder
@@ -98,6 +108,9 @@ async def create_agent(
             **extra,
         )
         branch_kwargs["chat_model"] = chat_model
+
+    if log_config is not None:
+        branch_kwargs["log_config"] = log_config
 
     branch = Branch(**branch_kwargs)
 
@@ -215,9 +228,14 @@ def _register_tools(branch: Branch, spec: AgentSpec) -> None:
             tool = _attach_hooks(BashTool().to_tool(), spec, "bash")
             branch.register_tools(tool)
         elif tool_spec == "search":
+            from pathlib import Path
+
             from lionagi.tools.code.search import SearchTool
 
-            tool = _attach_hooks(SearchTool().to_tool(), spec, "search")
+            workspace_root = str(Path(spec.cwd) if spec.cwd else Path.cwd())
+            tool = _attach_hooks(
+                SearchTool(workspace_root=workspace_root).to_tool(), spec, "search"
+            )
             branch.register_tools(tool)
 
 

@@ -5,14 +5,21 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
+import signal
 import tempfile
 
 _log = logging.getLogger(__name__)
 
 _TEMPLATE_RE = re.compile(r"\{\{(\w+)\}\}")
+
+# ADR-0027 defines the closed set of action kinds.  The CLI parser accepts
+# "playbook" as an alias for "play" for backward compatibility.
+_VALID_ACTION_KINDS = frozenset({"agent", "flow", "fanout", "play", "flow_yaml"})
+_ALIAS_ACTION_KINDS: dict[str, str] = {"playbook": "play"}
 
 
 def _render_template(template: str, context: dict) -> str:
@@ -38,6 +45,12 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
     must be deleted after the subprocess exits (only set for ``flow_yaml``).
     """
     kind = schedule["action_kind"]
+    # Normalize legacy alias and validate against the closed set (LIONAGI-AUDIT-003).
+    kind = _ALIAS_ACTION_KINDS.get(kind, kind)
+    if kind not in _VALID_ACTION_KINDS:
+        raise ValueError(
+            f"Unknown action_kind {kind!r}. Valid kinds: {sorted(_VALID_ACTION_KINDS)}"
+        )
     model = schedule.get("action_model") or ""
     prompt = schedule.get("action_prompt") or ""
     agent = schedule.get("action_agent")
@@ -106,16 +119,51 @@ async def spawn_and_wait(
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
         env=env,
+        # `uv run li` forks the real worker (and that worker may fork
+        # further). Put the whole tree in its own session/process group so a
+        # cancel can signal the GROUP, not just the direct child — otherwise
+        # grandchildren survive scheduler shutdown as orphans.
+        start_new_session=True,
+    )
+    # Capture the pgid NOW — once the child exits and is reaped,
+    # os.getpgid(proc.pid) raises ProcessLookupError and we'd skip the group
+    # kill. start_new_session=True makes pgid == proc.pid. Guard mocked pids
+    # in tests: a MagicMock.pid coerces to 1, and killpg(1, …) hits init.
+    # os.killpg is POSIX-only: on Windows leave _pgid None so the group-kill
+    # path is skipped and cleanup falls through to proc.terminate()/kill()
+    # instead of raising AttributeError.
+    _pgid: int | None = (
+        proc.pid if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1 else None
     )
 
     try:
         _, stderr = await proc.communicate()
+    except asyncio.CancelledError:
+        # Cancellation (e.g. scheduler shutdown) must not leave the spawned
+        # `uv run li` tree detached. SIGTERM the whole group, give it a moment
+        # to exit, then SIGKILL the group, before re-raising so the caller can
+        # record the cancel.
+        _log.warning("spawn_and_wait cancelled; terminating child for %s", invocation_id)
+        if _pgid is not None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(_pgid, signal.SIGTERM)
+        with contextlib.suppress(ProcessLookupError):
+            proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except (TimeoutError, asyncio.TimeoutError):
+            if _pgid is not None:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(_pgid, signal.SIGKILL)
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+        raise
     finally:
         if tmp_path is not None:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
 
     exit_code = proc.returncode or 0
     stderr_tail = (stderr[-2048:] if stderr else b"").decode(errors="replace")

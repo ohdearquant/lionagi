@@ -39,6 +39,13 @@ class _FakeOrcBranch:
 
 
 def _env(tmp_path, orc) -> SimpleNamespace:
+    _name_counts: dict = {}
+
+    def _assign_name(role: str) -> str:
+        _name_counts[role] = _name_counts.get(role, 0) + 1
+        n = _name_counts[role]
+        return f"{role}-{n}" if n > 1 else role
+
     return SimpleNamespace(
         run=SimpleNamespace(
             artifact_root=tmp_path,
@@ -51,8 +58,10 @@ def _env(tmp_path, orc) -> SimpleNamespace:
         effort=None,
         total_budget=None,
         team_data=None,
+        pack=None,
         session=SimpleNamespace(),
         builder=SimpleNamespace(),
+        assign_name=_assign_name,
     )
 
 
@@ -213,3 +222,75 @@ async def test_workers_override_keeps_role_modes(tmp_path):
     )
     assert "reviewer: codex/expensive (workers)" in out
     assert "adversarial" in out  # role behaviour preserved, not stripped like --bare
+
+
+# ── #1210 pack routing ────────────────────────────────────────────────────
+
+
+def _pack_env(tmp_path, orc, pack_yaml: str) -> SimpleNamespace:
+    """env with bare=False and a pack loaded from a YAML string."""
+    from lionagi.casts.pack import Pack
+
+    pack_file = tmp_path / "routing.yaml"
+    pack_file.write_text(pack_yaml, encoding="utf-8")
+    env = _env(tmp_path, orc)
+    env.bare = False
+    env.pack = Pack.from_file(pack_file)
+    return env
+
+
+@pytest.mark.asyncio
+async def test_pack_routing_shown_in_dry_run(tmp_path):
+    """A pack with writer.model appears as (pack) in dry-run resolution.
+
+    Uses ``writer`` — a casts role that has no user-profile on disk, so the
+    pack's RoleConfig.model is the winning source (profile > pack > default).
+    """
+    orc = _FakeOrcBranch(
+        [SimpleNamespace(assignments=[TaskAssignment(task="draft docs", assignee="writer")])]
+    )
+    env = _pack_env(
+        tmp_path,
+        orc,
+        "name: test-routing\nroles:\n  writer:\n    model: codex/codex-cheap\n",
+    )
+    out = await _run_flow_inner("codex/gpt-5.5", "task", env=env, dry_run=True)
+    assert "writer: codex/codex-cheap (pack)" in out
+
+
+@pytest.mark.asyncio
+async def test_workers_override_beats_pack_routing(tmp_path):
+    """--workers explicit spec overrides pack-sourced model (precedence rule)."""
+    orc = _FakeOrcBranch(
+        [SimpleNamespace(assignments=[TaskAssignment(task="draft docs", assignee="writer")])]
+    )
+    env = _pack_env(
+        tmp_path,
+        orc,
+        "name: test-routing\nroles:\n  writer:\n    model: codex/pack-model\n",
+    )
+    out = await _run_flow_inner(
+        "codex/gpt-5.5", "task", env=env, dry_run=True, workers_str="codex/explicit"
+    )
+    assert "writer: codex/explicit (workers)" in out
+    assert "(pack)" not in out
+
+
+def test_pack_flag_parses_via_argparse():
+    """`li o flow --pack PATH` and `li o fanout --pack PATH` reach args.pack."""
+    import argparse
+
+    from lionagi.cli.orchestrate import add_orchestrate_subparser
+
+    parser = argparse.ArgumentParser(prog="li")
+    sub = parser.add_subparsers(dest="command", required=True)
+    add_orchestrate_subparser(sub)
+
+    args = parser.parse_args(["o", "flow", "codex/gpt-5.5", "task", "--pack", "/tmp/r.yaml"])
+    assert args.pack == "/tmp/r.yaml"
+
+    args2 = parser.parse_args(["o", "flow", "codex/gpt-5.5", "task"])
+    assert args2.pack is None
+
+    args3 = parser.parse_args(["o", "fanout", "codex/gpt-5.5", "task", "--pack", "/tmp/r.yaml"])
+    assert args3.pack == "/tmp/r.yaml"

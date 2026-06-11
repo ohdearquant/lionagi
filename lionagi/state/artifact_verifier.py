@@ -10,7 +10,8 @@ import time
 from pathlib import PurePosixPath
 from typing import Any, Literal, TypedDict
 
-_GLOB_CHARS = frozenset("*?[]")
+from lionagi.libs.path_safety import GLOB_CHARS as _GLOB_CHARS
+
 _ARTIFACT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _VALIDATION_ROOT = os.path.realpath("/tmp/__contract_validate__")  # noqa: S108 — synthetic root for path-validation only, never written to
 
@@ -55,7 +56,7 @@ class VerificationResult(TypedDict):
 
 def _safe_join(root: str, rel: str) -> str:
     """Join rel under root, rejecting absolute paths, globs, '..', and escapes."""
-    if not isinstance(rel, str) or not rel or rel.startswith("/"):
+    if not isinstance(rel, str) or not rel or rel.startswith("/") or "\x00" in rel:
         raise ArtifactPathError(f"absolute path not allowed: {rel!r}")
     if any(c in _GLOB_CHARS for c in rel):
         raise ArtifactPathError(f"glob characters not allowed in v1: {rel!r}")

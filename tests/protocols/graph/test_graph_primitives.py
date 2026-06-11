@@ -127,9 +127,7 @@ def test_splice_after_preserves_custom_edge_properties():
     g.splice_after(a, new)
 
     # The new-to-successor edge should carry extra properties forward.
-    successor_edges = [
-        g.internal_edges[eid] for eid in g.node_edge_mapping[new.id]["out"]
-    ]
+    successor_edges = [g.internal_edges[eid] for eid in g.node_edge_mapping[new.id]["out"]]
     assert len(successor_edges) == 1
     e = successor_edges[0]
     assert e.label == ["hot"]

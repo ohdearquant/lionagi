@@ -46,9 +46,7 @@ def extract_docstring(
     elif style == "rest":
         func_description, params_description = _extract_docstring_details_rest(func)
     else:
-        raise ValueError(
-            f'{style} is not supported. Please choose either "google" or "reST".'
-        )
+        raise ValueError(f'{style} is not supported. Please choose either "google" or "reST".')
     return func_description, params_description
 
 

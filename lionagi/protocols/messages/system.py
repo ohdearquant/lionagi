@@ -1,11 +1,14 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, ClassVar
 
 from pydantic import Field, field_validator
+
+from lionagi.ln._utils import now_utc
 
 from .base import SenderRecipient
 from .message import Message, MessageContent, MessageRole
@@ -32,12 +35,8 @@ class SystemContent(MessageContent):
         parts.append(self.system_message)
         return "\n\n".join(parts)
 
-    def render(self, *_args: Any, **_kwargs: Any) -> str:
-        """Render system message.  Delegates to :attr:`rendered` for beta API compat."""
-        return self.rendered
-
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SystemContent":
+    def from_dict(cls, data: dict[str, Any]) -> SystemContent:
         """Construct SystemContent from dictionary."""
         system_message = data.get(
             "system_message",
@@ -47,7 +46,7 @@ class SystemContent(MessageContent):
 
         # Handle datetime generation
         if system_datetime is True:
-            system_datetime = datetime.now().isoformat(timespec="minutes")
+            system_datetime = now_utc().isoformat(timespec="minutes")
         elif system_datetime is False or system_datetime is None:
             system_datetime = None
 

@@ -1,5 +1,6 @@
 """Tests for lionagi.service.broadcaster module."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -288,3 +289,75 @@ class TestBroadcaster:
         sync_callback1.assert_called_once_with(event)
         async_callback.assert_awaited_once_with(event)
         sync_callback2.assert_called_once_with(event)
+
+
+##################################################
+#  Regression: asyncio.iscoroutine-only check    #
+##################################################
+
+
+class TestBroadcasterCoroutineOnlyRegression:
+    """Verify that broadcast only awaits coroutines, not Tasks or other awaitables.
+
+    origin/main used `if asyncio.iscoroutine(result): await result`.
+    The refactor replaced this with `await maybe_await(callback(event))`, which
+    uses inspect.isawaitable and would also await Tasks/Futures.  These tests
+    confirm the narrow coroutine-only semantics are restored.
+    """
+
+    @pytest.fixture(autouse=True)
+    def fresh_broadcaster(self):
+        class _TaskBroadcaster(Broadcaster):
+            _event_type = SampleEvent
+
+        self.TaskBroadcaster = _TaskBroadcaster
+        yield
+        _TaskBroadcaster._subscribers.clear()
+        _TaskBroadcaster._instance = None
+
+    @pytest.mark.asyncio
+    async def test_sync_subscriber_returning_task_is_not_awaited(self):
+        """Sync subscriber that schedules and returns an asyncio.Task must NOT block broadcast.
+
+        Old behavior: asyncio.iscoroutine(task) is False → broadcast does not await it.
+        New (broken) behavior: inspect.isawaitable(task) is True → broadcast awaits it.
+        """
+        task_completed = []
+
+        async def _background():
+            await asyncio.sleep(0.05)
+            task_completed.append(True)
+
+        def sync_callback_schedules_task(event):
+            # Fire-and-forget: schedule work and return the Task.
+            return asyncio.ensure_future(_background())
+
+        self.TaskBroadcaster.subscribe(sync_callback_schedules_task)
+        event = SampleEvent()
+
+        # broadcast() must return before _background() finishes (non-blocking).
+        await self.TaskBroadcaster.broadcast(event)
+
+        # The task has NOT completed yet because broadcast did not await it.
+        assert task_completed == [], (
+            "broadcast() awaited an asyncio.Task returned by a sync subscriber — "
+            "this changes fire-and-return to fire-and-wait, breaking origin/main behavior."
+        )
+
+        # Give the background task a chance to run to avoid ResourceWarning.
+        await asyncio.sleep(0.1)
+        assert task_completed == [True]
+
+    @pytest.mark.asyncio
+    async def test_async_subscriber_coroutine_is_still_awaited(self):
+        """Async subscriber's coroutine must still be awaited (regression safety net)."""
+        results = []
+
+        async def async_callback(event):
+            results.append("done")
+
+        self.TaskBroadcaster.subscribe(async_callback)
+        event = SampleEvent()
+        await self.TaskBroadcaster.broadcast(event)
+
+        assert results == ["done"], "async subscriber coroutine was not awaited"

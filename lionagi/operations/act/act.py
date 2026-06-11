@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from lionagi.ln import AlcallParams
 from lionagi.protocols.messages import ActionRequest, ActionResponse
 
+from .._defaults import get_default_action_call as _get_default_call_params
 from ..fields import ActionResponseModel
 from ..types import ActionParam
 
@@ -16,8 +17,6 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from lionagi.session.branch import Branch
-
-_DEFAULT_ALCALL_PARAMS = None
 
 
 async def _act(
@@ -225,11 +224,3 @@ async def _sequential_act(
         result = await _act(branch, req, suppress_errors, verbose_action)
         results.append(result)
     return results
-
-
-def _get_default_call_params() -> AlcallParams:
-    """Get or create default AlcallParams."""
-    global _DEFAULT_ALCALL_PARAMS
-    if _DEFAULT_ALCALL_PARAMS is None:
-        _DEFAULT_ALCALL_PARAMS = AlcallParams(output_dropna=True)
-    return _DEFAULT_ALCALL_PARAMS

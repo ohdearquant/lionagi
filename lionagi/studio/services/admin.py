@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import time
 import uuid
@@ -9,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from lionagi.cli._process import pid_alive as _pid_is_live
+from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
 from lionagi.state.db import DEFAULT_DB_PATH
 from lionagi.state.reasons import SessionReasons
 
@@ -25,14 +26,6 @@ def db_health() -> dict[str, int]:
     wal_path = db_path.parent / (db_path.name + "-wal")
     wal_bytes = wal_path.stat().st_size if wal_path.exists() else 0
     return {"size_bytes": size_bytes, "wal_bytes": wal_bytes, "wal_pending": wal_bytes}
-
-
-def _pid_is_live(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
 
 
 def _find_pid_file(root: Path) -> int | None:
@@ -148,14 +141,7 @@ async def doctor(*, stale_hours: float = 1.0) -> dict[str, Any]:
 
 
 async def health_report() -> dict[str, Any]:
-    """Composite session health snapshot for the admin console.
-
-    Layers ADR-0024's ``classify_session_health`` over the existing
-    phantom checks: process liveness comes from the same PID/ps scan
-    that ``doctor`` uses; artifacts/locks come from the run directory.
-    Terminal sessions are classified too (so we can spot zombies left
-    behind by past crashes).
-    """
+    """Composite session health snapshot for the admin console."""
     from collections import Counter
 
     from lionagi.state.health import (
@@ -192,7 +178,6 @@ async def health_report() -> dict[str, Any]:
     unhealthy: list[dict[str, Any]] = []
 
     for row in rows:
-        # Convert sqlite3.Row to dict for the pure classifier.
         sess = {k: row[k] for k in row.keys()}
         status = sess.get("status") or "completed"
         by_status[status] += 1
@@ -201,17 +186,12 @@ async def health_report() -> dict[str, Any]:
         has_artifacts = artifacts is not None and artifacts.exists()
         has_stale_locks = False
         if artifacts is not None and artifacts.exists():
-            # Lock check is cheap (one glob) but only matters for
-            # candidate-zombie terminal sessions and stale-process
-            # running ones. Skip for clearly-healthy active ones.
             cutoff = now - 3600
             has_stale_locks = _find_stale_lock(artifacts, cutoff=cutoff) is not None
 
         if status == "running":
             process_alive = _live_process_matches(row["id"], artifacts)
         else:
-            # Terminal session — process_alive is moot; classifier only
-            # uses it on the running branch.
             process_alive = False
 
         health = classify_session_health(
@@ -223,7 +203,6 @@ async def health_report() -> dict[str, Any]:
         )
         by_health[health.value] += 1
 
-        # "Unhealthy" = anything that warrants operator attention.
         if health not in (SessionHealth.HEALTHY, SessionHealth.IDLE):
             last_activity = (
                 sess.get("last_message_at") or sess.get("updated_at") or sess.get("started_at") or 0
@@ -259,12 +238,6 @@ async def health_report() -> dict[str, Any]:
     }
 
 
-# ADR-0025: admin operators cannot mark sessions completed/timed_out —
-# those are system-determined. Mirror the Python guard from db.py here
-# so the API rejects the request before touching the DB.
-_ADMIN_TRANSITION_TARGETS: frozenset[str] = frozenset({"failed", "aborted", "cancelled"})
-
-# ADR-0028 §5: phantom-classifier (PhantomReason) → reason code mapping.
 _PHANTOM_REASON_CODES: dict[str, str] = {
     "process_dead": SessionReasons.HEALTH_PHANTOM_PROCESS_DEAD,
     "missing_artifacts": SessionReasons.HEALTH_PHANTOM_MISSING_ARTIFACTS,
@@ -272,30 +245,14 @@ _PHANTOM_REASON_CODES: dict[str, str] = {
 }
 
 
-# ADR-0028 §5: SessionHealth (read-time) → reason code mapping. The
-# phantom resolver checks this AFTER the PhantomReason map so a
-# concrete phantom cause wins, but a non-phantom unhealthy session
-# (STALE without lock, ORPHANED, IDLE-but-process-dead) still gets a
-# specific reason code instead of falling back to the operator's
-# generic choice.
 def _resolve_session_health_reason_code(
     *,
     phantom_reason: str | None,
     health,  # SessionHealth enum from lionagi.state.health
 ) -> str | None:
-    """Return the most-specific health-derived reason code, or None.
-
-    Returns None when neither classifier yields a specific cause —
-    callers should keep the operator's `reason_code` in that case.
-    """
+    """Return the most-specific health-derived reason code, or None."""
     if phantom_reason is not None:
-        # PhantomReason wins — the phantom classifier names a concrete
-        # filesystem-level cause (dead process, missing artifacts, stale
-        # lock) that's more actionable than a generic health label.
         return _PHANTOM_REASON_CODES.get(phantom_reason)
-    # Non-phantom unhealthy states use SessionReasons.HEALTH_* codes.
-    # Map by enum name so changes to the SessionHealth enum surface
-    # here at import time, not at runtime.
     from lionagi.state.health import SessionHealth
 
     if health == SessionHealth.STALE:
@@ -317,21 +274,7 @@ async def transition_sessions(
     actor: str = "admin",
     legacy_reason: str | None = None,
 ) -> dict[str, Any]:
-    """Mark running sessions terminal with an audit-log entry.
-
-    ADR-0024 §B replaces the blunt "prune" with "transition": the session
-    row + messages + artifacts are preserved for debugging. Guards:
-
-    * ``target_status`` must be in ``ADMIN_TRANSITION_TARGETS``.
-    * Only ``running`` sessions are touched; already-terminal ones are
-      reported in ``skipped`` so the caller can warn the operator.
-    * HEALTHY and IDLE sessions are refused with ValueError (→ 422) to
-      prevent accidental termination of active sessions (ADR-0024 health
-      guard).
-    * The DB update is conditional on ``status='running'`` in the WHERE
-      clause to close the TOCTOU window between the pre-check read and the
-      write.
-    """
+    """Mark running sessions terminal with an audit-log entry."""
     from lionagi.state.reasons import validate_reason_code
 
     if target_status not in _ADMIN_TRANSITION_TARGETS:
@@ -356,9 +299,6 @@ async def transition_sessions(
     now = time.time()
 
     async with StateDB() as db:
-        # Health guard + UPDATE merged into one loop per session.
-        # Re-classify each session immediately before the UPDATE to minimize
-        # the TOCTOU window between the guard read and the destructive write.
         for sid in session_ids:
             current = await db.get_session(sid)
             if current is None:
@@ -369,7 +309,6 @@ async def transition_sessions(
                     {"session_id": sid, "reason": f"not_running:{current.get('status')}"}
                 )
                 continue
-            # Snapshot health-relevant timestamps for the atomic WHERE below.
             _snap_last_msg = current.get("last_message_at")
             _snap_updated = current.get("updated_at")
             artifacts = _artifacts_path(current)
@@ -393,12 +332,6 @@ async def transition_sessions(
                     "Only unhealthy sessions may be force-transitioned."
                 )
 
-            # Health/phantom classification overrides the operator reason
-            # code when a concrete cause is available (ADR-0028 §5).
-            # _resolve_session_health_reason_code() returns the
-            # most-specific code — PhantomReason takes priority over
-            # SessionHealth so a dead process / missing artifacts /
-            # stale lock isn't masked by the broader STALE label.
             phantom_reason = _classify_phantom(current, now=now, stale_seconds=3600)
             classifier_code = _resolve_session_health_reason_code(
                 phantom_reason=phantom_reason,
@@ -409,8 +342,6 @@ async def transition_sessions(
             effective_evidence_refs: list[dict[str, Any]] = list(evidence_refs)
             if classifier_code is not None:
                 effective_reason_code = classifier_code
-                # Preserve the operator's narrative when they bothered
-                # to write one; otherwise synthesize from the classifier.
                 if not reason_summary:
                     cause = phantom_reason or health.value
                     effective_reason_summary = (
@@ -433,18 +364,6 @@ async def transition_sessions(
                         }
                     )
 
-            # ADR-0028: the conditional sessions UPDATE and the
-            # status_transitions INSERT must commit together. The
-            # earlier two-commit layout had a window where a crash
-            # between commits left the session terminal with no
-            # history row — the exact drift ADR-0028 §4 says must
-            # not happen.
-            #
-            # BEGIN IMMEDIATE acquires the write lock up front so the
-            # TOCTOU window is the same length as before (we already
-            # held the SQLite connection; this just makes the lock
-            # explicit instead of letting aiosqlite take it lazily on
-            # the first write).
             await db.db.execute("BEGIN IMMEDIATE")
             try:
                 cur = await db.db.execute(
@@ -468,16 +387,11 @@ async def transition_sessions(
                     ),
                 )
                 if cur.rowcount == 0:
-                    # No row to transition — roll back the empty
-                    # transaction so we don't leave a no-op BEGIN
-                    # blocking the connection.
                     await db.db.rollback()
                     existing = await db.get_session(sid)
                     if existing is None:
                         skipped.append({"session_id": sid, "reason": "not_found"})
                     elif existing.get("status") == "running":
-                        # Status is still running but timestamps changed
-                        # between snapshot and UPDATE — concurrent heartbeat.
                         skipped.append(
                             {
                                 "session_id": sid,
@@ -492,7 +406,6 @@ async def transition_sessions(
                             }
                         )
                     continue
-                # Append the transition row inside the same transaction.
                 await db.db.execute(
                     "INSERT INTO status_transitions "
                     "(id, entity_type, entity_id, previous_status, status, "
@@ -522,8 +435,6 @@ async def transition_sessions(
                 )
                 await db.db.commit()
             except BaseException:
-                # Any failure between BEGIN and COMMIT rolls back both
-                # writes, restoring the running session.
                 await db.db.rollback()
                 raise
             transitioned.append(sid)
@@ -565,7 +476,7 @@ async def list_admin_events(
 
 
 async def prune_sessions(session_ids: list[str]) -> int:
-    """Delete sessions by explicit ID list (intentional admin action; unconditional)."""
+    """Delete sessions by explicit ID list."""
     seen: dict[str, None] = {}
     for sid in session_ids:
         seen[sid] = None
@@ -593,74 +504,12 @@ async def prune_sessions(session_ids: list[str]) -> int:
 
 
 async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
-    """Prune phantom sessions with a TOCTOU-safe guarded DELETE.
+    """Transition phantom sessions to 'failed' via the sanctioned status path.
 
-    Re-checks the phantom condition atomically in the WHERE clause so sessions
-    that transitioned to a terminal state between classification and deletion are
-    never removed.
-
-    Guard strategy is per-reason:
-    - ``process_dead`` / ``stale_lock``: require ``status = 'running' AND
-      updated_at <= stale_cutoff`` (staleness confirms the process is gone).
-    - ``missing_artifacts``: require ``status = 'running' AND updated_at <=
-      stale_cutoff`` — same guard as stale reasons to prevent deleting a session
-      that recovered (created its artifacts + heartbeated) between classification
-      and deletion.
+    Session rows are preserved so reason history and artifacts remain
+    inspectable. Delegates to :func:`reap_phantom_sessions` from the
+    lifecycle service.
     """
-    phantoms = await list_phantom_sessions(stale_hours=stale_hours)
-    if not phantoms or not DEFAULT_DB_PATH.exists():
-        return 0
+    from lionagi.studio.services.lifecycle import reap_phantom_sessions
 
-    now = time.time()
-    stale_cutoff = now - stale_hours * 3600
-
-    # Split by reason so each group gets the appropriate WHERE guard.
-    stale_ids = [
-        p["session_id"] for p in phantoms if p.get("reason") in ("process_dead", "stale_lock")
-    ]
-    artifact_entries = [
-        {
-            "id": p["session_id"],
-            "classified_updated_at": p.get("updated_at", 0),
-            "artifacts_path": p.get("artifacts_path"),
-        }
-        for p in phantoms
-        if p.get("reason") == "missing_artifacts"
-    ]
-
-    pruned = 0
-    async with _open_db(_DB) as db:
-        if stale_ids:
-            placeholders = ",".join("?" * len(stale_ids))
-            cur = await db.execute(
-                f"DELETE FROM sessions WHERE id IN ({placeholders})"  # noqa: S608
-                " AND status = 'running' AND (updated_at IS NULL OR updated_at <= ?)",
-                (*stale_ids, stale_cutoff),
-            )
-            await db.commit()
-            pruned += cur.rowcount or 0
-
-        for entry in artifact_entries:
-            ap = Path(entry["artifacts_path"]) if entry["artifacts_path"] else None
-            if ap and ap.exists():
-                continue
-            cur = await db.execute(
-                "DELETE FROM sessions WHERE id = ?"
-                " AND status = 'running'"
-                " AND (updated_at IS NULL OR updated_at <= ?)",
-                (entry["id"], entry["classified_updated_at"]),
-            )
-            await db.commit()
-            pruned += cur.rowcount or 0
-
-        if pruned:
-            await db.execute(
-                """
-                DELETE FROM messages
-                WHERE id NOT IN (
-                  SELECT value FROM progressions, json_each(progressions.collection)
-                )
-                """
-            )
-            await db.commit()
-    return pruned
+    return await reap_phantom_sessions(stale_hours=stale_hours, actor="admin_prune")

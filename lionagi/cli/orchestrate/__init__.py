@@ -8,10 +8,30 @@ import argparse
 import sys
 
 from lionagi._errors import TimeoutError as LionTimeoutError
-from lionagi.ln.concurrency import run_async
+from lionagi.libs.path_safety import validate_path_component as validate_path_component
+from lionagi.ln.concurrency import is_cancelled, run_async
 
+from .._lifecycle import EXIT_CODE_BY_STATUS
 from .._logging import hint, log_error
 from .._providers import add_common_cli_args
+from ._spec import (
+    _coerce_arg_value,
+    _derive_args_schema_from_spec,
+    _interpolate_prompt,
+    _load_flow_spec,
+    _resolve_playbook_path,
+    _validate_args_schema,
+    _validate_spec_fields,
+)
+from ._spec import (
+    _parse_argument_hint as _parse_argument_hint,
+)
+from ._spec import (
+    _scan_argv_for_playbook_name as _scan_argv_for_playbook_name,
+)
+from ._spec import (
+    inject_playbook_schema_into_parser as inject_playbook_schema_into_parser,
+)
 from .fanout import _run_fanout
 from .flow import FlowPlanError, _run_flow
 
@@ -19,12 +39,6 @@ from .flow import FlowPlanError, _run_flow
 def add_orchestrate_subparser(
     subparsers: argparse._SubParsersAction,
 ) -> dict[str, argparse.ArgumentParser]:
-    """Register `li orchestrate` (alias `li o`) with its sub-commands.
-
-    Returns a mapping of sub-command name → ArgumentParser so callers that
-    need to post-hoc extend a sub-parser (e.g. to inject playbook-declared
-    flags) can do so without re-navigating argparse internals.
-    """
     orch = subparsers.add_parser(
         "orchestrate",
         aliases=["o"],
@@ -80,6 +94,15 @@ def add_orchestrate_subparser(
         help="Comma-separated worker model specs (each can include effort).",
     )
     fo.add_argument(
+        "--pack",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Path to a YAML routing pack. Provides per-role model/effort when "
+            "--workers is absent. --workers overrides pack routing."
+        ),
+    )
+    fo.add_argument(
         "--max-concurrent",
         type=int,
         default=0,
@@ -126,7 +149,6 @@ def add_orchestrate_subparser(
 
     add_common_cli_args(fo)
 
-    # ── flow sub-command ─────────────────────────────────────────────
     fl = orch_sub.add_parser(
         "flow",
         help="Auto-DAG pipeline: orchestrator plans DAG, engine executes.",
@@ -262,6 +284,15 @@ def add_orchestrate_subparser(
         ),
     )
     fl.add_argument(
+        "--pack",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Path to a YAML routing pack. Provides per-role model/effort when "
+            "--workers is absent. --workers overrides pack routing."
+        ),
+    )
+    fl.add_argument(
         "--max-ops",
         "--max-agents",
         dest="max_ops",
@@ -289,424 +320,7 @@ def add_orchestrate_subparser(
     return {"fanout": fo, "flow": fl}
 
 
-def _scan_argv_for_playbook_name(argv: list[str]) -> str | None:
-    """Scan argv for -p NAME / --playbook NAME / --playbook=NAME."""
-    i = 0
-    while i < len(argv):
-        tok = argv[i]
-        if tok in ("-p", "--playbook"):
-            if i + 1 < len(argv):
-                return argv[i + 1]
-            return None
-        if tok.startswith("--playbook="):
-            return tok.split("=", 1)[1]
-        i += 1
-    return None
-
-
-def _derive_args_schema_from_spec(spec: dict) -> dict:
-    """Extract args schema from a loaded spec dict.
-
-    Priority: explicit args: block > argument-hint: fallback.
-    Returns {} on malformed input (caller validates separately).
-    """
-    if isinstance(spec.get("args"), dict):
-        schema: dict = {}
-        for name, field in spec["args"].items():
-            if not isinstance(field, dict):
-                continue
-            schema[name] = {
-                "type": field.get("type", "str"),
-                "default": field.get("default"),
-                "help": field.get("help", ""),
-            }
-        return schema
-    if spec.get("argument-hint"):
-        return _parse_argument_hint(spec["argument-hint"])
-    return {}
-
-
-def inject_playbook_schema_into_parser(
-    flow_parser: argparse.ArgumentParser, argv: list[str]
-) -> dict:
-    """Pre-scan argv for -p/--playbook; if found, load the playbook and
-    add its declared args as flags on the flow sub-parser.
-
-    Must be called BEFORE parser.parse_args so argparse can recognize
-    playbook-declared flags and consume their values correctly. No-op if
-    argv doesn't reference a playbook, or if resolution/loading fails
-    (errors surface at dispatch time via run_orchestrate).
-
-    Returns the extracted args schema (empty dict if none).
-    """
-    name = _scan_argv_for_playbook_name(argv)
-    if not name:
-        return {}
-    path, err = _resolve_playbook_path(name)
-    if err is not None:
-        return {}  # Defer error reporting to run_orchestrate
-    spec = _load_flow_spec(str(path))
-    if not isinstance(spec, dict):
-        return {}
-    schema = _derive_args_schema_from_spec(spec)
-    if not schema:
-        return {}
-    # Collect reserved option strings already defined on the flow parser.
-    # Playbook flags that collide are skipped with a warning — the base
-    # parser's flag wins, and the playbook author should rename.
-    reserved: set[str] = set()
-    for action in flow_parser._actions:
-        for opt in getattr(action, "option_strings", ()):
-            reserved.add(opt)
-    # Add each schema-declared flag to the flow parser. Use default=None so
-    # we can distinguish "user didn't pass" from "user passed false".
-    resolved_schema: dict = {}
-    for arg_name, field in schema.items():
-        cli_flag = "--" + arg_name.replace("_", "-")
-        if cli_flag in reserved:
-            import logging as _logging
-
-            _logging.getLogger("lionagi.cli").warning(
-                "playbook arg %r (%s) collides with built-in flag; "
-                "rename it in the playbook to use it",
-                arg_name,
-                cli_flag,
-            )
-            continue
-        type_str = field.get("type", "str")
-        help_text = field.get("help", "")
-        if type_str == "bool":
-            flow_parser.add_argument(
-                cli_flag,
-                dest=arg_name,
-                action="store_true",
-                default=None,
-                help=help_text,
-            )
-        else:
-            flow_parser.add_argument(
-                cli_flag,
-                dest=arg_name,
-                default=None,
-                help=help_text,
-                metavar=type_str.upper(),
-            )
-        resolved_schema[arg_name] = field
-    # Stash the collision-filtered schema on the parser as a default so
-    # run_orchestrate can interpolate against the exact same set of args
-    # (without re-deriving and re-introducing collisions).
-    flow_parser.set_defaults(_playbook_args_schema=resolved_schema)
-    return resolved_schema
-
-
-def _resolve_playbook_path(name: str) -> tuple[object, str | None]:
-    """Resolve a playbook NAME to its file path.
-
-    Returns (Path, None) on success, or (None, error_message) on failure.
-    """
-    from pathlib import Path
-
-    if not name or not isinstance(name, str):
-        return None, "playbook name must be a non-empty string"
-    # Reject path separators — NAME is a bare identifier.
-    if "/" in name or "\\" in name or name.startswith("."):
-        return (
-            None,
-            f"playbook NAME must be a bare identifier, got {name!r}. "
-            "Use -f /abs/path.yaml for ad-hoc specs.",
-        )
-    root = Path("~/.lionagi/playbooks").expanduser()
-    candidate = root / f"{name}.playbook.yaml"
-    if not candidate.is_file():
-        # Look for near-matches to suggest.
-        suggestions = []
-        if root.is_dir():
-            for p in sorted(root.glob("*.playbook.yaml")):
-                suggestions.append(p.stem.removesuffix(".playbook"))
-        hint_text = (
-            f" Available: {', '.join(suggestions[:10])}"
-            if suggestions
-            else " No playbooks found in ~/.lionagi/playbooks/"
-        )
-        return None, f"playbook not found: {candidate}.{hint_text}"
-    # Symlink containment — the playbooks root may itself be a symlink
-    # (users can point `~/.lionagi/playbooks/` at any directory they
-    # manage); comparing resolved paths accepts that while rejecting a
-    # malicious per-playbook symlink pointing at an arbitrary file on disk.
-    try:
-        resolved_root = root.resolve(strict=True)
-        resolved_candidate = candidate.resolve(strict=True)
-        resolved_candidate.relative_to(resolved_root)
-    except (OSError, ValueError):
-        return (
-            None,
-            f"playbook {name!r} resolves outside playbooks root (symlink escape blocked)",
-        )
-    return candidate, None
-
-
-def _parse_argument_hint(hint: str) -> dict:
-    """Parse CC-style argument-hint string into an args schema.
-
-    Examples:
-        '[--tabs N]'     → {"tabs": {"type": "str", "default": None}}
-        '[--poll]'       → {"poll": {"type": "bool", "default": False}}
-        '[--tabs N] [--poll]' → combination of both
-
-    Unparseable tokens are skipped silently. For strict typing, use args: block.
-    """
-    import re
-
-    schema: dict = {}
-    # Match [--flag] or [--flag VALUE] or [--flag N] etc.
-    # Group 1 = flag name, Group 2 = optional value placeholder
-    pattern = re.compile(r"\[--([a-zA-Z][a-zA-Z0-9_-]*)(?:\s+([A-Z_][A-Z0-9_]*))?\]")
-    for match in pattern.finditer(hint or ""):
-        flag_name = match.group(1).replace("-", "_")
-        value_placeholder = match.group(2)
-        if value_placeholder is None:
-            schema[flag_name] = {"type": "bool", "default": False}
-        else:
-            schema[flag_name] = {"type": "str", "default": None}
-    return schema
-
-
-def _validate_args_schema(args_schema) -> str | None:
-    """Validate the args: block. Returns error message or None."""
-    if not isinstance(args_schema, dict):
-        return f"spec field 'args' must be a dict, got {type(args_schema).__name__}"
-    valid_types = {"str", "int", "float", "bool"}
-    for name, spec in args_schema.items():
-        if not isinstance(name, str) or not name.replace("_", "").isalnum():
-            return f"args key {name!r} must be an alphanumeric identifier"
-        if not isinstance(spec, dict):
-            return f"args[{name!r}] must be a dict, got {type(spec).__name__}"
-        type_str = spec.get("type", "str")
-        if type_str not in valid_types:
-            return f"args[{name!r}].type must be one of {sorted(valid_types)}, got {type_str!r}"
-    return None
-
-
-def _coerce_arg_value(name: str, value, type_str: str):
-    """Coerce a raw string/bool from argparse into the schema-declared type.
-
-    Returns (coerced_value, None) on success or (None, error_message).
-    """
-    if value is None:
-        return None, None
-    if type_str == "bool":
-        # argparse store_true gives us a bool directly
-        return bool(value), None
-    if type_str == "str":
-        return str(value), None
-    try:
-        if type_str == "int":
-            return int(value), None
-        if type_str == "float":
-            return float(value), None
-    except (TypeError, ValueError):
-        return (
-            None,
-            f"arg --{name.replace('_', '-')} expected {type_str}, got {value!r}",
-        )
-    return value, None
-
-
-def _load_flow_spec(path: str) -> dict | None:
-    """Load a YAML or JSON flow spec file.
-
-    Returns a dict on success, or None after logging a CLI-facing error.
-    Empty specs are treated as an empty object.
-    """
-    from pathlib import Path
-
-    p = Path(path).expanduser()
-    if not p.is_file():
-        log_error(f"spec file not found: {p}")
-        return None
-    text = p.read_text()
-    suffix = p.suffix.lower()
-    try:
-        if suffix in (".yaml", ".yml"):
-            import yaml
-
-            data = yaml.safe_load(text) or {}
-        elif suffix == ".json":
-            import json
-
-            data = json.loads(text)
-        else:
-            import yaml
-
-            try:
-                data = yaml.safe_load(text) or {}
-            except Exception:
-                import json
-
-                data = json.loads(text)
-    except Exception as e:
-        log_error(f"failed to parse spec file {p}: {e}")
-        return None
-
-    if not isinstance(data, dict):
-        log_error("spec file must contain a YAML/JSON object")
-        return None
-    # Normalize top-level keys: accept both dashed (`max-agents`) and
-    # underscored (`max_agents`) forms so authors can mirror CLI flag names.
-    # `argument-hint` stays dashed (CC convention, parsed specially). `args`
-    # holds user-defined arg names; don't touch its children.
-    preserve_dashed = {"argument-hint"}
-    normalized: dict = {}
-    for key, value in data.items():
-        if key in preserve_dashed or "-" not in key:
-            normalized[key] = value
-        else:
-            normalized[key.replace("-", "_")] = value
-    return normalized
-
-
-def _validate_spec_fields(spec: dict) -> str | None:
-    """Validate spec field types and ranges. Returns an error message or None.
-
-    Uses ``in`` checks (not ``.get()``) so that YAML ``null`` (Python ``None``)
-    is treated as an invalid present value for all fields except ``effort``,
-    which explicitly allows ``None`` (meaning "use the profile default effort").
-    """
-    if "workers" in spec:
-        workers = spec["workers"]
-        if not isinstance(workers, int) or isinstance(workers, bool):
-            return f"spec field 'workers' must be an integer, got {type(workers).__name__}"
-        if not (1 <= workers <= 32):
-            return f"spec field 'workers' must be in [1, 32], got {workers}"
-
-    # `max_ops` is canonical; `max_agents` is a deprecated alias. Validate
-    # whichever key is present (rejecting a present-None value) and preserve
-    # the user-supplied key name in error messages for discoverability.
-    for key in ("max_ops", "max_agents"):
-        if key not in spec:
-            continue
-        value = spec[key]
-        if not isinstance(value, int) or isinstance(value, bool):
-            return f"spec field {key!r} must be an integer, got {type(value).__name__}"
-        # CLI docs `--max-ops`/`--max-agents` as "0 = unlimited" (default).
-        # Mirror that in spec: accept 0 (means unlimited) and 1-50 as a cap.
-        if not (0 <= value <= 50):
-            return f"spec field {key!r} must be in [0, 50] (0 = unlimited), got {value}"
-
-    # effort: None is explicitly allowed (means "use profile default").
-    # Allowed values mirror provider EFFORT_LEVELS in cli/_providers.py so
-    # the spec validator can't reject values the CLI itself accepts.
-    effort = spec.get("effort")
-    if effort is not None:
-        from .._providers import EFFORT_LEVELS
-
-        if not isinstance(effort, str):
-            return f"spec field 'effort' must be a string, got {type(effort).__name__}"
-        if effort not in EFFORT_LEVELS:
-            allowed = sorted(EFFORT_LEVELS)
-            return f"spec field 'effort' must be one of {allowed}, got {effort!r}"
-
-    # with_synthesis mirrors the CLI `--with-synthesis [MODEL]` surface:
-    #   bool  → use orchestrator model (bare flag)
-    #   str   → synthesis model spec (flag with explicit value)
-    if "with_synthesis" in spec:
-        val = spec["with_synthesis"]
-        if not isinstance(val, bool | str):
-            return (
-                f"spec field 'with_synthesis' must be bool or str (model spec), "
-                f"got {type(val).__name__}"
-            )
-
-    for bool_field in ("bare", "dry_run", "show_graph"):
-        if bool_field in spec:
-            val = spec[bool_field]
-            if not isinstance(val, bool):
-                return f"spec field {bool_field!r} must be a bool, got {type(val).__name__}"
-
-    if "prompt" in spec:
-        prompt = spec["prompt"]
-        if not isinstance(prompt, str):
-            return f"spec field 'prompt' must be a string, got {type(prompt).__name__}"
-        if len(prompt) > 8192:
-            return "spec field 'prompt' exceeds maximum length of 8192 characters"
-
-    if "save" in spec:
-        save = spec["save"]
-        if not isinstance(save, str):
-            return f"spec field 'save' must be a string, got {type(save).__name__}"
-
-    for str_field in ("model", "agent", "team_mode", "team_attach", "reactive"):
-        if str_field in spec:
-            val = spec[str_field]
-            if not isinstance(val, str):
-                return f"spec field {str_field!r} must be a string, got {type(val).__name__}"
-
-    if "artifacts" in spec:
-        artifacts = spec["artifacts"]
-        if artifacts is None:
-            return "spec field 'artifacts' must be a dict, got NoneType"
-        try:
-            from lionagi.state.artifact_verifier import (
-                validate_artifact_contract,
-                warn_unknown_artifact_keys,
-            )
-
-            validate_artifact_contract(artifacts)
-            # ADR-0029 §2: unknown subfields are reserved for v1.1.
-            # Warn at runtime as well as in `li play check` so contract
-            # files don't silently drift into v1.1-looking shapes the
-            # v1 executor ignores. Route through the standard logger
-            # so the warning lands in structured logs, not stdout.
-            import logging as _logging
-
-            _cli_log = _logging.getLogger("lionagi.cli")
-            warn_unknown_artifact_keys(
-                artifacts,
-                source="playbook",
-                emit=_cli_log.warning,
-            )
-        except Exception as exc:
-            return f"spec field 'artifacts' is invalid: {exc}"
-
-    return None
-
-
-def _interpolate_prompt(template: str, positional: str | None, playbook_args: dict) -> str:
-    """Interpolate {input} + all playbook args into the prompt template.
-
-    - {input} substitution uses the positional prompt if present
-    - {arg_name} substitutions use playbook_args (CLI-overridden values + defaults)
-    - If no placeholders present AND a positional prompt exists, append the
-      positional to the template (CC-skill-style)
-    """
-    if not template:
-        return positional or ""
-
-    # Build substitution context: {input} + all named args
-    ctx: dict = dict(playbook_args)
-    if positional is not None:
-        ctx["input"] = positional
-
-    # Detect any placeholder using format-style {name} tokens
-    import re
-
-    placeholders = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", template))
-    if not placeholders and positional is not None:
-        # No placeholders — append positional like a CC skill
-        return template + "\n\n" + positional
-
-    # Render: missing keys remain as literal {name} tokens
-    def _sub(match: re.Match[str]) -> str:
-        key = match.group(1)
-        if key in ctx:
-            return str(ctx[key])
-        return match.group(0)
-
-    return re.sub(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", _sub, template)
-
-
 def run_orchestrate(args: argparse.Namespace) -> int:
-    """Dispatch orchestrate sub-commands."""
     if args.orch_command == "fanout":
         has_model = args.model is not None or args.agent is not None
         if not has_model:
@@ -743,25 +357,23 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     playbook_name=getattr(args, "playbook", None),
                     invocation_id=getattr(args, "invocation", None),
                     project=getattr(args, "project", None),
+                    pack=getattr(args, "pack", None),
                 )
             )
         except (TimeoutError, LionTimeoutError) as e:
             log_error(str(e))
-            return 124  # ADR-0025: timed_out exits with GNU `timeout` code
+            return EXIT_CODE_BY_STATUS["timed_out"]
         except KeyboardInterrupt:
-            return 130  # ADR-0025: aborted (SIGINT)
+            return EXIT_CODE_BY_STATUS["aborted"]
         except BaseException as exc:
-            from lionagi.ln.concurrency.errors import cancelled_exc_classes
-
-            if isinstance(exc, cancelled_exc_classes()):
-                return 143  # ADR-0025: cancelled (SIGTERM)
+            if is_cancelled(exc):
+                return EXIT_CODE_BY_STATUS["cancelled"]
             raise
         if not args.verbose:
             print(output)
         return 0
 
     if args.orch_command == "flow":
-        # ── Resolve -p/--playbook NAME into a concrete file path ─────
         playbook_name = getattr(args, "playbook", None)
         playbook_artifacts: dict | None = None
         file_spec = getattr(args, "file", None)
@@ -775,7 +387,6 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 return 1
             file_spec = str(resolved_path)
 
-        # ── Load spec file if -f/--file or -p/--playbook was given ──
         if file_spec:
             spec = _load_flow_spec(file_spec)
             if spec is None:
@@ -787,24 +398,15 @@ def run_orchestrate(args: argparse.Namespace) -> int:
 
             playbook_artifacts = spec.get("artifacts")
 
-            # ── Derive args schema: explicit args: block OR argument-hint fallback
             if "args" in spec:
                 schema_err = _validate_args_schema(spec["args"])
                 if schema_err is not None:
                     log_error(schema_err)
                     return 1
-            # Prefer the collision-filtered schema stashed by
-            # inject_playbook_schema_into_parser — guarantees we don't
-            # interpolate against args whose flags were shadowed by base CLI.
-            # Use `is None` (not truthiness) so an empty filtered schema —
-            # e.g. every declared arg collided — still wins over re-derivation.
             args_schema = getattr(args, "_playbook_args_schema", None)
             if args_schema is None:
                 args_schema = _derive_args_schema_from_spec(spec)
 
-            # Playbook-declared flags were injected into the argparse parser
-            # before parse_args ran (see inject_playbook_schema_into_parser).
-            # Read the parsed values straight off the namespace.
             playbook_ctx: dict = {}
             for name, field in args_schema.items():
                 if field.get("default") is not None:
@@ -818,12 +420,9 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     return 1
                 playbook_ctx[name] = coerced
 
-            # If the file supplies the model/agent, argparse's lone positional
-            # is a prompt override, not a model override.
             if args.model and args.prompt is None and (spec.get("model") or spec.get("agent")):
                 args.prompt = args.model
                 args.model = None
-            # File values are defaults; CLI flags override.
             if args.model is None and "model" in spec:
                 args.model = spec["model"]
             if args.agent is None and spec.get("agent"):
@@ -840,7 +439,6 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 args.team_mode = spec["team_mode"]
             if getattr(args, "team_attach", None) is None and spec.get("team_attach"):
                 args.team_attach = spec["team_attach"]
-            # Prefer max_ops; fall back to deprecated max_agents spec field.
             if args.max_ops == 0:
                 spec_cap = spec.get("max_ops") or spec.get("max_agents")
                 if spec_cap:
@@ -853,14 +451,13 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 args.show_graph = True
             if getattr(args, "reactive", None) is None and spec.get("reactive") is not None:
                 args.reactive = spec["reactive"]
+            if getattr(args, "pack", None) is None and spec.get("pack"):
+                args.pack = spec["pack"]
             if args.save is None and spec.get("save"):
                 args.save = spec["save"]
             if spec.get("critic_model"):
                 pass  # reserved for future use
 
-        # Argparse assigns a lone positional to `model`, leaving prompt
-        # None. When --agent supplies the model and the user passed a
-        # single positional, that positional is actually the prompt.
         if args.model and not args.prompt and args.agent:
             args.prompt = args.model
             args.model = None
@@ -908,8 +505,6 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             import uuid as _uuid
             from pathlib import Path as _Path
 
-            # Pre-generate the session ID so the parent can print a monitor handle
-            # before the subprocess starts. The subprocess picks it up via env var.
             bg_session_id = str(_uuid.uuid4())
             bg_args = [a for a in sys.argv[1:] if a != "--background"]
             log_root = _Path(args.save).expanduser()
@@ -964,31 +559,25 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     playbook_artifacts=playbook_artifacts,
                     invocation_id=getattr(args, "invocation", None),
                     project=getattr(args, "project", None),
+                    pack=getattr(args, "pack", None),
                 )
             )
         except (TimeoutError, LionTimeoutError) as e:
             log_error(str(e))
-            return 124  # ADR-0025: timed_out exits with GNU `timeout` code
+            return EXIT_CODE_BY_STATUS["timed_out"]
         except KeyboardInterrupt:
-            return 130  # ADR-0025: aborted (SIGINT)
+            return EXIT_CODE_BY_STATUS["aborted"]
         except FlowPlanError as e:
-            # #1236: planning produced no usable DAG. Fail loud with the
-            # actionable message + raw response instead of exiting 0.
+            # planning produced no usable DAG — fail loud with actionable message
             log_error(str(e))
-            return 1
+            return EXIT_CODE_BY_STATUS["failed"]
         except BaseException as exc:
-            from lionagi.ln.concurrency.errors import cancelled_exc_classes
-
-            if isinstance(exc, cancelled_exc_classes()):
-                return 143  # ADR-0025: cancelled (SIGTERM)
+            if is_cancelled(exc):
+                return EXIT_CODE_BY_STATUS["cancelled"]
             raise
         if not args.verbose:
             print(output)
-        # ADR-0029 §7: terminal_status reflects the verification override.
-        # Map to the same exit codes used by `li agent` (see ADR-0025).
-        from lionagi.cli.agent import _EXIT_CODE_BY_TERMINAL_STATUS
-
-        return _EXIT_CODE_BY_TERMINAL_STATUS.get(terminal_status, 0)
+        return EXIT_CODE_BY_STATUS.get(terminal_status, 0)
 
     log_error(f"Unknown orchestrate command: {args.orch_command}")
     return 1

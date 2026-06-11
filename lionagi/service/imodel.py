@@ -1,6 +1,8 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import asyncio
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
@@ -23,21 +25,7 @@ from .rate_limited_processor import RateLimitedAPIExecutor
 
 
 class iModel:  # noqa: N801
-    """Manages API calls for a specific provider with optional rate-limiting.
-
-    The iModel class encapsulates a specific endpoint configuration (e.g.,
-    chat or completion endpoints). It determines and sets the necessary
-    API key based on the provider and uses a RateLimitedAPIExecutor to
-    handle queuing and throttling requests.
-
-    Attributes:
-        endpoint (Endpoint):
-            The chosen endpoint object (constructed via `match_endpoint` if
-            none is provided).
-        executor (RateLimitedAPIExecutor):
-            The rate-limited executor that queues and runs API calls in a
-            controlled fashion.
-    """
+    """Provider endpoint wrapper with rate-limiting, hooks, and streaming."""
 
     def __init__(
         self,
@@ -59,45 +47,6 @@ class iModel:  # noqa: N801
         created_at: float | None = None,
         **kwargs,
     ) -> None:
-        """Initializes the iModel instance.
-
-        Args:
-            provider (str, optional):
-                Name of the provider (e.g., 'openai', 'anthropic').
-            base_url (str, optional):
-                Base URL for the API (if a custom endpoint is needed).
-            endpoint (str | Endpoint, optional):
-                Either a string representing the endpoint type (e.g., 'chat')
-                or an `Endpoint` instance.
-            endpoint_params (list[str] | None, optional):
-                Additional parameters for the endpoint (e.g., 'v1' or other).
-            api_key (str, optional):
-                An explicit API key. If not given, tries to load one from
-                environment variables based on the provider.
-            queue_capacity (int, optional):
-                Maximum number of requests allowed in the queue before
-                executing them.
-            capacity_refresh_time (float, optional):
-                Time interval (in seconds) after which the queue capacity
-                is refreshed.
-            interval (float | None, optional):
-                Interval in seconds to check or process requests in
-                the queue. If None, defaults to capacity_refresh_time.
-            limit_requests (int | None, optional):
-                Maximum number of requests allowed per cycle, if any.
-            limit_tokens (int | None, optional):
-                Maximum number of tokens allowed per cycle, if any.
-            concurrency_limit (int | None, optional):
-                Maximum number of streaming concurrent requests allowed.
-                only applies to streaming requests.
-            provider_metadata (dict | None, optional):
-                Provider-specific metadata, such as session IDs for
-            **kwargs:
-                Additional keyword arguments, such as `model`, or any other
-                provider-specific fields.
-        """
-
-        # 1. put in ID and timestamp -----------------------------------------
         self.id = None
         self.created_at = None
         if id is not None:
@@ -111,7 +60,6 @@ class iModel:  # noqa: N801
         else:
             self.created_at = now_utc().timestamp()
 
-        # 2. Configure Endpoint ---------------------------------------------
         model = kwargs.get("model", None)
         if model:
             if not provider:
@@ -120,7 +68,9 @@ class iModel:  # noqa: N801
                     model = model.replace(provider + "/", "")
                     kwargs["model"] = model
                 else:
-                    raise ValueError("Provider must be provided")
+                    from lionagi.config import settings
+
+                    provider = settings.LIONAGI_CHAT_PROVIDER
 
         if api_key is not None:
             kwargs["api_key"] = api_key
@@ -137,12 +87,8 @@ class iModel:  # noqa: N801
         if base_url:
             self.endpoint.config.base_url = base_url
 
-        # 3. Configure executor ---------------------------------------------
-        # Resolve defaults based on endpoint type
         if queue_capacity is None:
-            queue_capacity = (
-                self.endpoint.DEFAULT_QUEUE_CAPACITY if self.endpoint.is_cli else 100
-            )
+            queue_capacity = self.endpoint.DEFAULT_QUEUE_CAPACITY if self.endpoint.is_cli else 100
         if concurrency_limit is None and self.endpoint.is_cli:
             concurrency_limit = self.endpoint.DEFAULT_CONCURRENCY_LIMIT
 
@@ -155,7 +101,6 @@ class iModel:  # noqa: N801
             concurrency_limit=concurrency_limit,
         )
 
-        # 4. other configurations --------------------------------------------
         self.streaming_process_func = streaming_process_func
         self.provider_metadata = provider_metadata or {}
         self.hook_registry = hook_registry or HookRegistry()
@@ -184,11 +129,7 @@ class iModel:  # noqa: N801
                 registry=self.hook_registry,
                 event_like=create_event_type,
                 params=create_event_hook_params or {},
-                exit=(
-                    self.exit_hook
-                    if create_event_exit_hook is None
-                    else create_event_exit_hook
-                ),
+                exit=(self.exit_hook if create_event_exit_hook is None else create_event_exit_hook),
                 timeout=create_event_hook_timeout,
             )
             await h_ev.invoke()
@@ -241,18 +182,8 @@ class iModel:  # noqa: N801
     def create_api_calling(
         self, include_token_usage_to_model: bool = False, **kwargs
     ) -> APICalling:
-        """Constructs an `APICalling` object from endpoint-specific payload.
-
-        Args:
-            **kwargs:
-                Additional arguments used to generate the payload.
-
-        Returns:
-            APICalling:
-                An `APICalling` instance with the constructed payload,
-                headers, and the selected endpoint.
-        """
-        # For CLI endpoints, auto-inject session_id for resume if available
+        """Construct an APICalling from endpoint-specific payload."""
+        # Auto-inject session_id for CLI endpoint resume
         if (
             isinstance(self.endpoint, CLIEndpoint)
             and "resume" not in kwargs
@@ -262,14 +193,9 @@ class iModel:  # noqa: N801
             kwargs["resume"] = self.endpoint.session_id
 
         transport_arg_keys = getattr(self.endpoint, "transport_arg_keys", ())
-        call_kwargs = {
-            k: kwargs.pop(k) for k in list(kwargs) if k in transport_arg_keys
-        }
+        call_kwargs = {k: kwargs.pop(k) for k in list(kwargs) if k in transport_arg_keys}
 
-        # The new Endpoint.create_payload returns (payload, headers)
         payload, headers = self.endpoint.create_payload(request=kwargs)
-
-        # Extract cache_control if provided
         cache_control = kwargs.pop("cache_control", False)
 
         return APICalling(
@@ -282,15 +208,7 @@ class iModel:  # noqa: N801
         )
 
     async def process_chunk(self, chunk) -> Any:
-        """Processes a chunk of streaming data.
-
-        Override this method in subclasses if you need custom handling
-        of streaming responses from the API.
-
-        Args:
-            chunk:
-                A portion of the streamed data returned by the API.
-        """
+        """Process a streaming data chunk. Override for custom handling."""
         processed = None
         chunk_type = type(chunk)
         chunk_key = None
@@ -300,12 +218,9 @@ class iModel:  # noqa: N801
             chunk_key = chunk_type.__name__
 
         # Hook registry takes priority over streaming_process_func.
-        # If the registry handles the chunk type, streaming_process_func is not called.
         if chunk_key is not None:
-            hook_result, should_exit, _status = (
-                await self.hook_registry.handle_streaming_chunk(
-                    chunk_key, chunk, exit=self.exit_hook
-                )
+            hook_result, should_exit, _status = await self.hook_registry.handle_streaming_chunk(
+                chunk_key, chunk, exit=self.exit_hook
             )
             if should_exit:
                 if (
@@ -328,17 +243,6 @@ class iModel:  # noqa: N801
         return processed
 
     async def stream(self, api_call=None, **kw) -> AsyncGenerator:
-        """Performs a streaming API call with the given arguments.
-
-        Args:
-            **kwargs:
-                Arguments for the request, merged with self.kwargs.
-
-        Returns:
-            `APICalling` | None:
-                An APICalling instance upon success, or None if something
-                goes wrong.
-        """
         if api_call is None:
             kw["stream"] = True
             api_call = await self.create_event(**kw)
@@ -371,21 +275,6 @@ class iModel:  # noqa: N801
                 self.executor.pile.pop(api_call.id, None)
 
     async def invoke(self, api_call: APICalling = None, **kw) -> APICalling:
-        """Invokes a rate-limited API call with the given arguments.
-
-        Args:
-            **kwargs:
-                Arguments for the request, merged with self.kwargs.
-
-        Returns:
-            APICalling | None:
-                The `APICalling` object if successfully invoked and
-                completed; otherwise None.
-
-        Raises:
-            ValueError:
-                If the call fails or if an error occurs during invocation.
-        """
         try:
             if api_call is None:
                 kw.pop("stream", None)
@@ -397,10 +286,6 @@ class iModel:  # noqa: N801
             await self.executor.append(api_call)
             await self.executor.forward()
 
-            # Wait for the event to reach a terminal status via
-            # asyncio.Event instead of busy-polling.  The completion
-            # event is signalled by Event.status setter when the
-            # status transitions to COMPLETED, FAILED, etc.
             if api_call.status in (
                 EventStatus.PROCESSING,
                 EventStatus.PENDING,
@@ -414,10 +299,7 @@ class iModel:  # noqa: N801
                 except asyncio.TimeoutError:
                     pass  # Fall through — same as old ctr>100 break
 
-            # Get the completed API call
             completed_call = self.executor.pile.pop(api_call.id)
-
-            # Store session_id for CLI endpoints
             if (
                 isinstance(self.endpoint, CLIEndpoint)
                 and completed_call
@@ -433,44 +315,27 @@ class iModel:  # noqa: N801
 
     @property
     def is_cli(self) -> bool:
-        """Whether this model uses a CLI-based endpoint."""
         return self.endpoint.is_cli
 
     @property
     def model_name(self) -> str:
-        """str: The name of the model used by the endpoint.
-
-        Returns:
-            The model name if available; otherwise, an empty string.
-        """
         return self.endpoint.config.kwargs.get("model", "")
 
     @property
     def request_options(self) -> type[BaseModel] | None:
-        """type[BaseModel] | None: The request options model for the endpoint.
-
-        Returns:
-            The request options model if available; otherwise, None.
-        """
         return self.endpoint.request_options
 
-    async def __aenter__(self) -> "iModel":
+    async def __aenter__(self) -> iModel:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         await self.close()
 
     async def close(self) -> None:
-        """Stop the executor and release resources."""
         await self.executor.stop()
 
-    def copy(self, share_session: bool = False) -> "iModel":
-        """Create a new iModel with the same configuration but a fresh ID and executor.
-
-        Args:
-            share_session: If True, carry over the CLI session_id for resume.
-                Defaults to False (fresh instance, no session state).
-        """
+    def copy(self, share_session: bool = False) -> iModel:
+        """Create a new iModel with same config but fresh ID and executor."""
         endpoint_cls = type(self.endpoint)
         new_endpoint = endpoint_cls(
             config=self.endpoint.config.model_copy(deep=True),
@@ -539,7 +404,6 @@ class iModel:  # noqa: N801
 
     @property
     def provider_session_id(self):
-        """Get the session ID from provider metadata if available."""
         if self.is_cli:
             return self.endpoint.session_id
         return self.provider_metadata.get("session_id")

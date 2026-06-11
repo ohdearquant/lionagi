@@ -2,11 +2,13 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useEffect, useId, useRef, useState } from "react";
 import { listProjects } from "@/lib/api";
 import type { ProjectSummary } from "@/lib/types";
 
 export default function ProjectChip() {
+  const t = useTranslations("nav");
   const router = useRouter();
   const pathname = usePathname() ?? "/";
   const searchParams = useSearchParams();
@@ -98,7 +100,9 @@ export default function ProjectChip() {
     }
   }
 
-  const chipLabel = currentProject ? `[project: ${currentProject} ▾]` : "[All projects ▾]";
+  const chipLabel = currentProject
+    ? t("projectChip.selected", { name: currentProject })
+    : t("projectChip.allShort");
 
   return (
     <div ref={containerRef} className="relative">
@@ -106,7 +110,7 @@ export default function ProjectChip() {
         type="button"
         onClick={() => setOpen((v) => !v)}
         onKeyDown={handleTriggerKeyDown}
-        aria-label="Filter by project"
+        aria-label={t("projectChip.ariaLabel")}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={menuId}
@@ -121,7 +125,7 @@ export default function ProjectChip() {
           ref={menuRef}
           id={menuId}
           role="menu"
-          aria-label="Filter by project"
+          aria-label={t("projectChip.ariaLabel")}
           onKeyDown={handleMenuKeyDown}
           className="absolute right-0 top-full z-50 mt-1 w-64 rounded border border-edge bg-surface-nav py-1 shadow-card"
         >
@@ -137,7 +141,7 @@ export default function ProjectChip() {
                 : "text-content-secondary",
             ].join(" ")}
           >
-            All projects
+            {t("projectChip.all")}
           </button>
 
           {projects.map((p) => (
@@ -168,7 +172,7 @@ export default function ProjectChip() {
               onClick={() => setOpen(false)}
               className="block px-3 py-2 text-body text-content-secondary transition-colors duration-150 hover:bg-surface-overlay hover:text-content-primary focus:bg-surface-overlay focus:outline-none"
             >
-              View all projects
+              {t("projectChip.viewAll")}
             </Link>
           </div>
         </div>

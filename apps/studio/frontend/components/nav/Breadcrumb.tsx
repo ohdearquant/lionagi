@@ -2,19 +2,54 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { NAV_GROUPS, isRouteActive } from "./types";
 
+const GROUP_KEY: Record<string, string> = {
+  Dashboard: "groups.dashboard",
+  Work: "groups.work",
+  Library: "groups.library",
+  Admin: "groups.admin",
+};
+
+const ITEM_KEY: Record<string, string> = {
+  Dashboard: "items.dashboard",
+  Shows: "items.shows",
+  Runs: "items.runs",
+  Projects: "items.projects",
+  Teams: "items.teams",
+  Invocations: "items.invocations",
+  Schedules: "items.schedules",
+  Playbooks: "items.playbooks",
+  Agents: "items.agents",
+  Plugins: "items.plugins",
+  Skills: "items.skills",
+  Health: "items.health",
+  Maintenance: "items.maintenance",
+};
+
 export default function Breadcrumb() {
+  const t = useTranslations("nav");
   const pathname = usePathname() ?? "/";
+
+  const tGroup = (label: string) => {
+    const key = GROUP_KEY[label];
+    return key ? t(key as Parameters<typeof t>[0]) : label;
+  };
+
+  const tItem = (label: string) => {
+    const key = ITEM_KEY[label];
+    return key ? t(key as Parameters<typeof t>[0]) : label;
+  };
 
   // Dashboard root
   if (pathname === "/") {
     return (
       <nav
-        aria-label="Breadcrumb"
+        aria-label={t("breadcrumb.ariaLabel")}
         className="flex h-6 items-center gap-1 border-b border-edge bg-surface-base px-4 text-meta text-content-muted"
       >
-        <span>Dashboard</span>
+        <span>{t("items.dashboard")}</span>
       </nav>
     );
   }
@@ -40,7 +75,7 @@ export default function Breadcrumb() {
     const firstSegment = pathname.split("/").filter(Boolean)[0] ?? "";
     return (
       <nav
-        aria-label="Breadcrumb"
+        aria-label={t("breadcrumb.ariaLabel")}
         className="flex h-6 items-center gap-1 border-b border-edge bg-surface-base px-4 text-meta text-content-muted"
       >
         {firstSegment && <span>{decodeURIComponent(firstSegment)}</span>}
@@ -61,13 +96,13 @@ export default function Breadcrumb() {
 
   return (
     <nav
-      aria-label="Breadcrumb"
+      aria-label={t("breadcrumb.ariaLabel")}
       className="flex h-6 items-center gap-1 border-b border-edge bg-surface-base px-4 text-meta text-content-muted"
     >
-      <span>{groupLabel}</span>
+      <span>{tGroup(groupLabel)}</span>
       <span aria-hidden="true">›</span>
       <Link href={itemHref} className="transition-colors duration-150 hover:text-content-secondary">
-        {itemLabel}
+        {tItem(itemLabel)}
       </Link>
       {detailSegment && (
         <>

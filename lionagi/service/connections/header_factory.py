@@ -43,11 +43,7 @@ class HeaderFactory:
         elif not api_key:
             raise ValueError("API key is required for authentication")
         else:
-            api_key = (
-                api_key.get_secret_value()
-                if isinstance(api_key, SecretStr)
-                else api_key
-            )
+            api_key = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
             if auth_type == "bearer":
                 dict_.update(HeaderFactory.get_bearer_auth_header(api_key))
             elif auth_type == "x-api-key":

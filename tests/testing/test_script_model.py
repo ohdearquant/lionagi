@@ -165,10 +165,32 @@ class TestLoaders:
         entry, _ = script.next(_payload(), 0)
         assert entry.content == "list-coerced"
 
-    def test_coerce_passes_through_scriptmodel(self):
+    def test_coerce_scriptmodel_returns_independent_copy(self):
         original = ScriptModel.from_responses([{"type": "text", "content": "x"}])
-        again = ScriptModel.coerce(original)
-        assert again is original
+        copy = ScriptModel.coerce(original)
+        # Must be a distinct object with independent cursor state.
+        assert copy is not original
+        assert copy.responses[0].content == "x"
+
+    def test_coerce_scriptmodel_cursor_independence(self):
+        script = ScriptModel.from_responses(
+            [
+                {"type": "text", "content": "one"},
+                {"type": "text", "content": "two"},
+            ]
+        )
+        copy_a = ScriptModel.coerce(script)
+        copy_b = ScriptModel.coerce(script)
+
+        # Advance copy_a by one step.
+        entry_a, _ = copy_a.next({"model": "t", "messages": [{"role": "user", "content": "hi"}]}, 0)
+        assert entry_a.content == "one"
+        assert copy_a.cursor == 1
+
+        # copy_b must be unaffected.
+        assert copy_b.cursor == 0
+        entry_b, _ = copy_b.next({"model": "t", "messages": [{"role": "user", "content": "hi"}]}, 0)
+        assert entry_b.content == "one"
 
     def test_invalid_response_type_raises(self):
         with pytest.raises(ValueError, match="unknown response type"):

@@ -6,16 +6,16 @@ from __future__ import annotations
 import threading
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Generator, Iterator, Sequence
-from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar
+from typing import Any, ClassVar, Generic, Literal, TypeVar
 from uuid import UUID
 
-from pydantic import Field, field_serializer
+from pydantic import Field, PrivateAttr, field_serializer
 from typing_extensions import Self, override
 
 from lionagi._errors import ItemExistsError, ItemNotFoundError, ValidationError
 from lionagi.adapters._base import Adaptable, AsyncAdaptable
+from lionagi.ln._utils import async_synchronized, synchronized
 from lionagi.ln.concurrency import Lock as ConcurrencyLock
 from lionagi.ln.concurrency import sleep as _concurrency_sleep
 from lionagi.utils import (
@@ -30,32 +30,10 @@ from .._concepts import Observable
 from .element import ID, Collective, E, Element, validate_order
 from .progression import Progression
 
-if TYPE_CHECKING:
-    from pydantic.fields import FieldInfo
-
-
 D = TypeVar("D")
 T = TypeVar("T", bound=E)
 
 _ADAPTER_REGISTERED = False
-
-
-def synchronized(func: Callable):
-    @wraps(func)
-    def wrapper(self: Pile, *args, **kwargs):
-        with self.lock:
-            return func(self, *args, **kwargs)
-
-    return wrapper
-
-
-def async_synchronized(func: Callable):
-    @wraps(func)
-    async def wrapper(self: Pile, *args, **kwargs):
-        async with self.async_lock:
-            return await func(self, *args, **kwargs)
-
-    return wrapper
 
 
 def _validate_item_type(value, /) -> set[type[T]] | None:
@@ -110,7 +88,6 @@ def _validate_progression(value: Any, collections: dict[UUID, T], /) -> Progress
             prog = Progression.from_dict(value)
             value = list(prog)
         except Exception:
-            # If we can't create Progression from dict, try to extract order field
             value = to_list_type(value.get("order", []))
     elif isinstance(value, Progression):
         prog = value
@@ -131,9 +108,7 @@ def _validate_progression(value: Any, collections: dict[UUID, T], /) -> Progress
 
 
 def _validate_collections(value: Any, item_type: set | None, strict_type: bool, /) -> dict[str, T]:
-    # Short-circuit genuinely empty input (None, empty list/dict/str) but NOT a
-    # single Observable that happens to be falsy — e.g. an empty Progression or
-    # Pile is a valid item whose len() is 0, and must not be silently dropped.
+    # Don't drop falsy Observables (e.g. empty Progression/Pile with len()==0).
     if not value and not isinstance(value, Observable):
         return {}
 
@@ -167,29 +142,7 @@ def _validate_collections(value: Any, item_type: set | None, strict_type: bool, 
 
 
 class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
-    """Thread-safe async-compatible, ordered collection of elements.
-
-    The Pile class provides a thread-safe, async-compatible collection with:
-    - Type validation and enforcement
-    - Order preservation
-    - Format adapters (JSON, CSV, Excel)
-    - Memory efficient storage
-
-    Thread Safety:
-        Mutation methods decorated with ``@synchronized`` /
-        ``@async_synchronized`` acquire ``_lock`` (a ``threading.RLock``).
-        The RLock is reentrant so that :class:`Flow` can hold its own lock
-        and then call Pile methods without deadlocking.
-
-        ``include()``, ``exclude()``, and ``update()`` are also decorated
-        with ``@synchronized`` as of v0.20.2.
-
-    Attributes:
-        pile_ (dict[str, T]): Internal storage mapping IDs to elements
-        item_type (set[type[T]] | None): Allowed element types
-        progress (Progression): Order tracking
-        strict_type (bool): Whether to enforce strict type checking
-    """
+    """Thread-safe, async-compatible, ordered collection of Observable elements."""
 
     collections: dict[UUID, T] = Field(default_factory=dict)
     item_type: set | None = Field(
@@ -214,14 +167,8 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         "strict_type",
     }
 
-    def __pydantic_extra__(self) -> dict[str, FieldInfo]:
-        return {
-            "_lock": Field(default_factory=threading.RLock),
-            "_async": Field(default_factory=ConcurrencyLock),
-        }
-
-    def __pydantic_private__(self) -> dict[str, FieldInfo]:
-        return self.__pydantic_extra__()
+    _lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
+    _async_lock: ConcurrencyLock = PrivateAttr(default_factory=ConcurrencyLock)
 
     @classmethod
     def _validate_before(cls, data: dict[str, Any]) -> dict[str, Any]:
@@ -251,14 +198,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         strict_type: bool = False,
         **kwargs,
     ) -> None:
-        """Initialize a Pile instance.
-
-        Args:
-            items: Initial items for the pile.
-            item_type: Allowed types for items in the pile.
-            order: Initial order of items (as Progression).
-            strict_type: If True, enforce strict type checking.
-        """
         data = Pile._validate_before(
             {
                 "collections": collections,
@@ -280,7 +219,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
     @field_serializer("item_type")
     def _serialize_item_type(self, v: set[type[T]] | None) -> list[str] | None:
-        """Serialize item_type to a list of class names."""
         if v is None:
             return None
         return [c.class_name(full=True) for c in v]
@@ -293,17 +231,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         data: dict[str, Any],
         /,
     ) -> Pile:
-        """Create a Pile instance from a dictionary.
-
-        Args:
-            data: A dictionary containing Pile data.
-
-        Returns:
-            A new Pile instance created from the provided data.
-
-        Raises:
-            ValidationError: If the dictionary format is invalid.
-        """
         return cls(**data)
 
     def __setitem__(
@@ -311,16 +238,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         key: ID.Ref | ID.RefSeq | int | slice,
         item: ID.ItemSeq | ID.Item,
     ) -> None:
-        """Set an item or items in the Pile.
-
-        Args:
-            key: The key to set (index, ID, or slice).
-            item: The item(s) to set.
-
-        Raises:
-            TypeError: If item type not allowed.
-            KeyError: If key invalid.
-        """
         self._setitem(key, item)
 
     @synchronized
@@ -330,18 +247,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         default: D = UNDEFINED,
         /,
     ) -> T | Pile | D:
-        """Remove and return item(s) from the Pile.
-
-        Args:
-            key: Key of item(s) to remove.
-            default: Value if key not found.
-
-        Returns:
-            Removed item(s) or default.
-
-        Raises:
-            KeyError: If key not found and no default.
-        """
         return self._pop(key, default)
 
     def remove(
@@ -349,14 +254,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         item: T,
         /,
     ) -> None:
-        """Remove a specific item from the Pile.
-
-        Args:
-            item: Item to remove.
-
-        Raises:
-            ValueError: If item not found.
-        """
         if isinstance(item, int | slice):
             raise TypeError("Invalid item type for remove, should be ID or Item(s)")
         if item in self:
@@ -366,19 +263,8 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
     @synchronized
     def include(self, item: ID.ItemSeq | ID.Item, /) -> None:
-        """Include item(s) if not present.
-
-        Args:
-            item: Item(s) to include.
-        """
         item_dict = _validate_collections(item, self.item_type, self.strict_type)
-
-        item_order = []
-        for i in item_dict.keys():
-            if i not in self.progression:
-                item_order.append(i)
-
-        self.progression.append(item_order)
+        self.progression.include(list(item_dict.keys()))
         self.collections.update(item_dict)
 
     @synchronized
@@ -387,11 +273,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         item: ID.ItemSeq | ID.Item,
         /,
     ) -> None:
-        """Exclude item(s) if present.
-
-        Args:
-            item: Item(s) to exclude.
-        """
         item = to_list_type(item)
         exclude_list = []
         for i in item:
@@ -411,14 +292,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         other: ID.Item | ID.ItemSeq,
         /,
     ) -> None:
-        """Update with items from another source.
-
-        Args:
-            other: Items to update from.
-
-        Raises:
-            TypeError: If item types not allowed.
-        """
         others = _validate_collections(other, self.item_type, self.strict_type)
         for i in others.keys():
             if i in self.collections:
@@ -428,28 +301,10 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
     @synchronized
     def insert(self, index: int, item: T, /) -> None:
-        """Insert item at position.
-
-        Args:
-            index: Position to insert at.
-            item: Item to insert.
-
-        Raises:
-            IndexError: If index out of range.
-            TypeError: If item type not allowed.
-        """
         self._insert(index, item)
 
     @synchronized
     def append(self, item: T, /) -> None:
-        """Append item to end (alias for include).
-
-        Args:
-            item: Item to append.
-
-        Raises:
-            TypeError: If item type not allowed.
-        """
         self.update(item)
 
     @synchronized
@@ -459,84 +314,52 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         default: D = UNDEFINED,
         /,
     ) -> T | Pile | D:
-        """Get item(s) by key with default.
-
-        Args:
-            key: Key to get items by.
-            default: Value if not found.
-
-        Returns:
-            Item(s) or default.
-        """
         return self._get(key, default)
 
     def keys(self) -> Sequence[str]:
-        """Get all Lion IDs in order."""
         return list(self.progression)
 
     def values(self) -> Sequence[T]:
-        """Get all items in order."""
         return [self.collections[key] for key in self.progression]
 
     def items(self) -> Sequence[tuple[UUID, T]]:
-        """Get all (ID, item) pairs in order."""
         return [(key, self.collections[key]) for key in self.progression]
 
     def is_empty(self) -> bool:
-        """Check if empty."""
         return len(self.progression) == 0
 
     def size(self) -> int:
-        """Get number of items."""
         return len(self.progression)
 
     def __iter__(self) -> Iterator[T]:
-        """Iterate over items safely."""
         current_order = list(self.progression)
 
         for key in current_order:
             yield self.collections[key]
 
     def __next__(self) -> T:
-        """Get next item."""
         try:
             return next(iter(self))
         except StopIteration:
             raise StopIteration("End of pile") from None
 
     def __getitem__(self, key: ID.Ref | ID.RefSeq | int | slice) -> Any | list | T:
-        """Get item(s) by key.
-
-        Args:
-            key: Key to get items by.
-
-        Returns:
-            Item(s) or sliced Pile.
-
-        Raises:
-            KeyError: If key not found.
-        """
         return self._getitem(key)
 
     def __contains__(self, item: ID.RefSeq | ID.Ref) -> bool:
-        """Check if item exists."""
         return item in self.progression
 
     def __len__(self) -> int:
-        """Get number of items."""
         return len(self.collections)
 
     @override
     def __bool__(self) -> bool:
-        """Check if not empty."""
         return not self.is_empty()
 
     def __list__(self) -> list[T]:
-        """Convert to list."""
         return self.values()
 
     def __ior__(self, other: Pile) -> Self:
-        """In-place union."""
         if not isinstance(other, Pile):
             raise TypeError(f"Invalid type for Pile operation. expected <Pile>, got {type(other)}")
         other = _validate_collections(list(other), self.item_type, self.strict_type)
@@ -544,20 +367,19 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         return self
 
     def __or__(self, other: Pile) -> Pile:
-        """Union."""
         if not isinstance(other, Pile):
             raise TypeError(f"Invalid type for Pile operation. expected <Pile>, got {type(other)}")
 
         result = self.__class__(
-            items=self.values(),
+            collections=self.values(),
             item_type=self.item_type,
-            order=self.progression,
+            strict_type=self.strict_type,
+            order=list(self.progression),
         )
         result.include(list(other))
         return result
 
     def __ixor__(self, other: Pile) -> Self:
-        """In-place symmetric difference."""
         if not isinstance(other, Pile):
             raise TypeError(f"Invalid type for Pile operation. expected <Pile>, got {type(other)}")
 
@@ -572,7 +394,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         return self
 
     def __xor__(self, other: Pile) -> Pile:
-        """Symmetric difference."""
         if not isinstance(other, Pile):
             raise TypeError(f"Invalid type for Pile operation. expected <Pile>, got {type(other)}")
 
@@ -586,13 +407,13 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         ]
 
         result = self.__class__(
-            items=values,
+            collections=values,
             item_type=self.item_type,
+            strict_type=self.strict_type,
         )
         return result
 
     def __iand__(self, other: Pile) -> Self:
-        """In-place intersection."""
         if not isinstance(other, Pile):
             raise TypeError(f"Invalid type for Pile operation. expected <Pile>, got {type(other)}")
 
@@ -604,24 +425,22 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         return self
 
     def __and__(self, other: Pile) -> Pile:
-        """Intersection."""
         if not isinstance(other, Pile):
             raise TypeError(f"Invalid type for Pile operation. expected <Pile>, got {type(other)}")
 
         values = [i for i in self if i in other]
         return self.__class__(
-            items=values,
+            collections=values,
             item_type=self.item_type,
+            strict_type=self.strict_type,
         )
 
     @override
     def __str__(self) -> str:
-        """Simple string representation."""
         return f"Pile({len(self)})"
 
     @override
     def __repr__(self) -> str:
-        """Detailed string representation."""
         length = len(self)
         if length == 0:
             return "Pile()"
@@ -631,33 +450,47 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
             return f"Pile({length})"
 
     def __getstate__(self):
-        """Prepare for pickling."""
         state = self.__dict__.copy()
-        state["_lock"] = None
-        state["_async_lock"] = None
+        state.pop("_lock", None)
+        state.pop("_async_lock", None)
         return state
 
     def __setstate__(self, state):
-        """Restore after unpickling."""
         self.__dict__.update(state)
-        self._lock = threading.RLock()
-        self._async_lock = ConcurrencyLock()
+        try:
+            priv = object.__getattribute__(self, "__pydantic_private__")
+        except AttributeError:
+            priv = {}
+            object.__setattr__(self, "__pydantic_private__", priv)
+        priv["_lock"] = threading.RLock()
+        priv["_async_lock"] = ConcurrencyLock()
+
+    def __deepcopy__(self, memo):
+        import copy
+
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            object.__setattr__(result, k, copy.deepcopy(v, memo))
+        priv = {}
+        for k, v in (self.__pydantic_private__ or {}).items():
+            if k in ("_lock", "_async_lock"):
+                continue
+            priv[k] = copy.deepcopy(v, memo)
+        priv["_lock"] = threading.RLock()
+        priv["_async_lock"] = ConcurrencyLock()
+        object.__setattr__(result, "__pydantic_private__", priv)
+        return result
 
     @property
     def lock(self):
-        """Thread lock."""
-        if not hasattr(self, "_lock") or self._lock is None:
-            self._lock = threading.RLock()
         return self._lock
 
     @property
     def async_lock(self):
-        """Async lock."""
-        if not hasattr(self, "_async_lock") or self._async_lock is None:
-            self._async_lock = ConcurrencyLock()
         return self._async_lock
 
-    # Async Interface methods
     @async_synchronized
     async def asetitem(
         self,
@@ -665,7 +498,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         item: ID.Item | ID.ItemSeq,
         /,
     ) -> None:
-        """Async set item(s)."""
         self._setitem(key, item)
 
     @async_synchronized
@@ -675,7 +507,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         default: Any = UNDEFINED,
         /,
     ):
-        """Async remove and return item(s)."""
         return self._pop(key, default)
 
     @async_synchronized
@@ -684,7 +515,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         item: ID.Ref | ID.RefSeq,
         /,
     ) -> None:
-        """Async remove item."""
         self.remove(item)
 
     @async_synchronized
@@ -693,7 +523,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         item: ID.ItemSeq | ID.Item,
         /,
     ) -> None:
-        """Async include item(s)."""
         self.include(item)
         if item not in self:
             raise TypeError(f"Item {item} is not of allowed types")
@@ -704,12 +533,10 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         item: ID.Ref | ID.RefSeq,
         /,
     ) -> None:
-        """Async exclude item(s)."""
         self.exclude(item)
 
     @async_synchronized
     async def aclear(self) -> None:
-        """Async clear all items."""
         self._clear()
 
     @async_synchronized
@@ -718,7 +545,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         other: ID.ItemSeq | ID.Item,
         /,
     ) -> None:
-        """Async update with items."""
         self.update(other)
 
     @async_synchronized
@@ -728,11 +554,9 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         default=UNDEFINED,
         /,
     ) -> list | Any | T:
-        """Async get item(s)."""
         return self._get(key, default)
 
     async def __aiter__(self) -> AsyncIterator[T]:
-        """Async iterate over items."""
         async with self.async_lock:
             current_order = list(self.progression)
 
@@ -740,32 +564,15 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
             yield self.collections[key]
 
     async def __anext__(self) -> T:
-        """Async get next item."""
         try:
             return await anext(self.AsyncPileIterator(self))
         except StopAsyncIteration:
             raise StopAsyncIteration("End of pile") from None
 
     def filter(self, predicate: Callable[[T], bool]) -> Pile[T]:
-        """Return a new Pile containing items matching the predicate.
-
-        Args:
-            predicate: A callable that takes an item and returns True/False.
-
-        Returns:
-            Pile[T]: A new Pile containing only matching items.
-        """
         return self._filter_by_function(predicate)
 
     def _filter_by_function(self, func: Callable[[T], bool]) -> Pile[T]:
-        """Internal filter implementation.
-
-        Args:
-            func: Callable predicate over items.
-
-        Returns:
-            Pile[T] with matching items in original order.
-        """
         matched = []
         for key in list(self.progression):
             item = self.collections[key]
@@ -777,14 +584,10 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
             strict_type=self.strict_type,
         )
 
-    # private methods
     def _getitem(self, key: Any) -> Any | list | T:
         if key is None:
             raise ValueError("getitem key not provided.")
 
-        # A bare type queries by it: ``pile[FindingEmitted]`` → items that *are*
-        # (or carry a field of) that type, via a TypeFilter. Returns a filtered
-        # Pile, like a slice. A Filter instance is callable and handled below.
         if isinstance(key, type):
             from lionagi.ln.types import TypeFilter
 
@@ -916,7 +719,11 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
                 self.progression.exclude(pops)
                 result = [self.collections.pop(i) for i in pops]
                 result = (
-                    self.__class__(items=result, item_type=self.item_type)
+                    self.__class__(
+                        collections=result,
+                        item_type=self.item_type,
+                        strict_type=self.strict_type,
+                    )
                     if len(result) > 1
                     else result[0]
                 )
@@ -968,11 +775,10 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
                 raise StopAsyncIteration
             item = self.pile[self.pile.progression[self.index]]
             self.index += 1
-            await _concurrency_sleep(0)  # Yield control to the event loop
+            await _concurrency_sleep(0)
             return item
 
     async def __aenter__(self) -> Self:
-        """Enter async context."""
         await self.async_lock.__aenter__()
         return self
 
@@ -982,12 +788,10 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         exc_val: BaseException | None,
         exc_tb: Any,
     ) -> None:
-        """Exit async context."""
         await self.async_lock.__aexit__(exc_type, exc_val, exc_tb)
 
     def is_homogenous(self) -> bool:
-        """Check if all items are same type."""
-        return len(self.collections) < 2 or all(is_same_dtype(self.collections.values()))
+        return len(self.collections) < 2 or is_same_dtype(list(self.collections.values()))
 
     @classmethod
     def list_adapters(cls) -> list[str]:
@@ -996,58 +800,24 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         return list(set(syn_) | set(asy_))
 
     def adapt_to(self, obj_key: str, many=False, **kw: Any) -> Any:
-        """Adapt to another format.
-
-        Args:
-            obj_key: Key indicating the format (e.g., 'json', 'csv').
-            many: If True, interpret to receive list of items in the collection.
-            **kw: Additional keyword arguments for adaptation.
-
-        Example:
-            >>> str_ = pile.adapt_to('json')
-            >>> df = pile.adapt_to('pd.DataFrame', many=True)
-            >>> csv_str = pile.adapt_to('csv', many=True)
-
-        Pile built-in with `json`, `csv`, `pd.DataFrame` adapters. You can add more
-        from pydapter, such as `qdrant`, `neo4j`, `postgres`, etc.
-        please visit https://khive-ai.github.io/pydapter/ for more details.
-        """
         kw["adapt_meth"] = "to_dict"
         return super().adapt_to(obj_key=obj_key, many=many, **kw)
 
     @classmethod
     def adapt_from(cls, obj: Any, obj_key: str, many=False, **kw: Any):
-        """Create from another format.
-
-        Args:
-            obj: Object to adapt from.
-            obj_key: Key indicating the format (e.g., 'json', 'csv').
-            many: If True, interpret to receive list of items in the collection.
-            **kw: Additional keyword arguments for adaptation.
-
-        Example:
-            >>> pile = Pile.adapt_from(str_, 'json')
-            >>> pile = Pile.adapt_from(df, 'pd.DataFrame', many=True)
-        Pile built-in with `json`, `csv`, `pd.DataFrame` adapters. You can add more
-        from pydapter, such as `qdrant`, `neo4j`, `postgres`, etc.
-        please visit https://khive-ai.github.io/pydapter/ for more details.
-        """
         kw["adapt_meth"] = "from_dict"
         return super().adapt_from(obj, obj_key, many=many, **kw)
 
     async def adapt_to_async(self, obj_key: str, many=False, **kw: Any) -> Any:
-        """Asynchronously adapt to another format."""
         kw["adapt_meth"] = "to_dict"
         return await super().adapt_to_async(obj_key=obj_key, many=many, **kw)
 
     @classmethod
     async def adapt_from_async(cls, obj: Any, obj_key: str, many=False, **kw: Any):
-        """Asynchronously create from another format."""
         kw["adapt_meth"] = "from_dict"
         return await super().adapt_from_async(obj, obj_key, many=many, **kw)
 
     def to_df(self, columns: list[str] | None = None, **kw: Any):
-        """Convert to DataFrame."""
         try:
             from lionagi.adapters.pandas_ import DataFrameAdapter
         except ImportError as e:
@@ -1070,16 +840,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         clear=False,
         **kw,
     ) -> None:
-        """Export collection to file in specified format.
-
-        Args:
-            fp: File path or buffer to write to. If None, returns string.
-                Cannot be None if obj_key is 'parquet'.
-            obj_key: Format to export ('json', 'csv', 'parquet').
-            mode: File mode ('w' for write, 'a' for append).
-            clear: If True, clear the collection after export.
-            **kw: Additional arguments for the export method, pandas kwargs
-        """
         df = self.to_df()
         match obj_key:
             case "parquet":
@@ -1098,7 +858,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         if clear:
             self.clear()
 
-    @async_synchronized
     async def adump(
         self,
         fp: str | Path,
@@ -1108,7 +867,33 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         clear=False,
         **kw,
     ) -> None:
-        return self.dump(fp, obj_key=obj_key, mode=mode, clear=clear, **kw)
+        from lionagi.ln.concurrency import run_sync
+
+        async with self.async_lock:
+            snapshot_ids = set(self.collections.keys())
+            df = self.to_df()
+
+        def _write() -> None:
+            match obj_key:
+                case "parquet":
+                    df.to_parquet(fp, engine="pyarrow", index=False, **kw)
+                case "json":
+                    df.to_json(fp, orient="records", lines=True, mode=mode, **kw)
+                case "csv":
+                    df.to_csv(fp, index=False, mode=mode, **kw)
+                case _:
+                    raise ValueError(
+                        f"Unsupported obj_key: {obj_key}. "
+                        "Supported keys are 'json', 'csv', 'parquet'."
+                    )
+
+        await run_sync(_write)
+
+        if clear:
+            async with self.async_lock:
+                self.progression.exclude(list(snapshot_ids))
+                for uid in snapshot_ids:
+                    self.collections.pop(uid, None)
 
     def filter_by_type(
         self,
@@ -1152,7 +937,6 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
 
 def to_list_type(value: Any, /) -> list[Any]:
-    """Convert input to a list format"""
     if value is None:
         return []
     if isinstance(value, UUID):

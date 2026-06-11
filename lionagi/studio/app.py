@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Any
@@ -27,14 +28,26 @@ from .routers import (
 )
 from .services import stats as stats_svc
 
-_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_log = logging.getLogger(__name__)
+
+# Paths that remain reachable without a bearer token regardless of whether
+# LIONAGI_STUDIO_AUTH_TOKEN is set.  This is intentionally a very small set:
+# only pure liveness probes that carry no application state belong here.
+_PUBLIC_PATHS = frozenset({"/health"})
 
 
 @asynccontextmanager
 async def lifespan(app_instance):
     from .scheduler.engine import scheduler
+    from .services.db_maintenance import checkpoint_state_db
+    from .services.lifecycle import run_startup_reconciliation
 
     await scheduler.start()
+    await run_startup_reconciliation()
+    try:
+        await checkpoint_state_db(actor="startup")
+    except Exception:  # noqa: BLE001
+        _log.warning("Startup WAL checkpoint failed (non-fatal)", exc_info=True)
     yield
     await scheduler.stop()
 
@@ -51,14 +64,19 @@ app.add_middleware(
 
 @app.middleware("http")
 async def require_studio_bearer_token(request: Request, call_next):
+    # CORS preflight requests arrive without an Authorization header by design.
+    # Let them pass through so CORSMiddleware can respond with the correct
+    # Allow-* headers; blocking them here would prevent browsers from ever
+    # reaching authenticated endpoints from a separate frontend origin.
+    if request.method == "OPTIONS":
+        return await call_next(request)
     token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
     path = request.url.path
     if token and request.headers.get("authorization") != f"Bearer {token}":
-        # Gate ALL methods on /api/admin/* — GET endpoints must not bypass auth.
-        if path.startswith("/api/admin/"):
-            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
-        # Gate mutating methods on all other /api/* routes.
-        if path.startswith("/api") and request.method in _MUTATING_METHODS:
+        # Allow only explicit liveness probes without a token.  Every other
+        # route — including all /api/* paths regardless of HTTP method — is
+        # protected when a token is configured.
+        if path not in _PUBLIC_PATHS:
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
 

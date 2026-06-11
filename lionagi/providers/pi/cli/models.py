@@ -5,10 +5,10 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import contextlib
 import json
 import logging
+import os
 import shutil
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -21,7 +21,19 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
+from lionagi.libs.path_safety import (
+    check_paths_safe,
+)
+from lionagi.libs.path_safety import (
+    contain_paths_in_root as contain_paths_in_repo,
+)
 from lionagi.libs.schema.as_readable import as_readable
+from lionagi.ln.concurrency.utils import maybe_await
+from lionagi.providers._cli_subprocess import (
+    _INHERIT_STDIN,
+    build_declarative_cli_args,
+    ndjson_from_cli,
+)
 
 HAS_PI_CLI = False
 PI_CLI = None
@@ -89,11 +101,7 @@ def _cli(
 
 
 class PiCodeRequest(BaseModel):
-    """Configuration + prompt for a Pi coding agent CLI invocation.
-
-    Fields annotated with ``_cli(...)`` metadata are automatically
-    assembled into CLI arguments by :meth:`as_cmd_args`, sorted by order.
-    """
+    """Configuration + prompt for a Pi coding agent CLI invocation."""
 
     # ── prompt (always required) ──────────────────────────────────
     prompt: str = Field(description="The prompt for Pi CLI")
@@ -204,16 +212,32 @@ class PiCodeRequest(BaseModel):
             return [v]
         return v
 
+    @field_validator("file_args", mode="before")
+    @classmethod
+    def _validate_file_args(cls, v: list) -> list:
+        return check_paths_safe(list(v), "file_args", strip_at=True)
+
+    @field_validator("extension", "skill", mode="before")
+    @classmethod
+    def _validate_path_fields(cls, v):
+        if v is None:
+            return v
+        items = [v] if isinstance(v, str) else list(v)
+        return check_paths_safe(items, "extension/skill")
+
+    @model_validator(mode="after")
+    def _contain_file_args_in_repo(self) -> PiCodeRequest:
+        repo_root = self.repo.resolve()
+        contain_paths_in_repo(self.file_args, repo_root, "file_args", strip_at=True)
+        if self.extension:
+            contain_paths_in_repo(self.extension, repo_root, "extension")
+        if self.skill:
+            contain_paths_in_repo(self.skill, repo_root, "skill")
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def _infer_provider_from_model(cls, data):
-        """Infer pi's --provider from model name when not explicitly set.
-
-        Pi CLI needs both --provider and --model. When lionagi passes
-        model="deepseek-chat", we detect the provider prefix so pi
-        routes to the correct API. For OpenRouter, the prefix is also
-        stripped from the model name (openrouter/vendor/id → vendor/id).
-        """
         if data.get("provider"):
             return data
         model = data.get("model") or ""
@@ -228,7 +252,6 @@ class PiCodeRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _validate_message_prompt(cls, data):
-        """Convert messages format to prompt if needed."""
         if data.get("prompt"):
             return data
 
@@ -239,7 +262,7 @@ class PiCodeRequest(BaseModel):
         for message in msg:
             if message["role"] != "system":
                 content = message["content"]
-                if isinstance(content, (dict, list)):
+                if isinstance(content, dict | list):
                     prompts.append(ln.json_dumps(content))
                 else:
                     prompts.append(content)
@@ -293,38 +316,7 @@ class PiCodeRequest(BaseModel):
         return {key: self.api_key}
 
     def _build_declarative_args(self) -> list[str]:
-        """Collect fields with ``_cli()`` metadata and emit flags."""
-        flagged: list[tuple[int, dict, Any]] = []
-        for field_name, field_info in type(self).model_fields.items():
-            extra = field_info.json_schema_extra
-            if not extra or "cli_flag" not in extra:
-                continue
-            val = getattr(self, field_name)
-            if val is None:
-                continue
-            if isinstance(val, list) and not val:
-                continue
-            if val is False:
-                continue
-            flagged.append((extra["cli_order"], extra, val))
-
-        flagged.sort(key=lambda x: x[0])
-
-        args: list[str] = []
-        for _, extra, val in flagged:
-            flag = extra["cli_flag"]
-            kind = extra.get("cli_kind", "value")
-
-            if kind == "bool":
-                if val:
-                    args.append(flag)
-            elif kind == "repeat":
-                for v in val:
-                    args.extend([flag, str(v)])
-            else:
-                args.extend([flag, str(val)])
-
-        return args
+        return build_declarative_cli_args(self)
 
 
 # --------------------------------------------------------------------------- chunks & session
@@ -332,8 +324,6 @@ class PiCodeRequest(BaseModel):
 
 @dataclass
 class PiChunk:
-    """Low-level wrapper around every JSON object from Pi CLI."""
-
     raw: dict[str, Any]
     type: str
     text: str | None = None
@@ -344,8 +334,6 @@ class PiChunk:
 
 @dataclass
 class PiSession:
-    """Aggregated view of a whole Pi CLI conversation."""
-
     session_id: str | None = None
     model: str | None = None
     chunks: list[PiChunk] = datafield(default_factory=list)
@@ -364,7 +352,6 @@ class PiSession:
 
 
 def _extract_summary(session: PiSession) -> dict[str, Any]:
-    """Extract summary from session data."""
     tool_counts: dict[str, int] = {}
     key_actions: list[str] = []
     file_operations: dict[str, list[str]] = {
@@ -400,9 +387,7 @@ def _extract_summary(session: PiSession) -> dict[str, Any]:
     for op_type in file_operations:
         file_operations[op_type] = list(dict.fromkeys(file_operations[op_type]))
 
-    result_summary = (
-        (session.result[:200] + "...") if len(session.result) > 200 else session.result
-    )
+    result_summary = (session.result[:200] + "...") if len(session.result) > 200 else session.result
 
     return {
         "tool_counts": tool_counts,
@@ -423,80 +408,16 @@ def _extract_summary(session: PiSession) -> dict[str, Any]:
 
 # TODO(#1043 Phase 2): migrate create_subprocess_exec + wait_for to anyio
 async def _ndjson_from_cli(request: PiCodeRequest):
-    """Yields each JSON object emitted by Pi CLI (JSONL mode)."""
     if PI_CLI is None:
-        raise RuntimeError(
-            "Pi CLI not found. Install with: npm i -g @mariozechner/pi-coding-agent"
-        )
-
-    import os
-
-    env = None
-    if request.env():
-        env = {**os.environ, **request.env()}
-
-    proc = await asyncio.create_subprocess_exec(
-        PI_CLI,
-        *request.as_cmd_args(),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=str(request.repo),
-        env=env,
-        start_new_session=True,
-    )
-
-    decoder = codecs.getincrementaldecoder("utf-8")()
-    json_decoder = json.JSONDecoder()
-    buffer: str = ""
-
-    if proc.stdout is None:
-        raise RuntimeError("Failed to capture stdout from Pi CLI")
-
-    try:
-        while True:
-            chunk = await proc.stdout.read(4096)
-            if not chunk:
-                break
-
-            buffer += decoder.decode(chunk)
-
-            while buffer:
-                buffer = buffer.lstrip()
-                if not buffer:
-                    break
-                try:
-                    obj, idx = json_decoder.raw_decode(buffer)
-                    yield obj
-                    buffer = buffer[idx:]
-                except json.JSONDecodeError:
-                    break
-
-        buffer += decoder.decode(b"", final=True)
-        buffer = buffer.strip()
-        if buffer:
-            try:
-                obj, idx = json_decoder.raw_decode(buffer)
-                yield obj
-            except json.JSONDecodeError:
-                log.error("Skipped unrecoverable JSON tail: %.120s...", buffer)
-
-        rc = await proc.wait()
-        if rc != 0:
-            err = ""
-            if proc.stderr is not None:
-                err = (await proc.stderr.read()).decode().strip()
-            raise RuntimeError(err or f"Pi CLI exited with code {rc}")
-
-    finally:
-        with contextlib.suppress(ProcessLookupError):
-            proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
+        raise RuntimeError("Pi CLI not found. Install with: npm i -g @mariozechner/pi-coding-agent")
+    env = {**os.environ, **request.env()} if request.env() else None
+    cmd = [PI_CLI, *request.as_cmd_args()]
+    # Old Pi subprocess did not set stdin; pass _INHERIT_STDIN to preserve that.
+    async with contextlib.aclosing(
+        ndjson_from_cli(cmd, cwd=request.repo, env=env, stdin=_INHERIT_STDIN)
+    ) as stream:
+        async for obj in stream:
+            yield obj
 
 
 async def stream_pi_cli_events(request: PiCodeRequest):
@@ -659,11 +580,13 @@ async def stream_pi_cli(
                     if text:
                         chunk.text = text
                         if on_text:
-                            await _maybe_await(on_text, text)
+                            await maybe_await(on_text(text))
                         if request.verbose_output:
                             _pp_text(text, theme)
 
                 elif etype == "text_end":
+                    # Field name verified against pi_cli_events.jsonl fixture:
+                    # assistantMessageEvent.content holds the accumulated text.
                     if text := event.get("content", ""):
                         session.result = text
 
@@ -692,11 +615,13 @@ async def stream_pi_cli(
 
                 elif etype in ("toolcall_start", "toolcall_delta", "toolcall_end"):
                     if etype == "toolcall_end":
+                        # Payload structure verified against pi_cli_events.jsonl fixture:
+                        # event.toolCall.{id, name, arguments} (nested under "toolCall" key).
                         tu = _tool_call_from_event(event)
                         chunk.tool_use = tu
                         session.tool_uses.append(tu)
                         if on_tool_use:
-                            await _maybe_await(on_tool_use, tu)
+                            await maybe_await(on_tool_use(tu))
                         if request.verbose_output:
                             _pp_tool_use(tu, theme)
 
@@ -730,7 +655,7 @@ async def stream_pi_cli(
                 chunk.tool_result = tr
                 session.tool_results.append(tr)
                 if on_tool_result:
-                    await _maybe_await(on_tool_result, tr)
+                    await maybe_await(on_tool_result(tr))
                 if request.verbose_output:
                     _pp_tool_result(tr, theme)
                 yield chunk
@@ -738,7 +663,17 @@ async def stream_pi_cli(
             elif typ == "tool_execution_update":
                 yield chunk
 
+            elif typ == "start":
+                # Top-level AssistantMessageEvent start: carries partial assistant
+                # message with initial model/usage info.
+                _remember_assistant_message(session, obj.get("partial"))
+                yield chunk
+
             elif typ == "done":
+                # Top-level done: may carry final message with model/usage.
+                # Both AgentEvent.done (end-of-stream) and a top-level
+                # AssistantMessageEvent.done use this type.
+                _remember_assistant_message(session, obj.get("message"))
                 break
 
             elif typ == "error":
@@ -762,15 +697,6 @@ async def stream_pi_cli(
         session.duration_ms = int((asyncio.get_running_loop().time() - _start) * 1000)
 
     if on_final:
-        await _maybe_await(on_final, session)
+        await maybe_await(on_final(session))
 
     yield session
-
-
-async def _maybe_await(func, *args):
-    """Call func which may be sync or async."""
-    import inspect
-
-    res = func(*args) if func else None
-    if inspect.iscoroutine(res):
-        await res

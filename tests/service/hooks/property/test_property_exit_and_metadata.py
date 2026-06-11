@@ -119,9 +119,7 @@ class TestExitPropagationInvariants:
         ),
     )
     @pytest.mark.anyio
-    async def test_pre_hook_exceptions_respect_exit_policy(
-        self, exit_policy, hook_type
-    ):
+    async def test_pre_hook_exceptions_respect_exit_policy(self, exit_policy, hook_type):
         """Property: Pre-hook non-cancellation exceptions respect exit policy."""
 
         async def failing_hook(*args, **kw):
@@ -168,9 +166,7 @@ class TestExitPropagationInvariants:
         chunk_type=st.text(min_size=1, max_size=20).filter(lambda x: x.strip()),
     )
     @pytest.mark.anyio
-    async def test_stream_handler_exceptions_respect_exit_policy(
-        self, exit_policy, chunk_type
-    ):
+    async def test_stream_handler_exceptions_respect_exit_policy(self, exit_policy, chunk_type):
         """Property: Stream handler exceptions respect exit policy."""
 
         async def failing_handler(*args, **kw):
@@ -206,9 +202,7 @@ class TestMetadataInvariants:
         ),
     )
     @pytest.mark.anyio
-    async def test_metadata_mirrors_event_attributes(
-        self, event_id, created_at, hook_type
-    ):
+    async def test_metadata_mirrors_event_attributes(self, event_id, created_at, hook_type):
         """Property: Metadata exactly mirrors event attributes for invocation hooks."""
 
         async def dummy_hook(*args, **kw):
@@ -217,9 +211,7 @@ class TestMetadataInvariants:
         registry = HookRegistry(hooks={hook_type: dummy_hook})
         event = FakeEventProperty(event_id, created_at)
 
-        (res, should_exit, status), meta = await registry.call(
-            event, hook_type=hook_type
-        )
+        (res, should_exit, status), meta = await registry.call(event, hook_type=hook_type)
 
         # Invariant: Metadata mirrors event attributes exactly
         assert meta["lion_class"] == "test_property_exit_and_metadata.FakeEventProperty"
@@ -241,10 +233,7 @@ class TestMetadataInvariants:
         )
 
         # Invariant: PreEventCreate only has lion_class
-        assert (
-            meta["lion_class"]
-            == "test_property_exit_and_metadata.FakeEventTypeProperty"
-        )
+        assert meta["lion_class"] == "test_property_exit_and_metadata.FakeEventTypeProperty"
         assert len(meta) == 1  # Only lion_class
 
     @given(
@@ -272,12 +261,8 @@ class TestMetadataInvariants:
         event = FakeEventProperty(event_id, created_at)
 
         # Get metadata from both hook types
-        (_, _, _), pre_meta = await registry.call(
-            event, hook_type=HookEventTypes.PreInvocation
-        )
-        (_, _, _), post_meta = await registry.call(
-            event, hook_type=HookEventTypes.PostInvocation
-        )
+        (_, _, _), pre_meta = await registry.call(event, hook_type=HookEventTypes.PreInvocation)
+        (_, _, _), post_meta = await registry.call(event, hook_type=HookEventTypes.PostInvocation)
 
         # Invariant: Metadata should be identical for same event
         assert pre_meta == post_meta
@@ -323,9 +308,7 @@ class TestSyncAsyncVariability:
         chunk_data=st.text(min_size=0, max_size=50),
     )
     @pytest.mark.anyio
-    async def test_sync_async_stream_handlers_equivalent(
-        self, exit_policy, chunk_type, chunk_data
-    ):
+    async def test_sync_async_stream_handlers_equivalent(self, exit_policy, chunk_type, chunk_data):
         """Property: Sync and async stream handlers produce identical results."""
 
         def sync_handler(ev, ct, ch, **kw):
@@ -367,9 +350,7 @@ class TestExceptionVariability:
         ),
     )
     @pytest.mark.anyio
-    async def test_exception_message_preserved(
-        self, error_message, exit_policy, hook_type
-    ):
+    async def test_exception_message_preserved(self, error_message, exit_policy, hook_type):
         """Property: Exception messages are preserved in results."""
 
         async def failing_hook(*args, **kw):
@@ -416,9 +397,7 @@ class TestExceptionVariability:
             captured_params.update(kw)
             return "ok"
 
-        registry = HookRegistry(
-            hooks={HookEventTypes.PreInvocation: param_capturing_hook}
-        )
+        registry = HookRegistry(hooks={HookEventTypes.PreInvocation: param_capturing_hook})
         event = FakeEventProperty("test", 42.0)
 
         await registry.call(

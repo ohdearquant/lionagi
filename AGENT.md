@@ -16,15 +16,15 @@ uv sync --all-extras                        # Install all deps (NEVER use pip)
 uv run pytest                               # Run all tests (parallel, -n auto)
 uv run pytest tests/path.py -v              # Run specific test file
 uv run pytest tests/path.py::test_func -v   # Run specific test function
-uv run pytest -m unit                       # By marker: unit, integration, slow, asyncio, performance
+uv run pytest -m unit                       # By marker; see pyproject.toml for the full marker list
 uv run pytest -n0 -s tests/path.py          # Debug: no parallelism, show stdout
 uv run pytest --cov=lionagi                 # With coverage
-uv run black . && uv run isort .            # Format
-pre-commit run -a                           # All pre-commit hooks (black, isort, pyupgrade)
+uv run ruff format . && uv run ruff check --fix .  # Format + autofix lint
+pre-commit run -a                           # All hooks (file sanity, ruff, pyupgrade, markdownlint, etc.)
 uv build                                    # Build wheel
 ```
 
-CI runs on Python 3.10, 3.11, 3.12, 3.13. Async mode is auto-detected.
+CI tests Python 3.10 and 3.14 on PRs, and 3.10-3.14 on `main`/`develop` pushes. Async mode is auto-detected.
 
 ## Repository Map
 
@@ -59,7 +59,11 @@ CLI has no dedicated unit test suite.
 
 ## Coding Standards
 
-- Line length: 79 chars (black, isort, ruff all enforce this)
+- Line length: 100 chars (`ruff format` + `ruff check`; `[tool.ruff]` in `pyproject.toml` is the source of truth). Target `py310`.
+- Ruff lint selects `E F W B I UP N S A` (incl. bugbear, isort, pyupgrade, naming, bandit).
+- New or materially changed `.py` files under `lionagi/` should keep/add the Apache-2.0 SPDX header, `from __future__ import annotations`, and an `__all__` tuple for public surface.
+- Reuse existing abstractions before creating new ones — `lionagi.ln` (`alcall`, `bcall`, `race`, `retry`, `fuzzy_json`, `json_dumps`, sentinels), `Pile`/`Progression`/`Element`, `iModel`. Don't fork near-duplicates.
+- Prefer LionAGI-native primitives over naked stdlib/third-party calls when a local helper exists. Examples: `alcall`/`bcall` over raw gather loops, `json_dumps`/`fuzzy_json` over direct `json` on model/provider payloads, `now_utc`/`to_uuid` over ad hoc time/UUID handling. Raw stdlib is fine at process boundaries when no LionAGI abstraction applies.
 - Keep code async-safe; avoid blocking calls in async execution paths.
 - Follow existing typing patterns; add type hints on new/changed public APIs.
 - Keep changes surgical: do not refactor unrelated modules in the same patch.
@@ -92,23 +96,12 @@ from lionagi.agent.config import AgentConfig
 from lionagi.agent.factory import create_agent
 
 async def main():
-    config = AgentConfig.coding()          # file tools + guard hooks + strict path policy
+    config = AgentConfig.coding()          # CodingToolkit + guard hooks + workspace path policy
     agent = await create_agent(config)     # returns a wired Branch
     reply = await agent.communicate("Refactor auth.py to use async/await throughout.")
     print(reply)
 
 asyncio.run(main())
-```
-
-**Create a research agent**
-
-```python
-config = AgentConfig.research()            # web + reader tools + log-only policy
-agent = await create_agent(config)
-result = await agent.operate(
-    instruction="Summarize the latest papers on diffusion models.",
-    response_format=Summary,
-)
 ```
 
 **Register custom hooks**
@@ -118,23 +111,24 @@ from lionagi.agent.hooks import guard_paths, log_tool_use
 from lionagi.agent.config import AgentConfig
 
 config = AgentConfig.coding()
-config.hooks.append(guard_paths(allowed=["/tmp/sandbox", "./src"]))
-config.hooks.append(log_tool_use(sink="tool_calls.jsonl"))
+config.pre("reader", guard_paths(allowed_paths=["/tmp/sandbox", "./src"]))
+config.post("*", log_tool_use)
 agent = await create_agent(config)
 ```
 
 **Use Sandbox for isolated edits**
 
 ```python
-from lionagi.tools.sandbox import SandboxSession
+from lionagi.tools.sandbox import create_sandbox, sandbox_diff, sandbox_commit, sandbox_merge
 
-async with await SandboxSession.create(base_branch="main") as session:
-    # agent edits happen inside the worktree
-    agent = await create_agent(AgentConfig.coding(), cwd=session.path)
-    await agent.communicate("Add type hints to all public functions in auth.py.")
-    print(await session.diff())            # inspect changes before committing
-    await session.commit("feat: add type hints to auth module")
-    await session.merge()                  # fast-forward into main; or session.discard()
+session = await create_sandbox(repo_root="/path/to/repo", base_branch="main")
+# agent edits happen inside the worktree at session.worktree_path
+config = AgentConfig.coding(cwd=session.worktree_path)
+agent = await create_agent(config)
+await agent.communicate("Add type hints to all public functions in auth.py.")
+print(await sandbox_diff(session))         # inspect changes before committing
+await sandbox_commit(session, "feat: add type hints to auth module")
+await sandbox_merge(session)               # merge into base; or sandbox_discard(session)
 ```
 
 **Permission policies**
@@ -142,14 +136,22 @@ async with await SandboxSession.create(base_branch="main") as session:
 ```python
 from lionagi.agent.permissions import PermissionPolicy
 
-# Allowlist mode: only listed tools may run
-policy = PermissionPolicy(mode="allowlist", tools=["read_file", "list_dir"])
+# Allow-all mode: everything permitted (default for orchestrators)
+policy = PermissionPolicy(mode="allow_all")
 
-# Confirm mode: prompt before each tool execution
-policy = PermissionPolicy(mode="confirm")
+# Deny-all mode: nothing permitted (safe mode)
+policy = PermissionPolicy(mode="deny_all")
+
+# Rules mode: per-tool allow/deny/escalate patterns
+policy = PermissionPolicy(
+    mode="rules",
+    allow={"reader": ["*"], "search": ["*"]},
+    deny={"bash": ["rm *"]},
+    escalate={"bash": ["*"]},
+)
 
 config = AgentConfig.coding()
-config.permission_policy = policy
+config.permissions = {"mode": "rules", "allow": {"reader": ["*"]}, "deny": {"bash": ["rm *"]}}
 ```
 
 **Settings** — place `.lionagi/settings.yaml` in the project root to override defaults. Global settings live at `~/.lionagi/settings.yaml`; project settings win on conflict.
@@ -163,6 +165,7 @@ github = "ohdearquant/lionagi"
 ```
 
 This is separate from `settings.yaml` (which is gitignored/local). The detection cascade at session creation (`lionagi/cli/_project.py`):
+
 1. Walk up from cwd → read `.lionagi/config.toml` → `[project].name`
 2. Check `project_overrides` in `~/.lionagi/settings.yaml` (key = `org/repo` remote or absolute path prefix)
 3. Parse git remote URL → derive `org/repo` as fallback

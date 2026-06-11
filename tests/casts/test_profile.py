@@ -110,6 +110,36 @@ class TestProfileFromYaml:
         assert p.modes == ()
 
 
+class TestProfileToYaml:
+    def test_round_trip_equals_original(self, tmp_path):
+        original = Profile.compose(
+            "researcher", modes=["evidential", "systematic"], name="my-researcher"
+        )
+        yaml_file = tmp_path / "profile.yaml"
+        original.to_yaml(yaml_file)
+        reloaded = Profile.from_yaml(yaml_file)
+        assert reloaded == original
+
+    def test_writes_canonical_schema(self, tmp_path):
+        p = Profile.compose("critic", modes=["adversarial"], name="adv-critic")
+        yaml_file = tmp_path / "profile.yaml"
+        p.to_yaml(yaml_file)
+        data = yaml.safe_load(yaml_file.read_text())
+        assert data == {
+            "name": "adv-critic",
+            "role": "critic",
+            "modes": ["adversarial"],
+        }
+
+    def test_round_trip_no_modes(self, tmp_path):
+        original = Profile.compose("analyst")
+        yaml_file = tmp_path / "bare.yaml"
+        original.to_yaml(yaml_file)
+        reloaded = Profile.from_yaml(yaml_file)
+        assert reloaded == original
+        assert reloaded.modes == ()
+
+
 class TestListRolesAndModes:
     def test_list_roles_includes_known(self):
         roles = list_roles()

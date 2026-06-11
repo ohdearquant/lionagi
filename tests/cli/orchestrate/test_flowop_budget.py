@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import re
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from lionagi.cli.orchestrate.flow import _format_budget_preamble
 
@@ -112,11 +114,14 @@ def test_orchestration_env_has_total_budget_field():
     assert "total_budget" in field_names
 
 
-def test_setup_orchestration_passes_total_budget():
+@pytest.mark.asyncio
+async def test_setup_orchestration_passes_total_budget():
     """setup_orchestration must forward total_budget to OrchestrationEnv."""
     from lionagi.cli.orchestrate._orchestration import setup_orchestration
 
-    # Patch the heavy internal calls so we don't need a live model.
+    # Patch the heavy internal calls so we don't need a live model. The
+    # no-profile orchestrator now builds its branch via create_agent (the
+    # canonical construction path), so that is what we stub.
     with (
         patch("lionagi.cli.orchestrate._orchestration.build_imodel_from_spec") as mock_imodel,
         patch("lionagi.cli.orchestrate._orchestration.allocate_run") as mock_run,
@@ -125,7 +130,10 @@ def test_setup_orchestration_passes_total_budget():
             side_effect=FileNotFoundError,
         ),
         patch("lionagi.cli.orchestrate._orchestration.resolve_persisted_effort", return_value=None),
-        patch("lionagi.cli.orchestrate._orchestration.Branch") as mock_branch,
+        patch(
+            "lionagi.cli.orchestrate._orchestration.create_agent",
+            new=AsyncMock(return_value=MagicMock(system=None)),
+        ),
         patch("lionagi.cli.orchestrate._orchestration.Session"),
         patch("lionagi.cli.orchestrate._orchestration.OperationGraphBuilder"),
     ):
@@ -135,9 +143,8 @@ def test_setup_orchestration_passes_total_budget():
         mock_ep.config.kwargs = {}
         mock_imodel.return_value.endpoint = mock_ep
         mock_run.return_value.ensure_artifact_root.return_value = None
-        mock_branch.return_value = MagicMock(system=None)
 
-        env = setup_orchestration(
+        env = await setup_orchestration(
             pattern_name="Flow",
             model_spec="openai/gpt-4.1-mini",
             agent_name=None,
@@ -153,7 +160,8 @@ def test_setup_orchestration_passes_total_budget():
     assert env.total_budget == 1800
 
 
-def test_setup_orchestration_total_budget_defaults_none():
+@pytest.mark.asyncio
+async def test_setup_orchestration_total_budget_defaults_none():
     """setup_orchestration default leaves total_budget as None."""
     from lionagi.cli.orchestrate._orchestration import setup_orchestration
 
@@ -165,7 +173,10 @@ def test_setup_orchestration_total_budget_defaults_none():
             side_effect=FileNotFoundError,
         ),
         patch("lionagi.cli.orchestrate._orchestration.resolve_persisted_effort", return_value=None),
-        patch("lionagi.cli.orchestrate._orchestration.Branch") as mock_branch,
+        patch(
+            "lionagi.cli.orchestrate._orchestration.create_agent",
+            new=AsyncMock(return_value=MagicMock(system=None)),
+        ),
         patch("lionagi.cli.orchestrate._orchestration.Session"),
         patch("lionagi.cli.orchestrate._orchestration.OperationGraphBuilder"),
     ):
@@ -174,9 +185,8 @@ def test_setup_orchestration_total_budget_defaults_none():
         mock_ep.config.kwargs = {}
         mock_imodel.return_value.endpoint = mock_ep
         mock_run.return_value.ensure_artifact_root.return_value = None
-        mock_branch.return_value = MagicMock(system=None)
 
-        env = setup_orchestration(
+        env = await setup_orchestration(
             pattern_name="Flow",
             model_spec="openai/gpt-4.1-mini",
             agent_name=None,

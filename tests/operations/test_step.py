@@ -3,7 +3,6 @@
 
 """Tests for lionagi.operations.operate.step — Step factory methods."""
 
-
 from lionagi.ln.types import Spec
 from lionagi.models import FieldModel
 from lionagi.operations.operate.step import Step
@@ -42,9 +41,7 @@ def test_step_respond_operative_additional_fields_returns_new_operative():
     base_op = Step.request_operative(name="Check")
     confidence_spec = Spec(float, name="confidence")
 
-    new_op = Step.respond_operative(
-        base_op, additional_fields={"confidence": confidence_spec}
-    )
+    new_op = Step.respond_operative(base_op, additional_fields={"confidence": confidence_spec})
 
     # new_op is a distinct object
     assert new_op is not base_op

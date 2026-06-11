@@ -10,8 +10,8 @@ from pydantic import BaseModel, JsonValue
 from lionagi.ln import AlcallParams
 from lionagi.ln.fuzzy import FuzzyMatchKeysParams
 from lionagi.ln.types import ModelConfig, Params
+from lionagi.operations.schema.structure import Structure
 from lionagi.protocols.action.tool import ToolRef
-from lionagi.protocols.structure.base import Structure
 from lionagi.protocols.types import ID, SenderRecipient
 from lionagi.service.imodel import iModel
 from lionagi.utils import LIONAGI_HOME
@@ -64,6 +64,20 @@ class ChatParam(MorphParam):
     include_token_usage_to_model: bool = False  # deprecated
     imodel: iModel = None
     imodel_kw: dict = None
+
+    @classmethod
+    def from_branch(cls, branch: "Branch", **overrides) -> "ChatParam":
+        defaults = dict(
+            sender=branch.user or "user",
+            recipient=branch.id,
+            images=[],
+            image_detail="auto",
+            plain_content="",
+            imodel=branch.chat_model,
+            imodel_kw={},
+        )
+        defaults.update(overrides)
+        return cls(**defaults)
 
 
 @dataclass(slots=True, frozen=True, init=False)
