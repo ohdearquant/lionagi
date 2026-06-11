@@ -256,7 +256,7 @@ def test_maintenance_vacuum_live_existing_db(tmp_path, monkeypatch):
     client, db_path = _make_client(tmp_path, monkeypatch)
 
     # Initialize the schema so the DB file exists before the request.
-    asyncio.get_event_loop().run_until_complete(_async_init_db(db_path))
+    asyncio.run(_async_init_db(db_path))
 
     resp = client.post("/api/admin/maintenance", json={"action": "vacuum"})
     assert resp.status_code == 200, resp.text
@@ -265,9 +265,7 @@ def test_maintenance_vacuum_live_existing_db(tmp_path, monkeypatch):
     assert data["status"] == "ok"
 
     # Verify the audit event was written to the same db_path.
-    events = asyncio.get_event_loop().run_until_complete(
-        _async_list_events(db_path, action="vacuum")
-    )
+    events = asyncio.run(_async_list_events(db_path, action="vacuum"))
     assert any(e["action"] == "vacuum" for e in events), (
         f"Expected vacuum audit event in {db_path}, got: {events}"
     )
@@ -332,7 +330,7 @@ def test_maintenance_lock_contention_returns_409(tmp_path, monkeypatch, action):
     client, db_path = _make_client(tmp_path, monkeypatch)
 
     # Initialize the schema so the DB file exists and is in WAL mode.
-    asyncio.get_event_loop().run_until_complete(_async_init_db(db_path))
+    asyncio.run(_async_init_db(db_path))
 
     # Patch _apply_pragmas to use a short busy_timeout so the test is fast.
     original_apply_pragmas = StateDB._apply_pragmas
