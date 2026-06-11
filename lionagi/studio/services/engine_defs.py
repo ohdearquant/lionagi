@@ -16,6 +16,7 @@ from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 class NameConflictError(Exception):
     """Engine definition name is already taken."""
 
+
 # Closed set of engine kinds — must equal set(lionagi.cli.engine._KIND_META).
 _VALID_ENGINE_KINDS: frozenset[str] = frozenset(
     {"research", "review", "coding", "hypothesis", "planning"}
@@ -26,6 +27,7 @@ _ALLOWED_OPTIONS_KEYS: frozenset[str] = frozenset({"test_cmd", "export_dir"})
 
 # Safe shell-token pattern: no leading '-', no shell metacharacters.
 _SAFE_TOKEN_RE = re.compile(r"^[a-zA-Z0-9_./:@\-\+= ]+$")
+
 
 def _validate_kind(kind: str) -> None:
     if kind not in _VALID_ENGINE_KINDS:
@@ -47,9 +49,7 @@ def _validate_options(options: dict[str, Any] | None) -> None:
         if not isinstance(val, str):
             raise ValueError(f"options.{key} must be a string, got {type(val).__name__}")
         if val.startswith("-"):
-            raise ValueError(
-                f"options.{key} {val!r} starts with '-' and would inject a CLI flag"
-            )
+            raise ValueError(f"options.{key} {val!r} starts with '-' and would inject a CLI flag")
         if not _SAFE_TOKEN_RE.match(val):
             raise ValueError(
                 f"options.{key} {val!r} contains shell metacharacters not allowed in "
@@ -138,9 +138,7 @@ async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:
         try:
             await db.create_engine_def(defn)
         except sqlite3.IntegrityError as exc:
-            raise NameConflictError(
-                f"Engine definition name {name!r} already exists"
-            ) from exc
+            raise NameConflictError(f"Engine definition name {name!r} already exists") from exc
     return {"id": def_id, "name": name, "created_at": now}
 
 

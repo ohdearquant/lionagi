@@ -36,8 +36,9 @@ async def _seed_engine_def(
     description: str | None = None,
     options: dict | None = None,
 ) -> str:
-    from lionagi.state.db import StateDB
     import time
+
+    from lionagi.state.db import StateDB
 
     def_id = _rid()
     now = time.time()
@@ -218,8 +219,8 @@ def patched_app(tmp_path: Path, monkeypatch):
     pytest.importorskip("fastapi", reason="studio extra not installed")
     httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
-    import lionagi.studio.services.engine_defs as ed_svc
     import lionagi.state.db as db_mod
+    import lionagi.studio.services.engine_defs as ed_svc
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(ed_svc, "DEFAULT_DB_PATH", db_path)

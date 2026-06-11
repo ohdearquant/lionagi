@@ -1172,10 +1172,7 @@ export interface UpdateEngineDefRequest {
 
 export interface LaunchResult {
   invocation_id: string;
-  engine_def_id: string;
-  engine_def_name: string;
-  kind: string;
-  argv: string[];
+  action_kind: string;
 }
 
 export async function listEngineDefs(params?: { kind?: string }): Promise<EngineDef[]> {

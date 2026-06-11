@@ -278,10 +278,7 @@ describe("engine defs API", () => {
   it("launchEngine — POST /api/launches/ with action_kind=engine", async () => {
     const response = {
       invocation_id: "inv-1",
-      engine_def_id: "def-1",
-      engine_def_name: "Coder",
-      kind: "coding",
-      argv: ["uv", "run", "li", "engine", "run", "--", "coding", "build a crawler"],
+      action_kind: "engine",
     };
     const calls = stubFetch(response, 202);
     const { launchEngine } = await import("./api");
