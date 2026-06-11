@@ -56,10 +56,15 @@ function DbHealthStrip({ doctor }: { doctor: AdminDoctorResponse }) {
 
 function formatMaintenanceResult(result: MaintenanceResult): string {
   if (result.action === "vacuum") {
+    if (result.status === "skipped") return "Vacuum skipped: no state database exists yet.";
     return `Vacuum complete (status: ${result.status ?? "ok"}).`;
   }
   if (result.action === "checkpoint") {
-    return `Checkpoint complete (busy: ${result.busy ?? 0}, log_pages: ${result.log_pages ?? 0}, checkpointed: ${result.checkpointed ?? 0}).`;
+    // busy/log_pages/checkpointed are null when the DB does not exist yet.
+    if (result.busy == null && result.log_pages == null && result.checkpointed == null) {
+      return "Checkpoint skipped: no state database exists yet.";
+    }
+    return `Checkpoint complete (busy: ${result.busy}, log_pages: ${result.log_pages}, checkpointed: ${result.checkpointed}).`;
   }
   if (result.action === "prune") {
     return `Prune complete: ${result.sessions_pruned ?? 0} session(s), ${result.runs_pruned ?? 0} run(s) removed.`;
@@ -142,14 +147,17 @@ export default function AdminMaintenancePage() {
     try {
       const result = await runMaintenance(action);
       setMaintenanceResult(formatMaintenanceResult(result));
-    } catch {
-      const key =
+    } catch (err) {
+      // Prefer the backend detail string preserved by fetchJson; fall back to
+      // the generic copy string when no structured message is available.
+      const backendMsg = err instanceof Error ? err.message : undefined;
+      const fallback =
         action === "vacuum"
           ? errors.maintenanceVacuum
           : action === "checkpoint"
             ? errors.maintenanceCheckpoint
             : errors.maintenancePrune;
-      setMaintenanceError(key);
+      setMaintenanceError(backendMsg ?? fallback);
     } finally {
       setMaintenanceRunning(null);
     }

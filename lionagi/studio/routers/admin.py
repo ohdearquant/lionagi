@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.state.reasons import RunReasons, validate_reason_code
 
 from ..services import admin as admin_svc
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-
-# Closed set of DB maintenance actions exposed through the Studio UI.
-_MAINTENANCE_ACTIONS = frozenset({"vacuum", "checkpoint", "prune"})
 
 _log = logging.getLogger(__name__)
 
@@ -28,11 +26,16 @@ _LEGACY_ADMIN_REASON_CODES: dict[str, str] = {
 class MaintenanceBody(BaseModel):
     """Request body for POST /api/admin/maintenance.
 
-    ``action`` must be one of the allowlisted values; any other token is
-    rejected with 422 before any operation runs.
+    The schema is closed (``extra="forbid"``) so any unknown field causes a
+    422 before the action string is even inspected.  ``action`` is typed as a
+    ``Literal`` — Pydantic rejects out-of-vocabulary values at parse time with
+    a validation error that already carries the allowed values, so the manual
+    frozenset check is no longer needed.
     """
 
-    action: str = Field(
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["vacuum", "checkpoint", "prune"] = Field(
         ...,
         description="DB maintenance action: 'vacuum', 'checkpoint', or 'prune'.",
     )
@@ -141,34 +144,44 @@ async def prune_old_data(body: PruneOldDataBody) -> dict[str, int]:
 async def run_maintenance(body: MaintenanceBody) -> dict[str, Any]:
     """Run a DB maintenance action (vacuum | checkpoint | prune).
 
-    The ``action`` field is validated against a strict allowlist before
-    any operation runs; unknown values return 422 immediately.
-    """
-    if body.action not in _MAINTENANCE_ACTIONS:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"Unknown action {body.action!r}. Allowed values: {sorted(_MAINTENANCE_ACTIONS)}"
-            ),
-        )
+    ``action`` is validated as a ``Literal`` by Pydantic at parse time; the
+    schema is closed (``extra="forbid"``), so unknown fields and out-of-
+    vocabulary action values return 422 before this handler runs.
 
+    Returns 409 with a structured detail when the state database is held by
+    another writer and the operation cannot acquire the write lock within
+    SQLite's configured busy_timeout (5 s).  The global busy_timeout in
+    db.py is intentionally left unchanged — this 409 is the maintenance-
+    specific policy so the operator sees an actionable message instead of a
+    generic 500.
+    """
     from ..services.db_maintenance import (
         checkpoint_state_db,
         prune_old_data,
         vacuum_state_db,
     )
 
-    if body.action == "vacuum":
-        result = await vacuum_state_db(actor="admin")
-        return {"action": "vacuum", **result}
+    try:
+        if body.action == "vacuum":
+            result = await vacuum_state_db(actor="admin")
+            return {"action": "vacuum", **result}
 
-    if body.action == "checkpoint":
-        result = await checkpoint_state_db(actor="admin")
-        return {"action": "checkpoint", **result}
+        if body.action == "checkpoint":
+            result = await checkpoint_state_db(actor="admin")
+            return {"action": "checkpoint", **result}
 
-    # action == "prune"
-    result = await prune_old_data(actor="admin")
-    return {"action": "prune", **result}
+        # action == "prune"
+        result = await prune_old_data(actor="admin")
+        return {"action": "prune", **result}
+
+    except sqlite3.OperationalError as exc:
+        msg = str(exc).lower()
+        if "locked" in msg or "in progress" in msg or "unable to open" in msg:
+            raise HTTPException(
+                status_code=409,
+                detail="State database is busy — another writer holds the lock. Try again shortly.",
+            ) from exc
+        raise
 
 
 @router.post("/prune")

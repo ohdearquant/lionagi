@@ -48,7 +48,17 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;
   const response = await fetch(url, { redirect: "follow", ...init });
   if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
+    // Preserve the backend `detail` field (FastAPI/Pydantic validation errors,
+    // our structured 409 body, etc.) so callers can surface it to the operator.
+    // Falls back to the status code when the body is not JSON or has no detail.
+    let detail: string | undefined;
+    try {
+      const body = (await response.json()) as { detail?: string };
+      if (typeof body?.detail === "string") detail = body.detail;
+    } catch {
+      // not JSON — ignore
+    }
+    throw new Error(detail ?? `Request failed: ${response.status}`);
   }
   return response.json() as Promise<T>;
 }
