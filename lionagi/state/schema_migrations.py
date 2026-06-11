@@ -99,4 +99,18 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("status_reason_summary", "TEXT"),
         ("status_evidence_refs", "JSON"),
     ],
+    # Phase C Move 2: engine run persistence.
+    # New table created via schema.sql; these columns allow ALTER TABLE on
+    # existing databases that pre-date this table (rare, but handled uniformly).
+    "engine_runs": [
+        ("id", "TEXT NOT NULL"),
+        ("kind", "TEXT NOT NULL"),
+        ("spec_json", "JSON NOT NULL"),
+        ("status", "TEXT NOT NULL DEFAULT 'running'"),
+        ("started_at", "REAL NOT NULL"),
+        ("ended_at", "REAL"),
+        ("session_id", "TEXT"),
+        ("export_dir", "TEXT"),
+        ("error", "TEXT"),
+    ],
 }
