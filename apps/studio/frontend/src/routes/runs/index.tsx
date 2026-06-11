@@ -110,14 +110,19 @@ interface RunsSearch {
   project?: string;
 }
 
+function coerceStatus(value: unknown): string[] | undefined {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) {
+    const strings = value.filter((v): v is string => typeof v === "string");
+    return strings.length > 0 ? strings : undefined;
+  }
+  return undefined;
+}
+
 export const Route = createFileRoute("/runs/")({
   validateSearch: (search: Record<string, unknown>): RunsSearch => ({
     page: typeof search.page === "number" ? search.page : undefined,
-    status: Array.isArray(search.status)
-      ? (search.status as string[])
-      : typeof search.status === "string"
-        ? [search.status]
-        : undefined,
+    status: coerceStatus(search.status),
     playbook: typeof search.playbook === "string" ? search.playbook : undefined,
     project: typeof search.project === "string" ? search.project : undefined,
   }),
