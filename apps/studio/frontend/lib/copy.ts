@@ -111,4 +111,7 @@ export const errors = {
   // Action failures — operator tried to do something, it failed.
   prune: "Failed to prune sessions.",
   pruneAll: "Failed to prune all phantom sessions.",
+  maintenanceVacuum: "Failed to run vacuum.",
+  maintenanceCheckpoint: "Failed to run checkpoint.",
+  maintenancePrune: "Failed to run prune.",
 } as const;

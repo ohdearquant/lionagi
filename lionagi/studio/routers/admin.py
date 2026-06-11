@@ -12,6 +12,9 @@ from ..services import admin as admin_svc
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+# Closed set of DB maintenance actions exposed through the Studio UI.
+_MAINTENANCE_ACTIONS = frozenset({"vacuum", "checkpoint", "prune"})
+
 _log = logging.getLogger(__name__)
 
 # Fallback mapping for deprecated 'reason' field without reason_code.
@@ -20,6 +23,19 @@ _LEGACY_ADMIN_REASON_CODES: dict[str, str] = {
     "aborted": RunReasons.ABORTED_USER,
     "cancelled": RunReasons.CANCELLED_SYSTEM,
 }
+
+
+class MaintenanceBody(BaseModel):
+    """Request body for POST /api/admin/maintenance.
+
+    ``action`` must be one of the allowlisted values; any other token is
+    rejected with 422 before any operation runs.
+    """
+
+    action: str = Field(
+        ...,
+        description="DB maintenance action: 'vacuum', 'checkpoint', or 'prune'.",
+    )
 
 
 class PruneBody(BaseModel):
@@ -119,6 +135,40 @@ async def prune_old_data(body: PruneOldDataBody) -> dict[str, int]:
     from ..services.db_maintenance import prune_old_data as _prune
 
     return await _prune(keep_days=body.keep_days, actor="admin")
+
+
+@router.post("/maintenance")
+async def run_maintenance(body: MaintenanceBody) -> dict[str, Any]:
+    """Run a DB maintenance action (vacuum | checkpoint | prune).
+
+    The ``action`` field is validated against a strict allowlist before
+    any operation runs; unknown values return 422 immediately.
+    """
+    if body.action not in _MAINTENANCE_ACTIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Unknown action {body.action!r}. Allowed values: {sorted(_MAINTENANCE_ACTIONS)}"
+            ),
+        )
+
+    from ..services.db_maintenance import (
+        checkpoint_state_db,
+        prune_old_data,
+        vacuum_state_db,
+    )
+
+    if body.action == "vacuum":
+        result = await vacuum_state_db(actor="admin")
+        return {"action": "vacuum", **result}
+
+    if body.action == "checkpoint":
+        result = await checkpoint_state_db(actor="admin")
+        return {"action": "checkpoint", **result}
+
+    # action == "prune"
+    result = await prune_old_data(actor="admin")
+    return {"action": "prune", **result}
 
 
 @router.post("/prune")

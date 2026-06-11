@@ -4,8 +4,13 @@ import { useEffect, useState } from "react";
 import Button from "@/components/Button";
 import PageHeader from "@/components/PageHeader";
 import Timestamp from "@/components/Timestamp";
-import { getAdminDoctor, pruneAdmin } from "@/lib/api";
-import type { AdminDoctorResponse, PhantomReason } from "@/lib/api";
+import { getAdminDoctor, pruneAdmin, runMaintenance } from "@/lib/api";
+import type {
+  AdminDoctorResponse,
+  MaintenanceAction,
+  MaintenanceResult,
+  PhantomReason,
+} from "@/lib/api";
 import { confirmPhantomPrune, empty, errors } from "@/lib/copy";
 
 function formatBytes(value: number): string {
@@ -49,12 +54,28 @@ function DbHealthStrip({ doctor }: { doctor: AdminDoctorResponse }) {
   );
 }
 
+function formatMaintenanceResult(result: MaintenanceResult): string {
+  if (result.action === "vacuum") {
+    return `Vacuum complete (status: ${result.status ?? "ok"}).`;
+  }
+  if (result.action === "checkpoint") {
+    return `Checkpoint complete (busy: ${result.busy ?? 0}, log_pages: ${result.log_pages ?? 0}, checkpointed: ${result.checkpointed ?? 0}).`;
+  }
+  if (result.action === "prune") {
+    return `Prune complete: ${result.sessions_pruned ?? 0} session(s), ${result.runs_pruned ?? 0} run(s) removed.`;
+  }
+  return "Done.";
+}
+
 export default function AdminMaintenancePage() {
   const [doctor, setDoctor] = useState<AdminDoctorResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [pruning, setPruning] = useState(false);
+  const [maintenanceRunning, setMaintenanceRunning] = useState<MaintenanceAction | null>(null);
+  const [maintenanceResult, setMaintenanceResult] = useState<string | null>(null);
+  const [maintenanceError, setMaintenanceError] = useState<string | null>(null);
 
   async function refresh() {
     try {
@@ -111,6 +132,26 @@ export default function AdminMaintenancePage() {
       setError(errors.pruneAll);
     } finally {
       setPruning(false);
+    }
+  }
+
+  async function handleMaintenance(action: MaintenanceAction) {
+    setMaintenanceRunning(action);
+    setMaintenanceResult(null);
+    setMaintenanceError(null);
+    try {
+      const result = await runMaintenance(action);
+      setMaintenanceResult(formatMaintenanceResult(result));
+    } catch {
+      const key =
+        action === "vacuum"
+          ? errors.maintenanceVacuum
+          : action === "checkpoint"
+            ? errors.maintenanceCheckpoint
+            : errors.maintenancePrune;
+      setMaintenanceError(key);
+    } finally {
+      setMaintenanceRunning(null);
     }
   }
 
@@ -211,6 +252,54 @@ export default function AdminMaintenancePage() {
             </table>
           </div>
         )}
+      </section>
+
+      <section>
+        <div className="mb-2.5 flex items-center justify-between">
+          <h2 className="text-label font-semibold text-content-primary">DB maintenance</h2>
+        </div>
+
+        {maintenanceResult && (
+          <div className="mb-3 rounded border border-status-success/30 bg-status-success-bg px-3 py-2 text-body text-content-primary">
+            {maintenanceResult}
+          </div>
+        )}
+        {maintenanceError && (
+          <div className="mb-3 rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-content-primary">
+            {maintenanceError}
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={maintenanceRunning !== null}
+            onClick={() => void handleMaintenance("checkpoint")}
+          >
+            {maintenanceRunning === "checkpoint" ? "Running..." : "Checkpoint WAL"}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={maintenanceRunning !== null}
+            onClick={() => void handleMaintenance("prune")}
+          >
+            {maintenanceRunning === "prune" ? "Running..." : "Prune old data"}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={maintenanceRunning !== null}
+            onClick={() => void handleMaintenance("vacuum")}
+          >
+            {maintenanceRunning === "vacuum" ? "Running..." : "Vacuum DB"}
+          </Button>
+        </div>
+        <p className="mt-2 text-meta text-content-muted">
+          Checkpoint flushes the WAL file. Prune removes terminal sessions older than the configured
+          keep_days. Vacuum reclaims freed pages (run after prune).
+        </p>
       </section>
     </main>
   );

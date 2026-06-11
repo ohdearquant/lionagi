@@ -789,6 +789,32 @@ export async function pruneAdmin(body: AdminPruneRequest): Promise<{ pruned: num
   });
 }
 
+// ─── Admin maintenance (Phase C Move 3) ──────────────────────────────────────
+
+export type MaintenanceAction = "vacuum" | "checkpoint" | "prune";
+
+export interface MaintenanceResult {
+  action: MaintenanceAction;
+  // vacuum
+  status?: string;
+  // checkpoint
+  mode?: string;
+  busy?: number | null;
+  log_pages?: number | null;
+  checkpointed?: number | null;
+  // prune
+  sessions_pruned?: number;
+  runs_pruned?: number;
+}
+
+export async function runMaintenance(action: MaintenanceAction): Promise<MaintenanceResult> {
+  return fetchJson<MaintenanceResult>("/api/admin/maintenance", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action }),
+  });
+}
+
 // ─── Projects (ADR-0026) ──────────────────────────────────────────────────────
 
 export interface ProjectListResponse {
