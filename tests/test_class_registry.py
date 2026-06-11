@@ -364,65 +364,100 @@ class TestGetClassMiss:
 
 
 class TestGetClassFileRegistryFallback:
-    """Pin the broken file-registry fallback in get_class().
+    """Pin the fixed file-registry fallback in get_class().
 
-    The fallback at _class_registry.py:100 always raises ImportError when
-    trying to load modules that use relative imports, and get_class() wraps
-    that in ValueError.  This is a documented latent bug.
+    get_class_objects() now derives the canonical dotted module name from
+    the file path relative to the package root and uses
+    ``importlib.import_module`` instead of ``spec_from_file_location`` with a
+    bare context-less name.  This restores full package context so relative
+    imports resolve correctly.  Fixes issue #1407.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=ValueError,
-        reason=(
-            "LATENT BUG: get_class_objects() executes modules via a bare spec "
-            "('module.name') with no parent package context.  Any module that "
-            "uses relative imports (from .x import Y) raises "
-            "'ImportError: attempted relative import beyond top-level package'. "
-            "This makes the file-registry fallback path unreachable for all "
-            "real lionagi classes.  Only in-memory LION_CLASS_REGISTRY hits "
-            "work.  Tracked so a future fix is pinned explicitly."
-        ),
-    )
-    def test_file_registry_fallback_raises_for_relative_import_module(self):
-        """Calling get_class() on a scanned class NOT already in LION_CLASS_REGISTRY
-        triggers the file-registry fallback and raises because relative imports fail."""
+    def test_file_registry_fallback_works_for_relative_import_module(self):
+        """Calling get_class() on a class present only in LION_CLASS_FILE_REGISTRY
+        (not in LION_CLASS_REGISTRY) must succeed via the file-registry fallback.
+
+        Formerly pinned as xfail because the old ``spec_from_file_location``
+        approach broke relative imports.  Now a strict passing test.
+        """
+        from lionagi._class_registry import (
+            LION_CLASS_FILE_REGISTRY,
+            LION_CLASS_REGISTRY,
+            get_class,
+        )
+        from lionagi.protocols.graph.node import Node
+
+        # 'Node' is guaranteed to be in FILE_REGISTRY (scanned at import time).
+        target = "Node"
+        assert target in LION_CLASS_FILE_REGISTRY, (
+            "Prerequisite: Node must be in LION_CLASS_FILE_REGISTRY"
+        )
+
+        # Remove all registry entries whose key contains 'Node' so that
+        # get_class is forced through the file-registry fallback path.
+        # The autouse _registry_snapshot fixture restores these afterwards.
+        keys_to_remove = [k for k in LION_CLASS_REGISTRY if k.endswith(f".{target}") or k == target]
+        for k in keys_to_remove:
+            del LION_CLASS_REGISTRY[k]
+        LION_CLASS_REGISTRY.pop(target, None)
+
+        # The fallback must now succeed — relative imports resolve correctly.
+        result = get_class(target)
+        assert isinstance(result, type)
+        assert issubclass(result, Node)
+
+    def test_file_registry_fallback_returns_correct_class(self):
+        """The class returned via the file-registry fallback is the real class,
+        not a re-imported duplicate with a different identity."""
+        from lionagi._class_registry import (
+            LION_CLASS_FILE_REGISTRY,
+            LION_CLASS_REGISTRY,
+            get_class,
+        )
+        from lionagi.protocols.generic.element import Element
+
+        target = "Element"
+        assert target in LION_CLASS_FILE_REGISTRY
+
+        keys_to_remove = [k for k in LION_CLASS_REGISTRY if k.endswith(f".{target}") or k == target]
+        for k in keys_to_remove:
+            del LION_CLASS_REGISTRY[k]
+        LION_CLASS_REGISTRY.pop(target, None)
+
+        result = get_class(target)
+        # importlib.import_module is idempotent (uses sys.modules cache), so
+        # the returned class object is identical to the already-imported one.
+        assert result is Element
+
+    def test_file_registry_fallback_path_outside_package_raises_clear_error(self):
+        """get_class_objects() must raise ValueError with a clear message when
+        the file path is not under the package root."""
+        from lionagi._class_registry import get_class_objects
+
+        with pytest.raises(ValueError, match="not located under the package root"):
+            get_class_objects("/tmp/some_random_file_outside_package.py")
+
+    def test_file_registry_fallback_class_not_in_module_raises_value_error(self):
+        """get_class() must raise ValueError when the file-registry entry exists
+        but the named class is not actually exported by that module.
+
+        This simulates a stale registry entry pointing to the wrong file.
+        """
         from lionagi._class_registry import (
             LION_CLASS_FILE_REGISTRY,
             LION_CLASS_REGISTRY,
             get_class,
         )
 
-        # Find a class that is in FILE_REGISTRY but not yet in LION_CLASS_REGISTRY
-        # by temporarily removing it from the in-memory registry.
-        # We use 'Node' which is guaranteed to be in FILE_REGISTRY.
-        target = "Node"
-        assert target in LION_CLASS_FILE_REGISTRY, (
-            "Prerequisite: Node must be in LION_CLASS_FILE_REGISTRY"
-        )
+        # Inject a fake entry: 'Element' file path but ask for a class that
+        # definitely isn't in element.py.
+        fake_class_name = "_NonExistentClassInElementPy_xyz"
+        LION_CLASS_FILE_REGISTRY[fake_class_name] = LION_CLASS_FILE_REGISTRY["Element"]
+        # Ensure it's not in the in-memory registry either.
+        LION_CLASS_REGISTRY.pop(fake_class_name, None)
 
-        # Remove from in-memory registry so get_class falls through to file path.
-        # (The autouse _registry_snapshot fixture will restore this automatically.)
-        keys_to_remove = [k for k in LION_CLASS_REGISTRY if k.endswith(f".{target}") or k == target]
-        for k in keys_to_remove:
-            del LION_CLASS_REGISTRY[k]
-
-        # Also remove bare name if present.
-        LION_CLASS_REGISTRY.pop(target, None)
-
-        # This should succeed if the fallback worked.  Because modules use
-        # relative imports, it actually raises ValueError wrapping ImportError.
-        # The xfail marks that as the *expected* failure — it passes when broken,
-        # fails (xpass) if someone fixes the underlying importlib loading logic.
-        # A *different* ValueError would fail the inner message assertion with
-        # AssertionError, which raises=ValueError does not absorb — keeping the
-        # xfail pinned to exactly this latent bug.
-        try:
-            result = get_class(target)
-        except ValueError as exc:
-            assert "attempted relative import" in str(exc)
-            raise
-        assert isinstance(result, type)  # only reached if fallback is fixed
+        with pytest.raises(ValueError, match="Unable to find class"):
+            get_class(fake_class_name)
 
 
 # ---------------------------------------------------------------------------
