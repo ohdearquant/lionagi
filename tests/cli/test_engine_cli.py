@@ -301,6 +301,15 @@ async def test_export_dir_persisted_from_args_coding(monkeypatch, capsys):
         async def close(self):
             pass
 
+        async def create_progression(self, prog_id, collection=None):
+            pass
+
+        async def create_session(self, session):
+            pass
+
+        async def update_status(self, entity_type, entity_id, *, new_status, reason_code, **kw):
+            pass
+
         async def insert_engine_run(self, *, run_id, kind, spec_json, started_at, session_id=None):
             pass
 
@@ -356,6 +365,15 @@ async def test_export_dir_persisted_from_args_hypothesis(monkeypatch, capsys):
         async def close(self):
             pass
 
+        async def create_progression(self, prog_id, collection=None):
+            pass
+
+        async def create_session(self, session):
+            pass
+
+        async def update_status(self, entity_type, entity_id, *, new_status, reason_code, **kw):
+            pass
+
         async def insert_engine_run(self, *, run_id, kind, spec_json, started_at, session_id=None):
             pass
 
@@ -406,6 +424,15 @@ async def test_export_dir_none_when_not_passed(monkeypatch, capsys):
             pass
 
         async def close(self):
+            pass
+
+        async def create_progression(self, prog_id, collection=None):
+            pass
+
+        async def create_session(self, session):
+            pass
+
+        async def update_status(self, entity_type, entity_id, *, new_status, reason_code, **kw):
             pass
 
         async def insert_engine_run(self, *, run_id, kind, spec_json, started_at, session_id=None):
@@ -460,6 +487,15 @@ async def test_cancelled_error_marks_row_cancelled(monkeypatch):
         async def close(self):
             close_count[0] += 1
 
+        async def create_progression(self, prog_id, collection=None):
+            pass
+
+        async def create_session(self, session):
+            pass
+
+        async def update_status(self, entity_type, entity_id, *, new_status, reason_code, **kw):
+            pass
+
         async def insert_engine_run(self, *, run_id, kind, spec_json, started_at, session_id=None):
             insert_calls.append({"run_id": run_id, "kind": kind})
 
@@ -511,6 +547,15 @@ async def test_keyboard_interrupt_marks_row_cancelled(monkeypatch):
         async def close(self):
             close_count[0] += 1
 
+        async def create_progression(self, prog_id, collection=None):
+            pass
+
+        async def create_session(self, session):
+            pass
+
+        async def update_status(self, entity_type, entity_id, *, new_status, reason_code, **kw):
+            pass
+
         async def insert_engine_run(self, *, run_id, kind, spec_json, started_at, session_id=None):
             pass
 
@@ -560,6 +605,15 @@ async def test_db_insert_called_on_success(monkeypatch, capsys):
             pass
 
         async def close(self):
+            pass
+
+        async def create_progression(self, prog_id, collection=None):
+            pass
+
+        async def create_session(self, session):
+            pass
+
+        async def update_status(self, entity_type, entity_id, *, new_status, reason_code, **kw):
             pass
 
         async def insert_engine_run(self, *, run_id, kind, spec_json, started_at, session_id=None):
@@ -645,6 +699,15 @@ async def test_import_failure_closes_db(monkeypatch):
 
         async def close(self):
             close_count[0] += 1
+
+        async def create_progression(self, prog_id, collection=None):
+            pass
+
+        async def create_session(self, session):
+            pass
+
+        async def update_status(self, entity_type, entity_id, *, new_status, reason_code, **kw):
+            pass
 
         async def insert_engine_run(self, *, run_id, kind, spec_json, started_at, session_id=None):
             pass
@@ -743,3 +806,61 @@ def test_main_routes_engine_command(monkeypatch):
     assert rc == 0
     assert len(run_engine_calls) == 1
     assert run_engine_calls[0].command == "engine"
+
+
+# ---------------------------------------------------------------------------
+# Signal persistence integration: engine run → session_signals table
+# ---------------------------------------------------------------------------
+
+
+async def test_engine_run_signals_land_in_session_signals(tmp_path):
+    """Engine session observer emits signals that land in session_signals.
+
+    Mirrors test_bind_db_persistence_production_path from test_signals_sse.py
+    but exercises the engine-run binding path: create sessions row with
+    run_id, bind persistence, emit signals via the session observer, confirm
+    rows appear in session_signals with correct kinds and monotone seq.
+    """
+    aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")  # noqa: F841
+
+    from lionagi.session.session import Session
+    from lionagi.session.signal import NodeCompleted, NodeStarted, RunStart
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "state.db"
+    run_id = "engine-sig-test-001"
+
+    async with StateDB(db_path) as db:
+        # Replicate the sessions/progressions row creation done by _do_engine_run.
+        prog_id = f"{run_id}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": run_id,
+                "created_at": 100.0,
+                "progression_id": prog_id,
+                "name": "engine:research",
+                "status": "running",
+                "invocation_kind": None,
+            }
+        )
+
+        # Bind persistence the same way _do_engine_run does.
+        session = Session()
+        session.observer.bind_db_persistence(run_id, db=db)
+
+        # Emit signals the way the engine's EngineRun.emit() would.
+        await session.observer.emit(RunStart())
+        await session.observer.emit(NodeStarted(op_id="node-1", name="step1"))
+        await session.observer.emit(NodeCompleted(op_id="node-1", name="step1", elapsed=0.3))
+
+        rows = await db.get_session_signals_after(run_id, 0)
+
+    assert len(rows) == 3
+    assert rows[0]["kind"] == "RunStart"
+    assert rows[1]["kind"] == "NodeStarted"
+    assert rows[2]["kind"] == "NodeCompleted"
+    assert rows[1]["op_id"] == "node-1"
+    assert rows[2]["payload"]["elapsed"] == pytest.approx(0.3)
+    # seq must be monotone starting at 1.
+    assert [r["seq"] for r in rows] == [1, 2, 3]
