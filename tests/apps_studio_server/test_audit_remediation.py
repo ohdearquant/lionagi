@@ -435,7 +435,7 @@ class TestFireCancellationRecorded:
 
         started = asyncio.Event()
 
-        async def blocking_spawn(argv, inv_id):
+        async def blocking_spawn(argv, inv_id, *, tmp_path=None):
             started.set()
             await asyncio.Event().wait()  # block until the _fire task is cancelled
 
