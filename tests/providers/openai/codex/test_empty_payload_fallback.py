@@ -123,3 +123,79 @@ async def test_error_event_top_level_message_preserved():
     assert len(chunks) == 1
     assert chunks[0].type == "error"
     assert chunks[0].content == msg
+
+
+# ---------------------------------------------------------------------------
+# Edge cases from codex review finding #2:
+# error=null, error missing, {"code": ...} no message, non-dict error
+# ---------------------------------------------------------------------------
+
+
+async def test_turn_failed_error_null_has_self_describing_content():
+    """turn.failed with JSON 'error': null must NOT surface as the string 'None'.
+    It should produce the same self-describing message as an empty dict."""
+    # JSON {"type": "turn.failed", "error": null} → obj.get("error", {}) returns None
+    events = [{"type": "turn.failed", "error": None}]
+    chunks = await _chunks_from_events(events)
+
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    assert chunk.type == "error"
+    assert chunk.content != "None", (
+        f"null error payload must not render as the string 'None'; got: {chunk.content!r}"
+    )
+    assert "turn.failed" in chunk.content, (
+        f"self-describing message must name the event type; got: {chunk.content!r}"
+    )
+
+
+async def test_turn_failed_missing_error_key_is_self_describing():
+    """turn.failed with no 'error' key at all should produce a self-describing message."""
+    events = [{"type": "turn.failed"}]
+    chunks = await _chunks_from_events(events)
+
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    assert chunk.type == "error"
+    assert chunk.content != "{}", (
+        f"missing-error turn.failed must not render as '{{}}'; got: {chunk.content!r}"
+    )
+    assert "turn.failed" in chunk.content, (
+        f"self-describing message must name event type; got: {chunk.content!r}"
+    )
+
+
+async def test_turn_failed_code_no_message_uses_str_repr():
+    """turn.failed with {'code': 'rate_limit'} but no 'message' key surfaces
+    str(err) which is informative, not the empty-payload fallback."""
+    events = [{"type": "turn.failed", "error": {"code": "rate_limit"}}]
+    chunks = await _chunks_from_events(events)
+
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    assert chunk.type == "error"
+    # str({'code': 'rate_limit'}) is informative — acceptable per spec
+    assert "rate_limit" in chunk.content or "code" in chunk.content, (
+        f"non-empty dict without message should use str(err); got: {chunk.content!r}"
+    )
+    # Must NOT be the empty-payload fallback string
+    assert "empty error payload" not in chunk.content, (
+        f"non-empty dict must not trigger empty-payload fallback; got: {chunk.content!r}"
+    )
+    assert "null error payload" not in chunk.content, (
+        f"non-empty dict must not trigger null-payload fallback; got: {chunk.content!r}"
+    )
+
+
+async def test_turn_failed_non_dict_error_uses_obj_message_or_str():
+    """turn.failed with a non-dict error (e.g. a string) falls to
+    obj.get('message', str(err)) — the non-dict branch."""
+    events = [{"type": "turn.failed", "error": "process failed"}]
+    chunks = await _chunks_from_events(events)
+
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    assert chunk.type == "error"
+    assert chunk.content == "process failed", (
+        f"non-dict error string should be surfaced directly; got: {chunk.content!r}"
+    )

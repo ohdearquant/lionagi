@@ -147,3 +147,92 @@ async def test_run_empty_error_chunk_uses_fallback_string():
     # The '(empty error)' guard in run.py means content becomes '(empty error)'
     with pytest.raises(ProviderError, match="empty error"):
         await _drain(run(branch, "do something", RunParam()))
+
+
+# ---------------------------------------------------------------------------
+# Finding #3: subprocess RuntimeError path → classified ProviderError
+# ---------------------------------------------------------------------------
+
+
+async def test_run_subprocess_runtime_error_is_classified():
+    """A plain RuntimeError raised by the stream iterator (e.g. from
+    ndjson_from_cli on nonzero exit) must be caught, classified, and
+    re-raised as the appropriate ProviderError subclass with the original
+    exception as __cause__."""
+    quota_stderr = "usage limit reached. try again at 9:00 PM"
+    branch = Branch()
+
+    # Patch stream to raise RuntimeError instead of yielding chunks
+    m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
+    import types
+
+    endpoint_ns = types.SimpleNamespace(
+        is_cli=True,
+        session_id=None,
+        to_dict=lambda: {"type": "fake_cli", "session_id": None},
+    )
+    m.endpoint = endpoint_ns
+    m.streaming_process_func = None
+
+    async def create_event(**kw):
+        return object()
+
+    m.create_event = create_event
+    m.executor = types.SimpleNamespace(append=AsyncMock(), config={})
+
+    original_exc = RuntimeError(quota_stderr)
+
+    async def stream_raises(api_call=None):
+        raise original_exc
+        # make it an async generator
+        yield  # pragma: no cover
+
+    m.stream = stream_raises
+    branch.chat_model = m
+
+    with pytest.raises(ProviderQuotaError, match="usage limit reached") as exc_info:
+        await _drain(run(branch, "do something", RunParam()))
+
+    # Original exception must be chained as __cause__
+    assert exc_info.value.__cause__ is original_exc, (
+        "classified ProviderError must chain the original RuntimeError as __cause__"
+    )
+
+
+async def test_run_already_classified_provider_error_not_double_wrapped():
+    """A ProviderError raised by the stream iterator must NOT be re-wrapped
+    — it must propagate unchanged (no double classification)."""
+    original_exc = ProviderQuotaError("usage limit reached. try again at 9:00 PM")
+    branch = Branch()
+
+    import types
+
+    m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
+    endpoint_ns = types.SimpleNamespace(
+        is_cli=True,
+        session_id=None,
+        to_dict=lambda: {"type": "fake_cli", "session_id": None},
+    )
+    m.endpoint = endpoint_ns
+    m.streaming_process_func = None
+
+    async def create_event(**kw):
+        return object()
+
+    m.create_event = create_event
+    m.executor = types.SimpleNamespace(append=AsyncMock(), config={})
+
+    async def stream_raises(api_call=None):
+        raise original_exc
+        yield  # pragma: no cover
+
+    m.stream = stream_raises
+    branch.chat_model = m
+
+    with pytest.raises(ProviderQuotaError) as exc_info:
+        await _drain(run(branch, "do something", RunParam()))
+
+    # Must be the same object — no wrapping
+    assert exc_info.value is original_exc, (
+        "already-classified ProviderError must not be double-wrapped"
+    )

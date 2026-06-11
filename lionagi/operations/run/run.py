@@ -331,6 +331,24 @@ async def run(
                 # as RunEnd (clean abandonment).  The outer finally will emit the
                 # terminal signal; re-raise here so the outer try sees it too.
                 raise
+            except RuntimeError as _exc:
+                # Provider subprocess failures (e.g. ndjson_from_cli raises
+                # RuntimeError(stderr) on nonzero exit) propagate here as plain
+                # RuntimeError.  Classify them so callers can distinguish quota,
+                # auth, and context-length failures from generic errors.
+                #
+                # Guard: ProviderError is already a RuntimeError subclass, so
+                # `except RuntimeError` catches it too.  Avoid double-wrapping
+                # by checking isinstance first; if already classified, propagate
+                # unchanged so the richer type is preserved for the caller.
+                from lionagi.providers._provider_errors import ProviderError
+
+                if isinstance(_exc, ProviderError):
+                    _run_exc = _exc
+                    raise
+                classified = classify_provider_error(str(_exc))
+                _run_exc = classified
+                raise classified from _exc
             except BaseException as _exc:
                 _run_exc = _exc
                 raise

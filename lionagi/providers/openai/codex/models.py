@@ -717,6 +717,11 @@ async def stream_codex_cli(
                 # "turn.failed" nests it under error.message.  Check both —
                 # otherwise a top-level-message error renders as the useless
                 # str() of an empty dict and the actionable text is discarded.
+                # Normalise null/missing error payloads: JSON "error": null
+                # arrives as None here (obj.get returns the default only when the
+                # key is absent, not when it is explicitly null).
+                if err is None:
+                    err = {}
                 session.result = (
                     (
                         err.get("message")

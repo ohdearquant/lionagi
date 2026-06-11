@@ -317,3 +317,211 @@ async def test_completed_run_with_error_column_in_real_db(tmp_path):
     assert row["error"] == "emission_missing: planner x2; summariser x1", (
         f"error column must persist alongside 'completed' status; got: {row['error']!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# INTEGRATION: real Engine subclass whose _run() calls operate_with_repair
+# with a branch that never emits — verifies the full Engine.run() → CLI
+# read-site handoff that the mock-based tests above could not catch.
+# ---------------------------------------------------------------------------
+
+
+class _NeverEmitBranch:
+    """Minimal Branch-like object whose operate() always returns None and
+    whose chat_model.is_cli is False (API worker path)."""
+
+    name = "planner"
+
+    class _ChatModel:
+        is_cli = False
+
+    chat_model = _ChatModel()
+
+    async def operate(self, instruction=None, **kw):
+        return None
+
+
+class _ZeroEmissionEngine:
+    """Minimal Engine-compatible subclass: _run() calls operate_with_repair
+    once with a branch that never emits, then returns a plain string result.
+    Inherits from Engine so Engine.run() orchestrates the lifecycle."""
+
+    from lionagi.engines.engine import Engine as _EngineBase  # imported at class body level
+
+    # We construct it as a proper subclass below to avoid a forward-reference
+    # issue in the class body itself.
+
+
+async def _build_zero_emission_engine():
+    """Construct a real Engine subclass that always fires emission_missing."""
+    from lionagi.engines.engine import Engine, EngineRun
+
+    class ZeroEmissionEngine(Engine):
+        async def _run(self, run: EngineRun, spec: str, **kwargs) -> str:  # type: ignore[override]
+            branch = _NeverEmitBranch()
+            # arrived() always returns False → retries exhausted → emission_missing fired
+            await run.operate_with_repair(
+                branch,  # type: ignore[arg-type]
+                "please emit",
+                arrived=lambda: False,
+                emits=(),
+                retries=1,
+            )
+            return "partial result despite missing emission"
+
+    return ZeroEmissionEngine(max_agents=5)
+
+
+async def test_real_engine_emission_failure_propagates_to_cli(monkeypatch):
+    """Integration: real Engine subclass with a branch that never emits →
+    _do_engine_run writes error='emission_missing: ...' with status='completed'.
+
+    This is the test codex identified as missing: the mock-based test above
+    only tested the CLI read path (manually set attr), not the real
+    Engine.run() → engine._emission_failures handoff."""
+    import lionagi.cli._logging as log_mod
+    import lionagi.cli.engine as engine_mod
+    import lionagi.state.db as db_mod
+
+    monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
+    monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
+
+    real_engine = await _build_zero_emission_engine()
+    MockEngineClass = MagicMock(return_value=real_engine)
+    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+
+    mock_db = MockStateDB()
+    monkeypatch.setattr(db_mod, "StateDB", lambda: mock_db)
+
+    args = _build_args(kind="research", spec="test topic", no_persist=False)
+    rc = await engine_mod._do_engine_run(args)
+
+    assert rc == 0, f"expected exit 0 (completed), got {rc}"
+    completed = [c for c in mock_db.update_calls if c["status"] == "completed"]
+    assert completed, f"no completed update; all calls: {mock_db.update_calls}"
+    error_val = completed[0]["error"]
+    assert error_val is not None, (
+        "emission_missing fired but engine_runs.error stayed NULL — "
+        "Engine.run() → engine._emission_failures handoff is broken"
+    )
+    assert "emission_missing" in error_val, (
+        f"error column must contain 'emission_missing'; got: {error_val!r}"
+    )
+    assert "planner" in error_val, f"agent name must appear in error column; got: {error_val!r}"
+
+
+async def test_real_engine_clean_run_leaves_error_null(monkeypatch):
+    """Integration: real Engine subclass with a branch whose emission arrives →
+    engine_runs.error stays NULL (no cross-run leak)."""
+    import lionagi.cli._logging as log_mod
+    import lionagi.cli.engine as engine_mod
+    import lionagi.state.db as db_mod
+
+    monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
+    monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
+
+    from lionagi.engines.engine import Engine, EngineRun
+
+    class _AlwaysArriveBranch:
+        name = "worker"
+
+        class _ChatModel:
+            is_cli = False
+
+        chat_model = _ChatModel()
+
+        async def operate(self, instruction=None, **kw):
+            return "emission arrived"
+
+    class CleanEngine(Engine):
+        async def _run(self, run: EngineRun, spec: str, **kwargs) -> str:  # type: ignore[override]
+            branch = _AlwaysArriveBranch()
+            await run.operate_with_repair(
+                branch,  # type: ignore[arg-type]
+                "please emit",
+                arrived=lambda: True,  # arrived immediately — no emission_missing
+                emits=(),
+                retries=1,
+            )
+            return "clean result"
+
+    real_engine = CleanEngine(max_agents=5)
+    MockEngineClass = MagicMock(return_value=real_engine)
+    monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
+
+    mock_db = MockStateDB()
+    monkeypatch.setattr(db_mod, "StateDB", lambda: mock_db)
+
+    args = _build_args(kind="research", spec="clean run", no_persist=False)
+    rc = await engine_mod._do_engine_run(args)
+
+    assert rc == 0
+    completed = [c for c in mock_db.update_calls if c["status"] == "completed"]
+    assert completed
+    assert completed[0]["error"] is None, (
+        f"clean run must leave error=NULL; got: {completed[0]['error']!r}"
+    )
+
+
+async def test_engine_reuse_second_run_resets_emission_failures(monkeypatch):
+    """Engine instance reused for a second clean run must NOT carry emission
+    failures from the first run (no cross-run leak)."""
+    import lionagi.cli._logging as log_mod
+    import lionagi.cli.engine as engine_mod
+    import lionagi.state.db as db_mod
+
+    monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
+    monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
+
+    from lionagi.engines.engine import Engine, EngineRun
+
+    call_count = [0]
+
+    class _ConditionalBranch:
+        name = "agent"
+
+        class _ChatModel:
+            is_cli = False
+
+        chat_model = _ChatModel()
+
+        async def operate(self, instruction=None, **kw):
+            return None
+
+    class TwoRunEngine(Engine):
+        """First run: emission_missing. Second run: clean."""
+
+        async def _run(self, run: EngineRun, spec: str, **kwargs) -> str:  # type: ignore[override]
+            call_count[0] += 1
+            branch = _ConditionalBranch()
+            if call_count[0] == 1:
+                # First run: never arrives → emission_missing
+                await run.operate_with_repair(
+                    branch,  # type: ignore[arg-type]
+                    "emit",
+                    arrived=lambda: False,
+                    emits=(),
+                    retries=1,
+                )
+            else:
+                # Second run: arrives immediately
+                await run.operate_with_repair(
+                    branch,  # type: ignore[arg-type]
+                    "emit",
+                    arrived=lambda: True,
+                    emits=(),
+                    retries=1,
+                )
+            return "result"
+
+    real_engine = TwoRunEngine(max_agents=5)
+
+    # Run 1: should produce emission_missing on engine
+    await real_engine.run("run-1")
+    assert real_engine._emission_failures, "first run should have emission failures"
+
+    # Run 2: clean run — engine._emission_failures must be reset
+    await real_engine.run("run-2")
+    assert real_engine._emission_failures == [], (
+        f"second clean run must reset _emission_failures; got: {real_engine._emission_failures}"
+    )
