@@ -35,6 +35,10 @@ _log = logging.getLogger(__name__)
 # POST /api/schedules/{id}/trigger instead.
 _LAUNCH_VALID_KINDS = frozenset({"agent", "flow", "fanout", "play"})
 
+# The event loop keeps only weak references to tasks; a fire-and-forget task
+# with no strong reference can be garbage-collected mid-flight.
+_detached_tasks: set[asyncio.Task] = set()
+
 
 def _validate_request(data: dict[str, Any]) -> None:
     """Raise ValueError if *data* fails security or structural checks."""
@@ -98,10 +102,12 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
     # Spawn detached — the HTTP handler must not block until the run finishes.
     # Fire-and-forget: the task is not awaited.  tmp_path is None for non-flow_yaml
     # kinds (validated above), so there is no temp-file lifetime issue.
-    asyncio.create_task(
+    task = asyncio.create_task(
         _spawn_detached(argv, inv_id, tmp_path=tmp_path),
         name=f"launch-{inv_id}",
     )
+    _detached_tasks.add(task)
+    task.add_done_callback(_detached_tasks.discard)
 
     return {
         "invocation_id": inv_id,
@@ -111,17 +117,22 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
 
 async def _spawn_detached(argv: list[str], inv_id: str, *, tmp_path: str | None) -> None:
     """Spawn the process and update the invocation row when it exits."""
+    from lionagi.state.reasons import RunReasons
+
     from ..scheduler.subprocess import spawn_and_wait
 
     try:
         exit_code, _stderr = await spawn_and_wait(argv, inv_id, tmp_path=tmp_path)
-        status = "completed" if exit_code == 0 else "failed"
+        if exit_code == 0:
+            status, reason = "completed", RunReasons.COMPLETED_OK
+        else:
+            status, reason = "failed", RunReasons.FAILED_EXIT_NONZERO
     except asyncio.CancelledError:
-        status = "cancelled"
+        # Server is going down with us; no terminal row update is possible.
         raise
     except Exception:
         _log.exception("Detached launch failed for invocation %s", inv_id)
-        status = "failed"
+        status, reason = "failed", RunReasons.FAILED_EXCEPTION
 
     try:
         async with StateDB() as db:
@@ -130,7 +141,7 @@ async def _spawn_detached(argv: list[str], inv_id: str, *, tmp_path: str | None)
                 "invocation",
                 inv_id,
                 new_status=status,
-                reason_code=f"launch:{status}",
+                reason_code=reason,
                 reason_summary=f"Detached launch {status}.",
                 evidence_refs=[],
                 source="executor",

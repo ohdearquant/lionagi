@@ -397,3 +397,56 @@ class TestLaunchArgvPath:
         from lionagi.studio.services.launches import _validate_request
 
         _validate_request({"action_kind": "play", "action_playbook": "my-playbook"})
+
+
+# ---------------------------------------------------------------------------
+# _spawn_detached terminal update uses registered reason codes
+# ---------------------------------------------------------------------------
+
+
+class TestSpawnDetachedTerminalUpdate:
+    """The post-exit invocation update must use codes the reason registry accepts."""
+
+    def _capture_update(self, exit_code=0, spawn_exc=None):
+        from lionagi.studio.services import launches
+
+        captured = {}
+
+        async def _fake_spawn(argv, inv_id, *, tmp_path=None):
+            if spawn_exc is not None:
+                raise spawn_exc
+            return (exit_code, "")
+
+        mock_db = AsyncMock()
+
+        async def _capture_status(entity_type, entity_id, **kw):
+            captured["entity_type"] = entity_type
+            captured.update(kw)
+
+        mock_db.update_status = _capture_status
+
+        with patch("lionagi.studio.services.launches.StateDB") as MockDB:
+            MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+            MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+            with patch(
+                "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+                side_effect=_fake_spawn,
+            ):
+                asyncio.run(launches._spawn_detached(["uv", "run", "li"], "inv1", tmp_path=None))
+        return captured
+
+    @pytest.mark.parametrize(
+        ("exit_code", "spawn_exc", "want_status"),
+        [
+            (0, None, "completed"),
+            (3, None, "failed"),
+            (None, RuntimeError("spawn blew up"), "failed"),
+        ],
+    )
+    def test_reason_code_is_registered(self, exit_code, spawn_exc, want_status):
+        """Every terminal path must emit a reason_code the registry validates."""
+        from lionagi.state.reasons import validate_reason_code
+
+        captured = self._capture_update(exit_code=exit_code, spawn_exc=spawn_exc)
+        assert captured["new_status"] == want_status
+        validate_reason_code(captured["reason_code"])
