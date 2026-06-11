@@ -179,3 +179,129 @@ describe("fetchJson Authorization header", () => {
     expect(headers?.["Authorization"]).toBeUndefined();
   });
 });
+
+describe("engine defs API", () => {
+  type FetchCall = { url: string; init?: RequestInit };
+
+  function stubFetch(response: unknown, status = 200): FetchCall[] {
+    const calls: FetchCall[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        return Promise.resolve(
+          new Response(JSON.stringify(response), {
+            status,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }),
+    );
+    return calls;
+  }
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    vi.stubGlobal("window", {
+      ...window,
+      __STUDIO_API_BASE__: undefined,
+      location: { ...window.location, port: "8765", hostname: "localhost", protocol: "http:" },
+    });
+  });
+
+  it("listEngineDefs — GET /api/engine-defs/ with no params", async () => {
+    const payload = [{ id: "abc", name: "My Engine", kind: "research" }];
+    const calls = stubFetch(payload);
+    const { listEngineDefs } = await import("./api");
+    const result = await listEngineDefs();
+    expect(result).toEqual(payload);
+    expect(calls[0]?.url).toMatch(/\/api\/engine-defs\//);
+    expect(calls[0]?.init?.method).toBeUndefined(); // GET
+  });
+
+  it("listEngineDefs — appends kind query param when provided", async () => {
+    const calls = stubFetch([]);
+    const { listEngineDefs } = await import("./api");
+    await listEngineDefs({ kind: "coding" });
+    expect(calls[0]?.url).toMatch(/[?&]kind=coding/);
+  });
+
+  it("getEngineDef — GET /api/engine-defs/:id", async () => {
+    const def = { id: "def-1", name: "Coder", kind: "coding" };
+    const calls = stubFetch(def);
+    const { getEngineDef } = await import("./api");
+    const result = await getEngineDef("def-1");
+    expect(result).toEqual(def);
+    expect(calls[0]?.url).toMatch(/\/api\/engine-defs\/def-1/);
+  });
+
+  it("getEngineDef — URL-encodes the id", async () => {
+    const calls = stubFetch({ id: "x y", name: "X Y", kind: "review" });
+    const { getEngineDef } = await import("./api");
+    await getEngineDef("x y");
+    expect(calls[0]?.url).toContain("x%20y");
+  });
+
+  it("createEngineDef — POST /api/engine-defs/ with body", async () => {
+    const response = { id: "new-id", name: "Research Bot", created_at: 1234567890 };
+    const calls = stubFetch(response, 200);
+    const { createEngineDef } = await import("./api");
+    const result = await createEngineDef({ name: "Research Bot", kind: "research" });
+    expect(result).toEqual(response);
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect((calls[0]?.init?.headers as Record<string, string>)["Content-Type"]).toBe(
+      "application/json",
+    );
+    const body = JSON.parse(calls[0]?.init?.body as string);
+    expect(body.name).toBe("Research Bot");
+    expect(body.kind).toBe("research");
+  });
+
+  it("updateEngineDef — PUT /api/engine-defs/:id with body", async () => {
+    const calls = stubFetch({ ok: true });
+    const { updateEngineDef } = await import("./api");
+    const result = await updateEngineDef("def-1", { model: "claude-opus-4-5" });
+    expect(result).toEqual({ ok: true });
+    expect(calls[0]?.init?.method).toBe("PUT");
+    expect((calls[0]?.init?.headers as Record<string, string>)["Content-Type"]).toBe(
+      "application/json",
+    );
+    expect(calls[0]?.url).toMatch(/\/api\/engine-defs\/def-1/);
+    const body = JSON.parse(calls[0]?.init?.body as string);
+    expect(body.model).toBe("claude-opus-4-5");
+  });
+
+  it("deleteEngineDef — DELETE /api/engine-defs/:id", async () => {
+    const calls = stubFetch({ ok: true });
+    const { deleteEngineDef } = await import("./api");
+    const result = await deleteEngineDef("def-1");
+    expect(result).toEqual({ ok: true });
+    expect(calls[0]?.init?.method).toBe("DELETE");
+    expect(calls[0]?.url).toMatch(/\/api\/engine-defs\/def-1/);
+  });
+
+  it("launchEngine — POST /api/launches/ with action_kind=engine", async () => {
+    const response = {
+      invocation_id: "inv-1",
+      action_kind: "engine",
+    };
+    const calls = stubFetch(response, 202);
+    const { launchEngine } = await import("./api");
+    const result = await launchEngine({
+      action_kind: "engine",
+      action_engine_def: "def-1",
+      action_prompt: "build a crawler",
+    });
+    expect(result).toEqual(response);
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(calls[0]?.url).toMatch(/\/api\/launches\//);
+    expect((calls[0]?.init?.headers as Record<string, string>)["Content-Type"]).toBe(
+      "application/json",
+    );
+    const body = JSON.parse(calls[0]?.init?.body as string);
+    expect(body.action_kind).toBe("engine");
+    expect(body.action_engine_def).toBe("def-1");
+    expect(body.action_prompt).toBe("build a crawler");
+  });
+});
