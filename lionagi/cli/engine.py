@@ -251,19 +251,27 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
         # separately: a failure here only disables live signal streaming,
         # never the engine_runs record itself.
         try:
-            prog_id = f"{run_id}-prog"
-            await db.create_progression(prog_id)
-            await db.create_session(
-                {
-                    "id": run_id,
-                    "created_at": started_at,
-                    "progression_id": prog_id,
-                    "name": f"engine:{kind}",
-                    "status": "running",
-                    "invocation_kind": None,
-                }
-            )
-            signal_session_id = run_id
+            # create_session is INSERT OR IGNORE: a pre-existing row with this
+            # id would be silently reused, appending our signals to an
+            # unrelated session and mirroring terminal status onto it.  run_id
+            # is a fresh uuid4 so this should never happen — but never bind to
+            # a row this run did not create.
+            if await db.get_session(run_id) is not None:
+                warn(f"sessions row {run_id} already exists; skipping signal binding")
+            else:
+                prog_id = f"{run_id}-prog"
+                await db.create_progression(prog_id)
+                await db.create_session(
+                    {
+                        "id": run_id,
+                        "created_at": started_at,
+                        "progression_id": prog_id,
+                        "name": f"engine:{kind}",
+                        "status": "running",
+                        "invocation_kind": None,
+                    }
+                )
+                signal_session_id = run_id
         except Exception as exc:  # noqa: BLE001
             warn(f"could not create signal session for engine run: {exc}")
             signal_session_id = None
