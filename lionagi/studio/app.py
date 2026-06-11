@@ -19,6 +19,7 @@ from .routers import (
     definitions,
     engine_runs,
     invocations,
+    launches,
     playbooks,
     plugins,
     projects,
@@ -155,6 +156,7 @@ app.include_router(plugins.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(teams.router, prefix="/api")
 app.include_router(invocations.router, prefix="/api")
+app.include_router(launches.router, prefix="/api")
 app.include_router(artifacts.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
 app.include_router(schedules.router, prefix="/api")
