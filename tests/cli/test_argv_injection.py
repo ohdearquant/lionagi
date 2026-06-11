@@ -917,42 +917,42 @@ class TestGithubRepoValidatorUnit:
         """'../../other-endpoint' must raise ValueError."""
         from lionagi.studio.scheduler.github import _validate_github_repo
 
-        with pytest.raises(ValueError, match="owner/name"):
+        with pytest.raises(ValueError, match="github_repo"):
             _validate_github_repo("../../other-endpoint")
 
     def test_extra_slash_segment_raises(self):
         """'owner/name/extra' (more than one slash) must raise ValueError."""
         from lionagi.studio.scheduler.github import _validate_github_repo
 
-        with pytest.raises(ValueError, match="owner/name"):
+        with pytest.raises(ValueError, match="github_repo"):
             _validate_github_repo("owner/name/extra")
 
     def test_no_slash_raises(self):
         """'owner' (missing slash) must raise ValueError."""
         from lionagi.studio.scheduler.github import _validate_github_repo
 
-        with pytest.raises(ValueError, match="owner/name"):
+        with pytest.raises(ValueError, match="github_repo"):
             _validate_github_repo("owner")
 
     def test_leading_dash_in_owner_raises(self):
         """'-owner/repo' (leading dash in owner segment) must raise ValueError."""
         from lionagi.studio.scheduler.github import _validate_github_repo
 
-        with pytest.raises(ValueError, match="owner/name"):
+        with pytest.raises(ValueError, match="github_repo"):
             _validate_github_repo("-owner/repo")
 
     def test_percent_encoded_traversal_raises(self):
         """'%2e%2e/repo' (URL-encoded dots) must raise ValueError."""
         from lionagi.studio.scheduler.github import _validate_github_repo
 
-        with pytest.raises(ValueError, match="owner/name"):
+        with pytest.raises(ValueError, match="github_repo"):
             _validate_github_repo("%2e%2e/repo")
 
     def test_empty_string_raises(self):
         """Empty string must raise ValueError (no owner/name structure)."""
         from lionagi.studio.scheduler.github import _validate_github_repo
 
-        with pytest.raises(ValueError, match="owner/name"):
+        with pytest.raises(ValueError, match="github_repo"):
             _validate_github_repo("")
 
     def test_valid_repo_accepted(self):
@@ -966,6 +966,57 @@ class TestGithubRepoValidatorUnit:
         from lionagi.studio.scheduler.github import _validate_github_repo
 
         _validate_github_repo("octocat/hello-world")  # must not raise
+
+    def test_dot_prefix_repo_accepted(self):
+        """'github/.github' must be accepted -- repos starting with '.' are valid
+        (verified: https://api.github.com/repos/github/.github returns 200)."""
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        _validate_github_repo("github/.github")  # must not raise
+
+    def test_dot_singleton_repo_raises(self):
+        """'owner/.' is a path-traversal singleton and must raise ValueError."""
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        with pytest.raises(ValueError, match="traversal"):
+            _validate_github_repo("owner/.")
+
+    def test_dotdot_singleton_repo_raises(self):
+        """'owner/..' is a path-traversal singleton and must raise ValueError."""
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        with pytest.raises(ValueError, match="traversal"):
+            _validate_github_repo("owner/..")
+
+    def test_owner_too_long_raises(self):
+        """Owner segment > 39 chars must raise ValueError."""
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        long_owner = "a" * 40
+        with pytest.raises(ValueError, match="owner segment"):
+            _validate_github_repo(f"{long_owner}/repo")
+
+    def test_repo_name_too_long_raises(self):
+        """Repo name segment > 100 chars must raise ValueError."""
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        long_name = "a" * 101
+        with pytest.raises(ValueError, match="repo name segment"):
+            _validate_github_repo(f"owner/{long_name}")
+
+    def test_owner_exactly_max_length_accepted(self):
+        """Owner segment of exactly 39 chars must be accepted."""
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        owner = "a" * 39
+        _validate_github_repo(f"{owner}/repo")  # must not raise
+
+    def test_repo_name_exactly_max_length_accepted(self):
+        """Repo name of exactly 100 chars must be accepted."""
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        name = "a" * 100
+        _validate_github_repo(f"owner/{name}")  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -985,7 +1036,7 @@ class TestGithubRepoServiceValidation:
         """create_schedule raises ValueError for '../../other-endpoint'."""
         from lionagi.studio.services.schedules import create_schedule
 
-        with pytest.raises(ValueError, match="owner/name"):
+        with pytest.raises(ValueError, match="github_repo"):
             self._run(
                 create_schedule(
                     {
@@ -1002,7 +1053,7 @@ class TestGithubRepoServiceValidation:
         """create_schedule raises ValueError for 'owner/name/extra'."""
         from lionagi.studio.services.schedules import create_schedule
 
-        with pytest.raises(ValueError, match="owner/name"):
+        with pytest.raises(ValueError, match="github_repo"):
             self._run(
                 create_schedule(
                     {
@@ -1019,7 +1070,7 @@ class TestGithubRepoServiceValidation:
         """create_schedule raises ValueError for 'owner' (no slash)."""
         from lionagi.studio.services.schedules import create_schedule
 
-        with pytest.raises(ValueError, match="owner/name"):
+        with pytest.raises(ValueError, match="github_repo"):
             self._run(
                 create_schedule(
                     {
@@ -1036,7 +1087,7 @@ class TestGithubRepoServiceValidation:
         """create_schedule raises ValueError for '-owner/repo'."""
         from lionagi.studio.services.schedules import create_schedule
 
-        with pytest.raises(ValueError, match="owner/name"):
+        with pytest.raises(ValueError, match="github_repo"):
             self._run(
                 create_schedule(
                     {
@@ -1053,7 +1104,7 @@ class TestGithubRepoServiceValidation:
         """create_schedule raises ValueError for '%2e%2e/repo'."""
         from lionagi.studio.services.schedules import create_schedule
 
-        with pytest.raises(ValueError, match="owner/name"):
+        with pytest.raises(ValueError, match="github_repo"):
             self._run(
                 create_schedule(
                     {
@@ -1070,7 +1121,7 @@ class TestGithubRepoServiceValidation:
         """create_schedule raises ValueError for empty github_repo string."""
         from lionagi.studio.services.schedules import create_schedule
 
-        with pytest.raises(ValueError, match="owner/name"):
+        with pytest.raises(ValueError, match="github_repo"):
             self._run(
                 create_schedule(
                     {
@@ -1152,25 +1203,116 @@ class TestGithubRepoServiceValidation:
 
     def test_patch_path_traversal_raises(self):
         """PATCH github_repo='../../other-endpoint' raises ValueError."""
-        with pytest.raises(ValueError, match="owner/name"):
+        with pytest.raises(ValueError, match="github_repo"):
             self._run_update(self._existing(), {"github_repo": "../../other-endpoint"})
 
     def test_patch_extra_slash_raises(self):
         """PATCH github_repo='owner/name/extra' raises ValueError."""
-        with pytest.raises(ValueError, match="owner/name"):
+        with pytest.raises(ValueError, match="github_repo"):
             self._run_update(self._existing(), {"github_repo": "owner/name/extra"})
 
     def test_patch_no_slash_raises(self):
         """PATCH github_repo='owner' (no slash) raises ValueError."""
-        with pytest.raises(ValueError, match="owner/name"):
+        with pytest.raises(ValueError, match="github_repo"):
             self._run_update(self._existing(), {"github_repo": "owner"})
 
     def test_patch_leading_dash_raises(self):
         """PATCH github_repo='-owner/repo' raises ValueError."""
-        with pytest.raises(ValueError, match="owner/name"):
+        with pytest.raises(ValueError, match="github_repo"):
             self._run_update(self._existing(), {"github_repo": "-owner/repo"})
 
     def test_patch_valid_repo_does_not_raise(self):
         """PATCH github_repo='octocat/hello-world' passes validation."""
         result = self._run_update(self._existing(), {"github_repo": "octocat/hello-world"})
         assert result is True
+
+    def test_patch_dot_prefix_repo_accepted(self):
+        """PATCH github_repo='github/.github' must be accepted (valid GitHub repo)."""
+        result = self._run_update(self._existing(), {"github_repo": "github/.github"})
+        assert result is True
+
+    def test_create_dot_prefix_repo_accepted(self):
+        """create_schedule with github_repo='github/.github' must pass validation."""
+        from unittest.mock import AsyncMock, patch
+
+        with patch("lionagi.studio.services.schedules.StateDB") as MockDB:
+            mock_db = AsyncMock()
+            mock_db.create_schedule = AsyncMock()
+            MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+            MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = self._run(
+                __import__(
+                    "lionagi.studio.services.schedules", fromlist=["create_schedule"]
+                ).create_schedule(
+                    {
+                        "name": "dot-github-repo",
+                        "trigger_type": "github_poll",
+                        "action_kind": "agent",
+                        "action_model": "sonnet",
+                        "github_repo": "github/.github",
+                    }
+                )
+            )
+        assert "id" in result
+
+    def test_create_1000_char_owner_raises(self):
+        """create_schedule raises ValueError when owner segment is 1000 chars."""
+        from lionagi.studio.services.schedules import create_schedule
+
+        long_owner = "a" * 1000
+        with pytest.raises(ValueError, match="owner segment"):
+            self._run(
+                create_schedule(
+                    {
+                        "name": "bad-long-owner",
+                        "trigger_type": "github_poll",
+                        "action_kind": "agent",
+                        "action_model": "sonnet",
+                        "github_repo": f"{long_owner}/repo",
+                    }
+                )
+            )
+
+    def test_create_1000_char_repo_raises(self):
+        """create_schedule raises ValueError when repo name segment is 1000 chars."""
+        from lionagi.studio.services.schedules import create_schedule
+
+        long_name = "a" * 1000
+        with pytest.raises(ValueError, match="repo name segment"):
+            self._run(
+                create_schedule(
+                    {
+                        "name": "bad-long-repo",
+                        "trigger_type": "github_poll",
+                        "action_kind": "agent",
+                        "action_model": "sonnet",
+                        "github_repo": f"owner/{long_name}",
+                    }
+                )
+            )
+
+    def test_patch_1000_char_owner_raises(self):
+        """PATCH github_repo with 1000-char owner raises ValueError."""
+        long_owner = "a" * 1000
+        with pytest.raises(ValueError, match="owner segment"):
+            self._run_update(self._existing(), {"github_repo": f"{long_owner}/repo"})
+
+    def test_patch_1000_char_repo_raises(self):
+        """PATCH github_repo with 1000-char repo name raises ValueError."""
+        long_name = "a" * 1000
+        with pytest.raises(ValueError, match="repo name segment"):
+            self._run_update(self._existing(), {"github_repo": f"owner/{long_name}"})
+
+    def test_patch_bad_stored_value_raises_on_unrelated_patch(self):
+        """PATCH of an unrelated field must raise when effective github_repo is invalid.
+
+        This covers the case where a schedule was inserted with a bad github_repo
+        (e.g. via direct DB import) and a later unrelated PATCH would previously
+        silently preserve the stale-invalid value.
+        """
+        # Seed existing schedule with a bad stored github_repo
+        existing_with_bad_repo = self._existing(github_repo="../../bad-stored")
+        # PATCH an unrelated field -- the effective github_repo is still bad
+        with pytest.raises(ValueError, match="owner/name|traversal|exactly one"):
+            self._run_update(existing_with_bad_repo, {"description": "innocuous update"})

@@ -315,9 +315,18 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_github_repo(fields["github_repo"])
 
         # Merge proposed fields over the existing schedule and re-validate
-        # flow_yaml constraints so a PATCH cannot create invalid state that
-        # would only surface as a silent empty-YAML write at fire time.
+        # constraints so a PATCH cannot create invalid state.  We check the
+        # effective (merged) value for any field whose validity depends on the
+        # full schedule state, not just on the incoming patch dict.
+        #
+        # github_repo: revalidate the effective value regardless of whether the
+        # PATCH supplied it.  A schedule whose github_repo was stored with a bad
+        # value (e.g. via direct DB import or manual repair) would otherwise
+        # survive unrelated PATCHes and accumulate stale-invalid state.
         effective = {**schedule, **fields}
+        effective_repo = effective.get("github_repo")
+        if effective_repo is not None:
+            _svc_validate_github_repo(effective_repo)
         if effective.get("action_kind") == "flow_yaml":
             yaml_text = effective.get("action_flow_yaml") or ""
             if not yaml_text.strip():

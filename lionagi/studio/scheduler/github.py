@@ -17,33 +17,91 @@ _log = logging.getLogger(__name__)
 
 _client: httpx.AsyncClient | None = None
 
-# CWE-918 defense-in-depth: github_repo must be exactly "owner/name" — one
-# slash, no path traversal sequences, no URL-special chars.  Both segments
-# follow GitHub's documented naming rules: start with an alphanumeric, then
-# allow alphanumerics, dots, hyphens, and underscores.  Leading dashes are
-# rejected both because GitHub disallows them and because they would be
-# ambiguous with CLI flags in contexts where the repo name is forwarded.
-# This regex is the single source of truth; the service layer imports and
-# delegates to this function rather than duplicating it.
-_GITHUB_REPO_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+# CWE-918 defense-in-depth: github_repo must be exactly "owner/name" -- one
+# slash, no path traversal sequences, no URL-special chars.
+#
+# Owner and repo segments have DIFFERENT rules (empirically verified against
+# the GitHub API -- e.g. https://api.github.com/repos/github/.github returns
+# 200, so a repo CAN start with '.'):
+#
+#   Owner: alphanumeric start, alphanumeric or '-' interior, alphanumeric end
+#          (GitHub's user/org naming rule), max 39 chars.
+#          Single-char owners (e.g. "a") are valid -- inner group is optional.
+#
+#   Repo:  letters/digits/'-'/'_'/'.' allowed, may start with '.' (e.g.
+#          .github), but must NOT be the traversal singletons '.' or '..'.
+#          Max 100 chars.
+#
+# These are the single sources of truth; services/schedules.py imports and
+# delegates to _validate_github_repo rather than duplicating them.
+_GITHUB_OWNER_MAX = 39
+_GITHUB_REPO_MAX = 100
+
+# Owner: alphanumeric start/end, alphanumeric or hyphen interior.
+_GITHUB_OWNER_RE = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$")
+# Repo name: letters/digits/'-'/'_'/'.' only (leading '.' is valid).
+_GITHUB_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# Traversal singletons that are structurally valid but semantically forbidden.
+_GITHUB_REPO_TRAVERSAL = frozenset({".", ".."})
 
 
 def _validate_github_repo(repo: str) -> None:
-    """Raise ValueError if *repo* does not match the owner/name format.
+    """Raise ValueError if *repo* is not a safe, credible GitHub owner/name pair.
 
     Enforced here (at URL-construction time) as a defense-in-depth check and
     also at the service write boundary via services/schedules._svc_validate_github_repo.
 
-    A value like ``../../other-endpoint`` would retarget the GitHub API path
-    even though the host is hardcoded (CWE-918 path manipulation).  The regex
-    ``^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$`` permits exactly one slash and
-    restricts both segments to the characters GitHub allows in owner/repo names.
+    Rules applied (CWE-918 path manipulation):
+    - Exactly one '/' separator -- no extra path segments.
+    - Owner: alphanumeric start/end, alphanumeric or hyphen interior, 1-39 chars.
+    - Repo:  letters/digits/'-'/'_'/'.' allowed (including leading '.', e.g.
+      '.github'), must not be the traversal singletons '.' or '..', 1-100 chars.
+    - No '/', '?', '#', '%', whitespace, or control chars (excluded by the
+      character classes above).
     """
-    if not _GITHUB_REPO_RE.match(repo):
+    if not repo or "/" not in repo:
         raise ValueError(
             f"github_repo {repo!r} is not a valid owner/name identifier. "
-            "Expected format: 'owner/repo' where both segments contain only "
-            "letters, digits, '.', '_', or '-' (no path traversal or URL-special chars)."
+            "Expected format: 'owner/repo' with exactly one '/' separator."
+        )
+    parts = repo.split("/")
+    if len(parts) != 2:
+        raise ValueError(
+            f"github_repo {repo!r} must contain exactly one '/' (got {len(parts) - 1})."
+        )
+    owner, name = parts
+
+    # --- Owner validation ---
+    if not owner:
+        raise ValueError(f"github_repo {repo!r}: owner segment is empty.")
+    if len(owner) > _GITHUB_OWNER_MAX:
+        raise ValueError(
+            f"github_repo {repo!r}: owner segment is {len(owner)} chars (max {_GITHUB_OWNER_MAX})."
+        )
+    if not _GITHUB_OWNER_RE.match(owner):
+        raise ValueError(
+            f"github_repo {repo!r}: owner {owner!r} is not a valid GitHub owner "
+            "identifier (alphanumeric start/end, alphanumeric or '-' interior, "
+            "no leading/trailing hyphen)."
+        )
+
+    # --- Repo name validation ---
+    if not name:
+        raise ValueError(f"github_repo {repo!r}: repo name segment is empty.")
+    if len(name) > _GITHUB_REPO_MAX:
+        raise ValueError(
+            f"github_repo {repo!r}: repo name segment is {len(name)} chars "
+            f"(max {_GITHUB_REPO_MAX})."
+        )
+    if not _GITHUB_REPO_NAME_RE.match(name):
+        raise ValueError(
+            f"github_repo {repo!r}: repo name {name!r} contains characters not "
+            "allowed in a GitHub repository name (use letters, digits, '-', '_', '.')."
+        )
+    if name in _GITHUB_REPO_TRAVERSAL:
+        raise ValueError(
+            f"github_repo {repo!r}: repo name {name!r} is a path-traversal "
+            "singleton and is not a valid repository name."
         )
 
 
@@ -90,7 +148,13 @@ async def github_poll(schedule: dict) -> list[dict[str, Any]]:
     try:
         _validate_github_repo(repo)
     except ValueError:
-        _log.error("github_poll: rejecting invalid github_repo %r — must be 'owner/name'", repo)
+        _log.error(
+            "github_poll: schedule %r (%r) has invalid github_repo %r -- "
+            "must be 'owner/name'; skipping poll",
+            schedule.get("id"),
+            schedule.get("name"),
+            repo,
+        )
         return []
 
     token = await _get_gh_token()
@@ -169,7 +233,7 @@ async def github_poll(schedule: dict) -> list[dict[str, Any]]:
     if max_updated and max_updated != cursor:
         update_fields["github_cursor"] = max_updated
     if new_etag and not update_fields:
-        # No new PRs but etag changed — update cursor to avoid redundant refetches
+        # No new PRs but etag changed -- update cursor to avoid redundant refetches
         # We don't have a dedicated etag column; skip persisting etag alone
         pass
     if update_fields:
