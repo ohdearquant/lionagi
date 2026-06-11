@@ -190,11 +190,24 @@ class SessionObserver(Observer):
             self.flow.add_progression(prog)
             return prog
 
-    def bind_db_persistence(self, session_id: str) -> None:
+    def bind_db_persistence(
+        self,
+        session_id: str,
+        db: Any = None,
+    ) -> None:
         """Register a subscription that persists every emitted Signal to StateDB.
 
         Wires an async handler onto self so that each call to :meth:`emit`
         appends a row to ``session_signals`` via :meth:`StateDB.insert_session_signal`.
+
+        When *db* is supplied (an already-open :class:`~lionagi.state.db.StateDB`
+        instance held by the CLI lifecycle), signals are written through that
+        connection without any extra open/close overhead — one write per signal,
+        the same cost as a message-persistence write.  When *db* is ``None`` (the
+        standalone / unit-test fallback), a fresh connection is opened per signal;
+        this is correct for isolated use but carries per-signal connection overhead
+        so it should not be used on production chatty sessions.
+
         Calling this more than once for the same session_id is idempotent only
         if the caller holds a reference and calls :meth:`unbind_db_persistence`
         first; otherwise a second handler is added and each signal is written twice.
@@ -203,7 +216,10 @@ class SessionObserver(Observer):
         """
         import time as _time
 
-        from lionagi.state.db import DEFAULT_DB_PATH, StateDB  # noqa: PLC0415
+        # Capture the caller-supplied db reference.  In production CLI paths this
+        # is the long-lived StateDB opened by setup_agent_persist /
+        # setup_orchestration_persist — the same instance used for message writes.
+        _bound_db = db
 
         async def _persist(event: Any, _ctx: Any = None) -> None:
             from lionagi.session.signal import Signal  # noqa: PLC0415
@@ -216,12 +232,12 @@ class SessionObserver(Observer):
             ts = _time.time()
             # Build compact payload from the signal's non-base fields.
             payload: dict[str, Any] = {}
-            for field in type(sig).model_fields:
-                if field in ("id", "ln_id", "timestamp", "data", "emitter_role"):
+            for _field in type(sig).model_fields:
+                if _field in ("id", "ln_id", "timestamp", "data", "emitter_role"):
                     continue
-                val = getattr(sig, field, None)
+                val = getattr(sig, _field, None)
                 if val is not None and val != "":
-                    payload[field] = val
+                    payload[_field] = val
             if sig.data is not None:
                 try:
                     from pydantic import BaseModel  # noqa: PLC0415
@@ -232,17 +248,30 @@ class SessionObserver(Observer):
                 except Exception:  # noqa: BLE001
                     payload["data"] = str(sig.data)
 
-            if not DEFAULT_DB_PATH.exists():
-                return
             try:
-                async with StateDB(DEFAULT_DB_PATH) as db:
-                    await db.insert_session_signal(
+                if _bound_db is not None:
+                    # Fast path: reuse the caller's already-open connection.
+                    await _bound_db.insert_session_signal(
                         session_id=session_id,
                         kind=kind,
                         op_id=op_id,
                         ts=ts,
                         payload=payload,
                     )
+                else:
+                    # Fallback: open a fresh connection (standalone / test use).
+                    from lionagi.state.db import DEFAULT_DB_PATH, StateDB  # noqa: PLC0415
+
+                    if not DEFAULT_DB_PATH.exists():
+                        return
+                    async with StateDB(DEFAULT_DB_PATH) as _db:
+                        await _db.insert_session_signal(
+                            session_id=session_id,
+                            kind=kind,
+                            op_id=op_id,
+                            ts=ts,
+                            payload=payload,
+                        )
             except Exception:  # noqa: BLE001, S110
                 pass  # persistence is best-effort — never break the session bus
 

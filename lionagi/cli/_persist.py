@@ -158,6 +158,15 @@ async def teardown_persist(
         for branch, h in ctx.get("hooks", []):
             unroute_message_persistence(branch, h)
 
+        # Detach signal persistence so the observer handler cannot fire after
+        # teardown (the db handle is about to be closed in the finally block).
+        session_obj = ctx.get("session")
+        if session_obj is not None:
+            try:
+                session_obj.observer.unbind_db_persistence()
+            except Exception as _exc:  # noqa: BLE001
+                _log.debug("signal persist unbind failed: %s", _exc)
+
         return final_status
     except Exception as exc:
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
@@ -288,6 +297,7 @@ async def setup_agent_persist(
 
         ctx = {
             "db": db,
+            "session": session,
             "branch": branch,
             "session_id": session_id,
             "session_prog_id": session_prog_id,
@@ -317,6 +327,11 @@ async def setup_agent_persist(
                     exc,
                     exc_info=True,
                 )
+
+        # Bind signal persistence through the already-open DB so every Signal
+        # emitted on this session's observer lands in session_signals without
+        # opening a new connection per signal (matches message-write cost).
+        session.observer.bind_db_persistence(session_id, db=db)
 
         from lionagi.hooks import route_message_persistence
 

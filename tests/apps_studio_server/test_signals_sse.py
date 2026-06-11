@@ -357,3 +357,157 @@ async def test_signals_endpoint_ordering_by_seq(patched_app):
     signal_rows = [e for e in collected if "kind" in e]
     assert [r["kind"] for r in signal_rows] == kinds
     assert [r["seq"] for r in signal_rows] == [1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# Production bind-site integration: observer.bind_db_persistence via the
+# CLI persist layer.  These tests prove the ignition wire exists and that
+# signals flow end-to-end from emit() → session_signals table → SSE service.
+# ---------------------------------------------------------------------------
+
+
+async def test_bind_db_persistence_production_path(tmp_path):
+    """End-to-end: bind via the production call pattern, emit real Signal rows.
+
+    Replicates exactly what setup_agent_persist / setup_orchestration_persist
+    do: open a StateDB, create a session row, call
+    observer.bind_db_persistence(session_id, db=db) with the live handle, then
+    emit signals via the observer.  Asserts rows land in session_signals and are
+    readable via get_session_signals_after().
+    """
+    from lionagi.session.observer import SessionObserver
+    from lionagi.session.session import Session
+    from lionagi.session.signal import NodeCompleted, NodeStarted, RunStart
+
+    db_path = tmp_path / "state.db"
+    session_id = "prod-bind-sess-1"
+
+    async with StateDB(db_path) as db:
+        # Replicate the session-row creation done by setup_agent_persist.
+        prog_id = f"{session_id}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": session_id,
+                "created_at": 100.0,
+                "progression_id": prog_id,
+                "name": "prod-bind-test",
+                "status": "running",
+                "invocation_kind": "agent",
+            }
+        )
+
+        # Production bind call: observer + the already-open db handle.
+        session = Session(name="prod-test")
+        observer: SessionObserver = session.observer
+        observer.bind_db_persistence(session_id, db=db)
+
+        # Emit signals the way the CLI runtime would.
+        await observer.emit(RunStart())
+        await observer.emit(NodeStarted(op_id="op-x", name="step1"))
+        await observer.emit(NodeCompleted(op_id="op-x", name="step1", elapsed=0.5))
+
+        rows = await db.get_session_signals_after(session_id, 0)
+
+    assert len(rows) == 3
+    assert rows[0]["kind"] == "RunStart"
+    assert rows[1]["kind"] == "NodeStarted"
+    assert rows[2]["kind"] == "NodeCompleted"
+    assert rows[1]["op_id"] == "op-x"
+    assert rows[2]["payload"]["elapsed"] == 0.5
+    # seq must be monotone.
+    assert [r["seq"] for r in rows] == [1, 2, 3]
+
+
+async def test_bind_db_persistence_unbind_stops_writes(tmp_path):
+    """After unbind_db_persistence(), further emit() calls write no new rows."""
+    from lionagi.session.session import Session
+    from lionagi.session.signal import NodeCompleted, NodeStarted
+
+    db_path = tmp_path / "state.db"
+    session_id = "prod-bind-sess-2"
+
+    async with StateDB(db_path) as db:
+        prog_id = f"{session_id}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": session_id,
+                "created_at": 100.0,
+                "progression_id": prog_id,
+                "name": "unbind-test",
+                "status": "running",
+                "invocation_kind": "agent",
+            }
+        )
+
+        observer = Session(name="unbind-test").observer
+        observer.bind_db_persistence(session_id, db=db)
+
+        await observer.emit(NodeStarted(op_id="op-a", name="step"))
+        rows_before = await db.get_session_signals_after(session_id, 0)
+        assert len(rows_before) == 1
+
+        # Teardown: unbind then emit.
+        observer.unbind_db_persistence()
+        await observer.emit(NodeCompleted(op_id="op-a", name="step", elapsed=1.0))
+
+        rows_after = await db.get_session_signals_after(session_id, 0)
+
+    # The second signal must not have been persisted.
+    assert len(rows_after) == 1
+    assert rows_after[0]["kind"] == "NodeStarted"
+
+
+async def test_setup_agent_persist_wires_signal_bind(tmp_path, monkeypatch):
+    """setup_agent_persist() calls bind_db_persistence so signals reach the DB.
+
+    Patches StateDB in lionagi.state.db to redirect the default DB path to
+    tmp_path, then calls the real setup_agent_persist function with a bare
+    Branch and verifies that emitting a Signal on the resulting session observer
+    writes a row to session_signals.
+    """
+    import lionagi.state.db as db_mod
+
+    _real_StateDB = db_mod.StateDB
+    _real_DEFAULT = db_mod.DEFAULT_DB_PATH
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
+
+    # Wrap StateDB so the default path resolves to our tmp file.
+    class _PatchedStateDB(_real_StateDB):
+        def __init__(self, path=None):
+            super().__init__(path if path is not None else db_path)
+
+    monkeypatch.setattr(db_mod, "StateDB", _PatchedStateDB)
+    # Also patch the import inside _persist.py (function-local import).
+    import lionagi.cli._persist as persist_mod
+
+    monkeypatch.setattr(persist_mod, "StateDB", _PatchedStateDB, raising=False)
+
+    from lionagi.cli._persist import setup_agent_persist, teardown_persist
+    from lionagi.session.signal import RunStart
+
+    try:
+        from lionagi import Branch
+    except Exception:
+        pytest.skip("lionagi.Branch not importable in this environment")
+
+    branch = Branch()
+    ctx = await setup_agent_persist(branch)
+    assert ctx is not None, "setup_agent_persist returned None — persistence setup failed"
+
+    session_id = ctx["session_id"]
+    session_obj = ctx["session"]
+
+    # Emit a signal via the session observer — the production path.
+    await session_obj.observer.emit(RunStart())
+
+    # Read back from the DB using the same connection (still open in ctx["db"]).
+    rows = await ctx["db"].get_session_signals_after(session_id, 0)
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "RunStart"
+
+    # Teardown should unbind without error.
+    await teardown_persist(ctx, status="completed")
