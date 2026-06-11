@@ -15,6 +15,11 @@ CORS_ORIGINS: list[str] = (
     else ["http://localhost:5173", "http://localhost:3000", "http://localhost:3765"]
 )
 
+# ── Launch admission config ───────────────────────────────────────────────────
+# Maximum number of on-demand launch tasks that may run in parallel.
+# When saturated, POST /api/launches returns 429.
+MAX_LAUNCHES: int = int(os.environ.get("LIONAGI_STUDIO_MAX_LAUNCHES", "4"))
+
 # ── Lifecycle reaper config ───────────────────────────────────────────────────
 # Default invocation deadline in seconds (2 hours). Override per action kind
 # via LIONAGI_STUDIO_INVOCATION_DEADLINE_<KIND>_SECONDS (e.g. _AGENT_SECONDS).

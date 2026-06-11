@@ -1,16 +1,12 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Launch service — backs POST /api/launches.
-
-Fires an agent/flow/fanout/play/flow_yaml run immediately, reusing the
-scheduler's validated argv-building path.  The spawned process runs detached;
-the caller watches progress via the invocations and sessions APIs.
-"""
+"""Launch service — backs POST /api/launches."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from typing import Any
@@ -29,15 +25,30 @@ _log = logging.getLogger(__name__)
 
 # flow_yaml is excluded from on-demand launches: the inline YAML would need to
 # be written to a temp file whose lifetime must outlive the HTTP request handler.
-# The scheduler handles this safely inside its own coroutine; replicating that
-# logic here would duplicate the temp-file lifetime management.  Callers who
-# need flow_yaml should create a schedule with trigger_type=manual and call
-# POST /api/schedules/{id}/trigger instead.
+# Callers who need flow_yaml should create a schedule with trigger_type=manual
+# and call POST /api/schedules/{id}/trigger instead.
 _LAUNCH_VALID_KINDS = frozenset({"agent", "flow", "fanout", "play"})
 
 # The event loop keeps only weak references to tasks; a fire-and-forget task
 # with no strong reference can be garbage-collected mid-flight.
 _detached_tasks: set[asyncio.Task] = set()
+
+# Admission cap: maximum number of detached launch tasks that may be in-flight
+# simultaneously.  Configurable via LIONAGI_STUDIO_MAX_LAUNCHES (default 4).
+_MAX_LAUNCHES: int = int(os.environ.get("LIONAGI_STUDIO_MAX_LAUNCHES", "4"))
+_launch_semaphore: asyncio.Semaphore | None = None
+
+
+class TooManyLaunchesError(Exception):
+    """Raised when the in-flight launch count reaches the configured cap."""
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    """Return (creating on first call) the module-level admission semaphore."""
+    global _launch_semaphore  # noqa: PLW0603
+    if _launch_semaphore is None:
+        _launch_semaphore = asyncio.Semaphore(_MAX_LAUNCHES)
+    return _launch_semaphore
 
 
 def _validate_request(data: dict[str, Any]) -> None:
@@ -64,11 +75,32 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
         to watch status and find child sessions once they appear.
       - ``action_kind``: the normalised kind that was fired.
 
+    Raises TooManyLaunchesError when the in-flight cap is reached.
     The spawned process runs detached.  Session IDs are only knowable after the
     process starts and writes to the DB, so they are not included in this
     response.
     """
     _validate_request(data)
+
+    # Build and validate argv BEFORE creating the DB row.  build_argv does its
+    # own validation pass; if it raises, no invocation row is left stranded.
+    schedule_dict: dict[str, Any] = {
+        "action_kind": data["action_kind"],
+        "action_model": data.get("action_model") or "",
+        "action_prompt": data.get("action_prompt") or "",
+        "action_agent": data.get("action_agent"),
+        "action_playbook": data.get("action_playbook"),
+        "action_project": data.get("action_project"),
+        "action_extra_args": data.get("action_extra_args") or [],
+    }
+    argv, tmp_path = build_argv(schedule_dict, {})
+
+    sem = _get_semaphore()
+    if not sem._value:  # noqa: SLF001  (asyncio.Semaphore internal — no public API)
+        raise TooManyLaunchesError(
+            f"Maximum concurrent launches ({_MAX_LAUNCHES}) reached. "
+            "Retry when an existing launch completes."
+        )
 
     inv_id = uuid.uuid4().hex[:12]
     now = time.time()
@@ -85,25 +117,9 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    # build_argv requires the scheduler dict shape; map the launch fields onto it.
-    schedule_dict: dict[str, Any] = {
-        "action_kind": data["action_kind"],
-        "action_model": data.get("action_model") or "",
-        "action_prompt": data.get("action_prompt") or "",
-        "action_agent": data.get("action_agent"),
-        "action_playbook": data.get("action_playbook"),
-        "action_project": data.get("action_project"),
-        "action_extra_args": data.get("action_extra_args") or [],
-    }
-
-    # build_argv does its own validation pass; raise before spawning if it disagrees.
-    argv, tmp_path = build_argv(schedule_dict, {})
-
     # Spawn detached — the HTTP handler must not block until the run finishes.
-    # Fire-and-forget: the task is not awaited.  tmp_path is None for non-flow_yaml
-    # kinds (validated above), so there is no temp-file lifetime issue.
     task = asyncio.create_task(
-        _spawn_detached(argv, inv_id, tmp_path=tmp_path),
+        _spawn_detached(argv, inv_id, tmp_path=tmp_path, semaphore=sem),
         name=f"launch-{inv_id}",
     )
     _detached_tasks.add(task)
@@ -115,24 +131,65 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _spawn_detached(argv: list[str], inv_id: str, *, tmp_path: str | None) -> None:
+async def shutdown_launches() -> None:
+    """Cancel all in-flight detached launch tasks and await their completion.
+
+    Called from the app lifespan on shutdown.  Each task's CancelledError
+    handler writes a terminal DB row before re-raising, so invocation rows do
+    not stay stuck in 'running'.
+    """
+    tasks = [t for t in list(_detached_tasks) if not t.done()]
+    if not tasks:
+        return
+    for t in tasks:
+        t.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _spawn_detached(
+    argv: list[str],
+    inv_id: str,
+    *,
+    tmp_path: str | None,
+    semaphore: asyncio.Semaphore,
+) -> None:
     """Spawn the process and update the invocation row when it exits."""
     from lionagi.state.reasons import RunReasons
 
     from ..scheduler.subprocess import spawn_and_wait
 
-    try:
-        exit_code, _stderr = await spawn_and_wait(argv, inv_id, tmp_path=tmp_path)
-        if exit_code == 0:
-            status, reason = "completed", RunReasons.COMPLETED_OK
-        else:
-            status, reason = "failed", RunReasons.FAILED_EXIT_NONZERO
-    except asyncio.CancelledError:
-        # Server is going down with us; no terminal row update is possible.
-        raise
-    except Exception:
-        _log.exception("Detached launch failed for invocation %s", inv_id)
-        status, reason = "failed", RunReasons.FAILED_EXCEPTION
+    async with semaphore:
+        try:
+            exit_code, _stderr = await spawn_and_wait(argv, inv_id, tmp_path=tmp_path)
+            if exit_code == 0:
+                status, reason = "completed", RunReasons.COMPLETED_OK
+            else:
+                status, reason = "failed", RunReasons.FAILED_EXIT_NONZERO
+        except asyncio.CancelledError:
+            # Server is shutting down — write a terminal row before propagating.
+            try:
+                async with StateDB() as db:
+                    await db.update_invocation(inv_id, ended_at=time.time())
+                    await db.update_status(
+                        "invocation",
+                        inv_id,
+                        new_status="cancelled",
+                        reason_code=RunReasons.CANCELLED_SYSTEM,
+                        reason_summary="Launch cancelled by server shutdown.",
+                        evidence_refs=[],
+                        source="executor",
+                        actor=inv_id,
+                        metadata={},
+                    )
+            except Exception:
+                _log.exception(
+                    "Failed to record cancellation for launch invocation %s during shutdown",
+                    inv_id,
+                )
+            raise
+        except Exception:
+            _log.exception("Detached launch failed for invocation %s", inv_id)
+            status, reason = "failed", RunReasons.FAILED_EXCEPTION
 
     try:
         async with StateDB() as db:

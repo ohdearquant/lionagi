@@ -110,6 +110,9 @@ async def lifespan(app_instance):
     except Exception:  # noqa: BLE001
         _log.warning("Startup WAL checkpoint failed (non-fatal)", exc_info=True)
     yield
+    from .services.launches import shutdown_launches
+
+    await shutdown_launches()
     await scheduler.stop()
 
 

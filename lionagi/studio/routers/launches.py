@@ -35,5 +35,7 @@ async def launch_run(body: LaunchRequest) -> dict[str, Any]:
     """
     try:
         return await launch_svc.launch(body.model_dump(exclude_none=True))
+    except launch_svc.TooManyLaunchesError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

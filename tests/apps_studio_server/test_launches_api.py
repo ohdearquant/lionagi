@@ -425,6 +425,7 @@ class TestSpawnDetachedTerminalUpdate:
 
         mock_db.update_status = _capture_status
 
+        sem = asyncio.Semaphore(1)
         with patch("lionagi.studio.services.launches.StateDB") as MockDB:
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
             MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -432,7 +433,11 @@ class TestSpawnDetachedTerminalUpdate:
                 "lionagi.studio.scheduler.subprocess.spawn_and_wait",
                 side_effect=_fake_spawn,
             ):
-                asyncio.run(launches._spawn_detached(["uv", "run", "li"], "inv1", tmp_path=None))
+                asyncio.run(
+                    launches._spawn_detached(
+                        ["uv", "run", "li"], "inv1", tmp_path=None, semaphore=sem
+                    )
+                )
         return captured
 
     @pytest.mark.parametrize(
@@ -450,3 +455,248 @@ class TestSpawnDetachedTerminalUpdate:
         captured = self._capture_update(exit_code=exit_code, spawn_exc=spawn_exc)
         assert captured["new_status"] == want_status
         validate_reason_code(captured["reason_code"])
+
+
+# ---------------------------------------------------------------------------
+# MAJOR 1 — Admission cap: 429 when in-flight launches >= MAX_LAUNCHES
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestLaunchAdmissionCap:
+    """POST /api/launches must return 429 when the in-flight cap is saturated."""
+
+    def test_429_when_slots_exhausted(self, tmp_path, monkeypatch):
+        """When all semaphore slots are taken, the next request returns 429."""
+        import lionagi.studio.services.launches as svc
+
+        # Reset module state so we start with a fresh semaphore.
+        svc._launch_semaphore = None
+        monkeypatch.setenv("LIONAGI_STUDIO_MAX_LAUNCHES", "1")
+        svc._MAX_LAUNCHES = 1
+        svc._launch_semaphore = asyncio.Semaphore(1)
+
+        # Manually acquire all slots to simulate full saturation.
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(svc._launch_semaphore.acquire())
+
+            # Stub DB + spawn so no real I/O happens.
+            mock_db = AsyncMock()
+            mock_db.create_invocation = AsyncMock()
+            db_ctx = MagicMock()
+            db_ctx.__aenter__ = AsyncMock(return_value=mock_db)
+            db_ctx.__aexit__ = AsyncMock(return_value=False)
+            monkeypatch.setattr("lionagi.studio.services.launches.StateDB", lambda *a, **kw: db_ctx)
+
+            def _consume(coro, **kw):
+                coro.close()
+                return MagicMock()
+
+            monkeypatch.setattr("lionagi.studio.services.launches.asyncio.create_task", _consume)
+
+            client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+            resp = client.post(
+                "/api/launches",
+                json={"action_kind": "agent", "action_model": "sonnet", "action_prompt": "hi"},
+            )
+            assert resp.status_code == 429, resp.text
+            assert "429" in resp.text or "Maximum" in resp.text or "concurrent" in resp.text
+        finally:
+            # Release the slot and close the loop.
+            svc._launch_semaphore.release()
+            svc._launch_semaphore = None
+            svc._MAX_LAUNCHES = int(
+                __import__("os").environ.get("LIONAGI_STUDIO_MAX_LAUNCHES", "4")
+            )
+            loop.close()
+
+    def test_spawn_not_called_when_saturated(self, tmp_path, monkeypatch):
+        """When cap is saturated, create_task must not be called."""
+        import lionagi.studio.services.launches as svc
+
+        svc._launch_semaphore = asyncio.Semaphore(1)
+        svc._MAX_LAUNCHES = 1
+
+        loop = asyncio.new_event_loop()
+        spawn_calls = []
+        try:
+            loop.run_until_complete(svc._launch_semaphore.acquire())
+
+            def _track_spawn(coro, **kw):
+                spawn_calls.append(coro)
+                coro.close()
+                return MagicMock()
+
+            monkeypatch.setattr(
+                "lionagi.studio.services.launches.asyncio.create_task",
+                _track_spawn,
+            )
+
+            client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+            resp = client.post(
+                "/api/launches",
+                json={"action_kind": "agent", "action_model": "sonnet"},
+            )
+            assert resp.status_code == 429
+            assert spawn_calls == [], "create_task must not be called when cap is saturated"
+        finally:
+            svc._launch_semaphore.release()
+            svc._launch_semaphore = None
+            svc._MAX_LAUNCHES = 4
+            loop.close()
+
+
+# ---------------------------------------------------------------------------
+# MAJOR 2 — Shutdown drains _detached_tasks + writes cancelled row
+# ---------------------------------------------------------------------------
+
+
+class TestShutdownDrains:
+    """shutdown_launches() must cancel in-flight tasks and await completion."""
+
+    def test_shutdown_cancels_tasks(self):
+        """shutdown_launches() cancels all tasks in _detached_tasks."""
+        import lionagi.studio.services.launches as svc
+
+        cancelled = []
+
+        async def _run():
+            # Clear any leftover tasks from previous tests in other event loops.
+            svc._detached_tasks.clear()
+
+            # Plant a fake long-running task.
+            async def _long():
+                try:
+                    await asyncio.sleep(999)
+                except asyncio.CancelledError:
+                    cancelled.append(True)
+                    raise
+
+            task = asyncio.ensure_future(_long())
+            svc._detached_tasks.add(task)
+            task.add_done_callback(svc._detached_tasks.discard)
+            # Yield so _long() reaches its first await before we cancel.
+            await asyncio.sleep(0)
+
+            await svc.shutdown_launches()
+
+        asyncio.run(_run())
+        assert cancelled == [True], "Task must have been cancelled"
+        assert len(svc._detached_tasks) == 0, "_detached_tasks must be empty after shutdown"
+
+    def test_shutdown_no_tasks_is_noop(self):
+        """shutdown_launches() with no tasks must not raise."""
+        import lionagi.studio.services.launches as svc
+
+        svc._detached_tasks.clear()
+        asyncio.run(svc.shutdown_launches())  # must not raise
+
+    def test_spawn_detached_cancelled_writes_terminal_row(self):
+        """When _spawn_detached is cancelled, it writes a cancelled row before re-raising."""
+        import lionagi.studio.services.launches as svc
+        from lionagi.state.reasons import RunReasons, validate_reason_code
+
+        captured = {}
+
+        mock_db = AsyncMock()
+
+        async def _capture_status(entity_type, entity_id, **kw):
+            captured["new_status"] = kw.get("new_status")
+            captured["reason_code"] = kw.get("reason_code")
+
+        mock_db.update_status = _capture_status
+        mock_db.update_invocation = AsyncMock()
+
+        async def _blocking_spawn(argv, inv_id, *, tmp_path=None):
+            # Block until cancelled so CancelledError propagates naturally.
+            await asyncio.sleep(999)
+            return (0, "")
+
+        async def _run():
+            sem = asyncio.Semaphore(1)
+
+            async def _inner():
+                with patch("lionagi.studio.services.launches.StateDB") as MockDB:
+                    MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+                    MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+                    with patch(
+                        "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+                        side_effect=_blocking_spawn,
+                    ):
+                        await svc._spawn_detached(
+                            ["uv", "run", "li"], "inv-cancel", tmp_path=None, semaphore=sem
+                        )
+
+            task = asyncio.ensure_future(_inner())
+            # Yield twice: once to enter _inner(), once to enter _blocking_spawn().
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        assert captured.get("new_status") == "cancelled"
+        validate_reason_code(captured.get("reason_code"))
+        assert captured["reason_code"] == RunReasons.CANCELLED_SYSTEM
+
+
+# ---------------------------------------------------------------------------
+# MAJOR 3 — build_argv called BEFORE create_invocation
+# ---------------------------------------------------------------------------
+
+
+class TestBuildArgvBeforeCreate:
+    """build_argv must be called before create_invocation; if it raises, no row is created."""
+
+    def test_build_argv_failure_leaves_no_invocation_row(self):
+        """If build_argv raises ValueError, create_invocation must not be called."""
+        import lionagi.studio.services.launches as svc
+
+        create_calls = []
+
+        mock_db = AsyncMock()
+        mock_db.create_invocation = AsyncMock(side_effect=lambda d: create_calls.append(d))
+
+        async def _run():
+            with (
+                patch("lionagi.studio.services.launches.StateDB") as MockDB,
+                patch(
+                    "lionagi.studio.services.launches.build_argv",
+                    side_effect=ValueError("argv build failed"),
+                ),
+            ):
+                MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+                MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+                with pytest.raises(ValueError, match="argv build failed"):
+                    await svc.launch({"action_kind": "agent", "action_model": "sonnet"})
+
+        asyncio.run(_run())
+        assert create_calls == [], "create_invocation must NOT be called if build_argv raises"
+
+    def test_build_argv_failure_returns_422_via_router(self, tmp_path, monkeypatch):
+        """If build_argv raises ValueError, the endpoint must return 422 with no DB write."""
+        create_calls = []
+
+        mock_db = AsyncMock()
+        mock_db.create_invocation = AsyncMock(side_effect=lambda d: create_calls.append(d))
+        db_ctx = MagicMock()
+        db_ctx.__aenter__ = AsyncMock(return_value=mock_db)
+        db_ctx.__aexit__ = AsyncMock(return_value=False)
+        monkeypatch.setattr("lionagi.studio.services.launches.StateDB", lambda *a, **kw: db_ctx)
+        monkeypatch.setattr(
+            "lionagi.studio.services.launches.build_argv",
+            lambda *a, **kw: (_ for _ in ()).throw(ValueError("forced argv failure")),
+        )
+
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+        resp = client.post(
+            "/api/launches",
+            json={"action_kind": "agent", "action_model": "sonnet"},
+        )
+        assert resp.status_code == 422, resp.text
+        assert create_calls == [], "create_invocation must NOT be called if build_argv raises"
