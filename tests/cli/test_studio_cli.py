@@ -12,7 +12,36 @@ uvicorn.run is mocked so the server is never actually started.
 
 from __future__ import annotations
 
+import contextlib
+import os
 from unittest.mock import patch
+
+
+@contextlib.contextmanager
+def _stubbed_serve():
+    """Patch the serve path's side effects for invocation tests.
+
+    _ensure_frontend_built would run a real npm install + vite build, and the
+    production branch then sets LIONAGI_STUDIO_FRONTEND_DIST in os.environ
+    (raw, not monkeypatched — uvicorn loads the app by import string, so the
+    real CLI must mutate the process env).  Left unguarded, that var leaks to
+    other test files on the same xdist worker, and any later fresh import of
+    lionagi.studio.app comes up SPA-enabled.  Restore both env vars to their
+    prior state on exit.
+    """
+    saved = {k: os.environ.get(k) for k in ("LIONAGI_STUDIO_FRONTEND_DIST", "LIONAGI_STUDIO_HOST")}
+    try:
+        with (
+            patch("uvicorn.run") as mock_run,
+            patch("lionagi.cli.studio._ensure_frontend_built", return_value=False),
+        ):
+            yield mock_run
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def test_studio_bare_invocation_does_not_raise(monkeypatch):
@@ -22,8 +51,8 @@ def test_studio_bare_invocation_does_not_raise(monkeypatch):
     --port, --host, --frontend-mode, or --no-frontend on the Namespace.
     The fix uses getattr() with defaults so the dereference is safe.
     """
-    # Prevent the real uvicorn server from starting.
-    with patch("uvicorn.run") as mock_run:
+    # Prevent the real uvicorn server (and a real frontend build) from starting.
+    with _stubbed_serve() as mock_run:
         from lionagi.cli.main import main
 
         # Should complete without AttributeError or SystemExit.
@@ -35,7 +64,7 @@ def test_studio_bare_invocation_does_not_raise(monkeypatch):
 
 def test_studio_start_explicit_subcommand_does_not_raise(monkeypatch):
     """``main(["studio", "start"])`` must also work (regression guard)."""
-    with patch("uvicorn.run") as mock_run:
+    with _stubbed_serve() as mock_run:
         from lionagi.cli.main import main
 
         result = main(["studio", "start"])
@@ -46,7 +75,7 @@ def test_studio_start_explicit_subcommand_does_not_raise(monkeypatch):
 
 def test_studio_start_with_port_flag(monkeypatch):
     """``main(["studio", "start", "--port", "9000"])`` passes port to uvicorn."""
-    with patch("uvicorn.run") as mock_run:
+    with _stubbed_serve() as mock_run:
         from lionagi.cli.main import main
 
         result = main(["studio", "start", "--port", "9000"])
@@ -59,7 +88,7 @@ def test_studio_start_with_port_flag(monkeypatch):
 def test_studio_bare_uses_default_port(monkeypatch):
     """Bare ``li studio`` must fall back to port 8765 (or env override)."""
     monkeypatch.delenv("LIONAGI_STUDIO_PORT", raising=False)
-    with patch("uvicorn.run") as mock_run:
+    with _stubbed_serve() as mock_run:
         from lionagi.cli.main import main
 
         result = main(["studio"])
