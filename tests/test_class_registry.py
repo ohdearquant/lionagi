@@ -23,6 +23,7 @@ would produce un-importable qualified names, causing ImportError in the
 fallback deserialization path.
 """
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -345,21 +346,18 @@ class TestGetClassMiss:
 
 
 # ---------------------------------------------------------------------------
-# 4b. get_class file-registry fallback path — pinned as known-broken
+# 4b. get_class file-registry fallback path — fixed (issue #1407)
 #
-# LATENT BUG: get_class()'s fallback at _class_registry.py:100 calls
-# get_class_objects() which uses importlib.util.spec_from_file_location with
-# a dummy module name ("module.name").  Modules in the scanned directories
-# (lionagi/protocols/generic, protocols/graph, protocols/messages) use
-# relative imports (e.g. "from .element import Element").  When exec'd under a
-# standalone spec with no parent package, those relative imports fail with
-# "ImportError: attempted relative import beyond top-level package".
+# Previously latent bug: get_class()'s fallback called get_class_objects()
+# which used importlib.util.spec_from_file_location with a dummy module name.
+# Modules in the scanned directories use relative imports (e.g. "from .element
+# import Element"); exec'd under a standalone spec with no parent package, those
+# relative imports failed with "ImportError: attempted relative import beyond
+# top-level package", making the fallback unreachable for any real lionagi class.
 #
-# As a result, only in-memory LION_CLASS_REGISTRY lookups work reliably.
-# The file-registry fallback path is unreachable for any real lionagi class.
-#
-# This test pins the current behavior so that any accidental "fix" that changes
-# the error type or suppresses the ValueError is caught immediately.
+# get_class_objects() now derives the canonical dotted module name from the file
+# path relative to the package root and uses importlib.import_module, restoring
+# full package context.  These tests pin the fixed behavior and the path guards.
 # ---------------------------------------------------------------------------
 
 
@@ -436,6 +434,37 @@ class TestGetClassFileRegistryFallback:
 
         with pytest.raises(ValueError, match="not located under the package root"):
             get_class_objects("/tmp/some_random_file_outside_package.py")
+
+    def test_file_registry_fallback_repo_root_outside_package_raises(self):
+        """A file under the project root but OUTSIDE the lionagi package (e.g. a
+        test module) must be rejected.  Otherwise a stale or polluted
+        LION_CLASS_FILE_REGISTRY entry could import arbitrary top-level modules
+        from the checkout instead of failing cleanly (regression for #1422
+        codex review: guard must use the package dir, not its parent)."""
+        from lionagi._class_registry import get_class_objects
+
+        # This very test file lives under the repo root but NOT under lionagi/.
+        outside_pkg_file = os.path.abspath(__file__)
+
+        with pytest.raises(ValueError, match="not located under the package root"):
+            get_class_objects(outside_pkg_file)
+
+    def test_file_registry_fallback_repo_root_via_get_class_raises(self):
+        """End-to-end: a registry entry pointing at a repo-root-but-outside-
+        package file must surface as ValueError through get_class(), not import
+        a top-level module."""
+        from lionagi._class_registry import (
+            LION_CLASS_FILE_REGISTRY,
+            LION_CLASS_REGISTRY,
+            get_class,
+        )
+
+        fake_class_name = "_RegistryPathEscape_xyz"
+        LION_CLASS_FILE_REGISTRY[fake_class_name] = os.path.abspath(__file__)
+        LION_CLASS_REGISTRY.pop(fake_class_name, None)
+
+        with pytest.raises(ValueError, match="Unable to find class"):
+            get_class(fake_class_name)
 
     def test_file_registry_fallback_class_not_in_module_raises_value_error(self):
         """get_class() must raise ValueError when the file-registry entry exists
