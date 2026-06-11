@@ -15,6 +15,67 @@ _VALID_EFFORT_LEVELS: frozenset[str] = frozenset(
 )
 _PRESERVE_DASHED: frozenset[str] = frozenset({"argument-hint"})
 
+# Re-use the same validation helpers as subprocess.py so the service boundary
+# and the spawn boundary enforce identical rules.  Imported lazily inside the
+# validation helpers to avoid circular imports at module load time.
+
+
+def _svc_validate_action_model(model: str | None) -> None:
+    """Service-boundary check: reject action_model values that inject CLI flags.
+
+    Delegates to subprocess._validate_action_model so the allowed-character
+    rule is defined in exactly one place.
+    """
+    if not model:
+        return
+    from lionagi.studio.scheduler.subprocess import _validate_action_model
+
+    _validate_action_model(model)
+
+
+def _svc_validate_identifier(value: str | None, field_name: str) -> None:
+    """Service-boundary check: reject identifier fields (agent/project/playbook) starting with '-'.
+
+    Identifier fields are not freeform text — they name profiles, projects, or
+    playbooks and must not start with '-'.  A leading '-' causes argparse to
+    treat the value as a flag, producing either a flag toggle or a usage error
+    depending on the subcommand.  Reject both outcomes at write time.
+    """
+    if not value:
+        return
+    from lionagi.studio.scheduler.subprocess import _validate_identifier
+
+    _validate_identifier(value, field_name)
+
+
+def _svc_validate_extra_args(extra: list | None) -> None:
+    """Service-boundary check: reject action_extra_args elements that inject CLI flags.
+
+    Delegates to subprocess._validate_extra_args so the flag-rejection rule is
+    defined in exactly one place.
+    """
+    if not extra:
+        return
+    from lionagi.studio.scheduler.subprocess import _validate_extra_args
+
+    _validate_extra_args(extra)
+
+
+def _svc_validate_prompt(prompt: str | None) -> None:
+    """Service-boundary check: reject action_prompt == '--'.
+
+    The literal end-of-options token '--' is silently consumed by argparse and
+    would not reach the runner as prompt text.  All other prompt content —
+    including values starting with '-' — is unrestricted because the structural
+    argv fix places a '--' sentinel before all positionals.  Delegates to
+    subprocess._validate_prompt so the rule is defined in one place.
+    """
+    if not prompt:
+        return
+    from lionagi.studio.scheduler.subprocess import _validate_prompt
+
+    _validate_prompt(prompt)
+
 
 def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
     """Parse and validate an inline YAML flow spec.
@@ -181,6 +242,14 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     if not data.get("action_kind"):
         raise ValueError("action_kind is required")
 
+    # Reject flag-injection vectors at write time so bad specs never reach storage.
+    _svc_validate_action_model(data.get("action_model"))
+    _svc_validate_prompt(data.get("action_prompt"))
+    _svc_validate_identifier(data.get("action_agent"), "action_agent")
+    _svc_validate_identifier(data.get("action_project"), "action_project")
+    _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
+    _svc_validate_extra_args(data.get("action_extra_args"))
+
     if data.get("action_kind") == "flow_yaml":
         yaml_text = data.get("action_flow_yaml") or ""
         if not yaml_text.strip():
@@ -211,6 +280,20 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         schedule = await db.get_schedule(schedule_id)
         if not schedule:
             return False
+
+        # Reject flag-injection vectors in the patched fields before writing.
+        if "action_model" in fields:
+            _svc_validate_action_model(fields["action_model"])
+        if "action_prompt" in fields:
+            _svc_validate_prompt(fields["action_prompt"])
+        if "action_agent" in fields:
+            _svc_validate_identifier(fields["action_agent"], "action_agent")
+        if "action_project" in fields:
+            _svc_validate_identifier(fields["action_project"], "action_project")
+        if "action_playbook" in fields:
+            _svc_validate_identifier(fields["action_playbook"], "action_playbook")
+        if "action_extra_args" in fields:
+            _svc_validate_extra_args(fields["action_extra_args"])
 
         # Merge proposed fields over the existing schedule and re-validate
         # flow_yaml constraints so a PATCH cannot create invalid state that

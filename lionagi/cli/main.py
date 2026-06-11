@@ -241,7 +241,16 @@ def main(argv: list[str] | None = None) -> int:
     # Resolve verbose once before any CLI code emits. argparse happens
     # below but we need the flag now to configure log levels.
     _argv = argv if argv is not None else sys.argv[1:]
-    verbose = "-v" in _argv or "--verbose" in _argv
+    # Only scan for -v/--verbose BEFORE the '--' end-of-options sentinel so that
+    # a scheduled action_prompt containing '--verbose' does not flip verbose mode.
+    # Human CLI invocations (e.g. `li agent -v sonnet "hi"`) place -v before '--',
+    # so their behaviour is unchanged.
+    try:
+        _sentinel_idx = _argv.index("--")
+        _pre_sentinel = _argv[:_sentinel_idx]
+    except ValueError:
+        _pre_sentinel = _argv
+    verbose = "-v" in _pre_sentinel or "--verbose" in _pre_sentinel
     configure_cli_logging(verbose)
 
     # `li skill NAME` prints a CC-compatible skill body to stdout.
