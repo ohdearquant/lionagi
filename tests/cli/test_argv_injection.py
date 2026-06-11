@@ -823,3 +823,83 @@ class TestMainVerboseScanSentinelAware:
         assert captured.get("verbose") is False, (
             f"Expected verbose=False (argparse-parsed), got {captured.get('verbose')!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# build_argv — template injection: rendered prompt must be validated post-render
+# (codex round 3 — order-of-operations bypass)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildArgvTemplateInjection:
+    """build_argv must validate action_prompt AFTER _render_template, not before.
+
+    A stored prompt like '{{payload}}' passes pre-render validation.  If
+    trigger_context supplies {"payload": "--"}, the rendered value is the
+    forbidden sentinel.  The fix: _validate_prompt runs on the rendered value,
+    so such template reconstruction is caught at spawn time.
+    """
+
+    def test_template_renders_sentinel_raises_agent(self):
+        """agent kind: '{{payload}}' + context {"payload": "--"} must raise ValueError."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        with pytest.raises(ValueError, match="'--'"):
+            build_argv(
+                _schedule(action_kind="agent", action_prompt="{{payload}}"),
+                {"payload": "--"},
+            )
+
+    def test_template_renders_sentinel_raises_flow(self):
+        """flow kind: '{{payload}}' + context {"payload": "--"} must raise ValueError."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        with pytest.raises(ValueError, match="'--'"):
+            build_argv(
+                _schedule(action_kind="flow", action_prompt="{{payload}}"),
+                {"payload": "--"},
+            )
+
+    def test_template_renders_sentinel_raises_fanout(self):
+        """fanout kind: '{{payload}}' + context {"payload": "--"} must raise ValueError."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        with pytest.raises(ValueError, match="'--'"):
+            build_argv(
+                _schedule(action_kind="fanout", action_prompt="{{payload}}"),
+                {"payload": "--"},
+            )
+
+    def test_template_renders_safe_value_passes(self):
+        """'{{payload}}' + context {"payload": "hello"} must build argv normally."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(
+            _schedule(action_kind="agent", action_prompt="{{payload}}"),
+            {"payload": "hello"},
+        )
+        assert tmp is None
+        sentinel_idx = argv.index("--")
+        assert "hello" in argv[sentinel_idx + 1 :]
+
+    def test_template_renders_bypass_flag_safe(self):
+        """'{{payload}}' + context {"payload": "--bypass"} reaches argv as value,
+        not as a flag.  (The structural -- fix handles leading-dash prompts;
+        only the exact '--' singleton is forbidden.)"""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(
+            _schedule(action_kind="agent", action_prompt="{{payload}}"),
+            {"payload": "--bypass"},
+        )
+        assert tmp is None
+        sentinel_idx = argv.index("--")
+        assert "--bypass" in argv[sentinel_idx + 1 :]
+
+    def test_template_literal_sentinel_in_stored_prompt_raises(self):
+        """A stored prompt that IS literally '--' (no template) is still rejected —
+        pre-render path unchanged."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        with pytest.raises(ValueError, match="'--'"):
+            build_argv(_schedule(action_prompt="--"), {})

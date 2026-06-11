@@ -172,9 +172,19 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
     # These checks mirror the service-layer boundary in services/schedules.py;
     # having them here ensures the subprocess is never spawned with injected flags
     # regardless of how the schedule dict was created.
+    #
+    # IMPORTANT — order of operations for action_prompt:
+    # action_prompt may contain {{var}} template placeholders that are expanded
+    # from trigger_context at fire time.  A stored prompt like '{{payload}}' passes
+    # pre-render validation but could render into the forbidden '--' sentinel when
+    # a trigger context supplies {"payload": "--"}.  To close this window we
+    # validate action_prompt AFTER rendering, not before.
+    #
+    # action_model, action_extra_args, action_agent, action_project, and
+    # action_playbook are NOT passed through _render_template — they are used
+    # verbatim from the schedule dict, so their validation before the render
+    # step is correct and sufficient.
     _validate_action_model(model)
-    if prompt:
-        _validate_prompt(prompt)
     if agent:
         _validate_identifier(agent, "action_agent")
     if project:
@@ -184,9 +194,13 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
     if isinstance(extra, list):
         _validate_extra_args(extra)
 
-    # Render template variables from trigger context
+    # Render template variables from trigger context FIRST, then validate the
+    # rendered prompt so that template-injected values (e.g. '{{payload}}' →
+    # '--') are caught before argv construction.
     if prompt:
         prompt = _render_template(prompt, trigger_context)
+    if prompt:
+        _validate_prompt(prompt)
 
     argv = ["uv", "run", "li"]
     tmp_path: str | None = None

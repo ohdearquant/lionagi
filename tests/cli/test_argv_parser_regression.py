@@ -554,3 +554,103 @@ class TestDoubleDashSentinelEdgeCases:
                 },
                 {},
             )
+
+
+# ---------------------------------------------------------------------------
+# Parser-level: template-rendered sentinel rejection (codex round 3)
+# ---------------------------------------------------------------------------
+
+
+class TestTemplateRenderedSentinelRejection:
+    """build_argv must validate action_prompt AFTER _render_template.
+
+    Codex round 3 finding: a stored '{{payload}}' passes pre-render validation,
+    but trigger_context {"payload": "--"} renders it into the forbidden sentinel
+    before argv construction.  The fix moves _validate_prompt to post-render.
+    These tests run through real build_argv (not the parser) to confirm that
+    the rendered reconstruction is caught at spawn time, not silently passed.
+    """
+
+    def test_template_payload_renders_sentinel_agent_raises(self) -> None:
+        """agent: '{{payload}}' + {"payload": "--"} → ValueError before argv built."""
+        import pytest as _pytest
+
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        with _pytest.raises(ValueError, match="'--'"):
+            build_argv(
+                {
+                    "id": "t",
+                    "action_kind": "agent",
+                    "action_model": "sonnet",
+                    "action_prompt": "{{payload}}",
+                    "action_agent": None,
+                    "action_project": None,
+                    "action_extra_args": [],
+                },
+                {"payload": "--"},
+            )
+
+    def test_template_payload_renders_sentinel_flow_raises(self) -> None:
+        """flow: '{{payload}}' + {"payload": "--"} → ValueError before argv built."""
+        import pytest as _pytest
+
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        with _pytest.raises(ValueError, match="'--'"):
+            build_argv(
+                {
+                    "id": "t",
+                    "action_kind": "flow",
+                    "action_model": "sonnet",
+                    "action_prompt": "{{payload}}",
+                    "action_agent": None,
+                    "action_project": None,
+                    "action_extra_args": [],
+                },
+                {"payload": "--"},
+            )
+
+    def test_template_payload_renders_sentinel_fanout_raises(self) -> None:
+        """fanout: '{{payload}}' + {"payload": "--"} → ValueError before argv built."""
+        import pytest as _pytest
+
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        with _pytest.raises(ValueError, match="'--'"):
+            build_argv(
+                {
+                    "id": "t",
+                    "action_kind": "fanout",
+                    "action_model": "sonnet",
+                    "action_prompt": "{{payload}}",
+                    "action_agent": None,
+                    "action_project": None,
+                    "action_extra_args": [],
+                },
+                {"payload": "--"},
+            )
+
+    def test_template_payload_safe_reaches_parser_correctly(self) -> None:
+        """'{{payload}}' + {"payload": "hello"} renders to 'hello' and builds valid argv."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        full_argv, _ = build_argv(
+            {
+                "id": "t",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+                "action_prompt": "{{payload}}",
+                "action_agent": None,
+                "action_project": None,
+                "action_extra_args": [],
+            },
+            {"payload": "hello world"},
+        )
+        # The rendered prompt must appear after the '--' sentinel
+        cli_argv = full_argv[3:]  # strip 'uv run li'
+        sep_idx = cli_argv.index("--")
+        positionals = cli_argv[sep_idx + 1 :]
+        assert "hello world" in positionals, (
+            f"Expected rendered prompt 'hello world' in positionals {positionals!r}"
+        )
