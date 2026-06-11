@@ -35,6 +35,7 @@ export const NAV_GROUPS: NavGroupDef[] = [
     items: [
       { label: "Shows", href: "/shows" },
       { label: "Runs", href: "/runs" },
+      { label: "Kanban", href: "/kanban" },
       { label: "Projects", href: "/projects" },
       { label: "Teams", href: "/teams" },
       { label: "Invocations", href: "/invocations" },
