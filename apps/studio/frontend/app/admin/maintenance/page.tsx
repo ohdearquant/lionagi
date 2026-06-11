@@ -148,8 +148,9 @@ export default function AdminMaintenancePage() {
       const result = await runMaintenance(action);
       setMaintenanceResult(formatMaintenanceResult(result));
     } catch (err) {
-      // Prefer the backend detail string preserved by fetchJson; fall back to
-      // the generic copy string when no structured message is available.
+      // fetchJson always throws an Error (backend detail when present, else
+      // "Request failed: <status>"), so the copy-string fallback only fires
+      // for non-Error throws (network-layer failures).
       const backendMsg = err instanceof Error ? err.message : undefined;
       const fallback =
         action === "vacuum"

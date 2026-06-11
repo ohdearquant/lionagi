@@ -175,8 +175,11 @@ async def run_maintenance(body: MaintenanceBody) -> dict[str, Any]:
         return {"action": "prune", **result}
 
     except sqlite3.OperationalError as exc:
+        # Only genuine lock/busy contention is retry-able. Open/path failures
+        # ("unable to open database file") are configuration problems and must
+        # not tell the operator to retry shortly — let them surface as 500.
         msg = str(exc).lower()
-        if "locked" in msg or "in progress" in msg or "unable to open" in msg:
+        if "locked" in msg or "in progress" in msg:
             raise HTTPException(
                 status_code=409,
                 detail="State database is busy — another writer holds the lock. Try again shortly.",
