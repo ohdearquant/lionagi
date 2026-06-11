@@ -200,6 +200,10 @@ class EngineRun:
         # so in-flight sequential work (operate_with_repair, branch.operate) is
         # interrupted promptly rather than continuing past the deadline.
         self._run_task: asyncio.Task | None = None
+        # Collects emission-missing diagnostics so the CLI can write them to
+        # the engine_runs.error column even when the overall status is "completed".
+        # Each entry is a string like "<agent> x<attempts>".
+        self._emission_failures: list[str] = []
 
     @property
     def events(self) -> Pile:
@@ -341,10 +345,15 @@ class EngineRun:
                 repair_msg = _repair_instruction(hint)
             res = await branch.operate(instruction=repair_msg)
         if retries and not arrived():
+            _agent_name = getattr(branch, "name", "") or ""
+            _attempts = attempt + 1
             self.notify(
                 "emission_missing",
-                agent=getattr(branch, "name", "") or "",
-                attempts=attempt + 1,
+                agent=_agent_name,
+                attempts=_attempts,
+            )
+            self._emission_failures.append(
+                f"{_agent_name} x{_attempts}" if _agent_name else f"x{_attempts}"
             )
         return res
 

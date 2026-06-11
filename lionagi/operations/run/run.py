@@ -19,6 +19,7 @@ from lionagi.protocols.messages import (
     AssistantResponseContent,
     Instruction,
 )
+from lionagi.providers._provider_errors import classify_provider_error
 
 from ..chat._prepare import _prepare_run_kwargs
 from ..types import ChatParam, ParseParam, RunParam
@@ -314,7 +315,7 @@ async def run(
                                 )
                                 break
                             content = chunk.content or "(empty error)"
-                            raise RuntimeError(content)
+                            raise classify_provider_error(content)
 
                 if res := await _flush_response():
                     if hasattr(api_call, "to_dict"):

@@ -718,7 +718,15 @@ async def stream_codex_cli(
                 # otherwise a top-level-message error renders as the useless
                 # str() of an empty dict and the actionable text is discarded.
                 session.result = (
-                    (err.get("message") or obj.get("message") or str(err))
+                    (
+                        err.get("message")
+                        or obj.get("message")
+                        or (
+                            f"CLI failure (empty error payload; event type={typ!r})"
+                            if err == {}
+                            else str(err)
+                        )
+                    )
                     if isinstance(err, dict)
                     else obj.get("message", str(err))
                 )
