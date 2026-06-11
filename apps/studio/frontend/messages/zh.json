@@ -1,0 +1,60 @@
+{
+  "nav": {
+    "theme": {
+      "toggle": "切换主题"
+    },
+    "brand": {
+      "name": "Lion Studio",
+      "subtitle": "协调引擎"
+    },
+    "dashboard": {
+      "title": "控制台"
+    },
+    "primary": {
+      "ariaLabel": "主导航"
+    },
+    "mobile": {
+      "open": "打开导航菜单"
+    },
+    "breadcrumb": {
+      "ariaLabel": "导航路径"
+    },
+    "groups": {
+      "dashboard": "控制台",
+      "work": "工作",
+      "library": "资源库",
+      "admin": "管理"
+    },
+    "items": {
+      "dashboard": "控制台",
+      "shows": "展示",
+      "runs": "运行",
+      "projects": "项目",
+      "teams": "团队",
+      "invocations": "调用",
+      "schedules": "调度",
+      "playbooks": "剧本",
+      "agents": "智能体",
+      "plugins": "插件",
+      "skills": "技能",
+      "health": "健康状态",
+      "maintenance": "维护"
+    },
+    "projectChip": {
+      "selected": "[项目：{name} ▾]",
+      "allShort": "[所有项目 ▾]",
+      "ariaLabel": "按项目筛选",
+      "all": "所有项目",
+      "viewAll": "查看所有项目"
+    },
+    "localeSwitcher": {
+      "switchToZh": "切换到中文",
+      "switchToEn": "切换到英文",
+      "labelZh": "中文",
+      "labelEn": "EN"
+    }
+  },
+  "common": {
+    "skipToMain": "跳转到主要内容"
+  }
+}
