@@ -921,3 +921,353 @@ class TestScheduleArgvInjectionRealService:
         assert "'--'" in detail or "action_prompt" in detail or "end-of-options" in detail, (
             f"Expected error mentioning '--' or action_prompt, got: {detail!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# CWE-918 github_repo path manipulation — real-service router tests (closes #1413)
+#
+# These tests use the REAL service layer + temp SQLite DB (same pattern as
+# TestScheduleArgvInjectionRealService) to confirm that github_repo validation
+# propagates from service → router as HTTP 400 responses.
+# ---------------------------------------------------------------------------
+
+
+class TestGithubRepoRealServiceValidation:
+    """Router → REAL service → temp DB: invalid github_repo values must return 400.
+
+    The test payloads exercise path-traversal sequences, extra slash segments,
+    bare owner name (no slash), leading dash, percent-encoded dots, and empty
+    string.  A single valid 'owner/repo.name-x_1' case confirms 201 acceptance.
+    """
+
+    # -- POST (create) --
+
+    def test_create_path_traversal_returns_400(self, monkeypatch, tmp_path) -> None:
+        """POST github_repo='../../other-endpoint' → 400."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "gh-traversal",
+                "trigger_type": "github_poll",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+                "github_repo": "../../other-endpoint",
+            },
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+        detail = r.json().get("detail", "")
+        assert "owner/name" in detail or "github_repo" in detail, (
+            f"Expected error mentioning owner/name or github_repo, got: {detail!r}"
+        )
+
+    def test_create_extra_slash_returns_400(self, monkeypatch, tmp_path) -> None:
+        """POST github_repo='owner/name/extra' → 400."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "gh-extra-slash",
+                "trigger_type": "github_poll",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+                "github_repo": "owner/name/extra",
+            },
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+
+    def test_create_no_slash_returns_400(self, monkeypatch, tmp_path) -> None:
+        """POST github_repo='owner' (no slash) → 400."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "gh-no-slash",
+                "trigger_type": "github_poll",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+                "github_repo": "owner",
+            },
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+
+    def test_create_leading_dash_returns_400(self, monkeypatch, tmp_path) -> None:
+        """POST github_repo='-owner/repo' (leading dash) → 400."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "gh-leading-dash",
+                "trigger_type": "github_poll",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+                "github_repo": "-owner/repo",
+            },
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+
+    def test_create_percent_encoded_returns_400(self, monkeypatch, tmp_path) -> None:
+        """POST github_repo='%2e%2e/repo' (percent-encoded dots) → 400."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "gh-pct-encoded",
+                "trigger_type": "github_poll",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+                "github_repo": "%2e%2e/repo",
+            },
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+
+    def test_create_valid_repo_accepted(self, monkeypatch, tmp_path) -> None:
+        """POST github_repo='owner/repo.name-x_1' → 201 (valid format accepted)."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "gh-valid-repo",
+                "trigger_type": "github_poll",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+                "github_repo": "owner/repo.name-x_1",
+            },
+        )
+        assert r.status_code == 201, f"expected 201, got {r.status_code}: {r.text}"
+
+    # -- PATCH (update) --
+
+    def test_patch_path_traversal_returns_400(self, monkeypatch, tmp_path) -> None:
+        """PATCH github_repo='../../other-endpoint' on existing schedule → 400."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        # First create a valid schedule to patch
+        create_r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "gh-patch-base",
+                "trigger_type": "cron",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+            },
+        )
+        assert create_r.status_code == 201, f"setup create failed: {create_r.text}"
+        sched_id = create_r.json()["id"]
+
+        r = client.patch(
+            f"/api/schedules/{sched_id}",
+            json={"github_repo": "../../other-endpoint"},
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+        detail = r.json().get("detail", "")
+        assert "owner/name" in detail or "github_repo" in detail, (
+            f"Expected error mentioning owner/name or github_repo, got: {detail!r}"
+        )
+
+    def test_patch_extra_slash_returns_400(self, monkeypatch, tmp_path) -> None:
+        """PATCH github_repo='owner/name/extra' on existing schedule → 400."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        create_r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "gh-patch-base2",
+                "trigger_type": "cron",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+            },
+        )
+        assert create_r.status_code == 201, f"setup create failed: {create_r.text}"
+        sched_id = create_r.json()["id"]
+
+        r = client.patch(
+            f"/api/schedules/{sched_id}",
+            json={"github_repo": "owner/name/extra"},
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+
+    # -- .github repo: positive tests (real service) --
+
+    def test_create_dot_github_repo_accepted(self, monkeypatch, tmp_path) -> None:
+        """POST github_repo='github/.github' → 201 (repo starting with '.' is valid)."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "gh-dot-github",
+                "trigger_type": "github_poll",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+                "github_repo": "github/.github",
+            },
+        )
+        assert r.status_code == 201, f"expected 201, got {r.status_code}: {r.text}"
+
+    def test_patch_dot_github_repo_accepted(self, monkeypatch, tmp_path) -> None:
+        """PATCH github_repo='github/.github' on existing schedule → 200."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        create_r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "gh-patch-dot-base",
+                "trigger_type": "cron",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+            },
+        )
+        assert create_r.status_code == 201, f"setup create failed: {create_r.text}"
+        sched_id = create_r.json()["id"]
+
+        r = client.patch(
+            f"/api/schedules/{sched_id}",
+            json={"github_repo": "github/.github"},
+        )
+        assert r.status_code == 200, f"expected 200, got {r.status_code}: {r.text}"
+
+    # -- length bounds: positive tests (real service) --
+
+    def test_create_1000_char_owner_returns_400(self, monkeypatch, tmp_path) -> None:
+        """POST github_repo with 1000-char owner → 400."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "gh-long-owner",
+                "trigger_type": "github_poll",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+                "github_repo": "a" * 1000 + "/repo",
+            },
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+
+    def test_create_1000_char_repo_returns_400(self, monkeypatch, tmp_path) -> None:
+        """POST github_repo with 1000-char repo name → 400."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "gh-long-repo",
+                "trigger_type": "github_poll",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+                "github_repo": "owner/" + "a" * 1000,
+            },
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+
+    def test_patch_1000_char_owner_returns_400(self, monkeypatch, tmp_path) -> None:
+        """PATCH github_repo with 1000-char owner → 400."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        create_r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "gh-patch-long-owner-base",
+                "trigger_type": "cron",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+            },
+        )
+        assert create_r.status_code == 201, f"setup create failed: {create_r.text}"
+        sched_id = create_r.json()["id"]
+
+        r = client.patch(
+            f"/api/schedules/{sched_id}",
+            json={"github_repo": "a" * 1000 + "/repo"},
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+
+    def test_patch_1000_char_repo_returns_400(self, monkeypatch, tmp_path) -> None:
+        """PATCH github_repo with 1000-char repo name → 400."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        create_r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "gh-patch-long-repo-base",
+                "trigger_type": "cron",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+            },
+        )
+        assert create_r.status_code == 201, f"setup create failed: {create_r.text}"
+        sched_id = create_r.json()["id"]
+
+        r = client.patch(
+            f"/api/schedules/{sched_id}",
+            json={"github_repo": "owner/" + "a" * 1000},
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+
+    # -- PATCH preserves bad stored value (MAJOR #3) --
+
+    def test_patch_unrelated_field_rejects_bad_stored_github_repo(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """PATCH of an unrelated field must return 400 when stored github_repo is invalid.
+
+        Seed a schedule directly via DB with a bad github_repo, then send an
+        unrelated PATCH (description only).  The effective-dict revalidation must
+        catch the stale-invalid value and return 400, not 200.
+        """
+        import aiosqlite
+
+        from tests.apps_studio_server._helpers import run_async
+
+        # 1. Build the temp DB and wire the app to it.
+        db_file = tmp_path / "test_state.db"
+        import lionagi.state.db as state_db_mod
+        import lionagi.studio.services.schedules as sched_svc_mod
+        from lionagi.studio.app import app
+
+        monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_file)
+        monkeypatch.setattr(sched_svc_mod, "DEFAULT_DB_PATH", db_file)
+
+        # 2. Use the real service to create the schema (create a throw-away schedule).
+        from fastapi.testclient import TestClient
+
+        client = TestClient(app, raise_server_exceptions=False)
+        setup_r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "schema-seed",
+                "trigger_type": "cron",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+            },
+        )
+        assert setup_r.status_code == 201, f"schema seed failed: {setup_r.text}"
+
+        # 3. Directly insert a schedule with a bad github_repo into the temp DB.
+        bad_id = "badstored1"
+        import time
+
+        now = time.time()
+
+        async def _insert():
+            async with aiosqlite.connect(db_file) as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO schedules
+                      (id, name, trigger_type, action_kind, github_repo,
+                       enabled, missed_fire_policy, overlap_policy,
+                       created_at, updated_at)
+                    VALUES (?,?,?,?,?,1,'skip','skip',?,?)
+                    """,
+                    (bad_id, "bad-stored-gh", "cron", "agent", "../../x", now, now),
+                )
+                await conn.commit()
+
+        run_async(_insert())
+
+        # 4. PATCH an unrelated field -- effective github_repo is still "../../x".
+        r = client.patch(
+            f"/api/schedules/{bad_id}",
+            json={"description": "innocuous update"},
+        )
+        assert r.status_code == 400, (
+            f"expected 400 for unrelated PATCH with bad stored github_repo, "
+            f"got {r.status_code}: {r.text}"
+        )
+        detail = r.json().get("detail", "")
+        assert "github_repo" in detail or "owner/name" in detail or "traversal" in detail, (
+            f"Expected error mentioning github_repo/owner/name/traversal, got: {detail!r}"
+        )
