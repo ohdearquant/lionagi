@@ -1010,9 +1010,57 @@ class TestBuildArgvEngineKind:
             "action_kind": "engine",
             "action_model": "",
             "action_prompt": "do the thing",
-            "action_agent": "coding",
+            "action_agent": "research",
             "action_engine_options": {},
             "action_extra_args": ["positional-token"],
         }
         argv, _ = build_argv(schedule, {})
         assert "positional-token" not in argv
+
+
+class TestCodingKindRequiresTestCmd:
+    """The engine CLI exits nonzero for 'coding' without --test-cmd; both
+    build_argv and the launch path must reject it before any row is created."""
+
+    def test_build_argv_coding_without_test_cmd_rejected(self):
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        schedule = {
+            "action_kind": "engine",
+            "action_model": "",
+            "action_prompt": "build a parser",
+            "action_agent": "coding",
+            "action_engine_options": {"export_dir": "out"},
+        }
+        with pytest.raises(ValueError, match="test_cmd"):
+            build_argv(schedule, {})
+
+    def test_launch_stored_coding_def_without_test_cmd_422_no_row(self, tmp_path, monkeypatch):
+        """A stored coding definition lacking test_cmd (e.g. written before
+        validation existed) must produce 422 and no invocation row."""
+        mock_db = _stub_db_and_spawn(monkeypatch)
+        _stub_engine_def(
+            monkeypatch,
+            {
+                "id": "bad123bad123",
+                "name": "bad-coder",
+                "kind": "coding",
+                "model": None,
+                "max_depth": None,
+                "max_agents": None,
+                "options": None,
+            },
+        )
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post(
+            "/api/launches",
+            json={
+                "action_kind": "engine",
+                "action_engine_def": "bad-coder",
+                "action_prompt": "build a parser",
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        assert "test_cmd" in resp.json()["detail"]
+        mock_db.create_invocation.assert_not_called()

@@ -369,3 +369,45 @@ async def test_list_endpoint_filter_by_kind(patched_app):
     names = [r["name"] for r in rows]
     assert "p1" in names
     assert "r1" not in names
+
+
+# ── coding kind requires options.test_cmd (engine CLI contract) ──────────────
+
+
+async def test_create_coding_without_test_cmd_raises(patched_svc):
+    svc, _ = patched_svc
+    with pytest.raises(ValueError, match="test_cmd"):
+        await svc.create_engine_def({"name": "coder", "kind": "coding"})
+
+
+async def test_create_coding_with_test_cmd_ok(patched_svc):
+    svc, _ = patched_svc
+    result = await svc.create_engine_def(
+        {"name": "coder", "kind": "coding", "options": {"test_cmd": "uv run pytest"}}
+    )
+    assert "id" in result
+
+
+async def test_update_kind_to_coding_without_test_cmd_raises(patched_svc):
+    svc, db_path = patched_svc
+    def_id = await _seed_engine_def(db_path, name="was-research", kind="research")
+    with pytest.raises(ValueError, match="test_cmd"):
+        await svc.update_engine_def(def_id, {"kind": "coding"})
+
+
+async def test_update_kind_to_coding_with_existing_test_cmd_ok(patched_svc):
+    svc, db_path = patched_svc
+    def_id = await _seed_engine_def(
+        db_path, name="had-opts", kind="research", options={"test_cmd": "pytest"}
+    )
+    ok = await svc.update_engine_def(def_id, {"kind": "coding"})
+    assert ok is True
+
+
+async def test_update_options_dropping_test_cmd_on_coding_raises(patched_svc):
+    svc, db_path = patched_svc
+    def_id = await _seed_engine_def(
+        db_path, name="coder2", kind="coding", options={"test_cmd": "pytest"}
+    )
+    with pytest.raises(ValueError, match="test_cmd"):
+        await svc.update_engine_def(def_id, {"options": {"export_dir": "out"}})

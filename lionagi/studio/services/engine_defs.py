@@ -57,6 +57,15 @@ def _validate_options(options: dict[str, Any] | None) -> None:
             )
 
 
+def _validate_kind_options(kind: str, options: dict[str, Any] | None) -> None:
+    """Reject kind/options combinations the engine CLI would refuse to run."""
+    if kind == "coding" and not (options or {}).get("test_cmd"):
+        raise ValueError(
+            "the 'coding' engine kind requires options.test_cmd "
+            "(e.g. {'test_cmd': 'pytest tests/'})"
+        )
+
+
 def _svc_validate_action_model(model: str | None) -> None:
     if not model:
         return
@@ -119,6 +128,7 @@ async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(f"{field} must be in [1, 100], got {val}")
 
     _validate_options(data.get("options"))
+    _validate_kind_options(kind, data.get("options"))
 
     def_id = uuid.uuid4().hex[:12]
     now = time.time()
@@ -166,6 +176,13 @@ async def update_engine_def(def_id: str, fields: dict[str, Any]) -> bool:
                         raise ValueError(f"{field} must be in [1, 100], got {val}")
         if "options" in fields:
             _validate_options(fields["options"])
+
+        # Validate the EFFECTIVE merged definition, not just the patch: a kind
+        # change to 'coding' or an options patch dropping test_cmd would
+        # otherwise store a definition the engine CLI always rejects.
+        effective_kind = fields.get("kind", existing.get("kind"))
+        effective_options = fields["options"] if "options" in fields else existing.get("options")
+        _validate_kind_options(effective_kind, effective_options)
 
         try:
             await db.update_engine_def(def_id, **fields)

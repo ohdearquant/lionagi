@@ -322,6 +322,10 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
         if model:
             flags += ["--model", model]
         engine_opts = schedule.get("action_engine_options") or {}
+        # The engine CLI exits nonzero for 'coding' without --test-cmd; fail
+        # here so no invocation row is created for a launch that cannot run.
+        if engine_kind == "coding" and not engine_opts.get("test_cmd"):
+            raise ValueError("the 'coding' engine kind requires action_engine_options.test_cmd")
         max_depth = engine_opts.get("max_depth")
         max_agents = engine_opts.get("max_agents")
         test_cmd = engine_opts.get("test_cmd")

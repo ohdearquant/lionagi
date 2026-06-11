@@ -96,6 +96,7 @@ export const empty = {
 export const errors = {
   // Validation — operator input invalid.
   nameRequired: "Name is required.",
+  testCmdRequired: "Test command is required for coding engines.",
 
   // Fetch failures — page or section couldn't load.
   loadProjects: "Failed to load projects.",

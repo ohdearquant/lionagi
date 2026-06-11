@@ -22,8 +22,10 @@ export const Route = createFileRoute("/engines/")({
 const ENGINE_KINDS = ["research", "review", "coding", "hypothesis", "planning"] as const;
 type EngineKind = (typeof ENGINE_KINDS)[number];
 
-// Kinds that expose coding-specific options (test_cmd / export_dir).
-const CODING_KINDS = new Set<string>(["coding", "hypothesis"]);
+// test_cmd is consumed (and required) only by the coding engine;
+// export_dir is consumed by coding and hypothesis.
+const TEST_CMD_KINDS = new Set<string>(["coding"]);
+const EXPORT_DIR_KINDS = new Set<string>(["coding", "hypothesis"]);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -53,7 +55,8 @@ const KIND_CLASS: Record<string, string> = {
   research: "border-status-running/40 bg-status-running-bg text-status-running",
   review: "border-status-warning/40 bg-status-warning-bg text-status-warning",
   coding: "border-status-success/40 bg-status-success-bg text-status-success",
-  hypothesis: "border-purple-400/40 bg-purple-50 text-purple-700 dark:bg-purple-900/20 dark:text-purple-300",
+  hypothesis:
+    "border-purple-400/40 bg-purple-50 text-purple-700 dark:bg-purple-900/20 dark:text-purple-300",
   planning: "border-edge bg-surface-overlay text-content-secondary",
 };
 
@@ -119,9 +122,11 @@ function formToRequest(form: FormState): CreateEngineDefRequest {
   if (form.description.trim()) req.description = form.description.trim();
 
   const opts: Record<string, string> = {};
-  if (CODING_KINDS.has(form.kind)) {
-    if (form.test_cmd.trim()) opts.test_cmd = form.test_cmd.trim();
-    if (form.export_dir.trim()) opts.export_dir = form.export_dir.trim();
+  if (TEST_CMD_KINDS.has(form.kind) && form.test_cmd.trim()) {
+    opts.test_cmd = form.test_cmd.trim();
+  }
+  if (EXPORT_DIR_KINDS.has(form.kind) && form.export_dir.trim()) {
+    opts.export_dir = form.export_dir.trim();
   }
   if (Object.keys(opts).length > 0) req.options = opts;
   return req;
@@ -129,13 +134,7 @@ function formToRequest(form: FormState): CreateEngineDefRequest {
 
 // ─── Create modal ─────────────────────────────────────────────────────────────
 
-function CreateModal({
-  onClose,
-  onCreated,
-}: {
-  onClose: () => void;
-  onCreated: () => void;
-}) {
+function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -150,6 +149,10 @@ function CreateModal({
       setErr(errors.nameRequired);
       return;
     }
+    if (TEST_CMD_KINDS.has(form.kind) && !form.test_cmd.trim()) {
+      setErr(errors.testCmdRequired);
+      return;
+    }
     setSaving(true);
     setErr(null);
     try {
@@ -162,7 +165,8 @@ function CreateModal({
     }
   }
 
-  const showCodingOpts = CODING_KINDS.has(form.kind);
+  const showTestCmd = TEST_CMD_KINDS.has(form.kind);
+  const showExportDir = EXPORT_DIR_KINDS.has(form.kind);
 
   return (
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- modal backdrop dismiss; keyboard Escape handled by inner dialog
@@ -173,9 +177,7 @@ function CreateModal({
       }}
     >
       <div className="w-full max-w-md rounded-xl border border-edge bg-surface-raised p-6 shadow-xl">
-        <h2 className="mb-5 text-base font-semibold text-content-primary">
-          New engine definition
-        </h2>
+        <h2 className="mb-5 text-base font-semibold text-content-primary">New engine definition</h2>
 
         <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-4">
           <SectionHeading>Identity</SectionHeading>
@@ -255,27 +257,32 @@ function CreateModal({
             </label>
           </div>
 
-          {showCodingOpts && (
+          {(showTestCmd || showExportDir) && (
             <>
               <SectionHeading>Options</SectionHeading>
-              <label className={labelClass()}>
-                <span className={labelTextClass()}>Test command</span>
-                <input
-                  className={fieldClass()}
-                  value={form.test_cmd}
-                  onChange={(e) => set("test_cmd", e.target.value)}
-                  placeholder="uv run pytest"
-                />
-              </label>
-              <label className={labelClass()}>
-                <span className={labelTextClass()}>Export directory</span>
-                <input
-                  className={fieldClass()}
-                  value={form.export_dir}
-                  onChange={(e) => set("export_dir", e.target.value)}
-                  placeholder="/tmp/output"
-                />
-              </label>
+              {showTestCmd && (
+                <label className={labelClass()}>
+                  <span className={labelTextClass()}>Test command *</span>
+                  <input
+                    className={fieldClass()}
+                    value={form.test_cmd}
+                    onChange={(e) => set("test_cmd", e.target.value)}
+                    placeholder="uv run pytest"
+                    required
+                  />
+                </label>
+              )}
+              {showExportDir && (
+                <label className={labelClass()}>
+                  <span className={labelTextClass()}>Export directory</span>
+                  <input
+                    className={fieldClass()}
+                    value={form.export_dir}
+                    onChange={(e) => set("export_dir", e.target.value)}
+                    placeholder="/tmp/output"
+                  />
+                </label>
+              )}
             </>
           )}
 
@@ -297,13 +304,7 @@ function CreateModal({
 
 // ─── Run modal ────────────────────────────────────────────────────────────────
 
-function RunModal({
-  defn,
-  onClose,
-}: {
-  defn: EngineDef;
-  onClose: () => void;
-}) {
+function RunModal({ defn, onClose }: { defn: EngineDef; onClose: () => void }) {
   const [spec, setSpec] = useState("");
   const [launching, setLaunching] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -352,9 +353,7 @@ function RunModal({
             <p className="text-sm text-status-success">
               Launched — invocation <span className="font-mono">{result}…</span>
             </p>
-            <p className="mt-1 text-[11px] text-content-muted">
-              Track progress in Invocations.
-            </p>
+            <p className="mt-1 text-[11px] text-content-muted">Track progress in Invocations.</p>
           </div>
         ) : (
           <form onSubmit={(e) => void handleLaunch(e)} className="flex flex-col gap-3">
@@ -393,19 +392,17 @@ function RunModal({
 
 // ─── Engine def card ──────────────────────────────────────────────────────────
 
-function EngineDefCard({
-  defn,
-  onDeleted,
-}: {
-  defn: EngineDef;
-  onDeleted: () => void;
-}) {
+function EngineDefCard({ defn, onDeleted }: { defn: EngineDef; onDeleted: () => void }) {
   const [deleting, setDeleting] = useState(false);
   const [showRun, setShowRun] = useState(false);
 
   async function handleDelete(e: React.MouseEvent) {
     e.stopPropagation();
-    if (!window.confirm(`Delete engine definition?\n\nThis removes the saved configuration.\nCannot be undone.`)) {
+    if (
+      !window.confirm(
+        `Delete engine definition?\n\nThis removes the saved configuration.\nCannot be undone.`,
+      )
+    ) {
       return;
     }
     setDeleting(true);
@@ -436,15 +433,9 @@ function EngineDefCard({
 
         {/* Caps row */}
         <div className="flex flex-wrap items-center gap-2 text-[11px] text-content-muted">
-          {defn.model && (
-            <span className="font-mono text-content-secondary">{defn.model}</span>
-          )}
-          {defn.max_depth != null && (
-            <span>depth: {defn.max_depth}</span>
-          )}
-          {defn.max_agents != null && (
-            <span>agents: {defn.max_agents}</span>
-          )}
+          {defn.model && <span className="font-mono text-content-secondary">{defn.model}</span>}
+          {defn.max_depth != null && <span>depth: {defn.max_depth}</span>}
+          {defn.max_agents != null && <span>agents: {defn.max_agents}</span>}
           {defn.options?.test_cmd && (
             <span className="truncate max-w-[120px]" title={defn.options.test_cmd}>
               test: <span className="font-mono">{defn.options.test_cmd}</span>
@@ -541,9 +532,7 @@ function EnginesPage() {
         </div>
       )}
 
-      {!loading && defs.length === 0 && !err && (
-        <EmptyState onCreate={() => setShowCreate(true)} />
-      )}
+      {!loading && defs.length === 0 && !err && <EmptyState onCreate={() => setShowCreate(true)} />}
 
       {!loading && defs.length > 0 && (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
