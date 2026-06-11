@@ -48,7 +48,17 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;
   const response = await fetch(url, { redirect: "follow", ...init });
   if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
+    // Preserve the backend `detail` field (FastAPI/Pydantic validation errors,
+    // our structured 409 body, etc.) so callers can surface it to the operator.
+    // Falls back to the status code when the body is not JSON or has no detail.
+    let detail: string | undefined;
+    try {
+      const body = (await response.json()) as { detail?: string };
+      if (typeof body?.detail === "string") detail = body.detail;
+    } catch {
+      // not JSON — ignore
+    }
+    throw new Error(detail ?? `Request failed: ${response.status}`);
   }
   return response.json() as Promise<T>;
 }
@@ -786,6 +796,32 @@ export async function pruneAdmin(body: AdminPruneRequest): Promise<{ pruned: num
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+// ─── Admin maintenance (Phase C Move 3) ──────────────────────────────────────
+
+export type MaintenanceAction = "vacuum" | "checkpoint" | "prune";
+
+export interface MaintenanceResult {
+  action: MaintenanceAction;
+  // vacuum
+  status?: string;
+  // checkpoint
+  mode?: string;
+  busy?: number | null;
+  log_pages?: number | null;
+  checkpointed?: number | null;
+  // prune
+  sessions_pruned?: number;
+  runs_pruned?: number;
+}
+
+export async function runMaintenance(action: MaintenanceAction): Promise<MaintenanceResult> {
+  return fetchJson<MaintenanceResult>("/api/admin/maintenance", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action }),
   });
 }
 

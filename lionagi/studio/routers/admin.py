@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.state.reasons import RunReasons, validate_reason_code
 
@@ -20,6 +21,24 @@ _LEGACY_ADMIN_REASON_CODES: dict[str, str] = {
     "aborted": RunReasons.ABORTED_USER,
     "cancelled": RunReasons.CANCELLED_SYSTEM,
 }
+
+
+class MaintenanceBody(BaseModel):
+    """Request body for POST /api/admin/maintenance.
+
+    The schema is closed (``extra="forbid"``) so any unknown field causes a
+    422 before the action string is even inspected.  ``action`` is typed as a
+    ``Literal`` — Pydantic rejects out-of-vocabulary values at parse time with
+    a validation error that already carries the allowed values, so the manual
+    frozenset check is no longer needed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["vacuum", "checkpoint", "prune"] = Field(
+        ...,
+        description="DB maintenance action: 'vacuum', 'checkpoint', or 'prune'.",
+    )
 
 
 class PruneBody(BaseModel):
@@ -119,6 +138,53 @@ async def prune_old_data(body: PruneOldDataBody) -> dict[str, int]:
     from ..services.db_maintenance import prune_old_data as _prune
 
     return await _prune(keep_days=body.keep_days, actor="admin")
+
+
+@router.post("/maintenance")
+async def run_maintenance(body: MaintenanceBody) -> dict[str, Any]:
+    """Run a DB maintenance action (vacuum | checkpoint | prune).
+
+    ``action`` is validated as a ``Literal`` by Pydantic at parse time; the
+    schema is closed (``extra="forbid"``), so unknown fields and out-of-
+    vocabulary action values return 422 before this handler runs.
+
+    Returns 409 with a structured detail when the state database is held by
+    another writer and the operation cannot acquire the write lock within
+    SQLite's configured busy_timeout (5 s).  The global busy_timeout in
+    db.py is intentionally left unchanged — this 409 is the maintenance-
+    specific policy so the operator sees an actionable message instead of a
+    generic 500.
+    """
+    from ..services.db_maintenance import (
+        checkpoint_state_db,
+        prune_old_data,
+        vacuum_state_db,
+    )
+
+    try:
+        if body.action == "vacuum":
+            result = await vacuum_state_db(actor="admin")
+            return {"action": "vacuum", **result}
+
+        if body.action == "checkpoint":
+            result = await checkpoint_state_db(actor="admin")
+            return {"action": "checkpoint", **result}
+
+        # action == "prune"
+        result = await prune_old_data(actor="admin")
+        return {"action": "prune", **result}
+
+    except sqlite3.OperationalError as exc:
+        # Only genuine lock/busy contention is retry-able. Open/path failures
+        # ("unable to open database file") are configuration problems and must
+        # not tell the operator to retry shortly — let them surface as 500.
+        msg = str(exc).lower()
+        if "locked" in msg or "in progress" in msg:
+            raise HTTPException(
+                status_code=409,
+                detail="State database is busy — another writer holds the lock. Try again shortly.",
+            ) from exc
+        raise
 
 
 @router.post("/prune")

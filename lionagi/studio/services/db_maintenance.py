@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """DB maintenance helpers for Studio.
 
-Three capabilities:
+Four capabilities:
 - ``checkpoint_state_db()``: runs ``PRAGMA wal_checkpoint(TRUNCATE)`` and
   records an ``admin_events`` row so ``/api/stats`` can surface the timestamp.
 - ``get_last_checkpoint_at()``: fetches the most recent checkpoint event.
@@ -10,6 +10,8 @@ Three capabilities:
 - ``prune_old_data()``: transactionally removes terminal sessions/runs older
   than ``keep_days``, respecting FK constraints (nullifies soft FKs before
   deleting parents), and writes an ``admin_events`` audit row.
+- ``vacuum_state_db()``: runs ``VACUUM`` to reclaim freed pages, writes an
+  ``admin_events`` audit row.
 """
 
 from __future__ import annotations
@@ -334,3 +336,26 @@ async def prune_old_data(
         runs_pruned,
     )
     return {"sessions_pruned": sessions_pruned, "runs_pruned": runs_pruned}
+
+
+async def vacuum_state_db(
+    *,
+    actor: str = "studio_db_maintenance",
+) -> dict[str, str]:
+    """Run ``VACUUM`` to reclaim freed pages and write an audit event.
+
+    VACUUM rebuilds the entire DB file under an exclusive lock.  Call this
+    after ``prune_old_data()`` to reclaim space freed by the deletes.
+    Returns ``{"status": "ok"}`` on success, ``{"status": "skipped"}`` when
+    the DB file does not yet exist.
+    """
+    if not DEFAULT_DB_PATH.exists():
+        return {"status": "skipped"}
+
+    async with StateDB() as db:
+        await db.db.execute("VACUUM")
+        await db.db.commit()
+        await db.insert_admin_event(action="vacuum", details={}, actor=actor)
+
+    _log.info("VACUUM complete")
+    return {"status": "ok"}
