@@ -448,8 +448,12 @@ class TestCLIHostWiring:
 
         # Stale env claims 0.0.0.0; the CLI is about to bind 127.0.0.1.
         monkeypatch.setenv("LIONAGI_STUDIO_HOST", "0.0.0.0")
+        # _start_local sets LIONAGI_STUDIO_FRONTEND_DIST raw in os.environ;
+        # registering the var with monkeypatch restores its absence on teardown
+        # so the path can't leak to other test files on this worker.
+        monkeypatch.delenv("LIONAGI_STUDIO_FRONTEND_DIST", raising=False)
         monkeypatch.setattr(studio_cli.shutil, "which", lambda _name: "/usr/bin/node")
-        monkeypatch.setattr(studio_cli, "_launch_frontend", lambda *a, **k: None)
+        monkeypatch.setattr(studio_cli, "_ensure_frontend_built", lambda *a, **k: True)
         monkeypatch.setattr(studio_cli, "_ensure_apps_importable", lambda: True)
 
         captured: dict[str, str] = {}

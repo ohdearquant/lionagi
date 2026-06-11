@@ -3,11 +3,13 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, JSONResponse
+from starlette.staticfiles import StaticFiles
 
 from .config import CORS_ORIGINS, HOST
 from .routers import (
@@ -36,6 +38,17 @@ _log = logging.getLogger(__name__)
 # LIONAGI_STUDIO_AUTH_TOKEN is set.  This is intentionally a very small set:
 # only pure liveness probes that carry no application state belong here.
 _PUBLIC_PATHS = frozenset({"/health"})
+
+# FastAPI built-in schema/docs routes that are NOT under /api but expose API
+# shape and must be bearer-guarded in token mode, just like /api/*.
+_GUARDED_NON_API_PATHS = frozenset(
+    {
+        "/openapi.json",
+        "/docs",
+        "/redoc",
+        "/docs/oauth2-redirect",
+    }
+)
 
 
 def _collect_cors_methods(application: FastAPI) -> list[str]:
@@ -113,10 +126,18 @@ async def require_studio_bearer_token(request: Request, call_next):
     token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
     path = request.url.path
     if token and request.headers.get("authorization") != f"Bearer {token}":
-        # Allow only explicit liveness probes without a token.  Every other
-        # route — including all /api/* paths regardless of HTTP method — is
-        # protected when a token is configured.
-        if path not in _PUBLIC_PATHS:
+        # All /api/* paths (any method) and the FastAPI schema/docs endpoints
+        # are protected when a token is configured.  Non-API GET/HEAD — the
+        # SPA shell, hashed assets, and liveness probes — stay public: browsers
+        # navigate without an Authorization header, so gating the shell would
+        # make the UI unloadable in authed mode.  Every byte behind those paths
+        # is the static frontend bundle; all data lives under /api.
+        is_api = path == "/api" or path.startswith("/api/")
+        is_guarded_non_api = path in _GUARDED_NON_API_PATHS
+        is_public_static = (
+            request.method in ("GET", "HEAD") and not is_api and not is_guarded_non_api
+        )
+        if path not in _PUBLIC_PATHS and not is_public_static:
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
 
@@ -153,11 +174,76 @@ async def get_stats() -> dict[str, Any]:
     return await stats_svc.get_stats()
 
 
+def _resolve_frontend_dist() -> Path | None:
+    """Return the dist/ directory to serve, or None if absent.
+
+    Reads the LIONAGI_STUDIO_FRONTEND_DIST env var.  The CLI (studio.py) sets
+    this before starting uvicorn; the Dockerfile sets it at image build time.
+    When the var is unset (e.g. raw ``uvicorn lionagi.studio.app:app`` without
+    the CLI), the app starts in API-only mode.
+    """
+    env_override = os.environ.get("LIONAGI_STUDIO_FRONTEND_DIST")
+    if not env_override:
+        return None
+    p = Path(env_override)
+    return p if (p / "index.html").exists() else None
+
+
+def _mount_spa(application: FastAPI, dist: Path) -> None:
+    """Mount static assets and register an SPA 404 fallback.
+
+    Assets (/assets/*) are served directly by StaticFiles with long-lived
+    cache headers (the filenames are content-hashed by Vite).  Every other
+    GET/HEAD path that does NOT start with /api and has no registered route
+    returns index.html so client-side deep-links work.
+
+    Implementation: the fallback is installed as a custom HTTP 404 exception
+    handler rather than a catch-all route.  A catch-all ``/{full_path:path}``
+    route intercepts ``/api/shows`` before FastAPI's trailing-slash redirect
+    runs (router registers ``/api/shows/`` but the redirect from ``/api/shows``
+    is emitted by Starlette's routing layer after route lookup fails — the
+    catch-all grabs it first).  An exception handler runs AFTER all routes
+    have been tried and none matched, so it never competes with real routes.
+    """
+    assets_dir = dist / "assets"
+    if assets_dir.is_dir():
+        application.mount("/assets", StaticFiles(directory=str(assets_dir)), name="spa-assets")
+
+    index_path = dist / "index.html"
+
+    @application.exception_handler(404)
+    async def _spa_fallback(request: Request, exc: Exception) -> FileResponse | JSONResponse:
+        # /api/* paths that reach here (no route matched) stay 404 JSON —
+        # browsers never navigate to /api/* directly, only JavaScript does,
+        # so returning HTML there would surface a confusing error.
+        path = request.url.path
+        if path.startswith("/api/") or path == "/api":
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        if request.method not in ("GET", "HEAD"):
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        return FileResponse(
+            str(index_path),
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+                "Pragma": "no-cache",
+            },
+        )
+
+
+# Mount the SPA if a dist/ exists.  Assets mount must happen BEFORE
+# CORSMiddleware is added so _collect_cors_methods sees the Mount entry.
+# The 404 exception handler is registered on the app object and takes effect
+# after all route resolution — CORSMiddleware position doesn't affect it.
+_dist = _resolve_frontend_dist()
+if _dist is not None:
+    _mount_spa(app, _dist)
+
 # CORS middleware is registered LAST — after every router and the two direct
-# @app.get endpoints above — so the method allowlist is derived from the
-# complete route table (see _collect_cors_methods).  Added last, it sits
-# outermost in the middleware stack, the correct position for CORS: preflight
-# is answered before the bearer-token gate (which already lets OPTIONS through).
+# @app.get endpoints above and the optional SPA mount — so the method allowlist
+# is derived from the complete route table (see _collect_cors_methods).  Added
+# last, it sits outermost in the middleware stack, the correct position for
+# CORS: preflight is answered before the bearer-token gate (which already lets
+# OPTIONS through).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,

@@ -1,43 +1,49 @@
-import nextConfig from "eslint-config-next";
-import prettierConfig from "eslint-config-prettier";
+import tseslint from "@typescript-eslint/eslint-plugin";
+import tsParser from "@typescript-eslint/parser";
+import reactPlugin from "eslint-plugin-react";
+import reactHooks from "eslint-plugin-react-hooks";
 import jsxA11y from "eslint-plugin-jsx-a11y";
+import prettierConfig from "eslint-config-prettier";
 
-// Track 6 (#1020): nextConfig already registers jsx-a11y plugin with 6 rules.
-// We merge the full recommended rule set into a new config object that also
-// declares the plugin, so ESLint flat config can resolve rule references.
-const jsxA11yExtension = {
-  plugins: {
-    "jsx-a11y": jsxA11y,
-  },
-  rules: {
-    ...jsxA11y.configs.recommended.rules,
-  },
-};
-
+/** @type {import("eslint").Linter.Config[]} */
 const config = [
-  // Spread nextConfig but replace the object that registers jsx-a11y with our
-  // merged version so the plugin is declared exactly once.
-  ...nextConfig.map((entry) => {
-    if (entry.plugins && "jsx-a11y" in entry.plugins) {
-      return {
-        ...entry,
-        plugins: {
-          ...entry.plugins,
-          "jsx-a11y": jsxA11y,
-        },
-        rules: {
-          ...(entry.rules ?? {}),
-          ...jsxA11y.configs.recommended.rules,
-        },
-      };
-    }
-    return entry;
-  }),
+  {
+    ignores: ["node_modules/**", "dist/**", "src/routeTree.gen.ts", ".next/**", "app/**"],
+  },
+  {
+    files: ["**/*.{ts,tsx}"],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        ecmaVersion: "latest",
+        sourceType: "module",
+        ecmaFeatures: { jsx: true },
+      },
+    },
+    plugins: {
+      "@typescript-eslint": tseslint,
+      react: reactPlugin,
+      "react-hooks": reactHooks,
+      "jsx-a11y": jsxA11y,
+    },
+    rules: {
+      ...tseslint.configs.recommended.rules,
+      ...reactPlugin.configs.recommended.rules,
+      ...reactHooks.configs.recommended.rules,
+      ...jsxA11y.configs.recommended.rules,
+      "react/react-in-jsx-scope": "off",
+      "react/prop-types": "off",
+      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+    },
+    settings: {
+      react: { version: "detect" },
+    },
+  },
   {
     ...prettierConfig,
     rules: {
       ...prettierConfig.rules,
-      "@next/next/no-img-element": "off",
     },
   },
 ];
