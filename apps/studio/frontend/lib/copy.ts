@@ -71,6 +71,7 @@ export const empty = {
   skills: "No skills found.",
   shows: "No shows found.",
   runs: "No runs found.",
+  engineRuns: "No engine runs found.",
   teamsNotFound: "No teams found.",
 
   // Filter results — user typed a filter and nothing matched.
@@ -104,6 +105,7 @@ export const errors = {
   loadSchedules: "Failed to load schedules.",
   loadTeams: "Failed to load teams.",
   loadRuns: "Failed to load runs.",
+  loadEngineRuns: "Failed to load engine runs.",
   teamNotFound: "Team not found.",
 
   // Action failures — operator tried to do something, it failed.

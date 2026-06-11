@@ -147,5 +147,30 @@
       "updated": "Updated"
     },
     "empty": "No sessions are currently running or queued."
+  },
+  "engineRuns": {
+    "tab": "Engines",
+    "title": "Engine Runs",
+    "subtitle": "Domain-specific multi-agent pipeline executions",
+    "runCount": "{count, plural, one {# run} other {# runs}}",
+    "table": {
+      "run": "Run",
+      "kind": "Kind",
+      "status": "Status",
+      "session": "Session",
+      "exportDir": "Export dir",
+      "started": "Started",
+      "duration": "Duration"
+    },
+    "status": {
+      "running": "running",
+      "completed": "completed",
+      "failed": "failed",
+      "cancelled": "cancelled"
+    },
+    "empty": "No engine runs found.",
+    "loadError": "Failed to load engine runs.",
+    "noSession": "—",
+    "noExportDir": "—"
   }
 }

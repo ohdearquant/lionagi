@@ -8,8 +8,8 @@ import Duration from "@/components/Duration";
 import PageHeader from "@/components/PageHeader";
 import StatusPill from "@/components/StatusPill";
 import Timestamp from "@/components/Timestamp";
-import { listRuns } from "@/lib/api";
-import type { RunListResponse } from "@/lib/api";
+import { listRuns, listEngineRuns } from "@/lib/api";
+import type { RunListResponse, EngineRunSummary } from "@/lib/api";
 import type { RunSummary } from "@/lib/types";
 import { empty, errors } from "@/lib/copy";
 
@@ -26,7 +26,7 @@ const STATUS_FILTERS = [
   "cancelled",
 ] as const;
 
-type ViewMode = "sessions" | "invocations";
+type ViewMode = "sessions" | "invocations" | "engines";
 
 interface InvocationGroup {
   invocation_id: string;
@@ -233,6 +233,9 @@ function RunsPageInner() {
   const [viewMode, setViewMode] = useState<ViewMode>("sessions");
   const [expandedInvocations, setExpandedInvocations] = useState<Set<string>>(new Set());
   const [knownProjects, setKnownProjects] = useState<string[]>([]);
+  const [engineRuns, setEngineRuns] = useState<EngineRunSummary[]>([]);
+  const [engineLoading, setEngineLoading] = useState(false);
+  const [engineError, setEngineError] = useState<string | null>(null);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- sync URL→input: no external system involved, single derived state write
   useEffect(() => setPlaybookInput(playbook), [playbook]);
@@ -309,6 +312,34 @@ function RunsPageInner() {
     const tick = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 30000);
     return () => clearInterval(tick);
   }, []);
+
+  // Engine runs fetch — only active when "engines" tab is selected.
+  useEffect(() => {
+    if (viewMode !== "engines") return;
+    let active = true;
+
+    async function loadEngines() {
+      setEngineLoading(true);
+      try {
+        const rows = await listEngineRuns({ limit: 100 });
+        if (active) {
+          setEngineRuns(rows);
+          setEngineError(null);
+        }
+      } catch {
+        if (active) setEngineError(errors.loadEngineRuns);
+      } finally {
+        if (active) setEngineLoading(false);
+      }
+    }
+
+    void loadEngines();
+    const interval = setInterval(loadEngines, 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [viewMode]);
 
   function toggleStatus(s: string) {
     const next = statuses.includes(s) ? statuses.filter((x) => x !== s) : [...statuses, s];
@@ -390,6 +421,14 @@ function RunsPageInner() {
             >
               Invocations
             </Button>
+            <Button
+              size="sm"
+              variant="toggle"
+              active={viewMode === "engines"}
+              onClick={() => setViewMode("engines")}
+            >
+              Engines
+            </Button>
           </div>
           {/* ADR-0026: project filter chips */}
           {knownProjects.length > 0 && (
@@ -459,13 +498,113 @@ function RunsPageInner() {
         </div>
       </div>
 
-      {error && (
+      {error && viewMode !== "engines" && (
         <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
           {error}
         </div>
       )}
+      {engineError && viewMode === "engines" && (
+        <div className="rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-status-error">
+          {engineError}
+        </div>
+      )}
 
-      <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
+      {/* Engine runs table — rendered when "engines" tab is active */}
+      {viewMode === "engines" && (
+        <div className="overflow-x-auto rounded border border-edge bg-surface-raised shadow-card">
+          <table aria-busy={engineLoading} className="w-full text-left text-body">
+            <thead>
+              <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
+                <th className="px-3 py-2.5 font-medium">Run</th>
+                <th className="px-3 py-2.5 font-medium">Kind</th>
+                <th className="px-3 py-2.5 font-medium">Status</th>
+                <th className="px-3 py-2.5 font-medium">Session</th>
+                <th className="px-3 py-2.5 font-medium">Export dir</th>
+                <th className="px-3 py-2.5 font-medium">Started</th>
+                <th className="px-3 py-2.5 font-medium">Duration</th>
+              </tr>
+            </thead>
+            <tbody>
+              {engineLoading && engineRuns.length === 0 ? (
+                <>
+                  <SkeletonRow />
+                  <SkeletonRow />
+                  <SkeletonRow />
+                </>
+              ) : engineRuns.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-3 py-14 text-center text-body text-content-muted">
+                    {empty.engineRuns}
+                  </td>
+                </tr>
+              ) : (
+                engineRuns.map((er) => {
+                  // For running engine runs (no ended_at), pass null duration
+                  // so Duration shows "—" rather than calling Date.now() in
+                  // render (which violates react-hooks/purity).
+                  const durSec =
+                    er.started_at != null && er.ended_at != null
+                      ? er.ended_at - er.started_at
+                      : null;
+                  return (
+                    <tr
+                      key={er.id}
+                      className="border-b border-edge-subtle text-content-secondary transition-colors duration-100 hover:bg-surface-overlay"
+                    >
+                      <td className="px-3 py-2">
+                        <span className="font-mono text-meta text-content-muted">
+                          {er.id.slice(-8)}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className="rounded px-1 py-0.5 font-mono text-[10px] border border-edge text-content-muted">
+                          {er.kind}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <StatusPill value={er.status} kind="lifecycle" />
+                      </td>
+                      <td className="px-3 py-2 font-mono text-meta text-content-muted">
+                        {er.session_id ? (
+                          <Link
+                            href={`/runs/${er.session_id}`}
+                            className="hover:text-status-running transition-colors"
+                          >
+                            {er.session_id.slice(-8)}
+                          </Link>
+                        ) : (
+                          <span className="text-content-muted/40">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-meta text-content-muted max-w-[200px] truncate">
+                        {er.export_dir ? (
+                          <span title={er.export_dir}>{er.export_dir}</span>
+                        ) : (
+                          <span className="text-content-muted/40">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-meta text-content-muted">
+                        <Timestamp value={er.started_at} />
+                      </td>
+                      <td className="px-3 py-2">
+                        <Duration value={durSec} />
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div
+        className={
+          viewMode === "engines"
+            ? "hidden"
+            : "overflow-x-auto rounded border border-edge bg-surface-raised shadow-card"
+        }
+      >
         <table aria-busy={loading} className="w-full text-left text-body">
           <thead>
             <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">

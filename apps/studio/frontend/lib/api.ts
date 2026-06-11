@@ -978,3 +978,40 @@ export async function listScheduleRuns(
   const qs = query.toString();
   return fetchJson(`/api/schedules/${encodeURIComponent(scheduleId)}/runs${qs ? `?${qs}` : ""}`);
 }
+
+// ─── Engine runs (Phase C Move 2) ─────────────────────────────────────────────
+
+export interface EngineRunSummary {
+  id: string;
+  kind: string;
+  spec_json: Record<string, unknown>;
+  status: string;
+  started_at: number;
+  ended_at: number | null;
+  session_id: string | null;
+  export_dir: string | null;
+  error: string | null;
+}
+
+export interface EngineRunListParams {
+  kind?: string;
+  status?: string;
+  session_id?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function listEngineRuns(params?: EngineRunListParams): Promise<EngineRunSummary[]> {
+  const query = new URLSearchParams();
+  if (params?.kind) query.set("kind", params.kind);
+  if (params?.status) query.set("status", params.status);
+  if (params?.session_id) query.set("session_id", params.session_id);
+  if (params?.limit != null) query.set("limit", String(params.limit));
+  if (params?.offset != null) query.set("offset", String(params.offset));
+  const qs = query.toString();
+  return fetchJson<EngineRunSummary[]>(`/api/engine-runs${qs ? `?${qs}` : ""}`);
+}
+
+export async function getEngineRun(runId: string): Promise<EngineRunSummary> {
+  return fetchJson<EngineRunSummary>(`/api/engine-runs/${encodeURIComponent(runId)}`);
+}

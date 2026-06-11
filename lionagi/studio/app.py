@@ -15,6 +15,7 @@ from .routers import (
     agents,
     artifacts,
     definitions,
+    engine_runs,
     invocations,
     playbooks,
     plugins,
@@ -83,6 +84,7 @@ async def require_studio_bearer_token(request: Request, call_next):
 
 
 app.include_router(runs.router, prefix="/api")
+app.include_router(engine_runs.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
 app.include_router(signals.router, prefix="/api")
 app.include_router(definitions.router, prefix="/api")
