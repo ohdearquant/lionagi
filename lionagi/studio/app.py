@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 
-from .config import CORS_ORIGINS
+from .config import CORS_ORIGINS, HOST
 from .routers import (
     admin,
     agents,
@@ -38,12 +38,57 @@ _log = logging.getLogger(__name__)
 _PUBLIC_PATHS = frozenset({"/health"})
 
 
+def _collect_cors_methods(application: FastAPI) -> list[str]:
+    """Derive the CORS method allowlist from the app's actual route table.
+
+    Hardcoding the list is brittle: FastAPI auto-generates ``HEAD`` for every
+    ``GET`` route and serves docs/OpenAPI endpoints, so a manual list silently
+    omits methods that are really served (CORS preflight for them then 400s).
+    Walking ``application.routes`` after all routers are mounted keeps the
+    allowlist exactly in sync with what is served.  ``OPTIONS`` is always
+    included so CORSMiddleware can answer preflight requests.
+    """
+    methods: set[str] = {"OPTIONS"}
+    for route in application.routes:
+        route_methods = getattr(route, "methods", None)
+        if route_methods:
+            methods.update(route_methods)
+    return sorted(methods)
+
+
+def _emit_startup_warnings() -> None:
+    """Emit security warnings once at startup — no-op if conditions are safe."""
+    token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
+    if not token:
+        bind_host = os.getenv("LIONAGI_STUDIO_HOST", HOST)
+        if bind_host == "0.0.0.0":  # noqa: S104
+            _log.warning(
+                "Studio running WITHOUT authentication on host 0.0.0.0 — "
+                "ALL API requests are accepted from any network interface. "
+                "This is unsafe in containers or cloud deployments. "
+                "Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
+            )
+        else:
+            _log.warning(
+                "Studio running WITHOUT authentication — all API requests are "
+                "accepted. Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
+            )
+
+    if "*" in CORS_ORIGINS:
+        _log.warning(
+            "CORS is configured with a wildcard origin ('*'). "
+            "Set CORS_ORIGINS to a comma-separated list of allowed origins "
+            "to restrict cross-origin access."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app_instance):
     from .scheduler.engine import scheduler
     from .services.db_maintenance import checkpoint_state_db
     from .services.lifecycle import run_startup_reconciliation
 
+    _emit_startup_warnings()
     await scheduler.start()
     await run_startup_reconciliation()
     try:
@@ -55,13 +100,6 @@ async def lifespan(app_instance):
 
 
 app = FastAPI(title="Lion Studio Server", lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 @app.middleware("http")
@@ -113,3 +151,16 @@ async def get_stats() -> dict[str, Any]:
     # called runs_svc.list_runs() which read filesystem dirs and returned a
     # different count than the sessions-backed list endpoint.
     return await stats_svc.get_stats()
+
+
+# CORS middleware is registered LAST — after every router and the two direct
+# @app.get endpoints above — so the method allowlist is derived from the
+# complete route table (see _collect_cors_methods).  Added last, it sits
+# outermost in the middleware stack, the correct position for CORS: preflight
+# is answered before the bearer-token gate (which already lets OPTIONS through).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_methods=_collect_cors_methods(app),
+    allow_headers=["*"],
+)
