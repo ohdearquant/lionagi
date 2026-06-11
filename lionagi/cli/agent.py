@@ -145,8 +145,32 @@ def _build_work_form(spec: dict, spec_path: str):
         )
 
     title = spec.get("title", spec_path)
-    raw_fields: dict = spec.get("fields", {})
-    raw_values: dict = spec.get("values", {})
+    raw_fields_raw = spec.get("fields")
+    raw_values_raw = spec.get("values")
+
+    # Validate types: 'fields' and 'values' must be mappings when present.
+    if raw_fields_raw is not None and not isinstance(raw_fields_raw, dict):
+        raise ValueError(
+            f"form spec {spec_path!r}: 'fields' must be a mapping, "
+            f"got {type(raw_fields_raw).__name__!r}"
+        )
+    if raw_values_raw is not None and not isinstance(raw_values_raw, dict):
+        raise ValueError(
+            f"form spec {spec_path!r}: 'values' must be a mapping, "
+            f"got {type(raw_values_raw).__name__!r}"
+        )
+
+    raw_fields: dict = raw_fields_raw or {}
+    raw_values: dict = raw_values_raw or {}
+
+    # Enforce: values without declared fields is not a valid use of --form.
+    # --form is a validation gate; forwarding unvalidated values silently
+    # defeats its purpose.  Use the prompt directly for unstructured context.
+    if raw_values and not raw_fields:
+        raise ValueError(
+            f"form spec {spec_path!r}: 'values' are declared but 'fields' is "
+            "absent or empty; declare fields to validate values against"
+        )
 
     # When fields are declared, reject undeclared value keys.
     if raw_fields:
@@ -292,7 +316,14 @@ async def _run_agent(
             # avoid set_system replacing the composed message.
             from lionagi.agent.factory import create_agent
 
-            profile_extra = (profile.system_prompt or "") if profile else ""
+            # Use profile.raw_body (not profile.system_prompt) to avoid
+            # duplicating LION_SYSTEM_MESSAGE: _parse_profile prepends it into
+            # system_prompt when lion_system=True, and factory.py:117-125 also
+            # prepends it because spec.lion_system remains True.  raw_body is
+            # the profile body before that expansion; the factory adds the
+            # header exactly once.  When lion_system=False, raw_body==system_prompt
+            # so both paths are consistent.
+            profile_extra = (getattr(profile, "raw_body", None) or "") if profile else ""
             spec = _make_coding_preset(
                 cwd=cwd,
                 effort=effort or "high",

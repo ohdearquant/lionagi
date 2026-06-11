@@ -674,13 +674,16 @@ async def test_run_agent_preset_and_profile_single_system_message_with_both(monk
     _wire_run_agent_mocks(monkeypatch, tmp_path)
 
     # Patch load_agent_profile to return a fake profile with a known prompt.
-    PROFILE_PROMPT = "PROFILE_EXTENSION_UNIQUE_MARKER"
+    # raw_body must NOT contain LION_SYSTEM_MESSAGE — that's added by the factory.
+    PROFILE_RAW_BODY = "PROFILE_EXTENSION_UNIQUE_MARKER"
     fake_profile = _NS(
         model=None,
         effort=None,
         yolo=False,
         fast_mode=False,
-        system_prompt=PROFILE_PROMPT,
+        system_prompt="LION_SYSTEM_MESSAGE\n\n" + PROFILE_RAW_BODY,
+        raw_body=PROFILE_RAW_BODY,
+        lion_system=True,
         artifact_defaults=None,
     )
     import lionagi.cli.agent as agent_mod
@@ -711,9 +714,9 @@ async def test_run_agent_preset_and_profile_single_system_message_with_both(monk
     assert "implementer" in rendered.lower(), (
         f"Expected preset 'implementer' role text in system message; got:\n{rendered[:500]}"
     )
-    # Profile extension is present.
-    assert PROFILE_PROMPT in rendered, (
-        f"Expected profile prompt {PROFILE_PROMPT!r} in system message; got:\n{rendered[:500]}"
+    # Profile raw body is present (passed in via extra_prompt slot).
+    assert PROFILE_RAW_BODY in rendered, (
+        f"Expected profile raw body {PROFILE_RAW_BODY!r} in system message; got:\n{rendered[:500]}"
     )
 
 
@@ -804,12 +807,16 @@ class TestFormSpecClosedSchema:
             _build_work_form(spec, "<test>")
         assert "sneaky" in str(exc_info.value)
 
-    def test_values_without_fields_are_allowed(self):
-        """When fields is absent, all values pass through (field-less form)."""
+    def test_values_without_fields_raises(self):
+        """values declared without fields is a validation error.
+
+        --form is a validation gate; forwarding unvalidated values silently
+        defeats its purpose.  Callers that want unstructured context should
+        put it directly in the prompt, not in a form spec.
+        """
         spec = {"values": {"k": "v", "extra": "also-fine"}}
-        form = _build_work_form(spec, "<test>")
-        # Field-less forms fill values without declaration checks.
-        assert form.values.get("k") == "v"
+        with pytest.raises(ValueError, match="'values' are declared but 'fields' is absent"):
+            _build_work_form(spec, "<test>")
 
     def test_run_agent_unknown_top_level_key_rc1_no_llm(self, tmp_path, monkeypatch):
         """Misspelled top-level key in spec file → rc=1, no LLM call."""
@@ -897,3 +904,197 @@ class TestFormDirectoryPath:
         assert any("regular file" in e or "not a regular file" in e for e in errors), (
             f"Expected 'regular file' in error; got: {errors}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Round-2 Finding 1: non-mapping fields / values probe shapes
+# ---------------------------------------------------------------------------
+
+
+class TestFormNonMappingTypes:
+    """Every probe shape from the codex report must produce rc=1 on error channel."""
+
+    def test_fields_as_list_raises(self):
+        with pytest.raises(ValueError, match="'fields' must be a mapping"):
+            _build_work_form({"fields": []}, "<test>")
+
+    def test_fields_as_string_raises(self):
+        with pytest.raises(ValueError, match="'fields' must be a mapping"):
+            _build_work_form({"fields": "abc"}, "<test>")
+
+    def test_values_as_list_with_fields_raises(self):
+        spec = {"fields": {"x": {"type": "str", "required": False}}, "values": []}
+        with pytest.raises(ValueError, match="'values' must be a mapping"):
+            _build_work_form(spec, "<test>")
+
+    def test_values_as_string_with_no_fields_raises(self):
+        """values: abc with no fields → ValueError (non-mapping, not field-less passthrough)."""
+        with pytest.raises(ValueError, match="'values' must be a mapping"):
+            _build_work_form({"values": "abc"}, "<test>")
+
+    def test_values_as_list_with_no_fields_raises(self):
+        """values: [] with no fields → rc=1 (runner must NOT run)."""
+        with pytest.raises(ValueError, match="'values' must be a mapping"):
+            _build_work_form({"values": []}, "<test>")
+
+    def test_values_as_string_with_fields_raises(self):
+        """values: abc with fields → non-mapping error, not string-iteration error."""
+        spec = {"fields": {"known": {"type": "str"}}, "values": "abc"}
+        with pytest.raises(ValueError, match="'values' must be a mapping"):
+            _build_work_form(spec, "<test>")
+
+    def _run_form_probe(self, tmp_path, monkeypatch, yaml_content):
+        """Write a spec file with given content, run run_agent, return (rc, errors, called)."""
+        bad = tmp_path / "spec.yaml"
+        bad.write_text(yaml_content)
+
+        llm_called = []
+        import lionagi.cli.agent as agent_mod
+
+        async def fake_run(*a, **kw):
+            llm_called.append(1)
+            return ("done", "claude", "br-001", "completed")
+
+        monkeypatch.setattr(agent_mod, "_run_agent", fake_run)
+        errors: list[str] = []
+        monkeypatch.setattr(agent_mod, "log_error", lambda msg: errors.append(msg))
+
+        rc = run_agent(_agent_args(form=str(bad)))
+        return rc, errors, llm_called
+
+    def test_fields_as_list_rc1_no_llm(self, tmp_path, monkeypatch):
+        rc, errors, called = self._run_form_probe(tmp_path, monkeypatch, "fields:\n  - x\n  - y\n")
+        assert rc == 1
+        assert not called, "runner must not be called for fields: []"
+        assert errors
+
+    def test_values_as_list_no_fields_rc1_no_llm(self, tmp_path, monkeypatch):
+        """values: [] with no fields → rc=1, runner NOT called (was rc=0 before fix)."""
+        rc, errors, called = self._run_form_probe(tmp_path, monkeypatch, "values:\n  - a\n  - b\n")
+        assert rc == 1
+        assert not called, "runner must not be called for values: [] with no fields"
+        assert errors
+
+
+# ---------------------------------------------------------------------------
+# Round-2 Finding 2: LION_SYSTEM_MESSAGE dedup with real profile files
+# ---------------------------------------------------------------------------
+
+
+def _make_agents_dir(tmp_path, monkeypatch):
+    """Create a .lionagi/agents/ dir under tmp_path and patch _find_lionagi_dirs."""
+    lionagi_dir = tmp_path / ".lionagi"
+    agents_dir = lionagi_dir / "agents"
+    agents_dir.mkdir(parents=True)
+
+    import lionagi.cli._agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_find_lionagi_dirs", lambda: [lionagi_dir])
+    return agents_dir
+
+
+@pytest.mark.asyncio
+async def test_preset_and_real_profile_no_lion_system_duplication(monkeypatch, tmp_path):
+    """Real profile (lion_system default=True) + preset=coding → exactly ONE
+    '# Welcome to LIONAGI' in the system message.
+
+    Before the fix: _parse_profile prepends LION_SYSTEM_MESSAGE into
+    system_prompt; _run_agent passed system_prompt to _make_coding_preset;
+    factory prepended LION_SYSTEM_MESSAGE again → count=2.
+
+    After the fix: _run_agent passes profile.raw_body (without the header);
+    factory prepends it once → count=1.
+    """
+    agents_dir = _make_agents_dir(tmp_path, monkeypatch)
+    profile_body = "You are a precise coding assistant."
+    (agents_dir / "coder.md").write_text(f"---\nlion_system: true\n---\n\n{profile_body}\n")
+
+    from lionagi import Branch as _Branch
+
+    branches_created: list = []
+    real_branch_init = _Branch.__init__
+
+    def spy_branch_init(self, *args, **kwargs):
+        real_branch_init(self, *args, **kwargs)
+        branches_created.append(self)
+
+    monkeypatch.setattr(_Branch, "__init__", spy_branch_init)
+    _wire_run_agent_mocks(monkeypatch, tmp_path)
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent(
+        "claude/sonnet",
+        "write code",
+        agent_name="coder",
+        preset="coding",
+    )
+
+    assert branches_created
+    tool_branch = next((b for b in branches_created if "bash" in b.acts.registry), None)
+    assert tool_branch is not None, "No branch with coding tools"
+
+    rendered = tool_branch.msgs.system.rendered
+    # Count occurrences of the LION header landmark.
+    count = rendered.count("# Welcome to LIONAGI")
+    assert count == 1, (
+        f"Expected exactly 1 '# Welcome to LIONAGI'; got {count}.\nMessage start: {rendered[:600]}"
+    )
+    # Implementer role content must be present.
+    assert "implementer" in rendered.lower(), "preset implementer role content missing"
+    # Profile body must be present.
+    assert profile_body in rendered, f"profile body {profile_body!r} not in message"
+
+
+@pytest.mark.asyncio
+async def test_preset_and_real_profile_nolion_no_lion_system_message(monkeypatch, tmp_path):
+    """Real profile with lion_system:false + preset=coding → implementer content present,
+    profile body present, ZERO occurrences of '# Welcome to LIONAGI'.
+
+    When lion_system=False the profile's raw_body is passed; AgentSpec.lion_system
+    remains True (the implementer preset owns that flag), so the factory adds the
+    header once for the role but NOT for the profile body.
+
+    Wait — AgentSpec.lion_system is always True for AgentSpec.coding(); the
+    flag on AgentProfile.lion_system controls ONLY whether the profile body
+    gets the header prepended.  The factory always prepends once for the spec.
+    So count=1 is expected even for lion_system:false profiles.
+    """
+    agents_dir = _make_agents_dir(tmp_path, monkeypatch)
+    profile_body = "Custom coding instructions, no lion header."
+    (agents_dir / "nolion.md").write_text(f"---\nlion_system: false\n---\n\n{profile_body}\n")
+
+    from lionagi import Branch as _Branch
+
+    branches_created: list = []
+    real_branch_init = _Branch.__init__
+
+    def spy_branch_init(self, *args, **kwargs):
+        real_branch_init(self, *args, **kwargs)
+        branches_created.append(self)
+
+    monkeypatch.setattr(_Branch, "__init__", spy_branch_init)
+    _wire_run_agent_mocks(monkeypatch, tmp_path)
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent(
+        "claude/sonnet",
+        "write code",
+        agent_name="nolion",
+        preset="coding",
+    )
+
+    assert branches_created
+    tool_branch = next((b for b in branches_created if "bash" in b.acts.registry), None)
+    assert tool_branch is not None
+
+    rendered = tool_branch.msgs.system.rendered
+    count = rendered.count("# Welcome to LIONAGI")
+    # The spec itself has lion_system=True so the factory adds it once for the
+    # role; the profile body (raw_body, no header) is appended as extra_prompt.
+    assert count == 1, (
+        f"Expected 1 '# Welcome to LIONAGI' for lion_system:false profile + preset; "
+        f"got {count}.\nMessage start: {rendered[:600]}"
+    )
+    assert profile_body in rendered, "profile body must be present"

@@ -84,6 +84,18 @@ def build_deadline_preamble(timeout_seconds: int) -> str:
 class AgentProfile:
     name: str
     system_prompt: str = ""
+    raw_body: str = ""
+    """Profile body text BEFORE LION_SYSTEM_MESSAGE is prepended.
+
+    When ``lion_system=True``, ``system_prompt`` has ``LION_SYSTEM_MESSAGE``
+    prepended; ``raw_body`` retains the markdown body as written in the file.
+    When ``lion_system=False``, ``raw_body == system_prompt``.
+
+    This field exists so callers that compose the profile body into an
+    ``AgentSpec.extra_prompt`` slot (where the factory will prepend
+    ``LION_SYSTEM_MESSAGE`` exactly once via ``spec.lion_system``) can avoid
+    duplicating the global Lion header.
+    """
     model: str | None = None
     effort: str | None = None
     yolo: bool = False
@@ -169,14 +181,18 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
     frontmatter, body = _parse_frontmatter(text)
 
     lion_system = bool(frontmatter.get("lion_system", True))
+    raw_body = body  # always the body as written, before any expansion
     if lion_system:
         from lionagi.session.prompts import LION_SYSTEM_MESSAGE
 
-        body = LION_SYSTEM_MESSAGE.strip() + "\n\n" + body
+        expanded = LION_SYSTEM_MESSAGE.strip() + "\n\n" + body
+    else:
+        expanded = body
 
     return AgentProfile(
         name=name,
-        system_prompt=body,
+        system_prompt=expanded,
+        raw_body=raw_body,
         model=frontmatter.get("model"),
         effort=frontmatter.get("effort"),
         yolo=bool(frontmatter.get("yolo", False)),
