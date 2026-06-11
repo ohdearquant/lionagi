@@ -134,16 +134,14 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
   return (
     <div
       className="flex flex-col gap-2.5 rounded-lg border border-edge bg-surface-raised p-4 shadow-card transition-all duration-150 hover:border-edge-strong hover:bg-surface-overlay cursor-pointer"
-      onClick={() =>
-        void navigate({ to: "/projects/$name", params: { name: encodeURIComponent(project.name) } })
-      }
+      onClick={() => void navigate({ to: "/projects/$name", params: { name: project.name } })}
       role="link"
       tabIndex={0}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           void navigate({
             to: "/projects/$name",
-            params: { name: encodeURIComponent(project.name) },
+            params: { name: project.name },
           });
         }
       }}

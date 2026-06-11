@@ -49,7 +49,7 @@ function CopyChip({ text, label }: { text: string; label?: string }) {
 
 function AgentDetailPage() {
   const { name } = Route.useParams();
-  const agentName = decodeURIComponent(name);
+  const agentName = name;
   const [agent, setAgent] = useState<AgentProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -120,7 +120,7 @@ function AgentDetailPage() {
         }
         subtitle={agent?.description ?? undefined}
         actions={
-          <Link to="/agents/$name/edit" params={{ name: encodeURIComponent(agentName) }}>
+          <Link to="/agents/$name/edit" params={{ name: agentName }}>
             <Button variant="primary" size="sm" leading="✎">
               Edit
             </Button>

@@ -39,6 +39,17 @@ _log = logging.getLogger(__name__)
 # only pure liveness probes that carry no application state belong here.
 _PUBLIC_PATHS = frozenset({"/health"})
 
+# FastAPI built-in schema/docs routes that are NOT under /api but expose API
+# shape and must be bearer-guarded in token mode, just like /api/*.
+_GUARDED_NON_API_PATHS = frozenset(
+    {
+        "/openapi.json",
+        "/docs",
+        "/redoc",
+        "/docs/oauth2-redirect",
+    }
+)
+
 
 def _collect_cors_methods(application: FastAPI) -> list[str]:
     """Derive the CORS method allowlist from the app's actual route table.
@@ -115,14 +126,17 @@ async def require_studio_bearer_token(request: Request, call_next):
     token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
     path = request.url.path
     if token and request.headers.get("authorization") != f"Bearer {token}":
-        # All /api/* paths (any method) are protected when a token is
-        # configured.  Non-API GET/HEAD — the SPA shell, hashed assets, and
-        # liveness probes — stay public: browsers navigate without an
-        # Authorization header, so gating the shell would make the UI
-        # unloadable in authed mode.  Every byte behind those paths is the
-        # static frontend bundle; all data lives under /api.
+        # All /api/* paths (any method) and the FastAPI schema/docs endpoints
+        # are protected when a token is configured.  Non-API GET/HEAD — the
+        # SPA shell, hashed assets, and liveness probes — stay public: browsers
+        # navigate without an Authorization header, so gating the shell would
+        # make the UI unloadable in authed mode.  Every byte behind those paths
+        # is the static frontend bundle; all data lives under /api.
         is_api = path == "/api" or path.startswith("/api/")
-        is_public_static = request.method in ("GET", "HEAD") and not is_api
+        is_guarded_non_api = path in _GUARDED_NON_API_PATHS
+        is_public_static = (
+            request.method in ("GET", "HEAD") and not is_api and not is_guarded_non_api
+        )
         if path not in _PUBLIC_PATHS and not is_public_static:
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)

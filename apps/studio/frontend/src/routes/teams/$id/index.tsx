@@ -41,7 +41,7 @@ function TeamMessages({ messages }: { messages: unknown[] }) {
 
 function TeamDetailPage() {
   const { id } = Route.useParams();
-  const teamId = decodeURIComponent(id);
+  const teamId = id;
 
   const [team, setTeam] = useState<TeamDetail | null>(null);
   const [loading, setLoading] = useState(true);

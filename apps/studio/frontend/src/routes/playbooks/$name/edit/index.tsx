@@ -23,7 +23,7 @@ interface LoadState {
 
 function EditPlaybookPage() {
   const { name } = Route.useParams();
-  const workerName = decodeURIComponent(name);
+  const workerName = name;
 
   const [loaded, setLoaded] = useState<LoadState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -106,7 +106,7 @@ function DeclarativeEditPage({
         await updatePlaybook(workerName, declarativeToPayload(data));
         await navigate({
           to: "/playbooks/$name",
-          params: { name: encodeURIComponent(workerName) },
+          params: { name: workerName },
         });
       } catch (err) {
         setErrors([err instanceof Error ? err.message : "Save failed"]);
@@ -121,7 +121,7 @@ function DeclarativeEditPage({
       <header className="flex flex-col gap-2 border-b border-edge pb-4">
         <Link
           to="/playbooks/$name"
-          params={{ name: encodeURIComponent(workerName) }}
+          params={{ name: workerName }}
           className="text-meta text-content-muted hover:text-content-primary"
         >
           / playbooks / {workerName}

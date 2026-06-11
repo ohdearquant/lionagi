@@ -347,15 +347,22 @@ def _is_build_stale(frontend_dir: Path) -> bool:
     source_roots = [
         frontend_dir / "src",
     ]
-    source_files = [
+    # Only include config files that actually exist in the frontend dir.
+    _candidate_source_files = [
         frontend_dir / "index.html",
         frontend_dir / "vite.config.mts",
         frontend_dir / "package.json",
+        frontend_dir / "package-lock.json",
+        frontend_dir / "tsconfig.json",
+        frontend_dir / "tailwind.config.ts",
+        frontend_dir / "postcss.config.cjs",
+        frontend_dir / "postcss.config.js",
     ]
+    source_files = [f for f in _candidate_source_files if f.exists()]
 
     for f in source_files:
         try:
-            if f.exists() and f.stat().st_mtime > marker_mtime:
+            if f.stat().st_mtime > marker_mtime:
                 return True
         except OSError:
             return True
@@ -375,9 +382,45 @@ def _is_build_stale(frontend_dir: Path) -> bool:
     return False
 
 
+def _needs_npm_install(frontend_dir: Path) -> bool:
+    """True when npm install must be run before building.
+
+    Triggers when:
+    - node_modules/ is absent entirely, or
+    - node_modules/.bin/vite is absent (Vite not installed), or
+    - package.json or package-lock.json is newer than the install marker
+      (node_modules/.package-lock.json, falling back to node_modules/ mtime).
+    """
+    node_modules = frontend_dir / "node_modules"
+    if not node_modules.exists():
+        return True
+    if not (node_modules / ".bin" / "vite").exists():
+        return True
+
+    # Use node_modules/.package-lock.json as the install marker (npm touches it
+    # on every install).  Fall back to node_modules/ dir mtime if absent.
+    install_marker = node_modules / ".package-lock.json"
+    if not install_marker.exists():
+        install_marker = node_modules
+
+    try:
+        installed_mtime = install_marker.stat().st_mtime
+    except OSError:
+        return True
+
+    for dep_file in (frontend_dir / "package.json", frontend_dir / "package-lock.json"):
+        try:
+            if dep_file.exists() and dep_file.stat().st_mtime > installed_mtime:
+                return True
+        except OSError:
+            return True
+
+    return False
+
+
 def _ensure_frontend_built(frontend_dir: Path) -> bool:
     """Install deps if needed, then build with Vite. Returns True on success."""
-    if not (frontend_dir / "node_modules").exists():
+    if _needs_npm_install(frontend_dir):
         print("Installing frontend dependencies...")
         try:
             subprocess.run(  # noqa: S603

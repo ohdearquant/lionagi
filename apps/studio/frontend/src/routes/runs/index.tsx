@@ -113,7 +113,11 @@ interface RunsSearch {
 export const Route = createFileRoute("/runs/")({
   validateSearch: (search: Record<string, unknown>): RunsSearch => ({
     page: typeof search.page === "number" ? search.page : undefined,
-    status: Array.isArray(search.status) ? (search.status as string[]) : undefined,
+    status: Array.isArray(search.status)
+      ? (search.status as string[])
+      : typeof search.status === "string"
+        ? [search.status]
+        : undefined,
     playbook: typeof search.playbook === "string" ? search.playbook : undefined,
     project: typeof search.project === "string" ? search.project : undefined,
   }),

@@ -233,8 +233,7 @@ function ShowSummaryPanel({
 }
 
 function ShowDetailPage() {
-  const { topic: rawTopic } = Route.useParams();
-  const topic = decodeURIComponent(rawTopic);
+  const { topic } = Route.useParams();
 
   const [show, setShow] = useState<ShowDetail | null>(null);
   const [error, setError] = useState<string | null>(null);

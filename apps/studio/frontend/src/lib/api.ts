@@ -32,7 +32,7 @@ declare global {
 
 export function resolveApiBase(): string {
   // Priority: window.__STUDIO_API_BASE__ (runtime injection) >
-  // VITE_STUDIO_API_BASE (build-time env) > port-aware fallback > hardcoded default.
+  // VITE_STUDIO_API_BASE (build-time env) > origin logic.
   // Treat empty string as "not configured" — defense against baking an empty
   // env var that silently produced same-origin /api/* requests.
   if (typeof window !== "undefined" && window.__STUDIO_API_BASE__) {
@@ -42,10 +42,14 @@ export function resolveApiBase(): string {
   if (viteEnv) return viteEnv;
   if (typeof window !== "undefined") {
     const port = window.location.port;
-    if (port && port !== "8765") {
-      return `${window.location.protocol}//localhost:8765`;
+    // Vite dev-server ports: forward to the backend on the same hostname.
+    if (port === "3000" || port === "5173") {
+      return `${window.location.protocol}//${window.location.hostname}:8765`;
     }
+    // Production / single-origin deployment: use same origin (relative URLs).
+    return "";
   }
+  // SSR / test environment without window: fall back to localhost for compat.
   return "http://localhost:8765";
 }
 

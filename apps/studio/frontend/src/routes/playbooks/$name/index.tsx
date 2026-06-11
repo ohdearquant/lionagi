@@ -27,7 +27,7 @@ const POLL_MAX_MS = 10 * 60 * 1000;
 
 function WorkerDetailPage() {
   const { name } = Route.useParams();
-  const workerName = decodeURIComponent(name);
+  const workerName = name;
   const [graph, setGraph] = useState<WorkerGraph | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -175,7 +175,7 @@ function WorkerDetailPage() {
           >
             Run
           </Button>
-          <Link to="/playbooks/$name/edit" params={{ name: encodeURIComponent(workerName) }}>
+          <Link to="/playbooks/$name/edit" params={{ name: workerName }}>
             <Button variant="secondary" size="sm" leading="✎">
               Edit
             </Button>
@@ -238,7 +238,7 @@ function PlaybookEmptyState({
         >
           Run
         </Button>
-        <Link to="/playbooks/$name/edit" params={{ name: encodeURIComponent(workerName) }}>
+        <Link to="/playbooks/$name/edit" params={{ name: workerName }}>
           <Button variant="secondary" size="md" leading="✎">
             Open editor
           </Button>

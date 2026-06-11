@@ -196,7 +196,7 @@ function DeleteButton({ name, onDeleted }: { name: string; onDeleted: () => void
 
 function ProjectDetailInner() {
   const { name } = Route.useParams();
-  const decodedName = decodeURIComponent(name);
+  const decodedName = name;
   const navigate = useNavigate();
 
   const [project, setProject] = useState<ProjectDetail | null>(null);

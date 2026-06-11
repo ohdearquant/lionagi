@@ -55,8 +55,12 @@ def spa_client(
     dist_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-) -> TestClient:
-    """TestClient with SPA serving enabled (real dist dir via env override)."""
+):
+    """TestClient with SPA serving enabled (real dist dir via env override).
+
+    Yield-fixture: reloads the app module after monkeypatch teardown so the
+    module singleton is restored for later tests in the same xdist worker.
+    """
     fake_db = tmp_path / "state.db"
 
     import lionagi.studio.services.sessions as sessions_mod
@@ -71,15 +75,24 @@ def spa_client(
     import lionagi.studio.app as app_mod
 
     reload(app_mod)
-    return TestClient(app_mod.app, raise_server_exceptions=False)
+    yield TestClient(app_mod.app, raise_server_exceptions=False)
+
+    # After monkeypatch has restored the environment, reload the module so it
+    # returns to API-only state.  This prevents a SPA-enabled app singleton
+    # from leaking into subsequent tests in the same xdist worker.
+    reload(app_mod)
 
 
 @pytest.fixture()
 def no_dist_client(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-) -> TestClient:
-    """TestClient with no dist dir — API-only mode."""
+):
+    """TestClient with no dist dir — API-only mode.
+
+    Yield-fixture: reloads the app module after monkeypatch teardown so the
+    module singleton is restored for later tests in the same xdist worker.
+    """
     fake_db = tmp_path / "state.db"
 
     import lionagi.studio.services.sessions as sessions_mod
@@ -96,7 +109,10 @@ def no_dist_client(
     import lionagi.studio.app as app_mod
 
     reload(app_mod)
-    return TestClient(app_mod.app, raise_server_exceptions=False)
+    yield TestClient(app_mod.app, raise_server_exceptions=False)
+
+    # Restore the module singleton after the test's env teardown.
+    reload(app_mod)
 
 
 # ---------------------------------------------------------------------------
@@ -307,3 +323,42 @@ class TestSPAWithAuthToken:
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "sekrit")
         resp = spa_client.post("/runs")
         assert resp.status_code == 401
+
+    def test_openapi_json_requires_token(
+        self,
+        spa_client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """GET /openapi.json must be 401 without a token in token mode."""
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "sekrit")
+        assert spa_client.get("/openapi.json").status_code == 401
+        ok = spa_client.get("/openapi.json", headers={"Authorization": "Bearer sekrit"})
+        assert ok.status_code == 200
+
+    def test_docs_requires_token(
+        self,
+        spa_client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """GET /docs must be 401 without a token in token mode."""
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "sekrit")
+        assert spa_client.get("/docs").status_code == 401
+
+    def test_redoc_requires_token(
+        self,
+        spa_client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """GET /redoc must be 401 without a token in token mode."""
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "sekrit")
+        assert spa_client.get("/redoc").status_code == 401
+
+    def test_spa_deep_links_still_public_with_token(
+        self,
+        spa_client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Arbitrary non-API GET paths (SPA deep links) must stay public in token mode."""
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "sekrit")
+        assert spa_client.get("/projects/my-project").status_code == 200
+        assert spa_client.get("/agents/my-agent").status_code == 200

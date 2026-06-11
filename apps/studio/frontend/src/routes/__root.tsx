@@ -1,4 +1,5 @@
 import { createRootRoute, Outlet } from "@tanstack/react-router";
+import { useEffect } from "react";
 import { IntlProvider } from "use-intl";
 import { ToastProvider } from "@/components/Toast";
 import Shell from "@/components/Shell";
@@ -27,6 +28,10 @@ function getLocaleFromCookie(): Locale {
 function RootComponent() {
   const locale = getLocaleFromCookie();
   const messages = MESSAGES[locale];
+
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
 
   return (
     <IntlProvider locale={locale} messages={messages}>

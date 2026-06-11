@@ -10,7 +10,7 @@ export const Route = createFileRoute("/agents/$name/edit/")({
 
 function EditAgentPage() {
   const { name } = Route.useParams();
-  const agentName = decodeURIComponent(name);
+  const agentName = name;
   const navigate = useNavigate();
   const [initial, setInitial] = useState<AgentProfile | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -46,7 +46,7 @@ function EditAgentPage() {
 
       try {
         await updateAgent(agentName, data);
-        await navigate({ to: "/agents/$name", params: { name: encodeURIComponent(agentName) } });
+        await navigate({ to: "/agents/$name", params: { name: agentName } });
       } catch (err) {
         setErrors([err instanceof Error ? err.message : "Failed to update agent"]);
         setSaving(false);
@@ -60,7 +60,7 @@ function EditAgentPage() {
       <header className="flex flex-col gap-2 border-b border-edge pb-4">
         <Link
           to="/agents/$name"
-          params={{ name: encodeURIComponent(agentName) }}
+          params={{ name: agentName }}
           className="text-meta text-content-muted hover:text-content-primary"
         >
           / agents / {agentName}
