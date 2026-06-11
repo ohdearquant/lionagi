@@ -116,9 +116,9 @@
   "kanban": {
     "title": "看板",
     "subtitle": "运行状态的只读生命周期视图。",
-    "agentCount": "# 个代理",
-    "runCount": "# 个运行",
-    "runningCount": "# 个运行中",
+    "agentCount": "{count, plural, other {# 个智能体}}",
+    "runCount": "{count, plural, other {# 个运行}}",
+    "runningCount": "{count, plural, other {# 个运行中}}",
     "lanes": {
       "queued": "排队中",
       "running": "进行中",
@@ -138,7 +138,7 @@
     "allProjects": "所有项目",
     "unassigned": "未分配",
     "active": "活跃",
-    "groupActive": "{count} 活跃",
+    "groupActive": "{count} 个活跃",
     "table": {
       "run": "运行",
       "status": "状态",
