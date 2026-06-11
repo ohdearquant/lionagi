@@ -131,6 +131,71 @@ directory (`~/Library/Logs/ai.lionagi.studio/studio-backend-{stdout,stderr}.log`
 - `macOSPrivateApi: true` — required for `titleBarStyle: Overlay`
 - Note: the SPA must add `-webkit-app-region: drag` CSS to the top rail
 
+## Security model
+
+### Loopback-only binding
+
+The shell forces the backend to bind on `127.0.0.1` via `LIONAGI_STUDIO_HOST`. The
+API is not reachable from other machines on the network.  A browser tab from an
+external origin cannot read responses from `http://127.0.0.1:<port>` due to the
+Same-Origin Policy — provided CORS is not misconfigured on the backend.
+
+### Per-launch bearer token
+
+At startup the shell generates a 32-hex-char token from `/dev/urandom` (16 bytes
+of OS-level CSPRNG entropy).  The token is:
+
+- Passed to the child process as `LIONAGI_STUDIO_AUTH_TOKEN`.  The FastAPI server
+  enforces bearer auth on all API routes when this env var is present.
+- Injected into the SPA via the Tauri initialization script as
+  `window.__STUDIO_AUTH_TOKEN__` before any page scripts run.
+- Attached by `lib/api.ts::fetchJson` as `Authorization: Bearer <token>` on every
+  request.
+
+A new token is generated for each app launch.  Restarting the app rotates the token.
+
+### What a malicious local process can and cannot do
+
+**Can**: observe that port `N` is bound on loopback (e.g. via `ss` / `lsof`), and
+attempt to connect to `http://127.0.0.1:N/api/...`.  Without the bearer token every
+such request will be rejected with HTTP 401.
+
+**Cannot**: obtain the bearer token from disk — it is never persisted; it lives in
+the child process environment and the Tauri webview JS heap.  Note the limit of this
+model: a malicious process running *as the same user* can ultimately inspect process
+state (e.g. `ps -E` on its own user's processes), so the token raises the bar and
+blocks other-user/local-network access — it does not defend against an attacker
+already running with your privileges.
+
+### CORS and live streams
+
+The webview's origin is `tauri://localhost`, so SPA→backend calls are cross-origin;
+the shell spawns the backend with `CORS_ORIGINS=tauri://localhost` to allow exactly
+that origin.  Live streams (session/show/signal SSE) use fetch-based subscriptions
+rather than `EventSource` so the `Authorization` header rides on them too.
+
+### Residual port-race window
+
+`find_free_port` binds port 0, obtains the OS-assigned port, and releases the
+listener.  The backend binds that port when it starts.  In the window between these
+two events, another local process could claim the port.  The shell mitigates this
+with two checks after health 2xx:
+
+1. `child.try_wait()` — if the intended backend exited, the health reply came from
+   an unrelated process and we fail with `ProcessExited`.
+2. Authenticated `GET /api/stats` — any squatter must present the correct bearer
+   token to pass this check; an unrelated service that happens to speak HTTP will
+   return 401 or a non-200 response and we fail with `IdentityCheckFailed`.
+
+The remaining attack surface requires a malicious process to (a) claim the port in
+the short race window, (b) speak HTTP on `/health` returning 2xx, (c) also speak
+HTTP on `/api/stats` returning 2xx with a valid bearer, which requires knowing the
+token before the app starts.  This is not a realistic threat model for a local
+development tool.
+
+`--port 0` CLI-level socket hand-off (which would eliminate the race entirely) is
+left for a future release.
+
 ## Tests
 
 ```bash
@@ -138,4 +203,5 @@ cd apps/studio/desktop/src-tauri
 cargo test
 ```
 
-9 unit tests covering free-port finding and CLI location logic.
+Tests cover free-port finding, CLI location logic, and backend lifecycle state
+machine transitions including the health-timeout leak reproducer.

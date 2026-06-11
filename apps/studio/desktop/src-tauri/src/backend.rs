@@ -9,9 +9,15 @@
 //! `kill(-pgid, SIGKILL)`.  This ensures all grandchildren (`uvicorn`, worker
 //! threads, etc.) die even if `li` ignores signals.
 //!
-//! `BackendHandle` is owned by `AppState` behind a `Mutex`.  The
-//! `on_window_event(Destroyed)` hook in `lib.rs` takes it and calls
-//! `terminate()`.  If the app crashes the OS reclaims the child anyway.
+//! ## Lifecycle state machine
+//!
+//! `AppState` holds a `Mutex<BackendState>` that is never `None`. The states
+//! are `Idle`, `Launching(BackendHandle)`, `Running(BackendHandle)`, and
+//! `ShuttingDown`. The spawned child is placed into `Launching` *before* the
+//! health poll begins, so every exit path (timeout, window destroy, app quit)
+//! can reach and terminate it.
+//!
+//! See `lib.rs` for the full state-machine transition diagram.
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
@@ -23,9 +29,9 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
 /// How long to wait for the health endpoint before giving up.
-const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
+pub const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
 /// Interval between health poll attempts.
-const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
+pub const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// Grace period for SIGTERM before SIGKILL.
 const SIGTERM_GRACE: Duration = Duration::from_secs(5);
 
@@ -41,6 +47,12 @@ pub enum LaunchError {
         "backend health check timed out after {0:.1}s — check backend logs for startup errors"
     )]
     HealthTimeout(f64),
+    #[error("backend exited before health check completed")]
+    ProcessExited,
+    #[error("launch already in progress")]
+    LaunchInProgress,
+    #[error("server identity check failed after health: {0}")]
+    IdentityCheckFailed(String),
 }
 
 impl serde::Serialize for LaunchError {
@@ -56,6 +68,14 @@ pub struct BackendHandle {
 }
 
 impl BackendHandle {
+    /// Returns `true` if the child process has already exited.
+    pub fn has_exited(&mut self) -> bool {
+        match self.child.try_wait() {
+            Ok(Some(_)) | Err(_) => true,
+            Ok(None) => false,
+        }
+    }
+
     /// Gracefully stop the backend: SIGTERM the process group, wait up to
     /// `SIGTERM_GRACE`, then SIGKILL the group if it is still alive.
     pub fn terminate(mut self) {
@@ -110,11 +130,21 @@ fn log_stdio(app: &AppHandle, suffix: &str) -> Stdio {
     .unwrap_or_else(Stdio::null)
 }
 
-/// Locate the CLI, spawn the backend, and poll the health endpoint.
-///
-/// Returns `Ok(BackendHandle)` once the backend is ready.  The caller
-/// (in `lib.rs`) is responsible for navigating the main window to the SPA.
-pub async fn launch_backend(app: &AppHandle) -> Result<BackendHandle, LaunchError> {
+/// Generate a 32-hex-char random token using `/dev/urandom` (macOS-only shell).
+pub fn generate_auth_token() -> String {
+    let mut buf = [0u8; 16];
+    // /dev/urandom is always available on macOS and never blocks.
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read;
+        let _ = f.read_exact(&mut buf);
+    }
+    buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Locate the CLI and spawn the backend process.  Health polling and state
+/// transitions are owned by `lib.rs::do_launch`, which stores the returned
+/// handle in the shared state machine before polling begins.
+pub fn spawn_backend(app: &AppHandle, auth_token: &str) -> Result<BackendHandle, LaunchError> {
     let cli = find_li_cli().ok_or(LaunchError::CliNotFound)?;
     let port = find_free_port()?;
 
@@ -126,6 +156,11 @@ pub async fn launch_backend(app: &AppHandle) -> Result<BackendHandle, LaunchErro
     let mut cmd = Command::new(&cli);
     cmd.args(["studio", "--no-frontend", "--port", &port.to_string()])
         .env("LIONAGI_STUDIO_HOST", "127.0.0.1")
+        .env("LIONAGI_STUDIO_AUTH_TOKEN", auth_token)
+        // The webview loads the SPA from the tauri custom protocol, so API
+        // calls are cross-origin; the backend's default CORS allowlist only
+        // covers localhost dev ports.
+        .env("CORS_ORIGINS", "tauri://localhost")
         .stdout(log_stdio(app, "stdout"))
         .stderr(log_stdio(app, "stderr"));
 
@@ -138,10 +173,6 @@ pub async fn launch_backend(app: &AppHandle) -> Result<BackendHandle, LaunchErro
         .spawn()
         .map_err(|e: std::io::Error| LaunchError::SpawnFailed(e.to_string()))?;
 
-    wait_for_health(&format!("http://127.0.0.1:{port}/health")).await?;
-
-    log::info!("backend ready on port {port}");
-
     Ok(BackendHandle {
         port,
         cli_path: cli,
@@ -149,22 +180,30 @@ pub async fn launch_backend(app: &AppHandle) -> Result<BackendHandle, LaunchErro
     })
 }
 
-/// Poll `url` until it returns HTTP 2xx or the timeout expires.
-async fn wait_for_health(url: &str) -> Result<(), LaunchError> {
+/// After health 2xx, verify the backend identity with an authenticated GET /api/stats.
+/// This ensures the health endpoint belongs to our process, not a port-race squatter.
+pub async fn verify_identity(port: u16, auth_token: &str) -> Result<(), LaunchError> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap_or_default();
 
-    let started = Instant::now();
-    loop {
-        match client.get(url).send().await {
-            Ok(r) if r.status().is_success() => return Ok(()),
-            _ => {}
-        }
-        if started.elapsed() >= HEALTH_TIMEOUT {
-            return Err(LaunchError::HealthTimeout(started.elapsed().as_secs_f64()));
-        }
-        tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
+    // Exact route path — a trailing slash would bounce through a redirect,
+    // and redirects can drop the Authorization header.
+    let url = format!("http://127.0.0.1:{port}/api/stats");
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {auth_token}"))
+        .send()
+        .await
+        .map_err(|e| LaunchError::IdentityCheckFailed(e.to_string()))?;
+
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(LaunchError::IdentityCheckFailed(format!(
+            "status {}",
+            resp.status()
+        )))
     }
 }
