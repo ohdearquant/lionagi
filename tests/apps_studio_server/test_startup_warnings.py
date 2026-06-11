@@ -293,6 +293,33 @@ class TestCORSBoundedMethods:
                 f"Expected {verb!r} in Access-Control-Allow-Methods; got header: {raw!r}"
             )
 
+    def test_head_preflight_is_allowed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A CORS preflight requesting HEAD must succeed — not 400.
+
+        The round-1 regression was an actual preflight 400 for HEAD (FastAPI
+        auto-generates HEAD for GET routes / docs endpoints).  The route-table
+        coverage test guards the allowlist contents; this asserts the observable
+        preflight status code directly so the exact failure mode can't return.
+        """
+        client = self._client(monkeypatch, tmp_path)
+        resp = client.options(
+            "/openapi.json",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "HEAD",
+            },
+        )
+        assert resp.status_code in (200, 204), (
+            f"HEAD preflight must succeed; got {resp.status_code}"
+        )
+        raw = resp.headers.get("access-control-allow-methods", "")
+        allowed = {m.strip().upper() for m in raw.split(",")}
+        assert "HEAD" in allowed, (
+            f"Expected HEAD in Access-Control-Allow-Methods; got header: {raw!r}"
+        )
+
     def test_allowlist_covers_every_served_route_method(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -409,4 +436,37 @@ class TestCLIHostWiring:
         assert captured["env_host"] == "0.0.0.0", (
             "CLI must export the resolved bind host into LIONAGI_STUDIO_HOST "
             "before uvicorn.run so the app's security warning sees it"
+        )
+
+    def test_start_local_overwrites_stale_host_env(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The second uvicorn site (_start_local) must also export the resolved
+        host, overwriting a stale LIONAGI_STUDIO_HOST so the warning can't fire a
+        false 0.0.0.0 positive when the CLI actually binds 127.0.0.1."""
+        import lionagi.cli.studio as studio_cli
+
+        # Stale env claims 0.0.0.0; the CLI is about to bind 127.0.0.1.
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", "0.0.0.0")
+        monkeypatch.setattr(studio_cli.shutil, "which", lambda _name: "/usr/bin/node")
+        monkeypatch.setattr(studio_cli, "_launch_frontend", lambda *a, **k: None)
+        monkeypatch.setattr(studio_cli, "_ensure_apps_importable", lambda: True)
+
+        captured: dict[str, str] = {}
+
+        def _fake_uvicorn_run(_app: str, *, host: str, port: int) -> None:
+            captured["env_host"] = os.environ.get("LIONAGI_STUDIO_HOST", "")
+            captured["bind_host"] = host
+
+        import uvicorn
+
+        monkeypatch.setattr(uvicorn, "run", _fake_uvicorn_run)
+
+        rc = studio_cli._start_local("127.0.0.1", 18765, 3000, tmp_path, False)
+
+        assert rc == 0
+        assert captured["bind_host"] == "127.0.0.1"
+        assert captured["env_host"] == "127.0.0.1", (
+            "_start_local must overwrite a stale LIONAGI_STUDIO_HOST with the "
+            "actual resolved bind host before uvicorn.run"
         )
