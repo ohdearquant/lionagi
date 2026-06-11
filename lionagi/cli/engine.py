@@ -250,6 +250,8 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     except Exception as exc:
         log_error(f"failed to import engine class for kind {kind!r}: {exc}")
         await _maybe_update_db(db, run_id, "failed", error=str(exc))
+        if db is not None:
+            await db.close()
         return 1
 
     # Build the on_event callback that translates engine events to stderr lines.
@@ -318,7 +320,8 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
         if hasattr(result, "model_dump"):
             # Pydantic model (e.g. CodingEngine returns CodeResultRecorded).
             result_data = result.model_dump(mode="json")
-            export_dir_for_db = result_data.get("export_dir") or export_dir_from_args
+            _rd_export = result_data.get("export_dir")
+            export_dir_for_db = _rd_export if _rd_export is not None else export_dir_from_args
         elif isinstance(result, str):
             result_data = {"result": result}
         else:

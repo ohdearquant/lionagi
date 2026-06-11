@@ -617,6 +617,54 @@ async def test_no_persist_skips_db(monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
+# Import-failure closes the DB
+# ---------------------------------------------------------------------------
+
+
+async def test_import_failure_closes_db(monkeypatch):
+    """When _import_engine_class raises, the open DB handle must still be closed."""
+    import lionagi.cli._logging as log_mod
+    import lionagi.cli.engine as engine_mod
+    import lionagi.state.db as db_mod
+
+    monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
+    monkeypatch.setattr(log_mod, "warn", lambda *a, **kw: None)
+    monkeypatch.setattr(log_mod, "log_error", lambda *a, **kw: None)
+
+    def _failing_import(module, name):
+        raise ImportError(f"cannot import {name} from {module}")
+
+    monkeypatch.setattr(engine_mod, "_import_engine_class", _failing_import)
+
+    close_count = [0]
+    update_calls: list[dict] = []
+
+    class MockStateDB:
+        async def open(self):
+            pass
+
+        async def close(self):
+            close_count[0] += 1
+
+        async def insert_engine_run(self, *, run_id, kind, spec_json, started_at, session_id=None):
+            pass
+
+        async def update_engine_run(
+            self, run_id, *, status, ended_at=None, export_dir=None, error=None
+        ):
+            update_calls.append({"status": status})
+
+    monkeypatch.setattr(db_mod, "StateDB", MockStateDB)
+
+    args = _build_args(kind="research", spec="test", no_persist=False)
+    rc = await engine_mod._do_engine_run(args)
+
+    assert rc == 1
+    assert close_count[0] == 1, "DB was not closed after import failure"
+    assert any(c["status"] == "failed" for c in update_calls)
+
+
+# ---------------------------------------------------------------------------
 # run_engine dispatch (synchronous entry point)
 # ---------------------------------------------------------------------------
 
