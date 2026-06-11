@@ -227,7 +227,7 @@ class TestBuildArgvValidation:
         """
         from lionagi.studio.scheduler.subprocess import build_argv
 
-        argv = build_argv(
+        argv, tmp_path = build_argv(
             {
                 "action_kind": "playbook",
                 "action_playbook": "audit",
@@ -239,6 +239,7 @@ class TestBuildArgvValidation:
             },
             {},
         )
+        assert tmp_path is None, "playbook alias must not create a tmp file"
         assert "play" in argv, f"'play' not in argv: {argv}"
         assert "audit" in argv, f"playbook name not in argv: {argv}"
 
@@ -247,7 +248,7 @@ class TestBuildArgvValidation:
         from lionagi.studio.scheduler.subprocess import build_argv
 
         for kind in ("agent", "flow", "fanout", "play"):
-            argv = build_argv(
+            argv, tmp_path = build_argv(
                 {
                     "action_kind": kind,
                     "action_model": "gpt-4",
@@ -260,6 +261,7 @@ class TestBuildArgvValidation:
                 {},
             )
             assert "uv" in argv
+            assert tmp_path is None, f"kind={kind!r} must not create a tmp file"
 
     def test_empty_string_kind_raises(self):
         """Empty string action_kind must be rejected."""
@@ -543,3 +545,71 @@ class TestInvocationReasonAggregation:
 
         assert status == "aborted"
         assert reason_code == RunReasons.ABORTED_USER
+
+
+# ---------------------------------------------------------------------------
+# Codex round-2 Low — router-level PATCH validation (HTTP 400 for invalid
+# flow_yaml transitions), covering the ValueError→HTTPException translation
+# added to routers/schedules.py.
+# ---------------------------------------------------------------------------
+
+
+class TestSchedulePatchRouterValidation:
+    """Router PATCH /api/schedules/{id} must translate service ValueError → 400.
+
+    The route handler calls ``sched_svc.update_schedule`` as a module-attribute
+    lookup at call time, so monkeypatching the attribute is sufficient.  No
+    app reload is needed — reloading ``app`` duplicates ``include_router`` calls
+    and corrupts route ordering when tests run sequentially.
+    """
+
+    @staticmethod
+    def _client_for_svc_mock(monkeypatch, mock_fn):
+        """Patch sched_svc.update_schedule and return a TestClient."""
+        from fastapi.testclient import TestClient
+
+        import lionagi.studio.services.schedules as sched_svc
+        from lionagi.studio.app import app
+
+        monkeypatch.setattr(sched_svc, "update_schedule", mock_fn)
+        return TestClient(app, raise_server_exceptions=False)
+
+    def test_patch_flow_yaml_without_yaml_returns_400(self, monkeypatch):
+        """PATCH action_kind=flow_yaml with no yaml body → HTTP 400."""
+
+        async def _reject(_schedule_id, _fields):
+            raise ValueError(
+                "action_flow_yaml is required and must not be empty for action_kind='flow_yaml'"
+            )
+
+        client = self._client_for_svc_mock(monkeypatch, _reject)
+        r = client.patch(
+            "/api/schedules/sched-abc",
+            json={"action_kind": "flow_yaml"},
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+        assert "action_flow_yaml" in r.json().get("detail", "")
+
+    def test_patch_malformed_yaml_returns_400(self, monkeypatch):
+        """PATCH with malformed flow_yaml spec → HTTP 400."""
+
+        async def _reject(_schedule_id, _fields):
+            raise ValueError("Invalid flow_yaml spec: missing required field 'steps'")
+
+        client = self._client_for_svc_mock(monkeypatch, _reject)
+        r = client.patch(
+            "/api/schedules/sched-abc",
+            json={"action_kind": "flow_yaml", "action_flow_yaml": "bad: yaml: [[["},
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+        assert "Invalid flow_yaml" in r.json().get("detail", "")
+
+    def test_patch_not_found_returns_404(self, monkeypatch):
+        """PATCH a non-existent schedule → HTTP 404 (service returns False)."""
+
+        async def _not_found(_schedule_id, _fields):
+            return False
+
+        client = self._client_for_svc_mock(monkeypatch, _not_found)
+        r = client.patch("/api/schedules/no-such-id", json={"name": "new-name"})
+        assert r.status_code == 404, f"expected 404, got {r.status_code}: {r.text}"
