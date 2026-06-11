@@ -6,13 +6,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 import uuid
 from typing import Any
 
 from lionagi.state.db import StateDB
 
+from .. import config
 from ..scheduler.subprocess import build_argv
 from ..services.schedules import (
     _svc_validate_action_model,
@@ -33,9 +33,9 @@ _LAUNCH_VALID_KINDS = frozenset({"agent", "flow", "fanout", "play"})
 # with no strong reference can be garbage-collected mid-flight.
 _detached_tasks: set[asyncio.Task] = set()
 
-# Admission cap: maximum number of detached launch tasks that may be in-flight
-# simultaneously.  Configurable via LIONAGI_STUDIO_MAX_LAUNCHES (default 4).
-_MAX_LAUNCHES: int = int(os.environ.get("LIONAGI_STUDIO_MAX_LAUNCHES", "4"))
+# Admission cap (config.MAX_LAUNCHES): a slot is acquired in launch() before
+# the invocation row is created and released when the detached task completes,
+# so a burst of concurrent POSTs cannot over-admit past the cap.
 _launch_semaphore: asyncio.Semaphore | None = None
 
 
@@ -47,7 +47,7 @@ def _get_semaphore() -> asyncio.Semaphore:
     """Return (creating on first call) the module-level admission semaphore."""
     global _launch_semaphore  # noqa: PLW0603
     if _launch_semaphore is None:
-        _launch_semaphore = asyncio.Semaphore(_MAX_LAUNCHES)
+        _launch_semaphore = asyncio.Semaphore(config.MAX_LAUNCHES)
     return _launch_semaphore
 
 
@@ -96,32 +96,45 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
     argv, tmp_path = build_argv(schedule_dict, {})
 
     sem = _get_semaphore()
-    if not sem._value:  # noqa: SLF001  (asyncio.Semaphore internal — no public API)
+    if sem.locked():
         raise TooManyLaunchesError(
-            f"Maximum concurrent launches ({_MAX_LAUNCHES}) reached. "
+            f"Maximum concurrent launches ({config.MAX_LAUNCHES}) reached. "
             "Retry when an existing launch completes."
         )
+    # The slot must be taken here, not inside the spawned task: deferring the
+    # acquire would let a burst of concurrent POSTs all pass the check above
+    # before any task runs.  locked() was False and nothing yields between the
+    # check and the acquire on a single event loop, so this never blocks.
+    await sem.acquire()
 
     inv_id = uuid.uuid4().hex[:12]
     now = time.time()
 
-    async with StateDB() as db:
-        await db.create_invocation(
-            {
-                "id": inv_id,
-                "skill": f"launch:{data['action_kind']}",
-                "plugin": "studio_launch",
-                "prompt": data.get("action_prompt") or data.get("action_playbook"),
-                "started_at": now,
-                "status": "running",
-            }
-        )
+    try:
+        async with StateDB() as db:
+            await db.create_invocation(
+                {
+                    "id": inv_id,
+                    "skill": f"launch:{data['action_kind']}",
+                    "plugin": "studio_launch",
+                    "prompt": data.get("action_prompt") or data.get("action_playbook"),
+                    "started_at": now,
+                    "status": "running",
+                }
+            )
 
-    # Spawn detached — the HTTP handler must not block until the run finishes.
-    task = asyncio.create_task(
-        _spawn_detached(argv, inv_id, tmp_path=tmp_path, semaphore=sem),
-        name=f"launch-{inv_id}",
-    )
+        # Spawn detached — the HTTP handler must not block until the run finishes.
+        task = asyncio.create_task(
+            _spawn_detached(argv, inv_id, tmp_path=tmp_path),
+            name=f"launch-{inv_id}",
+        )
+    except BaseException:
+        sem.release()
+        raise
+
+    # Release on task completion (a done callback fires even if the task is
+    # cancelled before its coroutine ever runs, where an in-task release would not).
+    task.add_done_callback(lambda _t: sem.release())
     _detached_tasks.add(task)
     task.add_done_callback(_detached_tasks.discard)
 
@@ -146,50 +159,43 @@ async def shutdown_launches() -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _spawn_detached(
-    argv: list[str],
-    inv_id: str,
-    *,
-    tmp_path: str | None,
-    semaphore: asyncio.Semaphore,
-) -> None:
+async def _spawn_detached(argv: list[str], inv_id: str, *, tmp_path: str | None) -> None:
     """Spawn the process and update the invocation row when it exits."""
     from lionagi.state.reasons import RunReasons
 
     from ..scheduler.subprocess import spawn_and_wait
 
-    async with semaphore:
+    try:
+        exit_code, _stderr = await spawn_and_wait(argv, inv_id, tmp_path=tmp_path)
+        if exit_code == 0:
+            status, reason = "completed", RunReasons.COMPLETED_OK
+        else:
+            status, reason = "failed", RunReasons.FAILED_EXIT_NONZERO
+    except asyncio.CancelledError:
+        # Server is shutting down — write a terminal row before propagating.
         try:
-            exit_code, _stderr = await spawn_and_wait(argv, inv_id, tmp_path=tmp_path)
-            if exit_code == 0:
-                status, reason = "completed", RunReasons.COMPLETED_OK
-            else:
-                status, reason = "failed", RunReasons.FAILED_EXIT_NONZERO
-        except asyncio.CancelledError:
-            # Server is shutting down — write a terminal row before propagating.
-            try:
-                async with StateDB() as db:
-                    await db.update_invocation(inv_id, ended_at=time.time())
-                    await db.update_status(
-                        "invocation",
-                        inv_id,
-                        new_status="cancelled",
-                        reason_code=RunReasons.CANCELLED_SYSTEM,
-                        reason_summary="Launch cancelled by server shutdown.",
-                        evidence_refs=[],
-                        source="executor",
-                        actor=inv_id,
-                        metadata={},
-                    )
-            except Exception:
-                _log.exception(
-                    "Failed to record cancellation for launch invocation %s during shutdown",
+            async with StateDB() as db:
+                await db.update_invocation(inv_id, ended_at=time.time())
+                await db.update_status(
+                    "invocation",
                     inv_id,
+                    new_status="cancelled",
+                    reason_code=RunReasons.CANCELLED_SYSTEM,
+                    reason_summary="Launch cancelled by server shutdown.",
+                    evidence_refs=[],
+                    source="executor",
+                    actor=inv_id,
+                    metadata={},
                 )
-            raise
         except Exception:
-            _log.exception("Detached launch failed for invocation %s", inv_id)
-            status, reason = "failed", RunReasons.FAILED_EXCEPTION
+            _log.exception(
+                "Failed to record cancellation for launch invocation %s during shutdown",
+                inv_id,
+            )
+        raise
+    except Exception:
+        _log.exception("Detached launch failed for invocation %s", inv_id)
+        status, reason = "failed", RunReasons.FAILED_EXCEPTION
 
     try:
         async with StateDB() as db:

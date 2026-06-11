@@ -60,6 +60,20 @@ def _stub_db_and_spawn(monkeypatch):
     return mock_db
 
 
+@pytest.fixture(autouse=True)
+def _fresh_launch_state():
+    """Reset module-global launch state so admission slots and detached-task
+    refs never leak between tests (stubbed create_task means done callbacks
+    that would release slots never fire)."""
+    import lionagi.studio.services.launches as svc
+
+    svc._launch_semaphore = None
+    svc._detached_tasks.clear()
+    yield
+    svc._launch_semaphore = None
+    svc._detached_tasks.clear()
+
+
 # ---------------------------------------------------------------------------
 # Basic happy-path
 # ---------------------------------------------------------------------------
@@ -425,7 +439,6 @@ class TestSpawnDetachedTerminalUpdate:
 
         mock_db.update_status = _capture_status
 
-        sem = asyncio.Semaphore(1)
         with patch("lionagi.studio.services.launches.StateDB") as MockDB:
             MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
             MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -433,11 +446,7 @@ class TestSpawnDetachedTerminalUpdate:
                 "lionagi.studio.scheduler.subprocess.spawn_and_wait",
                 side_effect=_fake_spawn,
             ):
-                asyncio.run(
-                    launches._spawn_detached(
-                        ["uv", "run", "li"], "inv1", tmp_path=None, semaphore=sem
-                    )
-                )
+                asyncio.run(launches._spawn_detached(["uv", "run", "li"], "inv1", tmp_path=None))
         return captured
 
     @pytest.mark.parametrize(
@@ -467,85 +476,63 @@ class TestLaunchAdmissionCap:
     """POST /api/launches must return 429 when the in-flight cap is saturated."""
 
     def test_429_when_slots_exhausted(self, tmp_path, monkeypatch):
-        """When all semaphore slots are taken, the next request returns 429."""
+        """When all semaphore slots are held, the next request returns 429."""
         import lionagi.studio.services.launches as svc
 
-        # Reset module state so we start with a fresh semaphore.
-        svc._launch_semaphore = None
-        monkeypatch.setenv("LIONAGI_STUDIO_MAX_LAUNCHES", "1")
-        svc._MAX_LAUNCHES = 1
-        svc._launch_semaphore = asyncio.Semaphore(1)
+        _stub_db_and_spawn(monkeypatch)
+        # A zero-value semaphore is indistinguishable from "every slot held".
+        svc._launch_semaphore = asyncio.Semaphore(0)
 
-        # Manually acquire all slots to simulate full saturation.
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(svc._launch_semaphore.acquire())
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+        resp = client.post(
+            "/api/launches",
+            json={"action_kind": "agent", "action_model": "sonnet", "action_prompt": "hi"},
+        )
+        assert resp.status_code == 429, resp.text
+        assert "Maximum concurrent launches" in resp.json()["detail"]
 
-            # Stub DB + spawn so no real I/O happens.
-            mock_db = AsyncMock()
-            mock_db.create_invocation = AsyncMock()
-            db_ctx = MagicMock()
-            db_ctx.__aenter__ = AsyncMock(return_value=mock_db)
-            db_ctx.__aexit__ = AsyncMock(return_value=False)
-            monkeypatch.setattr("lionagi.studio.services.launches.StateDB", lambda *a, **kw: db_ctx)
-
-            def _consume(coro, **kw):
-                coro.close()
-                return MagicMock()
-
-            monkeypatch.setattr("lionagi.studio.services.launches.asyncio.create_task", _consume)
-
-            client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
-
-            resp = client.post(
-                "/api/launches",
-                json={"action_kind": "agent", "action_model": "sonnet", "action_prompt": "hi"},
-            )
-            assert resp.status_code == 429, resp.text
-            assert "429" in resp.text or "Maximum" in resp.text or "concurrent" in resp.text
-        finally:
-            # Release the slot and close the loop.
-            svc._launch_semaphore.release()
-            svc._launch_semaphore = None
-            svc._MAX_LAUNCHES = int(
-                __import__("os").environ.get("LIONAGI_STUDIO_MAX_LAUNCHES", "4")
-            )
-            loop.close()
-
-    def test_spawn_not_called_when_saturated(self, tmp_path, monkeypatch):
-        """When cap is saturated, create_task must not be called."""
+    def test_no_row_or_task_when_saturated(self, tmp_path, monkeypatch):
+        """When the cap is saturated, neither a DB row nor a task is created."""
         import lionagi.studio.services.launches as svc
 
-        svc._launch_semaphore = asyncio.Semaphore(1)
-        svc._MAX_LAUNCHES = 1
-
-        loop = asyncio.new_event_loop()
+        mock_db = _stub_db_and_spawn(monkeypatch)
         spawn_calls = []
-        try:
-            loop.run_until_complete(svc._launch_semaphore.acquire())
 
-            def _track_spawn(coro, **kw):
-                spawn_calls.append(coro)
-                coro.close()
-                return MagicMock()
+        def _track_spawn(coro, **kw):
+            spawn_calls.append(coro)
+            coro.close()
+            return MagicMock()
 
-            monkeypatch.setattr(
-                "lionagi.studio.services.launches.asyncio.create_task",
-                _track_spawn,
-            )
+        monkeypatch.setattr(
+            "lionagi.studio.services.launches.asyncio.create_task",
+            _track_spawn,
+        )
+        svc._launch_semaphore = asyncio.Semaphore(0)
 
-            client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
-            resp = client.post(
-                "/api/launches",
-                json={"action_kind": "agent", "action_model": "sonnet"},
-            )
-            assert resp.status_code == 429
-            assert spawn_calls == [], "create_task must not be called when cap is saturated"
-        finally:
-            svc._launch_semaphore.release()
-            svc._launch_semaphore = None
-            svc._MAX_LAUNCHES = 4
-            loop.close()
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+        resp = client.post(
+            "/api/launches",
+            json={"action_kind": "agent", "action_model": "sonnet"},
+        )
+        assert resp.status_code == 429
+        assert spawn_calls == [], "create_task must not be called when cap is saturated"
+        mock_db.create_invocation.assert_not_called()
+
+    def test_burst_admission_capped_before_any_task_runs(self, tmp_path, monkeypatch):
+        """Slots are taken at admission time, not when the spawned task runs:
+        with cap 1, the second POST gets 429 even though the first task has
+        not started (and thus released nothing)."""
+        import lionagi.studio.services.launches as svc
+
+        _stub_db_and_spawn(monkeypatch)
+        monkeypatch.setattr(svc.config, "MAX_LAUNCHES", 1)
+
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+        body = {"action_kind": "agent", "action_model": "sonnet", "action_prompt": "hi"}
+        first = client.post("/api/launches", json=body)
+        second = client.post("/api/launches", json=body)
+        assert first.status_code == 202, first.text
+        assert second.status_code == 429, second.text
 
 
 # ---------------------------------------------------------------------------
@@ -615,8 +602,6 @@ class TestShutdownDrains:
             return (0, "")
 
         async def _run():
-            sem = asyncio.Semaphore(1)
-
             async def _inner():
                 with patch("lionagi.studio.services.launches.StateDB") as MockDB:
                     MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
@@ -625,9 +610,7 @@ class TestShutdownDrains:
                         "lionagi.studio.scheduler.subprocess.spawn_and_wait",
                         side_effect=_blocking_spawn,
                     ):
-                        await svc._spawn_detached(
-                            ["uv", "run", "li"], "inv-cancel", tmp_path=None, semaphore=sem
-                        )
+                        await svc._spawn_detached(["uv", "run", "li"], "inv-cancel", tmp_path=None)
 
             task = asyncio.ensure_future(_inner())
             # Yield twice: once to enter _inner(), once to enter _blocking_spawn().
