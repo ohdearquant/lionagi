@@ -4,6 +4,76 @@
 All notable changes to lionagi are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.27.0] - 2026-06-11
+
+Phase C control center (engine runs, CLI coding presets, studio maintenance),
+a studio lifecycle-signal layer with live Kanban/playfield views and en/zh
+i18n, inline-flow scheduling, the ADR-0079..0082 orchestration substrate
+cluster, and an eight-issue security/bug discovery sweep.
+
+### Added
+
+- **Phase C control center** — `li engine run` + `engine_runs` visibility
+  (#1415); `li agent --preset coding` + `--form spec.yaml` (#1418);
+  `POST /api/admin/maintenance` (vacuum / checkpoint / prune) with page
+  wiring (#1417).
+- **Scheduler inline flow** — `flow_yaml` schedule action kind runs an inline
+  YAML flow (#1265).
+- **Studio lifecycle & live views** — canonical lifecycle-signal contract +
+  lane projection (#1396); SSE lifecycle-signal stream + run event log (#1403);
+  self-healing session/invocation lifecycle reapers (#1260); Kanban lifecycle
+  view over run status (#1268); cross-project live playfield page (#1266);
+  action panel, filter counts, play-graph color/click/zoom + a11y perf
+  baseline (#1258).
+- **Internationalization** — next-intl pipeline with en/zh catalogs + locale
+  switcher (#1401); page conversions for kanban/playfield/dashboard + nav
+  keys (#1402).
+- **Orchestration substrate cluster** — ADR-0079..0082 + routing slice (#1267).
+- **Work system re-cut** — `WorkForm` + `Rule` / `RuleSet` (#1386).
+- **Coding-agent feedback surface** — guidance + ruff diagnostics (#1400).
+- **Class-registry test suite** (#1375).
+
+### Changed
+
+- **Engine layering** — extract `ChainRun` intermediate base + research
+  per-stage repair (#1385).
+- **Module relocation** — `protocols/structure` → `operations/schema` (#1378);
+  consolidate `Operative` construction + document HookPoint dispatch (#1377);
+  split CLI spec-validation and state-db into dedicated modules (#1376); dedup
+  `CodingToolkit` schemas to the tools/file canon + add the missing open
+  action (#1372).
+- **CI** — serialize gh-pages deploys with a concurrency group (#1395).
+
+### Fixed
+
+- **Registry fallback** — `LION_CLASS_FILE_REGISTRY` fallback now actually
+  loads classes via package-context import, with a package-boundary guard
+  against path escape (#1422).
+- **Provider / engine diagnostics** — typed provider errors + emission
+  diagnostics surface CLI worker failures (#1419); export a partial report on
+  budget/deadline cancellation (#1399); deadline watchdog, normalize-before-gate
+  and CLI-aware emission repair (#1371); gate runs on workspace ground truth
+  despite implementer emission failure (#1365); fan collected chain events to
+  `on_event` once across engines (#1362); honor `backoff_factor` in retry
+  (#1370).
+- **CLI providers** — map gemini NDJSON tool payloads + assistant answer into
+  session state (#1390); gemini-cli env trust, oauth model set, clearer
+  endpoint errors (#1374); codex surfaces the top-level error message instead
+  of an empty-dict `str()` (#1388).
+- **Session** — emit run lifecycle signals from `Branch.run`, fix ReAct
+  double-wrap, fix resume empty stream (#1373).
+
+### Security
+
+- **Studio** — startup warnings for unauthenticated mode + a bounded CORS
+  method allowlist derived from the route table (#1423).
+- **Scheduler hardening** — reject flag injection in
+  `action_model` / `action_extra_args` (#1414); validate `github_repo` format
+  before GitHub API URL construction (#1420).
+- **Bash tool** — remove the `allow_shell` bypass to close CWE-284 (#1421).
+- **Dependencies** — urllib3 2.6.3→2.7.0, authlib 1.7.0→1.7.2 (#1384);
+  codecov-action 6→7 (#1368); actions/cache 4→5 (#1369).
+
 ## [0.26.18] - 2026-06-09
 
 Engine layer expansion — hypothesis and coding engines with autonomy
