@@ -683,3 +683,328 @@ class TestBuildArgvBeforeCreate:
         )
         assert resp.status_code == 422, resp.text
         assert create_calls == [], "create_invocation must NOT be called if build_argv raises"
+
+
+# ---------------------------------------------------------------------------
+# Engine kind — launch a saved engine definition
+# ---------------------------------------------------------------------------
+
+
+def _stub_engine_def(monkeypatch, defn: dict | None, *, by_name_only: bool = False):
+    """Patch the engine-defs lookups that _resolve_engine_def calls."""
+    import lionagi.studio.services.engine_defs as ed
+
+    monkeypatch.setattr(
+        ed, "get_engine_def", AsyncMock(return_value=None if by_name_only else defn)
+    )
+    monkeypatch.setattr(ed, "get_engine_def_by_name", AsyncMock(return_value=defn))
+
+
+_ENGINE_DEF = {
+    "id": "abc123abc123",
+    "name": "my-engine",
+    "kind": "research",
+    "model": "gpt-4.1-mini",
+    "max_depth": 3,
+    "max_agents": None,
+    "options": {"test_cmd": "pytest"},
+}
+
+
+@pytest.mark.integration
+class TestLaunchEngineKind:
+    def test_launch_engine_returns_202(self, tmp_path, monkeypatch):
+        """POST /api/launches with action_kind=engine fires a saved definition."""
+        _stub_db_and_spawn(monkeypatch)
+        _stub_engine_def(monkeypatch, dict(_ENGINE_DEF))
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post(
+            "/api/launches",
+            json={
+                "action_kind": "engine",
+                "action_engine_def": "abc123abc123",
+                "action_prompt": "find recent papers on GQA",
+            },
+        )
+        assert resp.status_code == 202, resp.text
+        data = resp.json()
+        assert "invocation_id" in data
+        assert data["action_kind"] == "engine"
+
+    def test_launch_engine_resolves_by_name(self, tmp_path, monkeypatch):
+        """A definition not found by id is resolved by name."""
+        _stub_db_and_spawn(monkeypatch)
+        _stub_engine_def(monkeypatch, dict(_ENGINE_DEF), by_name_only=True)
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post(
+            "/api/launches",
+            json={
+                "action_kind": "engine",
+                "action_engine_def": "my-engine",
+                "action_prompt": "plan the migration",
+            },
+        )
+        assert resp.status_code == 202, resp.text
+
+    def test_launch_engine_unknown_def_422(self, tmp_path, monkeypatch):
+        """An unresolvable definition reference returns 422, not 500."""
+        _stub_db_and_spawn(monkeypatch)
+        _stub_engine_def(monkeypatch, None)
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post(
+            "/api/launches",
+            json={
+                "action_kind": "engine",
+                "action_engine_def": "nonexistent",
+                "action_prompt": "hello",
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        assert "not found" in resp.json()["detail"]
+
+    def test_launch_engine_missing_def_422(self, tmp_path, monkeypatch):
+        """action_engine_def is required for engine launches."""
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post(
+            "/api/launches",
+            json={"action_kind": "engine", "action_prompt": "hello"},
+        )
+        assert resp.status_code == 422, resp.text
+
+    def test_launch_engine_missing_prompt_422(self, tmp_path, monkeypatch):
+        """action_prompt (the engine spec) is required for engine launches."""
+        _stub_engine_def(monkeypatch, dict(_ENGINE_DEF))
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post(
+            "/api/launches",
+            json={"action_kind": "engine", "action_engine_def": "my-engine"},
+        )
+        assert resp.status_code == 422, resp.text
+
+    def test_launch_engine_def_flag_injection_rejected(self, tmp_path, monkeypatch):
+        """action_engine_def starting with '-' must be rejected with 422."""
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post(
+            "/api/launches",
+            json={
+                "action_kind": "engine",
+                "action_engine_def": "--bypass",
+                "action_prompt": "hello",
+            },
+        )
+        assert resp.status_code == 422, resp.text
+
+
+class TestEngineScheduleAssembly:
+    """launch() must assemble the schedule dict from the saved definition."""
+
+    def _launch_and_capture(self, monkeypatch, defn, request):
+        import lionagi.studio.services.launches as svc
+
+        _stub_engine_def(monkeypatch, defn)
+        captured = {}
+
+        def _fake_build_argv(schedule, ctx):
+            captured["schedule"] = schedule
+            return (["uv", "run", "li", "engine", "run", "--", "research", "spec"], None)
+
+        def _consume(coro, **kw):
+            coro.close()
+            return MagicMock()
+
+        with (
+            patch("lionagi.studio.services.launches.build_argv", side_effect=_fake_build_argv),
+            patch("lionagi.studio.services.launches.StateDB") as MockDB,
+            patch("lionagi.studio.services.launches.asyncio.create_task", side_effect=_consume),
+        ):
+            mock_db = AsyncMock()
+            mock_db.create_invocation = AsyncMock()
+            MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+            MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+            asyncio.run(svc.launch(request))
+        return captured["schedule"]
+
+    def test_def_fields_flow_into_schedule(self, monkeypatch):
+        """Definition kind, model, limits, and options reach build_argv."""
+        defn = {
+            "id": "def123def123",
+            "name": "deep-coder",
+            "kind": "coding",
+            "model": "gpt-4o",
+            "max_depth": 2,
+            "max_agents": 4,
+            "options": {"test_cmd": "uv run pytest", "export_dir": "out"},
+        }
+        schedule = self._launch_and_capture(
+            monkeypatch,
+            defn,
+            {
+                "action_kind": "engine",
+                "action_engine_def": "deep-coder",
+                "action_prompt": "build a web crawler",
+            },
+        )
+        assert schedule["action_kind"] == "engine"
+        assert schedule["action_agent"] == "coding"
+        assert schedule["action_model"] == "gpt-4o"
+        assert schedule["action_prompt"] == "build a web crawler"
+        assert schedule["action_engine_options"] == {
+            "test_cmd": "uv run pytest",
+            "export_dir": "out",
+            "max_depth": 2,
+            "max_agents": 4,
+        }
+
+    def test_request_model_overrides_def_model(self, monkeypatch):
+        """An explicit action_model in the request wins over the saved default."""
+        defn = dict(_ENGINE_DEF)
+        schedule = self._launch_and_capture(
+            monkeypatch,
+            defn,
+            {
+                "action_kind": "engine",
+                "action_engine_def": "my-engine",
+                "action_model": "claude-sonnet-4-5",
+                "action_prompt": "survey attention papers",
+            },
+        )
+        assert schedule["action_model"] == "claude-sonnet-4-5"
+
+
+# ---------------------------------------------------------------------------
+# build_argv engine kind — argv shape (flags first, '--', then positionals)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildArgvEngineKind:
+    def test_basic_shape(self):
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        schedule = {
+            "action_kind": "engine",
+            "action_model": "gpt-4o",
+            "action_prompt": "analyse the dataset",
+            "action_agent": "research",
+            "action_engine_options": {},
+        }
+        argv, tmp = build_argv(schedule, {})
+        assert tmp is None
+        assert argv[:5] == ["uv", "run", "li", "engine", "run"]
+        sep_idx = argv.index("--")
+        assert argv[sep_idx + 1] == "research"
+        assert argv[sep_idx + 2] == "analyse the dataset"
+        flags_part = argv[5:sep_idx]
+        assert "--model" in flags_part
+        assert flags_part[flags_part.index("--model") + 1] == "gpt-4o"
+
+    def test_exact_argv_with_all_options(self):
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        schedule = {
+            "action_kind": "engine",
+            "action_model": "claude-sonnet-4-5",
+            "action_prompt": "build me a web crawler",
+            "action_agent": "coding",
+            "action_engine_options": {
+                "max_depth": 2,
+                "max_agents": 4,
+                "test_cmd": "uv run pytest",
+                "export_dir": None,
+            },
+        }
+        argv, _ = build_argv(schedule, {})
+        assert argv == [
+            "uv", "run", "li", "engine", "run",
+            "--model", "claude-sonnet-4-5",
+            "--max-depth", "2",
+            "--max-agents", "4",
+            "--test-cmd", "uv run pytest",
+            "--",
+            "coding",
+            "build me a web crawler",
+        ]
+
+    def test_no_flags_when_empty(self):
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        schedule = {
+            "action_kind": "engine",
+            "action_model": "",
+            "action_prompt": "plan a project",
+            "action_agent": "planning",
+            "action_engine_options": {},
+        }
+        argv, _ = build_argv(schedule, {})
+        assert argv == ["uv", "run", "li", "engine", "run", "--", "planning", "plan a project"]
+
+    def test_missing_engine_kind_rejected(self):
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        schedule = {
+            "action_kind": "engine",
+            "action_model": "",
+            "action_prompt": "plan a project",
+            "action_agent": None,
+            "action_engine_options": {},
+        }
+        with pytest.raises(ValueError, match="engine kind"):
+            build_argv(schedule, {})
+
+    def test_missing_prompt_rejected(self):
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        schedule = {
+            "action_kind": "engine",
+            "action_model": "",
+            "action_prompt": "",
+            "action_agent": "planning",
+            "action_engine_options": {},
+        }
+        with pytest.raises(ValueError, match="engine spec"):
+            build_argv(schedule, {})
+
+    @pytest.mark.parametrize(
+        "opts",
+        [
+            {"test_cmd": "--bypass"},
+            {"export_dir": "-o"},
+            {"test_cmd": "pytest; rm -rf /"},
+            {"max_depth": 0},
+            {"max_depth": 101},
+            {"max_agents": "five"},
+            {"unknown_key": "x"},
+        ],
+    )
+    def test_unsafe_engine_options_rejected(self, opts):
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        schedule = {
+            "action_kind": "engine",
+            "action_model": "",
+            "action_prompt": "do the thing",
+            "action_agent": "coding",
+            "action_engine_options": opts,
+        }
+        with pytest.raises(ValueError):
+            build_argv(schedule, {})
+
+    def test_extra_args_suppressed_for_engine(self):
+        """action_extra_args must not be appended to engine argv."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        schedule = {
+            "action_kind": "engine",
+            "action_model": "",
+            "action_prompt": "do the thing",
+            "action_agent": "coding",
+            "action_engine_options": {},
+            "action_extra_args": ["positional-token"],
+        }
+        argv, _ = build_argv(schedule, {})
+        assert "positional-token" not in argv
