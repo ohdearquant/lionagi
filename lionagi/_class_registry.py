@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ast
-import importlib.util
+import importlib
 import os
 from typing import TypeVar
 
@@ -53,17 +53,71 @@ if not LION_CLASS_FILE_REGISTRY:
 
     LION_CLASS_FILE_REGISTRY = get_class_file_registry(script_dir, pattern_list)
 
+# The `lionagi/` package directory itself.  A valid *file_path* must live
+# under this directory — not merely under the project root — so that a stale
+# or polluted LION_CLASS_FILE_REGISTRY entry cannot import arbitrary top-level
+# modules from the checkout (e.g. test files outside the package).
+_PACKAGE_DIR: str = os.path.dirname(os.path.abspath(__file__))
+
+# The parent directory of the lionagi package (i.e. the project root that
+# contains the `lionagi/` directory).  Used to derive the dotted module name,
+# which must include the `lionagi.` prefix.  Stored at module level so it can
+# be used by get_class_objects without re-computing on every call.
+_PACKAGE_PARENT: str = os.path.dirname(_PACKAGE_DIR)
+
 
 def get_class_objects(file_path):
-    class_objects = {}
-    spec = importlib.util.spec_from_file_location("module.name", file_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    """Return a mapping of {class_name: class} for all classes in *file_path*.
 
-    for class_name in dir(module):
-        obj = getattr(module, class_name)
+    Instead of loading the file as an isolated module via
+    ``spec_from_file_location`` (which breaks relative imports), we derive the
+    canonical dotted module name from *file_path* relative to the package root
+    and use ``importlib.import_module``.  This preserves full package context
+    so relative imports (``from .x import Y``) resolve correctly.
+
+    Args:
+        file_path: Absolute path to a ``.py`` file inside the lionagi package.
+
+    Returns:
+        Dict mapping class names to class objects found in the module.
+
+    Raises:
+        ValueError: If *file_path* is not located under the package root (i.e.
+            the dotted name cannot be derived) or the module has no classes.
+        ImportError: Propagated if the derived module fails to import.
+    """
+    abs_path = os.path.abspath(file_path)
+
+    # Guard: the file must live inside the `lionagi/` package directory itself,
+    # not merely under the project root.  Otherwise any importable top-level
+    # module in the checkout (e.g. a test file) would be treated as a valid
+    # dotted module, broadening the fallback import surface.  os.path.commonpath
+    # raises ValueError for paths on different drives (Windows); treat that the
+    # same as "outside the package".
+    try:
+        within_package = os.path.commonpath([_PACKAGE_DIR, abs_path]) == _PACKAGE_DIR
+    except ValueError:
+        within_package = False
+
+    if not within_package:
+        raise ValueError(
+            f"Cannot derive a dotted module name for {file_path!r}: "
+            f"it is not located under the package root {_PACKAGE_DIR!r}."
+        )
+
+    rel = os.path.relpath(abs_path, _PACKAGE_PARENT)
+
+    # Convert filesystem path to dotted module name.
+    # Example: "lionagi/protocols/graph/node.py" -> "lionagi.protocols.graph.node"
+    dotted_name = rel.replace(os.sep, ".").removesuffix(".py")
+
+    module = importlib.import_module(dotted_name)
+
+    class_objects = {}
+    for attr_name in dir(module):
+        obj = getattr(module, attr_name)
         if isinstance(obj, type):
-            class_objects[class_name] = obj
+            class_objects[attr_name] = obj
 
     return class_objects
 
