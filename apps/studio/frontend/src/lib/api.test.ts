@@ -250,6 +250,9 @@ describe("engine defs API", () => {
     const result = await createEngineDef({ name: "Research Bot", kind: "research" });
     expect(result).toEqual(response);
     expect(calls[0]?.init?.method).toBe("POST");
+    expect((calls[0]?.init?.headers as Record<string, string>)["Content-Type"]).toBe(
+      "application/json",
+    );
     const body = JSON.parse(calls[0]?.init?.body as string);
     expect(body.name).toBe("Research Bot");
     expect(body.kind).toBe("research");
@@ -261,6 +264,9 @@ describe("engine defs API", () => {
     const result = await updateEngineDef("def-1", { model: "claude-opus-4-5" });
     expect(result).toEqual({ ok: true });
     expect(calls[0]?.init?.method).toBe("PUT");
+    expect((calls[0]?.init?.headers as Record<string, string>)["Content-Type"]).toBe(
+      "application/json",
+    );
     expect(calls[0]?.url).toMatch(/\/api\/engine-defs\/def-1/);
     const body = JSON.parse(calls[0]?.init?.body as string);
     expect(body.model).toBe("claude-opus-4-5");
@@ -290,6 +296,9 @@ describe("engine defs API", () => {
     expect(result).toEqual(response);
     expect(calls[0]?.init?.method).toBe("POST");
     expect(calls[0]?.url).toMatch(/\/api\/launches\//);
+    expect((calls[0]?.init?.headers as Record<string, string>)["Content-Type"]).toBe(
+      "application/json",
+    );
     const body = JSON.parse(calls[0]?.init?.body as string);
     expect(body.action_kind).toBe("engine");
     expect(body.action_engine_def).toBe("def-1");

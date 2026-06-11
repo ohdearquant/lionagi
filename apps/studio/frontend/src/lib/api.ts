@@ -1189,7 +1189,11 @@ export async function getEngineDef(defId: string): Promise<EngineDef> {
 export async function createEngineDef(
   body: CreateEngineDefRequest,
 ): Promise<{ id: string; name: string; created_at: number }> {
-  return fetchJson(`/api/engine-defs/`, { method: "POST", body: JSON.stringify(body) });
+  return fetchJson(`/api/engine-defs/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 export async function updateEngineDef(
@@ -1198,6 +1202,7 @@ export async function updateEngineDef(
 ): Promise<{ ok: boolean }> {
   return fetchJson(`/api/engine-defs/${encodeURIComponent(defId)}`, {
     method: "PUT",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
 }
@@ -1211,5 +1216,9 @@ export async function launchEngine(body: {
   action_engine_def: string;
   action_prompt: string;
 }): Promise<LaunchResult> {
-  return fetchJson(`/api/launches/`, { method: "POST", body: JSON.stringify(body) });
+  return fetchJson(`/api/launches/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
