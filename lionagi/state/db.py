@@ -262,16 +262,22 @@ class StateDB:
         self._db: aiosqlite.Connection | None = None
         # Per-(kind, name) lock to serialize version increment for save_definition.
         self._definition_locks: dict[tuple[str, str], Lock] = {}
-        # Serializes concurrent coroutines that share this connection and need a
-        # BEGIN IMMEDIATE transaction.  aiosqlite runs on a single background
-        # thread so cross-process WAL serialisation holds, but two coroutines on
-        # the SAME connection can enter "BEGIN IMMEDIATE" concurrently — the
-        # second sees "cannot start a transaction within a transaction" because
-        # aiosqlite.Connection.isolation_level is None (autocommit off via
-        # manual BEGIN) and there is no implicit nesting.  One lock per
-        # StateDB instance is sufficient; callers that need fine-grained
-        # per-key locks (e.g. _definition_locks) hold this lock during the
-        # critical window too.
+        # Connection-wide write lock: every mutating method that can share the
+        # live-persistence connection must hold this lock during its
+        # execute + commit (or BEGIN IMMEDIATE … commit/rollback) window.
+        #
+        # aiosqlite routes commands through a single background thread, so two
+        # coroutines issuing "BEGIN IMMEDIATE" concurrently on the same
+        # connection see "cannot start a transaction within a transaction".
+        # Even implicit-write paths (execute + commit) interleave unsafely when
+        # an explicit BEGIN is active: another coroutine's commit() can
+        # prematurely close the outer transaction.
+        #
+        # Methods covered: insert_session_signal, update_status,
+        # insert_message, append_to_progression, touch_session_activity,
+        # update_session (field-update section), update_branch.
+        # Methods NOT covered: read-only queries; save_definition (uses its
+        # own per-(kind,name) _definition_locks and is not on the signal path).
         self._write_lock: Lock = Lock()
 
     # ── Connection lifecycle ───────────────────────────────────────────
@@ -445,36 +451,41 @@ class StateDB:
         node_metadata = _to_json_column(msg.get("node_metadata"))
         content = _to_json_column(msg["content"])
 
-        type_id = await self._resolve_lion_class(lion_class_str)
+        # Serialise the full message write (including the message_types upsert
+        # sub-commit in _resolve_lion_class) behind _write_lock so this path
+        # cannot interleave with insert_session_signal's or update_status's
+        # BEGIN IMMEDIATE on the same aiosqlite connection.
+        async with self._write_lock:
+            type_id = await self._resolve_lion_class(lion_class_str)
 
-        # ON CONFLICT(id) DO UPDATE so re-emitted hooks overwrite stale content.
-        await self.db.execute(
-            """INSERT INTO messages (id, created_at, node_metadata, content,
-               embedding, sender, recipient, channel, role, lion_class)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET
-                 node_metadata = excluded.node_metadata,
-                 content       = excluded.content,
-                 embedding     = excluded.embedding,
-                 sender        = excluded.sender,
-                 recipient     = excluded.recipient,
-                 channel       = excluded.channel,
-                 role          = excluded.role,
-                 lion_class    = excluded.lion_class""",
-            (
-                msg["id"],
-                msg["created_at"],
-                node_metadata,
-                content,
-                msg.get("embedding"),
-                msg.get("sender"),
-                msg.get("recipient"),
-                msg.get("channel"),
-                msg["role"],
-                type_id,
-            ),
-        )
-        await self.db.commit()
+            # ON CONFLICT(id) DO UPDATE so re-emitted hooks overwrite stale content.
+            await self.db.execute(
+                """INSERT INTO messages (id, created_at, node_metadata, content,
+                   embedding, sender, recipient, channel, role, lion_class)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     node_metadata = excluded.node_metadata,
+                     content       = excluded.content,
+                     embedding     = excluded.embedding,
+                     sender        = excluded.sender,
+                     recipient     = excluded.recipient,
+                     channel       = excluded.channel,
+                     role          = excluded.role,
+                     lion_class    = excluded.lion_class""",
+                (
+                    msg["id"],
+                    msg["created_at"],
+                    node_metadata,
+                    content,
+                    msg.get("embedding"),
+                    msg.get("sender"),
+                    msg.get("recipient"),
+                    msg.get("channel"),
+                    msg["role"],
+                    type_id,
+                ),
+            )
+            await self.db.commit()
 
     async def get_message(self, message_id: str) -> dict[str, Any] | None:
         cur = await self.db.execute(
@@ -526,17 +537,18 @@ class StateDB:
 
     async def append_to_progression(self, progression_id: str, message_id: str) -> None:
         """Idempotent append of message_id to the progression JSON array."""
-        await self.db.execute(
-            """UPDATE progressions
-               SET collection = json_insert(collection, '$[#]', ?)
-               WHERE id = ?
-                 AND NOT EXISTS (
-                   SELECT 1 FROM json_each(progressions.collection)
-                   WHERE value = ?
-                 )""",
-            (message_id, progression_id, message_id),
-        )
-        await self.db.commit()
+        async with self._write_lock:
+            await self.db.execute(
+                """UPDATE progressions
+                   SET collection = json_insert(collection, '$[#]', ?)
+                   WHERE id = ?
+                     AND NOT EXISTS (
+                       SELECT 1 FROM json_each(progressions.collection)
+                       WHERE value = ?
+                     )""",
+                (message_id, progression_id, message_id),
+            )
+            await self.db.commit()
 
     # ── Sessions ───────────────────────────────────────────────────────
 
@@ -621,14 +633,15 @@ class StateDB:
     async def touch_session_activity(self, session_id: str, *, at: float | None = None) -> None:
         """Bump last_message_at and updated_at for staleness detection."""
         ts = at if at is not None else time.time()
-        await self.db.execute(
-            "UPDATE sessions "
-            "SET last_message_at = MAX(COALESCE(last_message_at, 0), ?), "
-            "    updated_at      = MAX(COALESCE(updated_at, 0), ?) "
-            "WHERE id = ?",
-            (ts, ts, session_id),
-        )
-        await self.db.commit()
+        async with self._write_lock:
+            await self.db.execute(
+                "UPDATE sessions "
+                "SET last_message_at = MAX(COALESCE(last_message_at, 0), ?), "
+                "    updated_at      = MAX(COALESCE(updated_at, 0), ?) "
+                "WHERE id = ?",
+                (ts, ts, session_id),
+            )
+            await self.db.commit()
 
     async def update_session(
         self,
@@ -676,11 +689,12 @@ class StateDB:
             fields["updated_at"] = time.time()
             sets = ", ".join(f"{k} = ?" for k in fields)
             vals = list(fields.values()) + [session_id]
-            await self.db.execute(
-                f"UPDATE sessions SET {sets} WHERE id = ?",  # noqa: S608
-                vals,
-            )
-            await self.db.commit()
+            async with self._write_lock:
+                await self.db.execute(
+                    f"UPDATE sessions SET {sets} WHERE id = ?",  # noqa: S608
+                    vals,
+                )
+                await self.db.commit()
 
     async def update_artifact_verification(
         self,
@@ -779,65 +793,69 @@ class StateDB:
         metadata_json = _json_dumps(metadata) if metadata is not None else None
         now = time.time()
 
-        await self.db.execute("BEGIN IMMEDIATE")
-        try:
-            cur = await self.db.execute(
-                f"SELECT status FROM {table} WHERE id = ?",  # noqa: S608
-                (entity_id,),
-            )
-            row = await cur.fetchone()
-            if row is None:
-                raise LookupError(f"{canonical_type} {entity_id!r} not found (table={table})")
-            previous_status = row["status"] if "status" in row.keys() else None
+        # Serialise the BEGIN IMMEDIATE window against all other write paths on
+        # this connection so no concurrent coroutine can issue its own BEGIN or
+        # implicit-write commit while this transaction is open.
+        async with self._write_lock:
+            await self.db.execute("BEGIN IMMEDIATE")
+            try:
+                cur = await self.db.execute(
+                    f"SELECT status FROM {table} WHERE id = ?",  # noqa: S608
+                    (entity_id,),
+                )
+                row = await cur.fetchone()
+                if row is None:
+                    raise LookupError(f"{canonical_type} {entity_id!r} not found (table={table})")
+                previous_status = row["status"] if "status" in row.keys() else None
 
-            if expected_statuses is not None and previous_status not in expected_statuses:
-                # CAS guard: current status is not in the expected set — skip.
+                if expected_statuses is not None and previous_status not in expected_statuses:
+                    # CAS guard: current status is not in the expected set — skip.
+                    await self.db.rollback()
+                    return False
+
+                await self.db.execute(
+                    f"UPDATE {table} SET "  # noqa: S608
+                    "  status = ?, "
+                    "  status_reason_code = ?, "
+                    "  status_reason_summary = ?, "
+                    "  status_evidence_refs = ?, "
+                    "  updated_at = ? "
+                    "WHERE id = ?",
+                    (
+                        new_status,
+                        reason_code,
+                        reason_summary,
+                        evidence_json,
+                        now,
+                        entity_id,
+                    ),
+                )
+
+                await self.db.execute(
+                    "INSERT INTO status_transitions "
+                    "(id, entity_type, entity_id, previous_status, status, "
+                    " reason_code, reason_summary, evidence_refs, "
+                    " source, actor, created_at, metadata) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        uuid.uuid4().hex,
+                        canonical_type,
+                        entity_id,
+                        previous_status,
+                        new_status,
+                        reason_code,
+                        reason_summary,
+                        evidence_json,
+                        source,
+                        actor,
+                        now,
+                        metadata_json,
+                    ),
+                )
+                await self.db.commit()
+            except BaseException:
                 await self.db.rollback()
-                return False
-
-            await self.db.execute(
-                f"UPDATE {table} SET "  # noqa: S608
-                "  status = ?, "
-                "  status_reason_code = ?, "
-                "  status_reason_summary = ?, "
-                "  status_evidence_refs = ?, "
-                "  updated_at = ? "
-                "WHERE id = ?",
-                (
-                    new_status,
-                    reason_code,
-                    reason_summary,
-                    evidence_json,
-                    now,
-                    entity_id,
-                ),
-            )
-
-            await self.db.execute(
-                "INSERT INTO status_transitions "
-                "(id, entity_type, entity_id, previous_status, status, "
-                " reason_code, reason_summary, evidence_refs, "
-                " source, actor, created_at, metadata) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    uuid.uuid4().hex,
-                    canonical_type,
-                    entity_id,
-                    previous_status,
-                    new_status,
-                    reason_code,
-                    reason_summary,
-                    evidence_json,
-                    source,
-                    actor,
-                    now,
-                    metadata_json,
-                ),
-            )
-            await self.db.commit()
-        except BaseException:
-            await self.db.rollback()
-            raise
+                raise
         return True
 
     async def list_sessions(
@@ -1512,11 +1530,12 @@ class StateDB:
             return
         sets = ", ".join(f"{k} = ?" for k in fields)
         vals = list(fields.values()) + [branch_id]
-        await self.db.execute(
-            f"UPDATE branches SET {sets} WHERE id = ?",  # noqa: S608
-            vals,
-        )
-        await self.db.commit()
+        async with self._write_lock:
+            await self.db.execute(
+                f"UPDATE branches SET {sets} WHERE id = ?",  # noqa: S608
+                vals,
+            )
+            await self.db.commit()
 
     async def repair_branch_progression(
         self,

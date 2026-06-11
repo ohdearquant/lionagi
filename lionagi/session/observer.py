@@ -96,19 +96,56 @@ def _sanitize_signal_payload(sig: Any) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         payload = {"sanitize_error": repr(sig)[:256]}
 
-    # Apply byte cap on the safe payload.
+    # Apply byte cap on the FINAL serialized form, not the intermediate
+    # safe_json string.  safe_json may be under the cap, but after wrapping in
+    # a truncation-marker dict and re-serializing (with JSON escaping of
+    # backslashes, quotes, etc.) the stored column can be 2× larger.
+    #
+    # Strategy:
+    #  1. Measure the final serialized payload.  If under cap, done.
+    #  2. If over cap, build a truncation-marker dict with a data slice whose
+    #     byte length starts at (cap - marker_overhead) and shrinks until the
+    #     whole re-serialized dict fits.  The loop terminates quickly because
+    #     each iteration exactly measures the excess; at most a few rounds.
     try:
         if safe_json is not None:
-            raw_bytes = safe_json.encode("utf-8")
+            original_bytes = safe_json.encode("utf-8")
         else:
-            raw_bytes = _jd(payload, safe_fallback=True).encode("utf-8")
-        if len(raw_bytes) > _PAYLOAD_BYTE_CAP:
-            clipped = raw_bytes[:_PAYLOAD_BYTE_CAP].decode("utf-8", errors="replace")
-            payload = {
-                "truncated": True,
-                "original_bytes": len(raw_bytes),
-                "data": clipped,
-            }
+            original_bytes = _jd(payload, safe_fallback=True).encode("utf-8")
+        original_len = len(original_bytes)
+
+        if original_len > _PAYLOAD_BYTE_CAP:
+            # Estimate marker overhead: serialise the marker with an empty data
+            # string to get the fixed-cost JSON bytes, then allow the remainder
+            # of the cap budget for the escaped data content.
+            _marker_empty = _jd(
+                {"truncated": True, "original_bytes": original_len, "data": ""},
+                safe_fallback=True,
+            )
+            # +2 for the two quote chars around the data string value
+            overhead = len(_marker_empty.encode("utf-8")) - 2
+            data_budget = max(0, _PAYLOAD_BYTE_CAP - overhead)
+
+            # Clip the original bytes to the estimated data budget, then
+            # iterate until the final serialized dict actually fits.
+            clip_len = data_budget
+            for _ in range(8):  # max 8 halvings; terminates well before that
+                clipped = original_bytes[:clip_len].decode("utf-8", errors="replace")
+                candidate = {
+                    "truncated": True,
+                    "original_bytes": original_len,
+                    "data": clipped,
+                }
+                final = _jd(candidate, safe_fallback=True).encode("utf-8")
+                if len(final) <= _PAYLOAD_BYTE_CAP:
+                    payload = candidate
+                    break
+                # Shrink clip proportionally to the overshoot.
+                excess = len(final) - _PAYLOAD_BYTE_CAP
+                clip_len = max(0, clip_len - excess)
+            else:
+                # Fallback: minimal marker with no data.
+                payload = {"truncated": True, "original_bytes": original_len, "data": ""}
     except Exception:  # noqa: BLE001, S110
         pass  # cap failure is non-fatal; the safe payload is still usable
 

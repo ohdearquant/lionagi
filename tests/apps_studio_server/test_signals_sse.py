@@ -865,3 +865,254 @@ async def test_signals_generator_cancellation_on_disconnect(tmp_path, monkeypatc
         await generator.aclose()
     except Exception as exc:  # noqa: BLE001
         pytest.fail(f"generator.aclose() raised unexpected {type(exc).__name__}: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# MAJOR-1 (Round 2): _write_lock must be connection-wide — concurrent signal
+# emits must not race with update_status, update_session, or insert_message
+# on the same bound StateDB connection.
+# ---------------------------------------------------------------------------
+
+
+async def test_concurrent_emit_and_update_status_no_failures(tmp_path):
+    """100 concurrent emits + 100 update_status calls on same DB → zero failures.
+
+    Before the connection-wide lock fix, update_status's unlocked BEGIN
+    IMMEDIATE raced with insert_session_signal's BEGIN IMMEDIATE, producing
+    'cannot start a transaction within a transaction' errors (Codex round-2
+    repro: 99/100 update_status calls failed).
+    """
+    from lionagi.session.session import Session
+    from lionagi.session.signal import NodeStarted
+    from lionagi.state.reasons import RunReasons
+
+    db_path = tmp_path / "state.db"
+    session_id = "race-status-sess"
+    n = 50  # 50 emits + 50 status transitions
+
+    async with StateDB(db_path) as db:
+        prog_id = f"{session_id}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": session_id,
+                "created_at": 100.0,
+                "progression_id": prog_id,
+                "name": "race-status-test",
+                "status": "running",
+                "invocation_kind": "agent",
+            }
+        )
+
+        session = Session(name="race-status-test")
+        observer = session.observer
+        observer.bind_db_persistence(session_id, db=db)
+
+        status_failures: list[Exception] = []
+
+        async def _do_status_update(i: int) -> None:
+            try:
+                # Toggle running → running (noop status, but exercises the path).
+                await db.update_status(
+                    "session",
+                    session_id,
+                    new_status="running",
+                    reason_code=RunReasons.STARTED_OK,
+                    reason_summary=f"touch-{i}",
+                )
+            except Exception as exc:  # noqa: BLE001
+                status_failures.append(exc)
+
+        await asyncio.gather(
+            *[observer.emit(NodeStarted(op_id=f"op-{i}", name=f"step-{i}")) for i in range(n)],
+            *[_do_status_update(i) for i in range(n)],
+        )
+
+        rows = await db.get_session_signals_after(session_id, 0)
+
+    assert len(rows) == n, f"Expected {n} signal rows, got {len(rows)}"
+    assert not status_failures, (
+        f"{len(status_failures)} update_status calls failed: {status_failures[0]}"
+    )
+    seqs = sorted(r["seq"] for r in rows)
+    assert seqs == list(range(1, n + 1)), f"seq gaps: {seqs}"
+
+
+async def test_concurrent_emit_and_update_session_no_failures(tmp_path):
+    """100 concurrent emits + 100 update_session (field-only) calls → zero failures."""
+    from lionagi.session.session import Session
+    from lionagi.session.signal import NodeStarted
+
+    db_path = tmp_path / "state.db"
+    session_id = "race-session-sess"
+    n = 50
+
+    async with StateDB(db_path) as db:
+        prog_id = f"{session_id}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": session_id,
+                "created_at": 100.0,
+                "progression_id": prog_id,
+                "name": "race-session-test",
+                "status": "running",
+                "invocation_kind": "agent",
+            }
+        )
+
+        session = Session(name="race-session-test")
+        observer = session.observer
+        observer.bind_db_persistence(session_id, db=db)
+
+        session_failures: list[Exception] = []
+
+        async def _do_session_update(i: int) -> None:
+            try:
+                await db.update_session(
+                    session_id,
+                    current_phase=f"phase-{i % 3}",
+                )
+            except Exception as exc:  # noqa: BLE001
+                session_failures.append(exc)
+
+        await asyncio.gather(
+            *[observer.emit(NodeStarted(op_id=f"op-{i}", name=f"step-{i}")) for i in range(n)],
+            *[_do_session_update(i) for i in range(n)],
+        )
+
+        rows = await db.get_session_signals_after(session_id, 0)
+
+    assert len(rows) == n, f"Expected {n} signal rows, got {len(rows)}"
+    assert not session_failures, (
+        f"{len(session_failures)} update_session calls failed: {session_failures[0]}"
+    )
+
+
+async def test_concurrent_emit_and_message_persist_no_failures(tmp_path):
+    """100 concurrent emits + 100 insert_message calls → zero failures and all rows present."""
+    import time as _time
+    import uuid as _uuid
+
+    from lionagi.session.session import Session
+    from lionagi.session.signal import NodeStarted
+
+    db_path = tmp_path / "state.db"
+    session_id = "race-message-sess"
+    n = 50
+
+    async with StateDB(db_path) as db:
+        prog_id = f"{session_id}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": session_id,
+                "created_at": 100.0,
+                "progression_id": prog_id,
+                "name": "race-message-test",
+                "status": "running",
+                "invocation_kind": "agent",
+            }
+        )
+
+        session = Session(name="race-message-test")
+        observer = session.observer
+        observer.bind_db_persistence(session_id, db=db)
+
+        message_failures: list[Exception] = []
+
+        async def _do_insert_message(i: int) -> None:
+            try:
+                await db.insert_message(
+                    {
+                        "id": _uuid.uuid4().hex,
+                        "created_at": _time.time(),
+                        "content": {"text": f"msg-{i}"},
+                        "role": "user",
+                        "sender": "tester",
+                        "recipient": "branch",
+                        "channel": None,
+                        "embedding": None,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                message_failures.append(exc)
+
+        await asyncio.gather(
+            *[observer.emit(NodeStarted(op_id=f"op-{i}", name=f"step-{i}")) for i in range(n)],
+            *[_do_insert_message(i) for i in range(n)],
+        )
+
+        rows = await db.get_session_signals_after(session_id, 0)
+
+    assert len(rows) == n, f"Expected {n} signal rows, got {len(rows)}"
+    assert not message_failures, (
+        f"{len(message_failures)} insert_message calls failed: {message_failures[0]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MAJOR-2 (Round 2): Byte cap must hold on the FINAL serialized form,
+# including JSON escaping overhead.  Codex repro: quote/backslash-heavy
+# payloads stored 32 KB instead of the claimed 16 KB cap.
+# ---------------------------------------------------------------------------
+
+
+async def test_payload_byte_cap_final_form_plain(tmp_path):
+    """100 k plain 'x' chars: final _to_json_column size <= _PAYLOAD_BYTE_CAP."""
+    from lionagi.session.observer import _PAYLOAD_BYTE_CAP, _sanitize_signal_payload
+    from lionagi.session.signal import NodeCompleted
+    from lionagi.state.db import _to_json_column
+
+    big_name = "x" * 100_000
+    sig = NodeCompleted(op_id="op-plain", name=big_name, elapsed=0.1)
+    payload = _sanitize_signal_payload(sig)
+    assert payload.get("truncated") is True, "Expected truncation for 100 k plain payload"
+    stored = _to_json_column(payload)
+    assert isinstance(stored, str)
+    assert len(stored.encode("utf-8")) <= _PAYLOAD_BYTE_CAP, (
+        f"plain: stored {len(stored.encode('utf-8'))} bytes, cap {_PAYLOAD_BYTE_CAP}"
+    )
+
+
+async def test_payload_byte_cap_final_form_quotes(tmp_path):
+    """100 k double-quote chars: final _to_json_column size <= _PAYLOAD_BYTE_CAP.
+
+    JSON-escaping doubles each '"' to '\\"', so naive byte-clip produces
+    ~2× the intended cap.  The fix must account for escaping overhead.
+    """
+    from lionagi.session.observer import _PAYLOAD_BYTE_CAP, _sanitize_signal_payload
+    from lionagi.session.signal import NodeCompleted
+    from lionagi.state.db import _to_json_column
+
+    # A name field filled with double-quotes: each char becomes \" in JSON.
+    big_name = '"' * 100_000
+    sig = NodeCompleted(op_id="op-quotes", name=big_name, elapsed=0.1)
+    payload = _sanitize_signal_payload(sig)
+    assert payload.get("truncated") is True
+    stored = _to_json_column(payload)
+    assert isinstance(stored, str)
+    assert len(stored.encode("utf-8")) <= _PAYLOAD_BYTE_CAP, (
+        f"quotes: stored {len(stored.encode('utf-8'))} bytes, cap {_PAYLOAD_BYTE_CAP}"
+    )
+
+
+async def test_payload_byte_cap_final_form_backslashes(tmp_path):
+    """100 k backslash chars: final _to_json_column size <= _PAYLOAD_BYTE_CAP.
+
+    JSON-escaping doubles each '\\' to '\\\\', so naive byte-clip produces
+    ~2× the intended cap.  The fix must account for escaping overhead.
+    """
+    from lionagi.session.observer import _PAYLOAD_BYTE_CAP, _sanitize_signal_payload
+    from lionagi.session.signal import NodeCompleted
+    from lionagi.state.db import _to_json_column
+
+    big_name = "\\" * 100_000
+    sig = NodeCompleted(op_id="op-bslash", name=big_name, elapsed=0.1)
+    payload = _sanitize_signal_payload(sig)
+    assert payload.get("truncated") is True
+    stored = _to_json_column(payload)
+    assert isinstance(stored, str)
+    assert len(stored.encode("utf-8")) <= _PAYLOAD_BYTE_CAP, (
+        f"backslashes: stored {len(stored.encode('utf-8'))} bytes, cap {_PAYLOAD_BYTE_CAP}"
+    )
