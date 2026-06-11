@@ -4,6 +4,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import Duration from "@/components/Duration";
 import PageHeader from "@/components/PageHeader";
 import StatusPill from "@/components/StatusPill";
@@ -53,19 +54,19 @@ interface Lane {
 const LANES: Lane[] = [
   {
     key: "queued",
-    label: "Queued",
+    label: "queued",
     statuses: ["pending", "prepared"],
     headerBg: "bg-status-warning-bg",
   },
   {
     key: "running",
-    label: "In Progress",
+    label: "running",
     statuses: ["running"],
     headerBg: "bg-status-running-bg",
   },
   {
     key: "review",
-    label: "Review / Waiting",
+    label: "review",
     // No canonical session statuses map here; populated once lifecycle-signal
     // enrichment surfaces awaiting/gated states through the runs API.
     statuses: [],
@@ -73,19 +74,19 @@ const LANES: Lane[] = [
   },
   {
     key: "done",
-    label: "Done",
+    label: "done",
     statuses: ["completed", "done", "success", "finished"],
     headerBg: "bg-status-success-bg",
   },
   {
     key: "failed",
-    label: "Failed",
+    label: "failed",
     statuses: ["failed", "timed_out", "timeout"],
     headerBg: "bg-status-error-bg",
   },
   {
     key: "cancelled",
-    label: "Cancelled",
+    label: "cancelled",
     statuses: ["cancelled", "canceled", "aborted"],
     headerBg: "bg-surface-overlay",
   },
@@ -123,6 +124,7 @@ function durationSeconds(run: RunSummary, nowSec: number): number | null {
 // ── Card ──────────────────────────────────────────────────────────────────────
 
 function KanbanCard({ run, now }: { run: RunSummary; now: number }) {
+  const t = useTranslations("kanban");
   const durSec = durationSeconds(run, now);
   const name = displayName(run);
   return (
@@ -149,7 +151,7 @@ function KanbanCard({ run, now }: { run: RunSummary; now: number }) {
         <StatusPill value={run.status} kind="lifecycle" />
         {run.branch_count != null && run.branch_count > 0 && (
           <span className="text-meta text-content-muted tabular-nums">
-            {run.branch_count} agent{run.branch_count !== 1 ? "s" : ""}
+            {t("agentCount", { count: run.branch_count })}
           </span>
         )}
       </div>
@@ -165,11 +167,14 @@ function KanbanCard({ run, now }: { run: RunSummary; now: number }) {
 // ── Lane column ───────────────────────────────────────────────────────────────
 
 function LaneColumn({ lane, runs, now }: { lane: Lane; runs: RunSummary[]; now: number }) {
+  const t = useTranslations("kanban");
   return (
     <div className="flex min-w-[210px] max-w-[260px] flex-1 flex-col rounded border border-edge">
       {/* Lane header */}
       <div className={`flex items-center justify-between rounded-t px-3 py-2 ${lane.headerBg}`}>
-        <h2 className="text-label font-medium text-content-primary">{lane.label}</h2>
+        <h2 className="text-label font-medium text-content-primary">
+          {t(`lanes.${lane.key}` as Parameters<typeof t>[0])}
+        </h2>
         <span className="ml-2 rounded-full border border-edge bg-surface-raised px-1.5 py-0.5 font-mono text-meta text-content-muted tabular-nums">
           {runs.length}
         </span>
@@ -182,7 +187,7 @@ function LaneColumn({ lane, runs, now }: { lane: Lane; runs: RunSummary[]; now: 
       >
         {runs.length === 0 ? (
           <div className="py-6 text-center text-meta text-content-muted/60">
-            {lane.statuses.length === 0 ? "Awaiting lifecycle-signal enrichment." : "No runs."}
+            {lane.statuses.length === 0 ? t("empty.awaitingEnrichment") : t("empty.noRuns")}
           </div>
         ) : (
           runs.map((run) => <KanbanCard key={run.run_id} run={run} now={now} />)
@@ -195,10 +200,13 @@ function LaneColumn({ lane, runs, now }: { lane: Lane; runs: RunSummary[]; now: 
 // ── Skeleton lane for loading state ──────────────────────────────────────────
 
 function SkeletonLane({ lane }: { lane: Lane }) {
+  const t = useTranslations("kanban");
   return (
     <div className="flex min-w-[210px] max-w-[260px] flex-1 flex-col rounded border border-edge">
       <div className={`flex items-center justify-between rounded-t px-3 py-2 ${lane.headerBg}`}>
-        <h2 className="text-label font-medium text-content-primary">{lane.label}</h2>
+        <h2 className="text-label font-medium text-content-primary">
+          {t(`lanes.${lane.key}` as Parameters<typeof t>[0])}
+        </h2>
         <span className="ml-2 rounded-full border border-edge bg-surface-raised px-1.5 py-0.5 font-mono text-meta text-content-muted">
           …
         </span>
@@ -218,6 +226,7 @@ function SkeletonLane({ lane }: { lane: Lane }) {
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function KanbanPage() {
+  const t = useTranslations("kanban");
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [total, setTotal] = useState<number>(0);
   const [loading, setLoading] = useState(true);
@@ -276,14 +285,14 @@ export default function KanbanPage() {
   return (
     <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-5 px-4 py-6 animate-page-enter">
       <PageHeader
-        title="Kanban"
-        subtitle="Read-only lifecycle view over run status. Drag-to-transition deferred (no transition endpoint on /api/runs/)."
+        title={t("title")}
+        subtitle={t("subtitle")}
         density="tight"
         badges={
           !loading ? (
             <span className="text-meta text-content-muted tabular-nums">
-              {total} run{total !== 1 ? "s" : ""}
-              {runningCount > 0 && <> &mdash; {runningCount} running</>}
+              {t("runCount", { count: total })}
+              {runningCount > 0 && <> &mdash; {t("runningCount", { count: runningCount })}</>}
             </span>
           ) : null
         }

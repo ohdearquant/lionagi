@@ -4,6 +4,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import Button from "@/components/Button";
 import Duration from "@/components/Duration";
 import PageHeader from "@/components/PageHeader";
@@ -101,15 +102,19 @@ function ProjectSection({
   runs: RunSummary[];
   now: number;
 }) {
+  const t = useTranslations("playfield");
+  // "Unassigned" is the internal sentinel value used as a Map key and in sort
+  // comparisons — translate only the display label, never the sentinel itself.
+  const displayProject = project === "Unassigned" ? t("unassigned") : project;
   return (
     <>
       <tr className="bg-surface-overlay border-b border-edge">
         <td colSpan={5} className="px-3 py-1.5">
           <h2 className="inline font-medium text-meta uppercase tracking-[0.06em] text-content-muted">
-            {project}
+            {displayProject}
           </h2>
           <span className="ml-2 font-mono font-normal text-[10px] text-content-muted/60">
-            {runs.length} active
+            {t("groupActive", { count: runs.length })}
           </span>
         </td>
       </tr>
@@ -121,6 +126,7 @@ function ProjectSection({
 }
 
 function PlayfieldPageInner() {
+  const t = useTranslations("playfield");
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -187,12 +193,14 @@ function PlayfieldPageInner() {
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 animate-page-enter">
       <PageHeader
-        title="Playfield"
-        subtitle="All running and queued plays and sessions across projects"
+        title={t("title")}
+        subtitle={t("subtitle")}
         density="tight"
         badges={
           !loading ? (
-            <span className="text-meta text-content-muted tabular-nums">{total} active</span>
+            <span className="text-meta text-content-muted tabular-nums">
+              {total} {t("active")}
+            </span>
           ) : null
         }
       />
@@ -206,7 +214,7 @@ function PlayfieldPageInner() {
             active={projectFilter === null}
             onClick={() => setProjectFilter(null)}
           >
-            All projects
+            {t("allProjects")}
           </Button>
           {knownProjects.map((p) => (
             <Button
@@ -216,7 +224,8 @@ function PlayfieldPageInner() {
               active={projectFilter === p}
               onClick={() => setProjectFilter(projectFilter === p ? null : p)}
             >
-              {p}
+              {/* "Unassigned" is the internal sentinel — translate display only */}
+              {p === "Unassigned" ? t("unassigned") : p}
             </Button>
           ))}
         </div>
@@ -232,11 +241,11 @@ function PlayfieldPageInner() {
         <table aria-busy={loading} className="w-full text-left text-body">
           <thead>
             <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
-              <th className="px-3 py-2.5 font-medium">Run</th>
-              <th className="px-3 py-2.5 font-medium">Status</th>
-              <th className="px-3 py-2.5 font-medium">Agents</th>
-              <th className="px-3 py-2.5 font-medium">Elapsed</th>
-              <th className="px-3 py-2.5 font-medium">Updated</th>
+              <th className="px-3 py-2.5 font-medium">{t("table.run")}</th>
+              <th className="px-3 py-2.5 font-medium">{t("table.status")}</th>
+              <th className="px-3 py-2.5 font-medium">{t("table.agents")}</th>
+              <th className="px-3 py-2.5 font-medium">{t("table.elapsed")}</th>
+              <th className="px-3 py-2.5 font-medium">{t("table.updated")}</th>
             </tr>
           </thead>
           <tbody>
@@ -250,7 +259,7 @@ function PlayfieldPageInner() {
               <tr>
                 <td colSpan={5} className="px-3 py-14 text-center text-body text-content-muted">
                   <span className="block mb-1 text-[11px]">{empty.runs}</span>
-                  <span className="text-meta">No sessions are currently running or queued.</span>
+                  <span className="text-meta">{t("empty")}</span>
                 </td>
               </tr>
             ) : (
