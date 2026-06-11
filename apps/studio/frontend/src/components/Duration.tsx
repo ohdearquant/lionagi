@@ -11,8 +11,10 @@ export interface DurationProps {
 function formatDuration(seconds: number): string {
   if (seconds < 1) return `${Math.round(seconds * 1000)}ms`;
   if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
-  const m = Math.floor(seconds / 60);
-  const s = Math.round(seconds - m * 60);
+  // Round to whole seconds before splitting so 1139.7s renders 19m 0s, not 18m 60s.
+  const total = Math.round(seconds);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
   if (m < 60) return s > 0 ? `${m}m ${s}s` : `${m}m`;
   const h = Math.floor(m / 60);
   const mm = m - h * 60;
