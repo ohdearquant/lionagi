@@ -617,3 +617,28 @@ CREATE INDEX IF NOT EXISTS idx_engine_runs_started
   ON engine_runs(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_engine_runs_session
   ON engine_runs(session_id) WHERE session_id IS NOT NULL;
+
+-- ── Engine definitions ────────────────────────────────────────────────────────
+-- Named, persisted engine configurations created via Studio.  A definition
+-- captures the engine kind + tunable parameters so operators can launch
+-- a specific pipeline on demand without repeating its configuration.
+
+CREATE TABLE IF NOT EXISTS engine_defs (
+  id          TEXT    PRIMARY KEY,
+  name        TEXT    NOT NULL UNIQUE,
+  kind        TEXT    NOT NULL,    -- one of the five engine kinds
+  model       TEXT,               -- optional model override
+  max_depth   INTEGER,            -- max pipeline depth [1, 100]
+  max_agents  INTEGER,            -- max concurrent agents [1, 100]
+  options     JSON,               -- {test_cmd?, export_dir?} only
+  description TEXT,
+  created_at  REAL    NOT NULL,
+  updated_at  REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_engine_defs_name
+  ON engine_defs(name);
+CREATE INDEX IF NOT EXISTS idx_engine_defs_kind
+  ON engine_defs(kind);
+CREATE INDEX IF NOT EXISTS idx_engine_defs_updated
+  ON engine_defs(updated_at DESC);

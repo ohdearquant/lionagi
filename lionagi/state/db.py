@@ -2183,6 +2183,103 @@ class StateDB:
             result.append(d)
         return result
 
+    # ── Engine definitions ─────────────────────────────────────────────
+
+    async def create_engine_def(self, defn: dict[str, Any]) -> None:
+        now = time.time()
+        await self.db.execute(
+            "INSERT INTO engine_defs "
+            "(id, name, kind, model, max_depth, max_agents, options, description, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                defn["id"],
+                defn["name"],
+                defn["kind"],
+                defn.get("model"),
+                defn.get("max_depth"),
+                defn.get("max_agents"),
+                _to_json_column(defn.get("options")),
+                defn.get("description"),
+                defn.get("created_at", now),
+                defn.get("updated_at", now),
+            ),
+        )
+        await self.db.commit()
+
+    async def get_engine_def(self, def_id: str) -> dict[str, Any] | None:
+        cur = await self.db.execute("SELECT * FROM engine_defs WHERE id = ?", (def_id,))
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        if isinstance(d.get("options"), str):
+            try:
+                d["options"] = json.loads(d["options"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return d
+
+    async def get_engine_def_by_name(self, name: str) -> dict[str, Any] | None:
+        cur = await self.db.execute("SELECT * FROM engine_defs WHERE name = ?", (name,))
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        if isinstance(d.get("options"), str):
+            try:
+                d["options"] = json.loads(d["options"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return d
+
+    async def list_engine_defs(
+        self,
+        *,
+        kind: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM engine_defs"
+        params: list[Any] = []
+        if kind is not None:
+            query += " WHERE kind = ?"
+            params.append(kind)
+        query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        cur = await self.db.execute(query, params)
+        rows = await cur.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            if isinstance(d.get("options"), str):
+                try:
+                    d["options"] = json.loads(d["options"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            result.append(d)
+        return result
+
+    async def update_engine_def(self, def_id: str, **fields: Any) -> None:
+        allowed = {"name", "kind", "model", "max_depth", "max_agents", "options", "description"}
+        bad = set(fields) - allowed
+        if bad:
+            raise ValueError(f"Invalid engine_def field(s): {bad}")
+        if "options" in fields:
+            fields["options"] = _to_json_column(fields["options"])
+        fields["updated_at"] = time.time()
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [def_id]
+        await self.db.execute(
+            f"UPDATE engine_defs SET {sets} WHERE id = ?",  # noqa: S608
+            vals,
+        )
+        await self.db.commit()
+
+    async def delete_engine_def(self, def_id: str) -> bool:
+        cur = await self.db.execute("DELETE FROM engine_defs WHERE id = ?", (def_id,))
+        await self.db.commit()
+        return cur.rowcount > 0
+
     # ── Helpers ────────────────────────────────────────────────────────
 
     @staticmethod
