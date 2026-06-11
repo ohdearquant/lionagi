@@ -158,8 +158,9 @@ def _studio_start(args: argparse.Namespace) -> int:
     print()
     print("To get the full UI, either:")
     print(f"  1. Install Docker and run: li studio        (auto-pulls {_STUDIO_IMAGE})")
-    print("  2. Clone the repo:        git clone https://github.com/ohdearquant/lionagi.git")
-    print("                            cd lionagi && li studio --dev")
+    print("  2. Clone the repo and build once:")
+    print("       git clone https://github.com/ohdearquant/lionagi.git")
+    print("       cd lionagi && li studio")
     print()
     return _start_backend_only(host, port)
 
@@ -199,8 +200,7 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
         print("Trying to use cached image...", file=sys.stderr)
 
     print()
-    print(f"Lion Studio UI:  http://localhost:{frontend_port}")
-    print(f"Lion Studio API: http://localhost:{api_port}")
+    print(f"Lion Studio: http://localhost:{api_port}")
     print("Press Ctrl+C to stop")
     print()
 
@@ -211,8 +211,6 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
         "--rm",
         "-p",
         f"{api_port}:8765",
-        "-p",
-        f"{frontend_port}:3000",
         "-v",
         f"{lionagi_home}:/root/.lionagi",
     ]
@@ -283,22 +281,38 @@ def _start_local(
         )
         return 1
 
-    frontend_proc = _launch_frontend(frontend_dir, frontend_port, port, dev_mode)
-
-    if frontend_proc:
-        print(f"Lion Studio UI:  http://{host}:{frontend_port}")
-    print(f"Lion Studio API: http://{host}:{port}")
-    print("Press Ctrl+C to stop")
-
     if not _ensure_apps_importable():
-        if frontend_proc:
-            frontend_proc.terminate()
         print(
             "Error: studio backend not found. Run from the lionagi repo root or install "
             "the full studio package.",
             file=sys.stderr,
         )
         return 1
+
+    frontend_proc: subprocess.Popen | None = None
+
+    if dev_mode:
+        # Dev mode: hot-reload Vite dev server + uvicorn side-by-side.
+        # Vite proxies /api → uvicorn (configured in vite.config.mts).
+        frontend_proc = _launch_vite_dev(frontend_dir, frontend_port)
+        if frontend_proc:
+            print(f"Lion Studio UI (dev):  http://{host}:{frontend_port}")
+        print(f"Lion Studio API:       http://{host}:{port}")
+    else:
+        # Production mode: build dist/ once, then uvicorn serves both UI and API
+        # from the same origin — no second process needed.
+        if _ensure_frontend_built(frontend_dir):
+            # Point the app at the built dist so the SPA fallback activates.
+            # app.py reads this env var at module import time; uvicorn loads the
+            # app fresh via the import string so the var must be set before the call.
+            dist_path = frontend_dir / "dist"
+            os.environ["LIONAGI_STUDIO_FRONTEND_DIST"] = str(dist_path)
+            print(f"Lion Studio: http://{host}:{port}")
+        else:
+            print("Warning: frontend build failed; starting API-only mode.", file=sys.stderr)
+            print(f"Lion Studio API: http://{host}:{port}")
+
+    print("Press Ctrl+C to stop")
 
     # Export the actually-resolved bind host so the app's startup security
     # warning (lionagi.studio.app) reflects the real bind address rather than a
@@ -320,8 +334,8 @@ def _start_local(
 
 
 def _is_build_stale(frontend_dir: Path) -> bool:
-    """True when .next/BUILD_ID is absent or older than source files."""
-    build_marker = frontend_dir / ".next" / "BUILD_ID"
+    """True when dist/index.html is absent or older than source files."""
+    build_marker = frontend_dir / "dist" / "index.html"
     if not build_marker.exists():
         return True
 
@@ -331,13 +345,12 @@ def _is_build_stale(frontend_dir: Path) -> bool:
         return True
 
     source_roots = [
-        frontend_dir / "app",
-        frontend_dir / "lib",
-        frontend_dir / "components",
+        frontend_dir / "src",
     ]
     source_files = [
+        frontend_dir / "index.html",
+        frontend_dir / "vite.config.mts",
         frontend_dir / "package.json",
-        frontend_dir / "next.config.mjs",
     ]
 
     for f in source_files:
@@ -362,18 +375,8 @@ def _is_build_stale(frontend_dir: Path) -> bool:
     return False
 
 
-def _launch_frontend(
-    frontend_dir: Path,
-    frontend_port: int,
-    api_port: int,
-    dev_mode: bool,
-) -> subprocess.Popen | None:
-    env = {
-        **os.environ,
-        "NEXT_PUBLIC_STUDIO_API_BASE": f"http://localhost:{api_port}",
-        "PORT": str(frontend_port),
-    }
-
+def _ensure_frontend_built(frontend_dir: Path) -> bool:
+    """Install deps if needed, then build with Vite. Returns True on success."""
     if not (frontend_dir / "node_modules").exists():
         print("Installing frontend dependencies...")
         try:
@@ -385,33 +388,33 @@ def _launch_frontend(
             )
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             print(f"Warning: npm install failed: {e}", file=sys.stderr)
-            return None
+            return False
 
-    if dev_mode:
-        cmd = ["npx", "next", "dev", "--port", str(frontend_port)]  # noqa: S607
-    else:
-        # Rebuild whenever the source is newer than the last successful build.
-        # NEXT_PUBLIC_STUDIO_API_BASE is inlined at build time, so a stale
-        # .next/ bundle may point at the wrong API origin — always rebuild on
-        # source changes to prevent "API unreachable" from stale bundles.
-        if _is_build_stale(frontend_dir):
-            print("Building frontend...")
-            try:
-                subprocess.run(  # noqa: S603
-                    ["npx", "next", "build"],  # noqa: S607
-                    cwd=str(frontend_dir),
-                    env=env,
-                    check=True,
-                    capture_output=True,
-                )
-            except subprocess.CalledProcessError as e:
-                print(f"Warning: frontend build failed: {e}", file=sys.stderr)
-                return None
-        cmd = ["npx", "next", "start", "--port", str(frontend_port)]  # noqa: S607
+    if _is_build_stale(frontend_dir):
+        print("Building frontend...")
+        try:
+            subprocess.run(  # noqa: S603
+                ["npx", "vite", "build"],  # noqa: S607
+                cwd=str(frontend_dir),
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as e:
+            print(f"Warning: frontend build failed: {e}", file=sys.stderr)
+            return False
 
+    return True
+
+
+def _launch_vite_dev(
+    frontend_dir: Path,
+    frontend_port: int,
+) -> subprocess.Popen | None:
+    """Spawn `npx vite --port <N>` for hot-reload dev mode."""
+    env = {**os.environ, "PORT": str(frontend_port)}
     try:
         return subprocess.Popen(  # noqa: S603
-            cmd,
+            ["npx", "vite", "--port", str(frontend_port)],  # noqa: S607
             cwd=str(frontend_dir),
             env=env,
             stdout=subprocess.DEVNULL,

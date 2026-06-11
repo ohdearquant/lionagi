@@ -139,26 +139,40 @@ review…) become **shipped specs**: open the research engine on the canvas and
 see its rule machine; fork it; tune budgets. The engines stop being opaque
 Python and become inspectable, remixable designs.
 
-## 6. Substrate work this requires (lionagi main src + CLI)
+## 6. Substrate work this requires (reconciled against the wiring inventory, 2026-06-11)
 
-The canvas is honest only if the engine runs what the canvas shows. Gaps known
-before the wiring inventory returns (to be reconciled with it):
+The canvas is honest only if the engine runs what the canvas shows. Verified
+state (full citation map in the wiring inventory; summary here):
 
-1. **Declarative reaction compiler** — spec `reactions:`/`budgets:`/`judge:` →
-   `SessionObserver.observe()` wiring + EngineRun-style guards. New module,
-   likely `lionagi/orchestration/`.
-2. **Grants in playbook schema** — `emits:` per step → `build_emission_operable`
-   → branch capability grant. Today grants are code-path only.
-3. **CLI**: `li o flow` accepts the extended spec; engine presets exposed
-   (`li engine research "topic"` or equivalent — exact surface TBD after
-   inventory).
-4. **Studio API**: design-time CRUD for specs (likely extends existing playbook
-   endpoints); run-time needs nothing new if session_signals SSE already
-   carries StructuredOutput/violation/lifecycle signals (inventory confirms).
-5. **Main-src adoption** (Ocean directive): operations and existing flows
-   should themselves emit onto the bus uniformly (the _observe.py seam claims
-   universality — verify against act/chat paths) so the canvas sees *every*
-   run, not only canvas-authored ones.
+**Already works — render phase can consume it today:**
+- Signal persistence + SSE for `li agent` and `li o flow`/`fanout` runs:
+  `bind_db_persistence` (cli/_persist.py:334, orchestrate/_orchestration.py:666)
+  → `session_signals` → `GET /api/sessions/{id}/signals` SSE (0.5s poll,
+  heartbeat, `{seq, kind, op_id, ts, payload≤16KB}` frames).
+- Reactive SpawnRequest injection is observable end-to-end: AssistantResponse →
+  capability extract → StructuredOutput → ReactiveExecutor `_on_bus_spawn` →
+  graph mutation → `NodeQueued` signal lands in the SSE stream within ≤0.5s.
+
+**Gap list (each is a substrate PR before/alongside its canvas phase):**
+1. **Engine runs are invisible live** — `li engine run` never calls
+   `bind_db_persistence`, so NodeQueued/Started/… from EngineRun.run_dag are
+   emitted but never persisted; Studio sees only the terminal `engine_runs`
+   row. One-line-class fix + tests. Required for canvas phase 1.
+2. **Studio cannot start anything** — no POST endpoints for engine runs or
+   flows; Studio is read-only on orchestration. Required for launching from
+   the canvas (phase 3).
+3. **Casts are invisible everywhere** — zero `lionagi.casts` imports in
+   studio/; no CLI inspection (`li casts` absent). The canvas needs a
+   roles/modes/emission-contract catalog API (node palette + port rendering).
+4. **No declarative grants** — `emits:` per step absent from playbook schema
+   (_spec.py:241-322 allows only `pack`, `reactive` beyond the DAG); grants
+   exist only via the role+modes+pack code path. Required for phase 3.
+5. **No declarative reactions** — reaction rules/observers/budgets/judge have
+   no YAML form; engines are configured only in Python. The `reactions:`
+   compiler onto `SessionObserver.observe()` is the phase-4 substrate PR.
+6. **work/forms barely wired** — `li agent --form` fills but never validates
+   (`validate_form`/RuleSet unreachable from CLI; no studio surface). Fold
+   into the Designer's arg/form story or explicitly defer.
 
 ## 7. What this is NOT
 
