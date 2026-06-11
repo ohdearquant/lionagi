@@ -236,7 +236,21 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
 
             db = StateDB()
             await db.open()
-            # Create a sessions row so session_signals FK is satisfied.
+            await db.insert_engine_run(
+                run_id=run_id,
+                kind=kind,
+                spec_json=spec_for_db,
+                started_at=started_at,
+                session_id=args.session_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            warn(f"could not open StateDB for persistence: {exc}")
+            db = None
+    if db is not None:
+        # Create a sessions row so session_signals FK is satisfied.  Guarded
+        # separately: a failure here only disables live signal streaming,
+        # never the engine_runs record itself.
+        try:
             prog_id = f"{run_id}-prog"
             await db.create_progression(prog_id)
             await db.create_session(
@@ -250,16 +264,8 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
                 }
             )
             signal_session_id = run_id
-            await db.insert_engine_run(
-                run_id=run_id,
-                kind=kind,
-                spec_json=spec_for_db,
-                started_at=started_at,
-                session_id=args.session_id,
-            )
         except Exception as exc:  # noqa: BLE001
-            warn(f"could not open StateDB for persistence: {exc}")
-            db = None
+            warn(f"could not create signal session for engine run: {exc}")
             signal_session_id = None
 
     # Import engine class lazily (no circular import; heavy deps stay unloaded
