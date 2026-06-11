@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 
-from .config import CORS_ORIGINS
+from .config import CORS_ORIGINS, HOST
 from .routers import (
     admin,
     agents,
@@ -37,6 +37,37 @@ _log = logging.getLogger(__name__)
 # only pure liveness probes that carry no application state belong here.
 _PUBLIC_PATHS = frozenset({"/health"})
 
+# Explicit CORS method allowlist derived from the router set.
+# Routers use: GET (39), POST (19), PUT (3), PATCH (1), DELETE (4).
+# OPTIONS is included to let the CORSMiddleware respond to preflight requests.
+_CORS_METHODS: list[str] = ["DELETE", "GET", "OPTIONS", "PATCH", "POST", "PUT"]
+
+
+def _emit_startup_warnings() -> None:
+    """Emit security warnings once at startup — no-op if conditions are safe."""
+    token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
+    if not token:
+        bind_host = os.getenv("LIONAGI_STUDIO_HOST", HOST)
+        if bind_host == "0.0.0.0":  # noqa: S104
+            _log.warning(
+                "Studio running WITHOUT authentication on host 0.0.0.0 — "
+                "ALL API requests are accepted from any network interface. "
+                "This is unsafe in containers or cloud deployments. "
+                "Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
+            )
+        else:
+            _log.warning(
+                "Studio running WITHOUT authentication — all API requests are "
+                "accepted. Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
+            )
+
+    if "*" in CORS_ORIGINS:
+        _log.warning(
+            "CORS is configured with a wildcard origin ('*'). "
+            "Set CORS_ORIGINS to a comma-separated list of allowed origins "
+            "to restrict cross-origin access."
+        )
+
 
 @asynccontextmanager
 async def lifespan(app_instance):
@@ -44,6 +75,7 @@ async def lifespan(app_instance):
     from .services.db_maintenance import checkpoint_state_db
     from .services.lifecycle import run_startup_reconciliation
 
+    _emit_startup_warnings()
     await scheduler.start()
     await run_startup_reconciliation()
     try:
@@ -59,7 +91,7 @@ app = FastAPI(title="Lion Studio Server", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
-    allow_methods=["*"],
+    allow_methods=_CORS_METHODS,
     allow_headers=["*"],
 )
 
