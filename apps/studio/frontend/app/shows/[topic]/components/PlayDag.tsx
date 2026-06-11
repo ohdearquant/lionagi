@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import ReactFlow, { Background, Controls, MarkerType } from "reactflow";
-import type { Edge, Node } from "reactflow";
+import type { Edge, Node, NodeMouseHandler } from "reactflow";
 import "reactflow/dist/style.css";
 import { getLayoutedElements } from "@/components/canvas/useLayout";
 import type { ShowDetail } from "@/lib/types";
@@ -12,6 +12,7 @@ type Play = ShowDetail["plays"][number];
 interface PlayDagProps {
   plays: Play[];
   showMd?: string | null;
+  onNodeClick?: (playName: string) => void;
 }
 
 function parseShowMdDeps(showMd: string | null | undefined): Map<string, string[]> {
@@ -39,6 +40,23 @@ function parseShowMdDeps(showMd: string | null | undefined): Map<string, string[
   return deps;
 }
 
+function statusBackground(status: string): string {
+  if (
+    status === "merged" ||
+    status === "completed" ||
+    status === "done" ||
+    status === "director-managed-complete"
+  ) {
+    return "var(--status-success-bg)";
+  }
+  if (status === "running" || status === "director-managed") {
+    return "var(--status-running-bg)";
+  }
+  if (status === "failed" || status === "error") return "var(--status-error-bg)";
+  // pending, blocked, default → neutral surface
+  return "var(--surface-raised)";
+}
+
 function statusColor(status: string): string {
   if (
     status === "merged" ||
@@ -55,7 +73,75 @@ function statusColor(status: string): string {
   return "var(--edge-strong)";
 }
 
-export default function PlayDag({ plays, showMd }: PlayDagProps) {
+/** Returns the set of edge IDs on the longest path (by hop count) through the DAG. */
+function criticalPathEdgeIds(nodes: Node[], edges: Edge[]): Set<string> {
+  const outgoing = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
+  for (const n of nodes) {
+    outgoing.set(n.id, []);
+    inDegree.set(n.id, 0);
+  }
+  for (const e of edges) {
+    outgoing.get(e.source)?.push(e.target);
+    inDegree.set(e.target, (inDegree.get(e.target) ?? 0) + 1);
+  }
+
+  // Kahn's topological sort
+  const queue: string[] = [];
+  const deg = new Map(inDegree);
+  deg.forEach((d, id) => {
+    if (d === 0) queue.push(id);
+  });
+  const topo: string[] = [];
+  while (queue.length > 0) {
+    const u = queue.shift()!;
+    topo.push(u);
+    for (const v of outgoing.get(u) ?? []) {
+      const nd = (deg.get(v) ?? 0) - 1;
+      deg.set(v, nd);
+      if (nd === 0) queue.push(v);
+    }
+  }
+
+  // DP: longest path distance and predecessor tracking
+  const dist = new Map<string, number>(nodes.map((n) => [n.id, 0]));
+  const prev = new Map<string, string | null>(nodes.map((n) => [n.id, null]));
+  for (const u of topo) {
+    for (const v of outgoing.get(u) ?? []) {
+      if ((dist.get(u) ?? 0) + 1 > (dist.get(v) ?? 0)) {
+        dist.set(v, (dist.get(u) ?? 0) + 1);
+        prev.set(v, u);
+      }
+    }
+  }
+
+  // Find end of longest path
+  let maxDist = -1;
+  let endNode = "";
+  dist.forEach((d, id) => {
+    if (d > maxDist) {
+      maxDist = d;
+      endNode = id;
+    }
+  });
+
+  // Map "source→target" to edge id for fast lookup
+  const edgeByKey = new Map(edges.map((e) => [`${e.source}→${e.target}`, e.id]));
+
+  // Trace back from endNode to collect critical edge IDs
+  const critical = new Set<string>();
+  let cur = endNode;
+  let p = prev.get(cur);
+  while (p) {
+    const eid = edgeByKey.get(`${p}→${cur}`);
+    if (eid) critical.add(eid);
+    cur = p;
+    p = prev.get(cur);
+  }
+  return critical;
+}
+
+export default function PlayDag({ plays, showMd, onNodeClick }: PlayDagProps) {
   const { nodes, edges } = useMemo(() => {
     const depsMap = parseShowMdDeps(showMd);
     const playNames = new Set(plays.map((p) => p.name));
@@ -66,7 +152,7 @@ export default function PlayDag({ plays, showMd }: PlayDagProps) {
       position: { x: 0, y: 0 },
       data: { label: play.name },
       style: {
-        background: "var(--surface-raised)",
+        background: statusBackground(play.meta.status),
         border: `1px solid ${statusColor(play.meta.status)}`,
         color: "var(--content-primary)",
         fontSize: 10,
@@ -107,11 +193,29 @@ export default function PlayDag({ plays, showMd }: PlayDagProps) {
       }));
     }
 
-    return getLayoutedElements(rawNodes, rawEdges, "LR");
+    // Highlight the critical (longest) path with a distinct edge style
+    const criticalIds = criticalPathEdgeIds(rawNodes, rawEdges);
+    const highlightedEdges = rawEdges.map((e) =>
+      criticalIds.has(e.id)
+        ? { ...e, style: { ...e.style, stroke: "var(--status-running)", strokeWidth: 2 } }
+        : e,
+    );
+
+    return getLayoutedElements(rawNodes, highlightedEdges, "LR");
   }, [plays, showMd]);
 
+  const handleNodeClick: NodeMouseHandler = useCallback(
+    (_event, node) => {
+      onNodeClick?.(node.id);
+    },
+    [onNodeClick],
+  );
+
   return (
-    <div style={{ height: 220 }} className="rounded border border-edge bg-surface-base">
+    <div
+      style={{ height: 300 }}
+      className={`rounded border border-edge bg-surface-base${onNodeClick ? " [&_.react-flow__node]:cursor-pointer" : ""}`}
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -120,6 +224,7 @@ export default function PlayDag({ plays, showMd }: PlayDagProps) {
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable={false}
+        onNodeClick={onNodeClick ? handleNodeClick : undefined}
         proOptions={{ hideAttribution: true }}
         className="bg-surface-base"
       >

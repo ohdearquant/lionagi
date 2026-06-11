@@ -112,15 +112,25 @@ function provenanceLabel(run: RunSummary): "fs" | "db" {
 
 function StatusFilterChip({
   value,
+  count,
   active,
   onClick,
 }: {
   value: string;
+  count?: number;
   active: boolean;
   onClick: () => void;
 }) {
   return (
-    <Button variant="toggle" size="sm" active={active} onClick={onClick}>
+    <Button
+      variant="toggle"
+      size="sm"
+      active={active}
+      onClick={onClick}
+      trailing={
+        count !== undefined ? <span className="tabular-nums opacity-70">{count}</span> : undefined
+      }
+    >
       {value}
     </Button>
   );
@@ -318,7 +328,9 @@ function RunsPageInner() {
     });
   }
 
-  const runs = data?.runs ?? [];
+  // Memoized so the [] fallback keeps a stable reference while loading —
+  // otherwise every render re-runs the memos hanging off `runs`.
+  const runs = useMemo(() => data?.runs ?? [], [data]);
   const total = data?.total ?? 0;
   const totalPages = data?.total_pages ?? 1;
 
@@ -326,6 +338,22 @@ function RunsPageInner() {
     () => groupByInvocation(runs),
     [runs],
   );
+
+  // Per-status counts derived from the currently loaded runs.
+  // "completed" is the canonical DB value; "done" is the ADR-0025 backward-compat alias.
+  const statusCounts = useMemo<Record<string, number>>(() => {
+    const counts: Record<string, number> = {};
+    for (const s of STATUS_FILTERS) counts[s] = 0;
+    for (const run of runs) {
+      const st = run.status;
+      if (st === "completed") {
+        counts["done"] = (counts["done"] ?? 0) + 1;
+      } else if (st in counts) {
+        counts[st] = (counts[st] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }, [runs]);
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 animate-page-enter">
@@ -419,6 +447,10 @@ function RunsPageInner() {
               <StatusFilterChip
                 key={s}
                 value={s}
+                // Counts come from the loaded result set, so with a status
+                // filter active the other chips' true counts are unknowable
+                // client-side — hide them rather than show zeros.
+                count={loading || statuses.length > 0 ? undefined : statusCounts[s]}
                 active={statuses.includes(s)}
                 onClick={() => toggleStatus(s)}
               />
