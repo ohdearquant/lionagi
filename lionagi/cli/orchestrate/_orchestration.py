@@ -660,6 +660,11 @@ async def setup_orchestration_persist(
             "identity_markers": _identity_markers,
         }
 
+        # Bind signal persistence through the already-open DB connection so that
+        # every Signal emitted on this session's observer is written to
+        # session_signals at the same cost as a message write (no per-signal open).
+        session.observer.bind_db_persistence(session_id, db=db)
+
         for branch in branches or []:
             register_branch_hook(ctx, branch)
 

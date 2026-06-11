@@ -567,3 +567,24 @@ CREATE INDEX IF NOT EXISTS idx_status_transitions_reason
   ON status_transitions(reason_code, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_status_transitions_created
   ON status_transitions(created_at DESC);
+
+-- ── Session signals (Phase C Move 1) ─────────────────────────────────────────
+-- Append-only lifecycle signal log emitted by SessionObserver.emit().
+-- seq is a monotonic per-session counter (assigned at INSERT via MAX+1).
+-- payload holds the JSON-serialised signal fields (kind, op_id, name, …).
+-- The SSE endpoint polls rows WHERE session_id = ? AND seq > ? ORDER BY seq.
+
+CREATE TABLE IF NOT EXISTS session_signals (
+  id          TEXT    PRIMARY KEY,         -- uuid4 hex
+  session_id  TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  seq         INTEGER NOT NULL,            -- per-session monotone, 1-based
+  kind        TEXT    NOT NULL,            -- signal class name (NodeStarted, …)
+  op_id       TEXT    NOT NULL DEFAULT '', -- op/node id when applicable
+  ts          REAL    NOT NULL,            -- Unix epoch seconds (float)
+  payload     JSON    NOT NULL DEFAULT '{}'
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_signals_seq
+  ON session_signals(session_id, seq);
+CREATE INDEX IF NOT EXISTS idx_session_signals_session_ts
+  ON session_signals(session_id, ts);
