@@ -236,3 +236,35 @@ async def test_run_already_classified_provider_error_not_double_wrapped():
     assert exc_info.value is original_exc, (
         "already-classified ProviderError must not be double-wrapped"
     )
+
+
+# ---------------------------------------------------------------------------
+# Round-3 regression: error:null chunk must NOT be swallowed as benign EOS
+# (codex round-2 finding: null normalised to {} matched the benign predicate)
+# ---------------------------------------------------------------------------
+
+
+async def test_run_raises_provider_error_for_null_error_payload_chunk():
+    """A StreamChunk from {"type":"error","error":null} must raise ProviderError
+    rather than completing silently.
+
+    Regression: after the null-normalisation fix (round 2), the null payload was
+    normalised to {} before the benign-EOS predicate, causing run() to treat it as
+    the resume-EOF sentinel and return a successful result.  The fix captures
+    _raw_err before normalising so null does NOT qualify as benign.
+    """
+    # This is the chunk that the adapter emits for {"type":"error","error":null}.
+    # After the fix it is NOT benign_eos, so run() must raise ProviderError.
+    # The self-describing content from the empty-payload branch matches the base
+    # ProviderError classifier (no quota/auth/context pattern).
+    null_error_chunk = StreamChunk(
+        type="error",
+        content="CLI failure (empty error payload; event type='error')",
+        metadata={"type": "error", "error": None},
+        # Crucially: benign_eos is NOT set
+    )
+    branch = Branch()
+    branch.chat_model = _make_fake_cli_model([null_error_chunk])
+
+    with pytest.raises(ProviderError):
+        await _drain(run(branch, "do something", RunParam()))
