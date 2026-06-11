@@ -641,3 +641,259 @@ async def test_run_agent_continue_last_with_preset_raises(monkeypatch, tmp_path)
             continue_last=True,
             preset="coding",
         )
+
+
+# ---------------------------------------------------------------------------
+# Finding 1: profile + preset system prompt composition
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_agent_preset_and_profile_single_system_message_with_both(monkeypatch, tmp_path):
+    """preset=coding + profile.system_prompt → exactly one system message that
+    contains BOTH the preset role/implementer content AND the profile extension.
+
+    MessageManager.add_message(system=...) calls set_system which replaces the
+    message.  The fix composes profile.system_prompt into spec.extra_prompt
+    BEFORE create_agent so build_system_message() produces a single message with
+    all content.
+    """
+    from types import SimpleNamespace as _NS
+
+    from lionagi import Branch as _Branch
+    from lionagi.cli._agents import AgentProfile  # type: ignore[attr-defined]
+
+    branches_created: list = []
+    real_branch_init = _Branch.__init__
+
+    def spy_branch_init(self, *args, **kwargs):
+        real_branch_init(self, *args, **kwargs)
+        branches_created.append(self)
+
+    monkeypatch.setattr(_Branch, "__init__", spy_branch_init)
+    _wire_run_agent_mocks(monkeypatch, tmp_path)
+
+    # Patch load_agent_profile to return a fake profile with a known prompt.
+    PROFILE_PROMPT = "PROFILE_EXTENSION_UNIQUE_MARKER"
+    fake_profile = _NS(
+        model=None,
+        effort=None,
+        yolo=False,
+        fast_mode=False,
+        system_prompt=PROFILE_PROMPT,
+        artifact_defaults=None,
+    )
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "load_agent_profile", lambda name: fake_profile)
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent(
+        "claude/sonnet",
+        "build it",
+        agent_name="myprofile",
+        preset="coding",
+    )
+
+    assert branches_created, "Branch must have been constructed"
+    tool_branch = next(
+        (b for b in branches_created if "bash" in b.acts.registry),
+        None,
+    )
+    assert tool_branch is not None, "No branch with coding tools found"
+
+    # Exactly one system message.
+    sys_msg = tool_branch.msgs.system
+    assert sys_msg is not None, "Branch has no system message"
+    rendered = sys_msg.rendered
+    # Preset role content: the implementer profile embeds "implementer" keyword.
+    assert "implementer" in rendered.lower(), (
+        f"Expected preset 'implementer' role text in system message; got:\n{rendered[:500]}"
+    )
+    # Profile extension is present.
+    assert PROFILE_PROMPT in rendered, (
+        f"Expected profile prompt {PROFILE_PROMPT!r} in system message; got:\n{rendered[:500]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_agent_profile_without_preset_system_prompt_unchanged(monkeypatch, tmp_path):
+    """Without --preset, profile.system_prompt is applied via add_message as before."""
+    from types import SimpleNamespace as _NS
+
+    from lionagi import Branch as _Branch
+
+    branches_created: list = []
+    real_branch_init = _Branch.__init__
+
+    def spy_branch_init(self, *args, **kwargs):
+        real_branch_init(self, *args, **kwargs)
+        branches_created.append(self)
+
+    monkeypatch.setattr(_Branch, "__init__", spy_branch_init)
+    _wire_run_agent_mocks(monkeypatch, tmp_path)
+
+    PROFILE_PROMPT = "PROFILE_ONLY_PROMPT_MARKER"
+    fake_profile = _NS(
+        model=None,
+        effort=None,
+        yolo=False,
+        fast_mode=False,
+        system_prompt=PROFILE_PROMPT,
+        artifact_defaults=None,
+    )
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "load_agent_profile", lambda name: fake_profile)
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent(
+        "claude/sonnet",
+        "do stuff",
+        agent_name="myprofile",
+        preset=None,
+    )
+
+    assert branches_created
+    # Last branch (no coding tools — plain Branch).
+    plain_branch = branches_created[-1]
+    sys_msg = plain_branch.msgs.system
+    assert sys_msg is not None, "Profile system prompt not set"
+    assert PROFILE_PROMPT in sys_msg.rendered
+
+
+# ---------------------------------------------------------------------------
+# Finding 2: form spec closed schema enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestFormSpecClosedSchema:
+    """Unknown top-level keys and undeclared values must be rejected."""
+
+    def test_unknown_top_level_key_raises_value_error(self):
+        """A misspelled key like 'fieldz' must raise ValueError."""
+        spec = {"fieldz": {"x": {"type": "str", "required": True}}}
+        with pytest.raises(ValueError, match="unknown top-level key"):
+            _build_work_form(spec, "<test>")
+
+    def test_unknown_key_names_the_bad_key(self):
+        """Error message must identify the offending key."""
+        spec = {"fieldz": {}, "typo": "bad"}
+        with pytest.raises(ValueError) as exc_info:
+            _build_work_form(spec, "<test>")
+        assert "fieldz" in str(exc_info.value) or "typo" in str(exc_info.value)
+
+    def test_undeclared_value_key_raises_value_error(self):
+        """Value key not declared in fields must raise ValueError."""
+        spec = {
+            "fields": {"known": {"type": "str", "required": True}},
+            "values": {"known": "ok", "undeclared": "bypass"},
+        }
+        with pytest.raises(ValueError, match="undeclared key"):
+            _build_work_form(spec, "<test>")
+
+    def test_undeclared_value_names_the_bad_key(self):
+        """Error message must name the undeclared value key."""
+        spec = {
+            "fields": {"x": {"type": "str", "required": False}},
+            "values": {"x": "fine", "sneaky": "bad"},
+        }
+        with pytest.raises(ValueError) as exc_info:
+            _build_work_form(spec, "<test>")
+        assert "sneaky" in str(exc_info.value)
+
+    def test_values_without_fields_are_allowed(self):
+        """When fields is absent, all values pass through (field-less form)."""
+        spec = {"values": {"k": "v", "extra": "also-fine"}}
+        form = _build_work_form(spec, "<test>")
+        # Field-less forms fill values without declaration checks.
+        assert form.values.get("k") == "v"
+
+    def test_run_agent_unknown_top_level_key_rc1_no_llm(self, tmp_path, monkeypatch):
+        """Misspelled top-level key in spec file → rc=1, no LLM call."""
+        bad = tmp_path / "bad.yaml"
+        bad.write_text("fieldz:\n  x:\n    type: str\n    required: true\n")
+
+        llm_called = []
+        import lionagi.cli.agent as agent_mod
+
+        async def fake_run(*a, **kw):
+            llm_called.append(1)
+            return ("done", "claude", "br-001", "completed")
+
+        monkeypatch.setattr(agent_mod, "_run_agent", fake_run)
+
+        errors: list[str] = []
+        monkeypatch.setattr(agent_mod, "log_error", lambda msg: errors.append(msg))
+
+        rc = run_agent(_agent_args(form=str(bad)))
+        assert rc == 1
+        assert not llm_called, "LLM must not be called when spec has unknown top-level key"
+        assert errors, "log_error must have been called"
+        assert any("fieldz" in e or "unknown" in e.lower() for e in errors), (
+            f"Expected 'fieldz' or 'unknown' in error; got: {errors}"
+        )
+
+    def test_run_agent_undeclared_value_key_rc1_no_llm(self, tmp_path, monkeypatch):
+        """Undeclared value key → rc=1, no LLM call."""
+        spec = tmp_path / "spec.yaml"
+        spec.write_text(
+            "fields:\n  known:\n    type: str\n    required: true\n"
+            "values:\n  known: ok\n  undeclared: bypass\n"
+        )
+
+        llm_called = []
+        import lionagi.cli.agent as agent_mod
+
+        async def fake_run(*a, **kw):
+            llm_called.append(1)
+            return ("done", "claude", "br-001", "completed")
+
+        monkeypatch.setattr(agent_mod, "_run_agent", fake_run)
+
+        errors: list[str] = []
+        monkeypatch.setattr(agent_mod, "log_error", lambda msg: errors.append(msg))
+
+        rc = run_agent(_agent_args(form=str(spec)))
+        assert rc == 1
+        assert not llm_called
+        assert errors
+        assert any("undeclared" in e or "undeclared" in e.lower() for e in errors), (
+            f"Expected 'undeclared' in error; got: {errors}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Finding 3: directory --form path → rc=1, clear error, no traceback
+# ---------------------------------------------------------------------------
+
+
+class TestFormDirectoryPath:
+    def test_load_form_spec_directory_raises_value_error(self, tmp_path):
+        """Passing a directory path to _load_form_spec must raise ValueError."""
+        with pytest.raises(ValueError, match="not a regular file"):
+            _load_form_spec(str(tmp_path))
+
+    def test_run_agent_directory_form_rc1_no_llm(self, tmp_path, monkeypatch):
+        """Directory path as --form value → rc=1, error on error channel."""
+        llm_called = []
+        import lionagi.cli.agent as agent_mod
+
+        async def fake_run(*a, **kw):
+            llm_called.append(1)
+            return ("done", "claude", "br-001", "completed")
+
+        monkeypatch.setattr(agent_mod, "_run_agent", fake_run)
+
+        errors: list[str] = []
+        monkeypatch.setattr(agent_mod, "log_error", lambda msg: errors.append(msg))
+
+        rc = run_agent(_agent_args(form=str(tmp_path)))
+        assert rc == 1
+        assert not llm_called, "LLM must not be called for directory --form path"
+        assert errors, "log_error must have been called"
+        assert any("regular file" in e or "not a regular file" in e for e in errors), (
+            f"Expected 'regular file' in error; got: {errors}"
+        )

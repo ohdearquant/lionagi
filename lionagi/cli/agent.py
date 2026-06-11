@@ -41,15 +41,26 @@ from ._runs import allocate_run, find_branch, load_last_branch, save_last_branch
 _PRESET_CHOICES = ("coding",)
 
 
-def _make_coding_preset(cwd: str | None = None, effort: str | None = "high"):
+def _make_coding_preset(
+    cwd: str | None = None,
+    effort: str | None = "high",
+    system_prompt: str | None = None,
+):
     """Construct an ``AgentSpec.coding()`` instance.
+
+    ``system_prompt`` is forwarded to ``AgentSpec.coding`` where it becomes
+    ``spec.extra_prompt`` — appended after the role header and policy block
+    inside ``build_system_message()``.  Pass the profile's system prompt here
+    when combining a profile with this preset so both land in a single system
+    message (``MessageManager.add_message(system=...)`` calls ``set_system``
+    which replaces, not appends).
 
     Isolated as a module-level function so tests can monkeypatch it without
     fighting Python's lazy-import caching.
     """
     from lionagi.agent.spec import AgentSpec
 
-    return AgentSpec.coding(cwd=cwd, effort=effort)
+    return AgentSpec.coding(cwd=cwd, effort=effort, system_prompt=system_prompt)
 
 
 # ---------------------------------------------------------------------------
@@ -57,16 +68,23 @@ def _make_coding_preset(cwd: str | None = None, effort: str | None = "high"):
 # ---------------------------------------------------------------------------
 
 
+_FORM_SPEC_ALLOWED_KEYS = frozenset({"title", "fields", "values"})
+
+
 def _load_form_spec(path: str) -> dict:
     """Load a YAML or JSON work-form spec file.
 
     Returns the parsed dict.  Raises ``ValueError`` with a user-friendly
-    message on parse failure.
+    message on parse failure, or ``FileNotFoundError`` when the path does
+    not point to a regular file.
     """
-    import os
+    from pathlib import Path as _Path
 
-    if not os.path.exists(path):
+    p = _Path(path)
+    if not p.exists():
         raise FileNotFoundError(f"form spec file not found: {path!r}")
+    if not p.is_file():
+        raise ValueError(f"form spec path is not a regular file: {path!r}")
 
     with open(path) as fh:
         raw = fh.read()
@@ -108,14 +126,37 @@ def _build_work_form(spec: dict, spec_path: str):
           repo: "/path/to/repo"
           effort: "medium"
 
-    When ``fields`` is absent, a field-less form is created and only the
-    ``values`` dict is forwarded as context.
+    Allowed top-level keys: ``title``, ``fields``, ``values``.  Unknown keys
+    are rejected with a ``ValueError``.
+
+    When ``fields`` is declared, every key in ``values`` must correspond to a
+    declared field name — undeclared keys are rejected.  When ``fields`` is
+    absent the spec is field-less and all values are forwarded as context.
     """
     from lionagi.work import FieldSpec, WorkForm, fill_form
+
+    # Enforce closed top-level schema.
+    unknown_keys = set(spec) - _FORM_SPEC_ALLOWED_KEYS
+    if unknown_keys:
+        bad = ", ".join(sorted(f"{k!r}" for k in unknown_keys))
+        raise ValueError(
+            f"form spec {spec_path!r}: unknown top-level key(s) {bad}; "
+            f"allowed: {sorted(_FORM_SPEC_ALLOWED_KEYS)}"
+        )
 
     title = spec.get("title", spec_path)
     raw_fields: dict = spec.get("fields", {})
     raw_values: dict = spec.get("values", {})
+
+    # When fields are declared, reject undeclared value keys.
+    if raw_fields:
+        undeclared = set(raw_values) - set(raw_fields)
+        if undeclared:
+            bad = ", ".join(sorted(f"{k!r}" for k in undeclared))
+            raise ValueError(
+                f"form spec {spec_path!r}: values contain undeclared key(s) {bad}; "
+                f"declared fields: {sorted(raw_fields)}"
+            )
 
     fields: dict[str, FieldSpec] = {}
     for name, fspec in raw_fields.items():
@@ -239,11 +280,24 @@ async def _run_agent(
         if preset == "coding":
             # 3a: use create_agent so CodingToolkit tools and path-guards are
             # fully wired (guard_destructive on bash, guard_paths on
-            # reader/editor).  The factory sets the system prompt via
-            # set_system(); do NOT add it manually afterwards.
+            # reader/editor).  The factory installs the full system message via
+            # set_system() — compose the profile extension into the spec BEFORE
+            # calling create_agent so both preset role/policy AND the profile
+            # prompt land in a single system message.
+            #
+            # AgentSpec.coding(system_prompt=...) maps to spec.extra_prompt,
+            # which build_system_message() appends AFTER the role header and
+            # policy block — no duplication of the LION system text.
+            # The post-factory add_message on the preset path is skipped to
+            # avoid set_system replacing the composed message.
             from lionagi.agent.factory import create_agent
 
-            spec = _make_coding_preset(cwd=cwd, effort=effort or "high")
+            profile_extra = (profile.system_prompt or "") if profile else ""
+            spec = _make_coding_preset(
+                cwd=cwd,
+                effort=effort or "high",
+                system_prompt=profile_extra or None,
+            )
             branch = await create_agent(
                 spec,
                 chat_model=chat_model,
@@ -274,9 +328,11 @@ async def _run_agent(
         if fast:
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
 
-    # Profile system prompt: applied after branch construction so it appends
-    # after the preset's system message (which create_agent sets via set_system).
-    if profile and profile.system_prompt:
+    # Profile system prompt for the non-preset path only.
+    # On the preset path the profile extension was already composed into the
+    # spec before create_agent ran (add_message would call set_system and
+    # replace the preset system message — see protocols/messages/manager.py:385).
+    if profile and profile.system_prompt and preset is None:
         branch.msgs.add_message(system=profile.system_prompt)
 
     if timeout is not None:
