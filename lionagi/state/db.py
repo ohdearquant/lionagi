@@ -262,6 +262,17 @@ class StateDB:
         self._db: aiosqlite.Connection | None = None
         # Per-(kind, name) lock to serialize version increment for save_definition.
         self._definition_locks: dict[tuple[str, str], Lock] = {}
+        # Serializes concurrent coroutines that share this connection and need a
+        # BEGIN IMMEDIATE transaction.  aiosqlite runs on a single background
+        # thread so cross-process WAL serialisation holds, but two coroutines on
+        # the SAME connection can enter "BEGIN IMMEDIATE" concurrently — the
+        # second sees "cannot start a transaction within a transaction" because
+        # aiosqlite.Connection.isolation_level is None (autocommit off via
+        # manual BEGIN) and there is no implicit nesting.  One lock per
+        # StateDB instance is sufficient; callers that need fine-grained
+        # per-key locks (e.g. _definition_locks) hold this lock during the
+        # critical window too.
+        self._write_lock: Lock = Lock()
 
     # ── Connection lifecycle ───────────────────────────────────────────
 
@@ -1866,25 +1877,33 @@ class StateDB:
         seq is MAX(seq)+1 for the session, assigned in the same write so
         concurrent inserts from different processes (WAL mode) do not
         collide — SQLite serialises IMMEDIATE transactions.
+
+        Concurrent coroutines sharing this StateDB instance are serialised
+        through ``self._write_lock`` so that no two coroutines can enter
+        ``BEGIN IMMEDIATE`` simultaneously on the same aiosqlite connection
+        (which would raise "cannot start a transaction within a transaction"
+        since aiosqlite uses a single background thread with no transaction
+        nesting support).
         """
         sig_id = uuid.uuid4().hex
-        await self.db.execute("BEGIN IMMEDIATE")
-        try:
-            cur = await self.db.execute(
-                "SELECT COALESCE(MAX(seq), 0) FROM session_signals WHERE session_id = ?",
-                (session_id,),
-            )
-            row = await cur.fetchone()
-            seq: int = (row[0] if row else 0) + 1
-            await self.db.execute(
-                "INSERT INTO session_signals (id, session_id, seq, kind, op_id, ts, payload) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (sig_id, session_id, seq, kind, op_id, ts, _to_json_column(payload)),
-            )
-            await self.db.commit()
-        except BaseException:
-            await self.db.rollback()
-            raise
+        async with self._write_lock:
+            await self.db.execute("BEGIN IMMEDIATE")
+            try:
+                cur = await self.db.execute(
+                    "SELECT COALESCE(MAX(seq), 0) FROM session_signals WHERE session_id = ?",
+                    (session_id,),
+                )
+                row = await cur.fetchone()
+                seq: int = (row[0] if row else 0) + 1
+                await self.db.execute(
+                    "INSERT INTO session_signals (id, session_id, seq, kind, op_id, ts, payload) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (sig_id, session_id, seq, kind, op_id, ts, _to_json_column(payload)),
+                )
+                await self.db.commit()
+            except BaseException:
+                await self.db.rollback()
+                raise
         return seq
 
     async def get_session_signals_after(

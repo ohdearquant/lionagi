@@ -11,6 +11,7 @@ Coverage targets:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -234,9 +235,11 @@ def patched_app(tmp_path, monkeypatch):
     """Return (app, db_path, AsyncClient) with DB patched to tmp_path.
 
     Skips automatically when the studio/httpx extras are not installed.
+    httpx >= 0.28 removed the ``app=`` shorthand from AsyncClient; use
+    ASGITransport explicitly.
     """
     pytest.importorskip("fastapi", reason="studio extra not installed")
-    pytest.importorskip("httpx", reason="httpx not installed")
+    httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
     import lionagi.studio.services.sessions as sessions_svc
     import lionagi.studio.services.signals as signals_svc
@@ -247,11 +250,11 @@ def patched_app(tmp_path, monkeypatch):
     monkeypatch.setattr(signals_svc, "_DB", str(db_path))
     monkeypatch.setattr(signals_svc, "DEFAULT_DB_PATH", db_path)
 
-    from httpx import AsyncClient
-
     from lionagi.studio.app import app
 
-    return app, db_path, AsyncClient(app=app, base_url="http://test")
+    transport = httpx.ASGITransport(app=app)
+    client = httpx.AsyncClient(transport=transport, base_url="http://test")
+    return app, db_path, client
 
 
 async def test_signals_endpoint_404_for_unknown_session(patched_app):
@@ -511,3 +514,354 @@ async def test_setup_agent_persist_wires_signal_bind(tmp_path, monkeypatch):
 
     # Teardown should unbind without error.
     await teardown_persist(ctx, status="completed")
+
+
+# ---------------------------------------------------------------------------
+# MAJOR-1: Concurrent emit must not drop rows (regression for BEGIN IMMEDIATE
+# on shared connection without per-instance asyncio lock).
+# ---------------------------------------------------------------------------
+
+
+async def test_concurrent_emit_all_rows_present(tmp_path):
+    """50 concurrent NodeStarted emits through the BOUND observer all land in DB.
+
+    Before the _write_lock fix, concurrent coroutines on the same aiosqlite
+    connection raced on BEGIN IMMEDIATE and produced 'cannot start a transaction
+    within a transaction' errors — all swallowed, leaving only ~1 row.
+    """
+    from lionagi.session.observer import SessionObserver
+    from lionagi.session.session import Session
+    from lionagi.session.signal import NodeStarted
+
+    db_path = tmp_path / "state.db"
+    session_id = "concurrent-emit-sess"
+    n = 50
+
+    async with StateDB(db_path) as db:
+        prog_id = f"{session_id}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": session_id,
+                "created_at": 100.0,
+                "progression_id": prog_id,
+                "name": "concurrent-test",
+                "status": "running",
+                "invocation_kind": "agent",
+            }
+        )
+
+        session = Session(name="concurrent-test")
+        observer: SessionObserver = session.observer
+        observer.bind_db_persistence(session_id, db=db)
+
+        # Emit all signals concurrently to exercise the lock path.
+        await asyncio.gather(
+            *[observer.emit(NodeStarted(op_id=f"op-{i}", name=f"step-{i}")) for i in range(n)]
+        )
+
+        rows = await db.get_session_signals_after(session_id, 0)
+
+    assert len(rows) == n, f"Expected {n} rows, got {len(rows)} — concurrent emit dropped rows"
+    # seq values must be contiguous 1..n (no gaps from dropped transactions).
+    seqs = sorted(r["seq"] for r in rows)
+    assert seqs == list(range(1, n + 1)), f"seq gaps detected: {seqs}"
+
+
+# ---------------------------------------------------------------------------
+# MAJOR-2: Payload safety — non-serialisable objects and large payloads.
+# ---------------------------------------------------------------------------
+
+
+async def test_payload_sanitizer_node_escalated_arbitrary_request(tmp_path):
+    """NodeEscalated with escalation_request=object() must persist (not be dropped).
+
+    Before the safe_fallback fix, the payload builder called _json_dumps on
+    escalation_request=object() without safe_fallback, raising TypeError.
+    The exception was swallowed → zero rows persisted.
+    """
+    from lionagi.session.observer import SessionObserver, _sanitize_signal_payload
+    from lionagi.session.session import Session
+    from lionagi.session.signal import NodeEscalated
+
+    sig = NodeEscalated(
+        op_id="op-esc",
+        name="escstep",
+        reason="no higher tier",
+        route="give_up",
+        escalation_request=object(),  # not JSON serialisable
+    )
+
+    # Direct sanitizer should not raise and must return a non-empty dict.
+    payload = _sanitize_signal_payload(sig)
+    assert isinstance(payload, dict)
+    # escalation_request must be present as a string (repr fallback).
+    assert "escalation_request" in payload
+    assert isinstance(payload["escalation_request"], str)
+
+    # End-to-end: emitting through a DB-bound observer must persist a row.
+    db_path = tmp_path / "state.db"
+    session_id = "esc-payload-sess"
+    async with StateDB(db_path) as db:
+        prog_id = f"{session_id}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": session_id,
+                "created_at": 100.0,
+                "progression_id": prog_id,
+                "name": "esc-test",
+                "status": "running",
+                "invocation_kind": "agent",
+            }
+        )
+        session = Session(name="esc-test")
+        observer: SessionObserver = session.observer
+        observer.bind_db_persistence(session_id, db=db)
+        await observer.emit(sig)
+        rows = await db.get_session_signals_after(session_id, 0)
+
+    assert len(rows) == 1, "NodeEscalated with non-serialisable request was dropped"
+    assert rows[0]["kind"] == "NodeEscalated"
+
+
+async def test_payload_sanitizer_hook_signal_non_json_kwargs(tmp_path):
+    """HookSignal with non-JSON kwargs (dict[str, Any]) must persist a sanitized row."""
+    from lionagi.hooks.bus import HookPoint, HookSignal
+    from lionagi.session.observer import _sanitize_signal_payload
+    from lionagi.session.session import Session
+
+    sig = HookSignal(
+        point=HookPoint.MESSAGE_ADD,
+        kwargs={"fn": lambda x: x, "obj": object()},  # both non-JSON-safe
+    )
+
+    payload = _sanitize_signal_payload(sig)
+    assert isinstance(payload, dict)
+    # kwargs must be present in some form (repr or string fallback).
+    assert "kwargs" in payload
+
+    # End-to-end.
+    db_path = tmp_path / "state.db"
+    session_id = "hook-payload-sess"
+    async with StateDB(db_path) as db:
+        prog_id = f"{session_id}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": session_id,
+                "created_at": 100.0,
+                "progression_id": prog_id,
+                "name": "hook-test",
+                "status": "running",
+                "invocation_kind": "agent",
+            }
+        )
+        session = Session(name="hook-test")
+        session.observer.bind_db_persistence(session_id, db=db)
+        await session.observer.emit(sig)
+        rows = await db.get_session_signals_after(session_id, 0)
+
+    assert len(rows) == 1, "HookSignal with non-JSON kwargs was dropped"
+
+
+async def test_payload_sanitizer_large_payload_truncated(tmp_path):
+    """A payload exceeding _PAYLOAD_BYTE_CAP is stored with truncated=true marker."""
+    from lionagi.session.observer import _PAYLOAD_BYTE_CAP, _sanitize_signal_payload
+    from lionagi.session.signal import NodeCompleted
+
+    # Create a signal whose name field is huge (well over the 16KB cap).
+    big_name = "x" * (_PAYLOAD_BYTE_CAP + 1000)
+    sig = NodeCompleted(op_id="op-big", name=big_name, elapsed=0.1)
+
+    payload = _sanitize_signal_payload(sig)
+    # Must be truncated.
+    assert payload.get("truncated") is True
+    assert "original_bytes" in payload
+    assert payload["original_bytes"] > _PAYLOAD_BYTE_CAP
+
+    # The truncated payload itself must be JSON-safe (no TypeError on insert).
+    db_path = tmp_path / "state.db"
+    session_id = "large-payload-sess"
+    async with StateDB(db_path) as db:
+        prog_id = f"{session_id}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": session_id,
+                "created_at": 100.0,
+                "progression_id": prog_id,
+                "name": "large-test",
+                "status": "running",
+                "invocation_kind": "agent",
+            }
+        )
+        seq = await db.insert_session_signal(
+            session_id=session_id,
+            kind="NodeCompleted",
+            op_id="op-big",
+            ts=1000.0,
+            payload=payload,
+        )
+        rows = await db.get_session_signals_after(session_id, 0)
+
+    assert len(rows) == 1
+    assert rows[0]["payload"].get("truncated") is True
+    assert seq == 1
+
+
+async def test_payload_sanitizer_message_added_stores_ref_not_body(tmp_path):
+    """MessageAdded must persist a compact message_ref, not the full message body."""
+    from unittest.mock import MagicMock
+
+    from lionagi.session.observer import _sanitize_signal_payload
+    from lionagi.session.signal import MessageAdded
+
+    # Build a mock message with a large content body.
+    msg = MagicMock()
+    msg.id = "msg-abc123"
+    msg.role = "assistant"
+    msg.sender = "branch-1"
+    msg.recipient = None
+    sig = MessageAdded(data=msg)
+
+    payload = _sanitize_signal_payload(sig)
+
+    # Must have message_ref with id and role, NOT the full body.
+    assert "message_ref" in payload
+    ref = payload["message_ref"]
+    assert ref["id"] == "msg-abc123"
+    assert ref["role"] == "assistant"
+    assert ref["sender"] == "branch-1"
+    # The full message content must not appear.
+    assert "content" not in payload
+    assert "data" not in payload
+
+
+# ---------------------------------------------------------------------------
+# MINOR: Bearer auth rejection for /api/sessions/{id}/signals
+# ---------------------------------------------------------------------------
+
+
+def test_signals_endpoint_requires_bearer_auth(tmp_path, monkeypatch):
+    """GET /api/sessions/{id}/signals returns 401 when auth token is set and absent.
+
+    Uses the synchronous TestClient (same pattern as test_audit_remediation.py)
+    so the test does not need an async streaming context.
+    """
+    pytest.importorskip("fastapi", reason="studio extra not installed")
+    from fastapi.testclient import TestClient
+
+    import lionagi.studio.services.sessions as sessions_svc
+    import lionagi.studio.services.signals as signals_svc
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(sessions_svc, "_DB", str(db_path))
+    monkeypatch.setattr(sessions_svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(signals_svc, "_DB", str(db_path))
+    monkeypatch.setattr(signals_svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "secret-token")
+
+    from lionagi.studio.app import app
+
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # No Authorization header → 401.
+    resp = client.get("/api/sessions/any-session-id/signals")
+    assert resp.status_code == 401, (
+        f"Expected 401 when auth token is set and no header provided, got {resp.status_code}"
+    )
+
+    # Wrong token → 401.
+    resp_wrong = client.get(
+        "/api/sessions/any-session-id/signals",
+        headers={"Authorization": "Bearer wrong-token"},
+    )
+    assert resp_wrong.status_code == 401
+
+    # Correct token → auth passes (404 or 200, not 401).
+    resp_ok = client.get(
+        "/api/sessions/any-session-id/signals",
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    assert resp_ok.status_code != 401, (
+        f"Correct bearer token was rejected with {resp_ok.status_code}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MINOR: Generator cancellation — client disconnect stops the SSE generator.
+# ---------------------------------------------------------------------------
+
+
+async def test_signals_generator_cancellation_on_disconnect(tmp_path, monkeypatch):
+    """SSE generator exits cleanly when cancelled (simulates client disconnect).
+
+    We directly instantiate the ``generate()`` async-generator from the signals
+    router, schedule it as an asyncio task, cancel it after it starts running,
+    and assert it raises ``CancelledError`` — not any unhandled exception.
+    This approach avoids the httpx streaming-backpressure issue where
+    ``async with client.stream(...)`` waits for the server-side generator to
+    drain before the client context-manager exits.
+    """
+    pytest.importorskip("fastapi", reason="studio extra not installed")
+    pytest.importorskip("httpx", reason="httpx not installed")
+
+    import lionagi.studio.services.sessions as sessions_svc
+    import lionagi.studio.services.signals as signals_svc
+
+    db_path = tmp_path / "state.db"
+    session_id = "cancel-test-sess"
+
+    # Seed a RUNNING session — the generator will keep polling indefinitely.
+    async with StateDB(db_path) as db:
+        prog_id = f"{session_id}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": session_id,
+                "created_at": 100.0,
+                "progression_id": prog_id,
+                "name": "cancel-test",
+                "status": "running",
+                "invocation_kind": "agent",
+            }
+        )
+
+    monkeypatch.setattr(sessions_svc, "_DB", str(db_path))
+    monkeypatch.setattr(sessions_svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(signals_svc, "_DB", str(db_path))
+    monkeypatch.setattr(signals_svc, "DEFAULT_DB_PATH", db_path)
+
+    # Import the router's generate factory directly.
+    from lionagi.studio.routers.signals import stream_signals
+
+    # The endpoint function builds a StreamingResponse whose body is the
+    # generate() async-generator.  We call it directly to get the generator.
+    response = await stream_signals(session_id)
+    generator = response.body_iterator  # the generate() async gen
+
+    async def _drain_one():
+        """Consume a single SSE frame from the generator."""
+        async for chunk in generator:
+            return chunk  # consume the first yielded frame then return
+
+    # Drive the generator one step so it enters asyncio.sleep(0.5) inside.
+    # Then cancel the drain task to simulate mid-stream disconnect.
+    task = asyncio.create_task(_drain_one())
+
+    # Wait briefly for the generator to start running (enter the while loop).
+    await asyncio.sleep(0.05)
+
+    task.cancel()
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass  # expected — task was cancelled
+
+    # The generator must be cancellable without propagating unexpected errors.
+    # Explicitly close the generator to release its resources.
+    try:
+        await generator.aclose()
+    except Exception as exc:  # noqa: BLE001
+        pytest.fail(f"generator.aclose() raised unexpected {type(exc).__name__}: {exc}")

@@ -763,6 +763,8 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
   }, [id]);
 
   // Stream lifecycle signals for this session.
+  // Cleanup resets signalEvents so stale events from a previous route do not
+  // briefly appear on the new run's Events panel (reset-on-id-change pattern).
   useEffect(() => {
     if (!id) return;
 
@@ -776,7 +778,10 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
       });
     });
 
-    return stop;
+    return () => {
+      stop();
+      setSignalEvents([]);
+    };
   }, [id]);
 
   useEffect(() => {

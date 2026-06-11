@@ -17,11 +17,102 @@ from ..protocols.generic.flow import Flow
 from ..protocols.generic.progression import Progression
 from .signal import Signal
 
-__all__ = ("SessionObserver", "RoleFilter")
+__all__ = ("SessionObserver", "RoleFilter", "_sanitize_signal_payload")
 
 Handler = Callable[[Any, "SessionObserver"], Any]
 Predicate = Callable[[Any], bool]
 Gate = Callable[[Any], Any]
+
+# Maximum byte size for a persisted signal payload.  Payloads exceeding this
+# cap are truncated: the dict is serialised to JSON, sliced, and a
+# ``truncated`` + ``original_bytes`` marker is injected so downstream
+# consumers know the data is partial.
+_PAYLOAD_BYTE_CAP: int = 16_384  # 16 KB
+
+# Signal fields that are part of Signal base and must not be promoted into the
+# payload dict (they are either redundant with columns or not meaningful there).
+_BASE_SIGNAL_FIELDS: frozenset[str] = frozenset(
+    {"id", "ln_id", "timestamp", "data", "emitter_role"}
+)
+
+
+def _sanitize_signal_payload(sig: Any) -> dict[str, Any]:
+    """Build a JSON-safe, size-bounded payload dict from a Signal instance.
+
+    Serialisation policy:
+    - Non-base fields from ``type(sig).model_fields`` are collected into a
+      raw dict, with ``MessageAdded.data`` replaced by a compact reference
+      to avoid duplicating message content in ``session_signals``.
+    - The raw dict is then serialised to a JSON string using
+      ``safe_fallback=True`` (unknown objects fall back to repr-with-type),
+      and immediately parsed back to a plain Python dict.  This guarantees
+      that every value stored is a JSON-native type — no non-serialisable
+      object can survive into ``_to_json_column(payload)``.
+    - If the resulting JSON exceeds ``_PAYLOAD_BYTE_CAP`` bytes, the payload
+      is replaced by ``{truncated: True, original_bytes: N, data: "<clip>"}``.
+    """
+    import json as _json  # noqa: PLC0415
+
+    from lionagi.ln import json_dumps as _jd  # noqa: PLC0415
+    from lionagi.session.signal import MessageAdded  # noqa: PLC0415
+
+    raw: dict[str, Any] = {}
+
+    for _field in type(sig).model_fields:
+        if _field in _BASE_SIGNAL_FIELDS:
+            continue
+        val = getattr(sig, _field, None)
+        if val is None or val == "":
+            continue
+        raw[_field] = val
+
+    # Handle sig.data per signal kind.
+    if isinstance(sig, MessageAdded):
+        msg = sig.data
+        if msg is not None:
+            ref: dict[str, Any] = {}
+            for _attr in ("id", "role", "sender", "recipient"):
+                v = getattr(msg, _attr, None)
+                if v is not None:
+                    ref[_attr] = str(v)
+            raw["message_ref"] = ref
+    elif sig.data is not None:
+        try:
+            from pydantic import BaseModel as _BaseModel  # noqa: PLC0415
+
+            raw["data"] = (
+                sig.data.model_dump() if isinstance(sig.data, _BaseModel) else str(sig.data)
+            )
+        except Exception:  # noqa: BLE001
+            raw["data"] = repr(sig.data)
+
+    # Serialise with safe_fallback so no TypeError escapes, then parse back to
+    # a dict of JSON-native types.  This is the single serialisation gate:
+    # after this point, ``payload`` contains only str/int/float/bool/list/dict.
+    safe_json: str | None = None
+    try:
+        safe_json = _jd(raw, safe_fallback=True)
+        payload: dict[str, Any] = _json.loads(safe_json)
+    except Exception:  # noqa: BLE001
+        payload = {"sanitize_error": repr(sig)[:256]}
+
+    # Apply byte cap on the safe payload.
+    try:
+        if safe_json is not None:
+            raw_bytes = safe_json.encode("utf-8")
+        else:
+            raw_bytes = _jd(payload, safe_fallback=True).encode("utf-8")
+        if len(raw_bytes) > _PAYLOAD_BYTE_CAP:
+            clipped = raw_bytes[:_PAYLOAD_BYTE_CAP].decode("utf-8", errors="replace")
+            payload = {
+                "truncated": True,
+                "original_bytes": len(raw_bytes),
+                "data": clipped,
+            }
+    except Exception:  # noqa: BLE001, S110
+        pass  # cap failure is non-fatal; the safe payload is still usable
+
+    return payload
 
 
 class _KeyAndRoleFilter(Filter):
@@ -230,23 +321,10 @@ class SessionObserver(Observer):
             kind = type(sig).__name__
             op_id = getattr(sig, "op_id", "") or ""
             ts = _time.time()
-            # Build compact payload from the signal's non-base fields.
-            payload: dict[str, Any] = {}
-            for _field in type(sig).model_fields:
-                if _field in ("id", "ln_id", "timestamp", "data", "emitter_role"):
-                    continue
-                val = getattr(sig, _field, None)
-                if val is not None and val != "":
-                    payload[_field] = val
-            if sig.data is not None:
-                try:
-                    from pydantic import BaseModel  # noqa: PLC0415
-
-                    payload["data"] = (
-                        sig.data.model_dump() if isinstance(sig.data, BaseModel) else str(sig.data)
-                    )
-                except Exception:  # noqa: BLE001
-                    payload["data"] = str(sig.data)
+            # Build a JSON-safe, size-bounded payload.  _sanitize_signal_payload
+            # never raises: unknown objects fall back to repr, MessageAdded stores
+            # only a compact message reference, and oversized payloads are capped.
+            payload = _sanitize_signal_payload(sig)
 
             try:
                 if _bound_db is not None:
