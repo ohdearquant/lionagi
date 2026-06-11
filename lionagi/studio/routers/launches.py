@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Launch endpoints — fire agent/flow/fanout/play/flow_yaml runs on demand."""
+"""Launch endpoints — fire agent/flow/fanout/play/engine runs on demand."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ class LaunchRequest(BaseModel):
     action_playbook: str | None = None
     action_project: str | None = None
     action_flow_yaml: str | None = None
+    action_engine_def: str | None = None
     action_extra_args: list[str] | None = None
 
 

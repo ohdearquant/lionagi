@@ -18,7 +18,7 @@ _TEMPLATE_RE = re.compile(r"\{\{(\w+)\}\}")
 
 # ADR-0027 defines the closed set of action kinds.  The CLI parser accepts
 # "playbook" as an alias for "play" for backward compatibility.
-_VALID_ACTION_KINDS = frozenset({"agent", "flow", "fanout", "play", "flow_yaml"})
+_VALID_ACTION_KINDS = frozenset({"agent", "flow", "fanout", "play", "flow_yaml", "engine"})
 _ALIAS_ACTION_KINDS: dict[str, str] = {"playbook": "play"}
 
 # action_model must be a safe model-spec token: alphanumerics, dots, slashes,
@@ -108,6 +108,43 @@ def _validate_extra_args(extra: list) -> None:
             )
 
 
+_ENGINE_OPTION_KEYS = frozenset({"max_depth", "max_agents", "test_cmd", "export_dir"})
+
+# Engine option string values land in argv as flag values.  Reject tokens that
+# argparse could mistake for option strings (leading '-') and anything outside
+# a conservative character set; numeric options must be bounded integers.
+_ENGINE_OPT_VALUE_RE = re.compile(r"^[a-zA-Z0-9_./:@\-\+= ]+$")
+
+
+def _validate_engine_options(opts: object) -> None:
+    """Raise ValueError if *opts* fails engine-option safety checks."""
+    if not opts:
+        return
+    if not isinstance(opts, dict):
+        raise ValueError("action_engine_options must be an object")
+    unknown = set(opts) - _ENGINE_OPTION_KEYS
+    if unknown:
+        raise ValueError(
+            f"action_engine_options contains unknown key(s) {sorted(unknown)}. "
+            f"Allowed: {sorted(_ENGINE_OPTION_KEYS)}"
+        )
+    for key in ("max_depth", "max_agents"):
+        val = opts.get(key)
+        if val is None:
+            continue
+        if not isinstance(val, int) or isinstance(val, bool) or not (1 <= val <= 100):
+            raise ValueError(f"action_engine_options.{key} must be an integer in [1, 100]")
+    for key in ("test_cmd", "export_dir"):
+        val = opts.get(key)
+        if val is None:
+            continue
+        if not isinstance(val, str) or val.startswith("-") or not _ENGINE_OPT_VALUE_RE.match(val):
+            raise ValueError(
+                f"action_engine_options.{key} must be a plain token that does not "
+                "start with '-' and contains no shell metacharacters"
+            )
+
+
 def _validate_prompt(prompt: str) -> None:
     """Raise ValueError if *prompt* is the literal end-of-options sentinel '--'.
 
@@ -193,6 +230,8 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
         _validate_identifier(playbook, "action_playbook")
     if isinstance(extra, list):
         _validate_extra_args(extra)
+    if kind == "engine":
+        _validate_engine_options(schedule.get("action_engine_options"))
 
     # Render template variables from trigger context FIRST, then validate the
     # rendered prompt so that template-injected values (e.g. '{{payload}}' →
@@ -269,10 +308,38 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
             flags += ["--project", project]
         argv += ["o", "flow", *flags, "--", model]
 
+    elif kind == "engine":
+        # engine def launch: argv shape is
+        #   uv run li engine run [named flags] -- <engine_kind> <spec>
+        # action_agent carries the engine kind (e.g. "research"); action_prompt
+        # carries the engine spec.  Named flags go first (CWE-88 hardening).
+        if not agent:
+            raise ValueError("engine launches require action_agent (the engine kind)")
+        if not prompt:
+            raise ValueError("engine launches require action_prompt (the engine spec)")
+        engine_kind = agent
+        flags = []
+        if model:
+            flags += ["--model", model]
+        engine_opts = schedule.get("action_engine_options") or {}
+        max_depth = engine_opts.get("max_depth")
+        max_agents = engine_opts.get("max_agents")
+        test_cmd = engine_opts.get("test_cmd")
+        export_dir = engine_opts.get("export_dir")
+        if max_depth is not None:
+            flags += ["--max-depth", str(int(max_depth))]
+        if max_agents is not None:
+            flags += ["--max-agents", str(int(max_agents))]
+        if test_cmd:
+            flags += ["--test-cmd", test_cmd]
+        if export_dir:
+            flags += ["--export-dir", export_dir]
+        argv += ["engine", "run", *flags, "--", engine_kind, prompt]
+
     # extra has already been validated above; extend argv with safe positional tokens.
     # These are appended AFTER the subcommand's positionals, after '--', so they
     # are treated as positional values by the subcommand's parser.
-    if isinstance(extra, list):
+    if kind != "engine" and isinstance(extra, list):
         argv.extend(str(a) for a in extra)
 
     return argv, tmp_path

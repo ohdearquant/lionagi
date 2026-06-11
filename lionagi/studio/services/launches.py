@@ -27,7 +27,7 @@ _log = logging.getLogger(__name__)
 # be written to a temp file whose lifetime must outlive the HTTP request handler.
 # Callers who need flow_yaml should create a schedule with trigger_type=manual
 # and call POST /api/schedules/{id}/trigger instead.
-_LAUNCH_VALID_KINDS = frozenset({"agent", "flow", "fanout", "play"})
+_LAUNCH_VALID_KINDS = frozenset({"agent", "flow", "fanout", "play", "engine"})
 
 # The event loop keeps only weak references to tasks; a fire-and-forget task
 # with no strong reference can be garbage-collected mid-flight.
@@ -65,6 +65,15 @@ def _validate_request(data: dict[str, Any]) -> None:
     _svc_validate_identifier(data.get("action_project"), "action_project")
     _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
     _svc_validate_extra_args(data.get("action_extra_args"))
+    if kind == "engine":
+        if not (data.get("action_engine_def") or "").strip():
+            raise ValueError(
+                "action_engine_def (an engine definition id or name) is required "
+                "for engine launches"
+            )
+        if not (data.get("action_prompt") or "").strip():
+            raise ValueError("action_prompt (the engine spec) is required for engine launches")
+        _svc_validate_identifier(data.get("action_engine_def"), "action_engine_def")
 
 
 async def launch(data: dict[str, Any]) -> dict[str, Any]:
@@ -93,6 +102,19 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
         "action_project": data.get("action_project"),
         "action_extra_args": data.get("action_extra_args") or [],
     }
+    if data["action_kind"] == "engine":
+        defn = await _resolve_engine_def(data["action_engine_def"])
+        # The saved definition supplies the engine kind (via the action_agent
+        # slot), default model, and engine flags; the request supplies the spec
+        # prompt and may override the model.
+        schedule_dict["action_agent"] = defn["kind"]
+        if not schedule_dict["action_model"]:
+            schedule_dict["action_model"] = defn.get("model") or ""
+        opts: dict[str, Any] = dict(defn.get("options") or {})
+        for key in ("max_depth", "max_agents"):
+            if defn.get(key) is not None:
+                opts[key] = defn[key]
+        schedule_dict["action_engine_options"] = opts
     argv, tmp_path = build_argv(schedule_dict, {})
 
     sem = _get_semaphore()
@@ -142,6 +164,18 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
         "invocation_id": inv_id,
         "action_kind": data["action_kind"],
     }
+
+
+async def _resolve_engine_def(ref: str) -> dict[str, Any]:
+    """Resolve *ref* (engine definition id, then name) or raise ValueError."""
+    from . import engine_defs
+
+    defn = await engine_defs.get_engine_def(ref)
+    if defn is None:
+        defn = await engine_defs.get_engine_def_by_name(ref)
+    if defn is None:
+        raise ValueError(f"Engine definition {ref!r} not found")
+    return defn
 
 
 async def shutdown_launches() -> None:

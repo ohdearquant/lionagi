@@ -18,6 +18,7 @@ from .routers import (
     artifacts,
     casts,
     definitions,
+    engine_defs,
     engine_runs,
     invocations,
     launches,
@@ -165,6 +166,7 @@ app.include_router(launches.router, prefix="/api")
 app.include_router(artifacts.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
 app.include_router(schedules.router, prefix="/api")
+app.include_router(engine_defs.router, prefix="/api")
 
 
 @app.get("/health")
