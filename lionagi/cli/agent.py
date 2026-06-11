@@ -34,6 +34,183 @@ from ._providers import (
 )
 from ._runs import allocate_run, find_branch, load_last_branch, save_last_branch_pointer
 
+# ---------------------------------------------------------------------------
+# Preset names supported by --preset
+# ---------------------------------------------------------------------------
+
+_PRESET_CHOICES = ("coding",)
+
+
+def _make_coding_preset(
+    cwd: str | None = None,
+    effort: str | None = "high",
+    system_prompt: str | None = None,
+):
+    """Construct an ``AgentSpec.coding()`` instance.
+
+    ``system_prompt`` is forwarded to ``AgentSpec.coding`` where it becomes
+    ``spec.extra_prompt`` — appended after the role header and policy block
+    inside ``build_system_message()``.  Pass the profile's system prompt here
+    when combining a profile with this preset so both land in a single system
+    message (``MessageManager.add_message(system=...)`` calls ``set_system``
+    which replaces, not appends).
+
+    Isolated as a module-level function so tests can monkeypatch it without
+    fighting Python's lazy-import caching.
+    """
+    from lionagi.agent.spec import AgentSpec
+
+    return AgentSpec.coding(cwd=cwd, effort=effort, system_prompt=system_prompt)
+
+
+# ---------------------------------------------------------------------------
+# WorkForm loading helpers (for --form)
+# ---------------------------------------------------------------------------
+
+
+_FORM_SPEC_ALLOWED_KEYS = frozenset({"title", "fields", "values"})
+
+
+def _load_form_spec(path: str) -> dict:
+    """Load a YAML or JSON work-form spec file.
+
+    Returns the parsed dict.  Raises ``ValueError`` with a user-friendly
+    message on parse failure, or ``FileNotFoundError`` when the path does
+    not point to a regular file.
+    """
+    from pathlib import Path as _Path
+
+    p = _Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"form spec file not found: {path!r}")
+    if not p.is_file():
+        raise ValueError(f"form spec path is not a regular file: {path!r}")
+
+    with open(path) as fh:
+        raw = fh.read()
+
+    # Try YAML first (superset of JSON), then fall back to plain JSON.
+    try:
+        import yaml  # type: ignore[import-untyped]
+
+        data = yaml.safe_load(raw)
+    except Exception as yaml_err:
+        try:
+            data = json.loads(raw)
+        except Exception:
+            raise ValueError(f"could not parse form spec {path!r}: {yaml_err}") from yaml_err
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"form spec {path!r} must be a YAML/JSON mapping, got {type(data).__name__}"
+        )
+    return data
+
+
+def _build_work_form(spec: dict, spec_path: str):
+    """Construct a :class:`~lionagi.work.WorkForm` from a parsed spec dict.
+
+    Expected YAML shape::
+
+        title: "My form"         # optional
+        fields:                   # optional; declares typed slots
+          repo:
+            type: str
+            required: true
+            description: "Repository path"
+          effort:
+            type: str
+            required: false
+            default: "high"
+        values:                   # optional; values to fill into the form
+          repo: "/path/to/repo"
+          effort: "medium"
+
+    Allowed top-level keys: ``title``, ``fields``, ``values``.  Unknown keys
+    are rejected with a ``ValueError``.
+
+    When ``fields`` is declared, every key in ``values`` must correspond to a
+    declared field name — undeclared keys are rejected.  When ``fields`` is
+    absent the spec is field-less and all values are forwarded as context.
+    """
+    from lionagi.work import FieldSpec, WorkForm, fill_form
+
+    # Enforce closed top-level schema.
+    unknown_keys = set(spec) - _FORM_SPEC_ALLOWED_KEYS
+    if unknown_keys:
+        bad = ", ".join(sorted(f"{k!r}" for k in unknown_keys))
+        raise ValueError(
+            f"form spec {spec_path!r}: unknown top-level key(s) {bad}; "
+            f"allowed: {sorted(_FORM_SPEC_ALLOWED_KEYS)}"
+        )
+
+    title = spec.get("title", spec_path)
+    raw_fields_raw = spec.get("fields")
+    raw_values_raw = spec.get("values")
+
+    # Validate types: 'fields' and 'values' must be mappings when present.
+    if raw_fields_raw is not None and not isinstance(raw_fields_raw, dict):
+        raise ValueError(
+            f"form spec {spec_path!r}: 'fields' must be a mapping, "
+            f"got {type(raw_fields_raw).__name__!r}"
+        )
+    if raw_values_raw is not None and not isinstance(raw_values_raw, dict):
+        raise ValueError(
+            f"form spec {spec_path!r}: 'values' must be a mapping, "
+            f"got {type(raw_values_raw).__name__!r}"
+        )
+
+    raw_fields: dict = raw_fields_raw or {}
+    raw_values: dict = raw_values_raw or {}
+
+    # Enforce: values without declared fields is not a valid use of --form.
+    # --form is a validation gate; forwarding unvalidated values silently
+    # defeats its purpose.  Use the prompt directly for unstructured context.
+    if raw_values and not raw_fields:
+        raise ValueError(
+            f"form spec {spec_path!r}: 'values' are declared but 'fields' is "
+            "absent or empty; declare fields to validate values against"
+        )
+
+    # When fields are declared, reject undeclared value keys.
+    if raw_fields:
+        undeclared = set(raw_values) - set(raw_fields)
+        if undeclared:
+            bad = ", ".join(sorted(f"{k!r}" for k in undeclared))
+            raise ValueError(
+                f"form spec {spec_path!r}: values contain undeclared key(s) {bad}; "
+                f"declared fields: {sorted(raw_fields)}"
+            )
+
+    fields: dict[str, FieldSpec] = {}
+    for name, fspec in raw_fields.items():
+        if not isinstance(fspec, dict):
+            raise ValueError(
+                f"form spec {spec_path!r}: field {name!r} must be a mapping, "
+                f"got {type(fspec).__name__}"
+            )
+        try:
+            fields[name] = FieldSpec(name=name, **fspec)
+        except Exception as exc:
+            raise ValueError(f"form spec {spec_path!r}: invalid field {name!r}: {exc}") from exc
+
+    form = WorkForm(title=title, fields=fields)
+    if raw_values or fields:
+        form = fill_form(form, raw_values)
+    return form
+
+
+def _form_to_context_block(form) -> str:
+    """Render a validated WorkForm's values as a structured context preamble.
+
+    Returns a string that can be prepended to the user's prompt so the LLM
+    receives the form values as structured inputs.
+    """
+    lines = [f"[Work Form: {form.title}]"]
+    for key, value in form.values.items():
+        lines.append(f"  {key}: {value!r}")
+    return "\n".join(lines)
+
 
 async def _run_agent(
     model_str: str | None,
@@ -51,10 +228,15 @@ async def _run_agent(
     invocation_id: str | None = None,
     project: str | None = None,
     bypass: bool = False,
+    preset: str | None = None,
 ) -> tuple[str, str, str, str]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status)."""
     if resume and continue_last:
         raise ValueError("--resume / -r and --continue-last / -c are mutually exclusive.")
+    if preset and (resume or continue_last):
+        raise ValueError(
+            "--preset only applies to new branches; cannot combine with --resume / --continue-last."
+        )
 
     # Cache cancellation exception class while event loop is running;
     # cancelled_exc_classes() in the error path needs it after loop exit.
@@ -118,10 +300,46 @@ async def _run_agent(
             )
         chat_model = build_chat_model(provider, model, yolo, verbose, theme, effort, fast, bypass)
         effort = resolve_persisted_effort(provider, chat_model, effort)
-        branch = Branch(
-            chat_model=chat_model,
-            log_config=DataLoggerConfig(auto_save_on_exit=False),
-        )
+
+        if preset == "coding":
+            # 3a: use create_agent so CodingToolkit tools and path-guards are
+            # fully wired (guard_destructive on bash, guard_paths on
+            # reader/editor).  The factory installs the full system message via
+            # set_system() — compose the profile extension into the spec BEFORE
+            # calling create_agent so both preset role/policy AND the profile
+            # prompt land in a single system message.
+            #
+            # AgentSpec.coding(system_prompt=...) maps to spec.extra_prompt,
+            # which build_system_message() appends AFTER the role header and
+            # policy block — no duplication of the LION system text.
+            # The post-factory add_message on the preset path is skipped to
+            # avoid set_system replacing the composed message.
+            from lionagi.agent.factory import create_agent
+
+            # Use profile.raw_body (not profile.system_prompt) to avoid
+            # duplicating LION_SYSTEM_MESSAGE: _parse_profile prepends it into
+            # system_prompt when lion_system=True, and factory.py:117-125 also
+            # prepends it because spec.lion_system remains True.  raw_body is
+            # the profile body before that expansion; the factory adds the
+            # header exactly once.  When lion_system=False, raw_body==system_prompt
+            # so both paths are consistent.
+            profile_extra = (getattr(profile, "raw_body", None) or "") if profile else ""
+            spec = _make_coding_preset(
+                cwd=cwd,
+                effort=effort or "high",
+                system_prompt=profile_extra or None,
+            )
+            branch = await create_agent(
+                spec,
+                chat_model=chat_model,
+                log_config=DataLoggerConfig(auto_save_on_exit=False),
+                load_settings=False,
+            )
+        else:
+            branch = Branch(
+                chat_model=chat_model,
+                log_config=DataLoggerConfig(auto_save_on_exit=False),
+            )
     else:
         cfg = branch.chat_model.endpoint.config.kwargs
         if model_str is not None:
@@ -141,7 +359,11 @@ async def _run_agent(
         if fast:
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
 
-    if profile and profile.system_prompt:
+    # Profile system prompt for the non-preset path only.
+    # On the preset path the profile extension was already composed into the
+    # spec before create_agent ran (add_message would call set_system and
+    # replace the preset system message — see protocols/messages/manager.py:385).
+    if profile and profile.system_prompt and preset is None:
         branch.msgs.add_message(system=profile.system_prompt)
 
     if timeout is not None:
@@ -247,7 +469,9 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:
         description=(
             "Spawn a single subagent and wait for its final response. "
             "Use -r / -c to continue a previous conversation. "
-            "Use -a to load a profile from .lionagi/agents/."
+            "Use -a to load a profile from .lionagi/agents/. "
+            "Use --preset to apply a built-in agent configuration. "
+            "Use --form to load and validate structured inputs before invoking."
         ),
     )
     agent.add_argument(
@@ -286,12 +510,65 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Continue the most recently used branch.",
     )
+    agent.add_argument(
+        "--preset",
+        choices=_PRESET_CHOICES,
+        default=None,
+        metavar="NAME",
+        help=(
+            "Apply a built-in agent configuration preset. "
+            f"Supported values: {', '.join(_PRESET_CHOICES)}. "
+            "'coding' wires CodingToolkit with path-guard hooks "
+            "and a coding system prompt; cwd defaults to the invocation directory."
+        ),
+    )
+    agent.add_argument(
+        "--form",
+        metavar="SPEC",
+        default=None,
+        help=(
+            "Path to a YAML or JSON work-form spec file. "
+            "The spec declares typed fields and values; validation runs "
+            "BEFORE any LLM call. Exits rc=1 on validation error. "
+            "Validated values are injected into the prompt as structured context."
+        ),
+    )
 
     add_common_cli_args(agent)
 
 
 def run_agent(args: argparse.Namespace) -> int:
     """Dispatch agent command."""
+    # 3b: --form: load, build, and validate BEFORE any LLM call.
+    # Validation errors exit rc=1 through the error channel (stderr).
+    form_prompt_prefix: str = ""
+    if getattr(args, "form", None):
+        try:
+            spec = _load_form_spec(args.form)
+        except FileNotFoundError as exc:
+            log_error(str(exc))
+            return 1
+        except ValueError as exc:
+            log_error(str(exc))
+            return 1
+
+        try:
+            work_form = _build_work_form(spec, args.form)
+        except ValueError as exc:
+            log_error(str(exc))
+            return 1
+
+        if work_form.status == "error":
+            errs = "; ".join(work_form.validation_errors)
+            log_error(f"form validation failed ({args.form}): {errs}")
+            return 1
+
+        # Validated — build a context block to prepend to the prompt.
+        if work_form.values:
+            form_prompt_prefix = _form_to_context_block(work_form) + "\n\n"
+
+    prompt = form_prompt_prefix + args.prompt
+
     has_model = args.model is not None or args.agent is not None
     if not has_model and not (args.resume or args.continue_last):
         log_error(
@@ -303,7 +580,7 @@ def run_agent(args: argparse.Namespace) -> int:
         result, provider, branch_id, terminal_status = run_async(
             _run_agent(
                 args.model,
-                args.prompt,
+                prompt,
                 yolo=args.yolo,
                 verbose=args.verbose,
                 theme=args.theme,
@@ -317,6 +594,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 invocation_id=getattr(args, "invocation", None),
                 project=getattr(args, "project", None),
                 bypass=getattr(args, "bypass", False),
+                preset=getattr(args, "preset", None),
             )
         )
     except KeyboardInterrupt:
