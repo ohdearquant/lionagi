@@ -1064,3 +1064,44 @@ class TestCodingKindRequiresTestCmd:
         assert resp.status_code == 422, resp.text
         assert "test_cmd" in resp.json()["detail"]
         mock_db.create_invocation.assert_not_called()
+
+    def test_build_argv_coding_whitespace_test_cmd_rejected(self):
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        schedule = {
+            "action_kind": "engine",
+            "action_model": "",
+            "action_prompt": "build a parser",
+            "action_agent": "coding",
+            "action_engine_options": {"test_cmd": "   "},
+        }
+        with pytest.raises(ValueError, match="test_cmd"):
+            build_argv(schedule, {})
+
+    def test_launch_stored_coding_def_whitespace_test_cmd_422_no_row(self, tmp_path, monkeypatch):
+        mock_db = _stub_db_and_spawn(monkeypatch)
+        _stub_engine_def(
+            monkeypatch,
+            {
+                "id": "ws1234ws1234",
+                "name": "ws-coder",
+                "kind": "coding",
+                "model": None,
+                "max_depth": None,
+                "max_agents": None,
+                "options": {"test_cmd": "   "},
+            },
+        )
+        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
+
+        resp = client.post(
+            "/api/launches",
+            json={
+                "action_kind": "engine",
+                "action_engine_def": "ws-coder",
+                "action_prompt": "build a parser",
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        assert "test_cmd" in resp.json()["detail"]
+        mock_db.create_invocation.assert_not_called()

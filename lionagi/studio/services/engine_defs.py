@@ -59,9 +59,10 @@ def _validate_options(options: dict[str, Any] | None) -> None:
 
 def _validate_kind_options(kind: str, options: dict[str, Any] | None) -> None:
     """Reject kind/options combinations the engine CLI would refuse to run."""
-    if kind == "coding" and not (options or {}).get("test_cmd"):
+    test_cmd = (options or {}).get("test_cmd")
+    if kind == "coding" and not str(test_cmd or "").strip():
         raise ValueError(
-            "the 'coding' engine kind requires options.test_cmd "
+            "the 'coding' engine kind requires a non-blank options.test_cmd "
             "(e.g. {'test_cmd': 'pytest tests/'})"
         )
 

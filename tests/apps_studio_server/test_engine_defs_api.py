@@ -411,3 +411,20 @@ async def test_update_options_dropping_test_cmd_on_coding_raises(patched_svc):
     )
     with pytest.raises(ValueError, match="test_cmd"):
         await svc.update_engine_def(def_id, {"options": {"export_dir": "out"}})
+
+
+async def test_create_coding_whitespace_test_cmd_raises(patched_svc):
+    svc, _ = patched_svc
+    with pytest.raises(ValueError, match="test_cmd"):
+        await svc.create_engine_def(
+            {"name": "ws-coder", "kind": "coding", "options": {"test_cmd": "   "}}
+        )
+
+
+async def test_update_options_whitespace_test_cmd_on_coding_raises(patched_svc):
+    svc, db_path = patched_svc
+    def_id = await _seed_engine_def(
+        db_path, name="ws-coder2", kind="coding", options={"test_cmd": "pytest"}
+    )
+    with pytest.raises(ValueError, match="test_cmd"):
+        await svc.update_engine_def(def_id, {"options": {"test_cmd": "   "}})
