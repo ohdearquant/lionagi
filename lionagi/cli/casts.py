@@ -27,7 +27,7 @@ def add_casts_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run_casts(args: argparse.Namespace) -> int:
-    from lionagi.casts._catalog import build_catalog
+    from lionagi.casts.catalog import build_catalog
 
     catalog = build_catalog()
 
@@ -73,7 +73,7 @@ def _print_role_detail(role: dict) -> None:
     print(role["description"])
     if role["emits"]:
         print()
-        print("Emits: " + ", ".join(role["emits"]))
+        print("Emits: " + ", ".join(e["model"] for e in role["emits"]))
     if role["body"]:
         print()
         print(role["body"].rstrip())

@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from lionagi.casts._catalog import build_catalog
+from lionagi.casts.catalog import build_catalog
 
 router = APIRouter(prefix="/casts", tags=["casts"])
 

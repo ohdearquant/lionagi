@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib
 
 _EXPECTED = (
+    "build_catalog",
     "Pattern",
     "PatternKind",
     "Role",

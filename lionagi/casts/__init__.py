@@ -3,6 +3,7 @@
 
 """casts — composable agent configuration: patterns, profiles, packs, and emission contracts."""
 
+from .catalog import build_catalog
 from .emission import (
     SPAWN_ALLOWED_OPERATIONS,
     AnalysisResult,
@@ -36,6 +37,8 @@ from .pattern import Mode, Pattern, PatternKind, Role, list_modes, list_roles
 from .profile import Profile
 
 __all__ = (
+    # catalog (read-only metadata seam)
+    "build_catalog",
     # pattern layer
     "Pattern",
     "PatternKind",
