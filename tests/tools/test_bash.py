@@ -6,6 +6,7 @@
 import asyncio
 
 import pytest
+from pydantic import ValidationError
 
 from lionagi.protocols.action.tool import Tool
 from lionagi.tools.code.bash import BashRequest, BashResponse, BashTool
@@ -24,20 +25,22 @@ def test_bash_request_defaults():
     req = BashRequest(command="ls")
     assert req.timeout is None
     assert req.cwd is None
-    assert req.allow_shell is False
 
 
 def test_bash_request_custom_fields():
-    req = BashRequest(command="pwd", timeout=5000, cwd="/tmp", allow_shell=False)
+    req = BashRequest(command="pwd", timeout=5000, cwd="/tmp")
     assert req.timeout == 5000
     assert req.cwd == "/tmp"
 
 
-def test_bash_request_allow_shell_excluded_from_dump():
-    # exclude=True means field is excluded from model_dump(), not from schema
-    req = BashRequest(command="ls", allow_shell=True)
-    dumped = req.model_dump()
-    assert "allow_shell" not in dumped
+def test_bash_request_allow_shell_kwarg_raises_validation_error():
+    # CWE-284 fix: allow_shell removed from BashRequest entirely.
+    # Callers that previously passed allow_shell=True (or False) receive a
+    # hard ValidationError — there is no silent bypass path on the model.
+    with pytest.raises(ValidationError):
+        BashRequest(command="ls", allow_shell=True)
+    with pytest.raises(ValidationError):
+        BashRequest(command="ls", allow_shell=False)
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +153,7 @@ async def test_handle_request_shell_control_operators_rejected(cmd, operator):
     tool = BashTool()
     resp = await tool.handle_request(BashRequest(command=cmd))
     assert resp.return_code == -1, f"Operator {operator!r} was not rejected"
-    assert "Shell control" in resp.stderr or "trusted shell mode" in resp.stderr, (
+    assert "Shell control" in resp.stderr, (
         f"Operator {operator!r} rejection message missing: {resp.stderr}"
     )
 
@@ -161,10 +164,13 @@ async def test_handle_request_shell_control_operators_rejected(cmd, operator):
 
 
 async def test_handle_request_output_truncation(tmp_path):
-    # Generate a python one-liner that emits well over 100 KB of output
-    script = "python3 -c \"import sys; sys.stdout.write('A' * 200000); sys.stdout.flush()\""
+    # Generate a Python script file that emits well over 100 KB of output.
+    # Running it via `python3 <path>` has no shell operators, so shell=False
+    # is used and the output-truncation path is exercised without any bypass.
+    script_path = tmp_path / "big_output.py"
+    script_path.write_text("import sys\nsys.stdout.write('A' * 200_000)\nsys.stdout.flush()\n")
     tool = BashTool()
-    req = BashRequest(command=script, allow_shell=True)
+    req = BashRequest(command=f"python3 {script_path}")
     resp = await tool.handle_request(req)
     assert "truncated" in resp.stdout.lower()
     assert resp.return_code == 0
@@ -212,6 +218,55 @@ async def test_to_tool_callable_executes():
     result = await t.func_callable(command="/bin/echo from_tool")
     assert result["return_code"] == 0
     assert "from_tool" in result["stdout"]
+
+
+# ---------------------------------------------------------------------------
+# Security: CWE-284 — shell=False is unconditional; no bypass via kwargs
+# ---------------------------------------------------------------------------
+
+
+async def test_subprocess_always_invoked_with_shell_false(monkeypatch):
+    """Popen must always receive shell=False regardless of command content."""
+    import lionagi.tools._subprocess as subprocess_mod
+
+    captured_kwargs = []
+    original_popen = subprocess_mod.subprocess.Popen
+
+    def recording_popen(*args, **kwargs):
+        captured_kwargs.append(kwargs)
+        return original_popen(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess_mod.subprocess, "Popen", recording_popen)
+
+    tool = BashTool()
+    await tool.handle_request(BashRequest(command="/bin/echo sec_test"))
+
+    assert captured_kwargs, "Popen was never called"
+    for kw in captured_kwargs:
+        assert kw.get("shell") is False, (
+            f"subprocess.Popen called with shell={kw.get('shell')!r} — must be False"
+        )
+
+
+async def test_shell_operators_do_not_execute_via_handle_request():
+    """Shell operators in command string must be rejected, not executed.
+
+    Probe: `echo sentinel; echo injected` — if shell=True were used, both
+    lines appear in stdout.  With shell=False the command is rejected before
+    reaching Popen, so stdout is empty and return_code is -1.
+    """
+    tool = BashTool()
+    resp = await tool.handle_request(BashRequest(command="echo sentinel; echo injected"))
+    assert resp.return_code == -1
+    assert "injected" not in resp.stdout
+
+
+async def test_pipe_operator_does_not_execute():
+    """Pipe operator must be rejected before reaching subprocess."""
+    tool = BashTool()
+    resp = await tool.handle_request(BashRequest(command="echo hi | cat"))
+    assert resp.return_code == -1
+    assert resp.stdout == ""
 
 
 # ---------------------------------------------------------------------------

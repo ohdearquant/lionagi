@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import shlex
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
@@ -16,6 +16,8 @@ from ..base import LionTool
 
 
 class BashRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     command: str = Field(
         ...,
         description=(
@@ -43,11 +45,6 @@ class BashRequest(BaseModel):
             "Use this instead of a leading `cd` command."
         ),
     )
-    allow_shell: bool = Field(
-        False,
-        description="Allow shell control operators. Only set via trusted code.",
-        exclude=True,
-    )
 
 
 class BashResponse(BaseModel):
@@ -69,17 +66,20 @@ class BashResponse(BaseModel):
     )
 
 
-def _command_for_subprocess(request: BashRequest) -> tuple[str | list[str], bool]:
-    """Rejects shell operators unless trusted."""
-    if request.allow_shell:
-        return request.command, True
+def _command_for_subprocess(request: BashRequest) -> list[str]:
+    """Returns argv list for subprocess; always runs with shell=False.
+
+    Shell control operators are unconditionally rejected — there is no trusted
+    bypass path on the request model.  Shell execution (shell=True) is removed
+    from the public call-path to close CWE-284.
+    """
     if _SHELL_CONTROL.search(request.command):
         raise PermissionError(
             f"Shell control operators are not supported: {request.command!r}. "
             "Run one command per call; use cwd= to set the working directory instead of `cd x && cmd`."
         )
     try:
-        return shlex.split(request.command), False
+        return shlex.split(request.command)
     except ValueError as e:
         raise PermissionError(
             f"Malformed command: {e}. Check quoting — use single quotes for arguments with spaces."
@@ -118,14 +118,14 @@ class BashTool(LionTool):
         timeout_sec = timeout_ms / 1000.0
 
         try:
-            cmd, shell = _command_for_subprocess(request)
+            cmd = _command_for_subprocess(request)
         except PermissionError as e:
             return BashResponse(stdout="", stderr=str(e), return_code=-1)
 
         return await run_sync(
             _subprocess_sync,
             cmd,
-            shell,
+            False,
             timeout_sec,
             timeout_ms,
             request.cwd or None,
