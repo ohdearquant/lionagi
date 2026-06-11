@@ -58,8 +58,8 @@ def spa_client(
 ):
     """TestClient with SPA serving enabled (real dist dir via env override).
 
-    Yield-fixture: reloads the app module after monkeypatch teardown so the
-    module singleton is restored for later tests in the same xdist worker.
+    Yield-fixture: teardown clears the env var and reloads the app module so
+    the API-only singleton is restored for later tests in the same xdist worker.
     """
     fake_db = tmp_path / "state.db"
 
@@ -77,9 +77,11 @@ def spa_client(
     reload(app_mod)
     yield TestClient(app_mod.app, raise_server_exceptions=False)
 
-    # After monkeypatch has restored the environment, reload the module so it
-    # returns to API-only state.  This prevents a SPA-enabled app singleton
-    # from leaking into subsequent tests in the same xdist worker.
+    # Restore the API-only module singleton so it does not leak into later
+    # tests in the same xdist worker.  Fixture finalizers run LIFO: this code
+    # executes BEFORE monkeypatch undoes setenv, so the env var must be
+    # removed explicitly here or the reload re-mounts the SPA.
+    os.environ.pop("LIONAGI_STUDIO_FRONTEND_DIST", None)
     reload(app_mod)
 
 
@@ -90,8 +92,8 @@ def no_dist_client(
 ):
     """TestClient with no dist dir — API-only mode.
 
-    Yield-fixture: reloads the app module after monkeypatch teardown so the
-    module singleton is restored for later tests in the same xdist worker.
+    Yield-fixture: teardown reloads the app module so the module singleton is
+    restored for later tests in the same xdist worker.
     """
     fake_db = tmp_path / "state.db"
 
@@ -111,7 +113,8 @@ def no_dist_client(
     reload(app_mod)
     yield TestClient(app_mod.app, raise_server_exceptions=False)
 
-    # Restore the module singleton after the test's env teardown.
+    # The env var is still absent here (finalizers run LIFO, before monkeypatch
+    # restores anything), so this reload restores the API-only singleton.
     reload(app_mod)
 
 
