@@ -275,7 +275,8 @@ class StateDB:
         #
         # Methods covered: insert_session_signal, update_status,
         # insert_message, append_to_progression, touch_session_activity,
-        # update_session (field-update section), update_branch.
+        # update_session (field-update section), update_branch,
+        # update_artifact_verification.
         # Methods NOT covered: read-only queries; save_definition (uses its
         # own per-(kind,name) _definition_locks and is not on the signal path).
         self._write_lock: Lock = Lock()
@@ -701,11 +702,15 @@ class StateDB:
         session_id: str,
         verification: dict[str, Any] | None,
     ) -> None:
-        await self.db.execute(
-            "UPDATE sessions SET artifact_verification_json = ?, updated_at = ? WHERE id = ?",
-            (_to_json_column(verification), time.time(), session_id),
-        )
-        await self.db.commit()
+        # Must hold _write_lock: teardown calls this while signal persistence is
+        # still bound (unbind happens after _teardown_common returns), so a late
+        # signal emit's BEGIN IMMEDIATE can race this implicit UPDATE+commit.
+        async with self._write_lock:
+            await self.db.execute(
+                "UPDATE sessions SET artifact_verification_json = ?, updated_at = ? WHERE id = ?",
+                (_to_json_column(verification), time.time(), session_id),
+            )
+            await self.db.commit()
 
     # ── Status reason model ───────────────────────────────────────────
 

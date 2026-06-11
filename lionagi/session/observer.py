@@ -23,11 +23,20 @@ Handler = Callable[[Any, "SessionObserver"], Any]
 Predicate = Callable[[Any], bool]
 Gate = Callable[[Any], Any]
 
-# Maximum byte size for a persisted signal payload.  Payloads exceeding this
-# cap are truncated: the dict is serialised to JSON, sliced, and a
+# Maximum byte size for the persisted payload JSON column in session_signals.
+# This is a PAYLOAD cap, not a frame cap: it bounds
+# ``len(_to_json_column(payload).encode("utf-8"))`` — the value stored in the
+# ``payload`` column.  The SSE generator wraps each row in a full JSON object
+# (id, session_id, seq, kind, op_id, ts, payload) and prefixes it with
+# ``data: ...\n\n``; that envelope adds bounded overhead (~176 bytes for
+# typical row metadata) so SSE frames can exceed this cap by that margin.
+# Callers that need a hard frame cap must reserve the envelope overhead before
+# calling _sanitize_signal_payload.
+# Payloads exceeding the cap are truncated: the dict is serialised to JSON,
+# sliced to fit (accounting for JSON escaping of backslashes and quotes), and a
 # ``truncated`` + ``original_bytes`` marker is injected so downstream
 # consumers know the data is partial.
-_PAYLOAD_BYTE_CAP: int = 16_384  # 16 KB
+_PAYLOAD_BYTE_CAP: int = 16_384  # 16 KB (payload column only; see note above)
 
 # Signal fields that are part of Signal base and must not be promoted into the
 # payload dict (they are either redundant with columns or not meaningful there).

@@ -10,6 +10,17 @@ pattern that /api/sessions/{id}/stream uses for messages.
 
 Auth: same bearer-token gate enforced by the app-level middleware in app.py;
 no additional checks needed here.
+
+Frame-size note: ``_PAYLOAD_BYTE_CAP`` (16 KiB) bounds the ``payload`` column
+stored in ``session_signals``, not the full SSE frame.  Each emitted frame is::
+
+    data: <json.dumps(row)>\\n\\n
+
+where ``row`` includes id, session_id, seq, kind, op_id, ts, and the capped
+payload value.  The row envelope adds bounded overhead (~176 bytes for typical
+metadata fields), so SSE frames can exceed ``_PAYLOAD_BYTE_CAP`` by that
+margin.  This is intentional: capping at the payload layer keeps the signal
+store predictable; the small fixed envelope overhead is acceptable.
 """
 
 from __future__ import annotations

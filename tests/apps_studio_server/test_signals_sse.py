@@ -1051,6 +1051,68 @@ async def test_concurrent_emit_and_message_persist_no_failures(tmp_path):
     )
 
 
+async def test_concurrent_emit_and_artifact_verification_no_failures(tmp_path):
+    """Bound emits racing update_artifact_verification on same DB → zero failures.
+
+    Codex round-3 repro: 100 direct insert_session_signal + 100
+    update_artifact_verification on the same StateDB → 1 transaction error,
+    99 rows, non-contiguous seq (update_artifact_verification's unlocked
+    UPDATE+commit raced the bound BEGIN IMMEDIATE).  After adding
+    _write_lock to update_artifact_verification, both paths serialize
+    correctly.
+    """
+    from lionagi.session.session import Session
+    from lionagi.session.signal import NodeStarted
+
+    db_path = tmp_path / "state.db"
+    session_id = "race-artifact-sess"
+    n = 50
+
+    async with StateDB(db_path) as db:
+        prog_id = f"{session_id}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": session_id,
+                "created_at": 100.0,
+                "progression_id": prog_id,
+                "name": "race-artifact-test",
+                "status": "running",
+                "invocation_kind": "agent",
+            }
+        )
+
+        session = Session(name="race-artifact-test")
+        observer = session.observer
+        observer.bind_db_persistence(session_id, db=db)
+
+        artifact_failures: list[Exception] = []
+
+        async def _do_artifact_verification(i: int) -> None:
+            try:
+                await db.update_artifact_verification(
+                    session_id,
+                    {"status": "ok", "missing_required": [], "iteration": i},
+                )
+            except Exception as exc:  # noqa: BLE001
+                artifact_failures.append(exc)
+
+        await asyncio.gather(
+            *[observer.emit(NodeStarted(op_id=f"op-{i}", name=f"step-{i}")) for i in range(n)],
+            *[_do_artifact_verification(i) for i in range(n)],
+        )
+
+        rows = await db.get_session_signals_after(session_id, 0)
+
+    assert len(rows) == n, f"Expected {n} signal rows, got {len(rows)}"
+    assert not artifact_failures, (
+        f"{len(artifact_failures)} update_artifact_verification calls failed: "
+        f"{artifact_failures[0]}"
+    )
+    seqs = sorted(r["seq"] for r in rows)
+    assert seqs == list(range(1, n + 1)), f"seq gaps after artifact race: {seqs}"
+
+
 # ---------------------------------------------------------------------------
 # MAJOR-2 (Round 2): Byte cap must hold on the FINAL serialized form,
 # including JSON escaping overhead.  Codex repro: quote/backslash-heavy
