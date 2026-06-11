@@ -34,6 +34,118 @@ from ._providers import (
 )
 from ._runs import allocate_run, find_branch, load_last_branch, save_last_branch_pointer
 
+# ---------------------------------------------------------------------------
+# Preset names supported by --preset
+# ---------------------------------------------------------------------------
+
+_PRESET_CHOICES = ("coding",)
+
+
+def _make_coding_preset(cwd: str | None = None, effort: str | None = "high"):
+    """Construct an ``AgentConfig.coding()`` instance.
+
+    Isolated as a module-level function so tests can monkeypatch it without
+    fighting Python's lazy-import caching.
+    """
+    from lionagi.agent.config import AgentConfig
+
+    return AgentConfig.coding(cwd=cwd, effort=effort)
+
+
+# ---------------------------------------------------------------------------
+# WorkForm loading helpers (for --form)
+# ---------------------------------------------------------------------------
+
+
+def _load_form_spec(path: str) -> dict:
+    """Load a YAML or JSON work-form spec file.
+
+    Returns the parsed dict.  Raises ``ValueError`` with a user-friendly
+    message on parse failure.
+    """
+    import os
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"form spec file not found: {path!r}")
+
+    with open(path) as fh:
+        raw = fh.read()
+
+    # Try YAML first (superset of JSON), then fall back to plain JSON.
+    try:
+        import yaml  # type: ignore[import-untyped]
+
+        data = yaml.safe_load(raw)
+    except Exception as yaml_err:
+        try:
+            data = json.loads(raw)
+        except Exception:
+            raise ValueError(f"could not parse form spec {path!r}: {yaml_err}") from yaml_err
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"form spec {path!r} must be a YAML/JSON mapping, got {type(data).__name__}"
+        )
+    return data
+
+
+def _build_work_form(spec: dict, spec_path: str):
+    """Construct a :class:`~lionagi.work.WorkForm` from a parsed spec dict.
+
+    Expected YAML shape::
+
+        title: "My form"         # optional
+        fields:                   # optional; declares typed slots
+          repo:
+            type: str
+            required: true
+            description: "Repository path"
+          effort:
+            type: str
+            required: false
+            default: "high"
+        values:                   # optional; values to fill into the form
+          repo: "/path/to/repo"
+          effort: "medium"
+
+    When ``fields`` is absent, a field-less form is created and only the
+    ``values`` dict is forwarded as context.
+    """
+    from lionagi.work import FieldSpec, WorkForm, fill_form
+
+    title = spec.get("title", spec_path)
+    raw_fields: dict = spec.get("fields", {})
+    raw_values: dict = spec.get("values", {})
+
+    fields: dict[str, FieldSpec] = {}
+    for name, fspec in raw_fields.items():
+        if not isinstance(fspec, dict):
+            raise ValueError(
+                f"form spec {spec_path!r}: field {name!r} must be a mapping, "
+                f"got {type(fspec).__name__}"
+            )
+        try:
+            fields[name] = FieldSpec(name=name, **fspec)
+        except Exception as exc:
+            raise ValueError(f"form spec {spec_path!r}: invalid field {name!r}: {exc}") from exc
+
+    form = WorkForm(title=title, fields=fields)
+    if raw_values or fields:
+        form = fill_form(form, raw_values)
+    return form
+
+
+def _form_to_context_block(form) -> str:
+    """Render a validated WorkForm's values as a structured context preamble.
+
+    Returns a string that can be prepended to the user's prompt so the LLM
+    receives the form values as structured inputs.
+    """
+    lines = [f"[Work Form: {form.title}]"]
+    for key, value in form.values.items():
+        lines.append(f"  {key}: {value!r}")
+    return "\n".join(lines)
+
 
 async def _run_agent(
     model_str: str | None,
@@ -51,6 +163,7 @@ async def _run_agent(
     invocation_id: str | None = None,
     project: str | None = None,
     bypass: bool = False,
+    preset: str | None = None,
 ) -> tuple[str, str, str, str]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status)."""
     if resume and continue_last:
@@ -78,6 +191,15 @@ async def _run_agent(
             yolo = True
         if profile.fast_mode and not fast:
             fast = True
+
+    # 3a: --preset wires AgentConfig.<preset>() after profile to allow CLI
+    # flags to override preset defaults.  The preset config supplies effort
+    # and the coding system prompt (written to the branch below).
+    preset_config = None
+    if preset == "coding":
+        preset_config = _make_coding_preset(cwd=cwd, effort=effort or "high")
+        if effort is None:
+            effort = preset_config.effort
 
     branch: Branch | None = None
     if continue_last:
@@ -143,6 +265,12 @@ async def _run_agent(
 
     if profile and profile.system_prompt:
         branch.msgs.add_message(system=profile.system_prompt)
+
+    # Preset system prompt (coding preset) — applied after profile so profile
+    # system prompt takes precedence when both are present.
+    if preset_config is not None and preset_config.system_prompt:
+        if not (profile and profile.system_prompt):
+            branch.msgs.add_message(system=preset_config.build_system_message())
 
     if timeout is not None:
         preamble = build_deadline_preamble(timeout)
@@ -247,7 +375,9 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:
         description=(
             "Spawn a single subagent and wait for its final response. "
             "Use -r / -c to continue a previous conversation. "
-            "Use -a to load a profile from .lionagi/agents/."
+            "Use -a to load a profile from .lionagi/agents/. "
+            "Use --preset to apply a built-in agent configuration. "
+            "Use --form to load and validate structured inputs before invoking."
         ),
     )
     agent.add_argument(
@@ -286,12 +416,65 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Continue the most recently used branch.",
     )
+    agent.add_argument(
+        "--preset",
+        choices=_PRESET_CHOICES,
+        default=None,
+        metavar="NAME",
+        help=(
+            "Apply a built-in agent configuration preset. "
+            f"Supported values: {', '.join(_PRESET_CHOICES)}. "
+            "'coding' wires CodingToolkit with path-guard hooks "
+            "and a coding system prompt; cwd defaults to the invocation directory."
+        ),
+    )
+    agent.add_argument(
+        "--form",
+        metavar="SPEC",
+        default=None,
+        help=(
+            "Path to a YAML or JSON work-form spec file. "
+            "The spec declares typed fields and values; validation runs "
+            "BEFORE any LLM call. Exits rc=1 on validation error. "
+            "Validated values are injected into the prompt as structured context."
+        ),
+    )
 
     add_common_cli_args(agent)
 
 
 def run_agent(args: argparse.Namespace) -> int:
     """Dispatch agent command."""
+    # 3b: --form: load, build, and validate BEFORE any LLM call.
+    # Validation errors exit rc=1 through the error channel (stderr).
+    form_prompt_prefix: str = ""
+    if getattr(args, "form", None):
+        try:
+            spec = _load_form_spec(args.form)
+        except FileNotFoundError as exc:
+            log_error(str(exc))
+            return 1
+        except ValueError as exc:
+            log_error(str(exc))
+            return 1
+
+        try:
+            work_form = _build_work_form(spec, args.form)
+        except ValueError as exc:
+            log_error(str(exc))
+            return 1
+
+        if work_form.status == "error":
+            errs = "; ".join(work_form.validation_errors)
+            log_error(f"form validation failed ({args.form}): {errs}")
+            return 1
+
+        # Validated — build a context block to prepend to the prompt.
+        if work_form.values:
+            form_prompt_prefix = _form_to_context_block(work_form) + "\n\n"
+
+    prompt = form_prompt_prefix + args.prompt
+
     has_model = args.model is not None or args.agent is not None
     if not has_model and not (args.resume or args.continue_last):
         log_error(
@@ -303,7 +486,7 @@ def run_agent(args: argparse.Namespace) -> int:
         result, provider, branch_id, terminal_status = run_async(
             _run_agent(
                 args.model,
-                args.prompt,
+                prompt,
                 yolo=args.yolo,
                 verbose=args.verbose,
                 theme=args.theme,
@@ -317,6 +500,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 invocation_id=getattr(args, "invocation", None),
                 project=getattr(args, "project", None),
                 bypass=getattr(args, "bypass", False),
+                preset=getattr(args, "preset", None),
             )
         )
     except KeyboardInterrupt:
