@@ -94,6 +94,15 @@ def add_orchestrate_subparser(
         help="Comma-separated worker model specs (each can include effort).",
     )
     fo.add_argument(
+        "--pack",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Path to a YAML routing pack. Provides per-role model/effort when "
+            "--workers is absent. --workers overrides pack routing."
+        ),
+    )
+    fo.add_argument(
         "--max-concurrent",
         type=int,
         default=0,
@@ -275,6 +284,15 @@ def add_orchestrate_subparser(
         ),
     )
     fl.add_argument(
+        "--pack",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Path to a YAML routing pack. Provides per-role model/effort when "
+            "--workers is absent. --workers overrides pack routing."
+        ),
+    )
+    fl.add_argument(
         "--max-ops",
         "--max-agents",
         dest="max_ops",
@@ -339,6 +357,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     playbook_name=getattr(args, "playbook", None),
                     invocation_id=getattr(args, "invocation", None),
                     project=getattr(args, "project", None),
+                    pack=getattr(args, "pack", None),
                 )
             )
         except (TimeoutError, LionTimeoutError) as e:
@@ -432,6 +451,8 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 args.show_graph = True
             if getattr(args, "reactive", None) is None and spec.get("reactive") is not None:
                 args.reactive = spec["reactive"]
+            if getattr(args, "pack", None) is None and spec.get("pack"):
+                args.pack = spec["pack"]
             if args.save is None and spec.get("save"):
                 args.save = spec["save"]
             if spec.get("critic_model"):
@@ -538,6 +559,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     playbook_artifacts=playbook_artifacts,
                     invocation_id=getattr(args, "invocation", None),
                     project=getattr(args, "project", None),
+                    pack=getattr(args, "pack", None),
                 )
             )
         except (TimeoutError, LionTimeoutError) as e:

@@ -251,6 +251,7 @@ async def _run_flow(
     playbook_artifacts: dict | None = None,
     invocation_id: str | None = None,
     project: str | None = None,
+    pack: str | None = None,
     **legacy_kwargs,
 ) -> tuple[str, str]:
     """Returns (output, terminal_status)."""
@@ -279,6 +280,7 @@ async def _run_flow(
         bare=bare,
         fast=fast,
         total_budget=timeout,
+        pack=pack,
     )
 
     _orc_model, _orc_provider = parse_orchestrator_provider(env.default_model_spec)
@@ -488,7 +490,7 @@ async def _run_flow_inner(
         for i, ta in enumerate(assignments):
             override = pool[i % len(pool)] if pool else None
             if override:
-                modes = [] if env.bare else resolve_modes(ta.assignee, ta.modes or None)
+                modes = [] if env.bare else resolve_modes(ta.assignee, ta.modes or None, env.pack)
                 mode_str = f"  modes={modes}" if modes else ""
                 lines.append(f"  {agent_ids[i]}: {override} (workers){mode_str}")
                 continue
@@ -496,17 +498,17 @@ async def _run_flow_inner(
                 lines.append(f"  {agent_ids[i]}: {model_spec} (bare)")
                 continue
             rm, rp = resolve_worker_spec(ta.assignee)
-            cfg = role_config(ta.assignee)
+            cfg = role_config(ta.assignee, env.pack)
             if rp:
                 # A user profile supplies its own body — casts modes don't apply
                 # (profile shadows casts; ADR-0074 follow-up makes them compose).
                 model, src, modes = rm, "profile", []
             elif cfg and cfg.model:
                 model, src = cfg.model, "pack"
-                modes = resolve_modes(ta.assignee, ta.modes or None)
+                modes = resolve_modes(ta.assignee, ta.modes or None, env.pack)
             else:
                 model, src = model_spec, "default"
-                modes = resolve_modes(ta.assignee, ta.modes or None)
+                modes = resolve_modes(ta.assignee, ta.modes or None, env.pack)
             mode_str = f"  modes={modes}" if modes else ""
             lines.append(f"  {agent_ids[i]}: {model} ({src}){mode_str}")
         return "\n".join(lines)
