@@ -8,7 +8,7 @@ Covers:
 - FILE_REGISTRY population at import (filesystem scan)
 - LION_CLASS_REGISTRY population via Node.__pydantic_init_subclass__
 - get_class: hit (registry) + miss (unknown name)
-- get_class file-registry fallback path (pinned as known-broken latent bug)
+- get_class file-registry fallback path (fixed in #1407; package-boundary guard)
 - Duplicate-name handling: real-path collision via actual subclass creation
 - Registry isolation: autouse fixture snapshots/restores both registries
 - Polymorphic round-trip: Node subclass -> to_dict -> Element.from_dict -> type preserved
