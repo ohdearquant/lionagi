@@ -63,7 +63,11 @@ engines / orchestration / operations
 - The planes communicate **only** through `StateDB` and exported artifacts.
   `studio` imports nothing from `casts`/`agent`/`engines`; `casts`/`agent`
   import nothing from `state`/`studio`/`hooks`. This separation is deliberate
-  and load-bearing — do not "unify" it.
+  and load-bearing — do not "unify" it. One documented exception:
+  `studio` may import `lionagi.casts.catalog` (read-only pattern/pack
+  metadata for the canvas palette, see DESIGN-CANVAS.md §6). The catalog
+  export is data-only — it must never expose functions that mutate casts
+  state or execute agent behavior.
 - Shared foundations live **below both planes**: provider/model-spec tables
   moved from `cli/_providers.py` to `service/providers.py`; filesystem layout
   constants moved from `cli/_runs.py`/`cli/_agents.py` to `lionagi/_paths.py`.

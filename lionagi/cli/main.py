@@ -20,6 +20,7 @@ import sys
 
 from ._logging import configure_cli_logging, log_error
 from .agent import add_agent_subparser, run_agent
+from .casts import add_casts_subparser, run_casts
 from .engine import add_engine_subparser, run_engine
 from .invoke import add_invoke_subparser, run_invoke
 from .kill import add_kill_subparser, run_kill
@@ -278,6 +279,7 @@ def main(argv: list[str] | None = None) -> int:
 
     orch_parsers = add_orchestrate_subparser(sub)
     add_agent_subparser(sub)
+    add_casts_subparser(sub)
     add_engine_subparser(sub)
     add_team_subparser(sub)
     add_studio_subparser(sub)
@@ -299,6 +301,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "agent":
         return run_agent(args)
+
+    if args.command == "casts":
+        return run_casts(args)
 
     if args.command == "engine":
         return run_engine(args)
