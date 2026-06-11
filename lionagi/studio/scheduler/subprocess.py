@@ -26,6 +26,11 @@ _ALIAS_ACTION_KINDS: dict[str, str] = {"playbook": "play"}
 # unconditionally to block flag injection into the spawned li process (CWE-88).
 _MODEL_RE = re.compile(r"^[a-zA-Z0-9_./:@-]+$")
 
+# Identifier fields (action_agent, action_project, action_playbook) share the
+# same character set as model specs: they name agents, projects, and playbooks
+# and have no legitimate use for leading '-'.
+_IDENT_RE = _MODEL_RE
+
 
 def _validate_action_model(model: str) -> None:
     """Raise ValueError if *model* could inject CLI flags into the subprocess.
@@ -48,6 +53,31 @@ def _validate_action_model(model: str) -> None:
         raise ValueError(
             f"action_model {model!r} contains characters not allowed in a model "
             "identifier. Allowed: letters, digits, '_', '.', '/', ':', '@', '-'."
+        )
+
+
+def _validate_identifier(value: str, field_name: str) -> None:
+    """Raise ValueError if *value* (an identifier field) starts with '-'.
+
+    Covers action_agent, action_project, and action_playbook.  These fields are
+    identifier-shaped (name a profile, project, or playbook) and must not start
+    with '-'.  A leading '-' would cause argparse to misinterpret the value as a
+    flag, producing an unexpected usage error rather than a flag toggle — still
+    fragile behaviour that callers should never be able to trigger.
+
+    Policy: loud rejection at write time (same as action_model).
+    """
+    if not value:
+        return
+    if value.startswith("-"):
+        raise ValueError(
+            f"{field_name} {value!r} starts with '-' and is not a valid identifier. "
+            "Identifier fields must not begin with '-'."
+        )
+    if not _IDENT_RE.match(value):
+        raise ValueError(
+            f"{field_name} {value!r} contains characters not allowed in an identifier. "
+            "Allowed: letters, digits, '_', '.', '/', ':', '@', '-'."
         )
 
 
@@ -113,6 +143,12 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
     # having them here ensures the subprocess is never spawned with injected flags
     # regardless of how the schedule dict was created.
     _validate_action_model(model)
+    if agent:
+        _validate_identifier(agent, "action_agent")
+    if project:
+        _validate_identifier(project, "action_project")
+    if playbook:
+        _validate_identifier(playbook, "action_playbook")
     if isinstance(extra, list):
         _validate_extra_args(extra)
 
@@ -123,18 +159,51 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
     argv = ["uv", "run", "li"]
     tmp_path: str | None = None
 
+    # argv structure (CWE-88 hardening):
+    #
+    #   Named flags (--agent, --project, -f …) FIRST, then the '--' end-of-options
+    #   sentinel, then positional arguments (model, prompt).
+    #
+    # The '--' sentinel tells argparse to stop treating subsequent tokens as
+    # option strings, so a prompt like '--bypass' is parsed as the prompt VALUE
+    # rather than toggling the bypass flag — making action_prompt injection-proof
+    # without restricting freeform prompt text at all.
+    #
+    # flow_yaml is a special case: the YAML file supplies the prompt, so the
+    # prompt positional is OMITTED entirely.  Empirically verified: the CLI
+    # parser reads the prompt from the -f spec file (prompt: key) and overwrites
+    # args.prompt, so a positional prompt is redundant and would only open a
+    # second injection surface.  Shape: li o flow -f <tmp> -- <model>
+
     if kind == "agent":
-        argv += ["agent", model, prompt]
+        # Named flags first (--agent must come before --)
+        flags: list[str] = []
         if agent:
-            argv += ["--agent", agent]
+            flags += ["--agent", agent]
+        if project:
+            flags += ["--project", project]
+        argv += ["agent", *flags, "--", model, prompt]
+
     elif kind == "flow":
-        argv += ["o", "flow", model, prompt]
+        flags = []
+        if project:
+            flags += ["--project", project]
+        argv += ["o", "flow", *flags, "--", model, prompt]
+
     elif kind == "fanout":
-        argv += ["o", "fanout", model, prompt]
+        flags = []
+        if project:
+            flags += ["--project", project]
+        argv += ["o", "fanout", *flags, "--", model, prompt]
+
     elif kind == "play":
+        # `li play NAME` is a positional-only subcommand; '--' is not needed
+        # because playbook names are validated as identifiers above and there
+        # is no freeform prompt positional.
         argv += ["play"]
         if playbook:
             argv.append(playbook)
+
     elif kind == "flow_yaml":
         # Write the inline YAML spec to a temp file so `li o flow -f <path>`
         # can read it.  The caller is responsible for deleting tmp_path after
@@ -147,12 +216,16 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
         except Exception:
             os.unlink(tmp_path)
             raise
-        argv += ["o", "flow", model, prompt, "-f", tmp_path]
-
-    if project:
-        argv += ["--project", project]
+        # Named flags first (-f must come before --), then -- sentinel, then
+        # model positional only (no prompt positional — YAML supplies it).
+        flags = ["-f", tmp_path]
+        if project:
+            flags += ["--project", project]
+        argv += ["o", "flow", *flags, "--", model]
 
     # extra has already been validated above; extend argv with safe positional tokens.
+    # These are appended AFTER the subcommand's positionals, after '--', so they
+    # are treated as positional values by the subcommand's parser.
     if isinstance(extra, list):
         argv.extend(str(a) for a in extra)
 

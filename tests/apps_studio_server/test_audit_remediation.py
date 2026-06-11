@@ -758,3 +758,141 @@ class TestScheduleArgvInjectionRouterValidation:
             },
         )
         assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+
+
+# ---------------------------------------------------------------------------
+# CWE-88 argument injection — real-service router tests (closes #1404, round 2)
+#
+# These tests use the REAL service layer (no mock) with a temp SQLite DB.
+# They validate that flag-injection rejections in create_schedule propagate
+# through the router as HTTP 400 responses.  Codex concern: the mocked router
+# tests verify HTTP translation only, not the actual validation logic.
+# ---------------------------------------------------------------------------
+
+
+def _real_svc_client(monkeypatch, tmp_path: Path) -> TestClient:
+    """Return a TestClient backed by the real service layer + temp DB.
+
+    We monkeypatch DEFAULT_DB_PATH in both the state.db module and the
+    schedules service module so StateDB() uses an isolated temp file.
+    No mock is applied to create_schedule.
+    """
+    from fastapi.testclient import TestClient
+
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.schedules as sched_svc_mod
+    from lionagi.studio.app import app
+
+    db_file = tmp_path / "test_state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_file)
+    monkeypatch.setattr(sched_svc_mod, "DEFAULT_DB_PATH", db_file)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+class TestScheduleArgvInjectionRealService:
+    """Router → REAL service → temp DB: each flag-injection field must return 400.
+
+    Codex's concern: the mocked router tests (TestScheduleArgvInjectionRouterValidation)
+    verify HTTP translation but not the actual validation logic.  These tests go through
+    the full stack (router → real create_schedule → real validators → DB write) with
+    only the DB path replaced by a temp file.
+    """
+
+    def test_create_action_model_flag_real_svc_returns_400(self, monkeypatch, tmp_path) -> None:
+        """POST action_model='--bypass' through real service → 400."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "bad-model-real",
+                "trigger_type": "cron",
+                "action_kind": "agent",
+                "action_model": "--bypass",
+                "action_prompt": "hello",
+            },
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+        detail = r.json().get("detail", "")
+        assert "--bypass" in detail or "action_model" in detail, (
+            f"Expected error mentioning --bypass or action_model, got: {detail!r}"
+        )
+
+    def test_create_extra_args_flag_real_svc_returns_400(self, monkeypatch, tmp_path) -> None:
+        """POST action_extra_args=['--bypass'] through real service → 400."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "bad-extra-real",
+                "trigger_type": "cron",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+                "action_prompt": "hello",
+                "action_extra_args": ["--bypass"],
+            },
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+        detail = r.json().get("detail", "")
+        assert "--bypass" in detail or "action_extra_args" in detail, (
+            f"Expected error mentioning --bypass or action_extra_args, got: {detail!r}"
+        )
+
+    def test_create_action_agent_flag_real_svc_returns_400(self, monkeypatch, tmp_path) -> None:
+        """POST action_agent='--bypass' through real service → 400."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "bad-agent-real",
+                "trigger_type": "cron",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+                "action_prompt": "hello",
+                "action_agent": "--bypass",
+            },
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+        detail = r.json().get("detail", "")
+        assert "--bypass" in detail or "action_agent" in detail, (
+            f"Expected error mentioning --bypass or action_agent, got: {detail!r}"
+        )
+
+    def test_create_action_project_flag_real_svc_returns_400(self, monkeypatch, tmp_path) -> None:
+        """POST action_project='--bypass' through real service → 400."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "bad-project-real",
+                "trigger_type": "cron",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+                "action_prompt": "hello",
+                "action_project": "--bypass",
+            },
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+        detail = r.json().get("detail", "")
+        assert "--bypass" in detail or "action_project" in detail, (
+            f"Expected error mentioning --bypass or action_project, got: {detail!r}"
+        )
+
+    def test_create_action_playbook_flag_real_svc_returns_400(self, monkeypatch, tmp_path) -> None:
+        """POST action_playbook='--bypass' through real service → 400."""
+        client = _real_svc_client(monkeypatch, tmp_path)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "bad-playbook-real",
+                "trigger_type": "cron",
+                "action_kind": "play",
+                "action_model": "sonnet",
+                "action_prompt": "hello",
+                "action_playbook": "--bypass",
+            },
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+        detail = r.json().get("detail", "")
+        assert "--bypass" in detail or "action_playbook" in detail, (
+            f"Expected error mentioning --bypass or action_playbook, got: {detail!r}"
+        )

@@ -33,6 +33,21 @@ def _svc_validate_action_model(model: str | None) -> None:
     _validate_action_model(model)
 
 
+def _svc_validate_identifier(value: str | None, field_name: str) -> None:
+    """Service-boundary check: reject identifier fields (agent/project/playbook) starting with '-'.
+
+    Identifier fields are not freeform text — they name profiles, projects, or
+    playbooks and must not start with '-'.  A leading '-' causes argparse to
+    treat the value as a flag, producing either a flag toggle or a usage error
+    depending on the subcommand.  Reject both outcomes at write time.
+    """
+    if not value:
+        return
+    from lionagi.studio.scheduler.subprocess import _validate_identifier
+
+    _validate_identifier(value, field_name)
+
+
 def _svc_validate_extra_args(extra: list | None) -> None:
     """Service-boundary check: reject action_extra_args elements that inject CLI flags.
 
@@ -213,6 +228,9 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
 
     # Reject flag-injection vectors at write time so bad specs never reach storage.
     _svc_validate_action_model(data.get("action_model"))
+    _svc_validate_identifier(data.get("action_agent"), "action_agent")
+    _svc_validate_identifier(data.get("action_project"), "action_project")
+    _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
     _svc_validate_extra_args(data.get("action_extra_args"))
 
     if data.get("action_kind") == "flow_yaml":
@@ -249,6 +267,12 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         # Reject flag-injection vectors in the patched fields before writing.
         if "action_model" in fields:
             _svc_validate_action_model(fields["action_model"])
+        if "action_agent" in fields:
+            _svc_validate_identifier(fields["action_agent"], "action_agent")
+        if "action_project" in fields:
+            _svc_validate_identifier(fields["action_project"], "action_project")
+        if "action_playbook" in fields:
+            _svc_validate_identifier(fields["action_playbook"], "action_playbook")
         if "action_extra_args" in fields:
             _svc_validate_extra_args(fields["action_extra_args"])
 
