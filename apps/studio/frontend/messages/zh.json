@@ -62,7 +62,6 @@
   "dashboard": {
     "title": "控制台",
     "subtitle": "运行概览",
-    "inventory": "资源清单",
     "viewAll": "查看全部 →",
     "allClean": "全部正常。",
     "allCleanDetail": "当前时间窗口内无失败、卡滞或阻塞的运行。",
@@ -76,6 +75,7 @@
       "stale": "无活动",
       "noStaleActivity": "无停滞活动",
       "noActivityPastThreshold": "超过阈值未活动",
+      "allTime": "全部时间",
       "failed": "失败（{range}）",
       "allClean": "全部正常",
       "needsInvestigation": "需要排查",
@@ -83,6 +83,13 @@
       "completedOver": "完成耗时 > {minutes} 分钟",
       "needsReview": "待审核",
       "stuck": "{count} 个卡滞 >{minutes}m"
+    },
+    "inventory": {
+      "label": "资源清单",
+      "playbooks": "个剧本",
+      "agents": "个智能体",
+      "runsTotal": "次运行",
+      "shows": "个展示"
     },
     "table": {
       "run": "运行",
@@ -109,6 +116,9 @@
   "kanban": {
     "title": "看板",
     "subtitle": "运行状态的只读生命周期视图。",
+    "agentCount": "# 个代理",
+    "runCount": "# 个运行",
+    "runningCount": "# 个运行中",
     "lanes": {
       "queued": "排队中",
       "running": "进行中",
@@ -126,7 +136,9 @@
     "title": "运行场",
     "subtitle": "所有项目中正在运行及排队的执行与会话",
     "allProjects": "所有项目",
+    "unassigned": "未分配",
     "active": "活跃",
+    "groupActive": "{count} 活跃",
     "table": {
       "run": "运行",
       "status": "状态",

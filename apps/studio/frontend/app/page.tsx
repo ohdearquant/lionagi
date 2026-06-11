@@ -172,7 +172,7 @@ export default function DashboardPage() {
     };
   }, [allRuns, windowSec, now]);
 
-  const rangeLabel = range === "all" ? "all time" : range;
+  const rangeLabel = range === "all" ? t("metrics.allTime") : range;
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 animate-page-enter">
@@ -241,24 +241,30 @@ export default function DashboardPage() {
       {/* Secondary inventory strip */}
       {stats ? (
         <div className="flex flex-wrap items-center gap-x-5 gap-y-1 rounded border border-edge bg-surface-overlay px-4 py-2.5 text-meta text-content-muted">
-          <span className="uppercase tracking-[0.08em] text-content-muted">{t("inventory")}</span>
+          <span className="uppercase tracking-[0.08em] text-content-muted">
+            {t("inventory.label")}
+          </span>
           <Link
             href="/playbooks"
             className="transition-colors duration-100 hover:text-content-primary"
           >
-            <span className="tabular-nums text-content-secondary">{stats.playbooks}</span> playbooks
+            <span className="tabular-nums text-content-secondary">{stats.playbooks}</span>{" "}
+            {t("inventory.playbooks")}
           </Link>
           <Link
             href="/agents"
             className="transition-colors duration-100 hover:text-content-primary"
           >
-            <span className="tabular-nums text-content-secondary">{stats.agents}</span> agents
+            <span className="tabular-nums text-content-secondary">{stats.agents}</span>{" "}
+            {t("inventory.agents")}
           </Link>
           <Link href="/runs" className="transition-colors duration-100 hover:text-content-primary">
-            <span className="tabular-nums text-content-secondary">{stats.runs}</span> runs total
+            <span className="tabular-nums text-content-secondary">{stats.runs}</span>{" "}
+            {t("inventory.runsTotal")}
           </Link>
           <Link href="/shows" className="transition-colors duration-100 hover:text-content-primary">
-            <span className="tabular-nums text-content-secondary">{stats.shows}</span> shows
+            <span className="tabular-nums text-content-secondary">{stats.shows}</span>{" "}
+            {t("inventory.shows")}
           </Link>
         </div>
       ) : null}

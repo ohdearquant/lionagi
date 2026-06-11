@@ -102,15 +102,19 @@ function ProjectSection({
   runs: RunSummary[];
   now: number;
 }) {
+  const t = useTranslations("playfield");
+  // "Unassigned" is the internal sentinel value used as a Map key and in sort
+  // comparisons — translate only the display label, never the sentinel itself.
+  const displayProject = project === "Unassigned" ? t("unassigned") : project;
   return (
     <>
       <tr className="bg-surface-overlay border-b border-edge">
         <td colSpan={5} className="px-3 py-1.5">
           <h2 className="inline font-medium text-meta uppercase tracking-[0.06em] text-content-muted">
-            {project}
+            {displayProject}
           </h2>
           <span className="ml-2 font-mono font-normal text-[10px] text-content-muted/60">
-            {runs.length} active
+            {t("groupActive", { count: runs.length })}
           </span>
         </td>
       </tr>
@@ -220,7 +224,8 @@ function PlayfieldPageInner() {
               active={projectFilter === p}
               onClick={() => setProjectFilter(projectFilter === p ? null : p)}
             >
-              {p}
+              {/* "Unassigned" is the internal sentinel — translate display only */}
+              {p === "Unassigned" ? t("unassigned") : p}
             </Button>
           ))}
         </div>

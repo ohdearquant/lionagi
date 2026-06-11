@@ -124,6 +124,7 @@ function durationSeconds(run: RunSummary, nowSec: number): number | null {
 // ── Card ──────────────────────────────────────────────────────────────────────
 
 function KanbanCard({ run, now }: { run: RunSummary; now: number }) {
+  const t = useTranslations("kanban");
   const durSec = durationSeconds(run, now);
   const name = displayName(run);
   return (
@@ -150,7 +151,7 @@ function KanbanCard({ run, now }: { run: RunSummary; now: number }) {
         <StatusPill value={run.status} kind="lifecycle" />
         {run.branch_count != null && run.branch_count > 0 && (
           <span className="text-meta text-content-muted tabular-nums">
-            {run.branch_count} agent{run.branch_count !== 1 ? "s" : ""}
+            {t("agentCount", { count: run.branch_count })}
           </span>
         )}
       </div>
@@ -290,8 +291,8 @@ export default function KanbanPage() {
         badges={
           !loading ? (
             <span className="text-meta text-content-muted tabular-nums">
-              {total} run{total !== 1 ? "s" : ""}
-              {runningCount > 0 && <> &mdash; {runningCount} running</>}
+              {t("runCount", { count: total })}
+              {runningCount > 0 && <> &mdash; {t("runningCount", { count: runningCount })}</>}
             </span>
           ) : null
         }

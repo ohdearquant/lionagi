@@ -62,7 +62,6 @@
   "dashboard": {
     "title": "Dashboard",
     "subtitle": "Operational overview",
-    "inventory": "Inventory",
     "viewAll": "View all →",
     "allClean": "All clean.",
     "allCleanDetail": "No failed, stuck, or blocked runs in window.",
@@ -76,6 +75,7 @@
       "stale": "Stale",
       "noStaleActivity": "no stale activity",
       "noActivityPastThreshold": "no activity past threshold",
+      "allTime": "all time",
       "failed": "Failed ({range})",
       "allClean": "all clean",
       "needsInvestigation": "needs investigation",
@@ -83,6 +83,13 @@
       "completedOver": "completed > {minutes}m",
       "needsReview": "Needs review",
       "stuck": "{count} stuck >{minutes}m"
+    },
+    "inventory": {
+      "label": "Inventory",
+      "playbooks": "playbooks",
+      "agents": "agents",
+      "runsTotal": "runs total",
+      "shows": "shows"
     },
     "table": {
       "run": "Run",
@@ -109,6 +116,9 @@
   "kanban": {
     "title": "Kanban",
     "subtitle": "Read-only lifecycle view over run status.",
+    "agentCount": "{count, plural, one {# agent} other {# agents}}",
+    "runCount": "{count, plural, one {# run} other {# runs}}",
+    "runningCount": "{count, plural, one {# running} other {# running}}",
     "lanes": {
       "queued": "Queued",
       "running": "In Progress",
@@ -126,7 +136,9 @@
     "title": "Playfield",
     "subtitle": "All running and queued plays and sessions across projects",
     "allProjects": "All projects",
+    "unassigned": "Unassigned",
     "active": "active",
+    "groupActive": "{count} active",
     "table": {
       "run": "Run",
       "status": "Status",
