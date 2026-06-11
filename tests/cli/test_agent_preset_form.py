@@ -438,8 +438,11 @@ class TestPresetCodingBehaviour:
 
 
 # ---------------------------------------------------------------------------
-# _run_agent — preset param wires _make_coding_preset() inside async path
+# _run_agent — preset param wires _make_coding_preset() and create_agent
 # ---------------------------------------------------------------------------
+
+#: Core CodingToolkit tool names expected when preset=coding is used.
+_CODING_TOOL_NAMES = {"reader", "editor", "bash", "search"}
 
 
 def _wire_run_agent_mocks(monkeypatch, tmp_path):
@@ -528,3 +531,113 @@ async def test_run_agent_no_preset_skips_coding_preset(monkeypatch, tmp_path):
     await _run_agent("claude/sonnet", "do stuff", preset=None)
 
     assert not coding_calls, "_make_coding_preset() must NOT be called without preset"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_preset_coding_registers_tools(monkeypatch, tmp_path):
+    """preset=coding must register CodingToolkit core tools on the branch.
+
+    Strategy: let create_agent run for real (it executes synchronously barring
+    model construction, which we bypass via chat_model injection).  We capture
+    the branch by intercepting Branch.__init__ to record every constructed
+    Branch instance, then inspect the last one created (which is the one
+    create_agent returned).
+    """
+    import lionagi.cli.agent as agent_mod
+
+    branches_created: list = []
+    from lionagi import Branch as _Branch
+
+    real_branch_init = _Branch.__init__
+
+    def spy_branch_init(self, *args, **kwargs):
+        real_branch_init(self, *args, **kwargs)
+        branches_created.append(self)
+
+    monkeypatch.setattr(_Branch, "__init__", spy_branch_init)
+    _wire_run_agent_mocks(monkeypatch, tmp_path)
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent("claude/sonnet", "build it", preset="coding")
+
+    assert branches_created, "Branch must have been constructed for preset=coding"
+    # The last created branch is the one from create_agent (tools are registered
+    # after init, so we check whichever has the coding tools).
+    tool_branch = next(
+        (b for b in branches_created if _CODING_TOOL_NAMES.issubset(b.acts.registry.keys())),
+        None,
+    )
+    assert tool_branch is not None, (
+        f"No branch has all coding tools registered. "
+        f"Registries: {[set(b.acts.registry.keys()) for b in branches_created]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_agent_preset_coding_guards_attached(monkeypatch, tmp_path):
+    """preset=coding must attach preprocessors (guards) to bash, reader, editor."""
+    from lionagi import Branch as _Branch
+
+    branches_created: list = []
+    real_branch_init = _Branch.__init__
+
+    def spy_branch_init(self, *args, **kwargs):
+        real_branch_init(self, *args, **kwargs)
+        branches_created.append(self)
+
+    monkeypatch.setattr(_Branch, "__init__", spy_branch_init)
+    _wire_run_agent_mocks(monkeypatch, tmp_path)
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent("claude/sonnet", "hack it", preset="coding")
+
+    assert branches_created
+    # Find the branch that has the coding tools (created by create_agent).
+    tool_branch = next(
+        (b for b in branches_created if "bash" in b.acts.registry),
+        None,
+    )
+    assert tool_branch is not None, "No branch has bash tool registered"
+
+    # secure=True (default) wires guard_destructive on bash and guard_paths on
+    # reader/editor — all three tools must have a preprocessor set.
+    for tool_name in ("bash", "reader", "editor"):
+        tool = tool_branch.acts.registry.get(tool_name)
+        assert tool is not None, f"tool '{tool_name}' not registered"
+        assert tool.preprocessor is not None, (
+            f"tool '{tool_name}' missing preprocessor (guard not attached)"
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_agent_resume_with_preset_raises(monkeypatch, tmp_path):
+    """--resume combined with --preset must raise ValueError immediately."""
+    _wire_run_agent_mocks(monkeypatch, tmp_path)
+
+    from lionagi.cli.agent import _run_agent
+
+    with pytest.raises(ValueError, match="preset only applies to new branches"):
+        await _run_agent(
+            "claude/sonnet",
+            "do stuff",
+            resume="some-branch-id",
+            preset="coding",
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_agent_continue_last_with_preset_raises(monkeypatch, tmp_path):
+    """--continue-last combined with --preset must raise ValueError immediately."""
+    _wire_run_agent_mocks(monkeypatch, tmp_path)
+
+    from lionagi.cli.agent import _run_agent
+
+    with pytest.raises(ValueError, match="preset only applies to new branches"):
+        await _run_agent(
+            "claude/sonnet",
+            "do stuff",
+            continue_last=True,
+            preset="coding",
+        )

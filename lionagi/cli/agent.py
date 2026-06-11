@@ -42,14 +42,14 @@ _PRESET_CHOICES = ("coding",)
 
 
 def _make_coding_preset(cwd: str | None = None, effort: str | None = "high"):
-    """Construct an ``AgentConfig.coding()`` instance.
+    """Construct an ``AgentSpec.coding()`` instance.
 
     Isolated as a module-level function so tests can monkeypatch it without
     fighting Python's lazy-import caching.
     """
-    from lionagi.agent.config import AgentConfig
+    from lionagi.agent.spec import AgentSpec
 
-    return AgentConfig.coding(cwd=cwd, effort=effort)
+    return AgentSpec.coding(cwd=cwd, effort=effort)
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +168,10 @@ async def _run_agent(
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status)."""
     if resume and continue_last:
         raise ValueError("--resume / -r and --continue-last / -c are mutually exclusive.")
+    if preset and (resume or continue_last):
+        raise ValueError(
+            "--preset only applies to new branches; cannot combine with --resume / --continue-last."
+        )
 
     # Cache cancellation exception class while event loop is running;
     # cancelled_exc_classes() in the error path needs it after loop exit.
@@ -191,15 +195,6 @@ async def _run_agent(
             yolo = True
         if profile.fast_mode and not fast:
             fast = True
-
-    # 3a: --preset wires AgentConfig.<preset>() after profile to allow CLI
-    # flags to override preset defaults.  The preset config supplies effort
-    # and the coding system prompt (written to the branch below).
-    preset_config = None
-    if preset == "coding":
-        preset_config = _make_coding_preset(cwd=cwd, effort=effort or "high")
-        if effort is None:
-            effort = preset_config.effort
 
     branch: Branch | None = None
     if continue_last:
@@ -240,10 +235,26 @@ async def _run_agent(
             )
         chat_model = build_chat_model(provider, model, yolo, verbose, theme, effort, fast, bypass)
         effort = resolve_persisted_effort(provider, chat_model, effort)
-        branch = Branch(
-            chat_model=chat_model,
-            log_config=DataLoggerConfig(auto_save_on_exit=False),
-        )
+
+        if preset == "coding":
+            # 3a: use create_agent so CodingToolkit tools and path-guards are
+            # fully wired (guard_destructive on bash, guard_paths on
+            # reader/editor).  The factory sets the system prompt via
+            # set_system(); do NOT add it manually afterwards.
+            from lionagi.agent.factory import create_agent
+
+            spec = _make_coding_preset(cwd=cwd, effort=effort or "high")
+            branch = await create_agent(
+                spec,
+                chat_model=chat_model,
+                log_config=DataLoggerConfig(auto_save_on_exit=False),
+                load_settings=False,
+            )
+        else:
+            branch = Branch(
+                chat_model=chat_model,
+                log_config=DataLoggerConfig(auto_save_on_exit=False),
+            )
     else:
         cfg = branch.chat_model.endpoint.config.kwargs
         if model_str is not None:
@@ -263,14 +274,10 @@ async def _run_agent(
         if fast:
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
 
+    # Profile system prompt: applied after branch construction so it appends
+    # after the preset's system message (which create_agent sets via set_system).
     if profile and profile.system_prompt:
         branch.msgs.add_message(system=profile.system_prompt)
-
-    # Preset system prompt (coding preset) — applied after profile so profile
-    # system prompt takes precedence when both are present.
-    if preset_config is not None and preset_config.system_prompt:
-        if not (profile and profile.system_prompt):
-            branch.msgs.add_message(system=preset_config.build_system_message())
 
     if timeout is not None:
         preamble = build_deadline_preamble(timeout)
