@@ -87,7 +87,10 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # column defaults there; insert_artifact() always sets this.
         ("updated_at", "REAL"),
     ],
-    "schedules": [],
+    "schedules": [
+        # YAML flow spec column added by sched-yaml feature.
+        ("action_flow_yaml", "TEXT"),
+    ],
     "schedule_runs": [
         # ADR-0028: schedule_runs originally had no updated_at.
         # update_status() writes it, so it must exist.

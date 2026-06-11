@@ -400,11 +400,12 @@ CREATE TABLE IF NOT EXISTS schedules (
   github_cursor       TEXT,
   poll_interval_sec   INTEGER,
   action_kind         TEXT    NOT NULL
-                      CHECK(action_kind IN ('agent', 'flow', 'fanout', 'play')),
+                      CHECK(action_kind IN ('agent', 'flow', 'fanout', 'play', 'flow_yaml')),
   action_model        TEXT,
   action_prompt       TEXT,
   action_agent        TEXT,
   action_playbook     TEXT,
+  action_flow_yaml    TEXT,
   action_project      TEXT,
   action_extra_args   JSON    DEFAULT '[]',
   on_success          JSON,

@@ -10,6 +10,75 @@ from typing import Any
 
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
+_VALID_EFFORT_LEVELS: frozenset[str] = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+)
+_PRESERVE_DASHED: frozenset[str] = frozenset({"argument-hint"})
+
+
+def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
+    """Parse and validate an inline YAML flow spec.
+
+    Returns an error message string on failure, or None on success.
+    Mirrors lionagi/cli/orchestrate/__init__.py::_validate_spec_fields() and
+    lionagi/studio/services/playbooks.py::_check_spec_fields() — implemented
+    inline to avoid loading fastapi or the full orchestrate module at import time.
+    Authoritative source for field rules: _validate_spec_fields() in the CLI.
+    """
+    import yaml  # lazy — not needed on every import of this module
+
+    try:
+        data = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as exc:
+        return f"flow_yaml spec is not valid YAML: {exc}"
+
+    if not isinstance(data, dict):
+        return f"flow_yaml spec must be a YAML mapping (dict), got {type(data).__name__}"
+
+    # Normalize hyphenated keys (e.g. max-ops → max_ops) before field checks.
+    spec: dict[str, Any] = {}
+    for key, value in data.items():
+        if key in _PRESERVE_DASHED or "-" not in key:
+            spec[key] = value
+        else:
+            spec[key.replace("-", "_")] = value
+
+    if "workers" in spec:
+        workers = spec["workers"]
+        if not isinstance(workers, int) or isinstance(workers, bool):
+            return f"spec field 'workers' must be an integer, got {type(workers).__name__}"
+        if not (1 <= workers <= 32):
+            return f"spec field 'workers' must be in [1, 32], got {workers}"
+
+    for key in ("max_ops", "max_agents"):
+        if key not in spec:
+            continue
+        value = spec[key]
+        if not isinstance(value, int) or isinstance(value, bool):
+            return f"spec field {key!r} must be an integer, got {type(value).__name__}"
+        if not (0 <= value <= 50):
+            return f"spec field {key!r} must be in [0, 50] (0 = unlimited), got {value}"
+
+    effort = spec.get("effort")
+    if effort is not None:
+        if not isinstance(effort, str):
+            return f"spec field 'effort' must be a string, got {type(effort).__name__}"
+        if effort not in _VALID_EFFORT_LEVELS:
+            return (
+                f"spec field 'effort' must be one of {sorted(_VALID_EFFORT_LEVELS)}, got {effort!r}"
+            )
+
+    if "with_synthesis" in spec:
+        val = spec["with_synthesis"]
+        if not isinstance(val, bool | str):
+            return (
+                f"spec field 'with_synthesis' must be bool or str (model spec), "
+                f"got {type(val).__name__}"
+            )
+
+    return None
+
+
 _ENSURE_SCHEDULES_SQL = """
 CREATE TABLE IF NOT EXISTS schedules (
     id                  TEXT    PRIMARY KEY,
@@ -112,6 +181,16 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     if not data.get("action_kind"):
         raise ValueError("action_kind is required")
 
+    if data.get("action_kind") == "flow_yaml":
+        yaml_text = data.get("action_flow_yaml") or ""
+        if not yaml_text.strip():
+            raise ValueError(
+                "action_flow_yaml is required and must not be empty for action_kind='flow_yaml'"
+            )
+        spec_err = _validate_flow_yaml_spec(yaml_text)
+        if spec_err:
+            raise ValueError(f"Invalid flow_yaml spec: {spec_err}")
+
     schedule_id = uuid.uuid4().hex[:12]
     now = time.time()
     schedule = {
@@ -132,6 +211,21 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         schedule = await db.get_schedule(schedule_id)
         if not schedule:
             return False
+
+        # Merge proposed fields over the existing schedule and re-validate
+        # flow_yaml constraints so a PATCH cannot create invalid state that
+        # would only surface as a silent empty-YAML write at fire time.
+        effective = {**schedule, **fields}
+        if effective.get("action_kind") == "flow_yaml":
+            yaml_text = effective.get("action_flow_yaml") or ""
+            if not yaml_text.strip():
+                raise ValueError(
+                    "action_flow_yaml is required and must not be empty for action_kind='flow_yaml'"
+                )
+            spec_err = _validate_flow_yaml_spec(yaml_text)
+            if spec_err:
+                raise ValueError(f"Invalid flow_yaml spec: {spec_err}")
+
         await db.update_schedule(schedule_id, **fields)
     return True
 
