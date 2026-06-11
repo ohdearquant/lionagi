@@ -27,7 +27,16 @@ import type {
 declare global {
   interface Window {
     __STUDIO_API_BASE__?: string;
+    __STUDIO_AUTH_TOKEN__?: string;
   }
+}
+
+/** Return the per-launch bearer token injected by the desktop shell, if any. */
+export function resolveAuthToken(): string | undefined {
+  if (typeof window !== "undefined" && window.__STUDIO_AUTH_TOKEN__) {
+    return window.__STUDIO_AUTH_TOKEN__;
+  }
+  return undefined;
 }
 
 export function resolveApiBase(): string {
@@ -57,7 +66,15 @@ export const API_BASE = resolveApiBase();
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;
-  const response = await fetch(url, { redirect: "follow", ...init });
+
+  // Attach the desktop-shell bearer token when present.
+  const token = resolveAuthToken();
+  const headers: HeadersInit = { ...(init?.headers ?? {}) };
+  if (token) {
+    (headers as Record<string, string>)["Authorization"] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(url, { redirect: "follow", ...init, headers });
   if (!response.ok) {
     // Preserve the backend `detail` field (FastAPI/Pydantic validation errors,
     // our structured 409 body, etc.) so callers can surface it to the operator.
@@ -72,6 +89,64 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(detail ?? `Request failed: ${response.status}`);
   }
   return response.json() as Promise<T>;
+}
+
+// Fetch-based server-sent-events subscription. Native EventSource cannot
+// attach the Authorization header the desktop shell's per-launch bearer token
+// requires; fetch + ReadableStream can. Mirrors EventSource semantics for the
+// studio endpoints: unnamed `data: <json>\n\n` frames, auto-reconnect after
+// 2s unless closed. Callers parse the JSON and call the returned closer on
+// their terminal "done" frame.
+function sseSubscribe(path: string, onData: (data: string) => void): () => void {
+  const controller = new AbortController();
+  let closed = false;
+  const close = () => {
+    closed = true;
+    controller.abort();
+  };
+
+  void (async () => {
+    while (!closed) {
+      try {
+        const token = resolveAuthToken();
+        const headers: Record<string, string> = { Accept: "text/event-stream" };
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        const response = await fetch(`${API_BASE}${path}`, {
+          headers,
+          signal: controller.signal,
+        });
+        if (!response.ok || !response.body) {
+          throw new Error(`SSE request failed: ${response.status}`);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let sep: number;
+          while ((sep = buffer.indexOf("\n\n")) !== -1) {
+            const frame = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            const data = frame
+              .split("\n")
+              .filter((line) => line.startsWith("data:"))
+              .map((line) => line.slice(5).replace(/^ /, ""))
+              .join("\n");
+            if (data && !closed) onData(data);
+          }
+        }
+      } catch {
+        // Aborted by close(), or a network error worth retrying.
+      }
+      if (!closed) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+    }
+  })();
+
+  return close;
 }
 
 // ─── Runs ─────────────────────────────────────────────────────────────────────
@@ -356,19 +431,18 @@ export async function getShow(topic: string): Promise<ShowDetail> {
   return fetchJson<ShowDetail>(`/api/shows/${encodeURIComponent(topic)}`);
 }
 
-// H-FE-5: terminal {"type":"done"} event from shows.py:456-458 MUST close
-// the EventSource. Source is closed BEFORE invoking the callback for done
-// events so that close() always runs even if the callback throws.
+// H-FE-5: terminal {"type":"done"} event from shows.py MUST close the
+// stream. The closer runs BEFORE invoking the callback for done events so
+// that close() always runs even if the callback throws.
 export function streamShow(topic: string, onEvent: (event: ShowEvent) => void): () => void {
-  const source = new EventSource(`${API_BASE}/api/shows/${encodeURIComponent(topic)}/stream`);
-  source.onmessage = (message) => {
-    const event = JSON.parse(message.data) as ShowEvent;
+  const close = sseSubscribe(`/api/shows/${encodeURIComponent(topic)}/stream`, (data) => {
+    const event = JSON.parse(data) as ShowEvent;
     if (event.type === "done") {
-      source.close();
+      close();
     }
     onEvent(event);
-  };
-  return () => source.close();
+  });
+  return close;
 }
 
 // ─── Sessions ────────────────────────────────────────────────────────────────
@@ -432,21 +506,20 @@ export function streamSession(
   id: string,
   onEvent: (event: Record<string, unknown>) => void,
 ): () => void {
-  const source = new EventSource(`${API_BASE}/api/sessions/${encodeURIComponent(id)}/stream`);
-  source.onmessage = (msg) => {
+  const close = sseSubscribe(`/api/sessions/${encodeURIComponent(id)}/stream`, (data) => {
     let event: Record<string, unknown>;
     try {
-      event = JSON.parse(msg.data) as Record<string, unknown>;
+      event = JSON.parse(data) as Record<string, unknown>;
     } catch {
       /* malformed chunk */
       return;
     }
     if (event.type === "done") {
-      source.close();
+      close();
     }
     onEvent(event);
-  };
-  return () => source.close();
+  });
+  return close;
 }
 
 // ─── Session lifecycle signals (Phase C Move 1) ───────────────────────────────
@@ -465,21 +538,20 @@ export function streamSignals(
   id: string,
   onEvent: (event: SignalEvent | { type: string }) => void,
 ): () => void {
-  const source = new EventSource(`${API_BASE}/api/sessions/${encodeURIComponent(id)}/signals`);
-  source.onmessage = (msg) => {
+  const close = sseSubscribe(`/api/sessions/${encodeURIComponent(id)}/signals`, (data) => {
     let event: SignalEvent | { type: string };
     try {
-      event = JSON.parse(msg.data) as SignalEvent | { type: string };
+      event = JSON.parse(data) as SignalEvent | { type: string };
     } catch {
       /* malformed chunk */
       return;
     }
     if ("type" in event && event.type === "done") {
-      source.close();
+      close();
     }
     onEvent(event);
-  };
-  return () => source.close();
+  });
+  return close;
 }
 
 // ─── Invocations (ADR-0020) ───────────────────────────────────────────────────

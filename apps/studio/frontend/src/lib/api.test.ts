@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { resolveApiBase } from "./api";
+import { resolveApiBase, resolveAuthToken } from "./api";
 
 describe("resolveApiBase", () => {
   beforeEach(() => {
@@ -108,5 +108,74 @@ describe("resolveApiBase", () => {
     });
     const result = resolveApiBase();
     expect(result).toBe("");
+  });
+});
+
+describe("resolveAuthToken", () => {
+  beforeEach(() => {
+    delete (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__;
+    vi.unstubAllGlobals();
+  });
+
+  it("returns undefined when token is not set", () => {
+    expect(resolveAuthToken()).toBeUndefined();
+  });
+
+  it("returns the token when __STUDIO_AUTH_TOKEN__ is set", () => {
+    (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__ =
+      "deadbeef0102030405060708090a0b0c";
+    expect(resolveAuthToken()).toBe("deadbeef0102030405060708090a0b0c");
+  });
+
+  it("returns undefined for empty string token", () => {
+    (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__ = "";
+    expect(resolveAuthToken()).toBeUndefined();
+  });
+});
+
+describe("fetchJson Authorization header", () => {
+  beforeEach(() => {
+    delete (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__;
+    vi.unstubAllGlobals();
+  });
+
+  it("attaches Authorization header when token is present", async () => {
+    (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__ =
+      "abc123token456";
+
+    const captured: RequestInit[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        captured.push(init ?? {});
+        return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      }),
+    );
+
+    // Import fetchJson indirectly via a public wrapper. getStats() calls fetchJson internally.
+    const { getStats } = await import("./api");
+    await getStats();
+
+    expect(captured.length).toBeGreaterThan(0);
+    const headers = captured[0]?.headers as Record<string, string> | undefined;
+    expect(headers?.["Authorization"]).toBe("Bearer abc123token456");
+  });
+
+  it("does not attach Authorization header when token is absent", async () => {
+    const captured: RequestInit[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        captured.push(init ?? {});
+        return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      }),
+    );
+
+    const { getStats } = await import("./api");
+    await getStats();
+
+    expect(captured.length).toBeGreaterThan(0);
+    const headers = captured[0]?.headers as Record<string, string> | undefined;
+    expect(headers?.["Authorization"]).toBeUndefined();
   });
 });

@@ -319,7 +319,7 @@ export interface ShowDetail {
 }
 
 // H-FE-5: "done" is the terminal SSE event emitted by shows.py:456-458.
-// The EventSource MUST be closed when this event arrives.
+// The SSE subscription MUST be closed when this event arrives.
 export interface ShowEvent {
   type: "new" | "change" | "delete" | "done";
   path?: string;

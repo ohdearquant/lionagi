@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lion Studio — Setup</title>
+  <style>
+    :root {
+      --bg:        #0C0D10;
+      --surface:   #13151A;
+      --border:    rgba(255,255,255,0.08);
+      --text:      #E8E6E1;
+      --muted:     rgba(232,230,225,0.55);
+      --accent:    #E8A33D;
+      --error:     #E5604C;
+      --mono:      "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+      --sans:      -apple-system, "Inter", system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* macOS traffic-light drag region */
+    .drag-region {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 52px;
+      -webkit-app-region: drag;
+      z-index: 10;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 40px 24px;
+      gap: 0;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 40px 48px;
+      max-width: 520px;
+      width: 100%;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+
+    .logo-mark {
+      width: 36px;
+      height: 36px;
+      background: var(--accent);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--mono);
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--bg);
+      flex-shrink: 0;
+    }
+
+    .logo-name {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    h1 {
+      font-size: 22px;
+      font-weight: 600;
+      line-height: 1.3;
+      margin-bottom: 12px;
+      letter-spacing: -0.02em;
+    }
+
+    .status-line {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 12px 14px;
+      background: rgba(229,96,76,0.08);
+      border: 1px solid rgba(229,96,76,0.25);
+      border-radius: 6px;
+      margin-bottom: 28px;
+    }
+
+    .status-glyph {
+      color: var(--error);
+      font-size: 14px;
+      line-height: 1.5;
+      flex-shrink: 0;
+    }
+
+    .status-text {
+      font-family: var(--mono);
+      font-size: 12.5px;
+      color: var(--text);
+      line-height: 1.5;
+      word-break: break-word;
+    }
+
+    .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .install-block {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin-bottom: 8px;
+    }
+
+    .install-block code {
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--accent);
+    }
+
+    .or-divider {
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+      margin: 6px 0;
+    }
+
+    .hint {
+      font-size: 12.5px;
+      color: var(--muted);
+      line-height: 1.5;
+      margin-bottom: 28px;
+      margin-top: 8px;
+    }
+
+    .hint a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .btn-retry {
+      width: 100%;
+      padding: 11px 0;
+      background: var(--accent);
+      color: var(--bg);
+      font-family: var(--sans);
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      border-radius: 7px;
+      cursor: pointer;
+      transition: opacity 0.12s;
+      -webkit-app-region: no-drag;
+    }
+
+    .btn-retry:hover  { opacity: 0.88; }
+    .btn-retry:active { opacity: 0.76; }
+    .btn-retry:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .retry-status {
+      margin-top: 14px;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--muted);
+      text-align: center;
+      min-height: 18px;
+    }
+
+    .retry-status.ok    { color: #4FB477; }
+    .retry-status.error { color: var(--error); }
+  </style>
+</head>
+<body>
+  <div class="drag-region"></div>
+
+  <div class="container">
+    <div class="card">
+      <div class="logo">
+        <div class="logo-mark">L</div>
+        <span class="logo-name">Lion Studio</span>
+      </div>
+
+      <h1>Backend not found</h1>
+
+      <div class="status-line" id="errorLine">
+        <span class="status-glyph">✕</span>
+        <span class="status-text" id="errorText">li CLI not found</span>
+      </div>
+
+      <div class="section-label">Install lionagi</div>
+      <div class="install-block"><code>uv pip install 'lionagi[studio]'</code></div>
+      <div class="or-divider">or</div>
+      <div class="install-block"><code>pipx install 'lionagi[studio]'</code></div>
+
+      <p class="hint">
+        After installing, click <strong>Retry</strong> — the shell will re-detect the
+        <code style="font-family:var(--mono);font-size:12px;color:var(--text)">li</code>
+        CLI and start the backend automatically.
+        <br><br>
+        The CLI must be on your PATH or at one of:
+        <code style="font-family:var(--mono);font-size:11px;color:var(--muted)">
+          ~/.local/bin/li · ~/.cargo/bin/li · /opt/homebrew/bin/li</code>
+      </p>
+
+      <button class="btn-retry" id="retryBtn" onclick="doRetry()">Retry</button>
+      <div class="retry-status" id="retryStatus"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    // Display the launch error message if set by the shell
+    const err = window.__STUDIO_LAUNCH_ERROR__;
+    if (err) {
+      document.getElementById("errorText").textContent = err;
+    }
+
+    window.doRetry = async function doRetry() {
+      const btn = document.getElementById("retryBtn");
+      const status = document.getElementById("retryStatus");
+      btn.disabled = true;
+      btn.textContent = "Retrying…";
+      status.textContent = "Searching for li CLI…";
+      status.className = "retry-status";
+
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const port = await invoke("retry_backend_launch");
+        status.textContent = `Backend started on port ${port}`;
+        status.className = "retry-status ok";
+        // The backend module will navigate the window to the SPA
+      } catch (e) {
+        status.textContent = String(e);
+        status.className = "retry-status error";
+        btn.disabled = false;
+        btn.textContent = "Retry";
+        document.getElementById("errorText").textContent = String(e);
+      }
+    };
+
+    // Expose as global for the non-module invocation path
+    window.doRetry = window.doRetry;
+  </script>
+</body>
+</html>

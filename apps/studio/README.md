@@ -90,3 +90,30 @@ uv run pytest tests/apps_studio_server/ -m "not (integration or network)" -x
 # Strict warnings (CI gate)
 uv run pytest tests/apps_studio_server/ -W error
 ```
+
+## Desktop App (macOS)
+
+See [`desktop/README.md`](desktop/README.md) for the full guide.
+
+**Quick start:**
+
+```bash
+# 1. Build the SPA (required before running the shell)
+cd apps/studio/frontend && npm install && npm run build
+
+# 2. Run the shell
+cd ../desktop/src-tauri && cargo run
+
+# 3. Dev mode (Vite hot-reload + Tauri)
+#    Terminal 1: cd apps/studio/frontend && npm run dev
+#    Terminal 2: cd apps/studio/desktop/src-tauri && cargo tauri dev
+
+# 4. Build .app bundle
+cargo tauri build         # signed + DMG
+cargo build --release     # binary only, no signing
+```
+
+The shell finds the `li` CLI automatically (searches PATH,
+`~/.local/bin/li`, `~/.cargo/bin/li`, `/opt/homebrew/bin/li`), spawns
+`li studio --no-frontend --port <free-port>`, and loads the SPA with
+`window.__STUDIO_API_BASE__` pre-set via Tauri's initialization script API.

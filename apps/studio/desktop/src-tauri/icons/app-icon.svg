@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- macOS squircle background -->
+  <rect width="512" height="512" rx="112" fill="#0C0D10"/>
+  <!-- Amber 'L' lettermark -->
+  <text
+    x="120"
+    y="390"
+    font-family="'SF Mono', 'JetBrains Mono', monospace"
+    font-size="340"
+    font-weight="700"
+    fill="#E8A33D"
+    letter-spacing="-20">L</text>
+</svg>
