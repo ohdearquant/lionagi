@@ -178,23 +178,29 @@ rather than `EventSource` so the `Authorization` header rides on them too.
 
 `find_free_port` binds port 0, obtains the OS-assigned port, and releases the
 listener.  The backend binds that port when it starts.  In the window between these
-two events, another local process could claim the port.  The shell mitigates this
-with two checks after health 2xx:
+two events, another local process could claim the port.  The shell applies two
+checks during launch:
 
-1. `child.try_wait()` — if the intended backend exited, the health reply came from
-   an unrelated process and we fail with `ProcessExited`.
-2. Authenticated `GET /api/stats` — any squatter must present the correct bearer
-   token to pass this check; an unrelated service that happens to speak HTTP will
-   return 401 or a non-200 response and we fail with `IdentityCheckFailed`.
+1. `child.try_wait()` before each `/health` poll iteration — if the spawned
+   backend has exited, the launch fails with `ProcessExited` instead of treating
+   replies from an unrelated process as progress.  (A squatter that answers
+   before the child's exit is observed can still pass this check.)
+2. After health 2xx, an authenticated `GET /api/stats` — an *accidental* squatter
+   (a stale studio instance, some other dev server) does not enforce bearer auth
+   against this launch's token and returns 401/404/non-2xx, failing the launch
+   with `IdentityCheckFailed`.
 
-The remaining attack surface requires a malicious process to (a) claim the port in
-the short race window, (b) speak HTTP on `/health` returning 2xx, (c) also speak
-HTTP on `/api/stats` returning 2xx with a valid bearer, which requires knowing the
-token before the app starts.  This is not a realistic threat model for a local
-development tool.
+Be precise about what this proves: the bearer is **sent to** the candidate
+server, so it does not authenticate the server.  A *malicious* local process that
+wins the race can return 200 for both paths, learn the token from the request,
+and pass both checks.  These checks filter accidents and misconfiguration; they
+are not a defense against a hostile process already running as the same user —
+which, as noted above, already has your full privileges and does not need a port
+race to act as you.
 
-`--port 0` CLI-level socket hand-off (which would eliminate the race entirely) is
-left for a future release.
+Closing the malicious case requires a handshake tied to the spawned child itself
+(e.g. `--port 0` with the child reporting its bound socket back over a pipe),
+which is left for a future release.
 
 ## Tests
 
@@ -203,5 +209,8 @@ cd apps/studio/desktop/src-tauri
 cargo test
 ```
 
-Tests cover free-port finding, CLI location logic, and backend lifecycle state
-machine transitions including the health-timeout leak reproducer.
+Tests cover free-port finding and CLI location logic (`port.rs`).  The backend
+lifecycle state machine in `lib.rs` is not unit-tested yet — its transitions
+require a running Tauri `AppHandle`, so they are exercised by the windowed app
+and verified in review; extracting the state machine behind a testable trait is
+future work.
