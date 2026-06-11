@@ -613,3 +613,148 @@ class TestSchedulePatchRouterValidation:
         client = self._client_for_svc_mock(monkeypatch, _not_found)
         r = client.patch("/api/schedules/no-such-id", json={"name": "new-name"})
         assert r.status_code == 404, f"expected 404, got {r.status_code}: {r.text}"
+
+
+# ---------------------------------------------------------------------------
+# CWE-88 argument injection — router-level 400 responses (closes #1404)
+# ---------------------------------------------------------------------------
+
+
+class TestScheduleArgvInjectionRouterValidation:
+    """Router POST and PATCH /api/schedules must translate flag-injection
+    ValueError → HTTP 400 for action_model and action_extra_args rejections.
+
+    Mirrors TestSchedulePatchRouterValidation: the route handler already maps
+    ValueError→400; these tests confirm that the new service-layer checks for
+    action_model/action_extra_args surface as 400 responses through the router.
+    """
+
+    @staticmethod
+    def _client_patch(monkeypatch, mock_fn):
+        """Patch sched_svc.update_schedule and return a TestClient."""
+        from fastapi.testclient import TestClient
+
+        import lionagi.studio.services.schedules as sched_svc
+        from lionagi.studio.app import app
+
+        monkeypatch.setattr(sched_svc, "update_schedule", mock_fn)
+        return TestClient(app, raise_server_exceptions=False)
+
+    @staticmethod
+    def _client_post(monkeypatch, mock_fn):
+        """Patch sched_svc.create_schedule and return a TestClient."""
+        from fastapi.testclient import TestClient
+
+        import lionagi.studio.services.schedules as sched_svc
+        from lionagi.studio.app import app
+
+        monkeypatch.setattr(sched_svc, "create_schedule", mock_fn)
+        return TestClient(app, raise_server_exceptions=False)
+
+    # -- PATCH action_model injection --
+
+    def test_patch_action_model_flag_returns_400(self, monkeypatch):
+        """PATCH action_model='--bypass' → HTTP 400 with detail naming the field."""
+
+        async def _reject(_schedule_id, _fields):
+            raise ValueError("action_model '--bypass' starts with '-' and would inject a CLI flag")
+
+        client = self._client_patch(monkeypatch, _reject)
+        r = client.patch(
+            "/api/schedules/sched-abc",
+            json={"action_model": "--bypass"},
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+        assert "--bypass" in r.json().get("detail", "") or "action_model" in r.json().get(
+            "detail", ""
+        )
+
+    def test_patch_action_model_yolo_returns_400(self, monkeypatch):
+        """PATCH action_model='--yolo' → HTTP 400."""
+
+        async def _reject(_schedule_id, _fields):
+            raise ValueError("action_model '--yolo' starts with '-' and would inject a CLI flag")
+
+        client = self._client_patch(monkeypatch, _reject)
+        r = client.patch(
+            "/api/schedules/sched-abc",
+            json={"action_model": "--yolo"},
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+
+    # -- PATCH action_extra_args injection --
+
+    def test_patch_extra_args_flag_returns_400(self, monkeypatch):
+        """PATCH action_extra_args=['--bypass'] → HTTP 400."""
+
+        async def _reject(_schedule_id, _fields):
+            raise ValueError(
+                "action_extra_args element '--bypass' starts with '-' and would inject a CLI flag"
+            )
+
+        client = self._client_patch(monkeypatch, _reject)
+        r = client.patch(
+            "/api/schedules/sched-abc",
+            json={"action_extra_args": ["--bypass"]},
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+        assert "--bypass" in r.json().get("detail", "") or "action_extra_args" in r.json().get(
+            "detail", ""
+        )
+
+    def test_patch_extra_args_yolo_returns_400(self, monkeypatch):
+        """PATCH action_extra_args=['--yolo'] → HTTP 400."""
+
+        async def _reject(_schedule_id, _fields):
+            raise ValueError(
+                "action_extra_args element '--yolo' starts with '-' and would inject a CLI flag"
+            )
+
+        client = self._client_patch(monkeypatch, _reject)
+        r = client.patch(
+            "/api/schedules/sched-abc",
+            json={"action_extra_args": ["--yolo"]},
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+
+    # -- POST (create) action_model injection --
+
+    def test_create_action_model_flag_returns_400(self, monkeypatch):
+        """POST action_model='--bypass' → HTTP 400."""
+
+        async def _reject(_data):
+            raise ValueError("action_model '--bypass' starts with '-' and would inject a CLI flag")
+
+        client = self._client_post(monkeypatch, _reject)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "bad-model-sched",
+                "trigger_type": "cron",
+                "action_kind": "agent",
+                "action_model": "--bypass",
+                "action_prompt": "hello",
+            },
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+
+    def test_create_extra_args_flag_returns_400(self, monkeypatch):
+        """POST action_extra_args=['--bypass'] → HTTP 400."""
+
+        async def _reject(_data):
+            raise ValueError(
+                "action_extra_args element '--bypass' starts with '-' and would inject a CLI flag"
+            )
+
+        client = self._client_post(monkeypatch, _reject)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "bad-extra-sched",
+                "trigger_type": "cron",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+                "action_extra_args": ["--bypass"],
+            },
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"

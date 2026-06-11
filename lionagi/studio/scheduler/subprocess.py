@@ -21,6 +21,56 @@ _TEMPLATE_RE = re.compile(r"\{\{(\w+)\}\}")
 _VALID_ACTION_KINDS = frozenset({"agent", "flow", "fanout", "play", "flow_yaml"})
 _ALIAS_ACTION_KINDS: dict[str, str] = {"playbook": "play"}
 
+# action_model must be a safe model-spec token: alphanumerics, dots, slashes,
+# colons, hyphens and underscores only.  Values starting with '-' are rejected
+# unconditionally to block flag injection into the spawned li process (CWE-88).
+_MODEL_RE = re.compile(r"^[a-zA-Z0-9_./:@-]+$")
+
+
+def _validate_action_model(model: str) -> None:
+    """Raise ValueError if *model* could inject CLI flags into the subprocess.
+
+    A model value starting with '-' would be interpreted as a flag by the spawned
+    ``li`` process.  Values containing characters outside the safe set are also
+    rejected because they have no legitimate use in a model spec.
+
+    Policy: reject loudly rather than silently filtering so callers discover bad
+    data at write time rather than at fire time.
+    """
+    if not model:
+        return
+    if model.startswith("-"):
+        raise ValueError(
+            f"action_model {model!r} starts with '-' and would inject a CLI flag "
+            "into the spawned li process. Provide a valid model identifier."
+        )
+    if not _MODEL_RE.match(model):
+        raise ValueError(
+            f"action_model {model!r} contains characters not allowed in a model "
+            "identifier. Allowed: letters, digits, '_', '.', '/', ':', '@', '-'."
+        )
+
+
+def _validate_extra_args(extra: list) -> None:
+    """Raise ValueError if any element of *extra* starts with '-'.
+
+    Elements starting with '-' are CLI flags and would be injected verbatim into
+    the argv of the spawned li process (CWE-88).  Positional tokens that do not
+    start with '-' are accepted.
+
+    Policy: reject loudly with the offending element named so callers can fix the
+    schedule spec rather than silently receiving a process that behaves differently
+    from what was intended.
+    """
+    for item in extra:
+        token = str(item)
+        if token.startswith("-"):
+            raise ValueError(
+                f"action_extra_args element {token!r} starts with '-' and would "
+                "inject a CLI flag into the spawned li process. Only positional "
+                "(non-flag) tokens are permitted in action_extra_args."
+            )
+
 
 def _render_template(template: str, context: dict) -> str:
     """Replace {{var}} placeholders with values from trigger context."""
@@ -58,6 +108,14 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
     project = schedule.get("action_project")
     extra = schedule.get("action_extra_args") or []
 
+    # Defensive validation: reject flag-injection vectors before touching argv.
+    # These checks mirror the service-layer boundary in services/schedules.py;
+    # having them here ensures the subprocess is never spawned with injected flags
+    # regardless of how the schedule dict was created.
+    _validate_action_model(model)
+    if isinstance(extra, list):
+        _validate_extra_args(extra)
+
     # Render template variables from trigger context
     if prompt:
         prompt = _render_template(prompt, trigger_context)
@@ -94,6 +152,7 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
     if project:
         argv += ["--project", project]
 
+    # extra has already been validated above; extend argv with safe positional tokens.
     if isinstance(extra, list):
         argv.extend(str(a) for a in extra)
 
