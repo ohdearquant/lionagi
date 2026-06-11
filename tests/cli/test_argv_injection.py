@@ -597,3 +597,229 @@ class TestUpdateScheduleInjectionRejection:
             asyncio.run(_go())
 
         assert not write_called["value"], "DB write must not be called when validation rejects"
+
+
+# ---------------------------------------------------------------------------
+# action_prompt == '--' sentinel rejection (codex round 2)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildArgvPromptSentinelRejection:
+    """build_argv must reject action_prompt exactly equal to '--'.
+
+    The literal end-of-options token '--' is consumed by argparse as a separator
+    rather than reaching the runner as prompt text.  Any other prompt content —
+    including '--bypass', '--verbose', '-- --', '-- trailing' — is permitted.
+    """
+
+    def test_prompt_double_dash_raises(self):
+        """action_prompt='--' must raise ValueError (silently eaten by argparse)."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        with pytest.raises(ValueError, match="'--'"):
+            build_argv(_schedule(action_prompt="--"), {})
+
+    def test_prompt_double_dash_in_flow_kind_raises(self):
+        """flow kind also rejects prompt == '--'."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        with pytest.raises(ValueError, match="'--'"):
+            build_argv(_schedule(action_kind="flow", action_prompt="--"), {})
+
+    def test_prompt_double_dash_in_fanout_kind_raises(self):
+        """fanout kind also rejects prompt == '--'."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        with pytest.raises(ValueError, match="'--'"):
+            build_argv(_schedule(action_kind="fanout", action_prompt="--"), {})
+
+    def test_prompt_double_dash_prefix_allowed(self):
+        """'-- --' (starts with -- but not exactly --) must be accepted."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(_schedule(action_prompt="-- --"), {})
+        assert tmp is None
+        # Value appears after sentinel in argv
+        assert "-- --" in argv
+
+    def test_prompt_double_dash_with_trailing_text_allowed(self):
+        """'-- some trailing text' must be accepted and appear in argv."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(_schedule(action_prompt="-- some trailing"), {})
+        assert tmp is None
+        assert "-- some trailing" in argv
+
+    def test_prompt_bypass_still_allowed(self):
+        """'--bypass' as prompt must still pass (structural -- fix handles it)."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(_schedule(action_prompt="--bypass"), {})
+        assert tmp is None
+        sentinel_idx = argv.index("--")
+        assert "--bypass" in argv[sentinel_idx + 1 :]
+
+    def test_service_create_prompt_double_dash_raises(self):
+        """create_schedule rejects action_prompt == '--'."""
+        from lionagi.studio.services.schedules import create_schedule
+
+        data = {
+            "name": "bad-prompt-sentinel",
+            "trigger_type": "cron",
+            "action_kind": "agent",
+            "action_model": "sonnet",
+            "action_prompt": "--",
+        }
+        with pytest.raises(ValueError, match="'--'"):
+            asyncio.run(create_schedule(data))
+
+    def test_service_update_prompt_double_dash_raises(self):
+        """update_schedule rejects action_prompt == '--' in PATCH."""
+        from unittest.mock import AsyncMock, patch
+
+        from lionagi.studio.services.schedules import update_schedule
+
+        existing = {
+            "id": "sid-p",
+            "name": "p",
+            "trigger_type": "cron",
+            "action_kind": "agent",
+            "action_model": "sonnet",
+            "action_extra_args": [],
+        }
+
+        class _MockDB:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get_schedule(self, sid):
+                return existing
+
+            async def update_schedule(self, sid, **kw):
+                pass
+
+        async def _go():
+            with patch(
+                "lionagi.studio.services.schedules.StateDB",
+                return_value=_MockDB(),
+            ):
+                await update_schedule("sid-p", {"action_prompt": "--"})
+
+        with pytest.raises(ValueError, match="'--'"):
+            asyncio.run(_go())
+
+
+# ---------------------------------------------------------------------------
+# cli/main.py — pre-parse verbose scan must be sentinel-aware (codex round 2)
+# ---------------------------------------------------------------------------
+
+
+class TestMainVerboseScanSentinelAware:
+    """The pre-argparse --verbose scan in main() must only inspect tokens
+    before the '--' sentinel.  A scheduled action_prompt='--verbose' must
+    not flip verbose mode.
+
+    These tests check the fix directly: the pre-sentinel slice of argv must
+    NOT contain '--verbose' when it appears after the '--' sentinel, and MUST
+    contain it when it appears before the sentinel (normal human usage).
+
+    Note: -v/--verbose is a subcommand flag (added by add_common_cli_args),
+    not a global li flag.  Human invocation is `li agent --verbose sonnet hi`,
+    NOT `li -v agent sonnet hi` (the latter is unrecognised by the top-level
+    parser).  The pre-parse scan sees all of argv (before the fix); the fix
+    restricts it to the pre-sentinel slice.
+    """
+
+    def test_pre_sentinel_slice_excludes_verbose_after_sentinel(self):
+        """Built argv for agent kind with action_prompt='--verbose':
+        the tokens BEFORE '--' must not include '--verbose'."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        sched = {
+            "id": "t",
+            "action_kind": "agent",
+            "action_model": "sonnet",
+            "action_prompt": "--verbose",
+            "action_agent": None,
+            "action_project": None,
+            "action_extra_args": [],
+        }
+        full_argv, _ = build_argv(sched, {})
+        cli_argv = full_argv[3:]  # strip 'uv run li'
+
+        # Reproduce the sentinel-aware scan from main()
+        try:
+            sep_idx = cli_argv.index("--")
+            pre_sentinel = cli_argv[:sep_idx]
+        except ValueError:
+            pre_sentinel = cli_argv
+
+        verbose = "-v" in pre_sentinel or "--verbose" in pre_sentinel
+        assert not verbose, (
+            f"pre-sentinel scan incorrectly set verbose=True. "
+            f"pre_sentinel={pre_sentinel!r}, full argv={cli_argv!r}"
+        )
+        # '--verbose' must be AFTER the sentinel (in the positionals section)
+        assert "--verbose" in cli_argv[cli_argv.index("--") + 1 :], (
+            f"'--verbose' should appear as prompt value after '--'. argv={cli_argv!r}"
+        )
+
+    def test_pre_sentinel_slice_includes_verbose_before_sentinel(self):
+        """Human `li agent --verbose sonnet hello` (no '--' sentinel):
+        the pre-sentinel slice IS all of argv, so verbose=True is correct."""
+        # Without a '--' sentinel in the argv, the full argv is pre_sentinel.
+        cli_argv = ["agent", "--verbose", "sonnet", "hello"]
+
+        try:
+            sep_idx = cli_argv.index("--")
+            pre_sentinel = cli_argv[:sep_idx]
+        except ValueError:
+            pre_sentinel = cli_argv
+
+        verbose = "-v" in pre_sentinel or "--verbose" in pre_sentinel
+        assert verbose, (
+            f"Expected verbose=True for 'agent --verbose sonnet hello'. "
+            f"pre_sentinel={pre_sentinel!r}"
+        )
+
+    def test_scheduled_verbose_prompt_reaches_runner_as_value(self):
+        """End-to-end: action_prompt='--verbose' reaches _run_agent as the prompt
+        value with verbose=False (the argparse-parsed verbose, not the pre-scan)."""
+        from unittest.mock import patch as _patch
+
+        import lionagi.cli.agent as agent_mod
+        from lionagi.cli.main import main
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        captured = {}
+
+        async def _fake_run_agent(model_str, prompt, *, verbose=False, **kwargs):
+            captured["prompt"] = prompt
+            captured["verbose"] = verbose
+            return "out", "provider", "branch", "completed"
+
+        sched = {
+            "id": "t",
+            "action_kind": "agent",
+            "action_model": "sonnet",
+            "action_prompt": "--verbose",
+            "action_agent": None,
+            "action_project": None,
+            "action_extra_args": [],
+        }
+        full_argv, _ = build_argv(sched, {})
+        cli_argv = full_argv[3:]
+
+        with _patch.object(agent_mod, "_run_agent", _fake_run_agent):
+            rc = main(cli_argv)
+
+        assert rc == 0, f"Expected rc=0, got {rc}"
+        assert captured.get("prompt") == "--verbose", (
+            f"Expected '--verbose' as prompt value, got {captured.get('prompt')!r}"
+        )
+        assert captured.get("verbose") is False, (
+            f"Expected verbose=False (argparse-parsed), got {captured.get('verbose')!r}"
+        )

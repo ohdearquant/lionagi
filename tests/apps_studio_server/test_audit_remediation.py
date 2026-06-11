@@ -896,3 +896,28 @@ class TestScheduleArgvInjectionRealService:
         assert "--bypass" in detail or "action_playbook" in detail, (
             f"Expected error mentioning --bypass or action_playbook, got: {detail!r}"
         )
+
+    def test_create_action_prompt_sentinel_real_svc_returns_400(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """POST action_prompt='--' through real service → 400 (codex round 2).
+
+        The literal end-of-options token '--' is silently consumed by argparse;
+        the service must reject it with a descriptive error.
+        """
+        client = _real_svc_client(monkeypatch, tmp_path)
+        r = client.post(
+            "/api/schedules/",
+            json={
+                "name": "bad-prompt-sentinel",
+                "trigger_type": "cron",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+                "action_prompt": "--",
+            },
+        )
+        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
+        detail = r.json().get("detail", "")
+        assert "'--'" in detail or "action_prompt" in detail or "end-of-options" in detail, (
+            f"Expected error mentioning '--' or action_prompt, got: {detail!r}"
+        )

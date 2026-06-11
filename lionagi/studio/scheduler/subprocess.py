@@ -91,6 +91,12 @@ def _validate_extra_args(extra: list) -> None:
     Policy: reject loudly with the offending element named so callers can fix the
     schedule spec rather than silently receiving a process that behaves differently
     from what was intended.
+
+    Note: extra tokens are appended after the subcommand's own positionals.
+    Parsers for agent/flow/fanout do not accept extra positionals, so non-empty
+    action_extra_args will cause those subcommands to exit rc 2 at fire time.
+    action_extra_args is only meaningful for future subcommand extensions or the
+    play kind; restrict its use accordingly.
     """
     for item in extra:
         token = str(item)
@@ -100,6 +106,30 @@ def _validate_extra_args(extra: list) -> None:
                 "inject a CLI flag into the spawned li process. Only positional "
                 "(non-flag) tokens are permitted in action_extra_args."
             )
+
+
+def _validate_prompt(prompt: str) -> None:
+    """Raise ValueError if *prompt* is the literal end-of-options sentinel '--'.
+
+    The '--' sentinel is special to argparse: when placed as the first positional
+    after our own '--' sentinel, argparse consumes it as the separator token and
+    the actual prompt value reaches the runner as an empty string (or causes a
+    'required' error), rather than arriving as the prompt text.
+
+    Freeform prompts are otherwise unrestricted — any other content including
+    leading '-' characters (e.g. '--bypass', '--verbose') is safe because the
+    structural fix in build_argv places a '--' before all positionals.  The sole
+    forbidden value is the exact two-character token '--'.
+
+    Prompt values like '-- --', '-- text', or '--' embedded in longer strings
+    are all permitted; only the exact singleton '--' is rejected.
+    """
+    if prompt == "--":
+        raise ValueError(
+            "action_prompt value '--' is not allowed: the literal end-of-options "
+            "token would be silently consumed by argparse rather than reaching the "
+            "runner as prompt text. Use any other prompt content."
+        )
 
 
 def _render_template(template: str, context: dict) -> str:
@@ -143,6 +173,8 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
     # having them here ensures the subprocess is never spawned with injected flags
     # regardless of how the schedule dict was created.
     _validate_action_model(model)
+    if prompt:
+        _validate_prompt(prompt)
     if agent:
         _validate_identifier(agent, "action_agent")
     if project:

@@ -468,3 +468,89 @@ class TestSentinelPlacement:
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Regression pin: '-- --' and '-- trailing' pass through (codex round 2)
+# ---------------------------------------------------------------------------
+
+
+class TestDoubleDashSentinelEdgeCases:
+    """Pin that '-- --' and '-- trailing' reach the runner as prompt values.
+
+    Codex verified '-- --' works today; these tests pin that behaviour so a
+    future change does not silently regress it.  The exact token '--' is
+    rejected by validation (tested in test_argv_injection.py); these tests
+    cover the multi-token or longer forms that must remain permitted.
+    """
+
+    def test_double_dash_space_double_dash_passes_through(self) -> None:
+        """action_prompt='-- --' must reach _run_agent as the prompt VALUE."""
+        _reset()
+        argv = _argv_without_wrapper(
+            __import__("lionagi.studio.scheduler.subprocess", fromlist=["build_argv"]).build_argv(
+                {
+                    "id": "t",
+                    "action_kind": "agent",
+                    "action_model": "sonnet",
+                    "action_prompt": "-- --",
+                    "action_agent": None,
+                    "action_project": None,
+                    "action_extra_args": [],
+                },
+                {},
+            )[0]
+        )
+        rc = _run_main_with_argv(argv)
+        assert rc == 0, f"Expected rc=0, got {rc}. argv={argv}"
+        c = _CAPTURED.get("agent")
+        assert c is not None, "run_agent was not called"
+        assert c["prompt"] == "-- --", f"Expected prompt='-- --', got {c['prompt']!r}"
+        assert c["bypass"] is False
+
+    def test_double_dash_trailing_text_passes_through(self) -> None:
+        """action_prompt='-- some text' must reach _run_agent as the prompt VALUE."""
+        _reset()
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        full_argv, _ = build_argv(
+            {
+                "id": "t",
+                "action_kind": "agent",
+                "action_model": "sonnet",
+                "action_prompt": "-- some trailing",
+                "action_agent": None,
+                "action_project": None,
+                "action_extra_args": [],
+            },
+            {},
+        )
+        argv = _argv_without_wrapper(full_argv)
+        rc = _run_main_with_argv(argv)
+        assert rc == 0, f"Expected rc=0, got {rc}. argv={argv}"
+        c = _CAPTURED.get("agent")
+        assert c is not None, "run_agent was not called"
+        assert c["prompt"] == "-- some trailing", (
+            f"Expected prompt='-- some trailing', got {c['prompt']!r}"
+        )
+        assert c["bypass"] is False
+
+    def test_exact_double_dash_rejected_at_build_time(self) -> None:
+        """action_prompt='--' must be rejected by build_argv before reaching argparse."""
+        import pytest as _pytest
+
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        with _pytest.raises(ValueError, match="'--'"):
+            build_argv(
+                {
+                    "id": "t",
+                    "action_kind": "agent",
+                    "action_model": "sonnet",
+                    "action_prompt": "--",
+                    "action_agent": None,
+                    "action_project": None,
+                    "action_extra_args": [],
+                },
+                {},
+            )

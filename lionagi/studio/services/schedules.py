@@ -61,6 +61,22 @@ def _svc_validate_extra_args(extra: list | None) -> None:
     _validate_extra_args(extra)
 
 
+def _svc_validate_prompt(prompt: str | None) -> None:
+    """Service-boundary check: reject action_prompt == '--'.
+
+    The literal end-of-options token '--' is silently consumed by argparse and
+    would not reach the runner as prompt text.  All other prompt content —
+    including values starting with '-' — is unrestricted because the structural
+    argv fix places a '--' sentinel before all positionals.  Delegates to
+    subprocess._validate_prompt so the rule is defined in one place.
+    """
+    if not prompt:
+        return
+    from lionagi.studio.scheduler.subprocess import _validate_prompt
+
+    _validate_prompt(prompt)
+
+
 def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
     """Parse and validate an inline YAML flow spec.
 
@@ -228,6 +244,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
 
     # Reject flag-injection vectors at write time so bad specs never reach storage.
     _svc_validate_action_model(data.get("action_model"))
+    _svc_validate_prompt(data.get("action_prompt"))
     _svc_validate_identifier(data.get("action_agent"), "action_agent")
     _svc_validate_identifier(data.get("action_project"), "action_project")
     _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
@@ -267,6 +284,8 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         # Reject flag-injection vectors in the patched fields before writing.
         if "action_model" in fields:
             _svc_validate_action_model(fields["action_model"])
+        if "action_prompt" in fields:
+            _svc_validate_prompt(fields["action_prompt"])
         if "action_agent" in fields:
             _svc_validate_identifier(fields["action_agent"], "action_agent")
         if "action_project" in fields:
