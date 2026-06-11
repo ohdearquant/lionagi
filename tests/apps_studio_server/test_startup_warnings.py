@@ -28,6 +28,7 @@ module, regardless of when the lifespan runs.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -292,6 +293,36 @@ class TestCORSBoundedMethods:
                 f"Expected {verb!r} in Access-Control-Allow-Methods; got header: {raw!r}"
             )
 
+    def test_allowlist_covers_every_served_route_method(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The CORS allowlist must cover EVERY method served by the app's route
+        table — not just the verbs the routers declare explicitly.
+
+        Regression for the round-1 finding: FastAPI auto-generates ``HEAD`` for
+        every ``GET`` route and serves docs/OpenAPI endpoints, so a hardcoded
+        list silently omitted ``HEAD`` and preflight for it 400'd.  Deriving the
+        allowlist from ``app.routes`` keeps the two in sync; this test fails if
+        any served method ever escapes the allowlist again.
+        """
+        import lionagi.studio.app as app_mod
+
+        served: set[str] = set()
+        for route in app_mod.app.routes:
+            methods = getattr(route, "methods", None)
+            if methods:
+                served.update(m.upper() for m in methods)
+
+        allowlist = {m.upper() for m in app_mod._collect_cors_methods(app_mod.app)}
+
+        missing = served - allowlist
+        assert not missing, (
+            f"CORS allowlist is missing served method(s): {sorted(missing)}; "
+            f"served={sorted(served)} allowlist={sorted(allowlist)}"
+        )
+        # HEAD specifically — the exact method the hardcoded list dropped.
+        assert "HEAD" in allowlist, f"HEAD must be in the CORS allowlist; got {sorted(allowlist)}"
+
 
 # ---------------------------------------------------------------------------
 # CORS wildcard origin warning
@@ -336,4 +367,46 @@ class TestCORSWildcardOriginWarning:
         cors_warnings = [m for m in records.warnings() if "CORS" in m.upper()]
         assert not cors_warnings, (
             f"Should not emit CORS warning for explicit origins; got: {cors_warnings!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# CLI wires the resolved bind host into the warning source
+# ---------------------------------------------------------------------------
+
+
+class TestCLIHostWiring:
+    """The app is loaded via import string, so it only sees the bind host
+    through ``LIONAGI_STUDIO_HOST``.  The CLI resolves the host from argparse /
+    env / default and must export it before ``uvicorn.run`` — otherwise the
+    0.0.0.0 escalation warning silently misses ``li studio --host 0.0.0.0``.
+
+    Regression for the round-1 finding: the warning read a stale default rather
+    than the actual bind host.
+    """
+
+    def test_backend_only_exports_resolved_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import lionagi.cli.studio as studio_cli
+
+        monkeypatch.delenv("LIONAGI_STUDIO_HOST", raising=False)
+        monkeypatch.setattr(studio_cli, "_ensure_apps_importable", lambda: True)
+
+        captured: dict[str, str] = {}
+
+        def _fake_uvicorn_run(_app: str, *, host: str, port: int) -> None:
+            # The export must have happened before uvicorn.run is invoked.
+            captured["env_host"] = os.environ.get("LIONAGI_STUDIO_HOST", "")
+            captured["bind_host"] = host
+
+        import uvicorn
+
+        monkeypatch.setattr(uvicorn, "run", _fake_uvicorn_run)
+
+        rc = studio_cli._start_backend_only("0.0.0.0", 18765)
+
+        assert rc == 0
+        assert captured["bind_host"] == "0.0.0.0"
+        assert captured["env_host"] == "0.0.0.0", (
+            "CLI must export the resolved bind host into LIONAGI_STUDIO_HOST "
+            "before uvicorn.run so the app's security warning sees it"
         )

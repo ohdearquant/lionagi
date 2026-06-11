@@ -37,10 +37,23 @@ _log = logging.getLogger(__name__)
 # only pure liveness probes that carry no application state belong here.
 _PUBLIC_PATHS = frozenset({"/health"})
 
-# Explicit CORS method allowlist derived from the router set.
-# Routers use: GET (39), POST (19), PUT (3), PATCH (1), DELETE (4).
-# OPTIONS is included to let the CORSMiddleware respond to preflight requests.
-_CORS_METHODS: list[str] = ["DELETE", "GET", "OPTIONS", "PATCH", "POST", "PUT"]
+
+def _collect_cors_methods(application: FastAPI) -> list[str]:
+    """Derive the CORS method allowlist from the app's actual route table.
+
+    Hardcoding the list is brittle: FastAPI auto-generates ``HEAD`` for every
+    ``GET`` route and serves docs/OpenAPI endpoints, so a manual list silently
+    omits methods that are really served (CORS preflight for them then 400s).
+    Walking ``application.routes`` after all routers are mounted keeps the
+    allowlist exactly in sync with what is served.  ``OPTIONS`` is always
+    included so CORSMiddleware can answer preflight requests.
+    """
+    methods: set[str] = {"OPTIONS"}
+    for route in application.routes:
+        route_methods = getattr(route, "methods", None)
+        if route_methods:
+            methods.update(route_methods)
+    return sorted(methods)
 
 
 def _emit_startup_warnings() -> None:
@@ -87,13 +100,6 @@ async def lifespan(app_instance):
 
 
 app = FastAPI(title="Lion Studio Server", lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_methods=_CORS_METHODS,
-    allow_headers=["*"],
-)
 
 
 @app.middleware("http")
@@ -145,3 +151,16 @@ async def get_stats() -> dict[str, Any]:
     # called runs_svc.list_runs() which read filesystem dirs and returned a
     # different count than the sessions-backed list endpoint.
     return await stats_svc.get_stats()
+
+
+# CORS middleware is registered LAST — after every router and the two direct
+# @app.get endpoints above — so the method allowlist is derived from the
+# complete route table (see _collect_cors_methods).  Added last, it sits
+# outermost in the middleware stack, the correct position for CORS: preflight
+# is answered before the bearer-token gate (which already lets OPTIONS through).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_methods=_collect_cors_methods(app),
+    allow_headers=["*"],
+)

@@ -176,6 +176,10 @@ def _start_backend_only(host: str, port: int) -> int:
         return 1
 
     print(f"Lion Studio API: http://{host}:{port}")
+    # Export the actually-resolved bind host so the app's startup security
+    # warning (lionagi.studio.app) reflects the real bind address rather than a
+    # stale default — the app is loaded via import string and only sees env.
+    os.environ["LIONAGI_STUDIO_HOST"] = host
     uvicorn.run("lionagi.studio.app:app", host=host, port=port)
     return 0
 
@@ -296,6 +300,10 @@ def _start_local(
         )
         return 1
 
+    # Export the actually-resolved bind host so the app's startup security
+    # warning (lionagi.studio.app) reflects the real bind address rather than a
+    # stale default — the app is loaded via import string and only sees env.
+    os.environ["LIONAGI_STUDIO_HOST"] = host
     try:
         uvicorn.run("lionagi.studio.app:app", host=host, port=port)
     except KeyboardInterrupt:
