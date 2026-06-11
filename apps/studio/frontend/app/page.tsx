@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import MetricCard from "@/components/MetricCard";
 import PageHeader from "@/components/PageHeader";
 import StatusPill from "@/components/StatusPill";
@@ -52,6 +53,7 @@ function isInRange(run: RunSummary, windowSec: number | null, nowSec: number): b
 }
 
 export default function DashboardPage() {
+  const t = useTranslations("dashboard");
   const [stats, setStats] = useState<StudioStats | null>(null);
   const [allRuns, setAllRuns] = useState<RunSummary[]>([]);
   const [shows, setShows] = useState<ShowSummary[]>([]);
@@ -102,7 +104,7 @@ export default function DashboardPage() {
           }
         }
       } catch {
-        if (active) setFetchError("API unreachable — data may be stale");
+        if (active) setFetchError(t("fetchError"));
       }
     }
 
@@ -114,7 +116,7 @@ export default function DashboardPage() {
       clearInterval(interval);
       clearInterval(tick);
     };
-  }, []);
+  }, [t]);
 
   const windowSec = rangeToSeconds(range);
 
@@ -175,8 +177,8 @@ export default function DashboardPage() {
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 animate-page-enter">
       <PageHeader
-        title="Dashboard"
-        subtitle="Operational overview"
+        title={t("title")}
+        subtitle={t("subtitle")}
         actions={<TimeRangeChips value={range} onChange={setRange} />}
         density="tight"
       />
@@ -190,41 +192,47 @@ export default function DashboardPage() {
       {/* Operational stat cards */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <MetricCard
-          label="Running now"
+          label={t("metrics.runningNow")}
           value={buckets.running.length}
           hint={
             buckets.stuck.length > 0
-              ? `${buckets.stuck.length} stuck >${STUCK_RUN_SECONDS / 60}m`
-              : `${rangeLabel}`
+              ? t("metrics.stuck", { count: buckets.stuck.length, minutes: STUCK_RUN_SECONDS / 60 })
+              : rangeLabel
           }
           tone={buckets.running.length > 0 ? "running" : "neutral"}
           icon={buckets.running.length > 0 ? "◐" : "○"}
         />
         <MetricCard
-          label="Stale"
+          label={t("metrics.stale")}
           value={buckets.stale.length}
-          hint={buckets.stale.length > 0 ? "no activity past threshold" : "no stale activity"}
+          hint={
+            buckets.stale.length > 0
+              ? t("metrics.noActivityPastThreshold")
+              : t("metrics.noStaleActivity")
+          }
           tone={buckets.stale.length > 0 ? "pending" : "neutral"}
           icon={buckets.stale.length > 0 ? "◴" : "·"}
         />
         <MetricCard
-          label={`Failed (${rangeLabel})`}
+          label={t("metrics.failed", { range: rangeLabel })}
           value={buckets.failed.length}
-          hint={buckets.failed.length === 0 ? "all clean" : "needs investigation"}
+          hint={
+            buckets.failed.length === 0 ? t("metrics.allClean") : t("metrics.needsInvestigation")
+          }
           tone={buckets.failed.length > 0 ? "failed" : "ok"}
           icon={buckets.failed.length > 0 ? "✕" : "✓"}
         />
         <MetricCard
-          label={`Slow runs (${rangeLabel})`}
+          label={t("metrics.slowRuns", { range: rangeLabel })}
           value={buckets.slow.length}
-          hint={`completed > ${SLOW_RUN_SECONDS / 60}m`}
+          hint={t("metrics.completedOver", { minutes: SLOW_RUN_SECONDS / 60 })}
           tone={buckets.slow.length > 0 ? "pending" : "neutral"}
           icon={buckets.slow.length > 0 ? "⏱" : "·"}
         />
         <MetricCard
-          label="Needs review"
+          label={t("metrics.needsReview")}
           value={buckets.needsReview.length}
-          hint={`${rangeLabel}`}
+          hint={rangeLabel}
           tone={buckets.needsReview.length > 0 ? "pending" : "neutral"}
           icon={buckets.needsReview.length > 0 ? "⊘" : "·"}
         />
@@ -233,7 +241,7 @@ export default function DashboardPage() {
       {/* Secondary inventory strip */}
       {stats ? (
         <div className="flex flex-wrap items-center gap-x-5 gap-y-1 rounded border border-edge bg-surface-overlay px-4 py-2.5 text-meta text-content-muted">
-          <span className="uppercase tracking-[0.08em] text-content-muted">Inventory</span>
+          <span className="uppercase tracking-[0.08em] text-content-muted">{t("inventory")}</span>
           <Link
             href="/playbooks"
             className="transition-colors duration-100 hover:text-content-primary"
@@ -260,13 +268,15 @@ export default function DashboardPage() {
       {/* Two-column: Needs attention | Recent activity */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <section>
-          <SectionHeader title="Needs attention" count={buckets.attention.length} href="/runs" />
+          <SectionHeader
+            title={t("sections.needsAttention")}
+            count={buckets.attention.length}
+            href="/runs"
+          />
           {buckets.attention.length === 0 ? (
             <div className="rounded border border-status-success/25 bg-status-success-bg px-4 py-4 text-body text-status-success shadow-card">
-              <span className="font-semibold">All clean.</span>{" "}
-              <span className="text-content-secondary">
-                No failed, stuck, or blocked runs in window.
-              </span>
+              <span className="font-semibold">{t("allClean")}</span>{" "}
+              <span className="text-content-secondary">{t("allCleanDetail")}</span>
             </div>
           ) : (
             <RunsTable runs={buckets.attention} emptyText="" now={now} />
@@ -274,29 +284,33 @@ export default function DashboardPage() {
         </section>
 
         <section>
-          <SectionHeader title="Recent activity" count={buckets.recent.length} href="/runs" />
+          <SectionHeader
+            title={t("sections.recentActivity")}
+            count={buckets.recent.length}
+            href="/runs"
+          />
           <RunsTable runs={buckets.recent} emptyText="No runs in window." now={now} />
         </section>
       </div>
 
       {/* Shows table */}
       <section>
-        <SectionHeader title="Shows" count={shows.length} href="/shows" />
+        <SectionHeader title={t("sections.shows")} count={shows.length} href="/shows" />
         <div className="overflow-hidden rounded border border-edge bg-surface-raised shadow-card">
           <table className="w-full text-left text-body">
             <thead>
               <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
-                <th className="px-3 py-2.5 font-medium">Topic</th>
-                <th className="px-3 py-2.5 font-medium tabular-nums">Plays</th>
-                <th className="px-3 py-2.5 font-medium">Status</th>
-                <th className="px-3 py-2.5 font-medium">Last update</th>
+                <th className="px-3 py-2.5 font-medium">{t("table.topic")}</th>
+                <th className="px-3 py-2.5 font-medium tabular-nums">{t("table.plays")}</th>
+                <th className="px-3 py-2.5 font-medium">{t("table.status")}</th>
+                <th className="px-3 py-2.5 font-medium">{t("table.lastUpdate")}</th>
               </tr>
             </thead>
             <tbody>
               {shows.length === 0 ? (
                 <tr>
                   <td colSpan={4} className="px-3 py-8 text-center text-meta text-content-muted">
-                    No shows
+                    {t("table.noShows")}
                   </td>
                 </tr>
               ) : (
@@ -332,6 +346,7 @@ export default function DashboardPage() {
 }
 
 function SectionHeader({ title, count, href }: { title: string; count: number; href: string }) {
+  const t = useTranslations("dashboard");
   return (
     <div className="mb-2.5 flex items-center justify-between">
       <div className="flex items-center gap-2">
@@ -344,7 +359,7 @@ function SectionHeader({ title, count, href }: { title: string; count: number; h
         href={href}
         className="text-meta text-content-muted transition-colors duration-100 hover:text-content-primary"
       >
-        View all →
+        {t("viewAll")}
       </Link>
     </div>
   );
@@ -359,16 +374,19 @@ function RunsTable({
   emptyText: string;
   now: number;
 }) {
+  const t = useTranslations("dashboard");
   return (
     <div className="overflow-hidden rounded border border-edge bg-surface-raised shadow-card">
       <table className="w-full text-left text-body">
         <thead>
           <tr className="border-b border-edge bg-surface-overlay text-meta uppercase tracking-[0.06em] text-content-muted">
-            <th className="px-3 py-2.5 font-medium">Run</th>
-            <th className="px-3 py-2.5 font-medium">Kind</th>
-            <th className="px-3 py-2.5 font-medium">Status</th>
-            <th className="px-3 py-2.5 font-medium tabular-nums text-right">Duration</th>
-            <th className="px-3 py-2.5 font-medium">Started</th>
+            <th className="px-3 py-2.5 font-medium">{t("table.run")}</th>
+            <th className="px-3 py-2.5 font-medium">{t("table.kind")}</th>
+            <th className="px-3 py-2.5 font-medium">{t("table.status")}</th>
+            <th className="px-3 py-2.5 font-medium tabular-nums text-right">
+              {t("table.duration")}
+            </th>
+            <th className="px-3 py-2.5 font-medium">{t("table.started")}</th>
           </tr>
         </thead>
         <tbody>
@@ -422,30 +440,35 @@ function formatBytes(value: number | null | undefined): string {
 }
 
 function SystemHealthCard({ db }: { db: DbStats | undefined }) {
+  const t = useTranslations("dashboard");
   if (!db) return null;
   return (
     <div className="rounded border border-edge bg-surface-raised p-4 shadow-card">
       <div className="mb-3 flex items-center justify-between">
-        <span className="text-label font-semibold text-content-primary">System Health</span>
+        <span className="text-label font-semibold text-content-primary">{t("health.title")}</span>
         <span className="font-mono text-meta text-content-muted">{db.path}</span>
       </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 text-meta">
         <div>
-          <div className="text-content-muted">State DB</div>
+          <div className="text-content-muted">{t("health.stateDb")}</div>
           <div className="tabular-nums text-content-secondary">{formatBytes(db.size_bytes)}</div>
         </div>
         <div>
-          <div className="text-content-muted">WAL</div>
+          <div className="text-content-muted">{t("health.wal")}</div>
           <div className="tabular-nums text-content-secondary">{formatBytes(db.wal_bytes)}</div>
         </div>
         <div>
-          <div className="text-content-muted">Connections</div>
+          <div className="text-content-muted">{t("health.connections")}</div>
           <div className="tabular-nums text-content-secondary">{db.connections_active}</div>
         </div>
         <div>
-          <div className="text-content-muted">Last checkpoint</div>
+          <div className="text-content-muted">{t("health.lastCheckpoint")}</div>
           <div className="text-content-secondary">
-            {db.last_checkpoint_at ? <Timestamp value={db.last_checkpoint_at} /> : "unavailable"}
+            {db.last_checkpoint_at ? (
+              <Timestamp value={db.last_checkpoint_at} />
+            ) : (
+              t("health.unavailable")
+            )}
           </div>
         </div>
       </div>
@@ -459,7 +482,7 @@ function SystemHealthCard({ db }: { db: DbStats | undefined }) {
           ))}
           {(db.sessions_by_status["running"] ?? 0) > 0 && (
             <Link href="/admin" className="text-meta text-status-running hover:underline">
-              Doctor →
+              {t("health.doctor")}
             </Link>
           )}
         </div>

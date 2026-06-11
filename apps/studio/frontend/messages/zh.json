@@ -28,7 +28,9 @@
     "items": {
       "dashboard": "控制台",
       "shows": "展示",
+      "playfield": "运行场",
       "runs": "运行",
+      "kanban": "看板",
       "projects": "项目",
       "teams": "团队",
       "invocations": "调用",
@@ -56,5 +58,82 @@
   },
   "common": {
     "skipToMain": "跳转到主要内容"
+  },
+  "dashboard": {
+    "title": "控制台",
+    "subtitle": "运行概览",
+    "inventory": "资源清单",
+    "viewAll": "查看全部 →",
+    "allClean": "全部正常。",
+    "allCleanDetail": "当前时间窗口内无失败、卡滞或阻塞的运行。",
+    "sections": {
+      "needsAttention": "需要关注",
+      "recentActivity": "近期活动",
+      "shows": "展示"
+    },
+    "metrics": {
+      "runningNow": "运行中",
+      "stale": "无活动",
+      "noStaleActivity": "无停滞活动",
+      "noActivityPastThreshold": "超过阈值未活动",
+      "failed": "失败（{range}）",
+      "allClean": "全部正常",
+      "needsInvestigation": "需要排查",
+      "slowRuns": "慢运行（{range}）",
+      "completedOver": "完成耗时 > {minutes} 分钟",
+      "needsReview": "待审核",
+      "stuck": "{count} 个卡滞 >{minutes}m"
+    },
+    "table": {
+      "run": "运行",
+      "kind": "类型",
+      "status": "状态",
+      "duration": "耗时",
+      "started": "开始时间",
+      "topic": "主题",
+      "plays": "执行次数",
+      "lastUpdate": "最后更新",
+      "noShows": "暂无展示"
+    },
+    "health": {
+      "title": "系统健康",
+      "stateDb": "状态数据库",
+      "wal": "预写日志",
+      "connections": "连接数",
+      "lastCheckpoint": "最近检查点",
+      "unavailable": "不可用",
+      "doctor": "诊断 →"
+    },
+    "fetchError": "API 不可达 — 数据可能已过期"
+  },
+  "kanban": {
+    "title": "看板",
+    "subtitle": "运行状态的只读生命周期视图。",
+    "lanes": {
+      "queued": "排队中",
+      "running": "进行中",
+      "review": "审核 / 等待",
+      "done": "已完成",
+      "failed": "失败",
+      "cancelled": "已取消"
+    },
+    "empty": {
+      "noRuns": "暂无运行。",
+      "awaitingEnrichment": "等待生命周期信号补充。"
+    }
+  },
+  "playfield": {
+    "title": "运行场",
+    "subtitle": "所有项目中正在运行及排队的执行与会话",
+    "allProjects": "所有项目",
+    "active": "活跃",
+    "table": {
+      "run": "运行",
+      "status": "状态",
+      "agents": "智能体数",
+      "elapsed": "已耗时",
+      "updated": "更新时间"
+    },
+    "empty": "当前无正在运行或排队的会话。"
   }
 }

@@ -28,7 +28,9 @@
     "items": {
       "dashboard": "Dashboard",
       "shows": "Shows",
+      "playfield": "Playfield",
       "runs": "Runs",
+      "kanban": "Kanban",
       "projects": "Projects",
       "teams": "Teams",
       "invocations": "Invocations",
@@ -56,5 +58,82 @@
   },
   "common": {
     "skipToMain": "Skip to main content"
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "subtitle": "Operational overview",
+    "inventory": "Inventory",
+    "viewAll": "View all →",
+    "allClean": "All clean.",
+    "allCleanDetail": "No failed, stuck, or blocked runs in window.",
+    "sections": {
+      "needsAttention": "Needs attention",
+      "recentActivity": "Recent activity",
+      "shows": "Shows"
+    },
+    "metrics": {
+      "runningNow": "Running now",
+      "stale": "Stale",
+      "noStaleActivity": "no stale activity",
+      "noActivityPastThreshold": "no activity past threshold",
+      "failed": "Failed ({range})",
+      "allClean": "all clean",
+      "needsInvestigation": "needs investigation",
+      "slowRuns": "Slow runs ({range})",
+      "completedOver": "completed > {minutes}m",
+      "needsReview": "Needs review",
+      "stuck": "{count} stuck >{minutes}m"
+    },
+    "table": {
+      "run": "Run",
+      "kind": "Kind",
+      "status": "Status",
+      "duration": "Duration",
+      "started": "Started",
+      "topic": "Topic",
+      "plays": "Plays",
+      "lastUpdate": "Last update",
+      "noShows": "No shows"
+    },
+    "health": {
+      "title": "System Health",
+      "stateDb": "State DB",
+      "wal": "WAL",
+      "connections": "Connections",
+      "lastCheckpoint": "Last checkpoint",
+      "unavailable": "unavailable",
+      "doctor": "Doctor →"
+    },
+    "fetchError": "API unreachable — data may be stale"
+  },
+  "kanban": {
+    "title": "Kanban",
+    "subtitle": "Read-only lifecycle view over run status.",
+    "lanes": {
+      "queued": "Queued",
+      "running": "In Progress",
+      "review": "Review / Waiting",
+      "done": "Done",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
+    "empty": {
+      "noRuns": "No runs.",
+      "awaitingEnrichment": "Awaiting lifecycle-signal enrichment."
+    }
+  },
+  "playfield": {
+    "title": "Playfield",
+    "subtitle": "All running and queued plays and sessions across projects",
+    "allProjects": "All projects",
+    "active": "active",
+    "table": {
+      "run": "Run",
+      "status": "Status",
+      "agents": "Agents",
+      "elapsed": "Elapsed",
+      "updated": "Updated"
+    },
+    "empty": "No sessions are currently running or queued."
   }
 }

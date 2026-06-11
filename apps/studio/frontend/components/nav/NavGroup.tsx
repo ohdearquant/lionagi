@@ -15,7 +15,9 @@ const GROUP_KEY: Record<string, string> = {
 const ITEM_KEY: Record<string, string> = {
   Dashboard: "items.dashboard",
   Shows: "items.shows",
+  Playfield: "items.playfield",
   Runs: "items.runs",
+  Kanban: "items.kanban",
   Projects: "items.projects",
   Teams: "items.teams",
   Invocations: "items.invocations",
