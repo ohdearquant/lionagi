@@ -974,6 +974,24 @@ class TestGithubRepoValidatorUnit:
 
         _validate_github_repo("github/.github")  # must not raise
 
+    def test_single_char_owner_accepted(self):
+        """'a/repo' — a single-char owner is valid GitHub grammar and must pass."""
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        _validate_github_repo("a/repo")  # must not raise
+
+    def test_dotted_repo_names_accepted(self):
+        """Repo names that are dotted but not traversal singletons are accepted.
+
+        'owner/...', 'owner/a..b', 'owner/.git' remain a single URL path segment
+        (not '.'/'..'), so they are path-safe and must not be over-rejected.
+        """
+        from lionagi.studio.scheduler.github import _validate_github_repo
+
+        _validate_github_repo("owner/...")  # must not raise
+        _validate_github_repo("owner/a..b")  # must not raise
+        _validate_github_repo("owner/.git")  # must not raise
+
     def test_dot_singleton_repo_raises(self):
         """'owner/.' is a path-traversal singleton and must raise ValueError."""
         from lionagi.studio.scheduler.github import _validate_github_repo
