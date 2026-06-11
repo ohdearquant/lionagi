@@ -225,6 +225,11 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
 
     # Open DB for persistence.
     db = None
+    # session_id for signal persistence: the engine run creates its own
+    # sessions row (run_id) so Studio can stream signals live.  The
+    # engine_runs.session_id column still carries the user-supplied
+    # --session-id for cross-linking to an existing session.
+    signal_session_id: str | None = None
     if not args.no_persist:
         try:
             from lionagi.state.db import StateDB
@@ -241,6 +246,35 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
         except Exception as exc:  # noqa: BLE001
             warn(f"could not open StateDB for persistence: {exc}")
             db = None
+    if db is not None:
+        # Create a sessions row so session_signals FK is satisfied.  Guarded
+        # separately: a failure here only disables live signal streaming,
+        # never the engine_runs record itself.
+        try:
+            # create_session is INSERT OR IGNORE: a pre-existing row with this
+            # id would be silently reused, appending our signals to an
+            # unrelated session and mirroring terminal status onto it.  run_id
+            # is a fresh uuid4 so this should never happen — but never bind to
+            # a row this run did not create.
+            if await db.get_session(run_id) is not None:
+                warn(f"sessions row {run_id} already exists; skipping signal binding")
+            else:
+                prog_id = f"{run_id}-prog"
+                await db.create_progression(prog_id)
+                await db.create_session(
+                    {
+                        "id": run_id,
+                        "created_at": started_at,
+                        "progression_id": prog_id,
+                        "name": f"engine:{kind}",
+                        "status": "running",
+                        "invocation_kind": None,
+                    }
+                )
+                signal_session_id = run_id
+        except Exception as exc:  # noqa: BLE001
+            warn(f"could not create signal session for engine run: {exc}")
+            signal_session_id = None
 
     # Import engine class lazily (no circular import; heavy deps stay unloaded
     # until actually needed).
@@ -249,7 +283,9 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
         engine_class = _import_engine_class(module, cls_name)
     except Exception as exc:
         log_error(f"failed to import engine class for kind {kind!r}: {exc}")
-        await _maybe_update_db(db, run_id, "failed", error=str(exc))
+        await _maybe_update_db(
+            db, run_id, "failed", error=str(exc), signal_session_id=signal_session_id
+        )
         if db is not None:
             await db.close()
         return 1
@@ -269,6 +305,19 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
             parts.append(f"{key}={val_str}")
         progress("  ".join(parts))
 
+    # Create a Session for signal binding, then bind persistence before running.
+    # This lets Studio poll session_signals live via GET /api/sessions/{run_id}/signals.
+    _session = None
+    if signal_session_id is not None:
+        try:
+            from lionagi.session.session import Session as _Session
+
+            _session = _Session()
+            _session.observer.bind_db_persistence(signal_session_id, db=db)
+        except Exception as exc:  # noqa: BLE001
+            warn(f"could not bind signal persistence for engine run: {exc}")
+            _session = None
+
     # Instantiate and run the engine.
     progress(f"engine[{kind}] starting  spec={spec!r}")
     result = None
@@ -278,11 +327,18 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
         # CodingEngine has its own .run() signature (positional spec + keyword
         # test_cmd/workspace/export_dir); other engines use Engine.run() which
         # dispatches to _run(run, <main_arg>, **run_kwargs).
-        result = await engine.run(spec, on_event=on_event, **run_kwargs)
+        result = await engine.run(spec, on_event=on_event, session=_session, **run_kwargs)
     except Exception as exc:
         log_error(f"engine[{kind}] failed: {exc}")
         ended_at = time.time()
-        await _maybe_update_db(db, run_id, "failed", ended_at=ended_at, error=str(exc))
+        await _maybe_update_db(
+            db,
+            run_id,
+            "failed",
+            ended_at=ended_at,
+            error=str(exc),
+            signal_session_id=signal_session_id,
+        )
         if db is not None:
             await db.close()
         return 1
@@ -300,6 +356,7 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
             "cancelled",
             ended_at=ended_at,
             error=f"{type(exc).__name__}: {exc}",
+            signal_session_id=signal_session_id,
         )
         if db is not None:
             await db.close()
@@ -345,6 +402,7 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
         ended_at=ended_at,
         export_dir=export_dir_for_db,
         error=emission_error,
+        signal_session_id=signal_session_id,
     )
     if db is not None:
         await db.close()
@@ -359,6 +417,7 @@ async def _maybe_update_db(
     ended_at: float | None = None,
     export_dir: str | None = None,
     error: str | None = None,
+    signal_session_id: str | None = None,
 ) -> None:
     """Update the engine run row if a DB handle is open; swallow errors."""
     if db is None:
@@ -373,3 +432,25 @@ async def _maybe_update_db(
         )
     except Exception as exc:  # noqa: BLE001
         warn(f"could not update engine run record in StateDB: {exc}")
+    # Mirror terminal status to the sessions row so Studio's SSE generator
+    # knows the stream is done (same done-detection logic as agent/flow runs).
+    if signal_session_id is not None and status in ("completed", "failed", "cancelled"):
+        _session_status = "completed" if status == "completed" else status
+        try:
+            from lionagi.state.reasons import RunReasons
+
+            _reason = (
+                RunReasons.COMPLETED_OK
+                if status == "completed"
+                else RunReasons.FAILED_EXCEPTION
+                if status == "failed"
+                else RunReasons.CANCELLED_SYSTEM
+            )
+            await db.update_status(
+                "session",
+                signal_session_id,
+                new_status=_session_status,
+                reason_code=_reason,
+            )
+        except Exception as exc:  # noqa: BLE001
+            warn(f"could not update engine session status in StateDB: {exc}")
