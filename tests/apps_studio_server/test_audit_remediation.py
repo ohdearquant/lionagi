@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from importlib import reload
 from pathlib import Path
 from unittest.mock import patch
@@ -1270,4 +1271,103 @@ class TestGithubRepoRealServiceValidation:
         detail = r.json().get("detail", "")
         assert "github_repo" in detail or "owner/name" in detail or "traversal" in detail, (
             f"Expected error mentioning github_repo/owner/name/traversal, got: {detail!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# github_poll schedules must not be treated as missed fires on engine restart
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestCheckMissedFiresGithubPollSkipped:
+    """_check_missed_fires must skip github_poll schedules entirely.
+
+    github_poll is event-driven — next_fire_at is not maintained by
+    _tick_github, so a stale value is not a missed fire.  Before the fix,
+    every engine restart produced a spurious 'skipped' schedule_run row for
+    each github_poll schedule with an out-of-date next_fire_at.
+    """
+
+    @staticmethod
+    def _github_poll_schedule(sched_id: str, stale_next_fire_at: float) -> dict:
+        return {
+            "id": sched_id,
+            "name": "poll-sched",
+            "trigger_type": "github_poll",
+            "github_repo": "owner/repo",
+            "poll_interval_sec": 300,
+            "action_kind": "agent",
+            "action_model": "gpt-4",
+            "action_prompt": "check events",
+            "overlap_policy": "allow",
+            "missed_fire_policy": "skip",
+            "next_fire_at": stale_next_fire_at,
+            "enabled": 1,
+        }
+
+    @staticmethod
+    def _interval_schedule_stale(sched_id: str, stale_next_fire_at: float) -> dict:
+        return {
+            "id": sched_id,
+            "name": "interval-sched",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+            "action_model": "gpt-4",
+            "action_prompt": "do stuff",
+            "overlap_policy": "allow",
+            "missed_fire_policy": "skip",
+            "next_fire_at": stale_next_fire_at,
+            "enabled": 1,
+        }
+
+    async def test_github_poll_stale_next_fire_at_produces_no_skipped_run(
+        self, monkeypatch, tmp_path
+    ):
+        """A github_poll schedule with a stale next_fire_at must not create a skipped run."""
+        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+        from lionagi.state.db import StateDB
+        from lionagi.studio.scheduler.engine import SchedulerEngine
+
+        stale = time.time() - 3600  # 1 hour in the past
+        sched_id = "gh-poll-stale"
+
+        async with StateDB() as db:
+            await db.create_schedule(self._github_poll_schedule(sched_id, stale))
+
+        engine = SchedulerEngine()
+        await engine._check_missed_fires()
+
+        async with StateDB() as db:
+            runs = await db.list_schedule_runs(sched_id)
+
+        assert runs == [], (
+            f"github_poll schedule must produce no schedule_run rows on missed-fire check, "
+            f"got: {runs}"
+        )
+
+    async def test_interval_stale_next_fire_at_still_produces_skipped_run(
+        self, monkeypatch, tmp_path
+    ):
+        """An interval schedule with a stale next_fire_at and policy=skip still creates a skipped run."""
+        monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+        from lionagi.state.db import StateDB
+        from lionagi.studio.scheduler.engine import SchedulerEngine
+
+        stale = time.time() - 3600
+        sched_id = "interval-stale"
+
+        async with StateDB() as db:
+            await db.create_schedule(self._interval_schedule_stale(sched_id, stale))
+
+        engine = SchedulerEngine()
+        await engine._check_missed_fires()
+
+        async with StateDB() as db:
+            runs = await db.list_schedule_runs(sched_id, status="skipped")
+
+        assert len(runs) == 1, (
+            f"interval schedule with missed_fire_policy=skip must create exactly one "
+            f"skipped run on missed-fire check, got: {runs}"
         )

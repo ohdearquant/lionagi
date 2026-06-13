@@ -211,6 +211,11 @@ class SchedulerEngine:
                 schedules = await db.list_schedules(enabled=True)
             now = time.time()
             for s in schedules:
+                # github_poll schedules are event-driven; next_fire_at is not
+                # maintained by _tick_github, so a stale value is not a missed
+                # fire — polling is driven by last_fired_at + poll_interval_sec.
+                if s.get("trigger_type") == "github_poll":
+                    continue
                 next_fire_at = s.get("next_fire_at")
                 if next_fire_at is None or next_fire_at >= now:
                     continue
