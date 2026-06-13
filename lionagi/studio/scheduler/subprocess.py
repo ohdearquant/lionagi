@@ -185,14 +185,23 @@ def _render_template(template: str, context: dict) -> str:
     return _TEMPLATE_RE.sub(_replace, template)
 
 
-def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | None]:
+def build_argv(
+    schedule: dict,
+    trigger_context: dict,
+    *,
+    invocation_id: str | None = None,
+) -> tuple[list[str], str | None]:
     """Build the subprocess argv for a scheduled action.
 
     Returns ``(argv, tmp_path)`` where ``tmp_path`` is a temporary file that
     must be deleted after the subprocess exits (only set for ``flow_yaml``).
+
+    Pass *invocation_id* to forward ``--invocation <id>`` to CLI subcommands
+    that accept it (``agent``, ``o flow``, ``o fanout``). This attributes the
+    spawned session to the scheduler's invocation row in StateDB.
     """
     kind = schedule["action_kind"]
-    # Normalize legacy alias and validate against the closed set (LIONAGI-AUDIT-003).
+    # Normalize legacy alias and validate against the closed set.
     kind = _ALIAS_ACTION_KINDS.get(kind, kind)
     if kind not in _VALID_ACTION_KINDS:
         raise ValueError(
@@ -267,18 +276,24 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
             flags += ["--agent", agent]
         if project:
             flags += ["--project", project]
+        if invocation_id:
+            flags += ["--invocation", invocation_id]
         argv += ["agent", *flags, "--", model, prompt]
 
     elif kind == "flow":
         flags = []
         if project:
             flags += ["--project", project]
+        if invocation_id:
+            flags += ["--invocation", invocation_id]
         argv += ["o", "flow", *flags, "--", model, prompt]
 
     elif kind == "fanout":
         flags = []
         if project:
             flags += ["--project", project]
+        if invocation_id:
+            flags += ["--invocation", invocation_id]
         argv += ["o", "fanout", *flags, "--", model, prompt]
 
     elif kind == "play":
@@ -306,6 +321,8 @@ def build_argv(schedule: dict, trigger_context: dict) -> tuple[list[str], str | 
         flags = ["-f", tmp_path]
         if project:
             flags += ["--project", project]
+        if invocation_id:
+            flags += ["--invocation", invocation_id]
         argv += ["o", "flow", *flags, "--", model]
 
     elif kind == "engine":

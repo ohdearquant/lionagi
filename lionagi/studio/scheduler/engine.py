@@ -405,7 +405,7 @@ class SchedulerEngine:
 
         # Build argv (and optional temp file for flow_yaml kind)
         try:
-            argv, _tmp_path = build_argv(schedule, trigger_context)
+            argv, _tmp_path = build_argv(schedule, trigger_context, invocation_id=inv_id)
         except Exception as exc:
             _log.exception("Invalid schedule action for %s (run %s)", schedule.get("name"), run_id)
             _end_time = time.time()

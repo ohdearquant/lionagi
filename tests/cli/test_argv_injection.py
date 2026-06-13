@@ -906,6 +906,120 @@ class TestBuildArgvTemplateInjection:
 
 
 # ---------------------------------------------------------------------------
+# build_argv — invocation_id passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestBuildArgvInvocationId:
+    """build_argv must forward --invocation <id> for kinds that support it."""
+
+    def test_agent_kind_includes_invocation_flag(self):
+        """--invocation <id> must appear before '--' sentinel for agent kind."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(_schedule(action_kind="agent"), {}, invocation_id="abc123")
+        assert tmp is None
+        assert "--invocation" in argv
+        assert argv[argv.index("--invocation") + 1] == "abc123"
+        sentinel_idx = argv.index("--")
+        inv_idx = argv.index("--invocation")
+        assert inv_idx < sentinel_idx, "--invocation must appear before '--' sentinel"
+
+    def test_flow_kind_includes_invocation_flag(self):
+        """--invocation <id> must appear before '--' sentinel for flow kind."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(_schedule(action_kind="flow"), {}, invocation_id="def456")
+        assert tmp is None
+        assert "--invocation" in argv
+        assert argv[argv.index("--invocation") + 1] == "def456"
+        sentinel_idx = argv.index("--")
+        inv_idx = argv.index("--invocation")
+        assert inv_idx < sentinel_idx
+
+    def test_fanout_kind_includes_invocation_flag(self):
+        """--invocation <id> must appear before '--' sentinel for fanout kind."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(_schedule(action_kind="fanout"), {}, invocation_id="ghi789")
+        assert tmp is None
+        assert "--invocation" in argv
+        assert argv[argv.index("--invocation") + 1] == "ghi789"
+        sentinel_idx = argv.index("--")
+        inv_idx = argv.index("--invocation")
+        assert inv_idx < sentinel_idx
+
+    def test_flow_yaml_kind_includes_invocation_flag(self):
+        """--invocation <id> must appear before '--' sentinel for flow_yaml kind."""
+        import os
+
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        sched = {
+            "id": "sy",
+            "action_kind": "flow_yaml",
+            "action_model": "sonnet",
+            "action_prompt": "hello",
+            "action_project": None,
+            "action_extra_args": [],
+            "action_flow_yaml": "prompt: test\n",
+        }
+        argv, tmp_path = build_argv(sched, {}, invocation_id="jkl000")
+        try:
+            assert "--invocation" in argv
+            assert argv[argv.index("--invocation") + 1] == "jkl000"
+            sentinel_idx = argv.index("--")
+            inv_idx = argv.index("--invocation")
+            assert inv_idx < sentinel_idx
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def test_play_kind_omits_invocation_flag(self):
+        """play kind does not support --invocation — must not appear in argv."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        sched = _schedule(action_kind="play", action_playbook="my-playbook")
+        argv, tmp = build_argv(sched, {}, invocation_id="xyz999")
+        assert tmp is None
+        assert "--invocation" not in argv
+
+    def test_engine_kind_omits_invocation_flag(self):
+        """engine kind does not support --invocation — must not appear in argv."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        sched = {
+            "id": "se",
+            "action_kind": "engine",
+            "action_model": "claude",
+            "action_prompt": "analyse this",
+            "action_agent": "research",
+            "action_project": None,
+            "action_extra_args": [],
+            "action_engine_options": {},
+        }
+        argv, tmp = build_argv(sched, {}, invocation_id="xyz999")
+        assert tmp is None
+        assert "--invocation" not in argv
+
+    def test_none_invocation_id_omits_flag(self):
+        """Passing invocation_id=None must not include --invocation in argv."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(_schedule(action_kind="agent"), {}, invocation_id=None)
+        assert tmp is None
+        assert "--invocation" not in argv
+
+    def test_omitted_invocation_id_omits_flag(self):
+        """Omitting invocation_id must not include --invocation in argv."""
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        argv, tmp = build_argv(_schedule(action_kind="agent"), {})
+        assert tmp is None
+        assert "--invocation" not in argv
+
+
+# ---------------------------------------------------------------------------
 # CWE-918 github_repo path manipulation — validator unit tests (closes #1413)
 # ---------------------------------------------------------------------------
 
