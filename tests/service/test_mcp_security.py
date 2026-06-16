@@ -1,10 +1,4 @@
-"""Tests for MCP security configuration.
-
-Fail-closed transport security: both command and URL transports require
-explicit opt-in via allow_commands=True / allow_urls=True before the
-transport object is constructed. These tests verify the boundary is
-enforced before side effects (process spawn, outbound TCP) occur.
-"""
+"""Tests for MCP security: fail-closed transport security requiring explicit opt-in before transport construction."""
 
 import pytest
 
@@ -18,8 +12,6 @@ from lionagi.service.connections.mcp_wrapper import (
 
 
 class TestMCPSecurityConfig:
-    """Test MCPSecurityConfig dataclass."""
-
     def test_default_config(self):
         """Default config denies all transports and filters sensitive env."""
         config = MCPSecurityConfig()
@@ -45,8 +37,6 @@ class TestMCPSecurityConfig:
 
 
 class TestFilterEnv:
-    """Test environment variable filtering."""
-
     def test_filters_sensitive_keys(self):
         """Known sensitive patterns are filtered."""
         config = MCPSecurityConfig()
@@ -99,11 +89,7 @@ class TestFilterEnv:
 
 
 class TestValidateCommand:
-    """Test command validation — fail-closed transport security.
-
-    A loaded .mcp.json config previously caused command execution before any
-    policy was checked (fail-open). Commands are now denied by default.
-    """
+    """Test command validation: .mcp.json configs previously caused execution before policy checks; commands now denied by default."""
 
     # --- Fail-closed (default deny) ---
 
@@ -170,11 +156,7 @@ class TestValidateCommand:
 
 
 class TestValidateUrl:
-    """Test URL transport validation — fail-closed security.
-
-    URL configs were previously passed directly to FastMCPClient without
-    any validation. URLs are now denied by default.
-    """
+    """Test URL transport validation: configs previously passed to FastMCPClient without validation; URLs now denied by default."""
 
     def test_default_denies_all_urls(self):
         """Default config (allow_urls=False) blocks every URL — fail closed."""
@@ -254,13 +236,7 @@ class TestMCPConnectionPoolFailClosed:
 
 
 class TestLoadMcpConfigTrustedLoad:
-    """load_mcp_config must restore normal .mcp.json usage (Finding 1).
-
-    The fail-closed transport default is correct for untrusted paths, but an
-    explicit load_mcp_config() call is a trust action — it must default to an
-    allow policy so a normal config registers its tools instead of silently
-    registering zero, and it must surface a security denial loudly.
-    """
+    """load_mcp_config is a trust action: must default to allow policy and surface denials loudly."""
 
     async def test_default_load_sets_allow_policy_and_registers(self, tmp_path, monkeypatch):
         import json
@@ -307,13 +283,7 @@ class TestLoadMcpConfigTrustedLoad:
             await mgr.load_mcp_config(str(cfg), mcp_security=MCPSecurityConfig())
 
     async def test_load_does_not_mutate_global_security_scope(self, tmp_path, monkeypatch):
-        """The permissive policy is threaded as an arg, not set on the global (Finding 3/1).
-
-        Mutating the process-global default — even with save/restore around the
-        awaiting registration loop — broadens trust to any client a CONCURRENT
-        load creates while ours is in flight, and leaves a race window. The fix
-        passes the policy down the call chain, so the global is never touched.
-        """
+        """The permissive policy is threaded as an arg, not set on the global; concurrent loads must not share trust scope."""
         import json
 
         from lionagi.protocols.action.manager import ActionManager
@@ -341,13 +311,7 @@ class TestLoadMcpConfigTrustedLoad:
             MCPConnectionPool._security = None
 
     async def test_concurrent_loads_do_not_cross_contaminate(self, monkeypatch):
-        """Two concurrent loads with different policies must not see each other's.
-
-        Regression (Finding 1): bracketing the awaiting registration loop by
-        mutating the shared ``_security`` class var let a restrictive load
-        observe a permissive load's policy (and vice versa) when they
-        interleaved. Threading the policy makes each load see only its own.
-        """
+        """Two concurrent loads with different policies must not observe each other's policy when interleaved."""
         import asyncio
 
         from lionagi.protocols.action.manager import ActionManager
@@ -414,9 +378,7 @@ class TestLoadMcpConfigTrustedLoad:
             MCPConnectionPool._clients.clear()
 
     async def test_load_mcp_tools_helper_trusted_and_loud(self, tmp_path, monkeypatch):
-        """Standalone load_mcp_tools mirrors load_mcp_config semantics (Finding 2):
-        trusted-allow threaded into the load, global untouched, denial raised loudly.
-        """
+        """load_mcp_tools mirrors load_mcp_config: trusted-allow threaded, global untouched, denial raised loudly."""
         import json
 
         from lionagi.protocols.action.manager import ActionManager, load_mcp_tools
@@ -458,14 +420,7 @@ class TestLoadMcpConfigTrustedLoad:
 
 
 class TestPerServerPolicyPersistence:
-    """Codex #1279: the authorized policy must reach the stored tool-call path,
-    not only the discovery client.
-
-    A trusted load records the per-server policy; every later client creation
-    for that server — the lazy first invocation of a tool_names-registered tool,
-    and reconnects after the cached client is cleaned up or goes stale —
-    re-applies it instead of failing closed.
-    """
+    """The authorized policy must reach the stored tool-call path, not only the discovery client; lazy and reconnect invocations re-apply it."""
 
     def _reset(self):
         MCPConnectionPool._security = None
@@ -561,11 +516,7 @@ class TestPerServerPolicyPersistence:
             self._reset()
 
     async def test_shared_command_different_args_do_not_share_policy(self, monkeypatch):
-        """Codex follow-up: the inline policy key must fingerprint the WHOLE
-        transport, not just the command/url. A trusted
-        ``{command: python, args: [safe.py]}`` must NOT authorize a different
-        ``{command: python, args: [-c, ...]}`` that merely shares the executable.
-        """
+        """Policy key must fingerprint the whole transport: a trusted config must NOT authorize a different args set sharing the same executable."""
         self._reset()
         seen = []
 
