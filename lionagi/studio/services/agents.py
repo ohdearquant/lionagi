@@ -90,7 +90,7 @@ def get_agent(name: str) -> dict[str, Any] | None:
 
     # Bool fields: always emit the CLI default so Studio's API response matches
     # what the CLI resolves for absent keys (lionagi/cli/_agents.py:180-192,
-    # lionagi/agent/config.py:52-53).
+    # AgentSpec field defaults in lionagi/agent/spec.py).
     result["yolo"] = bool(fm.get("yolo", False))
     result["fast_mode"] = bool(fm.get("fast_mode", False))
     result["lion_system"] = bool(fm.get("lion_system", True))

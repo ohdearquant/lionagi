@@ -98,4 +98,4 @@ skill) — flag the obvious, leave depth to the perf specialist.
 | `lionagi/operations/types.py` | Middle protocol definition |
 | `lionagi/operations/` | chat, parse, operate, ReAct, select, act, communicate, run |
 | `lionagi/ln/` | Utilities: alcall, bcall, retry, fuzzy_json, sentinels |
-| `lionagi/agent/` | AgentConfig, create_agent, PermissionPolicy, hooks |
+| `lionagi/agent/` | AgentSpec, create_agent, PermissionPolicy, hooks |

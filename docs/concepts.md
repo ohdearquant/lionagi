@@ -158,34 +158,34 @@ li agent -r b_abc456 "deepen section 3"             # specific branch
 
 ## Agent Infrastructure
 
-`AgentConfig` + `create_agent()` — preset configurations for common agent patterns that wire a
+`AgentSpec` + `create_agent()` — preset configurations for common agent patterns that wire a
 fully configured `Branch` without boilerplate.
 
 ```python
-from lionagi.agent import AgentConfig, create_agent
+from lionagi.agent import AgentSpec, create_agent
 
 # Preset: coding agent with file tools and a strict system prompt
-config = AgentConfig.coding(model="openai/gpt-4.1", cwd="/Users/me/project")
+spec = AgentSpec.coding(model="openai/gpt-4.1", cwd="/Users/me/project")
 
 # Add guardrail hooks
 from lionagi.agent.hooks import guard_destructive, log_tool_use
-config.pre("bash", guard_destructive)
-config.post("*", log_tool_use)
+spec.pre("bash", guard_destructive)
+spec.post("*", log_tool_use)
 
 # Create — returns a ready-to-use Branch
-branch = await create_agent(config)
+branch = await create_agent(spec)
 response = await branch.chat("Fix the import cycle in utils.py")
 ```
 
-**Why it exists**: `Branch` is a blank slate. `AgentConfig` captures what tools, permissions, and
-system prompt belong together so that the same agent definition can be reused, tested, and
+**Why it exists**: `Branch` is a blank slate. `AgentSpec` captures what role, tools, permissions,
+and system prompt belong together so that the same agent definition can be reused, tested, and
 serialized to YAML without manually wiring hooks each time.
 
-**Permission system**: rules on `AgentConfig.permissions` express what each tool is allowed to
+**Permission system**: rules on `AgentSpec.permissions` express what each tool is allowed to
 do. `mode="rules"` checks allow/deny/escalate lists per tool call before execution. Convenience
 presets: `PermissionPolicy.read_only()`, `PermissionPolicy.safe()`, `PermissionPolicy.deny_all()`.
 
-**Hook system**: pre/post/error hooks attach at the tool phase level. `config.pre("bash", fn)`
+**Hook system**: pre/post/error hooks attach at the tool phase level. `spec.pre("bash", fn)`
 runs `fn(tool_name, action, args)` before the bash tool executes; return a modified `args` dict
 to rewrite the call or raise `PermissionError` to block it. Post-hooks receive the result and
 can mutate it. Built-in hooks live in `lionagi.agent.hooks`.
@@ -211,7 +211,7 @@ runs. For one-off Python use, wiring a `Branch` directly is fine.
 **Don't use** if you're running `li agent` from the CLI — profiles (`~/.lionagi/agents/`) serve
 that role.
 
-→ Full reference: [`AgentConfig` and `create_agent()`](api/agent-config.md)
+→ Full reference: [`AgentSpec` and `create_agent()`](api/agent-config.md)
 
 ---
 
@@ -226,7 +226,7 @@ from lionagi.tools.sandbox import create_sandbox, sandbox_diff, sandbox_commit, 
 session = await create_sandbox(repo_root="/Users/me/project")
 
 # Hand the worktree path to an agent
-branch = await create_agent(AgentConfig.coding(cwd=session.worktree_path))
+branch = await create_agent(AgentSpec.coding(cwd=session.worktree_path))
 await branch.chat("Refactor the auth module")
 
 # Inspect before committing
@@ -260,7 +260,7 @@ create_sandbox() → [agent edits files] → sandbox_diff()
 `session.is_active` is `True` until `sandbox_merge()` or `sandbox_discard()` completes.
 
 **Use when**: an agent might make destructive or speculative changes you need to review before
-merging. Pair with `AgentConfig.coding(cwd=session.worktree_path)` to confine the agent.
+merging. Pair with `AgentSpec.coding(cwd=session.worktree_path)` to confine the agent.
 **Don't use** for read-only analysis — worktrees have overhead; just point the agent at the repo.
 
 → Full reference: [`SandboxSession`](api/sandbox.md)

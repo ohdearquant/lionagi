@@ -50,7 +50,6 @@ import yaml
 
 from lionagi.libs.nested import deep_merge as _deep_merge_impl
 
-from .config import AgentConfig
 from .spec import AgentSpec
 
 logger = logging.getLogger(__name__)
@@ -101,12 +100,12 @@ def load_settings(
 
 
 def apply_hooks_from_settings(
-    config: AgentSpec | AgentConfig,
+    config: AgentSpec,
     settings: dict[str, Any] | None = None,
     *,
     trusted_hook_modules: set[str] | frozenset[str] | None = None,
-) -> AgentSpec | AgentConfig:
-    """Apply hook configuration from settings dict to an AgentSpec (or legacy AgentConfig).
+) -> AgentSpec:
+    """Apply hook configuration from settings dict to an AgentSpec.
 
     Resolves hook specs (shell commands, Python import paths) into callables
     and registers them on the config.

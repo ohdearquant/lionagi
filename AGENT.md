@@ -92,12 +92,12 @@ Use the `lionagi/agent/` module to build sandboxed, permission-aware coding agen
 
 ```python
 import asyncio
-from lionagi.agent.config import AgentConfig
+from lionagi.agent.spec import AgentSpec
 from lionagi.agent.factory import create_agent
 
 async def main():
-    config = AgentConfig.coding()          # CodingToolkit + guard hooks + workspace path policy
-    agent = await create_agent(config)     # returns a wired Branch
+    spec = AgentSpec.coding()              # CodingToolkit + guard hooks + workspace path policy
+    agent = await create_agent(spec)       # returns a wired Branch
     reply = await agent.communicate("Refactor auth.py to use async/await throughout.")
     print(reply)
 
@@ -108,12 +108,12 @@ asyncio.run(main())
 
 ```python
 from lionagi.agent.hooks import guard_paths, log_tool_use
-from lionagi.agent.config import AgentConfig
+from lionagi.agent.spec import AgentSpec
 
-config = AgentConfig.coding()
-config.pre("reader", guard_paths(allowed_paths=["/tmp/sandbox", "./src"]))
-config.post("*", log_tool_use)
-agent = await create_agent(config)
+spec = AgentSpec.coding()
+spec.pre("reader", guard_paths(allowed_paths=["/tmp/sandbox", "./src"]))
+spec.post("*", log_tool_use)
+agent = await create_agent(spec)
 ```
 
 **Use Sandbox for isolated edits**
@@ -123,8 +123,8 @@ from lionagi.tools.sandbox import create_sandbox, sandbox_diff, sandbox_commit, 
 
 session = await create_sandbox(repo_root="/path/to/repo", base_branch="main")
 # agent edits happen inside the worktree at session.worktree_path
-config = AgentConfig.coding(cwd=session.worktree_path)
-agent = await create_agent(config)
+spec = AgentSpec.coding(cwd=session.worktree_path)
+agent = await create_agent(spec)
 await agent.communicate("Add type hints to all public functions in auth.py.")
 print(await sandbox_diff(session))         # inspect changes before committing
 await sandbox_commit(session, "feat: add type hints to auth module")
@@ -150,8 +150,8 @@ policy = PermissionPolicy(
     escalate={"bash": ["*"]},
 )
 
-config = AgentConfig.coding()
-config.permissions = {"mode": "rules", "allow": {"reader": ["*"]}, "deny": {"bash": ["rm *"]}}
+spec = AgentSpec.coding()
+spec.permissions = {"mode": "rules", "allow": {"reader": ["*"]}, "deny": {"bash": ["rm *"]}}
 ```
 
 **Settings** — place `.lionagi/settings.yaml` in the project root to override defaults. Global settings live at `~/.lionagi/settings.yaml`; project settings win on conflict.

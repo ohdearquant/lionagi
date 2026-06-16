@@ -193,7 +193,7 @@ await sandbox_discard(session)
 ## Full lifecycle example
 
 ```python
-from lionagi.agent import AgentConfig, create_agent
+from lionagi.agent import AgentSpec, create_agent
 from lionagi.tools.sandbox import (
     create_sandbox,
     sandbox_diff,
@@ -206,8 +206,8 @@ from lionagi.tools.sandbox import (
 session = await create_sandbox("/Users/me/project")
 
 # 2. Run an agent confined to the worktree
-config = AgentConfig.coding(cwd=session.worktree_path)
-branch = await create_agent(config)
+spec = AgentSpec.coding(cwd=session.worktree_path)
+branch = await create_agent(spec)
 await branch.chat("Refactor the auth module into separate files")
 
 # 3. Review changes
@@ -225,4 +225,4 @@ result = await sandbox_merge(session)
 
 ---
 
-Next: [`AgentConfig` and `create_agent()`](agent-config.md)
+Next: [`AgentSpec` and `create_agent()`](agent-config.md)

@@ -6,7 +6,7 @@
 Parser-level tests: flag parsing, choices rejection, file-not-found, invalid
 spec → rc!=0 + error message.
 
-Behaviour tests with runner patched: assert AgentConfig.coding() is used when
+Behaviour tests with runner patched: assert _make_coding_preset() is used when
 --preset coding is given; assert WorkForm validation gate fires before any LLM
 call.
 

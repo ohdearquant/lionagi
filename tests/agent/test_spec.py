@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import pytest
 
-from lionagi.agent.config import AgentConfig
 from lionagi.agent.factory import create_agent
 from lionagi.agent.permissions import PermissionPolicy
 from lionagi.agent.spec import AgentSpec, _resolve_permissions
@@ -196,88 +195,6 @@ class TestAgentSpecEmission:
 
 
 # ---------------------------------------------------------------------------
-# AgentSpec.from_legacy (AgentConfig bridge)
-# ---------------------------------------------------------------------------
-
-
-class TestAgentSpecFromLegacy:
-    def test_maps_role_and_model(self):
-        config = AgentConfig(
-            model="anthropic/claude-sonnet-4-6",
-            role="analyst",
-            effort="high",
-        )
-        spec = AgentSpec.from_legacy(config)
-        assert spec.profile.role.name == "analyst"
-        assert spec.model == "anthropic/claude-sonnet-4-6"
-        assert spec.effort == "high"
-
-    def test_preserves_system_prompt(self):
-        config = AgentConfig(role="analyst", system_prompt="Custom.")
-        spec = AgentSpec.from_legacy(config)
-        assert spec.extra_prompt == "Custom."
-        assert "Custom." in spec.build_system_message()
-
-    def test_empty_system_prompt_gives_none(self):
-        config = AgentConfig(role="analyst", system_prompt="")
-        spec = AgentSpec.from_legacy(config)
-        assert spec.extra_prompt is None
-
-    def test_tools(self):
-        config = AgentConfig(role="analyst", tools=["coding"])
-        spec = AgentSpec.from_legacy(config)
-        assert spec.tools == ("coding",)
-
-    def test_permissions_dict(self):
-        config = AgentConfig(role="analyst", permissions={"mode": "deny_all"})
-        spec = AgentSpec.from_legacy(config)
-        assert isinstance(spec.permissions, PermissionPolicy)
-        assert spec.permissions.mode == "deny_all"
-
-    def test_no_role_defaults_to_implementer(self):
-        config = AgentConfig()
-        spec = AgentSpec.from_legacy(config)
-        assert spec.profile.role.name == "implementer"
-
-    def test_lion_system_preserved(self):
-        config = AgentConfig(role="analyst", lion_system=False)
-        spec = AgentSpec.from_legacy(config)
-        assert spec.lion_system is False
-
-    def test_preserves_hook_handlers(self):
-        config = AgentConfig(role="analyst")
-
-        async def my_guard(tool_name, action, args):
-            pass
-
-        config.pre("bash", my_guard)
-        spec = AgentSpec.from_legacy(config)
-        assert "pre:bash" in spec.hook_handlers
-        assert spec.hook_handlers["pre:bash"] == [my_guard]
-
-    def test_preserves_cwd(self):
-        config = AgentConfig(role="analyst", cwd="/tmp/workspace")
-        spec = AgentSpec.from_legacy(config)
-        assert spec.cwd == "/tmp/workspace"
-
-    def test_preserves_yolo(self):
-        config = AgentConfig(role="analyst", yolo=True)
-        spec = AgentSpec.from_legacy(config)
-        assert spec.yolo is True
-
-    def test_hook_handlers_is_a_copy(self):
-        config = AgentConfig(role="analyst")
-
-        async def hook(tool_name, action, args):
-            pass
-
-        config.pre("bash", hook)
-        spec = AgentSpec.from_legacy(config)
-        spec.hook_handlers["pre:bash"].clear()
-        assert len(config.hook_handlers["pre:bash"]) == 1
-
-
-# ---------------------------------------------------------------------------
 # Hook methods
 # ---------------------------------------------------------------------------
 
@@ -354,11 +271,6 @@ class TestCreateAgentWithSpec:
         reader_tool = branch.acts.registry["reader_tool"]
         with pytest.raises(PermissionError):
             await reader_tool.preprocessor({"action": "read", "path": "/tmp/x.py"})
-
-    async def test_agentconfig_still_works(self):
-        config = AgentConfig()
-        branch = await create_agent(config, load_settings=False)
-        assert isinstance(branch, Branch)
 
     async def test_emission_grant(self):
         spec = AgentSpec.compose("critic", grant_emissions=True)

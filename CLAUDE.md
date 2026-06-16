@@ -64,8 +64,8 @@ Modules: chat, parse, operate, ReAct, select, interpret, communicate, run, act. 
 
 ### Agent Infrastructure (`lionagi/agent/`)
 
-- **`config.py`** — `AgentConfig` dataclass with preset: `.coding()` (CodingToolkit + guard hooks + workspace path policy).
-- **`factory.py`** — `create_agent()` async factory: wires a `Branch`, registers tools from config, attaches hooks, returns ready-to-use branch.
+- **`spec.py`** — `AgentSpec` dataclass (Profile + runtime concerns) with constructors `.compose(role, ...)` and preset `.coding()` (CodingToolkit + guard hooks + workspace path policy). Also `HooksMixin` and `_wire_secure_guards`.
+- **`factory.py`** — `create_agent(config: AgentSpec, ...)` async factory: wires a `Branch`, registers tools from the spec, attaches hooks, returns ready-to-use branch.
 - **`permissions.py`** — `PermissionPolicy` with `allow_all` / `deny_all` / `rules` modes. Applied per tool call before execution.
 - **`hooks.py`** — Built-in hooks: `guard_destructive` (blocks rm/drop/truncate), `guard_paths(allowed_paths=...)` (restricts file access to allowed roots), `log_tool_use` (structured tool-call logging).
 - **`settings.py`** — Loads `.lionagi/settings.yaml`; merges global (`~/.lionagi/settings.yaml`) with project-level (`.lionagi/settings.yaml`), project wins on conflict.

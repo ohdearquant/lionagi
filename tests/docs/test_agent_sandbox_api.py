@@ -4,7 +4,7 @@
 """Tests verifying documented agent and sandbox API matches source code.
 
 Guards against docs-drift for:
-- AgentConfig presets and fields
+- AgentSpec presets and fields
 - PermissionPolicy modes and constructor
 - Hook function signatures (guard_destructive, guard_paths, log_tool_use)
 - SandboxSession dataclass and module-level async functions
@@ -16,52 +16,52 @@ import inspect
 from dataclasses import fields
 
 # =============================================================================
-# AgentConfig
+# AgentSpec
 # =============================================================================
 
 
-class TestAgentConfigPresets:
-    """Verify AgentConfig has exactly the documented presets."""
+class TestAgentSpecPresets:
+    """Verify AgentSpec has exactly the documented presets."""
 
     def test_coding_preset_exists(self):
-        """AgentConfig.coding() is a classmethod that returns AgentConfig."""
-        from lionagi.agent.config import AgentConfig
+        """AgentSpec.coding() is a classmethod that returns AgentSpec."""
+        from lionagi.agent.spec import AgentSpec
 
-        assert hasattr(AgentConfig, "coding")
-        config = AgentConfig.coding()
-        assert isinstance(config, AgentConfig)
+        assert hasattr(AgentSpec, "coding")
+        spec = AgentSpec.coding()
+        assert isinstance(spec, AgentSpec)
 
     def test_research_preset_does_not_exist(self):
-        """AgentConfig.research() must NOT exist (removed; docs updated)."""
-        from lionagi.agent.config import AgentConfig
+        """AgentSpec.research() must NOT exist (removed; docs updated)."""
+        from lionagi.agent.spec import AgentSpec
 
-        assert not hasattr(AgentConfig, "research")
+        assert not hasattr(AgentSpec, "research")
 
     def test_coding_tools_value(self):
-        """AgentConfig.coding() sets tools to ['coding'] (CodingToolkit)."""
-        from lionagi.agent.config import AgentConfig
+        """AgentSpec.coding() sets tools to ('coding',) (CodingToolkit)."""
+        from lionagi.agent.spec import AgentSpec
 
-        config = AgentConfig.coding()
-        assert config.tools == ["coding"]
+        spec = AgentSpec.coding()
+        assert spec.tools == ("coding",)
 
     def test_coding_secure_default_hooks(self):
         """Secure mode (default) wires guard_destructive and guard_paths."""
-        from lionagi.agent.config import AgentConfig
+        from lionagi.agent.spec import AgentSpec
 
-        config = AgentConfig.coding()
+        spec = AgentSpec.coding()
         # pre:bash should have guard_destructive
-        assert "pre:bash" in config.hook_handlers
-        assert len(config.hook_handlers["pre:bash"]) >= 1
+        assert "pre:bash" in spec.hook_handlers
+        assert len(spec.hook_handlers["pre:bash"]) >= 1
         # pre:reader and pre:editor should have guard_paths
-        assert "pre:reader" in config.hook_handlers
-        assert "pre:editor" in config.hook_handlers
+        assert "pre:reader" in spec.hook_handlers
+        assert "pre:editor" in spec.hook_handlers
 
     def test_coding_insecure_no_hooks(self):
-        """AgentConfig.coding(secure=False) does not add guard hooks."""
-        from lionagi.agent.config import AgentConfig
+        """AgentSpec.coding(secure=False) does not add guard hooks."""
+        from lionagi.agent.spec import AgentSpec
 
-        config = AgentConfig.coding(secure=False)
-        assert len(config.hook_handlers) == 0
+        spec = AgentSpec.coding(secure=False)
+        assert len(spec.hook_handlers) == 0
 
 
 # =============================================================================
@@ -285,7 +285,7 @@ class TestSandboxSessionAPI:
 
 
 class TestCreateAgentFactory:
-    """Verify create_agent exists and accepts AgentConfig."""
+    """Verify create_agent exists and accepts an AgentSpec."""
 
     def test_create_agent_is_async(self):
         from lionagi.agent.factory import create_agent

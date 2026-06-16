@@ -109,7 +109,7 @@ CWE reference: CWE-400 (uncontrolled resource consumption), CWE-770 (allocation 
 |---|---|
 | `lionagi/agent/permissions.py` | PermissionPolicy — allowlist / denylist / confirm modes |
 | `lionagi/agent/hooks.py` | guard_destructive, guard_paths, log_tool_use built-in hooks |
-| `lionagi/agent/config.py` | AgentConfig presets (coding/research) with path policies |
+| `lionagi/agent/spec.py` | AgentSpec presets (coding) with path policies |
 | `lionagi/tools/sandbox.py` | SandboxSession — git worktree isolation for speculative edits |
 | `lionagi/service/connections/providers/` | Provider wrappers (OpenAI, Anthropic, Gemini, Ollama, etc.) |
 | `lionagi/protocols/action/` | Tool schema generation via function_to_schema(); MCP integration |

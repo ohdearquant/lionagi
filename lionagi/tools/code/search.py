@@ -172,7 +172,7 @@ class SearchTool(LionTool):
 
     If *workspace_root* is None (the default), no containment is applied —
     callers should pair this with a :class:`lionagi.agent.permissions.PermissionPolicy`
-    allowlist, or set the root via ``create_agent()`` / ``AgentConfig``.
+    allowlist, or set the root via ``create_agent()`` / ``AgentSpec``.
     """
 
     is_lion_system_tool = True

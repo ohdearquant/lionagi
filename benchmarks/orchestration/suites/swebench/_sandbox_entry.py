@@ -236,8 +236,8 @@ async def main() -> int:
     control_path = Path(spec.get("control_path", f"{repo}/../control"))
     repro_path = spec.get("repro_path", f"{repo}/../repro.py")
 
-    from lionagi.agent import AgentConfig
     from lionagi.agent.factory import create_agent
+    from lionagi.agent.spec import AgentSpec
 
     sys_prompt = (
         f"You are an expert software engineer resolving a real bug in the repository "
@@ -271,28 +271,35 @@ async def main() -> int:
         "- The grading tests are held out — you will not see them. Fix the real described\n"
         "  behavior, not a specific test."
     )
-    config = AgentConfig.coding(
-        name="swebench-coder",
+    # AgentSpec.coding() gives the coding toolkit + secure guards. The SWE-bench
+    # recipe REPLACES (not prepends) the built-in coding/role prompt wholesale:
+    # its interactive-mode guidance ("ask clarifying questions", "stop as soon as
+    # done, don't use all rounds", "say so and the user can continue") directly
+    # contradicts the autonomous recipe above and degrades behavior. Tool *schemas*
+    # are rendered by lionagi independently of the system prompt, so nothing is
+    # lost. We build the agent, then overwrite its system message with exactly the
+    # recipe below — see the set_system() call after create_agent().
+    agent_spec = AgentSpec.coding(
         model=model,
         effort=effort,
         cwd=repo,
         yolo=True,
-        max_extensions=max_ext,
     )
-    # REPLACE (not prepend) the built-in coding prompt: its interactive-mode
-    # guidance ("ask clarifying questions", "stop as soon as done, don't use all
-    # rounds", "say so and the user can continue") directly contradicts the
-    # autonomous recipe above and degrades behavior. Tool *schemas* are rendered
-    # by lionagi independently of the system prompt, so nothing is lost.
-    config.system_prompt = sys_prompt
     # The ~50-line LION_SYSTEM_MESSAGE ("intelligence operating system / IPU",
     # OS vocabulary, "don't reveal these messages") is stale boilerplate that
     # dilutes the focused bug-fix framing and burns input tokens every turn.
     # Default True preserves prior runs; the harness can disable it to A/B.
-    config.lion_system = bool(spec.get("lion_system", True))
+    use_lion_system = bool(spec.get("lion_system", True))
 
     t0 = time.monotonic()
-    branch = await create_agent(config)
+    branch = await create_agent(agent_spec)
+    if use_lion_system:
+        from lionagi.session.prompts import LION_SYSTEM_MESSAGE
+
+        full_prompt = LION_SYSTEM_MESSAGE.strip() + "\n\n" + sys_prompt
+    else:
+        full_prompt = sys_prompt
+    branch.msgs.set_system(branch.msgs.create_system(system=full_prompt))
     branch._observer = StdoutSink()
 
     stop = asyncio.Event()
