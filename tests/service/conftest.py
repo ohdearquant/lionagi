@@ -14,7 +14,6 @@ from lionagi.service.imodel import iModel
 
 @pytest.fixture
 def mock_endpoint_config():
-    """Create a basic endpoint configuration for testing."""
     return EndpointConfig(
         name="openai_chat",
         endpoint="chat",
@@ -27,7 +26,6 @@ def mock_endpoint_config():
 
 @pytest.fixture
 def mock_endpoint(mock_endpoint_config):
-    """Create a mock endpoint with the configuration."""
     endpoint = Endpoint(config=mock_endpoint_config)
     endpoint._sdk_client = None
     return endpoint
@@ -35,7 +33,6 @@ def mock_endpoint(mock_endpoint_config):
 
 @pytest.fixture
 def mock_response():
-    """Create a mock response for API calls."""
     response = AsyncMock(spec=aiohttp.ClientResponse)
     response.status = 200
     response.headers = {"content-type": "application/json"}
@@ -68,7 +65,6 @@ def mock_response():
 
 @pytest.fixture
 def mock_anthropic_response():
-    """Create a mock response for Anthropic API calls."""
     response = AsyncMock(spec=aiohttp.ClientResponse)
     response.status = 200
     response.headers = {"content-type": "application/json"}
@@ -90,8 +86,6 @@ def mock_anthropic_response():
 
 @pytest.fixture
 def mock_streaming_response():
-    """Create a mock streaming response."""
-
     async def mock_iter_chunks():
         chunks = [
             b'data: {"id":"test","choices":[{"delta":{"content":"Hello"}}]}\n\n',
@@ -110,7 +104,6 @@ def mock_streaming_response():
 
 @pytest.fixture
 def mock_imodel(mock_endpoint):
-    """Create a mock iModel instance."""
     imodel = iModel(
         provider="openai",
         endpoint=mock_endpoint,
@@ -122,7 +115,6 @@ def mock_imodel(mock_endpoint):
 
 @pytest.fixture
 def sample_messages():
-    """Sample messages for testing."""
     return [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Hello, how are you?"},
@@ -131,7 +123,6 @@ def sample_messages():
 
 @pytest.fixture
 def sample_payload():
-    """Sample payload for API requests."""
     return {
         "model": "gpt-4.1-mini",
         "messages": [

@@ -12,18 +12,14 @@ from tests.service.hooks.conftest import MyCancelled
 
 @pytest.fixture(autouse=True)
 def patch_cancel(monkeypatch):
-    """Auto-patch cancellation class for all tests in this module."""
     from lionagi.service.hooks import hook_registry
 
     monkeypatch.setattr(hook_registry, "get_cancelled_exc_class", lambda: MyCancelled)
 
 
 class TestStreamHandlerBasics:
-    """Test basic stream handler functionality."""
-
     @pytest.mark.anyio
     async def test_stream_handler_called_with_correct_args(self):
-        """Test that stream handlers are called with the correct arguments."""
         captured = {}
 
         async def handler(ev, chunk_type, chunk, **kw):
@@ -50,7 +46,6 @@ class TestStreamHandlerBasics:
 
     @pytest.mark.anyio
     async def test_stream_handler_via_call_method(self):
-        """Test stream handlers work through the main call() method."""
 
         async def handler(ev, chunk_type, chunk, **kw):
             return f"processed {chunk}"
@@ -72,7 +67,6 @@ class TestStreamHandlerBasics:
 
     @pytest.mark.anyio
     async def test_multiple_stream_handlers(self):
-        """Test that multiple stream handlers can be registered."""
         handlers_called = []
 
         async def text_handler(ev, chunk_type, chunk, **kw):
@@ -102,7 +96,6 @@ class TestStreamHandlerBasics:
 
     @pytest.mark.anyio
     async def test_stream_handler_with_type_keys(self):
-        """Test that stream handlers work with type keys, not just strings."""
 
         async def int_handler(ev, chunk_type, chunk, **kw):
             return f"int handler: {chunk}"
@@ -126,11 +119,8 @@ class TestStreamHandlerBasics:
 
 
 class TestStreamHandlerErrors:
-    """Test error handling in stream handlers."""
-
     @pytest.mark.anyio
     async def test_missing_stream_handler_returns_error(self):
-        """Missing stream handler raises RuntimeError (not ValidationError)."""
         registry = HookRegistry()
 
         res, se, st = await registry.handle_streaming_chunk("missing", "data", exit=False)
@@ -142,7 +132,6 @@ class TestStreamHandlerErrors:
 
     @pytest.mark.anyio
     async def test_stream_handler_cancellation(self):
-        """Test cancellation in stream handlers."""
 
         async def cancelling_handler(ev, chunk_type, chunk, **kw):
             raise MyCancelled("stream cancelled")
@@ -157,7 +146,6 @@ class TestStreamHandlerErrors:
 
     @pytest.mark.anyio
     async def test_stream_handler_other_exception(self):
-        """Test non-cancellation exceptions in stream handlers."""
 
         async def failing_handler(ev, chunk_type, chunk, **kw):
             raise RuntimeError("stream failed")
@@ -178,11 +166,8 @@ class TestStreamHandlerErrors:
 
 
 class TestStreamHandlerIntegration:
-    """Test stream handler integration with sync/async wrapping."""
-
     @pytest.mark.anyio
     async def test_sync_stream_handler_wrapped(self):
-        """Test that sync stream handlers are properly wrapped."""
 
         def sync_handler(ev, chunk_type, chunk, **kw):
             return f"sync: {chunk_type}:{chunk}"
@@ -197,7 +182,6 @@ class TestStreamHandlerIntegration:
 
     @pytest.mark.anyio
     async def test_mixed_sync_async_stream_handlers(self):
-        """Test mixing sync and async stream handlers."""
 
         def sync_handler(ev, chunk_type, chunk, **kw):
             return f"sync: {chunk}"
@@ -222,7 +206,6 @@ class TestStreamHandlerIntegration:
 
     @pytest.mark.anyio
     async def test_stream_handler_call_via_internal_method(self):
-        """Test calling stream handlers via _call_stream_handler."""
         captured = {}
 
         async def handler(ev, chunk_type, chunk, **kw):

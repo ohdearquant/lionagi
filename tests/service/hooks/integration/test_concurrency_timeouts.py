@@ -18,8 +18,6 @@ from tests.service.hooks.conftest import FakeEvent, MyCancelled
 
 
 class ConcurrentTestEvent(HookedEvent):
-    """Test event for concurrency testing."""
-
     def __init__(self, invoke_delay=0.0, invoke_result="test_result"):
         super().__init__()
         # Use object.__setattr__ to bypass frozen fields
@@ -29,7 +27,6 @@ class ConcurrentTestEvent(HookedEvent):
         object.__setattr__(self, "invoke_end_time", None)
 
     async def _core_invoke(self):
-        """Test implementation with configurable delay."""
         # Use object.__setattr__ to bypass frozen fields
         object.__setattr__(self, "invoke_start_time", anyio.current_time())
         if self.invoke_delay > 0:
@@ -38,7 +35,6 @@ class ConcurrentTestEvent(HookedEvent):
         return self.invoke_result
 
     async def _core_stream(self):
-        """Test streaming implementation."""
         yield "chunk1"
         if self.invoke_delay > 0:
             await anyio.sleep(self.invoke_delay)
@@ -46,12 +42,8 @@ class ConcurrentTestEvent(HookedEvent):
 
 
 class TestParallelInvocations:
-    """Test parallel hook invocations for isolation."""
-
     @pytest.mark.anyio
     async def test_parallel_hook_events_isolated(self, patch_cancellation):
-        """Test that parallel HookEvent invocations don't interfere."""
-
         # Create separate registries for isolation
         async def hook1(ev, **kw):
             await anyio.sleep(0.01)  # Small delay
@@ -111,8 +103,6 @@ class TestParallelInvocations:
 
     @pytest.mark.anyio
     async def test_parallel_hooked_events_isolated(self, patch_cancellation, patch_logger):
-        """Test that parallel HookedEvent invocations don't interfere."""
-
         async def pre_hook(ev, **kw):
             await anyio.sleep(0.01)
             return f"pre_{ev.id}"
@@ -156,7 +146,6 @@ class TestParallelInvocations:
 
     @pytest.mark.anyio
     async def test_parallel_registry_calls_independent(self, patch_cancellation):
-        """Test that parallel registry calls are independent."""
         call_count = 0
 
         async def counting_hook(ev, **kw):
@@ -191,11 +180,8 @@ class TestParallelInvocations:
 
 
 class TestTimeoutBehavior:
-    """Test timeout handling and cancellation."""
-
     @pytest.mark.anyio
     async def test_hook_timeout_cancels_properly(self, patch_cancellation):
-        """Test that hook timeouts properly cancel execution."""
         # Mock fail_after to raise cancellation after a delay
         original_time = anyio.current_time()
 
@@ -228,8 +214,6 @@ class TestTimeoutBehavior:
 
     @pytest.mark.anyio
     async def test_concurrent_timeouts_independent(self, patch_cancellation):
-        """Test that timeouts in one hook don't affect others."""
-
         async def fast_hook(ev, **kw):
             await anyio.sleep(0.01)
             return "fast_done"
@@ -274,8 +258,6 @@ class TestTimeoutBehavior:
 
 
 class TestNoDeadlocks:
-    """Test that the hook system doesn't create deadlocks."""
-
     @pytest.mark.anyio
     async def test_nested_hook_calls_no_deadlock(self, patch_cancellation):
         """Test that hooks calling other hooks don't deadlock."""
@@ -331,8 +313,6 @@ class TestNoDeadlocks:
 
     @pytest.mark.anyio
     async def test_high_concurrency_no_resource_exhaustion(self, patch_cancellation):
-        """Test high concurrency doesn't exhaust resources."""
-
         async def simple_hook(ev, **kw):
             return "simple"
 
@@ -374,11 +354,8 @@ class TestNoDeadlocks:
 
 
 class TestPerformanceSmoke:
-    """Smoke tests for performance characteristics."""
-
     @pytest.mark.anyio
     async def test_hook_invocation_overhead_minimal(self, patch_cancellation):
-        """Test that hook invocation overhead is minimal."""
         call_times = []
 
         async def timing_hook(ev, **kw):
@@ -412,8 +389,6 @@ class TestPerformanceSmoke:
 
     @pytest.mark.anyio
     async def test_metadata_creation_efficient(self, patch_cancellation):
-        """Test that metadata creation is efficient for many calls."""
-
         async def metadata_hook(ev, **kw):
             return "metadata_test"
 
@@ -446,8 +421,6 @@ class TestPerformanceSmoke:
 
     @pytest.mark.anyio
     async def test_error_handling_performance(self, patch_cancellation):
-        """Test that error handling doesn't significantly impact performance."""
-
         async def sometimes_failing_hook(ev, **kw):
             # Fail every other call
             if int(ev.id.split("_")[-1]) % 2 == 0:
