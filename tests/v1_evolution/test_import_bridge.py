@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for import bridge between V0 and V1 Observable.
-
-Validates that the central import location (types.py) correctly exports
-both V1 (preferred) and V0 (legacy) Observable classes with proper identity.
-"""
+"""Tests for import bridge between V0 and V1 Observable in types.py."""
 
 from abc import ABCMeta
 from typing import Protocol
@@ -14,11 +10,8 @@ import pytest
 
 
 class TestImportBridge:
-    """Test import bridge exports and identity verification."""
-
     def test_import_bridge_exports_and_identity(self):
-        """Verify import bridge exports correct classes under correct names."""
-        # Should not fail due to ImportError
+
         try:
             from lionagi.protocols.types import LegacyObservable, Observable
         except ImportError:
@@ -43,7 +36,6 @@ class TestImportBridge:
         )
 
     def test_bridge_utilities_exported(self):
-        """Verify bridge utilities are exported from types.py."""
         try:
             from lionagi.protocols.types import canonical_id, to_uuid
         except ImportError:
@@ -61,7 +53,6 @@ class TestImportBridge:
         assert to_uuid is uuid_source, "to_uuid should be imported from ids.py"
 
     def test_observable_proto_explicit_export(self):
-        """Verify ObservableProto is explicitly exported alongside Observable alias."""
         try:
             from lionagi.protocols.types import ObservableProto
         except ImportError:
@@ -73,7 +64,6 @@ class TestImportBridge:
         assert ObservableProto is Observable, "ObservableProto should be the same as Observable"
 
     def test_all_exports_in_module_all(self):
-        """Verify all new exports are listed in __all__."""
         from lionagi.protocols import types
 
         required_exports = [
@@ -92,8 +82,6 @@ class TestImportBridge:
             assert hasattr(types, export), f"'{export}' should be available in types module"
 
     def test_backward_compatibility_import_paths(self):
-        """Verify existing import paths still work."""
-        # These imports should continue to work for V0 compatibility
         try:
             from lionagi.protocols.types import Element, Event, Log, Pile
         except ImportError:
