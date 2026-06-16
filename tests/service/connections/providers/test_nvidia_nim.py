@@ -30,7 +30,6 @@ class TestNvidiaNimEndpoints:
     """Test NVIDIA NIM endpoint configurations."""
 
     def test_chat_endpoint_config(self):
-        """Test that chat endpoint config has correct defaults."""
         config = NVIDIA_NIM_CHAT_ENDPOINT_CONFIG
         assert config.provider == "nvidia_nim"
         assert config.base_url == "https://integrate.api.nvidia.com/v1"
@@ -41,7 +40,6 @@ class TestNvidiaNimEndpoints:
         assert config.kwargs["model"] == "meta/llama3-8b-instruct"
 
     def test_embed_endpoint_config(self):
-        """Test that embedding endpoint config has correct defaults."""
         config = NVIDIA_NIM_EMBED_ENDPOINT_CONFIG
         assert config.provider == "nvidia_nim"
         assert config.base_url == "https://integrate.api.nvidia.com/v1"
@@ -50,38 +48,32 @@ class TestNvidiaNimEndpoints:
         assert config.kwargs["model"] == "nvidia/nv-embed-v1"
 
     def test_chat_endpoint_initialization(self):
-        """Test NvidiaNimChatEndpoint initialization."""
         endpoint = NvidiaNimChatEndpoint()
         assert endpoint.config.provider == "nvidia_nim"
         assert endpoint.config.endpoint == "chat/completions"
 
     def test_embed_endpoint_initialization(self):
-        """Test NvidiaNimEmbedEndpoint initialization."""
         endpoint = NvidiaNimEmbedEndpoint()
         assert endpoint.config.provider == "nvidia_nim"
         assert endpoint.config.endpoint == "embeddings"
 
     def test_match_endpoint_chat(self):
-        """Test that match_endpoint returns correct chat endpoint."""
         endpoint = match_endpoint("nvidia_nim", "chat")
         assert isinstance(endpoint, NvidiaNimChatEndpoint)
         assert endpoint.config.provider == "nvidia_nim"
 
     def test_match_endpoint_embed(self):
-        """Test that match_endpoint returns correct embedding endpoint."""
         endpoint = match_endpoint("nvidia_nim", "embed")
         assert isinstance(endpoint, NvidiaNimEmbedEndpoint)
         assert endpoint.config.provider == "nvidia_nim"
 
     def test_custom_model_override(self):
-        """Test that custom model can be specified."""
         endpoint = NvidiaNimChatEndpoint()
         endpoint.config.kwargs["model"] = "meta/llama3-70b-instruct"
         assert endpoint.config.kwargs["model"] == "meta/llama3-70b-instruct"
 
     @pytest.mark.asyncio
     async def test_chat_endpoint_call(self):
-        """Test chat endpoint call with mocked response."""
         from unittest.mock import AsyncMock, patch
 
         endpoint = NvidiaNimChatEndpoint()

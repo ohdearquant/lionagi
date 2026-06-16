@@ -1,15 +1,9 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression test: AG2 GroupChat nlip_url SSRF bypass (issue #985 round 3).
+"""Regression tests for AG2 GroupChat nlip_url SSRF bypass (issue #985 round 3).
 
-AG2GroupChatEndpoint.stream() accepts caller-supplied agent_configs with an
-arbitrary 'nlip_url' value.  Before the fix that value was copied into
-AgentSpec and handed directly to NlipRemoteAgent(url=...), which opens its
-own HTTP connection and never passes through the Endpoint SSRF guards.
-
-These tests assert that a metadata/private nlip_url is rejected with
-PermissionError before NlipRemoteAgent is ever constructed.
+Asserts that a private nlip_url is rejected with PermissionError before NlipRemoteAgent is ever constructed.
 """
 
 from __future__ import annotations
@@ -79,8 +73,7 @@ class TestAssertNlipUrlSafe:
 
 
 class TestBuildGroupChatNlipUrlSSRF:
-    """build_group_chat() must reject private nlip_url before constructing
-    NlipRemoteAgent so the third-party agent never opens a connection."""
+    """build_group_chat() must reject private nlip_url before NlipRemoteAgent is constructed."""
 
     def _make_spec(self, nlip_url: str):
         from lionagi.providers.ag2.groupchat.models import AgentSpec, GroupChatSpec
@@ -98,11 +91,7 @@ class TestBuildGroupChatNlipUrlSSRF:
         )
 
     def test_metadata_ip_blocked_before_nlip_remote_agent(self):
-        """169.254.169.254 (AWS IMDS / link-local) must raise PermissionError.
-
-        Stubs autogen so the outer ConversableAgent import succeeds; the SSRF
-        guard fires in the per-agent loop before NlipRemoteAgent is reached.
-        """
+        """169.254.169.254 (AWS IMDS) must raise PermissionError before NlipRemoteAgent is reached."""
         from lionagi.providers.ag2.groupchat.models import build_group_chat
 
         spec = self._make_spec("http://169.254.169.254/")
@@ -113,7 +102,6 @@ class TestBuildGroupChatNlipUrlSSRF:
                     build_group_chat(spec, llm_config=None)
 
     def test_rfc1918_blocked(self):
-        """10.x private range must also be blocked."""
         from lionagi.providers.ag2.groupchat.models import build_group_chat
 
         spec = self._make_spec("http://10.0.0.1/")
@@ -124,7 +112,6 @@ class TestBuildGroupChatNlipUrlSSRF:
                     build_group_chat(spec, llm_config=None)
 
     def test_loopback_blocked(self):
-        """127.0.0.1 loopback must be blocked."""
         from lionagi.providers.ag2.groupchat.models import build_group_chat
 
         spec = self._make_spec("http://127.0.0.1:8080/")
@@ -135,8 +122,7 @@ class TestBuildGroupChatNlipUrlSSRF:
                     build_group_chat(spec, llm_config=None)
 
     def test_public_nlip_url_proceeds_past_guard(self):
-        """A public nlip_url passes the guard. Downstream autogen calls may fail
-        in the test env (no real AG2 install) but no PermissionError must fire."""
+        """A public nlip_url passes the guard; downstream errors from missing autogen install are acceptable."""
         from lionagi.providers.ag2.groupchat.models import build_group_chat
 
         spec = self._make_spec("https://nlip.example.com/")
@@ -159,8 +145,7 @@ class TestBuildGroupChatNlipUrlSSRF:
 
 
 class TestAG2GroupChatEndpointNlipUrlSSRF:
-    """Caller-supplied agent_configs[*].nlip_url must be SSRF-checked before
-    NlipRemoteAgent is constructed in AG2GroupChatEndpoint.stream()."""
+    """Caller-supplied agent_configs[*].nlip_url must be SSRF-checked before NlipRemoteAgent is constructed."""
 
     def _make_endpoint(self):
         from lionagi.providers.ag2.groupchat.endpoint import AG2GroupChatEndpoint
@@ -178,12 +163,7 @@ class TestAG2GroupChatEndpointNlipUrlSSRF:
 
     @pytest.mark.asyncio
     async def test_nlip_url_ssrf_blocked_in_stream(self):
-        """Caller-supplied nlip_url for a remote NLIP agent must be SSRF-checked.
-
-        Regression for issue #985 round 3: AG2GroupChatEndpoint.stream()
-        previously handed agent_configs[*]['nlip_url'] directly to
-        NlipRemoteAgent without any guard.
-        """
+        """Caller-supplied nlip_url must be SSRF-checked in stream() (regression: issue #985 round 3)."""
         endpoint = self._make_endpoint()
         agent_configs = [
             {
@@ -204,11 +184,7 @@ class TestAG2GroupChatEndpointNlipUrlSSRF:
 
     @pytest.mark.asyncio
     async def test_nlip_url_blocked_before_nlip_remote_agent_constructed(self):
-        """NlipRemoteAgent must never be instantiated for a blocked nlip_url.
-
-        Patches _assert_nlip_url_safe directly so we can assert it was called,
-        proving the guard fires before any NlipRemoteAgent construction attempt.
-        """
+        """Guard must fire before NlipRemoteAgent is constructed; patches _assert_nlip_url_safe to verify call site."""
         endpoint = self._make_endpoint()
         agent_configs = [
             {

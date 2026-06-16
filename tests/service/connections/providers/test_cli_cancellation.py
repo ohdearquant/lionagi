@@ -1,14 +1,6 @@
 """Regression tests for CLI subprocess cancellation (Ctrl+C / SIGINT).
 
-Root cause: Without start_new_session=True, Ctrl+C sends
-SIGINT to both Python and the CLI subprocess. The child handles SIGINT
-gracefully and exits with a partial result, causing auto_finish to spawn
-a new session instead of stopping.
-
-These tests verify:
-1. Subprocesses are spawned in isolated sessions (start_new_session=True)
-2. CancelledError during streaming propagates without triggering auto_finish
-3. The aclosing() cleanup path terminates the subprocess
+Covers start_new_session isolation, CancelledError propagation without auto_finish, and aclosing() cleanup.
 """
 
 from __future__ import annotations
@@ -29,7 +21,6 @@ class TestSubprocessSessionIsolation:
 
     @pytest.mark.asyncio
     async def test_claude_cli_uses_start_new_session(self):
-        """Claude CLI subprocess must use start_new_session=True."""
         from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
 
         request = ClaudeCodeRequest(prompt="test")
@@ -61,7 +52,6 @@ class TestSubprocessSessionIsolation:
 
     @pytest.mark.asyncio
     async def test_codex_cli_uses_start_new_session(self):
-        """Codex CLI subprocess must use start_new_session=True."""
         from lionagi.providers.openai.codex.models import CodexCodeRequest
 
         request = CodexCodeRequest(prompt="test")
@@ -92,7 +82,6 @@ class TestSubprocessSessionIsolation:
 
     @pytest.mark.asyncio
     async def test_gemini_cli_uses_start_new_session(self):
-        """Gemini CLI subprocess must use start_new_session=True."""
         from lionagi.providers.google.gemini_code.models import GeminiCodeRequest
 
         request = GeminiCodeRequest(prompt="test")
@@ -132,7 +121,6 @@ class TestCancellationSkipsAutoFinish:
 
     @pytest.mark.asyncio
     async def test_cancelled_error_skips_auto_finish(self):
-        """CancelledError during first stream must not spawn a second request."""
         from lionagi.providers.anthropic.claude_code.endpoint import (
             ClaudeCodeCLIEndpoint,
         )
@@ -140,7 +128,6 @@ class TestCancellationSkipsAutoFinish:
         stream_call_count = 0
 
         async def cancelling_stream(*args, **kwargs):
-            """Yields one chunk then raises CancelledError (simulates Ctrl+C)."""
             nonlocal stream_call_count
             stream_call_count += 1
             yield MagicMock(text="partial")
@@ -167,7 +154,6 @@ class TestCancellationSkipsAutoFinish:
 
     @pytest.mark.asyncio
     async def test_keyboard_interrupt_skips_auto_finish(self):
-        """KeyboardInterrupt during streaming must not spawn a second request."""
         from lionagi.providers.anthropic.claude_code.endpoint import (
             ClaudeCodeCLIEndpoint,
         )
@@ -197,12 +183,7 @@ class TestCancellationSkipsAutoFinish:
 
     @pytest.mark.asyncio
     async def test_task_cancel_skips_auto_finish(self):
-        """Task.cancel() (non-SIGINT) during streaming must not spawn a second request.
-
-        This tests the actual regression scenario: the stream completes normally
-        (subprocess exits gracefully), but the Python task is cancelled by the
-        executor/timeout. The _cancelled sentinel guard must prevent auto_finish.
-        """
+        """Task.cancel() must not trigger auto_finish even when subprocess exits gracefully."""
         from lionagi.providers.anthropic.claude_code.endpoint import (
             ClaudeCodeCLIEndpoint,
         )
@@ -210,7 +191,6 @@ class TestCancellationSkipsAutoFinish:
         stream_call_count = 0
 
         async def stream_then_cancel(*args, **kwargs):
-            """Yields chunks normally, then the task gets cancelled externally."""
             nonlocal stream_call_count
             stream_call_count += 1
             yield MagicMock(text="partial")
@@ -234,7 +214,6 @@ class TestCancellationSkipsAutoFinish:
 
     @pytest.mark.asyncio
     async def test_normal_completion_still_triggers_auto_finish(self):
-        """Normal stream completion should still trigger auto_finish when needed."""
         from lionagi.providers.anthropic.claude_code.endpoint import (
             ClaudeCodeCLIEndpoint,
         )
@@ -289,8 +268,7 @@ class TestNdjsonCleanupPropagation:
 
     @pytest.mark.asyncio
     async def test_cancelled_error_not_swallowed_by_finally(self):
-        """CancelledError from proc.wait() timeout must propagate, not be caught."""
-        # This tests the fix: except asyncio.TimeoutError (not CancelledError)
+        # Fix: except asyncio.TimeoutError (not CancelledError)
         from lionagi.providers.anthropic.claude_code.models import (
             ClaudeCodeRequest,
             _ndjson_from_cli,
@@ -338,7 +316,6 @@ class TestToolAllowlistArgs:
     """Verify tool names are passed without embedded quotes to subprocess."""
 
     def test_allowed_tools_no_embedded_quotes(self):
-        """Tool names in --allowedTools must not have embedded quote chars."""
         from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
 
         request = ClaudeCodeRequest(
@@ -363,7 +340,6 @@ class TestToolAllowlistArgs:
             assert tool in {"Bash", "Read", "Write"}
 
     def test_disallowed_tools_no_embedded_quotes(self):
-        """Tool names in --disallowedTools must not have embedded quote chars."""
         from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
 
         request = ClaudeCodeRequest(
@@ -383,7 +359,6 @@ class TestToolAllowlistArgs:
             assert '"' not in tool
 
     def test_mcp_config_no_embedded_quotes(self):
-        """--mcp-config path must not have embedded quote chars."""
         from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
 
         request = ClaudeCodeRequest(
@@ -406,7 +381,6 @@ class TestSessionIsolation:
     """Verify each stream_claude_code_cli call gets its own session."""
 
     def test_default_session_is_none_not_shared_instance(self):
-        """stream_claude_code_cli must default session to None, not a shared instance."""
         import inspect
 
         from lionagi.providers.anthropic.claude_code.models import (
@@ -431,7 +405,6 @@ class TestEmptyResponsesGuard:
 
     @pytest.mark.asyncio
     async def test_auto_finish_with_empty_responses(self):
-        """auto_finish must not IndexError when no chunks were received."""
         from lionagi.providers.anthropic.claude_code.endpoint import (
             ClaudeCodeCLIEndpoint,
         )
@@ -484,7 +457,6 @@ class TestProcessGroupCleanup:
 
     @pytest.mark.asyncio
     async def test_gemini_cleanup_calls_killpg(self):
-        """Gemini _ndjson_from_cli cleanup must call os.killpg."""
         from lionagi.providers.google.gemini_code.models import (
             GeminiCodeRequest,
             _ndjson_from_cli,
@@ -516,7 +488,6 @@ class TestProcessGroupCleanup:
 
     @pytest.mark.asyncio
     async def test_pi_cleanup_calls_killpg(self):
-        """Pi _ndjson_from_cli cleanup must call os.killpg."""
         from lionagi.providers.pi.cli.models import PiCodeRequest, _ndjson_from_cli
 
         request = PiCodeRequest(prompt="test")
@@ -544,7 +515,7 @@ class TestProcessGroupCleanup:
 
     @pytest.mark.asyncio
     async def test_gemini_mock_pid_guard_skips_killpg(self):
-        """Gemini must NOT call os.killpg when proc.pid is a mock (pid > 1 guard)."""
+        """pid=1 must be filtered by the safety guard, not passed to os.killpg."""
         from lionagi.providers.google.gemini_code.models import (
             GeminiCodeRequest,
             _ndjson_from_cli,
@@ -580,9 +551,7 @@ class TestProcessGroupCleanup:
 
     @pytest.mark.asyncio
     async def test_gemini_cleanup_no_killpg_platform(self, monkeypatch):
-        """On a platform without os.killpg (Windows), cleanup must
-        fall through to proc.terminate() instead of raising AttributeError from
-        the finally block (which only suppresses ProcessLookupError)."""
+        """When os.killpg is absent (Windows), cleanup must fall through to proc.terminate()."""
         import lionagi.providers._cli_subprocess as cli_sub
         from lionagi.providers.google.gemini_code import models
 
@@ -608,8 +577,7 @@ class TestProcessGroupCleanup:
 
     @pytest.mark.asyncio
     async def test_pi_cleanup_no_killpg_platform(self, monkeypatch):
-        """Pi cleanup must not raise AttributeError when os.killpg
-        is unavailable (Windows); it falls back to proc.terminate()."""
+        """When os.killpg is absent (Windows), Pi cleanup must fall through to proc.terminate()."""
         import lionagi.providers._cli_subprocess as cli_sub
         from lionagi.providers.pi.cli import models
 
@@ -681,17 +649,10 @@ class TestKillpgUnavailablePlatform:
 
 
 class TestStderrDeadlockPrevention:
-    """stderr-heavy subprocesses must not deadlock.
-
-    Gemini and Pi now drain stderr concurrently via an asyncio task.
-    We feed a large stderr payload and verify:
-    1. The stream completes without hanging.
-    2. The drained bytes appear in the error message on non-zero exit.
-    """
+    """Gemini and Pi drain stderr concurrently; a large payload must not deadlock."""
 
     @pytest.mark.asyncio
     async def test_gemini_large_stderr_does_not_deadlock(self):
-        """Gemini _ndjson_from_cli must not deadlock with large stderr."""
         import asyncio
 
         from lionagi.providers.google.gemini_code.models import (
@@ -741,7 +702,6 @@ class TestStderrDeadlockPrevention:
 
     @pytest.mark.asyncio
     async def test_pi_large_stderr_does_not_deadlock(self):
-        """Pi _ndjson_from_cli must not deadlock with large stderr."""
         from lionagi.providers.pi.cli.models import PiCodeRequest, _ndjson_from_cli
 
         request = PiCodeRequest(prompt="test")
