@@ -1,7 +1,4 @@
-"""End-to-end tests for PydanticSpecAdapter.
-
-Tests the complete flow: Spec → FieldInfo → Model → Validation
-"""
+"""End-to-end tests for PydanticSpecAdapter: Spec → FieldInfo → Model → Validation."""
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -11,10 +8,7 @@ from lionagi.ln.types import Operable, Spec
 
 
 class TestProtocolConformance:
-    """Test that PydanticSpecAdapter conforms to SpecAdapter protocol."""
-
     def test_conforms_to_protocol(self):
-        """Test adapter implements protocol methods."""
         assert hasattr(PydanticSpecAdapter, "create_field")
         assert hasattr(PydanticSpecAdapter, "create_model")
         assert hasattr(PydanticSpecAdapter, "create_validator")
@@ -25,10 +19,7 @@ class TestProtocolConformance:
 
 
 class TestCreateField:
-    """Test create_field() method."""
-
     def test_basic_field(self):
-        """Test basic field creation."""
         spec = Spec(str, name="username")
         field_info = PydanticSpecAdapter.create_field(spec)
 
@@ -36,14 +27,12 @@ class TestCreateField:
         assert field_info.annotation == str
 
     def test_field_with_default(self):
-        """Test field with default value."""
         spec = Spec(str, name="username", default="anonymous")
         field_info = PydanticSpecAdapter.create_field(spec)
 
         assert field_info.default == "anonymous"
 
     def test_field_with_default_factory(self):
-        """Test field with default factory."""
         spec = Spec(list, name="tags", default_factory=list)
         field_info = PydanticSpecAdapter.create_field(spec)
 
@@ -51,7 +40,6 @@ class TestCreateField:
         assert callable(field_info.default_factory)
 
     def test_nullable_field(self):
-        """Test nullable field."""
         spec = Spec(str, name="bio", nullable=True)
         field_info = PydanticSpecAdapter.create_field(spec)
 
@@ -60,7 +48,6 @@ class TestCreateField:
         assert field_info.annotation == str | None
 
     def test_listable_field(self):
-        """Test listable field."""
         spec = Spec(str, name="tags", listable=True)
         field_info = PydanticSpecAdapter.create_field(spec)
 
@@ -68,10 +55,7 @@ class TestCreateField:
 
 
 class TestCreateModel:
-    """Test create_model() method."""
-
     def test_basic_model_creation(self):
-        """Test creating a basic model."""
         specs = [
             Spec(str, name="username"),
             Spec(int, name="age"),
@@ -85,7 +69,6 @@ class TestCreateModel:
         assert "age" in UserModel.model_fields
 
     def test_model_with_defaults(self):
-        """Test model with default values."""
         specs = [
             Spec(str, name="username", default="anonymous"),
             Spec(int, name="age", default=0),
@@ -99,7 +82,6 @@ class TestCreateModel:
         assert instance.age == 0
 
     def test_model_with_nullable_fields(self):
-        """Test model with nullable fields."""
         specs = [
             Spec(str, name="username"),
             Spec(str, name="bio", nullable=True),
@@ -113,7 +95,6 @@ class TestCreateModel:
         assert instance.bio is None
 
     def test_model_validation(self):
-        """Test that model validates types correctly."""
         specs = [
             Spec(str, name="username"),
             Spec(int, name="age"),
@@ -132,7 +113,6 @@ class TestCreateModel:
             UserModel(username="alice", age="not_an_int")
 
     def test_model_with_include(self):
-        """Test creating model with include filter."""
         specs = [
             Spec(str, name="username"),
             Spec(int, name="age"),
@@ -149,7 +129,6 @@ class TestCreateModel:
         assert "email" not in UserModel.model_fields
 
     def test_model_with_exclude(self):
-        """Test creating model with exclude filter."""
         specs = [
             Spec(str, name="username"),
             Spec(int, name="age"),
@@ -167,10 +146,7 @@ class TestCreateModel:
 
 
 class TestEndToEnd:
-    """Test complete end-to-end flows."""
-
     def test_spec_to_model_to_instance(self):
-        """Test complete flow from Spec to validated instance."""
         # Step 1: Define specs
         specs = [
             Spec(str, name="name"),
@@ -195,7 +171,6 @@ class TestEndToEnd:
         assert person.tags == []
 
     def test_operable_create_model_integration(self):
-        """Test Operable.create_model() integration."""
         specs = [
             Spec(str, name="username"),
             Spec(int, name="score", default=0),
@@ -211,8 +186,6 @@ class TestEndToEnd:
         assert player.score == 0
 
     def test_complex_types(self):
-        """Test with complex Python types."""
-
         specs = [
             Spec(dict[str, int], name="scores"),
             Spec(list[str], name="tags"),
@@ -227,10 +200,7 @@ class TestEndToEnd:
 
 
 class TestValidationMethods:
-    """Test validation utility methods."""
-
     def test_parse_json(self):
-        """Test JSON parsing."""
         json_str = '{"name": "Alice", "age": 30}'
         data = PydanticSpecAdapter.parse_json(json_str, fuzzy=False)
 
@@ -239,7 +209,6 @@ class TestValidationMethods:
         assert data["age"] == 30
 
     def test_parse_json_fuzzy(self):
-        """Test fuzzy JSON parsing."""
         # JSON in markdown code block
         text = """Here is the data:
 ```json
@@ -252,7 +221,6 @@ and more text"""
         assert data["name"] == "Bob"
 
     def test_fuzzy_match_fields(self):
-        """Test fuzzy field matching."""
         specs = [Spec(str, name="user_name"), Spec(int, name="user_age")]
         operable = Operable(specs)
         UserModel = PydanticSpecAdapter.create_model(operable, "UserModelFuzzy")
@@ -265,7 +233,6 @@ and more text"""
         assert "user_name" in matched or "username" in matched
 
     def test_update_model(self):
-        """Test model update."""
         specs = [Spec(str, name="name"), Spec(int, name="age")]
         operable = Operable(specs)
         PersonModel = PydanticSpecAdapter.create_model(operable, "PersonModel")
@@ -280,7 +247,7 @@ and more text"""
 
 
 # ---------------------------------------------------------------------------
-# C7: callable default becomes default_factory
+# callable default becomes default_factory
 # ---------------------------------------------------------------------------
 
 
@@ -301,7 +268,7 @@ def test_pydantic_field_adapter_uses_callable_metadata_as_default_factory():
 
 
 # ---------------------------------------------------------------------------
-# C8: strict fuzzy_match_fields raises; non-strict coerces typos and drops unknowns
+# strict fuzzy_match_fields raises; non-strict coerces typos and drops unknowns
 # ---------------------------------------------------------------------------
 
 
@@ -329,10 +296,7 @@ def test_pydantic_field_adapter_strict_fuzzy_match_raises_on_unmatched_key():
 
 
 class TestEdgeCases:
-    """Test edge cases and error handling."""
-
     def test_empty_operable(self):
-        """Test with empty operable."""
         operable = Operable([])
         EmptyModel = PydanticSpecAdapter.create_model(operable, "EmptyModel")
 
@@ -341,7 +305,6 @@ class TestEdgeCases:
         assert instance is not None
 
     def test_spec_without_name(self):
-        """Test spec without name is skipped."""
         specs = [
             Spec(str, name="valid"),
             Spec(int),  # No name

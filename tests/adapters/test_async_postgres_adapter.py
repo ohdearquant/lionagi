@@ -6,7 +6,7 @@
 import pytest
 
 # ---------------------------------------------------------------------------
-# A9 / A10: check_async_postgres_available
+# check_async_postgres_available
 # ---------------------------------------------------------------------------
 
 
@@ -36,7 +36,7 @@ def test_check_async_postgres_available_true_when_dependencies_present(monkeypat
 
 
 # ---------------------------------------------------------------------------
-# A11: to_obj calls _ensure_table before delegating to parent
+# to_obj calls _ensure_table before delegating to parent
 # ---------------------------------------------------------------------------
 
 

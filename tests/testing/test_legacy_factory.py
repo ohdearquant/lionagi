@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the legacy ``LionAGIMockFactory`` API at its new home.
-
-These mirror what ``tests/fixtures/test_mock_factory.py`` used to do — kept
-here so any behavior change in the legacy factory is caught locally rather
-than only via docs tests.
-"""
+"""Tests for the legacy LionAGIMockFactory API."""
 
 from __future__ import annotations
 

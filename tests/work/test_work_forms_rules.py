@@ -1,18 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lionagi.work: WorkForm, FieldSpec, Rule, RuleSet.
-
-Covers the public API exported by lionagi.work.__init__:
-  - FieldSpec declaration, type coercion, and default validation
-  - WorkForm Element inheritance (UUID id, created_at, form_id alias)
-  - WorkForm lifecycle and transition logic
-  - fill_form / validate_form functional helpers (including ruleset param)
-  - Rule (required, type, range, pattern, custom) apply()
-  - RuleSet composition (add, remove, get, apply_all, duplicate prevention)
-  - Bool-as-int subclass behaviour (pinned)
-  - ReDoS: length cap enforced; no phantom timeout claim
-"""
+"""Tests for lionagi.work: WorkForm, FieldSpec, Rule, RuleSet."""
 
 from __future__ import annotations
 
@@ -136,7 +125,6 @@ class TestFieldSpec:
         with pytest.raises(Exception):
             FieldSpec(name="bad-field")
 
-    # Default value type validation (Fix 4)
     def test_valid_int_default(self):
         spec = FieldSpec(name="n", type="int", required=False, default=5)
         assert spec.default == 5
@@ -941,7 +929,6 @@ class TestRuleSet:
         assert len(errors) == 1
         assert "email" in errors[0]
 
-    # Duplicate rule_id prevention (Fix 5)
     def test_add_duplicate_rule_id_raises(self):
         """add() must reject a rule_id already in the set."""
         rs = RuleSet()
