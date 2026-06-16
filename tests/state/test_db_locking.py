@@ -1,16 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Regression tests for concurrent writer contention on ``StateDB``.
-
-SQLite serializes writers via the database lock; with WAL mode and
-``PRAGMA busy_timeout = 5000`` (set by ``_apply_pragmas``), concurrent
-writes from multiple connections coexist as long as the wait stays
-under five seconds. These tests use file-backed DBs (not ``:memory:``)
-because in-memory connections cannot share a database — each opens
-its own — defeating the contention test.
-"""
+"""Regression tests for concurrent writer contention on StateDB (WAL + busy_timeout=5000; file-backed DBs only — in-memory can't share)."""
 
 from __future__ import annotations
 
@@ -46,10 +37,7 @@ def db_path(tmp_path: Path) -> Path:
 
 
 async def test_two_connections_can_insert_concurrently(db_path: Path):
-    """Two StateDB instances pointing at the same file can interleave
-    inserts without raising. The default ``busy_timeout = 5000`` is
-    enough to absorb the lock wait.
-    """
+    """Two StateDB instances on the same file can interleave inserts without raising."""
     db1 = StateDB(db_path)
     db2 = StateDB(db_path)
     await db1.open()
@@ -57,7 +45,6 @@ async def test_two_connections_can_insert_concurrently(db_path: Path):
     try:
         msgs = [_make_msg() for _ in range(20)]
 
-        # Interleave writes across the two connections.
         async def insert_all(db: StateDB, batch: list[dict]):
             for m in batch:
                 await db.insert_message(m)
@@ -67,7 +54,6 @@ async def test_two_connections_can_insert_concurrently(db_path: Path):
             insert_all(db2, msgs[10:]),
         )
 
-        # All 20 visible via a third connection.
         db3 = StateDB(db_path)
         await db3.open()
         try:
@@ -82,10 +68,7 @@ async def test_two_connections_can_insert_concurrently(db_path: Path):
 
 
 async def test_concurrent_resolve_lion_class_no_unique_error(db_path: Path):
-    """``_resolve_lion_class`` uses ``INSERT OR IGNORE`` + ``SELECT`` so
-    two concurrent connections seeing the same novel class do NOT raise
-    ``UNIQUE constraint failed``. R3 race fix regression guard.
-    """
+    """_resolve_lion_class uses INSERT OR IGNORE + SELECT — two concurrent connections on the same novel class must not raise UNIQUE constraint failure."""
     db1 = StateDB(db_path)
     db2 = StateDB(db_path)
     await db1.open()
@@ -111,14 +94,7 @@ async def test_concurrent_resolve_lion_class_no_unique_error(db_path: Path):
 async def test_busy_timeout_eventually_returns_locked_error(
     tmp_path: Path,
 ):
-    """If one connection holds an exclusive lock longer than
-    ``busy_timeout``, the second connection gets ``database is locked``
-    rather than hanging forever. This guards against the symptom
-    described as "CLI process hangs after completion".
-
-    We force the failure by lowering busy_timeout to 100ms and parking
-    a writer inside a transaction.
-    """
+    """A connection holding an exclusive lock past busy_timeout surfaces OperationalError rather than hanging; uses 100ms timeout to keep test fast."""
     db_path = tmp_path / "locked.db"
     db1 = StateDB(db_path)
     db2 = StateDB(db_path)
@@ -127,15 +103,13 @@ async def test_busy_timeout_eventually_returns_locked_error(
     # Tighten the timeout on db2 so the test runs fast.
     await db2.db.execute("PRAGMA busy_timeout = 100")
     try:
-        # db1 starts an EXCLUSIVE transaction and holds it.
         await db1.db.execute("BEGIN EXCLUSIVE")
         try:
             import aiosqlite
 
             with pytest.raises(aiosqlite.OperationalError):
-                # db2's write must error before 5s (busy_timeout=100).
                 await db2.insert_message(_make_msg())
-                # Commit forces the lock attempt to actually fail.
+                # commit forces the lock attempt to actually fail
                 await db2.db.commit()
         finally:
             await db1.db.rollback()
@@ -150,10 +124,7 @@ async def test_busy_timeout_eventually_returns_locked_error(
 async def test_concurrent_save_definition_same_key_serialized(
     db_path: Path,
 ):
-    """Two concurrent ``save_definition`` calls for the SAME (kind, name)
-    must produce two distinct, monotonically-increasing versions —
-    serialized by the per-(kind, name) ``asyncio.Lock``.
-    """
+    """Concurrent save_definition for the same (kind, name) produces distinct monotonically-increasing versions via the per-key asyncio.Lock."""
     db = StateDB(db_path)
     await db.open()
     try:
@@ -179,9 +150,7 @@ async def test_concurrent_save_definition_same_key_serialized(
 async def test_concurrent_save_definition_different_keys_parallel(
     db_path: Path,
 ):
-    """Different (kind, name) pairs do NOT block each other — they
-    each get their own asyncio.Lock.
-    """
+    """Different (kind, name) pairs use independent asyncio.Locks and don't block each other."""
     db = StateDB(db_path)
     await db.open()
     try:
@@ -205,7 +174,6 @@ async def test_concurrent_save_definition_different_keys_parallel(
                 content="z",
             ),
         )
-        # All version 1 — they're independent streams.
         assert sorted(versions) == [1, 1, 1]
     finally:
         await db.close()

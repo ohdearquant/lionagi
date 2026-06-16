@@ -1,13 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for the StateDB schema migration path.
-
-Verifies that _reconcile_columns adds all expected columns to tables that
-were created with an older schema (before those columns existed).
-
-asyncio_mode = "auto" in pyproject.toml — no @pytest.mark.asyncio needed.
-"""
+"""Regression tests for StateDB schema migration — verifies _reconcile_columns adds all expected columns to old-schema tables."""
 
 from __future__ import annotations
 
@@ -30,11 +24,7 @@ async def _column_names(db: aiosqlite.Connection, table: str) -> set[str]:
 
 @pytest.fixture
 async def old_schema_db():
-    """In-memory DB with tables created using only the original minimal columns.
-
-    Simulates a DB that was initialized before the migration columns were added
-    to schema.sql — the kind of DB that _reconcile_columns must upgrade.
-    """
+    """In-memory DB with bare-minimum columns simulating a pre-migration schema."""
     async with aiosqlite.connect(":memory:") as db:
         db.row_factory = aiosqlite.Row
         await db.execute("PRAGMA journal_mode=WAL")
@@ -89,7 +79,6 @@ async def old_schema_db():
                 created_at REAL NOT NULL
             )
         """)
-        # schedules: currently empty in migration table
         await db.execute("""
             CREATE TABLE schedules (
                 id         TEXT PRIMARY KEY,

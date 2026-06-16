@@ -1,18 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Attack-driven regression tests for lionagi/casts/emission.py.
-
-Issue: SpawnRequest.operation was an unconstrained str allowing any model-emitted
-operation name to bypass the documented allowlist (operate|chat|communicate|ReAct)
-and reach flow routing unconstrained.
-
-Issue: Emission models silently discarded unknown keys from model output (no
-extra='forbid'), making over-broad or malformed emissions invisible.
-
-Fix: SpawnRequest.operation is now Literal["operate","chat","communicate","ReAct"],
-and all emission classes inherit from _EmissionModel which sets extra='forbid'.
-"""
+"""Security regression tests for SpawnRequest operation allowlist and emission extra='forbid'."""
 
 from __future__ import annotations
 
@@ -27,13 +16,7 @@ from lionagi.casts.emission import (
 
 
 class TestSpawnRequestOperationAllowlist:
-    """Verify SpawnRequest rejects operations outside the documented allowlist.
-
-    Attack: model emits SpawnRequest with operation='dangerous' (or any
-    non-allowlisted name) attempting to route to a custom session operation.
-    Boundary: SpawnRequest.model_validate must fail before the value reaches
-    role_node_builder or create_operation.
-    """
+    """SpawnRequest rejects operations outside the documented allowlist."""
 
     @pytest.mark.parametrize("op", sorted(SPAWN_ALLOWED_OPERATIONS))
     def test_allowed_operations_accepted(self, op: str):
@@ -62,12 +45,7 @@ class TestSpawnRequestOperationAllowlist:
         ],
     )
     def test_unknown_operation_rejected_at_validation(self, bad_op: str):
-        """Non-allowlisted operation strings must raise ValidationError on
-        SpawnRequest construction — rejected at the boundary, before any routing.
-
-        This is the attack regression: a model that emits operation='dangerous'
-        must be refused before role_node_builder ever sees the value.
-        """
+        """Non-allowlisted operation strings raise ValidationError before any routing."""
         with pytest.raises(ValidationError):
             SpawnRequest(instruction="pwn", operation=bad_op)
 
@@ -84,12 +62,7 @@ class TestSpawnRequestOperationAllowlist:
 
 
 class TestEmissionModelExtraForbid:
-    """Verify emission models reject unknown keys (extra='forbid').
-
-    Attack: model output with extra/unexpected keys is validated silently
-    discarding the unknown fields, hiding malformed emissions.
-    Fix: _EmissionModel sets extra='forbid', so unknown keys raise ValidationError.
-    """
+    """Emission models reject unknown keys via extra='forbid'."""
 
     def test_finding_rejects_unknown_key(self):
         with pytest.raises(ValidationError, match="extra_inputs_not_permitted|extra"):
