@@ -322,7 +322,7 @@ def test_null_status_reaper_cas_allows_null(tmp_path, monkeypatch):
     assert run_async(_get_status(db_path, "session", sid)) == "failed"
 
 
-# ── Finding 2: orphan cleanup after prune ────────────────────────────────────
+# ── orphan cleanup after prune ───────────────────────────────────────────────
 
 
 def test_prune_cleans_orphaned_messages_and_progressions(tmp_path, monkeypatch):

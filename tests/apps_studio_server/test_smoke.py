@@ -1,8 +1,4 @@
-"""Hermetic smoke tests for the Lion Studio server.
-
-Covers /api/stats, /api/shows, /api/playbooks, /api/runs, /api/agents/{name},
-plus path-traversal guard tests for /api/runs and /api/agents.
-"""
+"""Hermetic smoke tests for the Lion Studio server."""
 
 from __future__ import annotations
 
@@ -29,7 +25,6 @@ def _make_client(
     with_agent: bool = False,
     with_playbook: bool = False,
 ) -> TestClient:
-    """Patch all roots to tmp_path subdirs and return a wired TestClient."""
     shows_root = tmp_path / "shows"
     runs_root = tmp_path / "runs"
     agents_root = tmp_path / "agents"
@@ -183,12 +178,10 @@ def test_runs_list_returns_dict(tmp_path, monkeypatch):
 
 
 def test_runs_list_has_contract_fields(tmp_path, monkeypatch):
-    """RunSummary must contain the SQLite-backed fields (F-A1-1, ADR-0004 rewire).
+    """RunSummary must contain the SQLite-backed fields.
 
-    list_runs() now reads from the sessions SQLite table, not filesystem.
-    Field names match the sessions schema: playbook_name, status, started_at,
-    ended_at (not worker_name/task/step_count/finished_at from the old JSON snapshots).
-    With an empty/absent DB, the list is empty.
+    list_runs() reads from the sessions SQLite table; with an empty/absent DB the list
+    is empty.
     """
     client = _make_client(tmp_path, monkeypatch, with_run=True)
     r = client.get("/api/runs")
@@ -200,7 +193,7 @@ def test_runs_list_has_contract_fields(tmp_path, monkeypatch):
 
 
 def test_runs_list_filter_by_playbook(tmp_path, monkeypatch):
-    """?playbook= filter replaces the old ?worker= param (F-A3-7, ADR-0005)."""
+    """?playbook= filter replaces the old ?worker= param."""
     client = _make_client(tmp_path, monkeypatch, with_run=True)
     # Correct param name; both should 200 with empty list (empty DB)
     r = client.get("/api/runs?playbook=some-playbook")
@@ -224,7 +217,7 @@ def test_runs_list_filter_by_status(tmp_path, monkeypatch):
 
 
 def test_run_detail_contract_fields(tmp_path, monkeypatch):
-    """RunDetail must include all required fields; reads from StateDB not flat-file."""
+    """RunDetail must include all required fields; reads from StateDB not flat file."""
     from lionagi.state.db import StateDB
 
     run_id = str(uuid.uuid4())
@@ -316,7 +309,7 @@ def test_agents_list_returns_dict(tmp_path, monkeypatch):
 
 
 def test_agent_detail_flat_contract(tmp_path, monkeypatch):
-    """GET /api/agents/{name} must return AgentProfile flat shape."""
+    """GET /api/agents/{name} must return AgentProfile in flat shape."""
     client = _make_client(tmp_path, monkeypatch, with_agent=True)
     r = client.get("/api/agents/my-agent")
     assert r.status_code == 200

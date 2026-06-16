@@ -1,22 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for SPA static serving (Vite dist/ mount in lionagi/studio/app.py).
-
-Covers:
-- SPA fallback serves index.html for /, /runs, /runs/abc, /agents
-- /api/* unknown paths return 404, not index.html
-- Existing API routes are unaffected
-- No-dist case: app works API-only (no crash, / returns 404 or JSON)
-- index.html response carries no-cache headers
-- CORS methods still include HEAD after the SPA mount (registration-order guard)
-
-Test strategy: set LIONAGI_STUDIO_FRONTEND_DIST to a tmp_path dir we populate
-with a real index.html and an assets/ subdirectory.  We reload the app module so
-the module-level _resolve_frontend_dist() and _mount_spa() calls re-run with the
-new env.  We do NOT mock _resolve_frontend_dist itself — we test through the real
-construction path per spec.
-"""
+"""Tests for SPA static serving (Vite dist/ mount in lionagi/studio/app.py)."""
 
 from __future__ import annotations
 
@@ -56,11 +41,7 @@ def spa_client(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    """TestClient with SPA serving enabled (real dist dir via env override).
-
-    Yield-fixture: teardown clears the env var and reloads the app module so
-    the API-only singleton is restored for later tests in the same xdist worker.
-    """
+    """TestClient with SPA serving enabled; teardown restores the API-only singleton for xdist workers."""
     fake_db = tmp_path / "state.db"
 
     import lionagi.studio.services.sessions as sessions_mod
@@ -90,11 +71,7 @@ def no_dist_client(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    """TestClient with no dist dir — API-only mode.
-
-    Yield-fixture: teardown reloads the app module so the module singleton is
-    restored for later tests in the same xdist worker.
-    """
+    """TestClient in API-only mode (no dist dir); teardown reloads the app module for xdist workers."""
     fake_db = tmp_path / "state.db"
 
     import lionagi.studio.services.sessions as sessions_mod
@@ -250,12 +227,7 @@ class TestCORSAfterSPAMount:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        """HEAD must still be in the CORS allowlist after the SPA fallback is mounted.
-
-        The SPA fallback is a GET route, which FastAPI auto-generates a HEAD
-        companion for.  _collect_cors_methods must be called AFTER the SPA
-        mount so HEAD from the fallback route is included.
-        """
+        """HEAD must be in the CORS allowlist after SPA mount (_collect_cors_methods called after mount)."""
         import lionagi.studio.app as app_mod
 
         allowlist = {m.upper() for m in app_mod._collect_cors_methods(app_mod.app)}
@@ -289,14 +261,7 @@ class TestCORSAfterSPAMount:
 
 
 class TestSPAWithAuthToken:
-    """With LIONAGI_STUDIO_AUTH_TOKEN set, the static shell must stay loadable.
-
-    Browsers navigate without an Authorization header; the SPA shell and
-    hashed assets are the public surface, while every /api path remains
-    bearer-guarded.  Regression guard for the single-origin migration: the
-    old two-process layout served the shell from Node (auth-free) and only
-    guarded the FastAPI origin.
-    """
+    """With LIONAGI_STUDIO_AUTH_TOKEN set, the static shell stays public while /api paths are bearer-guarded."""
 
     def test_shell_and_assets_public_with_token(
         self,

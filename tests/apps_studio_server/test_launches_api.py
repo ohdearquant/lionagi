@@ -62,9 +62,7 @@ def _stub_db_and_spawn(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _fresh_launch_state():
-    """Reset module-global launch state so admission slots and detached-task
-    refs never leak between tests (stubbed create_task means done callbacks
-    that would release slots never fire)."""
+    """Reset module-global launch state to prevent slot and task-ref leaks between tests."""
     import lionagi.studio.services.launches as svc
 
     svc._launch_semaphore = None
@@ -519,9 +517,7 @@ class TestLaunchAdmissionCap:
         mock_db.create_invocation.assert_not_called()
 
     def test_burst_admission_capped_before_any_task_runs(self, tmp_path, monkeypatch):
-        """Slots are taken at admission time, not when the spawned task runs:
-        with cap 1, the second POST gets 429 even though the first task has
-        not started (and thus released nothing)."""
+        """With cap 1, the second POST gets 429 before the first task starts (slots taken at admission)."""
         import lionagi.studio.services.launches as svc
 
         _stub_db_and_spawn(monkeypatch)

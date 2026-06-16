@@ -226,12 +226,7 @@ def test_deadline_for_kind_uses_env_var(monkeypatch):
 
 
 def test_reap_stale_invocations_per_kind_override(tmp_path, monkeypatch):
-    """Per-kind env override: only the matching kind is reaped at the shorter cutoff.
-
-    Two invocations started 3000 s ago:
-    - kind 'agent': per-kind deadline set to 1800 s → reaped
-    - kind 'flow':  no override; global deadline 7200 s → not reaped
-    """
+    """Per-kind env override reaps only the matching kind at the shorter cutoff (agent 1800s vs flow 7200s)."""
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
     monkeypatch.setenv("LIONAGI_STUDIO_INVOCATION_DEADLINE_AGENT_SECONDS", "1800")

@@ -1,17 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for POST /api/admin/maintenance (Phase C Move 3).
-
-Coverage:
-  - auth: missing token, wrong token, correct token
-  - closed schema: extra fields → 422 with no service call (spy)
-  - allowlist enforcement: unknown/shell-injection/flag-shaped actions → 422
-  - success path for each action (service layer monkeypatched)
-  - live vacuum on an existing initialized DB
-  - DB-absent graceful paths
-  - SQLite lock contention → 409 with structured detail (all three actions)
-"""
+"""Tests for POST /api/admin/maintenance."""
 
 from __future__ import annotations
 
@@ -318,12 +308,7 @@ def test_maintenance_checkpoint_db_absent(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("action", ["vacuum", "checkpoint", "prune"])
 def test_maintenance_lock_contention_returns_409(tmp_path, monkeypatch, action):
-    """When another writer holds the DB lock all three actions must return 409.
-
-    We initialize the DB, hold a raw BEGIN IMMEDIATE on a second connection,
-    then patch StateDB._apply_pragmas to set busy_timeout=100 ms so the test
-    finishes quickly instead of waiting the production 5 s.
-    """
+    """All three actions return 409 when another writer holds the DB lock (busy_timeout=100ms)."""
     from lionagi.state.db import StateDB
 
     # _make_client patches everything to tmp_path/"state.db".

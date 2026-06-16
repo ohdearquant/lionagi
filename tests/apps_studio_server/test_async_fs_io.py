@@ -1,10 +1,4 @@
-"""Tests that Studio route handlers offload synchronous filesystem I/O
-to worker threads instead of blocking the event loop.
-
-Verifies that the hottest routes (invocations list, runs detail, agents,
-playbooks, skills, plugins) complete without performing synchronous
-filesystem reads on the main async thread.
-"""
+"""Tests that Studio route handlers offload synchronous filesystem I/O to worker threads."""
 
 from __future__ import annotations
 
@@ -123,10 +117,7 @@ def _make_client(
 
 
 def test_run_detail_reads_from_statedb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """GET /api/runs/{id} reads from StateDB (not flat-file run.json).
-
-    get_run() is now async and reads the same SQLite source as list_runs().
-    """
+    """GET /api/runs/{id} reads from StateDB (same SQLite source as list_runs())."""
     from lionagi.state.db import StateDB
 
     run_id = str(uuid.uuid4())
@@ -278,10 +269,7 @@ def test_skill_detail_uses_thread_offload(tmp_path: Path, monkeypatch: pytest.Mo
 def test_run_detail_returns_404_for_nonexistent_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GET /api/runs/{id} returns 404 for an ID absent from StateDB.
-
-    get_run() is now async and reads StateDB directly (no thread offload needed).
-    """
+    """GET /api/runs/{id} returns 404 for an ID absent from StateDB."""
     client = _make_client(tmp_path, monkeypatch)
     r = client.get("/api/runs/20240101T000000-abc123")
     assert r.status_code == 404

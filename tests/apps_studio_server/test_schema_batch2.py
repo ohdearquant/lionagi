@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for Batch 2 DB/Schema fixes: #990 status_source migration."""
+"""Tests for status_source column migration on the shows table."""
 
 from __future__ import annotations
 
@@ -16,14 +16,14 @@ aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# #990 — status_source column migration and round-trip
+# status_source column migration and round-trip
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
 class TestStatusSourceMigration:
     def test_new_db_has_status_source_column(self, tmp_path):
-        """A freshly created StateDB must have status_source on the shows table."""
+        """Fresh StateDB must have status_source on the shows table."""
         from lionagi.state.db import StateDB
 
         db_path = tmp_path / "state.db"
@@ -36,7 +36,7 @@ class TestStatusSourceMigration:
 
         cols = _run(_check())
         assert "status_source" in cols, (
-            "shows table missing status_source column after fresh StateDB init (#990)"
+            "shows table missing status_source column after fresh StateDB init"
         )
 
     def test_existing_db_migrated_to_add_status_source(self, tmp_path):

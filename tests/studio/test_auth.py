@@ -1,17 +1,11 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Attack-driven regression tests for bearer-token protection on GET routes.
+"""Attack-driven tests for bearer-token protection on GET routes.
 
-Before the fix, GET /api/invocations and GET /api/sessions (and many other
-data-returning routes) returned agent-produced content without authentication,
-even when LIONAGI_STUDIO_AUTH_TOKEN was set.  Any unauthenticated caller could
-enumerate sessions, runs, projects, schedules, teams, agents, playbooks,
-definitions, shows, and aggregate stats.
-
-The middleware now uses a default-deny posture: when a token is configured,
-every path that is not in the explicit public allowlist (_PUBLIC_PATHS) returns
-401 regardless of HTTP method.  The only public path is /health.
+The middleware uses a default-deny posture: when a token is configured, every
+path not in the explicit public allowlist returns 401. The only public path is
+/health.
 """
 
 from __future__ import annotations
@@ -46,7 +40,6 @@ _DATA_GET_PREFIXES = [
 
 
 def _make_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
-    """Return a TestClient wired to the studio app with a throw-away DB."""
     from importlib import reload
 
     import lionagi.studio.app as app_mod
@@ -56,8 +49,7 @@ def _make_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
 
     fake_db = tmp_path / "state.db"
 
-    # Redirect all DB-backed services to the throw-away path so no real
-    # state is read and the app stays hermetic.
+    # Redirect all DB-backed services to the throw-away path so the app stays hermetic.
     for mod in (stats_mod, inv_mod, sess_mod):
         if hasattr(mod, "DEFAULT_DB_PATH"):
             monkeypatch.setattr(mod, "DEFAULT_DB_PATH", fake_db)
@@ -73,12 +65,7 @@ class TestGetInvocationsAuthGuard:
     """GET /api/invocations must be gated by the bearer token."""
 
     def test_unauthenticated_request_is_rejected(self, monkeypatch, tmp_path):
-        """GET /api/invocations/ without a token returns 401 when auth is configured.
-
-        Attack scenario: an unauthenticated caller polls the invocations list to
-        enumerate agent activity.  The guard must reject such requests before any
-        data is returned.
-        """
+        """GET /api/invocations/ without a token returns 401 when auth is configured."""
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
         client = _make_client(monkeypatch, tmp_path)
 
@@ -115,12 +102,7 @@ class TestGetSessionsAuthGuard:
     """GET /api/sessions must be gated by the bearer token."""
 
     def test_unauthenticated_request_is_rejected(self, monkeypatch, tmp_path):
-        """GET /api/sessions/ without a token returns 401 when auth is configured.
-
-        Attack scenario: an unauthenticated caller lists all sessions to harvest
-        session IDs for further enumeration.  The guard must reject this before
-        any data leaves the server.
-        """
+        """GET /api/sessions/ without a token returns 401 when auth is configured."""
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "testsecret")
         client = _make_client(monkeypatch, tmp_path)
 
@@ -154,14 +136,7 @@ class TestGetSessionsAuthGuard:
 
 @pytest.mark.integration
 class TestDefaultDenyAllDataRoutes:
-    """Every data-returning GET prefix must be 401 when a token is configured.
-
-    This is a parametrized regression guard: adding a new router cannot
-    silently open a new unauthenticated GET surface.  Any route not listed in
-    _DATA_GET_PREFIXES AND not in _PUBLIC_PATHS is already covered by the
-    default-deny middleware, but explicit enumeration here makes regressions
-    obvious immediately.
-    """
+    """Every data-returning GET prefix must be 401 when a token is configured."""
 
     @pytest.mark.parametrize("prefix", _DATA_GET_PREFIXES)
     def test_unauthenticated_returns_401(self, monkeypatch, tmp_path, prefix):

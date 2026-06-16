@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for Batch 2 DB/Schema fixes: #992 shared _db helper."""
+"""Tests for the shared _db helper: WAL mode, busy_timeout, row_factory."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# #992 — open_db() configures busy_timeout, WAL, and row_factory
+# open_db() configures busy_timeout, WAL, and row_factory
 # ---------------------------------------------------------------------------
 
 

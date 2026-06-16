@@ -1,4 +1,4 @@
-"""Tests for #1015 teams read-only viewer."""
+"""Tests for teams read-only viewer."""
 
 from __future__ import annotations
 

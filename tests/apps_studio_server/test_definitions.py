@@ -179,14 +179,12 @@ def _make_patched_client(tmp_path, monkeypatch):
 def test_save_definition_rejects_unsafe_name_post(encoded_name, tmp_path, monkeypatch):
     """POST /api/definitions/agent/<unsafe_name> must NOT return 200.
 
-    This covers the path/glob injection attack surface reported in PR #981
-    round-2 review: URL-encoded metacharacters and traversal sequences are
-    decoded by the ASGI layer before route parameters are populated, so the
-    service layer must validate the already-decoded string.
+    URL-encoded metacharacters and traversal sequences are decoded by the ASGI
+    layer before route parameters are populated, so the service layer must
+    validate the already-decoded string.
 
-    Note: %2F (slash) may be split at the ASGI level before the route handler
-    is invoked, resulting in a 404 instead of a 422.  Both are acceptable
-    rejections — the important invariant is that no 200 is returned.
+    Note: %2F (slash) may be split at the ASGI level, resulting in 404 instead
+    of 422. Both are acceptable — the invariant is that no 200 is returned.
     """
     client = _make_patched_client(tmp_path, monkeypatch)
     r = client.post(
@@ -303,13 +301,10 @@ async def test_save_definition_accepts_valid_kinds(kind, tmp_path, monkeypatch):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_concurrent_save_disk_reflects_highest_version(tmp_path, monkeypatch):
-    """Two concurrent save_definition() calls for the same (kind, name) must
-    leave the disk file with the content of the HIGHER committed version.
+    """Two concurrent save_definition() calls must leave disk with the higher-version content.
 
-    Regression test for the save race described in PR #981 round-2 review:
-    without a per-(kind, name) lock spanning both the DB write and the disk
-    write, the lower-version caller can win the disk write after losing the DB
-    race.
+    Without a per-(kind, name) lock spanning both the DB write and the disk write,
+    the lower-version caller can win the disk write after losing the DB race.
     """
     import asyncio
 

@@ -1,13 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the engine_runs Studio API (Phase C Move 2).
-
-Coverage targets:
-  - GET /api/engine-runs/          (list, filters, empty state)
-  - GET /api/engine-runs/{id}      (single row, 404 on miss)
-  - lionagi.studio.services.engine_runs  (service layer, DB absent)
-"""
+"""Tests for the engine_runs Studio API."""
 
 from __future__ import annotations
 
@@ -166,10 +160,7 @@ async def test_service_spec_json_round_trips(patched_engine_runs_svc):
 
 @pytest.fixture
 def patched_app(tmp_path: Path, monkeypatch):
-    """Return (app, db_path, httpx.AsyncClient) with engine_runs DB patched.
-
-    Skips when fastapi/httpx extras are not installed.
-    """
+    """Return (app, db_path, httpx.AsyncClient) with engine_runs DB patched to a temp path."""
     pytest.importorskip("fastapi", reason="studio extra not installed")
     httpx = pytest.importorskip("httpx", reason="httpx not installed")
 

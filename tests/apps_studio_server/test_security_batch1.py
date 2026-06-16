@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for Batch 1 security fixes: #986, #987, #988."""
+"""Security tests: public path safety, marketplace bounds, bearer token auth."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def _make_fake_home(tmp_path: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# #986 — public_path() never returns absolute paths
+# public_path() must never return absolute paths
 # ---------------------------------------------------------------------------
 
 
@@ -65,7 +65,7 @@ class TestPublicPath:
 
 
 # ---------------------------------------------------------------------------
-# #986 — definitions disk_path is not absolute
+# definitions disk_path must not be absolute
 # ---------------------------------------------------------------------------
 
 
@@ -103,7 +103,7 @@ class TestDefinitionsDiskPath:
 
 
 # ---------------------------------------------------------------------------
-# #986 — plugins path field is not absolute
+# plugins path field must not be absolute
 # ---------------------------------------------------------------------------
 
 
@@ -173,7 +173,7 @@ class TestPluginsPathSanitization:
 
 
 # ---------------------------------------------------------------------------
-# #987 — marketplace plugin source paths bounded to repo root
+# marketplace plugin source paths must be bounded to repo root
 # ---------------------------------------------------------------------------
 
 
@@ -265,7 +265,7 @@ class TestMarketplaceSourcePaths:
 
 
 # ---------------------------------------------------------------------------
-# #988 — optional bearer token auth
+# optional bearer token auth
 # ---------------------------------------------------------------------------
 
 

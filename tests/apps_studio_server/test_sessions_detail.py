@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Section 1 tests: _graph_from_metadata() and get_session() DAG graph paths.
-
-Coverage targets:
-  - lionagi.studio.services.sessions._graph_from_metadata  (all branches)
-  - lionagi.studio.services.sessions.get_session           (node_metadata → graph)
-"""
+"""Tests for _graph_from_metadata() and get_session() DAG graph paths."""
 
 from __future__ import annotations
 
