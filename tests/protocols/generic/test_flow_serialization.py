@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for Flow serialization round-trip support.
-
-Verifies to_dict(), from_dict(), and Pile coercion for nested Pile
-fields (items, progressions).
-"""
+"""Tests for Flow serialization round-trip support."""
 
 from lionagi.protocols.generic.flow import Flow
 from lionagi.protocols.generic.pile import Pile
@@ -39,8 +35,6 @@ def _flow_with_progression(n: int = 3, prog_name: str = "stage-1"):
 
 
 class TestFlowToDict:
-    """Test that Flow.to_dict() produces a valid serializable dict."""
-
     def test_to_dict_has_items_and_progressions(self):
         flow, nodes, prog = _flow_with_progression(3)
         d = flow.to_dict()
@@ -100,8 +94,6 @@ class TestFlowToDict:
 
 
 class TestFlowRoundTrip:
-    """Test Flow.from_dict(flow.to_dict()) reconstructs properly."""
-
     def test_basic_round_trip(self):
         flow, nodes, prog = _flow_with_progression(3, "pipeline")
         d = flow.to_dict()
@@ -254,8 +246,6 @@ class TestProgressionNamesRebuild:
 
 
 class TestEmptyFlowRoundTrip:
-    """Test serialization of empty flows."""
-
     def test_empty_flow_to_dict(self):
         flow = Flow()
         d = flow.to_dict()
@@ -301,8 +291,6 @@ class TestEmptyFlowRoundTrip:
 
 
 class TestPileCoercion:
-    """Test Flow._coerce_pile handles dict, list, and Pile inputs."""
-
     def test_coerce_pile_passthrough(self):
         """Pile instances should pass through unchanged."""
         pile = Pile()
@@ -357,8 +345,6 @@ class TestPileCoercion:
 
 
 class TestFlowJsonRoundTrip:
-    """Test JSON serialization round-trip (to_json / from_json)."""
-
     def test_json_round_trip(self):
         flow, nodes, _ = _flow_with_progression(3, "json-stage")
         json_str = flow.to_json()

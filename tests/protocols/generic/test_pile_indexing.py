@@ -1,13 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Coverage tests for lionagi/protocols/generic/pile.py (~76% → 90%+ target).
-
-Targets uncovered lines: to_df, dump, filter_by_type, set ops (__ior__,
-__iand__, __ixor__, __or__, __and__, __xor__), __setitem__ by UUID/int,
-insert at boundaries, async edges, from_dict/to_dict roundtrip,
-is_homogenous, adapt_to/adapt_from, strict_type enforcement.
-"""
+"""Coverage tests for lionagi/protocols/generic/pile.py."""
 
 from __future__ import annotations
 
@@ -57,9 +51,6 @@ def pile_5(five_items):
 # ---------------------------------------------------------------------------
 
 pandas_missing = importlib.util.find_spec("pandas") is None
-
-
-"""Tests for Pile async edges and serialization roundtrip."""
 
 
 @pytest.mark.asyncio

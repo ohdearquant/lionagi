@@ -12,31 +12,26 @@ from lionagi.protocols.generic.event import EventStatus
 
 # Helper functions for testing
 async def helper_func(x: int = 0, y: str = "default") -> str:
-    """Test function."""
     return f"{x}-{y}"
 
 
 def another_helper_func(x: int = 0) -> int:
-    """Another test function."""
     return x + 1
 
 
 @pytest.fixture
 def action_manager():
-    """Fixture for creating an ActionManager instance."""
     return ActionManager()
 
 
 @pytest.fixture
 def populated_manager():
-    """Fixture for creating an ActionManager with pre-registered tools."""
     manager = ActionManager()
     manager.register_tools([helper_func, another_helper_func])
     return manager
 
 
 def test_action_manager_init():
-    """Test ActionManager initialization."""
     manager = ActionManager()
     assert isinstance(manager.registry, dict)
     assert len(manager.registry) == 0
@@ -50,7 +45,6 @@ def test_action_manager_init():
 
 
 def test_tool_registration(action_manager):
-    """Test tool registration functionality."""
     # Test registering a callable
     action_manager.register_tool(helper_func)
     assert helper_func.__name__ in action_manager.registry
@@ -70,7 +64,6 @@ def test_tool_registration(action_manager):
 
 
 def test_tool_registration_validation(action_manager):
-    """Test tool registration validation."""
     # Test invalid tool type
     with pytest.raises(TypeError):
         action_manager.register_tool("not_a_tool")
@@ -82,7 +75,6 @@ def test_tool_registration_validation(action_manager):
 
 
 def test_contains_check(populated_manager):
-    """Test tool existence checking."""
     # Test with function name
     assert "helper_func" in populated_manager
 
@@ -99,7 +91,6 @@ def test_contains_check(populated_manager):
 
 @pytest.mark.asyncio
 async def test_match_tool_action_request(populated_manager):
-    """Test matching tool from ActionRequest."""
     # Test with ActionRequest
     request = ActionRequest(content={"function": "helper_func", "arguments": {"x": 1}})
     result = populated_manager.match_tool(request)
@@ -121,8 +112,6 @@ async def test_match_tool_action_request(populated_manager):
 
 @pytest.mark.asyncio
 async def test_invoke(populated_manager):
-    """Test tool invocation."""
-
     # Test with ActionRequest
     request = ActionRequest(content={"function": "helper_func", "arguments": {"x": 3, "y": "test"}})
     result = await populated_manager.invoke(request)
@@ -130,7 +119,6 @@ async def test_invoke(populated_manager):
 
 
 def test_schema_list(populated_manager):
-    """Test retrieving tool schemas."""
     schemas = populated_manager.schema_list
     assert isinstance(schemas, list)
     assert len(schemas) == 2
@@ -138,7 +126,6 @@ def test_schema_list(populated_manager):
 
 
 def test_get_tool_schema(populated_manager):
-    """Test retrieving specific tool schemas."""
     # Test with boolean=True (all tools)
     result = populated_manager.get_tool_schema(True)
     assert "tools" in result
@@ -170,7 +157,6 @@ def test_get_tool_schema(populated_manager):
 
 
 def test_get_tool_schema_with_kwargs(populated_manager):
-    """Test retrieving tool schemas with additional kwargs."""
     result = populated_manager.get_tool_schema(True)
     assert "tools" in result
 
@@ -181,17 +167,14 @@ def test_get_tool_schema_with_kwargs(populated_manager):
 
 
 def duplicate_name_func1(x: int) -> int:
-    """Function #1 with name collision."""
     return x + 10
 
 
 def duplicate_name_func1(x: int, y: int) -> int:  # noqa: F811
-    """Function #2 with the same name as #1 in Python scope (overrides #1)."""
     return x + y
 
 
 async def failing_func():
-    """An async function that always raises an error."""
     raise RuntimeError("This function always fails")
 
 
@@ -201,13 +184,6 @@ async def failing_func():
 
 
 def test_register_duplicate_name_different_functions():
-    """
-    Test registering two different callables that Python sees as having
-    the same __name__ (due to redefinition).
-    In a real code base, you typically wouldn't do this, but let's ensure
-    the manager handles it gracefully. The second definition overrides
-    the first at the Python level, so effectively only one gets registered.
-    """
     manager = ActionManager()
     manager.register_tool(duplicate_name_func1)  # This references the second definition
 
@@ -220,12 +196,6 @@ def test_register_duplicate_name_different_functions():
 
 
 def test_register_tool_update_with_different_callable():
-    """
-    Test that if you register a tool with name X, then attempt to register
-    a different function with the same name (Python-level name collision),
-    update=True will allow the override.
-    """
-
     def func_original(x: int) -> str:
         return f"Original {x}"
 
@@ -255,11 +225,6 @@ def test_register_tool_update_with_different_callable():
 
 @pytest.mark.asyncio
 async def test_invoke_with_missing_arguments(populated_manager):
-    """
-    Test invoking a tool with missing required arguments
-    to confirm that the `FunctionCalling` logic raises errors at instantiation.
-    (Or if the tool has defaults, it might succeed.)
-    """
     # another_helper_func(x: int=0) -> int
     # 'x' has a default, so missing 'x' should be okay => x=0
     request = ActionRequest(content={"function": "another_helper_func", "arguments": {}})
@@ -276,10 +241,6 @@ async def test_invoke_with_missing_arguments(populated_manager):
 
 @pytest.mark.asyncio
 async def test_invoke_failure_scenario(action_manager):
-    """
-    Test that if a tool's callable raises an Exception,
-    ActionManager.invoke returns a FunctionCalling with FAILED status.
-    """
     # Register a function that always fails
     action_manager.register_tool(failing_func)
 
@@ -292,10 +253,6 @@ async def test_invoke_failure_scenario(action_manager):
 
 
 def test_get_tool_schema_with_auto_register():
-    """
-    Test the auto_register=True behavior in get_tool_schema().
-    If the tool isn't registered, the manager should register it on the fly.
-    """
     manager = ActionManager()
 
     def unregistered_tool(x: int) -> int:
@@ -311,10 +268,6 @@ def test_get_tool_schema_with_auto_register():
 
 
 def test_get_tool_schema_without_auto_register():
-    """
-    Test the auto_register=False behavior in get_tool_schema().
-    If the tool isn't registered, it should raise a ValueError.
-    """
     manager = ActionManager()
 
     def unregistered_tool(x: int) -> int:
@@ -328,11 +281,6 @@ def test_get_tool_schema_without_auto_register():
 
 
 def test_get_tool_schema_partial_list(populated_manager):
-    """
-    Test passing a list that contains a mix of valid and invalid tools
-    to get_tool_schema(). The first invalid should raise an error.
-    """
-
     def brand_new_tool():
         return "I'm not in the registry yet"
 
@@ -361,10 +309,7 @@ def test_get_tool_schema_partial_list(populated_manager):
 
 
 class TestRegisterToolDuplicateToolObject:
-    """Line 86: register_tool with a duplicate Tool object (update=False)."""
-
     def test_duplicate_tool_object_raises_with_function_name(self):
-        """Line 86: tool.function extracted for error message when Tool duplicated."""
         manager = ActionManager()
 
         def my_func(x: int) -> int:
@@ -380,7 +325,6 @@ class TestRegisterToolDuplicateToolObject:
             manager.register_tool(tool, update=False)
 
     def test_duplicate_callable_tool_registered_as_name(self):
-        """Line 88: callable.__name__ extracted when function already registered."""
         manager = ActionManager()
 
         def another_fn(y: str) -> str:

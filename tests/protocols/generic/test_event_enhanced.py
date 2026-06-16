@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Enhanced tests for Event/Execution features (PR4).
-
-Covers: Execution.retryable, Execution.add_error(),
-Execution._serialize_exception_group(), Event.assert_completed(),
-and backward compatibility.
-"""
+"""Tests for Execution.retryable, add_error(), _serialize_exception_group(), and Event.assert_completed()."""
 
 from __future__ import annotations
 
@@ -22,8 +17,6 @@ from lionagi.protocols.generic.event import Event, EventStatus, Execution
 
 
 class TestExecutionRetryable:
-    """Tests for the Execution.retryable field."""
-
     def test_default_is_unset(self):
         ex = Execution()
         assert ex.retryable is Unset
@@ -77,8 +70,6 @@ class TestExecutionRetryable:
 
 
 class TestExecutionAddError:
-    """Tests for the Execution.add_error() method."""
-
     def test_first_error_sets_error(self):
         ex = Execution()
         err = ValueError("first")
@@ -146,8 +137,6 @@ class TestExecutionAddError:
 
 
 class TestSerializeExceptionGroup:
-    """Tests for Execution._serialize_exception_group()."""
-
     def test_simple_exception_group(self):
         ex = Execution()
         eg = ExceptionGroup("test group", [ValueError("a"), TypeError("b")])
@@ -250,8 +239,6 @@ class TestSerializeExceptionGroup:
 
 
 class TestEventAssertCompleted:
-    """Tests for Event.assert_completed()."""
-
     def test_no_op_when_completed(self):
         event = Event()
         event.execution.status = EventStatus.COMPLETED
@@ -317,8 +304,6 @@ class TestEventAssertCompleted:
 
 
 class TestBackwardCompatibility:
-    """Ensure new features do not break existing behavior."""
-
     def test_execution_without_retryable(self):
         """Execution() without retryable uses Unset sentinel (not None)."""
         ex = Execution()
