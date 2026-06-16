@@ -1,10 +1,4 @@
-"""Comprehensive tests for lionagi.ln._utils module.
-
-Tests cover: acreate_path (async file operations), get_bins (string binning),
-import_module (dynamic imports), and utility functions.
-
-Target: >95% coverage for _utils.py (currently 36.21%)
-"""
+"""Tests for lionagi.ln._utils: acreate_path, get_bins, import_module."""
 
 import pytest
 from hypothesis import given, settings
@@ -24,11 +18,8 @@ from lionagi.ln._utils import (
 
 
 class TestNowUtc:
-    """Test suite for now_utc function."""
-
     @pytest.mark.unit
     def test_now_utc_returns_datetime(self):
-        """Test now_utc returns datetime object."""
         result = now_utc()
         assert result is not None
         assert hasattr(result, "year")
@@ -41,18 +32,14 @@ class TestNowUtc:
 
 
 class TestAcreatePath:
-    """Test suite for acreate_path async function."""
-
     @pytest.mark.anyio
     async def test_acreate_path_basic(self, tmp_path):
-        """Test acreate_path basic usage."""
         result = await acreate_path(directory=tmp_path, filename="test.txt")
         assert result.name == "test.txt"
         assert result.parent == tmp_path
 
     @pytest.mark.anyio
     async def test_acreate_path_with_subdirectory(self, tmp_path):
-        """Test acreate_path handles filename with subdirectory."""
         result = await acreate_path(
             directory=tmp_path,
             filename="subdir/test.txt",
@@ -63,20 +50,17 @@ class TestAcreatePath:
 
     @pytest.mark.anyio
     async def test_acreate_path_backslash_raises(self, tmp_path):
-        """Test acreate_path raises ValueError for backslash in filename."""
         with pytest.raises(ValueError, match="cannot contain directory separators"):
             await acreate_path(directory=tmp_path, filename="test\\file.txt")
 
     @pytest.mark.anyio
     async def test_acreate_path_with_extension_in_filename(self, tmp_path):
-        """Test acreate_path handles filename with extension."""
         result = await acreate_path(directory=tmp_path, filename="test.txt")
         assert result.name == "test.txt"
         assert result.suffix == ".txt"
 
     @pytest.mark.anyio
     async def test_acreate_path_with_explicit_extension(self, tmp_path):
-        """Test acreate_path with explicit extension parameter."""
         result = await acreate_path(
             directory=tmp_path,
             filename="test",
@@ -87,7 +71,6 @@ class TestAcreatePath:
 
     @pytest.mark.anyio
     async def test_acreate_path_extension_overrides_filename_ext(self, tmp_path):
-        """Test explicit extension parameter overrides filename extension."""
         result = await acreate_path(
             directory=tmp_path,
             filename="test.txt",
@@ -98,7 +81,6 @@ class TestAcreatePath:
 
     @pytest.mark.anyio
     async def test_acreate_path_with_timestamp_prefix(self, tmp_path):
-        """Test acreate_path adds timestamp as prefix."""
         result = await acreate_path(
             directory=tmp_path,
             filename="test.txt",
@@ -115,7 +97,6 @@ class TestAcreatePath:
 
     @pytest.mark.anyio
     async def test_acreate_path_with_timestamp_suffix(self, tmp_path):
-        """Test acreate_path adds timestamp as suffix."""
         result = await acreate_path(
             directory=tmp_path,
             filename="test.txt",
@@ -131,7 +112,6 @@ class TestAcreatePath:
 
     @pytest.mark.anyio
     async def test_acreate_path_with_custom_timestamp_format(self, tmp_path):
-        """Test acreate_path with custom timestamp format."""
         result = await acreate_path(
             directory=tmp_path,
             filename="test.txt",
@@ -145,7 +125,6 @@ class TestAcreatePath:
 
     @pytest.mark.anyio
     async def test_acreate_path_with_random_hash(self, tmp_path):
-        """Test acreate_path adds random hash suffix."""
         result = await acreate_path(
             directory=tmp_path,
             filename="test.txt",
@@ -159,7 +138,6 @@ class TestAcreatePath:
 
     @pytest.mark.anyio
     async def test_acreate_path_with_timestamp_and_hash(self, tmp_path):
-        """Test acreate_path with both timestamp and random hash."""
         result = await acreate_path(
             directory=tmp_path,
             filename="test.txt",
@@ -173,7 +151,6 @@ class TestAcreatePath:
 
     @pytest.mark.anyio
     async def test_acreate_path_file_exists_ok_true(self, tmp_path):
-        """Test acreate_path with file_exist_ok=True allows existing files."""
         # Create file first
         test_file = tmp_path / "test.txt"
         test_file.touch()
@@ -188,7 +165,6 @@ class TestAcreatePath:
 
     @pytest.mark.anyio
     async def test_acreate_path_file_exists_raises(self, tmp_path):
-        """Test acreate_path raises when file exists and file_exist_ok=False."""
         # Create file first
         test_file = tmp_path / "test.txt"
         test_file.touch()
@@ -202,7 +178,6 @@ class TestAcreatePath:
 
     @pytest.mark.anyio
     async def test_acreate_path_creates_parent_directories(self, tmp_path):
-        """Test acreate_path creates parent directories."""
         result = await acreate_path(
             directory=tmp_path,
             filename="deep/nested/structure/test.txt",
@@ -217,11 +192,8 @@ class TestAcreatePath:
 
 
 class TestGetBins:
-    """Test suite for get_bins function."""
-
     @pytest.mark.unit
     def test_get_bins_basic(self):
-        """Test get_bins basic functionality."""
         result = get_bins(["a" * 10, "b" * 10, "c" * 10], upper=25)
         assert len(result) == 2
         assert result[0] == [0, 1]
@@ -229,13 +201,11 @@ class TestGetBins:
 
     @pytest.mark.unit
     def test_get_bins_empty_input(self):
-        """Test get_bins with empty input."""
         result = get_bins([], upper=100)
         assert result == []
 
     @pytest.mark.unit
     def test_get_bins_single_item_fits(self):
-        """Test get_bins with single item that fits."""
         result = get_bins(["a" * 50], upper=100)
         assert result == [[0]]
 
@@ -252,7 +222,6 @@ class TestGetBins:
 
     @pytest.mark.unit
     def test_get_bins_exact_boundary(self):
-        """Test get_bins at exact upper boundary."""
         # First two items total exactly 100 (50 + 49 = 99 < 100)
         result = get_bins(["a" * 50, "b" * 49, "c" * 30], upper=100)
         assert len(result) == 2
@@ -261,7 +230,6 @@ class TestGetBins:
 
     @pytest.mark.unit
     def test_get_bins_all_items_fit_one_bin(self):
-        """Test get_bins when all items fit in one bin."""
         result = get_bins(["a" * 10, "b" * 10, "c" * 10], upper=100)
         assert len(result) == 1
         assert result[0] == [0, 1, 2]
@@ -273,7 +241,6 @@ class TestGetBins:
     )
     @settings(max_examples=50)
     def test_get_bins_property_invariants(self, strings, upper):
-        """Property test: get_bins maintains invariants."""
         result = get_bins(strings, upper)
 
         # All indices should be present exactly once
@@ -295,24 +262,19 @@ class TestGetBins:
 
 
 class TestImportModule:
-    """Test suite for import_module function."""
-
     @pytest.mark.unit
     def test_import_module_package_only(self):
-        """Test import_module with package name only."""
         result = import_module("json")
         assert result is not None
         assert hasattr(result, "dumps")
 
     @pytest.mark.unit
     def test_import_module_with_module_name(self):
-        """Test import_module with package and module name."""
         result = import_module("os", "path")
         assert result is not None
 
     @pytest.mark.unit
     def test_import_module_with_single_import_name(self):
-        """Test import_module with single import name."""
         result = import_module("json", import_name="dumps")
         assert callable(result)
         # Verify it's the actual dumps function
@@ -320,7 +282,6 @@ class TestImportModule:
 
     @pytest.mark.unit
     def test_import_module_with_list_import_names(self):
-        """Test import_module with list of import names."""
         result = import_module("json", import_name=["dumps", "loads"])
         assert isinstance(result, list)
         assert len(result) == 2
@@ -328,13 +289,11 @@ class TestImportModule:
 
     @pytest.mark.unit
     def test_import_module_invalid_package_raises(self):
-        """Test import_module raises ImportError for invalid package."""
         with pytest.raises(ImportError, match="Failed to import"):
             import_module("nonexistent_package_xyz")
 
     @pytest.mark.unit
     def test_import_module_invalid_module_raises(self):
-        """Test import_module raises ImportError for invalid module."""
         with pytest.raises(ImportError, match="Failed to import"):
             import_module("os", "nonexistent_module_xyz")
 
@@ -345,22 +304,17 @@ class TestImportModule:
 
 
 class TestIsImportInstalled:
-    """Test suite for is_import_installed function."""
-
     @pytest.mark.unit
     def test_is_import_installed_true_for_stdlib(self):
-        """Test is_import_installed returns True for stdlib packages."""
         assert is_import_installed("json") is True
         assert is_import_installed("os") is True
         assert is_import_installed("sys") is True
 
     @pytest.mark.unit
     def test_is_import_installed_true_for_installed_packages(self):
-        """Test is_import_installed returns True for installed packages."""
         assert is_import_installed("pytest") is True
         assert is_import_installed("anyio") is True
 
     @pytest.mark.unit
     def test_is_import_installed_false_for_nonexistent(self):
-        """Test is_import_installed returns False for nonexistent packages."""
         assert is_import_installed("nonexistent_package_xyz_12345") is False

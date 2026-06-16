@@ -64,7 +64,6 @@ async def test_taskgroup_name_passthrough(anyio_backend):
 
 @pytest.mark.anyio
 async def test_taskgroup_happy_path_completion(anyio_backend):
-    """Test that TaskGroup waits for all tasks to complete successfully."""
     results = []
 
     async def worker(n):
@@ -82,7 +81,6 @@ async def test_taskgroup_happy_path_completion(anyio_backend):
 
 @pytest.mark.anyio
 async def test_taskgroup_start_with_initialization(anyio_backend):
-    """Test TaskGroup.start() for tasks that signal initialization."""
     initialized = []
     completed = []
 
@@ -112,7 +110,6 @@ async def test_taskgroup_start_with_initialization(anyio_backend):
 
 @pytest.mark.anyio
 async def test_taskgroup_mixed_success_and_cancellation(anyio_backend):
-    """Test TaskGroup with some tasks completing before cancellation."""
     completed = []
     cancelled = []
 
@@ -150,7 +147,6 @@ async def test_taskgroup_mixed_success_and_cancellation(anyio_backend):
 
 @pytest.mark.anyio
 async def test_taskgroup_cancel_scope_propagation(anyio_backend):
-    """Test that TaskGroup properly propagates its cancel scope."""
     outer_cancelled = False
     inner_cancelled = False
     outer_started = anyio.Event()

@@ -9,11 +9,7 @@ from lionagi.libs.schema.extract_docstring import extract_docstring
 
 
 class TestExtractDocstringGoogle:
-    """Test cases for Google-style docstring extraction."""
-
     def test_simple_google_docstring(self):
-        """Test extracting simple Google-style docstring."""
-
         def sample_func(x: int, y: str):
             """This is a sample function.
 
@@ -30,8 +26,6 @@ class TestExtractDocstringGoogle:
         assert params["y"] == "The second parameter."
 
     def test_google_with_type_annotations(self):
-        """Test Google-style docstring with type annotations in Args."""
-
         def typed_func(x: int, y: str):
             """Function with typed parameters.
 
@@ -48,8 +42,6 @@ class TestExtractDocstringGoogle:
         assert params["y"] == "A string parameter."
 
     def test_google_multiline_param_description(self):
-        """Test multiline parameter descriptions in Google style."""
-
         def multiline_func(x: int):
             """Function with multiline parameter.
 
@@ -66,8 +58,6 @@ class TestExtractDocstringGoogle:
         assert "spans multiple lines" in params["x"]
 
     def test_google_with_parameters_keyword(self):
-        """Test Google-style with 'Parameters:' instead of 'Args:'."""
-
         def params_func(x: int):
             """Function using Parameters keyword.
 
@@ -82,8 +72,6 @@ class TestExtractDocstringGoogle:
         assert params["x"] == "The parameter."
 
     def test_google_with_arguments_keyword(self):
-        """Test Google-style with 'Arguments:' keyword."""
-
         def args_func(x: int):
             """Function using Arguments keyword.
 
@@ -98,8 +86,6 @@ class TestExtractDocstringGoogle:
         assert params["x"] == "The parameter."
 
     def test_google_no_docstring(self):
-        """Test function without docstring."""
-
         def no_doc():
             pass
 
@@ -109,8 +95,6 @@ class TestExtractDocstringGoogle:
         assert params == {}
 
     def test_google_description_only(self):
-        """Test docstring with only description, no parameters."""
-
         def desc_only():
             """Just a description."""
             pass
@@ -121,8 +105,6 @@ class TestExtractDocstringGoogle:
         assert params == {}
 
     def test_google_complex_docstring(self):
-        """Test complex Google-style docstring with multiple sections."""
-
         def complex_func(param1: str, param2: int):
             """Complex function with detailed documentation.
 
@@ -146,8 +128,6 @@ class TestExtractDocstringGoogle:
         assert "param2" in params
 
     def test_google_empty_lines_in_args(self):
-        """Test handling of empty lines within Args section."""
-
         def empty_lines_func(x: int, y: str):
             """Function with empty lines.
 
@@ -165,11 +145,7 @@ class TestExtractDocstringGoogle:
 
 
 class TestExtractDocstringRest:
-    """Test cases for reST-style docstring extraction."""
-
     def test_simple_rest_docstring(self):
-        """Test extracting simple reST-style docstring."""
-
         def sample_func(x: int, y: str):
             """This is a sample function.
 
@@ -185,8 +161,6 @@ class TestExtractDocstringRest:
         assert params["y"] == "The second parameter."
 
     def test_rest_with_type_annotations(self):
-        """Test reST-style with type annotations."""
-
         def typed_func(x: int, y: str):
             """Function with typed parameters.
 
@@ -204,8 +178,6 @@ class TestExtractDocstringRest:
         assert params["y"] == "A string parameter."
 
     def test_rest_multiline_param_description(self):
-        """Test multiline parameter descriptions in reST style."""
-
         def multiline_func(x: int):
             """Function with multiline parameter.
 
@@ -222,8 +194,6 @@ class TestExtractDocstringRest:
         assert "This is a parameter" in params["x"]
 
     def test_rest_no_docstring(self):
-        """Test function without docstring."""
-
         def no_doc():
             pass
 
@@ -233,8 +203,6 @@ class TestExtractDocstringRest:
         assert params == {}
 
     def test_rest_description_only(self):
-        """Test docstring with only description, no parameters."""
-
         def desc_only():
             """Just a description."""
             pass
@@ -245,8 +213,6 @@ class TestExtractDocstringRest:
         assert params == {}
 
     def test_rest_complex_docstring(self):
-        """Test complex reST-style docstring with multiple sections."""
-
         def complex_func(param1: str, param2: int):
             """Complex function with detailed documentation.
 
@@ -268,11 +234,7 @@ class TestExtractDocstringRest:
 
 
 class TestExtractDocstringGeneral:
-    """Test cases for general docstring extraction functionality."""
-
     def test_unsupported_style(self):
-        """Test that unsupported style raises ValueError."""
-
         def sample_func():
             """Test function."""
             pass
@@ -283,8 +245,6 @@ class TestExtractDocstringGeneral:
         assert "not supported" in str(excinfo.value).lower()
 
     def test_style_case_insensitive(self):
-        """Test that style parameter is case insensitive."""
-
         def sample_func(x: int):
             """Test function.
 
@@ -302,8 +262,6 @@ class TestExtractDocstringGeneral:
         assert params1 == params2 == params3
 
     def test_style_with_whitespace(self):
-        """Test that style parameter handles whitespace."""
-
         def sample_func(x: int):
             """Test function.
 
@@ -317,8 +275,6 @@ class TestExtractDocstringGeneral:
         assert "x" in params
 
     def test_default_style_is_google(self):
-        """Test that default style is Google."""
-
         def sample_func(x: int):
             """Test function.
 
@@ -333,8 +289,6 @@ class TestExtractDocstringGeneral:
         assert "x" in params
 
     def test_function_with_no_parameters_google(self):
-        """Test Google-style function with no parameters."""
-
         def no_params():
             """Function with no parameters.
 
@@ -348,8 +302,6 @@ class TestExtractDocstringGeneral:
         assert params == {}
 
     def test_function_with_no_parameters_rest(self):
-        """Test reST-style function with no parameters."""
-
         def no_params():
             """Function with no parameters.
 
@@ -362,8 +314,6 @@ class TestExtractDocstringGeneral:
         assert params == {}
 
     def test_parameter_with_special_characters(self):
-        """Test parameter names with underscores and numbers."""
-
         def special_params(param_1: int, param_2_long: str):
             """Function with special parameter names.
 
@@ -378,8 +328,6 @@ class TestExtractDocstringGeneral:
         assert "param_2_long" in params
 
     def test_real_world_example_google(self):
-        """Test with a real-world-like Google-style docstring."""
-
         def calculate_statistics(data: list, method: str, precision: int):
             """Calculate statistical measures from data.
 
@@ -415,8 +363,6 @@ class TestExtractDocstringGeneral:
         assert "statistical method" in params["method"].lower()
 
     def test_real_world_example_rest(self):
-        """Test with a real-world-like reST-style docstring."""
-
         def process_data(input_file: str, output_format: str):
             """Process data from input file and convert to specified format.
 

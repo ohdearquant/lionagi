@@ -90,53 +90,43 @@ class TestLCallFunction(unittest.IsolatedAsyncioTestCase):
 
 
 class TestLCallSyncFunction:
-    """Test suite for synchronous lcall function."""
-
     @pytest.mark.unit
     def test_lcall_basic_usage(self):
-        """Test lcall basic functionality."""
         result = lcall([1, 2, 3], lambda x: x * 2)
         assert result == [2, 4, 6]
 
     @pytest.mark.unit
     def test_lcall_func_not_callable_raises(self):
-        """Test lcall raises ValueError when func is not callable."""
         with pytest.raises(ValueError, match="exactly one callable"):
             lcall([1, 2, 3], "not_callable")
 
     @pytest.mark.unit
     def test_lcall_func_iterable_with_one_callable(self):
-        """Test lcall accepts iterable with single callable."""
         result = lcall([1, 2, 3], [lambda x: x * 2])
         assert result == [2, 4, 6]
 
     @pytest.mark.unit
     def test_lcall_func_iterable_with_multiple_callables_raises(self):
-        """Test lcall raises ValueError when func iterable has multiple callables."""
         with pytest.raises(ValueError, match="exactly one callable"):
             lcall([1, 2, 3], [lambda x: x * 2, lambda x: x * 3])
 
     @pytest.mark.unit
     def test_lcall_func_iterable_with_non_callable_raises(self):
-        """Test lcall raises ValueError when func iterable has non-callable."""
         with pytest.raises(ValueError, match="exactly one callable"):
             lcall([1, 2, 3], ["not_callable"])
 
     @pytest.mark.unit
     def test_lcall_func_non_iterable_non_callable_raises(self):
-        """Test lcall raises ValueError when func is neither callable nor iterable."""
         with pytest.raises(ValueError, match="func must be callable"):
             lcall([1, 2, 3], 123)
 
     @pytest.mark.unit
     def test_lcall_output_unique_without_flatten_raises(self):
-        """Test lcall raises ValueError when output_unique=True without flatten."""
         with pytest.raises(ValueError, match="unique_output requires"):
             lcall([1, 2, 3], lambda x: x, output_unique=True)
 
     @pytest.mark.unit
     def test_lcall_output_unique_with_flatten(self):
-        """Test lcall works when output_unique=True with flatten."""
         result = lcall(
             [[1, 2], [2, 3], [3, 4]],
             lambda x: x,
@@ -148,7 +138,6 @@ class TestLCallSyncFunction:
 
     @pytest.mark.unit
     def test_lcall_output_unique_with_dropna(self):
-        """Test lcall works when output_unique=True with both flatten and dropna."""
         result = lcall(
             [1, 2, 3],
             lambda x: [x, x] if x != 2 else None,
@@ -162,7 +151,6 @@ class TestLCallSyncFunction:
 
     @pytest.mark.unit
     def test_lcall_interrupted_error_returns_partial(self):
-        """Test lcall returns partial results on InterruptedError."""
 
         def func(x):
             if x == 2:
@@ -174,7 +162,6 @@ class TestLCallSyncFunction:
 
     @pytest.mark.unit
     def test_lcall_exception_propagates(self):
-        """Test lcall propagates non-interrupted exceptions."""
 
         def func(x):
             if x == 2:
@@ -186,7 +173,6 @@ class TestLCallSyncFunction:
 
     @pytest.mark.unit
     def test_lcall_input_flatten(self):
-        """Test lcall with input_flatten=True."""
         result = lcall(
             [[1, 2], [3, 4]],
             lambda x: x * 2,
@@ -196,7 +182,6 @@ class TestLCallSyncFunction:
 
     @pytest.mark.unit
     def test_lcall_input_dropna(self):
-        """Test lcall with input_dropna=True."""
         result = lcall(
             [1, None, 2, None, 3],
             lambda x: x * 2,
@@ -206,7 +191,6 @@ class TestLCallSyncFunction:
 
     @pytest.mark.unit
     def test_lcall_non_list_input_conversion(self):
-        """Test lcall converts non-list iterable inputs."""
         # Tuple input
         result = lcall((1, 2, 3), lambda x: x * 2)
         assert result == [2, 4, 6]
@@ -221,13 +205,11 @@ class TestLCallSyncFunction:
 
     @pytest.mark.unit
     def test_lcall_non_iterable_input_single_element(self):
-        """Test lcall wraps non-iterable input as single element list."""
         result = lcall(5, lambda x: x * 2)
         assert result == [10]
 
     @pytest.mark.unit
     def test_lcall_with_args_kwargs(self):
-        """Test lcall passes extra args and kwargs to function."""
 
         def func(x, add, multiply=1):
             return (x + add) * multiply
@@ -237,7 +219,6 @@ class TestLCallSyncFunction:
 
     @pytest.mark.unit
     def test_lcall_output_flatten(self):
-        """Test lcall with output_flatten=True."""
 
         def func(x):
             return [x, x * 2]
@@ -247,7 +228,6 @@ class TestLCallSyncFunction:
 
     @pytest.mark.unit
     def test_lcall_output_dropna(self):
-        """Test lcall with output_dropna=True."""
 
         def func(x):
             return None if x == 2 else x
@@ -263,7 +243,6 @@ class TestLCallSyncFunction:
     )
     @settings(max_examples=30)
     def test_lcall_flatten_options_property(self, values, input_flatten, output_flatten):
-        """Property test: lcall processing options work correctly."""
         result = lcall(
             values,
             lambda x: x * 2,
@@ -278,7 +257,6 @@ class TestLCallSyncFunction:
     @given(values=st.lists(st.integers(min_value=0, max_value=100), max_size=15))
     @settings(max_examples=20)
     def test_lcall_preserves_order_property(self, values):
-        """Property test: lcall preserves input order."""
 
         def double(x):
             return x * 2
@@ -289,13 +267,11 @@ class TestLCallSyncFunction:
 
     @pytest.mark.unit
     def test_lcall_empty_input(self):
-        """Test lcall with empty input list."""
         result = lcall([], lambda x: x * 2)
         assert result == []
 
     @pytest.mark.unit
     def test_lcall_input_unique_with_flatten(self):
-        """Test lcall with input_unique and flatten."""
         result = lcall(
             [[1, 2], [2, 3], [3, 4]],
             lambda x: x * 2,

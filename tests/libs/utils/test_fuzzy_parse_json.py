@@ -1,4 +1,4 @@
-"""Test suite for JSON utilities (fuzzy_json, extract_json) - TDD Specification Implementation."""
+"""Tests for fuzzy_json and extract_json utilities."""
 
 import pytest
 
@@ -7,13 +7,7 @@ from lionagi.ln.fuzzy._fuzzy_json import fix_json_string, fuzzy_json
 
 
 class TestFuzzyJsonParsing:
-    """TestSuite: FuzzyJsonParsing (Msgspec Integration) - Resilience, malformed input handling."""
-
     def test_valid_json(self):
-        """Test: ValidJson
-
-        GIVEN input='{"a": 1}' THEN returns {"a": 1}.
-        """
         assert fuzzy_json('{"a": 1}') == {"a": 1}, "Valid JSON must parse correctly"
         assert fuzzy_json("[1, 2, 3]") == [
             1,
@@ -25,10 +19,6 @@ class TestFuzzyJsonParsing:
         )
 
     def test_normalization(self):
-        """Test: Normalization (Single Quote, Whitespace, Unquoted Keys)
-
-        GIVEN input=" {'a': 1, b: '2'} " THEN returns {"a": 1, "b": "2"}.
-        """
         # Single quotes
         assert fuzzy_json("{'a': 1}") == {"a": 1}, (
             "Single quotes must be normalized to double quotes"
@@ -55,12 +45,6 @@ class TestFuzzyJsonParsing:
         )
 
     def test_unmatched_brackets_fixing(self):
-        """Test: UnmatchedBracketsFixing (CRITICAL)
-
-        GIVEN input='[{"a": 1}, {"b": 2}' (Missing }] )
-        WHEN fuzzy_json(input) is called
-        THEN returns [{"a": 1}, {"b": 2}].
-        """
         # Missing closing bracket
         assert fuzzy_json('[{"a": 1}, {"b": 2}') == [
             {"a": 1},
@@ -81,12 +65,6 @@ class TestFuzzyJsonParsing:
         )
 
     def test_irreparable_input(self):
-        """Test: IrreparableInput
-
-        GIVEN input="Not JSON" or ""
-        WHEN fuzzy_json(input) is called
-        THEN raise ValueError.
-        """
         with pytest.raises(ValueError, match="Invalid JSON string"):
             fuzzy_json("Not JSON at all")
 
@@ -103,7 +81,6 @@ class TestFuzzyJsonParsing:
             fuzzy_json(None)
 
     def test_complex_malformed_json(self):
-        """Test handling of complex malformed JSON scenarios."""
         # Mixed quotes
         assert fuzzy_json("{\"a\": 'value'}") == {"a": "value"}, "Mixed quotes must be handled"
 
@@ -116,7 +93,6 @@ class TestFuzzyJsonParsing:
         ], "Trailing commas in arrays should be handled"
 
     def test_escaped_characters(self):
-        """Test handling of escaped characters."""
         # Escaped quotes
         assert fuzzy_json('{"key": "\\"value\\""}') == {"key": '"value"'}, (
             "Escaped quotes must be preserved"
@@ -128,7 +104,6 @@ class TestFuzzyJsonParsing:
         )
 
     def test_msgspec_decoder_efficiency(self):
-        """Test that msgspec decoder is used efficiently."""
         # Large JSON should still parse efficiently
         large_json = '{"items": [' + ",".join(f'{{"id": {i}}}' for i in range(100)) + "]}"
         result = fuzzy_json(large_json)
@@ -138,10 +113,7 @@ class TestFuzzyJsonParsing:
 
 
 class TestExtractJson:
-    """TestSuite: ExtractJson - Markdown extraction, multiple blocks, fuzzy integration."""
-
     def test_direct_json_parsing(self):
-        """Test direct JSON parsing without markdown blocks."""
         assert extract_json('{"a": 1}') == {"a": 1}, "Direct JSON must parse"
         assert extract_json("[1, 2, 3]") == [
             1,
@@ -150,12 +122,6 @@ class TestExtractJson:
         ], "Direct JSON array must parse"
 
     def test_markdown_code_block_extraction(self):
-        """Test: MarkdownCodeBlockExtraction
-
-        GIVEN input='Text\n```json\n{"a": 1}\n```'
-        WHEN extract_json(input) is called
-        THEN returns {"a": 1}.
-        """
         input_text = """Some text before
 ```json
 {"a": 1}
@@ -179,12 +145,6 @@ Some text after"""
         )
 
     def test_multiple_code_blocks(self):
-        """Test: MultipleCodeBlocks
-
-        GIVEN input='```json\n{"a": 1}\n```\n```json\n{"b": 2}\n```'
-        WHEN extract_json(input) is called
-        THEN returns [{"a": 1}, {"b": 2}].
-        """
         input_text = """First block:
 ```json
 {"a": 1}
@@ -220,12 +180,6 @@ Second block:
         ], "Three blocks must all be extracted"
 
     def test_fuzzy_integration(self):
-        """Test: FuzzyIntegration
-
-        GIVEN input="```json\n{'a': 1}\n```"
-        WHEN extract_json(input, fuzzy_parse=True) is called
-        THEN returns {"a": 1}.
-        """
         # Single quotes in markdown block
         input_text = """```json
 {'a': 1, 'b': 2}
@@ -253,7 +207,6 @@ Second block:
         )
 
     def test_return_one_if_single_parameter(self):
-        """Test the return_one_if_single parameter behavior."""
         single_block = """```json
 {"single": "value"}
 ```"""
@@ -272,7 +225,6 @@ Second block:
         )
 
     def test_list_input(self):
-        """Test that list of strings is properly joined and processed."""
         lines = [
             "Some text",
             "```json",
@@ -301,7 +253,6 @@ Second block:
         ], "Multiple blocks from list input"
 
     def test_no_json_found(self):
-        """Test behavior when no JSON is found."""
         assert extract_json("No JSON here") == [], "No JSON should return empty list"
         assert extract_json("```python\nprint('hello')\n```") == [], (
             "Non-JSON code block returns empty"
@@ -314,7 +265,6 @@ Second block:
         )
 
     def test_nested_json_in_markdown(self):
-        """Test extraction of complex nested JSON from markdown."""
         complex_md = """Here's a complex response:
         
 ```json
@@ -346,28 +296,22 @@ And another one:
 
 
 class TestFixJsonString:
-    """Test the fix_json_string utility function directly."""
-
     def test_fix_missing_closing_brackets(self):
-        """Test fixing various missing closing brackets."""
         assert fix_json_string('{"a": 1') == '{"a": 1}'
         assert fix_json_string("[1, 2, 3") == "[1, 2, 3]"
         assert fix_json_string('{"a": [1, 2') == '{"a": [1, 2]}'
         assert fix_json_string('[{"a": 1') == '[{"a": 1}]'
 
     def test_nested_missing_brackets(self):
-        """Test fixing deeply nested missing brackets."""
         assert fix_json_string('{"a": {"b": {"c": 1') == '{"a": {"b": {"c": 1}}}'
         assert fix_json_string("[[[1, 2") == "[[[1, 2]]]"
 
     def test_mixed_bracket_types(self):
-        """Test fixing mixed bracket types."""
         assert (
             fix_json_string('{"array": [1, 2, {"nested": 3') == '{"array": [1, 2, {"nested": 3}]}'
         )
 
     def test_error_conditions(self):
-        """Test error conditions for fix_json_string."""
         with pytest.raises(ValueError, match="Extra closing bracket"):
             fix_json_string('{"a": 1}}')
 
@@ -378,7 +322,6 @@ class TestFixJsonString:
             fix_json_string("")
 
     def test_string_preservation(self):
-        """Test that strings containing brackets are preserved."""
         # Brackets inside strings should not affect bracket counting
         result = fix_json_string('{"text": "Use [brackets] and {braces} in text"}')
         assert result == '{"text": "Use [brackets] and {braces} in text"}'
