@@ -70,7 +70,7 @@ class _SpyHandler(logging.Handler):
 
 
 @contextmanager
-def _spy_logger(name: str) -> Generator[_RecordList, None, None]:
+def _spy_logger(name: str) -> Generator[_RecordList]:
     """Context manager: attach a spy handler to logger *name*, yield its records."""
     logger = logging.getLogger(name)
     spy = _SpyHandler()
@@ -89,10 +89,38 @@ def _spy_logger(name: str) -> Generator[_RecordList, None, None]:
 # ---------------------------------------------------------------------------
 
 
+async def _anoop(*args: object, **kwargs: object) -> None:
+    return None
+
+
+def _neutralize_heavy_lifespan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub out the lifespan's heavy startup/shutdown side-effects.
+
+    These tests assert only on ``_emit_startup_warnings()`` (which runs first,
+    before anything below).  Letting the rest of the lifespan run — for every
+    one of the 7 lifespan tests, each in its own ``TestClient`` portal thread,
+    on top of 9 module reloads — spins a background scheduler tick loop, runs
+    three DB reapers (one of which shells out to ``ps`` and reads the real
+    ``state.db``), and WAL-checkpoints.  That machinery dominates this file's
+    memory/thread/subprocess footprint and made it the consistent casualty of
+    OOM-killed xdist workers; it also leaked writes into the developer/CI real
+    ``DEFAULT_DB_PATH``.  The scheduler-start, reconciliation, and checkpoint
+    paths are covered directly by the scheduler/launches test modules.
+    """
+    import lionagi.studio.scheduler.engine as engine_mod
+    import lionagi.studio.services.db_maintenance as db_maintenance_mod
+    import lionagi.studio.services.launches as launches_mod
+    import lionagi.studio.services.lifecycle as lifecycle_mod
+
+    monkeypatch.setattr(engine_mod.scheduler, "start", _anoop)
+    monkeypatch.setattr(engine_mod.scheduler, "stop", _anoop)
+    monkeypatch.setattr(lifecycle_mod, "run_startup_reconciliation", _anoop)
+    monkeypatch.setattr(db_maintenance_mod, "checkpoint_state_db", _anoop)
+    monkeypatch.setattr(launches_mod, "shutdown_launches", _anoop)
+
+
 @contextmanager
-def _lifespan_client(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> Generator[TestClient, None, None]:
+def _lifespan_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[TestClient]:
     """Context manager that starts a TestClient with lifespan running.
 
     The FastAPI lifespan (where _emit_startup_warnings fires) only executes
@@ -110,6 +138,7 @@ def _lifespan_client(
     monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
 
     reload(app_mod)
+    _neutralize_heavy_lifespan(monkeypatch)
     with TestClient(app_mod.app, raise_server_exceptions=False) as client:
         yield client
 
