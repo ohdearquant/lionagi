@@ -1,13 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Coverage tests for lionagi/protocols/generic/pile.py (~76% → 90%+ target).
-
-Targets uncovered lines: to_df, dump, filter_by_type, set ops (__ior__,
-__iand__, __ixor__, __or__, __and__, __xor__), __setitem__ by UUID/int,
-insert at boundaries, async edges, from_dict/to_dict roundtrip,
-is_homogenous, adapt_to/adapt_from, strict_type enforcement.
-"""
+"""Coverage tests for lionagi/protocols/generic/pile.py."""
 
 from __future__ import annotations
 
@@ -59,14 +53,8 @@ def pile_5(five_items):
 pandas_missing = importlib.util.find_spec("pandas") is None
 
 
-"""Tests for Pile filter, homogeneity, adapt_to, misc, and filter_method."""
-
-
 class TestIsHomogenous:
-    """is_homogenous previously iterated over dict_values directly, causing
-    TypeError in is_same_dtype which requires a list or Mapping, not
-    dict_values. Fixed by materialising list(self.collections.values())
-    before the call."""
+    """is_homogenous iterated over dict_values directly, causing TypeError in is_same_dtype; fixed by list(self.collections.values())."""
 
     def test_empty_is_homogenous(self):
         p = Pile()
@@ -77,24 +65,20 @@ class TestIsHomogenous:
         assert p.is_homogenous() is True
 
     def test_same_type_two_items_is_homogenous(self):
-        """Two items of the same type must return True (exercises the fixed path)."""
         p = Pile(collections=[Item(value=0), Item(value=1)])
         assert p.is_homogenous() is True
 
     def test_same_type_five_items_is_homogenous(self):
-        """Five items of the same type must return True."""
         items = [Item(value=i) for i in range(5)]
         p = Pile(collections=items)
         assert p.is_homogenous() is True
 
     def test_mixed_types_is_not_homogenous(self):
-        """A pile with two different concrete types is not homogenous."""
         items = [Item(value=0), OtherItem(name="x")]
         p = Pile(collections=items)
         assert p.is_homogenous() is False
 
     def test_mixed_types_three_items_is_not_homogenous(self):
-        """Mixed-type pile with 3 items is not homogenous."""
         items = [Item(value=0), Item(value=1), OtherItem(name="x")]
         p = Pile(collections=items)
         assert p.is_homogenous() is False

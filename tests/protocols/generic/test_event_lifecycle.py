@@ -87,8 +87,6 @@ class StreamCancelledEvent(Event):
 
 
 class TestInvokeLifecycle:
-    """Tests for the invoke() template method wrapper."""
-
     @pytest.mark.asyncio
     async def test_invoke_calls_inner_invoke(self):
         """_invoke() is called by invoke()."""
@@ -207,8 +205,6 @@ class TestInvokeLifecycle:
 
 
 class TestStreamLifecycle:
-    """Tests for the stream() template method wrapper."""
-
     @pytest.mark.asyncio
     async def test_stream_yields_chunks(self):
         """_stream() chunks are yielded by stream()."""

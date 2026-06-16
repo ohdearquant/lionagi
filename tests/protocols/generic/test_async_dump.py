@@ -62,9 +62,7 @@ class TestPileAdump:
 
     @pytest.mark.asyncio
     async def test_adump_does_not_block_event_loop(self, pile_with_items, tmp_path):
-        """Verify that the event loop remains responsive during adump by
-        running a concurrent coroutine that must complete within a
-        reasonable window."""
+        """Verify that the event loop remains responsive during adump."""
         fp = tmp_path / "dump.json"
         sentinel = []
 
