@@ -10,10 +10,6 @@ from lionagi.ln.concurrency._compat import (
     is_exception_group,
 )
 
-# ---------------------------------------------------------------------------
-# D9 – ExceptionGroup helpers work for both groups and plain exceptions
-# ---------------------------------------------------------------------------
-
 
 class TestIsExceptionGroup:
     def test_true_for_exception_group(self):

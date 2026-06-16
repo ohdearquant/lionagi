@@ -1,10 +1,6 @@
-"""Comprehensive tests for CompletionStream from lionagi.ln.concurrency.patterns.
+"""Tests for CompletionStream from lionagi.ln.concurrency.patterns.
 
-CompletionStream provides structured-concurrency-safe completion stream with
-explicit lifecycle management. These tests cover all critical paths including
-lifecycle, cancellation, error handling, and edge cases.
-
-Coverage Target: patterns.py lines 173-248 (CompletionStream class)
+Covers lifecycle, cancellation, error handling, and edge cases.
 """
 
 import anyio

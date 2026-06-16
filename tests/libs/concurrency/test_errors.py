@@ -47,7 +47,6 @@ async def test_is_cancelled_true_for_backend_exception(anyio_backend):
 
 @pytest.mark.anyio
 async def test_shield_protects_from_external_cancellation(anyio_backend):
-    """Test that shield protects an operation from external cancellation."""
     completed = False
     shield_worked = False
 
@@ -84,8 +83,6 @@ async def test_shield_protects_from_external_cancellation(anyio_backend):
 
 @pytest.mark.anyio
 async def test_shield_still_allows_internal_cancellation(anyio_backend):
-    """Test that shield doesn't prevent internal cancellation (e.g. timeouts)."""
-
     async def work_with_timeout():
         with fail_after(0.01):
             await anyio.sleep(1.0)
