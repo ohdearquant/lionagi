@@ -492,13 +492,7 @@ class TestChatContextParameters:
 
 @pytest.fixture
 def make_mocked_branch_for_chat(make_mocked_branch):
-    """Adapter over the canonical ``make_mocked_branch`` factory.
-
-    Test methods take ``make_mocked_branch_for_chat`` and call ``()`` with
-    optional ``system=``. The factory is shared across the operations
-    test suite via ``lionagi.testing.pytest_plugin`` — no per-file
-    ``_fake_invoke`` definitions.
-    """
+    """Adapter over make_mocked_branch; test methods call () with optional system=."""
 
     def _make_branch(system=None):
         branch = make_mocked_branch(

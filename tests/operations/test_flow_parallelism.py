@@ -1,15 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Tests for flow parallelism and incremental execution patterns.
-
-These tests ensure that:
-1. Operations run truly in parallel without locking bottlenecks
-2. Completed operations are not re-executed
-3. Flows can be expanded and re-run incrementally
-4. Context handling works correctly with various types
-"""
+"""Tests for flow parallelism, incremental execution, and context handling."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock

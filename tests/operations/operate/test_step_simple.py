@@ -1,9 +1,4 @@
-"""
-Simple Coverage Tests for Step Class
-
-Focuses on exercising code paths to improve coverage without
-complex integrations that may be broken due to API changes.
-"""
+"""Coverage tests for Step.request_operative and Step utility methods."""
 
 import pytest
 from pydantic import BaseModel

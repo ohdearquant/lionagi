@@ -1,9 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Test that cancelled operations and API calls use EventStatus.CANCELLED.
-"""
+"""Tests that cancelled operations and API calls use EventStatus.CANCELLED."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock

@@ -346,7 +346,7 @@ def make_mocked_branch_for_parse(make_mocked_branch):
 
 
 # ---------------------------------------------------------------------------
-# D11 – parse propagates cancellation without retry
+# parse propagates cancellation without retry
 # ---------------------------------------------------------------------------
 
 
