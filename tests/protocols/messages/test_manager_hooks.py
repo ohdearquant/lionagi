@@ -1,21 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Hook contract regression tests for ``MessageManager``:
-
-* ``a_add_message`` snapshots the callback list before firing — a hook
-  that mutates ``_on_message_added`` mid-iteration cannot inject
-  itself into the current fire.
-* Sync ``add_message`` does the same snapshot+preflight before pile
-  mutation (the rejection of async hooks fires BEFORE the message
-  lands in the pile — no in-memory drift vs. SQLite).
-* Hook failures are aggregated into ``BaseExceptionGroup`` (3.10
-  backport via ``exceptiongroup`` package) — one failing hook does
-  NOT prevent other hooks from firing.
-* Re-entrant ``a_add_message`` from inside a hook is safe (the outer
-  call already snapshotted; the inner call gets its own snapshot).
-"""
+"""Hook contract regression tests for MessageManager: snapshot semantics, failure aggregation, and re-entrant safety."""
 
 from __future__ import annotations
 
@@ -39,17 +25,10 @@ def mm() -> MessageManager:
     return MessageManager()
 
 
-# ── Snapshot semantics: mid-iteration mutation cannot inject hooks ───────────
-
-
 async def test_hook_added_during_iteration_does_not_fire_this_call(
     mm: MessageManager,
 ):
-    """A hook that appends another callback to the public list during
-    iteration must NOT see that newly-appended callback fire for the
-    CURRENT message. The snapshot taken at fire time decouples the
-    iteration from public mutations.
-    """
+    """A hook that appends another callback during iteration must NOT see that new callback fire for the current message; the snapshot decouples iteration from public mutations."""
     fired_outer: list = []
     fired_late: list = []
 
@@ -86,10 +65,7 @@ async def test_hook_added_during_iteration_does_not_fire_this_call(
 async def test_hook_removed_during_iteration_still_fires_this_call(
     mm: MessageManager,
 ):
-    """A hook that removes ITSELF from the public list while iterating
-    still fires for the current message (the snapshot held it). On the
-    NEXT message, the removed hook is gone.
-    """
+    """A hook that removes itself while iterating still fires for the current message (snapshot held it); gone on the next message."""
     fired: list = []
 
     async def self_removing_hook(msg):
@@ -137,9 +113,6 @@ def test_sync_add_message_snapshot_isolated_from_public_mutation(
 
     msg2 = mm.add_message(instruction="y", sender="u", recipient="r")
     assert fired_late == [msg2]
-
-
-# ── Failure aggregation: one bad hook does not abort the others ─────────────
 
 
 async def test_one_failing_hook_does_not_prevent_others_async(
@@ -221,9 +194,6 @@ def test_one_failing_sync_hook_does_not_prevent_others(mm: MessageManager):
     assert len(fired_b) == 1
 
 
-# ── Sync-path preflight: async hooks rejected before pile mutation ──────────
-
-
 def test_sync_preflight_rejects_async_hook_before_pile_mutation(
     mm: MessageManager,
 ):
@@ -244,17 +214,10 @@ def test_sync_preflight_rejects_async_hook_before_pile_mutation(
     assert len(mm.messages) == msgs_before
 
 
-# ── Re-entrant a_add_message from within a hook ──────────────────────────────
-
-
 async def test_a_add_message_safe_when_hook_calls_a_add_message(
     mm: MessageManager,
 ):
-    """A hook that itself calls ``a_add_message`` (e.g. to emit a
-    derived event) must not deadlock or double-fire. The outer call
-    already snapshotted its callbacks; the inner call gets its own
-    snapshot — they don't interfere.
-    """
+    """A hook calling a_add_message re-entrantly must not deadlock or double-fire; outer and inner calls use independent snapshots."""
     fired: list = []
 
     async def echo_hook(msg):

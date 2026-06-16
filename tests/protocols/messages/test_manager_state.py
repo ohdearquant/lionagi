@@ -26,9 +26,6 @@ def message_manager():
     return MessageManager()
 
 
-"""Tests for MessageManager initialization and message creation."""
-
-
 def test_message_manager_initialization():
     """Test basic initialization of MessageManager"""
     manager = MessageManager()
@@ -76,13 +73,11 @@ def test_set_system():
     system1 = System(content={"system_message": "System 1"})
     system2 = System(content={"system_message": "System 2"})
 
-    # Set first system
     manager.set_system(system1)
     assert manager.system == system1
     assert system1 in manager.messages
     assert len(manager.messages) == 1
 
-    # Replace with second system
     manager.set_system(system2)
     assert manager.system == system2
     assert system1 not in manager.messages
@@ -458,13 +453,11 @@ def test_add_message_with_metadata(message_manager):
 
 def test_add_message_update_existing(message_manager):
     """Test updating existing message via add_message"""
-    # Add initial message
     msg1 = message_manager.add_message(
         instruction="First version",
         sender="user",
     )
 
-    # Update the same message
     msg2 = message_manager.add_message(
         instruction=msg1,
         guidance="Added guidance",

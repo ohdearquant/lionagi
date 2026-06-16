@@ -9,10 +9,6 @@ from lionagi.protocols.types import Edge, Graph, Pile
 
 from .helpers import create_test_node
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 
 @pytest.fixture
 def linear_chain():
@@ -104,9 +100,7 @@ def branching_dag():
     return graph, all_nodes, edges
 
 
-# ---------------------------------------------------------------------------
 # get_tails
-# ---------------------------------------------------------------------------
 
 
 class TestGetTails:
@@ -200,9 +194,7 @@ class TestGetTails:
         assert d.id in tail_ids
 
 
-# ---------------------------------------------------------------------------
 # topological_sort
-# ---------------------------------------------------------------------------
 
 
 class TestTopologicalSort:
@@ -293,9 +285,7 @@ class TestTopologicalSort:
             assert item.id in graph.internal_nodes
 
 
-# ---------------------------------------------------------------------------
 # find_path (async)
-# ---------------------------------------------------------------------------
 
 
 class TestFindPath:
@@ -457,11 +447,6 @@ class TestFindPath:
         path = await graph.find_path(nodes[0].id, nodes[1].id)
         assert path is not None
         assert len(path) == 1
-
-
-# ---------------------------------------------------------------------------
-# D4 – find_path skips edges when condition returns False
-# ---------------------------------------------------------------------------
 
 
 class _FalseCondition(EdgeCondition):

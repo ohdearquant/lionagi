@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for thread-safe synchronized Graph mutation methods.
-
-Validates that concurrent add_node, add_edge, and mixed add/remove
-operations do not corrupt internal state or deadlock.
-"""
+"""Thread-safety tests for synchronized Graph add_node, add_edge, and mixed add/remove."""
 
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -30,7 +26,6 @@ class TestGraphSynchronizedAddNode:
         assert len(graph.internal_nodes) == num_threads
         assert len(graph.node_edge_mapping) == num_threads
 
-        # Every node must have an entry in the mapping
         for node in nodes:
             assert node.id in graph.node_edge_mapping
             assert graph.node_edge_mapping[node.id] == {"in": {}, "out": {}}
@@ -73,7 +68,6 @@ class TestGraphSynchronizedAddEdge:
 
         assert len(graph.internal_edges) == num_edges
 
-        # Verify mapping integrity for every edge
         for edge in edges:
             assert edge.id in graph.node_edge_mapping[edge.head]["out"]
             assert graph.node_edge_mapping[edge.head]["out"][edge.id] == edge.tail
@@ -104,11 +98,7 @@ class TestGraphSynchronizedMixedOperations:
     """Mixed add/remove operations must not deadlock or corrupt state."""
 
     def test_add_then_remove_no_deadlock(self):
-        """Add nodes concurrently, then remove them concurrently.
-
-        Uses a barrier to synchronize all threads before starting
-        the remove phase, maximizing contention.
-        """
+        """Add nodes and remove them concurrently; uses a barrier to maximize contention."""
         graph = Graph()
         num_threads = 20
         nodes = [Node() for _ in range(num_threads)]
@@ -135,7 +125,6 @@ class TestGraphSynchronizedMixedOperations:
         graph = Graph()
         num_pairs = 10
 
-        # Create node pairs and edges
         heads = [Node() for _ in range(num_pairs)]
         tails = [Node() for _ in range(num_pairs)]
         for n in heads + tails:
@@ -143,13 +132,11 @@ class TestGraphSynchronizedMixedOperations:
 
         edges = [Edge(head=heads[i], tail=tails[i]) for i in range(num_pairs)]
 
-        # Add all edges first
         for e in edges:
             graph.add_edge(e)
 
         assert len(graph.internal_edges) == num_pairs
 
-        # Remove all edges concurrently
         with ThreadPoolExecutor(max_workers=num_pairs) as pool:
             futures = [pool.submit(graph.remove_edge, e) for e in edges]
             for f in as_completed(futures):
@@ -161,11 +148,7 @@ class TestGraphSynchronizedMixedOperations:
             assert graph.node_edge_mapping[n.id] == {"in": {}, "out": {}}
 
     def test_mixed_add_node_and_add_edge_no_deadlock(self):
-        """Concurrent add_node and add_edge on separate data -- no deadlock.
-
-        Since the lock is reentrant, even nested calls from the same
-        thread will not deadlock.
-        """
+        """Concurrent add_node and add_edge on non-overlapping data; RLock ensures no deadlock."""
         graph = Graph()
 
         # Pre-seed nodes for edge operations
@@ -202,11 +185,7 @@ class TestGraphSynchronizedMixedOperations:
         assert len(graph.internal_edges) == 10
 
     def test_remove_node_cascades_edges_under_contention(self):
-        """Removing nodes with connected edges under contention.
-
-        Each node is connected to exactly one edge. Removing the head
-        node should also clean up the edge.
-        """
+        """Removing head nodes concurrently cascades edge removal."""
         graph = Graph()
         num = 10
 
@@ -221,7 +200,6 @@ class TestGraphSynchronizedMixedOperations:
 
         assert len(graph.internal_edges) == num
 
-        # Remove head nodes concurrently; edges should be cascade-removed
         with ThreadPoolExecutor(max_workers=num) as pool:
             futures = [pool.submit(graph.remove_node, h) for h in heads]
             for f in as_completed(futures):

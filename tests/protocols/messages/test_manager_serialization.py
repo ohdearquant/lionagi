@@ -20,9 +20,6 @@ def message_manager():
     return MessageManager()
 
 
-"""Tests for MessageManager serialization, chat_msgs, and complex flows."""
-
-
 def test_to_chat_msgs_basic(message_manager):
     """Test conversion to chat messages"""
     message_manager.add_message(
@@ -48,7 +45,6 @@ def test_to_chat_msgs_with_progression(message_manager):
     )
     msg3 = message_manager.add_message(instruction="Third", sender="user", recipient="assistant")
 
-    # Get only first two messages
     chat_msgs = message_manager.to_chat_msgs(progression=[msg1.id, msg2.id])
     assert len(chat_msgs) == 2
 
@@ -94,16 +90,13 @@ def test_concat_recent_action_responses_to_instruction(message_manager):
     """Test concatenating action responses to instruction"""
     instruction = message_manager.add_message(instruction="Test", context=[], sender="user")
 
-    # Add action request and response
     request = message_manager.add_message(action_function="func", action_arguments={})
     response = message_manager.add_message(
         action_request=request, action_output={"result": "success"}
     )
 
-    # Concat responses to instruction
     message_manager.concat_recent_action_responses_to_instruction(instruction)
 
-    # Check that response content was added to instruction context
     assert len(instruction.content.prompt_context) > 0
 
 
@@ -185,44 +178,36 @@ def test_message_manager_with_tool_schemas(message_manager):
 
 def test_complete_conversation_flow(message_manager):
     """Test a complete conversation flow"""
-    # Set system message
     system = message_manager.add_message(system="You are a helpful assistant")
     assert message_manager.system == system
 
-    # User instruction
     instruction1 = message_manager.add_message(
         instruction="What is 2+2?", sender="user", recipient="assistant"
     )
 
-    # Assistant response
     response1 = message_manager.add_message(
         assistant_response="2+2 equals 4", sender="assistant", recipient="user"
     )
 
-    # User follow-up
     instruction2 = message_manager.add_message(
         instruction="What about 3+3?", sender="user", recipient="assistant"
     )
 
-    # Assistant with action request
     request = message_manager.add_message(
         action_function="calculate",
         action_arguments={"a": 3, "b": 3},
         sender="assistant",
     )
 
-    # Action response
     action_response = message_manager.add_message(
         action_request=request,
         action_output={"result": 6},
     )
 
-    # Final assistant response
     response2 = message_manager.add_message(
         assistant_response="3+3 equals 6", sender="assistant", recipient="user"
     )
 
-    # Verify the flow
     assert len(message_manager.messages) == 7
     assert message_manager.last_instruction == instruction2
     assert message_manager.last_response == response2
@@ -232,6 +217,5 @@ def test_complete_conversation_flow(message_manager):
     assert len(message_manager.action_responses) == 1
     assert len(message_manager.actions) == 2
 
-    # Test chat conversion
     chat_msgs = message_manager.to_chat_msgs()
     assert len(chat_msgs) == 7

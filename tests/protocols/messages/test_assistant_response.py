@@ -11,80 +11,51 @@ from lionagi.protocols.messages.assistant_response import (
 )
 from lionagi.protocols.types import MessageRole
 
-# ============================================================================
-# Mock Response Models for Testing
-# ============================================================================
-
 
 class AnthropicTextContent(BaseModel):
-    """Mock Anthropic text content block"""
-
     type: str = "text"
     text: str
 
 
 class AnthropicResponse(BaseModel):
-    """Mock Anthropic API response"""
-
     content: list[AnthropicTextContent]
     model: str = "claude-3-opus"
 
 
 class OpenAIMessage(BaseModel):
-    """Mock OpenAI message"""
-
     content: str | None = None
 
 
 class OpenAIDelta(BaseModel):
-    """Mock OpenAI delta for streaming"""
-
     content: str | None = None
 
 
 class OpenAIChoice(BaseModel):
-    """Mock OpenAI choice"""
-
     message: OpenAIMessage | None = None
     delta: OpenAIDelta | None = None
 
 
 class OpenAIChatResponse(BaseModel):
-    """Mock OpenAI chat completion response"""
-
     choices: list[OpenAIChoice]
     model: str = "gpt-4"
 
 
 class OpenAIOutputText(BaseModel):
-    """Mock OpenAI responses API output text"""
-
     type: str = "output_text"
     text: str
 
 
 class OpenAIOutputMessage(BaseModel):
-    """Mock OpenAI responses API message"""
-
     type: str = "message"
     content: list[OpenAIOutputText]
 
 
 class OpenAIResponsesAPIResponse(BaseModel):
-    """Mock OpenAI responses API response"""
-
     output: list[OpenAIOutputMessage]
 
 
 class ClaudeCodeResponse(BaseModel):
-    """Mock Claude Code response"""
-
     result: str
-
-
-# ============================================================================
-# Test parse_assistant_response() Function
-# ============================================================================
 
 
 def test_parse_assistant_response_anthropic_format():
@@ -247,11 +218,6 @@ def test_parse_assistant_response_mixed_content_types():
     assert text == "Text blockPlain string"
 
 
-# ============================================================================
-# Test AssistantResponseContent Dataclass
-# ============================================================================
-
-
 def test_assistant_response_content_initialization():
     """Test basic initialization of AssistantResponseContent"""
     content = AssistantResponseContent(assistant_response="Test content")
@@ -289,11 +255,6 @@ def test_assistant_response_content_from_dict_empty():
     content = AssistantResponseContent.from_dict(data)
 
     assert content.assistant_response == ""
-
-
-# ============================================================================
-# Test AssistantResponse Message Class
-# ============================================================================
 
 
 def test_assistant_response_initialization():
@@ -339,11 +300,6 @@ def test_assistant_response_sender_recipient():
 
     assert response.sender == MessageRole.ASSISTANT
     assert response.recipient == MessageRole.USER
-
-
-# ============================================================================
-# Test from_response() Classmethod
-# ============================================================================
 
 
 def test_from_response_anthropic():
@@ -442,11 +398,6 @@ def test_from_response_preserves_all_formats():
         assert assistant_response.content.assistant_response == expected_text
 
 
-# ============================================================================
-# Test model_response Property
-# ============================================================================
-
-
 def test_model_response_property_access():
     """Test model_response property accesses metadata"""
     model_data = {"choices": [{"message": {"content": "Test"}}]}
@@ -478,11 +429,6 @@ def test_model_response_property_from_response():
     assert isinstance(model_response, dict)
     assert "choices" in model_response
     assert model_response["model"] == "gpt-4"
-
-
-# ============================================================================
-# Test Integration and Edge Cases
-# ============================================================================
 
 
 def test_assistant_response_complete_workflow():

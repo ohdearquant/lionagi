@@ -25,12 +25,10 @@ def edge_test_graph():
     """Fixture for testing edge functionality"""
     graph = Graph()
 
-    # Create nodes
     node1 = create_test_node("EdgeNode1")
     node2 = create_test_node("EdgeNode2")
     node3 = create_test_node("EdgeNode3")
 
-    # Add nodes
     graph.add_node(node1)
     graph.add_node(node2)
     graph.add_node(node3)
@@ -45,17 +43,14 @@ class TestEdgeBasics:
         """Test creating edges with different configurations"""
         graph, node1, node2, _ = edge_test_graph
 
-        # Basic edge
         edge = Edge(head=node1, tail=node2)
         graph.add_edge(edge)
         assert edge in graph.internal_edges
 
-        # Edge with label
         edge_with_label = Edge(head=node1, tail=node2, label=["test_label"])
         graph.add_edge(edge_with_label)
         assert edge_with_label.properties.get("label") == ["test_label"]
 
-        # Edge with properties
         edge_with_props = Edge(head=node1, tail=node2, weight=10, custom_prop="test")
         graph.add_edge(edge_with_props)
         assert edge_with_props.properties.get("weight") == 10
@@ -68,15 +63,12 @@ class TestEdgeBasics:
         edge = Edge(head=node1, tail=node2)
         graph.add_edge(edge)
 
-        # Add property
         edge.update_property("weight", 5)
         assert edge.properties.get("weight") == 5
 
-        # Update property
         edge.update_property("weight", 10)
         assert edge.properties.get("weight") == 10
 
-        # Remove property
         edge.properties.pop("weight")
         assert edge.properties.get("weight", None) is None
 
@@ -257,10 +249,6 @@ class TestEdgeOperations:
         assert edge.id not in graph.node_edge_mapping[node1.id]["out"]
         assert edge.id not in graph.node_edge_mapping[node2.id]["in"]
 
-
-# ---------------------------------------------------------------------------
-# Coverage gap tests for edge.py lines 97, 101, 107, 132-141
-# ---------------------------------------------------------------------------
 
 from lionagi.protocols.generic.element import Element
 

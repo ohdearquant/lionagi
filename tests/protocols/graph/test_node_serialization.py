@@ -81,11 +81,6 @@ class TestBackwardsCompatibility:
         assert Node.node_config is None
 
 
-# ===================================================================
-# 7. Edge cases and error conditions
-# ===================================================================
-
-
 class TestEdgeCases:
     """Boundary conditions and unusual inputs."""
 
@@ -173,11 +168,6 @@ class TestEdgeCases:
         result = _content_hash(3.14)
         assert isinstance(result, str)
         assert len(result) == 64
-
-
-# ===================================================================
-# 8. Manual subclass with node_config ClassVar
-# ===================================================================
 
 
 class TestManualSubclassWithConfig:

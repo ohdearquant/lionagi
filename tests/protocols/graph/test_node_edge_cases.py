@@ -1,10 +1,4 @@
-"""
-Coverage Boost Tests for Node Class
-
-Creates comprehensive tests for the Node base class to improve coverage
-from 50% to 80%+. Focuses on embedding validation, serialization,
-adaptation, and registration functionality.
-"""
+"""Coverage boost tests for Node: embedding validation, serialization, adaptation, and registration."""
 
 from unittest.mock import patch
 

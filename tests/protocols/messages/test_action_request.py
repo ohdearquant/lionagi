@@ -323,10 +323,8 @@ def test_action_request_immutable_arguments():
         arguments=original_args,
     )
 
-    # Modify original
     original_args["key"] = "modified"
 
-    # Content should have independent copy
     # Note: dataclass doesn't deep copy by default, but from_dict uses copy()
     data = {
         "function": "test",
@@ -335,5 +333,4 @@ def test_action_request_immutable_arguments():
     content2 = ActionRequestContent.from_dict(data)
     original_args["new_key"] = "new_value"
 
-    # The from_dict copy should be independent
     assert "new_key" not in content2.arguments

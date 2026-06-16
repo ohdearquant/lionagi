@@ -14,7 +14,6 @@ from lionagi.protocols.messages.base import (
 from lionagi.protocols.messages.message import MessageContent, RoledMessage
 
 
-# Test MessageContent implementation
 @dataclass(slots=True)
 class _MockContent(MessageContent):
     """Mock implementation of MessageContent for testing purposes."""
@@ -36,7 +35,6 @@ class _MockContent(MessageContent):
         )
 
 
-# Test RoledMessage implementation
 class _MockMessage(RoledMessage):
     """Mock implementation of RoledMessage for testing."""
 
@@ -55,11 +53,6 @@ class _MockMessage(RoledMessage):
         super().__init__(content=content_data, **kwargs)
 
 
-# ============================================================================
-# MessageRole Tests
-# ============================================================================
-
-
 def test_message_role_enum():
     """Test MessageRole enumeration values and types."""
     assert isinstance(MessageRole.SYSTEM, Enum)
@@ -73,11 +66,6 @@ def test_message_role_enum():
     assert MessageRole.ASSISTANT.value == "assistant"
     assert MessageRole.UNSET.value == "unset"
     assert MessageRole.ACTION.value == "action"
-
-
-# ============================================================================
-# MessageField Tests
-# ============================================================================
 
 
 def test_message_field_enum():
@@ -102,11 +90,6 @@ def test_message_field_enum():
     assert all(field.value in MESSAGE_FIELDS for field in MessageField)
 
 
-# ============================================================================
-# MessageContent Tests
-# ============================================================================
-
-
 def test_message_content_dataclass():
     """Test MessageContent is a proper dataclass with slots."""
     content = _MockContent(text="test content", metadata={"key": "value"})
@@ -114,7 +97,6 @@ def test_message_content_dataclass():
     assert content.text == "test content"
     assert content.metadata["key"] == "value"
 
-    # Verify slots behavior (no __dict__)
     assert not hasattr(content, "__dict__")
 
 
@@ -148,11 +130,6 @@ def test_message_content_to_dict():
 def test_message_content_none_as_sentinel():
     """Test MessageContent._config.none_as_sentinel."""
     assert MessageContent._config.none_as_sentinel is True
-
-
-# ============================================================================
-# RoledMessage Initialization Tests
-# ============================================================================
 
 
 def test_roled_message_initialization():
@@ -199,11 +176,6 @@ def test_roled_message_content_always_message_content():
     assert not isinstance(message.content, dict)
 
 
-# ============================================================================
-# RoledMessage Role Validation Tests
-# ============================================================================
-
-
 def test_roled_message_role_classvar():
     """Test role is a ClassVar property, not an instance field."""
     from typing import ClassVar
@@ -246,11 +218,6 @@ def test_roled_message_role_default():
     assert message.role == MessageRole.UNSET
 
 
-# ============================================================================
-# RoledMessage Sender/Recipient Tests
-# ============================================================================
-
-
 def test_roled_message_sender_recipient_validation():
     """Test sender and recipient validation."""
     message = _MockMessage(
@@ -291,11 +258,6 @@ def test_roled_message_sender_recipient_none():
     assert message.recipient == MessageRole.UNSET or message.recipient is None
 
 
-# ============================================================================
-# RoledMessage Properties Tests
-# ============================================================================
-
-
 def test_roled_message_rendered_property():
     """Test RoledMessage rendered property delegates to content.rendered."""
     content = _MockContent(text="Hello World")
@@ -330,11 +292,6 @@ def test_roled_message_image_content_property():
 
     # For simple text content, image_content should be None
     assert message.image_content is None
-
-
-# ============================================================================
-# RoledMessage Update Method Tests
-# ============================================================================
 
 
 def test_roled_message_update_sender():
@@ -407,17 +364,7 @@ def test_roled_message_update_preserves_other_fields():
     assert message.sender == MessageRole.USER
 
 
-# ============================================================================
-# RoledMessage Clone Tests
-# ============================================================================
-
-
 # Clone method doesn't exist - removed test
-
-
-# ============================================================================
-# RoledMessage Serialization Tests
-# ============================================================================
 
 
 def test_roled_message_to_dict():
@@ -446,11 +393,6 @@ def test_roled_message_serialization_to_dict():
     assert "content" in serialized
 
 
-# ============================================================================
-# RoledMessage String Representation Tests
-# ============================================================================
-
-
 def test_roled_message_str_representation():
     """Test string representation of RoledMessage."""
     message = _MockMessage(
@@ -464,11 +406,6 @@ def test_roled_message_str_representation():
     # String representation should contain useful information
     assert isinstance(str_repr, str)
     assert len(str_repr) > 0
-
-
-# ============================================================================
-# validate_sender_recipient Function Tests
-# ============================================================================
 
 
 def test_validate_sender_recipient_message_role():
@@ -487,11 +424,6 @@ def test_validate_sender_recipient_none():
     """Test validate_sender_recipient with None."""
     result = validate_sender_recipient(None)
     assert result == MessageRole.UNSET
-
-
-# ============================================================================
-# Integration Tests
-# ============================================================================
 
 
 def test_message_workflow_complete():
@@ -526,6 +458,5 @@ def test_message_content_immutability_via_update():
     original_content = message.content
     message.update(text="Updated")
 
-    # Content should be a new instance
     assert message.content is not original_content
     assert message.content.text == "Updated"
