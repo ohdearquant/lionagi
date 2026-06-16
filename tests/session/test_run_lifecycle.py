@@ -1,14 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for run lifecycle signal emission and ReAct double-wrap fix.
-
-Covers:
-  R0 — Branch.run() / run() emits RunStart, RunEnd, RunFailed via observer.
-  R1 — Branch.ReAct() emits exactly ONE RunStart per call (no double-wrap).
-  R2 — Bug #1347: empty / empty-dict "error" chunk does not raise RuntimeError
-       (resume end-of-stream treated as clean completion).
-"""
+"""Tests for run lifecycle signal emission and ReAct double-wrap fix."""
 
 from __future__ import annotations
 
@@ -30,7 +23,6 @@ from lionagi.session.signal import RunEnd, RunFailed, RunStart
 
 
 def _make_fake_cli_model(chunks: list[StreamChunk], session_id: str | None = None):
-    """Return an iModel patched to behave as a CLI endpoint yielding *chunks*."""
     m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
     endpoint_ns = types.SimpleNamespace(
         is_cli=True,
@@ -55,7 +47,6 @@ def _make_fake_cli_model(chunks: list[StreamChunk], session_id: str | None = Non
 
 
 async def _drain(gen) -> list:
-    """Collect all items from an async generator."""
     return [item async for item in gen]
 
 
@@ -216,18 +207,12 @@ async def test_react_no_signals_without_observer():
 
 
 # ---------------------------------------------------------------------------
-# R2 — Bug #1347: empty / empty-dict error chunk treated as end-of-stream
+# empty / empty-dict error chunk treated as end-of-stream
 # ---------------------------------------------------------------------------
 
 
 async def test_run_benign_eos_error_chunk_treated_as_end_of_stream():
-    """Error chunk with benign_eos=True metadata must not raise; stream completes cleanly.
-
-    This is the contract for the resume end-of-stream sentinel.  The codex provider
-    adapter sets benign_eos=True when the error object carries no message (normal
-    resumed-session termination).  Only chunks with that explicit marker are treated
-    as clean EOS — all other error chunks surface as RunFailed.
-    """
+    """Error chunk with benign_eos=True must not raise; stream completes cleanly."""
     model = _make_fake_cli_model(
         [
             StreamChunk(type="text", content="partial result"),
@@ -242,7 +227,6 @@ async def test_run_benign_eos_error_chunk_treated_as_end_of_stream():
     msgs = await _drain(run(branch, "resume", RunParam()))
     text_msgs = [m for m in msgs if isinstance(m, AssistantResponse)]
 
-    # The partial result text must still be emitted; the benign error must not raise
     assert len(text_msgs) >= 1, "expected at least one AssistantResponse from partial result"
     assert text_msgs[0].response == "partial result"
 
@@ -268,11 +252,7 @@ async def test_run_benign_eos_empty_dict_error_chunk_treated_as_end_of_stream():
 
 
 async def test_run_empty_error_chunk_without_marker_raises():
-    """Empty-content error chunk WITHOUT benign_eos=True must surface as RunFailed.
-
-    Genuine provider failures that return an empty error object must not be
-    silently swallowed — the explicit benign_eos marker is required to suppress.
-    """
+    """Empty-content error chunk without benign_eos=True must surface as RunFailed."""
     model = _make_fake_cli_model(
         [
             StreamChunk(type="text", content="partial result"),
@@ -297,17 +277,9 @@ async def test_run_non_empty_error_chunk_still_raises():
 
 
 async def test_run_resume_session_produces_non_empty_stream():
-    """Simulate a resumed session: text before benign-eos gives non-empty output.
-
-    This is the regression for issue #1347 where ``li agent -r`` returned an
-    empty stream because the empty "error" sentinel raised before any content
-    was yielded back to the caller.  The fix requires the provider adapter to
-    mark the EOS sentinel with ``benign_eos=True``.
-    """
+    """Resumed session: text before benign-eos gives non-empty output."""
     from lionagi.protocols.messages import AssistantResponse
 
-    # Simulate what the codex provider adapter emits on resume: system chunk with
-    # session_id, then content, then a benign EOS sentinel.
     model = _make_fake_cli_model(
         [
             StreamChunk(type="system", metadata={"session_id": "resumed-sid"}),
@@ -327,17 +299,12 @@ async def test_run_resume_session_produces_non_empty_stream():
 
 
 # ---------------------------------------------------------------------------
-# R3 — Finding 1: abandoned generators emit exactly one terminal signal
+# abandoned generators emit exactly one terminal signal
 # ---------------------------------------------------------------------------
 
 
 async def test_run_aclose_after_instruction_emits_run_end():
-    """aclose() after receiving only the instruction must emit RunEnd (not nothing).
-
-    Regression: previously RunStart was emitted but the generator closed at the
-    first yield before reaching the try/finally, so no terminal signal was ever
-    emitted.
-    """
+    """aclose() after the instruction must emit RunEnd."""
     s = Session()
     model = _make_fake_cli_model([StreamChunk(type="text", content="hello")])
     s.default_branch.chat_model = model
@@ -348,7 +315,6 @@ async def test_run_aclose_after_instruction_emits_run_end():
     s.observe(RunFailed, lambda sig, _: failures.append(sig))
 
     gen = run(s.default_branch, "go", RunParam())
-    # Advance to get the instruction, then immediately close
     await gen.__anext__()
     await gen.aclose()
 
@@ -358,13 +324,7 @@ async def test_run_aclose_after_instruction_emits_run_end():
 
 
 async def test_run_break_after_instruction_emits_run_end():
-    """break after the instruction then explicit aclose() must emit RunEnd.
-
-    Python defers generator cleanup when using ``async for ... break`` — the
-    ``GeneratorExit`` is delivered only when the generator is explicitly closed.
-    This test mirrors realistic consumer code that explicitly awaits aclose(),
-    e.g. via an ``async with asynccontextmanager`` wrapper.
-    """
+    """break after instruction then explicit aclose() must emit RunEnd."""
     s = Session()
     model = _make_fake_cli_model([StreamChunk(type="text", content="hello")])
     s.default_branch.chat_model = model
@@ -379,8 +339,7 @@ async def test_run_break_after_instruction_emits_run_end():
     gen = run(s.default_branch, "go", RunParam())
     async for msg in gen:
         if isinstance(msg, _Instruction):
-            break  # abandon after first yield
-    # Explicitly close so GeneratorExit is delivered synchronously
+            break
     await gen.aclose()
 
     assert len(starts) == 1
@@ -389,13 +348,7 @@ async def test_run_break_after_instruction_emits_run_end():
 
 
 async def test_run_break_after_response_emits_run_end():
-    """break after AssistantResponse + explicit aclose() must emit RunEnd, not RunFailed.
-
-    Regression: previously GeneratorExit was caught by ``except BaseException``
-    and misclassified as RunFailed, and anyio raised a cancel-scope cross-task
-    error because the generator yielded inside the fail_after scope.  This test
-    verifies the fix using explicit aclose() to deliver the close synchronously.
-    """
+    """break after AssistantResponse + aclose() must emit RunEnd, not RunFailed."""
     s = Session()
     model = _make_fake_cli_model(
         [
@@ -414,8 +367,7 @@ async def test_run_break_after_response_emits_run_end():
     gen = run(s.default_branch, "go", RunParam())
     async for msg in gen:
         if isinstance(msg, _AR):
-            break  # abandon after assistant response
-    # Deliver GeneratorExit synchronously so the test can assert after
+            break
     await gen.aclose()
 
     assert len(starts) == 1
@@ -424,7 +376,6 @@ async def test_run_break_after_response_emits_run_end():
 
 
 async def test_run_aclose_before_first_yield_no_signals():
-    """aclose() before the first __anext__ emits no signals (generator not started)."""
     s = Session()
     model = _make_fake_cli_model([StreamChunk(type="text", content="hi")])
     s.default_branch.chat_model = model
@@ -434,7 +385,6 @@ async def test_run_aclose_before_first_yield_no_signals():
     s.observe(RunEnd, lambda sig, _: ends.append(sig))
 
     gen = run(s.default_branch, "go", RunParam())
-    # Close without ever calling __anext__ — body never executed
     await gen.aclose()
 
     assert len(starts) == 0, "body not entered, no RunStart expected"
@@ -442,18 +392,12 @@ async def test_run_aclose_before_first_yield_no_signals():
 
 
 # ---------------------------------------------------------------------------
-# R4 — Finding 2: CLI-backed ReAct emits exactly one RunStart total
+# CLI-backed ReAct emits exactly one RunStart total
 # ---------------------------------------------------------------------------
 
 
 async def test_react_cli_backed_emits_single_run_start():
-    """CLI-backed Branch.ReAct() must emit exactly one RunStart across all internal rounds.
-
-    This test patches operate() with a fake that calls run_and_collect() directly
-    (using the branch's fake CLI model) so it exercises the actual suppression path
-    through run() rather than bypassing it entirely.  The N+1 regression was that each
-    nested run() call emitted its own RunStart on top of the outer ReAct wrapper's.
-    """
+    """CLI-backed Branch.ReAct() must emit exactly one RunStart across all rounds."""
     import asyncio
 
     from lionagi.operations.ReAct.utils import Analysis, ReActAnalysis
@@ -465,19 +409,13 @@ async def test_react_cli_backed_emits_single_run_start():
     s.observe(RunEnd, lambda sig, _: ends.append(sig))
     s.observe(RunFailed, lambda sig, _: failures.append(sig))
 
-    # Fake CLI model: each call returns a minimal text chunk so run_and_collect
-    # completes without needing a real CLI binary.
     call_count = 0
 
     async def mock_operate_via_run_and_collect(*args, **kw):
-        """Call the real run_and_collect path through the fake CLI model so the
-        suppression ContextVar is actually exercised, then return a ReAct analysis
-        result so the loop terminates."""
         nonlocal call_count
         call_count += 1
         branch = args[0] if args else kw.get("branch")
 
-        # Build a fresh fake CLI model for this inner call
         cli_model = _make_fake_cli_model([StreamChunk(type="text", content="intermediate answer")])
         if branch is not None:
             branch.chat_model = cli_model
@@ -504,13 +442,7 @@ async def test_react_cli_backed_emits_single_run_start():
 
 
 async def test_concurrent_runs_on_same_branch_not_suppressed():
-    """Two concurrent run() calls on the same branch must each emit their own
-    RunStart / RunEnd — the ContextVar-based suppression must NOT leak between
-    concurrent asyncio tasks (MAJOR 1 regression).
-
-    Scenario: a ReAct is in flight (suppression active in its task); an
-    independent run() started in a separate task must still emit lifecycle signals.
-    """
+    """Concurrent run() calls on the same branch must each emit their own RunStart/RunEnd."""
     import asyncio
 
     from lionagi.session._lifecycle_ctx import suppress_lifecycle_var
@@ -519,23 +451,18 @@ async def test_concurrent_runs_on_same_branch_not_suppressed():
     starts = []
     s.observe(RunStart, lambda sig, _: starts.append(sig))
 
-    # Simulate a task where suppression is active (like inside ReAct)
     async def suppressed_task():
         token = suppress_lifecycle_var.set(True)
         try:
-            # This task has suppression on — but we want to verify the
-            # independent_task below is NOT affected.
-            await asyncio.sleep(0)  # yield so independent_task can run
+            await asyncio.sleep(0)
         finally:
             suppress_lifecycle_var.reset(token)
 
-    # Independent run() — started as a separate task so it has its own context copy
     async def independent_run_task():
         model = _make_fake_cli_model([StreamChunk(type="text", content="hello")])
         s.default_branch.chat_model = model
         await _drain(run(s.default_branch, "go", RunParam()))
 
-    # Run both concurrently
     await asyncio.gather(suppressed_task(), independent_run_task())
 
     assert len(starts) >= 1, (
@@ -545,13 +472,7 @@ async def test_concurrent_runs_on_same_branch_not_suppressed():
 
 
 async def test_run_start_observer_exception_does_not_abort_run():
-    """A raising RunStart observer must not prevent the run from proceeding or
-    emitting a terminal signal (MAJOR 3: RunStart emission unprotected).
-
-    Previously an exception in the RunStart observer propagated directly out of
-    run(), aborting the stream before any content was produced and without a
-    RunFailed signal (the terminal signal requires RunStart to have completed).
-    """
+    """A raising RunStart observer must not prevent run() from proceeding."""
     import asyncio
 
     s = Session()
@@ -573,7 +494,6 @@ async def test_run_start_observer_exception_does_not_abort_run():
 
     from lionagi.protocols.messages import AssistantResponse
 
-    # Should NOT raise despite RunStart observer boom
     msgs = await _drain(run(s.default_branch, "go", RunParam()))
 
     assert boom_raised, "RunStart boom observer was never invoked"
@@ -584,11 +504,7 @@ async def test_run_start_observer_exception_does_not_abort_run():
 
 
 async def test_react_run_start_observer_exception_does_not_abort_react():
-    """A raising RunStart observer must not abort Branch.ReAct() (MAJOR 3 ReAct path).
-
-    The ReAct wrapper now uses _safe_emit for RunStart; an observer raising there
-    must be swallowed so the ReAct call still returns a result.
-    """
+    """A raising RunStart observer must not abort Branch.ReAct()."""
     s = Session()
     boom_raised = False
 
@@ -620,17 +536,12 @@ async def test_react_run_start_observer_exception_does_not_abort_react():
 
 
 # ---------------------------------------------------------------------------
-# R5 — Finding 3: observer exception during cleanup preserves streaming_process_func
+# observer exception during cleanup preserves streaming_process_func
 # ---------------------------------------------------------------------------
 
 
 async def test_run_observer_exception_on_run_end_restores_stream_func():
-    """streaming_process_func must be restored even when a RunEnd observer raises.
-
-    Regression: previously, an observer that raised on RunEnd caused the exception
-    to propagate out of run()'s finally block, and model.streaming_process_func was
-    never restored — leaving later runs with the wrong chunk processor.
-    """
+    """streaming_process_func must be restored even when a RunEnd observer raises."""
     s = Session()
     model = _make_fake_cli_model([StreamChunk(type="text", content="ok")])
     s.default_branch.chat_model = model
@@ -648,23 +559,16 @@ async def test_run_observer_exception_on_run_end_restores_stream_func():
 
     s.observe(RunEnd, boom_on_run_end)
 
-    # run() should complete (RunEnd emission logs but does not re-raise)
     await _drain(run(s.default_branch, "go", RunParam()))
 
     assert boom_raised, "boom handler was never called"
-    # The streaming_process_func must have been restored regardless of the
-    # observer exception.
     assert model.streaming_process_func is sentinel, (
         "streaming_process_func was not restored after observer exception on RunEnd"
     )
 
 
 async def test_run_observer_exception_on_run_end_preserves_run_outcome():
-    """Real run outcome must be preserved when a RunEnd observer raises.
-
-    The caller of run() (or run_and_collect()) must not see the observer's
-    exception — only the run's own result.
-    """
+    """Run outcome must be preserved when a RunEnd observer raises."""
     s = Session()
     model = _make_fake_cli_model([StreamChunk(type="text", content="result")])
     s.default_branch.chat_model = model
@@ -677,7 +581,6 @@ async def test_run_observer_exception_on_run_end_preserves_run_outcome():
 
     from lionagi.protocols.messages import AssistantResponse
 
-    # Should NOT raise; the observer exception is logged, not propagated
     msgs = await _drain(run(s.default_branch, "go", RunParam()))
     text_msgs = [m for m in msgs if isinstance(m, AssistantResponse)]
     assert len(text_msgs) >= 1, "run outcome not preserved after observer exception"

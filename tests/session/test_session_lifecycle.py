@@ -1,15 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Comprehensive tests for Session class focusing on multi-branch orchestration.
-
-Test Coverage:
-1. Basic flow execution (single/multiple branches, context passing)
-2. Branch management (creation, registration, selection, iteration)
-3. Edge cases (empty graphs, branch lifecycle, error handling, context isolation)
-4. Mail system (send/receive, routing, mailbox management)
-"""
+"""Tests for Session lifecycle: basic flow execution and branch management."""
 
 from unittest.mock import AsyncMock
 
@@ -55,7 +47,6 @@ def _get_oai_config(
 
 
 def make_mock_branch(name: str = "TestBranch") -> Branch:
-    """Create a Branch with mocked iModel for testing."""
     branch = Branch(user="test_user", name=name)
 
     async def _fake_invoke(**kwargs):
@@ -84,7 +75,6 @@ def make_mock_branch(name: str = "TestBranch") -> Branch:
 
 
 def make_simple_graph(num_nodes: int = 3) -> tuple[Graph, list[Operation]]:
-    """Create a simple linear graph with specified number of operations."""
     ops = [
         Operation(operation="chat", parameters={"instruction": f"Task {i}"})
         for i in range(num_nodes)
@@ -101,7 +91,6 @@ def make_simple_graph(num_nodes: int = 3) -> tuple[Graph, list[Operation]]:
 
 
 def make_parallel_graph() -> tuple[Graph, dict[str, Operation]]:
-    """Create a diamond-shaped graph for parallel execution testing."""
     ops = {
         "start": Operation(operation="chat", parameters={"instruction": "Start"}),
         "branch_a": Operation(operation="chat", parameters={"instruction": "Branch A"}),
@@ -127,11 +116,8 @@ def make_parallel_graph() -> tuple[Graph, dict[str, Operation]]:
 
 
 class TestBasicFlowExecution:
-    """Test basic flow execution scenarios."""
-
     @pytest.mark.asyncio
     async def test_flow_single_branch_linear_graph(self):
-        """Test flow execution with single branch and linear graph."""
         session = Session()
         branch = make_mock_branch("MainBranch")
         session.include_branches(branch)
@@ -140,39 +126,32 @@ class TestBasicFlowExecution:
 
         result = await session.flow(graph, parallel=False, verbose=False)
 
-        # Verify all operations completed
         assert len(result["completed_operations"]) == 3
         assert all(op.id in result["completed_operations"] for op in ops)
         assert len(result["operation_results"]) == 3
 
     @pytest.mark.asyncio
     async def test_flow_multiple_branches_parallel(self):
-        """Test flow with multiple branches executing in parallel."""
         session = Session()
 
-        # Create multiple branches
         branch1 = make_mock_branch("Branch1")
         branch2 = make_mock_branch("Branch2")
         branch3 = make_mock_branch("Branch3")
         session.include_branches([branch1, branch2, branch3])
 
-        # Create parallel graph
         graph, ops = make_parallel_graph()
 
         result = await session.flow(graph, parallel=True, max_concurrent=3, verbose=False)
 
-        # Verify all operations completed
         assert len(result["completed_operations"]) == 4
         assert all(op.id in result["completed_operations"] for op in ops.values())
 
     @pytest.mark.asyncio
     async def test_flow_context_passing_between_operations(self):
-        """Test that context is properly passed between operations."""
         session = Session()
         branch = make_mock_branch()
         session.include_branches(branch)
 
-        # Create operations with context
         op1 = Operation(
             operation="chat",
             parameters={
@@ -190,14 +169,11 @@ class TestBasicFlowExecution:
         initial_context = {"global_key": "global_value"}
         result = await session.flow(graph, context=initial_context, parallel=False)
 
-        # Verify context propagation
         assert "global_key" in result["final_context"]
-        # op2 should have received context from op1
         assert op2.parameters.get("context") is not None
 
     @pytest.mark.asyncio
     async def test_flow_with_empty_graph(self):
-        """Test flow handles empty graph correctly."""
         session = Session()
         branch = make_mock_branch()
         session.include_branches(branch)
@@ -212,7 +188,6 @@ class TestBasicFlowExecution:
 
     @pytest.mark.asyncio
     async def test_flow_with_single_operation(self):
-        """Test flow with single operation (no dependencies)."""
         session = Session()
         branch = make_mock_branch()
         session.include_branches(branch)

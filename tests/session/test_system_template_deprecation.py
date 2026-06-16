@@ -8,8 +8,6 @@ from lionagi.session.branch import Branch
 
 
 class TestSystemTemplateDeprecation:
-    """Branch(system_template=...) must raise DeprecationWarning."""
-
     def test_system_template_warns(self):
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -58,6 +56,5 @@ class TestSystemTemplateDeprecation:
             warnings.simplefilter("always")
             branch = Branch(system_template="ignored {{ template }}")
 
-        # Branch is usable and the deprecated param caused no message to be added
         assert branch is not None
         assert len(branch.messages) == 0

@@ -1,24 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for findings from PR #930 review (2026-04-24).
-
-Covers the 3 MUST-FIX items and the SHOULD-FIX items that were addressable
-at code level:
-
-MUST-FIX
-  1. Symlink containment on `li skill` + playbook resolution.
-  2. HookRegistry accepts both `pre_event_create` and `pre_event_create_hook`
-     alias keys.
-  3. E402 — helpers declared below imports in `cli/orchestrate/flow.py`.
-
-SHOULD-FIX
-  - `max_ops` / `max_agents` accept 0 as "unlimited".
-  - `_clamp_claude_effort` behavior: xhigh → high on non-opus-4-7 Claude
-    models; preserved on opus-4-7; untouched for non-xhigh efforts.
-  - `_handle_play_shortcut` argv rewrite for `li play`, `li play list`,
-    flag-before-name error, and no-args usage path.
-"""
+"""Regression tests for symlink containment, HookRegistry aliases, and related CLI behaviors."""
 
 from __future__ import annotations
 
@@ -32,7 +15,7 @@ from lionagi.cli.skill import resolve_skill_path
 from lionagi.service.hooks._types import HookEventTypes
 from lionagi.service.hooks.hook_registry import HookRegistry
 
-# ── MUST-FIX #1: Symlink containment ────────────────────────────────
+# ── Symlink containment ────────────────────────────────
 
 
 class TestSkillSymlinkContainment:
@@ -103,7 +86,7 @@ class TestPlaybookSymlinkContainment:
         assert "symlink escape" in err or "outside" in err
 
 
-# ── MUST-FIX #2: HookRegistry alias both spellings ──────────────────
+# ── HookRegistry alias both spellings ──────────────────
 
 
 class TestHookRegistryAliases:
@@ -126,7 +109,7 @@ class TestHookRegistryAliases:
         assert HookEventTypes.PreEventCreate in reg._hooks
 
 
-# ── SHOULD-FIX: max_ops/max_agents 0 = unlimited ────────────────────
+# ── max_ops/max_agents 0 = unlimited ────────────────────
 
 
 class TestMaxOpsZeroUnlimited:
@@ -145,7 +128,7 @@ class TestMaxOpsZeroUnlimited:
         assert err is not None
 
 
-# ── SHOULD-FIX #4: _clamp_claude_effort coverage ────────────────────
+# ── _clamp_claude_effort coverage ────────────────────
 
 
 class TestClampClaudeEffort:
@@ -170,12 +153,11 @@ class TestClampClaudeEffort:
             assert _clamp_claude_effort(effort, "claude/claude-opus-4-7") == effort
 
 
-# ── SHOULD-FIX #5: _handle_play_shortcut coverage ───────────────────
+# ── _handle_play_shortcut coverage ───────────────────
 
 
 class TestHandlePlayShortcut:
     def test_empty_argv_returns_unchanged(self):
-        # Empty argv → not a play invocation → returned as-is
         assert _handle_play_shortcut([]) == []
 
     def test_non_play_passthrough(self):
@@ -189,7 +171,6 @@ class TestHandlePlayShortcut:
         assert "Usage" in out
 
     def test_play_rewrite(self, monkeypatch, tmp_path):
-        """`li play NAME [rest]` → `o flow -p NAME [rest]`."""
         monkeypatch.setenv("HOME", str(tmp_path))
         rewritten = _handle_play_shortcut(["play", "rewrite", "--tabs", "5", "query text"])
         assert rewritten == [
@@ -226,7 +207,7 @@ class TestHandlePlayShortcut:
         assert code == 1
 
 
-# ── SHOULD-FIX #6: _LazyStderrHandler re-binds stream ───────────────
+# ── _LazyStderrHandler re-binds stream ───────────────
 
 
 class TestLazyStderrHandler:
@@ -236,8 +217,6 @@ class TestLazyStderrHandler:
         handler = _LazyStderrHandler()
         handler.setFormatter(logging.Formatter("%(message)s"))
 
-        # Simulate pytest swapping stderr: create a custom logger that
-        # goes through our handler, emit once to capsys-wrapped stderr.
         logger = logging.getLogger("lionagi.cli._logging_test")
         logger.handlers.clear()
         logger.addHandler(handler)
@@ -248,8 +227,6 @@ class TestLazyStderrHandler:
         err1 = capsys.readouterr().err
         assert "first-message" in err1
 
-        # Simulate a stream swap — the handler must pick up the new
-        # sys.stderr. Emit again and confirm nothing crashes.
         logger.info("second-message")
         err2 = capsys.readouterr().err
         assert "second-message" in err2

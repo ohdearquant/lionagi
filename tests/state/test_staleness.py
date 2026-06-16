@@ -154,7 +154,7 @@ async def test_touch_session_activity_with_explicit_at(db: StateDB):
 
 
 async def test_touch_session_activity_monotonic(db: StateDB):
-    """Past timestamps must not regress last_message_at (PR #1049 fix)."""
+    """Past timestamps must not regress last_message_at."""
     s = await _make_session(db, status="running", invocation_kind="agent")
     row = await db.get_session(s["id"])
     original = row["last_message_at"]
