@@ -15,7 +15,6 @@ class TestiModelRateLimitingEdgeCases:
     """Tests for rate limiting edge cases and boundary conditions."""
 
     def test_zero_rate_limits(self):
-        """Test iModel accepts zero rate limits (no limiting)."""
         imodel = iModel(
             provider="openai",
             model="gpt-4.1-mini",
@@ -27,7 +26,6 @@ class TestiModelRateLimitingEdgeCases:
         assert imodel.executor.config["limit_requests"] == 0
 
     def test_negative_rate_limits(self):
-        """Test iModel accepts negative rate limits (no limiting)."""
         imodel = iModel(
             provider="openai",
             model="gpt-4.1-mini",
@@ -38,7 +36,6 @@ class TestiModelRateLimitingEdgeCases:
         assert imodel.executor.config["limit_requests"] == -10
 
     def test_extremely_high_rate_limits(self):
-        """Test iModel with extremely high rate limits."""
         imodel = iModel(
             provider="openai",
             model="gpt-4.1-mini",
@@ -49,7 +46,6 @@ class TestiModelRateLimitingEdgeCases:
         assert imodel.executor.config["limit_requests"] == 1000000
 
     def test_zero_queue_capacity(self):
-        """Test iModel accepts zero queue capacity (unlimited queue)."""
         imodel = iModel(
             provider="openai",
             model="gpt-4.1-mini",
@@ -60,7 +56,6 @@ class TestiModelRateLimitingEdgeCases:
         assert imodel.executor.config["queue_capacity"] == 0
 
     def test_capacity_refresh_time_boundary(self):
-        """Test iModel with boundary capacity refresh times."""
         # Very short refresh time
         imodel1 = iModel(
             provider="openai",
@@ -80,7 +75,6 @@ class TestiModelRateLimitingEdgeCases:
         assert imodel2.executor.config["capacity_refresh_time"] == 3600.0
 
     def test_zero_concurrency_limit(self):
-        """Test iModel with zero concurrency limit uses default."""
         imodel = iModel(
             provider="openai",
             model="gpt-4.1-mini",
@@ -91,7 +85,6 @@ class TestiModelRateLimitingEdgeCases:
         assert imodel.executor.concurrency_limit == 100
 
     def test_single_concurrency_limit(self):
-        """Test iModel with concurrency limit of 1."""
         imodel = iModel(
             provider="openai",
             model="gpt-4.1-mini",
@@ -102,7 +95,6 @@ class TestiModelRateLimitingEdgeCases:
 
     @pytest.mark.asyncio
     async def test_rate_limit_token_counting(self, mock_response):
-        """Test that token counting is tracked for rate limiting."""
         imodel = iModel(
             provider="openai",
             model="gpt-4.1-mini",
@@ -127,10 +119,7 @@ class TestiModelRateLimitingEdgeCases:
 
     @pytest.mark.asyncio
     async def test_burst_requests_rate_limiting(self, mock_response):
-        """Test rate limiting behavior with burst of requests.
-
-        Fire exactly limit_requests so the burst all clears in one window.
-        """
+        """Fire exactly limit_requests so the burst all clears in one rate-limit window."""
         imodel = iModel(
             provider="openai",
             model="gpt-4.1-mini",
@@ -165,13 +154,9 @@ class TestiModelRateLimitingEdgeCases:
 
     @pytest.mark.asyncio
     async def test_over_budget_burst_completes_not_dropped(self, mock_response):
-        """Requests exceeding the per-window budget must NOT be silently dropped.
+        """Regression: denied event was dequeued and left PENDING outside the queue — over-budget calls lost until 10s timeout.
 
-        Regression: a rate-limited (denied) event was dequeued and left PENDING
-        outside the queue, so the over-budget calls were lost and the caller's
-        invoke() blocked until its 10s safety timeout. The fix re-enqueues
-        deferred events and the replenisher re-drives process() on each refresh,
-        so every over-budget call eventually completes once the budget refills.
+        Fix re-enqueues deferred events; replenisher re-drives process() on each refresh so every over-budget call completes.
         """
         imodel = iModel(
             provider="openai",

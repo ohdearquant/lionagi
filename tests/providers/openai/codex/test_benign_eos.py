@@ -1,12 +1,9 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Adapter-level tests for the benign_eos predicate in stream_codex_cli.
+"""Tests for the benign_eos predicate in stream_codex_cli.
 
-Covers the narrowing criteria from MAJOR 2 fix:
-  1. error event with err={"code": "rate_limit"} (no "message") → NOT benign.
-  2. turn.failed with empty error payload → NOT benign (turn.failed is never benign).
-  3. error event with err={} (empty dict) → benign (resume-EOF sentinel).
+Only {"type":"error","error":{}} (empty dict) is the resume-EOF sentinel; non-empty error dicts and turn.failed are always real failures.
 """
 
 from __future__ import annotations
@@ -47,12 +44,7 @@ async def _chunks_from_events(events: list[dict]) -> list[StreamChunk]:
 
 @pytest.mark.asyncio
 async def test_error_event_with_rate_limit_code_is_not_benign():
-    """An 'error' event whose error dict has a code but no message must NOT be
-    tagged benign — only a completely empty error payload qualifies.
-
-    Shape: {"type": "error", "error": {"code": "rate_limit"}}
-    The error dict has a truthy "code" value, so any(err.values()) is True → not benign.
-    """
+    """{"error": {"code": "rate_limit"}} has a truthy value so any(err.values()) is True — not benign."""
     events = [{"type": "error", "error": {"code": "rate_limit"}}]
     chunks = await _chunks_from_events(events)
 
@@ -71,11 +63,7 @@ async def test_error_event_with_rate_limit_code_is_not_benign():
 
 @pytest.mark.asyncio
 async def test_turn_failed_with_empty_error_is_not_benign():
-    """A 'turn.failed' event is NEVER benign, even with an empty error payload.
-
-    turn.failed signals an explicit model-side failure; it must always surface
-    as an error so the caller can handle it (RunFailed signal, retry logic, etc.)
-    """
+    """turn.failed signals an explicit model failure and must never be marked benign_eos, even with an empty error payload."""
     events = [{"type": "turn.failed", "error": {}}]
     chunks = await _chunks_from_events(events)
 
@@ -95,11 +83,7 @@ async def test_turn_failed_with_empty_error_is_not_benign():
 
 @pytest.mark.asyncio
 async def test_error_event_with_empty_error_dict_is_benign_eos():
-    """An 'error' event with err={} is the true resume-EOF sentinel shape.
-
-    This must be tagged benign_eos=True so run() terminates cleanly rather
-    than propagating a spurious RunFailed signal.
-    """
+    """{"error":{}} is the resume-EOF sentinel and must be tagged benign_eos=True so run() terminates cleanly."""
     # A bare error event with an empty error payload — the resume-EOF sentinel.
     events = [{"type": "error", "error": {}}]
     chunks = await _chunks_from_events(events)
@@ -119,8 +103,7 @@ async def test_error_event_with_empty_error_dict_is_benign_eos():
 
 @pytest.mark.asyncio
 async def test_error_event_with_empty_message_is_not_benign():
-    """{"error": {"message": ""}} is a real failure whose detail happens to be
-    empty — the payload is not the bare {} sentinel, so it must surface."""
+    """{"error": {"message": ""}} is not the bare {} sentinel; must surface as a real error."""
     events = [{"type": "error", "error": {"message": ""}}]
     chunks = await _chunks_from_events(events)
 
@@ -131,9 +114,7 @@ async def test_error_event_with_empty_message_is_not_benign():
 
 @pytest.mark.asyncio
 async def test_error_event_with_empty_message_and_toplevel_code_is_not_benign():
-    """{"error": {"message": ""}, "code": "rate_limit"} — falsy payload plus a
-    top-level failure indicator must surface as a real error (codex round-3
-    repro: this shape was previously tagged benign_eos)."""
+    """Falsy payload plus top-level "code" indicator must surface as a real error."""
     events = [{"type": "error", "error": {"message": ""}, "code": "rate_limit"}]
     chunks = await _chunks_from_events(events)
 
@@ -144,8 +125,7 @@ async def test_error_event_with_empty_message_and_toplevel_code_is_not_benign():
 
 @pytest.mark.asyncio
 async def test_error_event_with_none_message_is_not_benign():
-    """{"error": {"message": None}} is structured (non-empty dict) and must
-    surface as a real error."""
+    """{"error": {"message": None}} is a non-empty dict (structured), not the {} sentinel."""
     events = [{"type": "error", "error": {"message": None}}]
     chunks = await _chunks_from_events(events)
 
@@ -156,8 +136,7 @@ async def test_error_event_with_none_message_is_not_benign():
 
 @pytest.mark.asyncio
 async def test_error_event_with_toplevel_code_and_empty_error_is_not_benign():
-    """Bare {} error payload but a top-level failure indicator ("code") —
-    outside the known EOF envelope, must surface as a real error."""
+    """Bare {} error payload plus a top-level "code" key is outside the EOF envelope; must surface as real error."""
     events = [{"type": "error", "error": {}, "code": "rate_limit"}]
     chunks = await _chunks_from_events(events)
 
@@ -168,9 +147,7 @@ async def test_error_event_with_toplevel_code_and_empty_error_is_not_benign():
 
 @pytest.mark.asyncio
 async def test_error_event_without_error_key_is_not_benign():
-    """A bare {"type": "error"} with no error key at all is malformed, not the
-    EOF sentinel — the sentinel is an explicit empty error object (codex
-    round-4 suggestion)."""
+    """{"type":"error"} with no error key is malformed, not the EOF sentinel (which requires an explicit empty {} object)."""
     events = [{"type": "error"}]
     chunks = await _chunks_from_events(events)
 
@@ -181,13 +158,7 @@ async def test_error_event_without_error_key_is_not_benign():
 
 @pytest.mark.asyncio
 async def test_error_event_with_toplevel_message_surfaces_the_message():
-    """An "error" event carrying its message at the TOP LEVEL (no "error" key)
-    — the shape the codex CLI emits for usage-limit errors — must surface the
-    actual message as chunk content, not the str() of an empty error dict.
-
-    Real-world shape:
-        {"type": "error", "message": "You've hit your usage limit. ..."}
-    """
+    """Top-level "message" key (real codex CLI usage-limit shape) must surface as chunk content, not str({})."""
     msg = (
         "You've hit your usage limit. Visit "
         "https://chatgpt.com/codex/settings/usage to purchase more credits."
@@ -206,9 +177,7 @@ async def test_error_event_with_toplevel_message_surfaces_the_message():
 
 @pytest.mark.asyncio
 async def test_turn_failed_with_nested_message_still_preferred_over_toplevel():
-    """turn.failed keeps its nested error.message as the surfaced content even
-    when a top-level "message" is also present — the nested one is the
-    provider's canonical detail for that event type."""
+    """turn.failed uses nested error.message as canonical content even when a top-level "message" is also present."""
     events = [
         {
             "type": "turn.failed",
@@ -232,13 +201,7 @@ async def test_turn_failed_with_nested_message_still_preferred_over_toplevel():
 
 @pytest.mark.asyncio
 async def test_error_event_null_payload_is_not_benign():
-    """{"type": "error", "error": null} must NOT be tagged benign_eos=True.
-
-    Regression for the round-2 null-normalisation fix: normalising null→{} before
-    the benign predicate caused this shape to match the empty-dict sentinel and be
-    swallowed silently.  null is a malformed/unexpected provider envelope; it must
-    surface as a real error with a self-describing message.
-    """
+    """Regression: null→{} normalisation caused {"error":null} to match the empty-dict sentinel and be swallowed silently."""
     events = [{"type": "error", "error": None}]
     chunks = await _chunks_from_events(events)
 
@@ -261,8 +224,7 @@ async def test_error_event_null_payload_is_not_benign():
 
 @pytest.mark.asyncio
 async def test_error_event_empty_dict_is_still_benign_after_null_fix():
-    """Confirm {"type": "error", "error": {}} remains benign EOS after the null
-    fix — the original sentinel behavior must not be broken."""
+    """{"error":{}} must remain benign EOS after the null-normalisation fix — the original sentinel must not break."""
     events = [{"type": "error", "error": {}}]
     chunks = await _chunks_from_events(events)
 

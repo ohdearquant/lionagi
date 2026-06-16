@@ -3,18 +3,7 @@
 
 """Unit tests for gemini_code NDJSON event mapping.
 
-Covers two bugs reproduced from live gemini CLI stream-json output:
-
-Bug A — tool payload loss: the real `tool_use` events carry arguments under
-`parameters`, not `input`/`args`, and `tool_result` events carry the output
-under `output`, not `content`/`result`.  Both fields were dropped, producing
-empty `{}` argument dicts and empty output strings in the persisted session.
-
-Bug B — assistant-answer echo: the gemini CLI echoes the user prompt as a
-`{"type":"message","role":"user",...}` event before the assistant reply.
-Both events share `type=="message"`, so the echo's text was included in the
-fallback result accumulation, making `session.result` start with the raw
-user prompt instead of the model's answer.
+Covers Bug A (tool payload loss: args in `parameters` not `input`, output in `output` not `content`) and Bug B (user-echo contamination of session.result).
 """
 
 from __future__ import annotations
@@ -61,12 +50,7 @@ async def _run_events(events: list[dict]) -> GeminiSession:
 
 @pytest.mark.asyncio
 async def test_tool_use_parameters_key_captured():
-    """A `tool_use` event whose args are under `parameters` must be fully captured.
-
-    Real event shape observed from the gemini CLI:
-      {"type":"tool_use","tool_name":"google_web_search",
-       "tool_id":"google_web_search__...", "parameters":{"query":"France capital"}}
-    """
+    """tool_use args under `parameters` (real gemini CLI key) must be captured, not dropped."""
     events = [
         {"type": "init", "session_id": "s1", "model": "gemini-3-flash-preview"},
         {
@@ -92,12 +76,7 @@ async def test_tool_use_parameters_key_captured():
 
 @pytest.mark.asyncio
 async def test_tool_result_output_key_captured():
-    """A `tool_result` event whose payload is under `output` must be fully captured.
-
-    Real event shape observed from the gemini CLI:
-      {"type":"tool_result","tool_id":"google_web_search__...",
-       "status":"success","output":"Search results returned."}
-    """
+    """tool_result output under `output` (real gemini CLI key) must be captured, not dropped."""
     events = [
         {"type": "init", "session_id": "s1", "model": "gemini-3-flash-preview"},
         {
@@ -150,16 +129,7 @@ async def test_tool_result_error_status_flagged():
 
 @pytest.mark.asyncio
 async def test_assistant_answer_not_user_echo_is_result():
-    """session.result must be the assistant reply, not the echoed user prompt.
-
-    The gemini CLI emits the user prompt as a message event before the
-    assistant reply.  Both share type=="message".  Only the assistant role
-    content must appear in session.result.
-
-    Real sequence observed:
-      {"type":"message","role":"user","content":"ping"}
-      {"type":"message","role":"assistant","content":"Pong!","delta":true}
-    """
+    """session.result must contain only the assistant reply, not the user-echo message event the CLI emits first."""
     events = [
         {"type": "init", "session_id": "s1", "model": "gemini-3-flash-preview"},
         {"type": "message", "role": "user", "content": "ping"},
@@ -178,11 +148,7 @@ async def test_assistant_answer_not_user_echo_is_result():
 
 @pytest.mark.asyncio
 async def test_user_echo_not_added_to_messages():
-    """The user echo event must not be appended to session.messages.
-
-    session.messages should contain only assistant turns so that resume context
-    doesn't re-submit the user's own words as assistant output.
-    """
+    """User echo events must not be appended to session.messages to avoid re-submitting them on resume."""
     events = [
         {"type": "init", "session_id": "s1", "model": "gemini-3-flash-preview"},
         {"type": "message", "role": "user", "content": "Reply with exactly: OK"},
@@ -226,13 +192,7 @@ async def test_multi_delta_assistant_chunks_joined():
 
 @pytest.mark.asyncio
 async def test_real_key_beats_legacy_key_on_tool_use():
-    """When both the real gemini CLI key and a legacy alias are present on the
-    same event, the real key must win for every field.
-
-    Regression: the original probe chains put legacy keys first, so a dummy
-    `name` or `input` field emitted alongside the real `tool_name`/`parameters`
-    would be captured instead of the actual payload.
-    """
+    """Regression: original probe chains put legacy keys first; real gemini CLI keys (tool_name, parameters) must win."""
     events = [
         {"type": "init", "session_id": "s1", "model": "gemini-3-flash-preview"},
         {
@@ -259,9 +219,7 @@ async def test_real_key_beats_legacy_key_on_tool_use():
 
 @pytest.mark.asyncio
 async def test_real_key_beats_legacy_key_on_tool_result():
-    """When both the real gemini CLI key and a legacy alias are present on a
-    tool_result event, the real key must win for id and content.
-    """
+    """Real gemini CLI keys (tool_id, output) must win over legacy aliases on tool_result events."""
     events = [
         {"type": "init", "session_id": "s1", "model": "gemini-3-flash-preview"},
         {
@@ -288,12 +246,7 @@ async def test_real_key_beats_legacy_key_on_tool_result():
 
 @pytest.mark.asyncio
 async def test_nested_tool_call_in_message_content_real_keys():
-    """A tool_use block nested inside a message content list must use the same
-    real-keys-first probe chains as top-level tool_use events.
-
-    Real gemini CLI tool-use blocks inside content lists may carry
-    `tool_name`/`parameters` rather than `name`/`input`.
-    """
+    """Nested tool_use blocks inside message content lists must use real-key probe chains (tool_name/parameters)."""
     events = [
         {"type": "init", "session_id": "s1", "model": "gemini-3-flash-preview"},
         {
@@ -370,9 +323,7 @@ async def test_nested_tool_call_btype_is_recognized():
 
 @pytest.mark.asyncio
 async def test_full_tool_turn_preserves_all_payloads():
-    """A complete turn with user echo, tool call, tool result, and assistant answer
-    must land everything correctly: args/output captured, result = assistant text only.
-    """
+    """Full turn with user echo, tool call, tool result, and assistant answer: args/output captured, result = assistant text only."""
     events = [
         {"type": "init", "session_id": "s1", "model": "gemini-3-flash-preview"},
         {

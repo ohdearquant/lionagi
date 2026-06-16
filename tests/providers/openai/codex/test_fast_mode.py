@@ -3,14 +3,7 @@
 
 """Smoke tests for CodexCodeRequest.fast_mode (issue #964).
 
-Tests verify that:
-1. fast_mode=False (default) emits no service_tier arg.
-2. fast_mode=True emits ``-c service_tier=fast`` in the command args.
-3. fast_mode does NOT cap or remove reasoning_effort.
-4. Profile frontmatter ``fast_mode: true`` is parsed and propagated to
-   CodexCodeRequest via build_imodel_from_spec (mocked iModel).
-5. ``li agent --fast`` and ``li play --fast`` flags are registered in
-   the argparse namespace via add_common_cli_args.
+Verifies: default emits no service_tier; fast_mode=True emits -c service_tier=fast; reasoning_effort is unaffected; profile frontmatter propagates; --fast CLI flag is registered.
 """
 
 from __future__ import annotations

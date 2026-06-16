@@ -16,7 +16,6 @@ class TestiModelEdgeCases:
 
     @pytest.mark.asyncio
     async def test_concurrent_streaming_multiple_requests(self, mock_streaming_response):
-        """Test concurrent streaming requests with semaphore control."""
         imodel = iModel(
             provider="openai",
             model="gpt-4.1-mini",
@@ -102,7 +101,6 @@ class TestiModelEdgeCases:
 
     @pytest.mark.asyncio
     async def test_provider_switching_mid_session(self, mock_response):
-        """Test switching providers by creating new iModel instances."""
         # Start with OpenAI
         imodel1 = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
 
@@ -132,7 +130,6 @@ class TestiModelEdgeCases:
 
     @pytest.mark.asyncio
     async def test_error_recovery_and_retry_logic(self):
-        """Test error handling and recovery in invoke."""
         imodel = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
 
         call_count = 0
@@ -164,7 +161,6 @@ class TestiModelEdgeCases:
 
     @pytest.mark.asyncio
     async def test_streaming_error_mid_stream(self):
-        """Test error handling when streaming fails mid-stream."""
         imodel = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
 
         async def failing_stream():
@@ -227,7 +223,6 @@ class TestiModelEdgeCases:
 
     @pytest.mark.asyncio
     async def test_provider_metadata_persistence(self, mock_response):
-        """Test session_id persists on CLI endpoint across multiple calls."""
         imodel = iModel(
             provider="claude_code",
             model="claude-3-5-sonnet-20241022",
@@ -256,7 +251,6 @@ class TestiModelEdgeCases:
 
     @pytest.mark.asyncio
     async def test_streaming_with_processing_function_error(self):
-        """Test error in streaming_process_func doesn't crash stream."""
 
         def failing_processor(chunk):
             if "error" in str(chunk):
@@ -286,7 +280,6 @@ class TestiModelEdgeCases:
 
     @pytest.mark.asyncio
     async def test_serialization_roundtrip_with_complex_config(self):
-        """Test to_dict/from_dict preserves complex configurations."""
         imodel = iModel(
             provider="openai",
             model="gpt-4.1-mini",

@@ -2,12 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for the Gemini CLI endpoint fixes.
 
-Covers:
-- GEMINI_CLI_TRUST_WORKSPACE env var is injected into the subprocess env (fix #1)
-- subprocess stderr is surfaced when the process exits nonzero (fix #2, via ndjson_from_cli)
-- stdout noise lines that are not valid JSON are tolerated (fix #3, already handled by ndjson_from_cli buffer)
-- default model is gemini-3-flash-preview (fix #4)
-- known-bad model id surfaces a clear error, not empty output (ndjson_from_cli raises RuntimeError)
+Covers trust-env injection, nonzero-exit stderr surfacing, JSON-noise tolerance, default model gemini-3-flash-preview, and known-bad model surfacing a RuntimeError.
 """
 
 from __future__ import annotations

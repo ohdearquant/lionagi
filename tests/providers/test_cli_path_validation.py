@@ -1,19 +1,8 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Attack-driven path-validation tests for agentic-CLI providers.
+"""Attack-driven path-validation tests for agentic-CLI providers (Codex, Claude Code, Gemini, Pi).
 
-Each provider (Codex, Claude Code, Gemini, Pi) accepts path-grant fields
-that flow into subprocess argv.  A traversal or absolute path in the wrong
-field could let the spawned CLI read or write arbitrary host files.
-
-These tests verify that the shared containment helpers are wired correctly:
-  - traversal paths (``../../etc/passwd``) are always rejected;
-  - absolute paths are rejected in write-target fields (output_schema,
-    system_prompt_file, etc.) but allowed in read-grant fields (add_dir)
-    because the orchestration layer legitimately sets repo to a per-agent
-    artifact directory and add_dir to the wider project root;
-  - legitimate relative paths are accepted everywhere;
-  - symlink-escape attempts are caught by the repo-containment layer.
+Traversal paths are always rejected; absolute paths are rejected in write-target fields but allowed in read-grant fields (add_dir); relative paths accepted; symlink-escape caught by repo-containment.
 """
 
 from __future__ import annotations
@@ -189,12 +178,7 @@ class TestCodexPathValidation:
         assert str(req.output_last_message) == "results/last.txt"
 
     def test_add_dir_orchestration_regression(self, tmp_path):
-        """Regression: repo=artifact_dir with add_dir=[project_root] must succeed.
-
-        The orchestration layer sets repo to a per-agent artifact directory and
-        adds the project root (outside that artifact dir) to add_dir so workers
-        can read source files.  This must not be rejected.
-        """
+        """Regression: repo=artifact_dir with add_dir=[project_root] must succeed; orchestration sets add_dir to the project root outside the per-agent artifact dir."""
         from lionagi.providers.openai.codex.models import CodexCodeRequest
 
         project_root = tmp_path / "project"
@@ -325,12 +309,7 @@ class TestClaudeCodePathValidation:
         assert req.add_dir == ["workspace/subdir"]
 
     def test_add_dir_orchestration_regression(self, tmp_path):
-        """Regression: repo=artifact_dir with add_dir=[project_root] must succeed.
-
-        The orchestration layer sets repo to a per-agent artifact directory and
-        adds the project root (outside that artifact dir) to add_dir so workers
-        can read source files.  This must not be rejected.
-        """
+        """Regression: repo=artifact_dir with add_dir=[project_root] must succeed; orchestration sets add_dir to the project root outside the per-agent artifact dir."""
         from lionagi.providers.anthropic.claude_code.models import ClaudeCodeRequest
 
         project_root = tmp_path / "project"

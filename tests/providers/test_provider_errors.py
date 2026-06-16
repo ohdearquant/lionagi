@@ -3,12 +3,7 @@
 
 """Unit tests for lionagi/providers/_provider_errors.py (issue #1397).
 
-Covers:
-  - classify_provider_error returns correct subclass for each regex family
-  - All classifications are case-insensitive
-  - Unmatched text → base ProviderError
-  - All subclasses are RuntimeError instances
-  - EmissionError attrs preserved
+classify_provider_error matches quota/auth/context patterns case-insensitively; unmatched text returns base ProviderError; all subclasses are RuntimeError; EmissionError attrs preserved.
 """
 
 from __future__ import annotations

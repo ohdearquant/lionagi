@@ -15,12 +15,10 @@ class TestAnthropicIntegration:
 
     @pytest.fixture
     def anthropic_imodel(self):
-        """Create an iModel instance for Anthropic."""
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-anthropic-key"}):
             return iModel(provider="anthropic", model="claude-3-opus-20240229")
 
     def test_anthropic_endpoint_configuration(self, anthropic_imodel):
-        """Test that Anthropic endpoint is configured correctly."""
         assert anthropic_imodel.endpoint.config.provider == "anthropic"
         assert anthropic_imodel.endpoint.config.openai_compatible is False
         if anthropic_imodel.endpoint.config.endpoint_params:
@@ -28,7 +26,6 @@ class TestAnthropicIntegration:
         assert anthropic_imodel.endpoint.config.default_headers["anthropic-version"] == "2023-06-01"
 
     def test_anthropic_headers_creation(self, anthropic_imodel):
-        """Test that Anthropic headers are created correctly."""
         payload, headers = anthropic_imodel.endpoint.create_payload(
             {
                 "messages": [{"role": "user", "content": "Hello"}],
@@ -45,8 +42,6 @@ class TestAnthropicIntegration:
         assert "api_key" not in payload  # Should be removed from payload
 
     def test_anthropic_payload_validation(self, anthropic_imodel):
-        """Test Anthropic payload validation with Pydantic models."""
-        # Valid payload should work
         payload, headers = anthropic_imodel.endpoint.create_payload(
             {
                 "messages": [{"role": "user", "content": "Hello"}],
@@ -60,8 +55,7 @@ class TestAnthropicIntegration:
         assert payload["max_tokens"] == 100
 
     def test_anthropic_message_format(self, anthropic_imodel):
-        """Test Anthropic message format requirements."""
-        # Test with system message
+        # system message is extracted to a separate field
         payload, _ = anthropic_imodel.endpoint.create_payload(
             {
                 "messages": [
@@ -83,7 +77,6 @@ class TestAnthropicIntegration:
 
     @pytest.mark.asyncio
     async def test_anthropic_api_calling_creation(self, anthropic_imodel, mock_anthropic_response):
-        """Test creating APICalling for Anthropic."""
         api_call = anthropic_imodel.create_api_calling(
             messages=[{"role": "user", "content": "Hello, Claude!"}],
             max_tokens=100,
@@ -97,7 +90,6 @@ class TestAnthropicIntegration:
 
     @pytest.mark.asyncio
     async def test_anthropic_successful_invoke(self, anthropic_imodel, mock_anthropic_response):
-        """Test successful Anthropic API invocation."""
         with patch.object(
             anthropic_imodel.endpoint,
             "call",
@@ -114,8 +106,6 @@ class TestAnthropicIntegration:
 
     @pytest.mark.asyncio
     async def test_anthropic_streaming(self, anthropic_imodel):
-        """Test Anthropic streaming responses."""
-        # Set a streaming_process_func that returns the chunk
         anthropic_imodel.streaming_process_func = lambda chunk: chunk
 
         async def mock_anthropic_stream():
@@ -149,7 +139,6 @@ class TestAnthropicIntegration:
         assert len(chunks) >= 2
 
     def test_anthropic_url_construction(self):
-        """Test Anthropic URL construction."""
         endpoint = match_endpoint(
             provider="anthropic",
             endpoint="chat",
@@ -160,7 +149,6 @@ class TestAnthropicIntegration:
         assert "api.anthropic.com" in url
 
     def test_anthropic_model_validation(self, anthropic_imodel):
-        """Test that Anthropic models are validated correctly."""
         valid_models = [
             "claude-3-opus-20240229",
             "claude-3-sonnet-20240229",
@@ -178,8 +166,7 @@ class TestAnthropicIntegration:
             assert payload["model"] == model
 
     def test_anthropic_error_handling(self, anthropic_imodel):
-        """Test Anthropic-specific error handling."""
-        # Test with missing max_tokens (required for Anthropic)
+        # max_tokens is required for Anthropic
         with pytest.raises(
             ValueError
         ):  # endpoint wraps pydantic ValidationError as ValueError("Invalid payload")
@@ -192,23 +179,18 @@ class TestAnthropicIntegration:
             )
 
     def test_anthropic_reasoning_models(self):
-        """Test configuration for Anthropic reasoning models if any."""
-        # Anthropic doesn't have reasoning models like OpenAI's o1 series yet,
-        # but this test ensures the system can handle them if introduced
         endpoint = match_endpoint(
             provider="anthropic",
             endpoint="chat",
             model="claude-3-opus-20240229",  # Current model
         )
 
-        # Standard Anthropic models should use normal configuration
         assert endpoint.config.openai_compatible is False
         if endpoint.config.endpoint_params:
             assert "messages" in endpoint.config.endpoint_params
 
     @pytest.mark.asyncio
     async def test_anthropic_parallel_requests(self, anthropic_imodel, mock_anthropic_response):
-        """Test parallel requests to Anthropic API."""
         import asyncio
 
         async def mock_request_with_delay(request, cache_control=False, **kwargs):
@@ -234,14 +216,12 @@ class TestAnthropicIntegration:
 
             results = await asyncio.gather(*tasks)
 
-        # Verify all requests completed independently
         assert len(results) == 3
         for i, result in enumerate(results):
             assert result.response is not None
             assert f"{i}" in result.response["id"]
 
     def test_anthropic_cache_control(self, anthropic_imodel):
-        """Test Anthropic cache control feature."""
         api_call = anthropic_imodel.create_api_calling(
             messages=[{"role": "user", "content": "Hello"}],
             max_tokens=100,
