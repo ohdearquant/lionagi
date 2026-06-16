@@ -312,12 +312,7 @@ def test_subprocess_sync_timeout_mock_pid_calls_kill_not_killpg(monkeypatch):
 
 @pytest.mark.parametrize("invalid_pid", [None, 0, 1, -1, True, False])
 def test_subprocess_sync_timeout_invalid_pid_calls_kill_not_killpg(invalid_pid):
-    """Lock in the `> 1` half of the guard against accidental removal.
-
-    None/0/1/-1/False all fail isinstance(int) or fail > 1; True is int but == 1.
-    All must route to proc.kill() — killpg(0) would target current pgroup;
-    killpg(1) would target init/CI runner.
-    """
+    """Non-positive or non-int pids must use proc.kill(), never os.killpg (killpg(0/1) would target pgroup/init)."""
     import subprocess
     from unittest.mock import MagicMock, patch
 

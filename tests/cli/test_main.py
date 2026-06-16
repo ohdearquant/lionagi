@@ -120,7 +120,7 @@ def test_play_check_playbook_without_contract(tmp_path, monkeypatch, capsys):
     assert "no `artifacts:` block declared" in out
 
 
-# ─── #1194: `li play <name> --help` surfaces forwarded global flags ───
+# ─── `li play <name> --help` surfaces forwarded global flags ───
 
 
 def test_play_help_shows_common_flags(tmp_path, monkeypatch, capsys):
