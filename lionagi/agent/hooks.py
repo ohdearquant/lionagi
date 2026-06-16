@@ -75,11 +75,8 @@ def guard_paths(
 
         expanded = Path(raw_path).expanduser()
         if not expanded.is_absolute() and allowed_roots:
-            # Resolve relative paths against the workspace root so that
-            # "src/foo.py" is treated as workspace-relative, not process-cwd-
-            # relative.  Without this a relative in-workspace path would
-            # resolve to <process_cwd>/src/foo.py which almost never equals the
-            # configured allowed root and would be wrongly blocked.
+            # Resolve relative paths against the workspace root, not the process
+            # cwd — otherwise an in-workspace path would never match allowed_roots.
             resolved = (allowed_roots[0] / expanded).resolve(strict=False)
         else:
             resolved = expanded.resolve(strict=False)
@@ -96,26 +93,17 @@ def guard_paths(
                     if resolved == denied_resolved or denied_resolved in resolved.parents:
                         raise PermissionError(f"Path matches deny rule: {raw_path}")
                 else:
-                    # Relative deny pattern — two matching strategies:
-                    #
-                    # 1. Glob patterns (contain *, ?, or [): apply fnmatch to each
-                    #    resolved path component.  This fixes LIONAGI-AUDIT-001 where
-                    #    "*.key" was treated as a literal string and never matched
-                    #    "/tmp/api.key".
-                    #
-                    # 2. Plain-text patterns (no glob chars): retain the original
-                    #    substring check against raw_path and resolved.name so that
-                    #    documented examples like ".env" still block ".env.local".
+                    # Relative deny pattern: glob patterns (*, ?, [) fnmatch each
+                    # resolved path component; plain-text patterns fall back to a
+                    # substring check so ".env" still blocks ".env.local".
                     import fnmatch
 
                     _glob_chars = frozenset("*?[")
                     if any(c in denied for c in _glob_chars):
-                        # Glob mode: match against each resolved path component.
                         parts = resolved.parts
                         if any(fnmatch.fnmatch(part, denied) for part in parts):
                             raise PermissionError(f"Path matches deny rule: {raw_path}")
                     elif denied in raw_path or denied in resolved.name:
-                        # Plain-text mode: substring containment (original behaviour).
                         raise PermissionError(f"Path matches deny rule: {raw_path}")
         return None
 

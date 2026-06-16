@@ -1,12 +1,10 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-DataFrame adapter — inlined from pydapter.extras.pandas_.
+"""DataFrame adapter — inlined from pydapter.extras.pandas_.
 
-pandas is optional.  This module raises ImportError with an actionable message
-when pandas is not installed, matching the behaviour of the previous pydapter
-import in pile.py's to_df() method.
+pandas is optional; the adapter raises ImportError with an install hint when it
+is not installed.
 """
 
 from __future__ import annotations
@@ -53,7 +51,7 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
         many: bool,
         required_columns: list[str] | None = None,
     ) -> None:
-        _require_pandas()  # ensure pandas is available; raises ImportError if not
+        _require_pandas()
         try:
             if df.empty:
                 if many:

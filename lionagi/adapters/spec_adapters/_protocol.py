@@ -60,7 +60,6 @@ class SpecAdapter(ABC):
 
         data = extract_json(text, fuzzy_parse=fuzzy)
 
-        # Unwrap single-item lists/tuples
         if isinstance(data, list | tuple) and len(data) == 1:
             data = data[0]
 
@@ -82,17 +81,10 @@ class SpecAdapter(ABC):
     ) -> Any | None:
         """Parse response text into validated model instance."""
         try:
-            # Step 1: Parse JSON
             data = cls.parse_json(text, fuzzy=fuzzy_parse)
-
-            # Step 2: Fuzzy match fields
             matched_data = cls.fuzzy_match_fields(data, model_cls, strict=strict)
-
-            # Step 3: Validate with framework-specific method
             instance = cls.validate_model(model_cls, matched_data)
-
             return instance
-
         except (ValueError, TypeError, KeyError, AttributeError):
             if strict:
                 raise
@@ -107,10 +99,6 @@ class SpecAdapter(ABC):
     ) -> Any:
         """Update existing model instance with new data."""
         model_cls = model_cls or type(instance)
-
-        # Merge existing data with updates
         current_data = cls.dump_model(instance)
         current_data.update(updates)
-
-        # Validate merged data
         return cls.validate_model(model_cls, current_data)

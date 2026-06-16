@@ -17,11 +17,8 @@ __all__ = ("Profile",)
 
 @dataclass(frozen=True, slots=True)
 class Profile:
-    """Named identity composition: one Role + ordered cognitive Modes.
-
-    Pure configuration — no tools, model, or permissions. Validates mode
-    conflicts at construction time (both directions of conflicts_with).
-    """
+    """Named identity composition: one Role + ordered cognitive Modes (pure
+    config; validates mode conflicts at construction)."""
 
     name: str
     role: Role
@@ -71,12 +68,8 @@ class Profile:
         )
 
     def to_yaml(self, path: str | Path) -> None:
-        """Save this Profile to a YAML file, symmetric with :meth:`from_yaml`.
-
-        Writes ``{name, role, modes: [...]}`` using role/mode canonical names —
-        the same schema ``from_yaml`` reads, so the round-trip recomposes an
-        equal Profile.
-        """
+        """Save to YAML ({name, role, modes}) using canonical names — symmetric
+        with from_yaml."""
         import yaml
 
         data = {

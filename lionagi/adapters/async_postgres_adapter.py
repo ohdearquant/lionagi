@@ -1,17 +1,11 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Async PostgreSQL adapter for lionagi Nodes.
+"""Async PostgreSQL adapter for lionagi Nodes.
 
-This module requires the ``lionagi[postgres]`` extra (pydapter[postgres],
-sqlalchemy, asyncpg).  It is loaded lazily — only when a caller explicitly
-uses the ``lionagi_async_pg`` adapter key via ``_ensure_postgres_adapter()``
-in node.py.
-
-The base class (AsyncPostgresAdapter) is sourced from pydapter's extras
-because it provides a complete async SQLAlchemy/asyncpg write stack.  Only
-pydapter[postgres] carries that dependency; it is NOT part of the core install.
+Requires the ``lionagi[postgres]`` extra (sqlalchemy, asyncpg). Loaded lazily
+via ``_ensure_postgres_adapter()`` in node.py — never at import time, since the
+base ``AsyncPostgresAdapter`` comes from pydapter's postgres extra.
 """
 
 from __future__ import annotations
@@ -24,23 +18,11 @@ T = TypeVar("T")
 
 
 def create_lionagi_async_postgres_adapter() -> type[AsyncAdapter]:
-    """Build the LionAGIAsyncPostgresAdapter class.
-
-    This factory is intentionally deferred — calling it requires pydapter's
-    async_postgres extras (sqlalchemy, asyncpg).  It is invoked lazily by
-    ``_ensure_postgres_adapter()`` in node.py, never at import time.
-    """
+    """Build the LionAGIAsyncPostgresAdapter class (requires the postgres extra)."""
     from pydapter.extras.async_postgres_ import AsyncPostgresAdapter
 
     class LionAGIAsyncPostgresAdapter(AsyncPostgresAdapter[T]):
-        """
-        Streamlined async adapter for lionagi Nodes.
-
-        Features:
-        - Auto-creates tables with lionagi schema
-        - Inherits all pydapter v1.0.4+ improvements (SQL write stack)
-        - No workarounds needed for SQLite or raw SQL
-        """
+        """Async adapter for lionagi Nodes; auto-creates the table on write."""
 
         obj_key: ClassVar[str] = "lionagi_async_pg"
 
@@ -100,13 +82,9 @@ def create_lionagi_async_postgres_adapter() -> type[AsyncAdapter]:
     return LionAGIAsyncPostgresAdapter
 
 
-# LionAGIAsyncPostgresAdapter is NOT constructed at import time.
-# Use create_lionagi_async_postgres_adapter() when the postgres extra is available.
-# The _ensure_postgres_adapter() function in node.py handles the lazy construction.
-#
-# For test patching purposes, a sentinel attribute is exposed so that
-# patch("lionagi.adapters.async_postgres_adapter.LionAGIAsyncPostgresAdapter")
-# resolves without triggering the factory.
+# Built lazily by _ensure_postgres_adapter() in node.py, not at import time. The
+# module-level name stays defined so test patching of this attribute resolves
+# without triggering the factory.
 LionAGIAsyncPostgresAdapter = None  # populated lazily by _ensure_postgres_adapter()
 
 __all__ = ("LionAGIAsyncPostgresAdapter", "create_lionagi_async_postgres_adapter")
