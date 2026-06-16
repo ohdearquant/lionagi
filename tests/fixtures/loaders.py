@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Re-export shim. Real home: ``lionagi.testing.loaders``.
-
-Data files are now bundled at ``lionagi/testing/data/`` — the loader looks
-there by default, so this shim works without copying files around.
-"""
+"""Re-export shim for lionagi.testing.loaders; data files are bundled at lionagi/testing/data/."""
 
 from lionagi.testing.loaders import (
     TestDataLoader,

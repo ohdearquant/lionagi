@@ -1,10 +1,4 @@
-"""Tests for integration documentation examples (llm-providers.md, tools.md, mcp-servers.md).
-
-Validates that the code patterns shown in integration docs actually work:
-- All supported LLM providers can construct iModel instances
-- Tool and function_to_schema produce correct OpenAI-format schemas
-- MCP-related imports resolve correctly
-"""
+"""Tests for integration documentation examples (llm-providers.md, tools.md, mcp-servers.md)."""
 
 import pytest
 from pydantic import BaseModel

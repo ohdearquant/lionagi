@@ -32,10 +32,7 @@ except ImportError:
 
 @pytest.fixture
 def ensure_fake_lionagi(monkeypatch):
-    """
-    If lionagi is not installed in the environment, install minimal stubs so the
-    tests exercising chunk_content/chunk() can run.
-    """
+    """Install minimal lionagi stubs if the real package is absent."""
     if "lionagi" in sys.modules:
         # Real lionagi present; do nothing.
         yield
@@ -97,13 +94,7 @@ def ensure_fake_lionagi(monkeypatch):
 
 @pytest.fixture(scope="session")
 def mod_paths():
-    """
-    Resolve module paths for the code under test from env vars with sensible defaults.
-    Adjust env vars to match your layout:
-      UUT_CHUNK_MOD  (chunk_by_chars/tokens, chunk_content)
-      UUT_API_MOD    (dir_to_files, chunk)
-      UUT_SCHEMA_MOD (load_pydantic_model_from_schema)
-    """
+    """Resolve module paths from env vars (UUT_CHUNK_MOD, UUT_API_MOD, UUT_SCHEMA_MOD)."""
     import os
 
     return {

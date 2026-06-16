@@ -1,14 +1,4 @@
-"""Tests that code examples from lionagi documentation are syntactically
-and structurally correct.
-
-Covers 6 doc files:
-  - sessions-and-branches.md
-  - messages-and-memory.md
-  - models-and-providers.md
-  - tools-and-functions.md
-  - operations.md
-  - lionagi-philosophy.md
-"""
+"""Tests that documented code examples in core-concepts docs are structurally correct."""
 
 import pytest
 

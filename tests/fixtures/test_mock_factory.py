@@ -1,8 +1,4 @@
-"""
-Simple Phase 1 Infrastructure Validation
-
-Basic tests to validate infrastructure components work without complex fixtures.
-"""
+"""Infrastructure validation tests for testing utilities."""
 
 import asyncio
 

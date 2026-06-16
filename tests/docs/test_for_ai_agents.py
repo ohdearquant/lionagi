@@ -1,11 +1,4 @@
-"""Tests for for-ai-agents documentation examples.
-
-Covers code patterns from:
-- orchestration-guide.md
-- self-improvement.md
-- pattern-selection.md
-- claude-code-usage.md
-"""
+"""Tests for for-ai-agents documentation examples."""
 
 import inspect
 

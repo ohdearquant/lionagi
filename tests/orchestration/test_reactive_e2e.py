@@ -1,13 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""End-to-end reactive flow through the real operate path + reactive bus.
-
-Workers are ``TestBranch`` scripted endpoints (CLI), so ``operate`` runs the
-production streaming/run + capability-extraction path with no network. A
-worker granted spawn rights emits a ``spawn_request`` capability; the
-ReactiveExecutor must catch it off ``session.observe`` and grow the live DAG.
-"""
+"""End-to-end reactive flow tests through the real operate path and reactive bus."""
 
 from __future__ import annotations
 

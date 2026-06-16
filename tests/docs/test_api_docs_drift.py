@@ -1,10 +1,4 @@
-"""Tests verifying docs/api/ accuracy against live source code.
-
-Catches drift between documentation and actual implementation for:
-- imodel.md: provider env-var names
-- operations.md: import paths for Middle protocol and param types
-- flow.md / session.md: Session.flow() return-type shape
-"""
+"""Tests verifying docs/api/ accuracy against live source code."""
 
 from pathlib import Path
 

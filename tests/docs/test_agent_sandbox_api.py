@@ -1,14 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests verifying documented agent and sandbox API matches source code.
-
-Guards against docs-drift for:
-- AgentSpec presets and fields
-- PermissionPolicy modes and constructor
-- Hook function signatures (guard_destructive, guard_paths, log_tool_use)
-- SandboxSession dataclass and module-level async functions
-"""
+"""Tests verifying documented agent and sandbox API matches source code."""
 
 from __future__ import annotations
 
