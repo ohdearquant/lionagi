@@ -1,15 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""`li team` — persistent team messaging (inbox pattern).
-
-Examples:
-    li team create "research-team" -m "researcher,writer,reviewer"
-    li team list
-    li team send "analyze auth middleware" --team abc123 --to all
-    li team send "focus on JWT" --team abc123 --to researcher --from writer
-    li team receive --team abc123 --as researcher
-    li team show abc123
-"""
+"""`li team` — persistent team messaging (inbox pattern)."""
 
 from __future__ import annotations
 
@@ -49,13 +40,7 @@ def _team_file(team_id: str) -> Path:
 
 @contextlib.contextmanager
 def _locked_team(team_id: str, *, create_path: Path | None = None):
-    """Read-modify-write context for a team file with an exclusive POSIX lock.
-
-    Yields the current team dict; persist edits to it and they get written
-    back when the block exits. The lock is held for the whole
-    read-modify-write cycle, so concurrent ``li team send`` invocations
-    serialize instead of clobbering each other.
-    """
+    """Read-modify-write a team file under an exclusive POSIX lock; concurrent sends serialize."""
     path = create_path if create_path is not None else _team_file(team_id)
     # Open in r+ so we can read current contents AND truncate+rewrite.
     # If the file doesn't exist yet (create flow), the caller supplies

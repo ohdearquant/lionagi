@@ -28,7 +28,7 @@ async def get_session(session_id: str) -> dict[str, Any]:
 
 @router.get("/{session_id}/stream")
 async def stream_session(session_id: str):
-    # F-A2-4 (ADR-0006): pre-flight 404 guard before opening the stream.
+    # ADR-0006: pre-flight 404 guard before opening the stream.
     # Without this, a non-existent session silently returns no messages and
     # then waits 60s before emitting done — client hangs with no indication.
     # The shows router already does this at shows.py:34-35; we mirror that pattern.

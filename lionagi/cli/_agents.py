@@ -1,36 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Load agent profiles from .lionagi/agents/
-
-Directory layout (preferred — supports supplementary references):
-
-    .lionagi/agents/<name>/
-        <name>.md            # Main profile (frontmatter + system prompt)
-        patterns/            # Optional: supplementary reference files
-        refs/                # Optional: anything else the agent reads on demand
-
-Flat layout (legacy, still resolved for backward compat):
-
-    .lionagi/agents/<name>.md
-
-Profile format (YAML frontmatter + markdown body):
-
-    ---
-    model: claude_code/opus
-    effort: high
-    yolo: true
-    ---
-
-    You are an implementer. Write production code, not stubs...
-
-Frontmatter fields (all optional, CLI flags override):
-  model:              provider/model spec
-  effort:             reasoning effort level
-  yolo:               auto-approve tool calls
-  fast_mode:          route via OpenAI priority tier (codex only)
-  lion_system:        prepend LION_SYSTEM_MESSAGE (default: true)
-  artifact_defaults:  ADR-0029 expected artifact defaults
-"""
+"""Load agent profiles from .lionagi/agents/ (directory or flat layout, YAML frontmatter)."""
 
 from __future__ import annotations
 
@@ -47,19 +17,7 @@ def _validate_bare_name(name: str) -> None:
 
 
 def build_deadline_preamble(timeout_seconds: int) -> str:
-    """Build a deadline-awareness preamble for the agent's first user message.
-
-    Injected when ``--timeout N`` is set so the agent knows its wall-clock
-    budget and can pace reasoning accordingly.  A leading user message is used
-    (rather than a system-prompt prefix) because it is the most reliably
-    visible position across codex, claude-code, and other CLI providers.
-
-    Args:
-        timeout_seconds: The ``--timeout`` value in seconds.
-
-    Returns:
-        The formatted ``[DEADLINE] … [/DEADLINE]`` block.
-    """
+    """Build a [DEADLINE] preamble injected as the first user message when --timeout is set."""
     import time as _time
     from datetime import datetime, timezone
 
@@ -85,17 +43,7 @@ class AgentProfile:
     name: str
     system_prompt: str = ""
     raw_body: str = ""
-    """Profile body text BEFORE LION_SYSTEM_MESSAGE is prepended.
-
-    When ``lion_system=True``, ``system_prompt`` has ``LION_SYSTEM_MESSAGE``
-    prepended; ``raw_body`` retains the markdown body as written in the file.
-    When ``lion_system=False``, ``raw_body == system_prompt``.
-
-    This field exists so callers that compose the profile body into an
-    ``AgentSpec.extra_prompt`` slot (where the factory will prepend
-    ``LION_SYSTEM_MESSAGE`` exactly once via ``spec.lion_system``) can avoid
-    duplicating the global Lion header.
-    """
+    """Body as written in the file, before LION_SYSTEM_MESSAGE is prepended; use this when composing into AgentSpec.extra_prompt to avoid double-prepend."""
     model: str | None = None
     effort: str | None = None
     yolo: bool = False
@@ -112,12 +60,7 @@ def _find_lionagi_dir() -> Path | None:
 
 
 def _resolve_profile_path(agents_dir: Path, name: str) -> Path | None:
-    """Return the profile file for NAME in AGENTS_DIR, or None.
-
-    Resolution order:
-      1. <agents_dir>/<name>/<name>.md   (directory layout, preferred)
-      2. <agents_dir>/<name>.md          (flat legacy layout)
-    """
+    """Return profile path for NAME: directory layout (<name>/<name>.md) before flat (<name>.md)."""
     dir_candidate = agents_dir / name / f"{name}.md"
     if dir_candidate.is_file():
         return dir_candidate
@@ -149,13 +92,7 @@ def list_agents() -> list[str]:
 
 
 def load_agent_profile(name: str) -> AgentProfile:
-    """Load an agent profile by name.
-
-    Searches project-local .lionagi/agents/ first, then ~/.lionagi/agents/.
-    Resolves directory layout (<name>/<name>.md) before flat (<name>.md).
-    Raises FileNotFoundError if not found in any location.
-    Raises ValueError if name contains path separators or traversal components.
-    """
+    """Load a named agent profile, searching project-local then global ~/.lionagi/agents/."""
     _validate_bare_name(name)
     dirs = _find_lionagi_dirs()
     if not dirs:

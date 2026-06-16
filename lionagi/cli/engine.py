@@ -1,19 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""`li engine run <kind> <spec>` — shell-reachable engine execution.
-
-Engines are domain-specific multi-agent pipelines exposed here so they can
-be invoked without writing Python.  Each engine kind maps to one required
-positional argument; optional flags mirror the engine constructor kwargs
-that are most commonly overridden from the command line.
-
-Progress events from the engine's ``on_event`` callback are written to
-stderr via :func:`~lionagi.cli._logging.progress`.  The final result is
-serialised as JSON on stdout so callers can pipe it downstream.
-
-Run records are persisted in the StateDB ``engine_runs`` table (Phase C
-Move 2): one INSERT at start, one UPDATE at end with status/error/export_dir.
-"""
+"""`li engine run <kind> <spec>` — shell-reachable engine execution."""
 
 from __future__ import annotations
 

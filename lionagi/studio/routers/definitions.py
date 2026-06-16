@@ -12,7 +12,7 @@ router = APIRouter(prefix="/definitions", tags=["definitions"])
 
 @router.get("/")
 async def list_definitions(
-    # F-A3-5 (ADR-0016): "skill" removed — KIND_DIRS excludes it and ADR-0016
+    # ADR-0016: "skill" removed — KIND_DIRS excludes it and ADR-0016
     # §"What is editable" explicitly marks skills as not editable/not in the
     # definitions write path.
     kind: str | None = Query(default=None, description="Filter by kind: agent, playbook"),
@@ -43,10 +43,10 @@ class SaveBody(BaseModel):
     message: str | None = None
 
 
-# F-A3-1 (ADR-0016 §"Save semantics"): POST /api/definitions/{kind}/{name}
+# ADR-0016 §"Save semantics": POST /api/definitions/{kind}/{name}
 @router.post("/{kind}/{name}")
 async def save_definition(kind: str, name: str, body: SaveBody) -> dict[str, Any]:
-    # F-A3-6 (ADR-0016): unknown kind (e.g. "skill") raises ValueError in the
+    # ADR-0016: unknown kind (e.g. "skill") raises ValueError in the
     # service layer; catch it and return 422 instead of propagating a 500.
     try:
         return await defs_svc.save_definition(kind, name, body.content, body.message)
@@ -54,7 +54,7 @@ async def save_definition(kind: str, name: str, body: SaveBody) -> dict[str, Any
         raise HTTPException(status_code=422, detail=str(e)) from e
 
 
-# F-A3-2 (ADR-0016 §"Rollback semantics"): version as query param, not path segment
+# ADR-0016 §"Rollback semantics": version as query param, not path segment
 @router.post("/{kind}/{name}/rollback")
 async def rollback_definition(
     kind: str,

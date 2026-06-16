@@ -1,18 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""`li monitor` — observe play/agent/run progress in real-time.
-
-Replaces fragile file-polling and log-tailing with a single CLI surface.
-
-Examples:
-    li monitor                      # table of all running entities
-    li monitor <id>                 # detail view for one run/play/agent/invocation
-    li monitor --watch              # live-refresh table every 2s
-    li monitor --watch <id>         # live-refresh detail view
-    li monitor --since 1h           # running entities updated in the last hour
-    li monitor --type session       # filter by entity type
-    li monitor --project myproject  # filter by project name
-"""
+"""`li monitor` — observe play/agent/run progress in real-time."""
 
 from __future__ import annotations
 
@@ -391,8 +379,8 @@ def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
         "type": sess.get("invocation_kind") or "session",
         "project": sess.get("project") or "-",
         "status": sess.get("status") or "?",
-        # #1235: live flow phase (executing/synthesizing) wins over the
-        # static orchestrator/playbook name once a flow leaves planning.
+        # live flow phase (executing/synthesizing) wins over the static
+        # orchestrator/playbook name once a flow leaves planning.
         "phase": (
             sess.get("current_phase") or sess.get("agent_name") or sess.get("playbook_name") or "-"
         ),

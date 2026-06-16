@@ -1,16 +1,8 @@
-"""Status display mapping for plays and sessions (ADR-0012).
-
-Raw statuses from the show skill's state machine are preserved in the database.
-This module provides display mappings for the UI.
-
-DISPLAY_MAP is a play + session display mapping — NOT a session lifecycle gate.
-It translates raw DB status tokens into UI-friendly display strings.
-Do not use this map for lifecycle validation or session state-machine transitions.
-"""
+"""ADR-0012 status display mapping — translates raw DB tokens to UI-friendly strings for plays and sessions."""
 
 from __future__ import annotations
 
-# F-A1-7 (ADR-0011, ADR-0017, ADR-0025): DISPLAY_MAP must only contain
+# ADR-0011, ADR-0017, ADR-0025: DISPLAY_MAP must only contain
 # values present in the closed ADR vocabularies.
 #
 # ADR-0011 plays.status CHECK vocabulary (11 values):

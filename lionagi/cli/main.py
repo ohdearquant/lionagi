@@ -1,16 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""`li` — lionagi command line.
-
-Examples:
-    li agent claude/sonnet "Write a Python function to reverse a string."
-    li agent codex/gpt-5.3-codex "..."
-    li agent -r <branch-id> "follow-up prompt"
-    li agent claude -c "follow-up prompt"
-
-    li o fanout codex/gpt-5.4-xhigh "audit for dead code" -n 3
-    li o fanout claude/sonnet "suggest approaches" -n 3 --with-synthesis claude/opus-4-6-medium
-"""
+"""`li` — lionagi command line."""
 
 from __future__ import annotations
 
@@ -92,14 +82,7 @@ def _print_playbook_help(name: str) -> int:
 
 
 def _handle_play_check(argv: list[str]) -> int:
-    """`li play check <name>` — ADR-0029 §9 pre-flight contract validation.
-
-    Loads the playbook, optionally loads the agent profile it names so
-    `artifact_defaults` participate in the merge (matching what a real
-    invocation will see), resolves the contract via
-    :func:`lionagi.state.artifact_verifier.resolve_artifact_contract`,
-    and pretty-prints the result. Does not fire the playbook.
-    """
+    """`li play check <name>` — ADR-0029 §9 pre-flight artifact-contract validation; does not fire the playbook."""
     if not argv or argv[0].startswith("-"):
         print("Usage: li play check <name>")
         return 1
@@ -214,9 +197,6 @@ def _handle_play_shortcut(argv: list[str]) -> list[str] | int:
             print(name)
         return 0
     if head == "check":
-        # ADR-0029 §9: pre-flight artifact-contract validation.
-        # `li play check <name>` loads the playbook, resolves its
-        # artifact contract, and prints the result without firing.
         return _handle_play_check(rest[1:])
     if head.startswith("-"):
         log_error(

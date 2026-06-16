@@ -64,7 +64,6 @@ def list_agents() -> list[dict[str, Any]]:
 
 
 def get_agent(name: str) -> dict[str, Any] | None:
-    # Validate path component — raises HTTPException(404) if unsafe
     safe_path_join(_AGENTS_ROOT, name)
 
     stem = name.removesuffix(".md")
@@ -78,7 +77,6 @@ def get_agent(name: str) -> dict[str, Any] | None:
     fm, body = _parse_frontmatter(text)
     fm = _normalize_frontmatter(fm)
 
-    # Flatten into AgentProfile shape expected by the frontend
     result: dict[str, Any] = {
         "name": stem,
         "path": public_path(path),
@@ -88,16 +86,10 @@ def get_agent(name: str) -> dict[str, Any] | None:
         "guidance": fm.get("guidance") or None,
     }
 
-    # Bool fields: always emit the CLI default so Studio's API response matches
-    # what the CLI resolves for absent keys (lionagi/cli/_agents.py:180-192,
-    # AgentSpec field defaults in lionagi/agent/spec.py).
     result["yolo"] = bool(fm.get("yolo", False))
     result["fast_mode"] = bool(fm.get("fast_mode", False))
     result["lion_system"] = bool(fm.get("lion_system", True))
 
-    # Preserve remaining optional fields only when present in frontmatter.
-    # `effort` is canonical; `reasoning_effort` is accepted only as a legacy
-    # read fallback.
     for optional_key in ("permission_mode", "effort", "description"):
         if optional_key in fm:
             result[optional_key] = fm[optional_key]
@@ -125,14 +117,7 @@ _KNOWN_FRONTMATTER_KEYS = (
 
 
 def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
-    """Write an agent profile back to disk.
-
-    Unknown frontmatter keys (e.g. ``yolo``, ``max-ops``) are preserved so
-    hand-authored agent files don't lose configuration on save.
-    If the file is a symlink (the common case — ``~/.lionagi/agents/*`` points
-    at ``firm/agents/*``), the write follows the link so the real source file
-    is updated.
-    """
+    """Write an agent profile back to disk; preserves unknown frontmatter keys; follows symlinks."""
     safe_path_join(_AGENTS_ROOT, name)
     stem = name.removesuffix(".md")
     path = _AGENTS_ROOT / f"{stem}.md"
@@ -146,8 +131,6 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     existing_fm, existing_body = _parse_frontmatter(existing_text)
     existing_fm = _normalize_frontmatter(existing_fm)
 
-    # Merge: start with everything that was there, overlay known keys from
-    # the request. A key explicitly set to "" or None is treated as "clear".
     fm: dict[str, Any] = dict(existing_fm)
     incoming = _normalize_frontmatter(data)
     for key in _KNOWN_FRONTMATTER_KEYS:
@@ -166,9 +149,6 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
         else:
             fm.pop("model", None)
 
-    # system_prompt convention: body of the markdown file. Frontmatter
-    # ``system_prompt`` is supported on read but we always write to the body
-    # so existing agent .md files (which use the body) stay readable.
     new_body = data.get("system_prompt")
     if new_body is None:
         new_body = existing_body
@@ -180,8 +160,6 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     else:
         new_text = f"{new_body}\n" if new_body else ""
 
-    # open(..., "w") on a symlink truncates the target, not the link — exactly
-    # what we want.
     path.write_text(new_text)
 
     return get_agent(name)

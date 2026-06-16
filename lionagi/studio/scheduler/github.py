@@ -46,18 +46,11 @@ _GITHUB_REPO_TRAVERSAL = frozenset({".", ".."})
 
 
 def _validate_github_repo(repo: str) -> None:
-    """Raise ValueError if *repo* is not a safe, credible GitHub owner/name pair.
+    """Raise ValueError if *repo* is not a safe GitHub owner/name pair (CWE-918).
 
-    Enforced here (at URL-construction time) as a defense-in-depth check and
-    also at the service write boundary via services/schedules._svc_validate_github_repo.
-
-    Rules applied (CWE-918 path manipulation):
-    - Exactly one '/' separator -- no extra path segments.
-    - Owner: alphanumeric start/end, alphanumeric or hyphen interior, 1-39 chars.
-    - Repo:  letters/digits/'-'/'_'/'.' allowed (including leading '.', e.g.
-      '.github'), must not be the traversal singletons '.' or '..', 1-100 chars.
-    - No '/', '?', '#', '%', whitespace, or control chars (excluded by the
-      character classes above).
+    Defense-in-depth at URL-construction time; service write boundary applies the
+    same check via services/schedules._svc_validate_github_repo.  Rules: exactly
+    one '/' separator, valid owner/repo segments per the regex constants above.
     """
     if not repo or "/" not in repo:
         raise ValueError(
@@ -202,7 +195,6 @@ async def github_poll(schedule: dict) -> list[dict[str, Any]]:
         _log.warning("GitHub API returned %d for %s", resp.status_code, repo)
         return []
 
-    # Check rate limit
     remaining = int(resp.headers.get("x-ratelimit-remaining", "60"))
     if remaining < 10:
         _log.warning("GitHub rate limit low: %d remaining for %s", remaining, repo)

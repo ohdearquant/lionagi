@@ -62,11 +62,6 @@ def _extract_repo_and_branches(show_md: str | None) -> tuple[str | None, str | N
     return repo, base, integration
 
 
-# ---------------------------------------------------------------------------
-# SQLite-backed list/detail — fast queries, cross-ref to sessions
-# ---------------------------------------------------------------------------
-
-
 async def _db_available() -> bool:
     return DEFAULT_DB_PATH.exists()
 
@@ -103,7 +98,7 @@ async def _list_shows_db() -> list[dict[str, Any]]:
             "path": public_path(Path(row["show_dir"])),
             "play_count": row["play_count"],
             "latest_status": row["status"],
-            # F-A1-5 (ADR-0011 §"Show status provenance"): status_source field.
+            # ADR-0011 §"Show status provenance": status_source field.
             # The status_source column is defined in ADR-0011's schema block but
             # is absent from the current schema.sql (deferred migration — tracked
             # separately; adding it requires ALTER TABLE and a backfill pass that
@@ -145,7 +140,7 @@ def _list_shows_fs() -> list[dict[str, Any]]:
                 "path": public_path(path),
                 "play_count": len(plays),
                 "latest_status": latest_status,
-                # F-A1-5: filesystem-loaded rows carry "filesystem" provenance
+                # filesystem-loaded rows carry "filesystem" provenance
                 "status_source": "filesystem",
                 "last_update": last_update,
             }
@@ -154,10 +149,6 @@ def _list_shows_fs() -> list[dict[str, Any]]:
 
 
 async def get_show(topic: str) -> dict[str, Any] | None:
-    # safe_path_join validates the topic component (no traversal, no NUL, etc.)
-    # but does NOT require the path to exist — we resolve existence after the DB
-    # lookup so that Docker deployments (state.db mounted, show dirs absent) can
-    # still serve show detail from the DB.
     show_dir = safe_path_join(SHOWS_ROOT, topic)
     dir_exists = show_dir.is_dir()
 
@@ -188,9 +179,6 @@ async def get_show(topic: str) -> dict[str, Any] | None:
         except Exception:
             _log.warning("get_show DB query failed for topic %r", topic, exc_info=True)
 
-    # Return None only when BOTH the filesystem dir is absent AND the DB has no
-    # row for this topic.  In Docker, show dirs are not mounted but the DB is —
-    # returning None in that case caused every topic from list_shows() to 404.
     if not dir_exists and show_row is None:
         return None
 
@@ -247,16 +235,13 @@ async def get_show(topic: str) -> dict[str, Any] | None:
                 }
             )
     else:
-        # DB row exists but no plays recorded yet (or show dir absent in Docker).
         plays = []
 
-    # F-A1-5 (ADR-0011 §"Show status provenance"): status_source mirrors the
+    # ADR-0011 §"Show status provenance": status_source mirrors the
     # derivation in list_shows() — "sqlite" when the row came from the DB,
     # "filesystem" for filesystem fallback (show_row is None).
     status_source = "sqlite" if show_row else "filesystem"
 
-    # show_dir may not exist on disk (Docker); public_path handles non-existent
-    # paths gracefully (it uses resolve() + relative_to(), not stat()).
     return {
         "topic": topic,
         "path": public_path(show_dir),
@@ -266,11 +251,6 @@ async def get_show(topic: str) -> dict[str, Any] | None:
         "status_source": status_source,
         "plays": plays,
     }
-
-
-# ---------------------------------------------------------------------------
-# Import filesystem shows into SQLite
-# ---------------------------------------------------------------------------
 
 
 async def import_shows() -> dict[str, int]:
@@ -548,25 +528,16 @@ async def import_shows() -> dict[str, int]:
     return {"shows_imported": shows_count, "plays_imported": plays_count}
 
 
-# ---------------------------------------------------------------------------
-# SSE watcher (unchanged)
-# ---------------------------------------------------------------------------
-
-
 _SHOW_TERMINAL_STATUSES = frozenset({"completed", "aborted"})
 _SHOW_DONE_STABLE_SECS = 60.0
 
 
-async def watch_show(topic: str) -> AsyncGenerator[str, None]:
+async def watch_show(topic: str) -> AsyncGenerator[str]:
     """SSE stream of file changes under a show directory.
 
-    F-A2-3 (ADR-0006 reconnect semantics): emits ``{"type":"done"}`` when the
-    show status is terminal (completed or aborted) AND no file has changed for
-    60 seconds, then closes.  This matches the session stream's done semantics.
-
-    When the show directory does not exist on disk (e.g. Docker deployments
-    where show dirs are not mounted), immediately emits ``{"type":"done"}`` and
-    returns rather than running an infinite loop with no events.
+    ADR-0006 reconnect semantics: emits ``{"type":"done"}`` when the show is
+    terminal (completed or aborted) AND no file has changed for 60 seconds.
+    Emits done immediately when the show directory does not exist (Docker deployments).
     """
     topic_dir = safe_path_join(SHOWS_ROOT, topic)
     if not topic_dir.is_dir():
@@ -598,9 +569,7 @@ async def watch_show(topic: str) -> AsyncGenerator[str, None]:
             last_change = time.time()
             any_change = True
 
-        # Check for terminal + stable condition (F-A2-3)
         if not any_change and (time.time() - last_change) >= _SHOW_DONE_STABLE_SECS:
-            # Query current show status from DB (fast path) or filesystem
             show_status: str | None = None
             if await _db_available():
                 try:

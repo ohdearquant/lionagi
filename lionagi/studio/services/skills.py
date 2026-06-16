@@ -11,12 +11,7 @@ SKILLS_ROOT = LIONAGI_HOME / "skills"
 
 
 def _find_skill_md(skill_dir: Any) -> Any | None:
-    """Return the primary .md file for a skill directory.
-
-    Checks for ``SKILL.md`` first (the canonical name used by all current
-    skills), then falls back to a file named ``{dir_name}.md`` to handle
-    the alternative layout described in the spec.
-    """
+    """Return the primary .md file for a skill directory — SKILL.md, then {dir_name}.md, then any .md."""
     canonical = skill_dir / "SKILL.md"
     if canonical.exists():
         return canonical
@@ -34,7 +29,6 @@ def list_skills() -> list[dict[str, Any]]:
     out = []
     for entry in sorted(SKILLS_ROOT.iterdir()):
         if entry.name.startswith("_"):
-            # Skip hidden/archive directories (e.g. _archive)
             continue
 
         if entry.is_dir():
@@ -42,7 +36,6 @@ def list_skills() -> list[dict[str, Any]]:
             if path is None:
                 continue
         elif entry.suffix == ".md":
-            # Direct .md file at skills root
             path = entry
         else:
             continue
@@ -69,7 +62,6 @@ def list_skills() -> list[dict[str, Any]]:
 
 
 def get_skill(name: str) -> dict[str, Any] | None:
-    # Validate path component — raises HTTPException(404) if unsafe
     safe_path_join(SKILLS_ROOT, name)
 
     skill_dir = SKILLS_ROOT / name
@@ -78,7 +70,6 @@ def get_skill(name: str) -> dict[str, Any] | None:
         if path is None:
             return None
     else:
-        # Try as a direct .md file
         stem = name.removesuffix(".md")
         path = SKILLS_ROOT / f"{stem}.md"
         if not path.exists():

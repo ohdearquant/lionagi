@@ -1,13 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Studio service: session lifecycle-signal persistence and SSE tail.
-
-Signals are written to ``session_signals`` by :meth:`SessionObserver.bind_db_persistence`
-during a live session. This module provides the read path: replay existing rows
-then poll for new ones, mirroring the pattern used by sessions.get_session_messages_after
-for the message SSE stream.
-"""
+"""Studio service: read path for session_signals — replay rows then poll for new ones."""
 
 from __future__ import annotations
 
@@ -31,7 +25,6 @@ async def get_signals_after(
         return []
 
     async with _open_db(_DB) as db:
-        # Gracefully skip when the table doesn't exist yet on old DB files.
         cur = await db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='session_signals'"
         )

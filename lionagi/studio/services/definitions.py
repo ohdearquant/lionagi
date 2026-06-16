@@ -99,7 +99,6 @@ async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
 
     result = await anyio.to_thread.run_sync(partial(_scan_disk, kind))
 
-    # Batch-enrich all entries with version info in one DB round-trip.
     if result and await _ensure_db():
         conditions = " OR ".join("(kind = ? AND name = ?)" for _ in result)
         params = [value for item in result for value in (item["kind"], item["name"])]
@@ -179,7 +178,8 @@ async def get_version(kind: str, name: str, version: int) -> dict[str, Any] | No
 
     async with _open_db(_DB) as db:
         cur = await db.execute(
-            "SELECT id, content, version, created_at, message FROM definitions WHERE kind = ? AND name = ? AND version = ?",
+            "SELECT id, content, version, created_at, message FROM definitions"
+            " WHERE kind = ? AND name = ? AND version = ?",
             (kind, name, version),
         )
         row = await cur.fetchone()
@@ -202,25 +202,15 @@ async def save_definition(
     content: str,
     message: str | None = None,
 ) -> dict[str, Any]:
-    """Save definition: record version in SQLite FIRST, then write to disk.
+    """Persist a definition version: DB write first, then disk (ADR-0016 §"Save semantics").
 
-    F-A3-4 (ADR-0016 §"Save semantics"): DB write must succeed before the
-    file is written.  If the DB write fails, propagate the exception — do NOT
-    return a success response without a row.  Using StateDB.save_definition()
-    ensures correct locking and automatic schema creation on first use.
-
-    Path safety: ``kind`` and ``name`` are validated as safe single-component
-    names before any filesystem operation, rejecting traversal sequences and
-    glob metacharacters (see ``_path_safety.validate_name_component``).
-
-    Race safety: DB write + disk write execute inside a per-(kind, name)
-    asyncio.Lock so concurrent saves for the same definition are serialised
-    across both operations (not just within StateDB).
-
-    Returns the new version info.
+    DB write must succeed before the file is written — propagate any exception
+    rather than returning success without a row.  Per-(kind, name) asyncio.Lock
+    spans both operations so concurrent saves for the same definition are
+    serialised.  Returns the new version info.
     """
-    # Validate kind and name at the service boundary — reject traversal
-    # sequences, path separators, NUL, and glob metacharacters.
+    # Validate at the service boundary — reject traversal sequences, path
+    # separators, NUL, and glob metacharacters.
     validate_name_component(kind, label="kind")
     validate_name_component(name, label="name")
 
@@ -230,9 +220,6 @@ async def save_definition(
 
     from lionagi.state.db import StateDB
 
-    # Acquire per-(kind, name) lock — spans BOTH the DB write inside
-    # StateDB.save_definition() AND the subsequent disk write so that two
-    # concurrent saves cannot interleave their DB commit + file write.
     lock = await _lock_for(kind, name)
     async with lock:
         disk_file = await anyio.to_thread.run_sync(partial(_find_definition_file, base, name))
@@ -241,9 +228,6 @@ async def save_definition(
 
         now = time.time()
 
-        # DB write first — StateDB handles schema creation, locking, and retries.
-        # Raises on failure (e.g. unique-version retry exhaustion, schema error).
-        # The caller (router) catches exceptions and propagates as 500.
         async with StateDB() as db:
             version = await db.save_definition(
                 kind=kind,
@@ -253,14 +237,13 @@ async def save_definition(
                 message=message,
             )
 
-        # Only write to disk after DB row is committed.
         def _write_disk() -> None:
             disk_file.parent.mkdir(parents=True, exist_ok=True)
             disk_file.write_text(content)
 
         await anyio.to_thread.run_sync(_write_disk)
 
-    # F-A3-4 (ADR-0016 §"Save semantics"): response field is "saved_at", not "created_at"
+    # ADR-0016 §"Save semantics": response field is "saved_at", not "created_at"
     return {
         "kind": kind,
         "name": name,
@@ -273,12 +256,9 @@ async def save_definition(
 async def rollback_definition(kind: str, name: str, target_version: int) -> dict[str, Any] | None:
     """Restore a previous version: read old content from DB, write to disk, record as new version.
 
-    F-A3-3 (ADR-0016 §"Rollback semantics"): returns
+    ADR-0016 §"Rollback semantics": returns
         { version: N+1, rolled_back_from: current_version, rolled_back_to: N }
     """
-    # Validation is handled inside get_version() and save_definition() calls
-    # below, but validate here too so rollback_definition() itself is safe at
-    # its own boundary.
     validate_name_component(kind, label="kind")
     validate_name_component(name, label="name")
 
@@ -286,7 +266,6 @@ async def rollback_definition(kind: str, name: str, target_version: int) -> dict
     if not old:
         return None
 
-    # Capture current version BEFORE the save so we can report rolled_back_from
     current_version = 0
     if await _ensure_db():
         async with _open_db(_DB) as db:
@@ -348,44 +327,27 @@ _EXTENSIONS = (".md", ".playbook.yaml", ".yaml")
 def _find_definition_file(base: Path, name: str) -> Path | None:
     """Locate the on-disk file for a definition.
 
-    ``name`` MUST already be validated by ``validate_name_component`` before
-    this function is called — callers are responsible for that check.
-
-    Security model:
-    - Path injection is prevented by ``validate_name_component(name)`` which
-      rejects ``..``, path separators, glob metacharacters, NUL, and empty/
-      whitespace strings BEFORE this function is called.
-    - The lexical candidate paths are constructed by joining ``base`` with the
-      already-validated ``name``, so they are guaranteed to be children of
-      ``base`` without resolving symlinks.
-    - Symlinks MAY point outside ``base`` (e.g. ``~/.lionagi/agents/*.md``
-      symlinked from ``firm/agents/``).  This is intentional and supported —
-      the agent service also write-throughs symlinks.  We do NOT validate
-      ``candidate.resolve()`` against ``base.resolve()`` because that breaks
-      every symlinked agent definition.
-
-    The original implementation used an unescaped recursive glob
-    (``base.glob(f"**/{name}{ext}")``) which allowed glob metacharacters in
-    *name* to expand across the filesystem.  That glob is replaced by
-    deterministic literal-path checks that do not interpret ``name`` as a
-    pattern, keeping the fix while allowing symlink targets anywhere.
+    ``name`` MUST be pre-validated by ``validate_name_component`` (callers'
+    responsibility).  Candidates are literal-path joins — not glob patterns —
+    so metacharacters in *name* cannot expand across the filesystem.  Symlinks
+    may target outside ``base`` (e.g. ``~/.lionagi/agents/*.md`` → ``firm/agents/``);
+    we intentionally do not resolve-and-restrict, as that breaks every symlinked
+    agent definition.
     """
-    # Fast path 1: direct child  (base/<name><ext>)
+    # Fast path 1: direct child (base/<name><ext>)
     for ext in _EXTENSIONS:
         candidate = base / f"{name}{ext}"
         if candidate.exists():
             return candidate
 
-    # Fast path 2: nested subdir  (base/<name>/<name><ext>)
+    # Fast path 2: nested subdir (base/<name>/<name><ext>)
     for ext in _EXTENSIONS:
         candidate = base / name / f"{name}{ext}"
         if candidate.exists():
             return candidate
 
-    # Slow path: scan one level of subdirectories for <name><ext>.
-    # Deliberately NOT using Path.glob() with untrusted input — iterate
-    # literal candidates instead so no metacharacter expansion can occur.
-    # Guard against a missing base directory (e.g. fresh LIONAGI_HOME).
+    # Slow path: scan one level of subdirectories with literal candidates —
+    # NOT Path.glob() with untrusted input so no metacharacter expansion occurs.
     if not base.exists():
         return None
     for subdir in base.iterdir():

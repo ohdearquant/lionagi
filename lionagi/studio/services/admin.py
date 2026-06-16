@@ -137,9 +137,6 @@ async def doctor(*, stale_hours: float = 1.0) -> dict[str, Any]:
     }
 
 
-# ─── ADR-0024: graduated health + transition (additive) ──────────────────────
-
-
 async def health_report() -> dict[str, Any]:
     """Composite session health snapshot for the admin console."""
     from collections import Counter
@@ -274,7 +271,7 @@ async def transition_sessions(
     actor: str = "admin",
     legacy_reason: str | None = None,
 ) -> dict[str, Any]:
-    """Mark running sessions terminal with an audit-log entry."""
+    """Transition running sessions to a terminal status with an audit-log entry."""
     from lionagi.state.reasons import validate_reason_code
 
     if target_status not in _ADMIN_TRANSITION_TARGETS:

@@ -217,7 +217,7 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
             "Hard wall-clock timeout in seconds. "
             "When set, a [DEADLINE] preamble is injected into the agent's "
             "prompt so the agent knows its time budget and can pace reasoning "
-            "accordingly (issue #1087)."
+            "accordingly."
         ),
     )
     # ADR-0020: opt-in skill-orchestration grouping. Set by a skill via

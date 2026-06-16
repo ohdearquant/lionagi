@@ -15,7 +15,7 @@ async def list_shows() -> list[dict[str, Any]]:
     return await shows_svc.list_shows()
 
 
-# F-A1-6 (ADR-0011 §"Migration"): import_shows is a state-mutating operation
+# ADR-0011 §"Migration": import_shows is a state-mutating operation
 # (INSERT OR IGNORE into shows + plays); it must use POST, not GET.
 # ADR-0011 specifies this as a CLI maintenance command (`li state import-shows`).
 # The POST endpoint is retained as a Studio convenience trigger.

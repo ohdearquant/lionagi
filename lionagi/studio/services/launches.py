@@ -23,19 +23,10 @@ from ..services.schedules import (
 
 _log = logging.getLogger(__name__)
 
-# flow_yaml is excluded from on-demand launches: the inline YAML would need to
-# be written to a temp file whose lifetime must outlive the HTTP request handler.
-# Callers who need flow_yaml should create a schedule with trigger_type=manual
-# and call POST /api/schedules/{id}/trigger instead.
 _LAUNCH_VALID_KINDS = frozenset({"agent", "flow", "fanout", "play", "engine"})
 
-# The event loop keeps only weak references to tasks; a fire-and-forget task
-# with no strong reference can be garbage-collected mid-flight.
 _detached_tasks: set[asyncio.Task] = set()
 
-# Admission cap (config.MAX_LAUNCHES): a slot is acquired in launch() before
-# the invocation row is created and released when the detached task completes,
-# so a burst of concurrent POSTs cannot over-admit past the cap.
 _launch_semaphore: asyncio.Semaphore | None = None
 
 
@@ -77,22 +68,14 @@ def _validate_request(data: dict[str, Any]) -> None:
 
 
 async def launch(data: dict[str, Any]) -> dict[str, Any]:
-    """Validate *data*, record an invocation, spawn the process, return identifiers.
-
-    Returns a dict with:
-      - ``invocation_id``: created before spawn; use GET /api/invocations/{id}
-        to watch status and find child sessions once they appear.
-      - ``action_kind``: the normalised kind that was fired.
+    """Validate *data*, record an invocation, spawn a detached process, return identifiers.
 
     Raises TooManyLaunchesError when the in-flight cap is reached.
-    The spawned process runs detached.  Session IDs are only knowable after the
-    process starts and writes to the DB, so they are not included in this
-    response.
+    Returns ``{invocation_id, action_kind}``; session IDs appear in the DB only after the
+    process starts.
     """
     _validate_request(data)
 
-    # Build and validate argv BEFORE creating the DB row.  build_argv does its
-    # own validation pass; if it raises, no invocation row is left stranded.
     schedule_dict: dict[str, Any] = {
         "action_kind": data["action_kind"],
         "action_model": data.get("action_model") or "",
@@ -111,9 +94,9 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
         if not schedule_dict["action_model"]:
             schedule_dict["action_model"] = defn.get("model") or ""
         opts: dict[str, Any] = dict(defn.get("options") or {})
-        for key in ("max_depth", "max_agents"):
-            if defn.get(key) is not None:
-                opts[key] = defn[key]
+        for k in ("max_depth", "max_agents"):
+            if defn.get(k) is not None:
+                opts[k] = defn[k]
         schedule_dict["action_engine_options"] = opts
     argv, tmp_path = build_argv(schedule_dict, {})
 
@@ -123,10 +106,6 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
             f"Maximum concurrent launches ({config.MAX_LAUNCHES}) reached. "
             "Retry when an existing launch completes."
         )
-    # The slot must be taken here, not inside the spawned task: deferring the
-    # acquire would let a burst of concurrent POSTs all pass the check above
-    # before any task runs.  locked() was False and nothing yields between the
-    # check and the acquire on a single event loop, so this never blocks.
     await sem.acquire()
 
     inv_id = uuid.uuid4().hex[:12]
@@ -145,7 +124,6 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
                 }
             )
 
-        # Spawn detached — the HTTP handler must not block until the run finishes.
         task = asyncio.create_task(
             _spawn_detached(argv, inv_id, tmp_path=tmp_path),
             name=f"launch-{inv_id}",
@@ -154,8 +132,6 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
         sem.release()
         raise
 
-    # Release on task completion (a done callback fires even if the task is
-    # cancelled before its coroutine ever runs, where an in-task release would not).
     task.add_done_callback(lambda _t: sem.release())
     _detached_tasks.add(task)
     task.add_done_callback(_detached_tasks.discard)
@@ -179,12 +155,7 @@ async def _resolve_engine_def(ref: str) -> dict[str, Any]:
 
 
 async def shutdown_launches() -> None:
-    """Cancel all in-flight detached launch tasks and await their completion.
-
-    Called from the app lifespan on shutdown.  Each task's CancelledError
-    handler writes a terminal DB row before re-raising, so invocation rows do
-    not stay stuck in 'running'.
-    """
+    """Cancel all in-flight launch tasks on shutdown; each task writes a terminal DB row before re-raising."""
     tasks = [t for t in list(_detached_tasks) if not t.done()]
     if not tasks:
         return

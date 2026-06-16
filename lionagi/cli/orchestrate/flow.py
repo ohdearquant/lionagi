@@ -409,7 +409,6 @@ async def _run_flow_inner(
     session = env.session
     builder = env.builder
 
-    # ── Phase 0: Orchestrator plans the DAG as a list[TaskAssignment] ──
     roster = available_roles()
     budget_note = ""
     if max_ops > 0:
@@ -427,8 +426,7 @@ async def _run_flow_inner(
         env.orc_branch, prompt, roles=roster, dag=True, guidance=guidance, max_tasks=max_ops
     )
     if not assignments:
-        # #1236: fail loud rather than exiting 0 with no work. One reinforced
-        # retry, then raise with the raw response attached.
+        # Fail loud rather than silently exiting 0 with no work done.
         _warn("Orchestrator returned no assignments; retrying once with a sharper instruction.")
         assignments = await plan(
             env.orc_branch,
@@ -455,14 +453,11 @@ async def _run_flow_inner(
 
     t_plan = time.monotonic() - t0
 
-    # One deduplicated worker name per assignment (researcher, researcher-2, …).
     agent_ids: list[str] = [env.assign_name(ta.assignee) for ta in assignments]
 
     dep_indices = [_earlier_dep_indices(ta.depends_on, i) for i, ta in enumerate(assignments)]
 
-    # Heterogeneous worker models via --workers M1,M2,... (assignment i uses
-    # pool[i % len]). Unlike --bare (which also drops profiles), an explicit
-    # pool overrides only the model and keeps each role's profile/system prompt.
+    # --workers overrides model only; --bare also drops profiles (distinct behaviors).
     pool = [s.strip() for s in workers_str.split(",")] if workers_str else []
 
     dag_lines = []
@@ -471,7 +466,6 @@ async def _run_flow_inner(
         dag_lines.append(f"{i + 1}:{ta.assignee}{deps}")
     progress(f"Plan done ({t_plan:.1f}s): {len(assignments)} assignments — {' | '.join(dag_lines)}")
 
-    # ── Dry run: dump assignments and exit ────────────────────────────
     if dry_run:
         lines = [f"Plan ({len(assignments)} assignments):", ""]
         for i, ta in enumerate(assignments):
@@ -513,7 +507,6 @@ async def _run_flow_inner(
             lines.append(f"  {agent_ids[i]}: {model} ({src}){mode_str}")
         return "\n".join(lines)
 
-    # ── Team setup ────────────────────────────────────────────────────
     if team_attach:
         from ..team import _load_team
 
@@ -531,7 +524,6 @@ async def _run_flow_inner(
         progress(f"Team '{team_name}' created ({env.team_data['id']})")
     team_data = env.team_data
 
-    # ── Budget preambles (proportional split of a total timeout) ──────
     budget_preambles: dict[int, str] = {}
     if env.total_budget and assignments:
         share = int(env.total_budget / len(assignments))
@@ -544,15 +536,12 @@ async def _run_flow_inner(
                 deadline_epoch=deadline,
             )
 
-    # ── Reactive mode (--reactive): who, if anyone, may grow the DAG ──
     reactive, spawn_roles = _parse_reactive(reactive_spec)
 
     def _may_spawn(role: str) -> bool:
         return reactive and (spawn_roles is None or role in spawn_roles)
 
-    # ── Build one worker branch + op node per assignment ──────────────
-    # A worker granted SpawnRequest may grow the live DAG. role_base maps a role
-    # → a branch the reactive node_builder clones for spawned follow-ups.
+    # role_base: a branch per role that the reactive node_builder clones for follow-ups.
     worker_models: list[str] = []
     node_ids: list[str] = []
     role_base: dict[str, object] = {}
@@ -570,7 +559,6 @@ async def _run_flow_inner(
         worker_models.append(w_model)
         role_base.setdefault(ta.assignee, w_branch)
 
-        # Context: original task + artifact dir + upstream dirs + effort + team.
         ctx: list = [{"original_task": prompt}]
         artifact_note = (
             f"Your artifact directory: {run.agent_artifact_dir(agent_ids[i])}/ — "
@@ -641,11 +629,7 @@ async def _run_flow_inner(
                 ctx_lp["session_id"], node_metadata=json.dumps({**early_graph, **_markers})
             )
 
-    # ── Progress + segment + branch-status plumbing (Studio) ──────────
-    # The DAG runs through the planning engine's run_dag (below), which tees a
-    # NodeStarted / NodeCompleted / NodeFailed onto the session bus per node.
-    # These three handlers OBSERVE the bus — persistence and Studio segments are
-    # reactive subscriptions, not a threaded-through on_progress callback.
+    # Studio segment handlers observe the session bus; not a threaded on_progress callback.
     _op_segments: list[dict] = []
 
     def _on_node_started(sig, _ctx):
@@ -726,7 +710,6 @@ async def _run_flow_inner(
 
         _aio.ensure_future(_do())
 
-    # ── Execution (reactive self-expansion, or flat batch when off) ───
     await _persist_session_phase(env, "executing")
     if reactive:
         scope = "all workers" if spawn_roles is None else f"roles {sorted(spawn_roles)}"
@@ -760,10 +743,7 @@ async def _run_flow_inner(
                         "with no completion — possible hung child process"
                     )
 
-    # Subscribe the Studio/segment handlers to the node-lifecycle bus, then run
-    # the DAG through the planning engine (ADR-0075 §4). run_dag emits the node
-    # signals the handlers above consume; the engine shares this session, so the
-    # emission store and any other observers see the same events.
+    # ADR-0075 §4: run_dag drives the session bus; observers above consume the signals.
     from lionagi.engines import PlanningEngine
     from lionagi.session.signal import NodeCompleted, NodeFailed, NodeStarted
 
@@ -793,7 +773,6 @@ async def _run_flow_inner(
     op_results = dag_result.get("operation_results", {})
     n_spawned = dag_result.get("spawned_operations", 0)
 
-    # ── Collect results (initial assignments + reactively spawned) ────
     agent_results: list[dict] = []
 
     def _record_result(result: dict) -> None:
@@ -842,7 +821,6 @@ async def _run_flow_inner(
     spawn_note = f" (+{n_spawned} spawned)" if n_spawned else ""
     progress(f"DAG done ({t_exec_elapsed:.1f}s){spawn_note}.")
 
-    # ── Synthesis ─────────────────────────────────────────────────────
     synthesis_result = None
     if (with_synthesis or n_spawned) and agent_results:
         synth_spec = synthesis_model or model_spec
@@ -895,7 +873,6 @@ async def _run_flow_inner(
         }
         progress(f"Synthesis done ({t_synth_elapsed:.1f}s).")
 
-    # ── Output ────────────────────────────────────────────────────────
     if output_format == "json":
         output = _format_result_json(agent_results, synthesis_result)
     else:
@@ -907,7 +884,6 @@ async def _run_flow_inner(
     if team_data:
         _post_results_to_team(team_data, agent_results, agent_ids, synthesis_result)
 
-    # ── Persist branches + run manifest + hints ───────────────────────
     finalize_orchestration(
         env,
         kind="flow",

@@ -1,17 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Studio self-healing lifecycle reapers.
-
-Three reapers, all writing through the sanctioned StateDB.update_status()
-path so reason history is always written atomically with status changes.
-
-Callers
--------
-- ``run_startup_reconciliation()``: called once from ``app.lifespan()``
-  after the scheduler starts.
-- ``run_periodic_reapers()``: called from the scheduler tick; the engine
-  throttles it via ``_last_reaper_run`` so it doesn't fire every 30 s.
-"""
+"""Studio self-healing lifecycle reapers — write through StateDB.update_status()."""
 
 from __future__ import annotations
 
@@ -61,18 +50,12 @@ async def reap_stale_invocations(
     deadline_seconds: int | None = None,
     zero_session_grace_seconds: int | None = None,
 ) -> int:
-    """Transition running invocations that have exceeded their deadline.
+    """Transition stale running invocations to ``timed_out``.
 
-    Two conditions trigger a ``timed_out`` transition via
-    ``StateDB.update_status()``:
-    1. ``started_at + effective_deadline < now`` — wall-clock deadline.
-       The effective deadline is resolved per ``action_kind`` via
-       ``LIONAGI_STUDIO_INVOCATION_DEADLINE_<KIND>_SECONDS``, falling back
-       to the global ``deadline_seconds`` / ``INVOCATION_DEADLINE_SECONDS``.
-    2. ``session_count == 0 AND updated_at + zero_session_grace_seconds < now``
-       — invocation created but no session was ever spawned.
-
-    Returns the number of invocations transitioned.
+    Two conditions: (1) wall-clock deadline exceeded (per-kind env override
+    ``LIONAGI_STUDIO_INVOCATION_DEADLINE_<KIND>_SECONDS`` → global fallback);
+    (2) zero sessions spawned past the grace period.
+    Returns count transitioned.
     """
     from lionagi.studio.config import (
         INVOCATION_DEADLINE_SECONDS,
@@ -175,15 +158,11 @@ async def reap_stale_invocations(
 
 
 async def reap_null_status_sessions() -> int:
-    """Transition sessions with null status whose process is no longer alive.
+    """Transition null-status sessions whose process is dead to ``failed``.
 
-    A session ends up with ``status=NULL`` when the process dies before
-    writing a terminal status (crash, OOM, SIGKILL). This detector scans
-    for those rows and transitions them to ``failed`` via
-    ``StateDB.update_status()``.
-
-    Already-terminal sessions (completed, failed, timed_out, …) are never
-    touched — the guard is ``status IS NULL``.
+    Sessions get ``status=NULL`` when the process crashes before writing a
+    terminal status (crash, OOM, SIGKILL).  Guard is ``status IS NULL`` so
+    already-terminal rows are never touched.
     """
     if not DEFAULT_DB_PATH.exists():
         return 0
@@ -208,7 +187,6 @@ async def reap_null_status_sessions() -> int:
             _log.info("Reaping null-status session %s: process is dead", sid)
             try:
                 async with StateDB() as db:
-                    # Set ended_at if missing before the status transition.
                     if row["ended_at"] is None:
                         await db.update_session(sid, ended_at=now)
                     transitioned = await db.update_status(
@@ -228,7 +206,6 @@ async def reap_null_status_sessions() -> int:
                 else:
                     _log.debug("Session %s skipped (status changed before CAS lock)", sid)
             except LookupError:
-                # Session deleted between the query and the update — harmless.
                 pass
             except Exception:
                 _log.exception("Failed to transition null-status session %s", sid)
@@ -246,13 +223,10 @@ async def reap_phantom_sessions(
     stale_hours: float | None = None,
     actor: str = "studio_lifecycle_reaper",
 ) -> int:
-    """Auto-reap phantom sessions via the sanctioned status transition path.
+    """Transition phantom sessions to ``failed`` via StateDB.update_status() — no DELETE.
 
-    Reuses ``admin_svc.list_phantom_sessions()`` for detection, then
-    transitions each phantom to ``failed`` with reason ``phantom_reaped``
-    via ``StateDB.update_status()`` — no ``DELETE FROM sessions``.
-
-    Returns the number of phantoms transitioned.
+    Uses ``admin_svc.list_phantom_sessions()`` for detection.
+    Returns count transitioned.
     """
     from lionagi.studio.config import PHANTOM_STALE_HOURS
 

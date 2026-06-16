@@ -1,12 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0021 artifacts API.
-
-Skill-produced structured outcomes (ReviewOutcome, GateVerdict,
-CIResult, ...). Most consumers fetch via /api/invocations/{id} which
-returns the artifact list inline; these endpoints exist for the cases
-where the caller has only a session id, or wants the artifact alone.
-"""
+"""ADR-0021 artifacts API — skill-produced structured outcomes (ReviewOutcome, GateVerdict, CIResult)."""
 
 from __future__ import annotations
 

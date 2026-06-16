@@ -15,10 +15,6 @@ _VALID_EFFORT_LEVELS: frozenset[str] = frozenset(
 )
 _PRESERVE_DASHED: frozenset[str] = frozenset({"argument-hint"})
 
-# Re-use the same validation helpers as subprocess.py so the service boundary
-# and the spawn boundary enforce identical rules.  Imported lazily inside the
-# validation helpers to avoid circular imports at module load time.
-
 
 def _svc_validate_action_model(model: str | None) -> None:
     """Service-boundary check: reject action_model values that inject CLI flags.
@@ -258,7 +254,6 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     if not data.get("action_kind"):
         raise ValueError("action_kind is required")
 
-    # Reject flag-injection vectors at write time so bad specs never reach storage.
     _svc_validate_action_model(data.get("action_model"))
     _svc_validate_prompt(data.get("action_prompt"))
     _svc_validate_identifier(data.get("action_agent"), "action_agent")
@@ -298,7 +293,6 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         if not schedule:
             return False
 
-        # Reject flag-injection vectors in the patched fields before writing.
         if "action_model" in fields:
             _svc_validate_action_model(fields["action_model"])
         if "action_prompt" in fields:
@@ -314,15 +308,6 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
         if "github_repo" in fields:
             _svc_validate_github_repo(fields["github_repo"])
 
-        # Merge proposed fields over the existing schedule and re-validate
-        # constraints so a PATCH cannot create invalid state.  We check the
-        # effective (merged) value for any field whose validity depends on the
-        # full schedule state, not just on the incoming patch dict.
-        #
-        # github_repo: revalidate the effective value regardless of whether the
-        # PATCH supplied it.  A schedule whose github_repo was stored with a bad
-        # value (e.g. via direct DB import or manual repair) would otherwise
-        # survive unrelated PATCHes and accumulate stale-invalid state.
         effective = {**schedule, **fields}
         effective_repo = effective.get("github_repo")
         if effective_repo is not None:

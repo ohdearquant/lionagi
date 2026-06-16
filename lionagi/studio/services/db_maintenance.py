@@ -1,18 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""DB maintenance helpers for Studio.
-
-Four capabilities:
-- ``checkpoint_state_db()``: runs ``PRAGMA wal_checkpoint(TRUNCATE)`` and
-  records an ``admin_events`` row so ``/api/stats`` can surface the timestamp.
-- ``get_last_checkpoint_at()``: fetches the most recent checkpoint event.
-- ``get_db_size_alert()``: compares current DB size to the configured threshold.
-- ``prune_old_data()``: transactionally removes terminal sessions/runs older
-  than ``keep_days``, respecting FK constraints (nullifies soft FKs before
-  deleting parents), and writes an ``admin_events`` audit row.
-- ``vacuum_state_db()``: runs ``VACUUM`` to reclaim freed pages, writes an
-  ``admin_events`` audit row.
-"""
+"""DB maintenance helpers — checkpoint, prune, vacuum, size alert for Studio."""
 
 from __future__ import annotations
 
@@ -137,15 +125,9 @@ async def prune_old_data(
 ) -> dict[str, int]:
     """Remove terminal sessions/runs older than ``keep_days`` in one transaction.
 
-    FK safety:
-    - ``branches`` → CASCADE on sessions (auto-deleted)
-    - ``artifacts``, ``plays``, ``team_messages`` → soft FK to sessions
-      (no CASCADE); session_id is nullified before the DELETE so FK
-      constraints don't fire.
-    - ``status_transitions`` has no FK to sessions; rows are deleted for
-      hygiene.
-    - ``schedule_runs.chain_parent_id`` self-references schedule_runs;
-      children are nullified before the parent delete.
+    FK safety: branches CASCADE on sessions; artifacts/plays/team_messages have
+    soft FKs (no CASCADE) so session_id is nullified before DELETE; schedule_runs
+    chain_parent_id self-reference is nullified before parent delete.
     """
     from lionagi.studio.config import PRUNE_KEEP_DAYS
 
@@ -172,11 +154,9 @@ async def prune_old_data(
         session_ids = [r[0] for r in rows]
 
         if session_ids:
-            # Dedup + sort for determinism; chunk all IN-lists at _CHUNK (500).
             session_ids = sorted(set(session_ids))
 
-            # ── Capture child ids BEFORE deleting anything ────────────────
-            # Progressions referenced by the pruned sessions.
+            # Capture child ids BEFORE deleting anything.
             rows = await _fetch_chunked(
                 db.db,
                 "SELECT progression_id FROM sessions WHERE id",
@@ -184,7 +164,6 @@ async def prune_old_data(
             )
             session_prog_ids = [r[0] for r in rows if r[0] is not None]
 
-            # Progressions referenced by the branches that will cascade-delete.
             rows = await _fetch_chunked(
                 db.db,
                 "SELECT progression_id FROM branches WHERE session_id",
@@ -194,7 +173,6 @@ async def prune_old_data(
 
             candidate_prog_ids = sorted({*session_prog_ids, *branch_prog_ids})
 
-            # Messages from candidate progressions' collection arrays.
             coll_msg_ids: list[str] = []
             if candidate_prog_ids:
                 rows = await _fetch_chunked(
@@ -205,8 +183,7 @@ async def prune_old_data(
                 )
                 coll_msg_ids = [r[0] for r in rows]
 
-            # Direct-FK message refs on pruned sessions: first_msg_id, last_msg_id.
-            # (schema.sql:104-105: sessions.first_msg_id, sessions.last_msg_id)
+            # schema.sql: sessions.first_msg_id / last_msg_id REFERENCES messages(id)
             rows = await _fetch_chunked(
                 db.db,
                 "SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL AND id",
@@ -220,8 +197,7 @@ async def prune_old_data(
             )
             session_last_ids = [r[0] for r in rows]
 
-            # Direct-FK message refs on pruned branches: system_msg_id.
-            # (schema.sql:206: branches.system_msg_id)
+            # schema.sql: branches.system_msg_id REFERENCES messages(id)
             rows = await _fetch_chunked(
                 db.db,
                 "SELECT system_msg_id FROM branches WHERE system_msg_id IS NOT NULL AND session_id",
@@ -245,25 +221,20 @@ async def prune_old_data(
                 "UPDATE team_messages SET session_id = NULL WHERE session_id",
                 session_ids,
             )
-            # Delete audit trail for these sessions (no FK; good hygiene).
             await _exec_chunked(
                 db.db,
                 "DELETE FROM status_transitions WHERE entity_type = 'session' AND entity_id",
                 session_ids,
             )
-            # Delete sessions; branches cascade automatically via FK ON DELETE CASCADE.
+            # branches cascade automatically via FK ON DELETE CASCADE
             sessions_pruned = await _exec_chunked(
                 db.db, "DELETE FROM sessions WHERE id", session_ids
             )
 
-            # ── Targeted orphan cleanup (scoped to pruned lineage only) ───
-            # Only delete progressions/messages that were part of the pruned
-            # sessions' lineage and are now unreferenced.  Never touch rows
-            # outside that lineage — this prevents a newborn-orphan race where
-            # _persist.py commits a progression before the session row exists.
+            # Targeted orphan cleanup — scoped to pruned lineage only.
+            # Never touch rows outside that lineage: prevents newborn-orphan race
+            # where _persist.py commits a progression before the session row exists.
             if candidate_prog_ids:
-                # Delete progressions in the candidate set still unreferenced by
-                # any surviving session or branch.
                 for i in range(0, len(candidate_prog_ids), _CHUNK):
                     chunk = candidate_prog_ids[i : i + _CHUNK]
                     ph = ", ".join("?" * len(chunk))
@@ -278,13 +249,6 @@ async def prune_old_data(
                     )
 
             if candidate_msg_ids:
-                # Delete messages in the candidate set that are no longer held by
-                # any surviving reference: progression collection arrays OR the
-                # direct FK columns first_msg_id / last_msg_id (sessions) and
-                # system_msg_id (branches).
-                # schema.sql:104 sessions.first_msg_id REFERENCES messages(id)
-                # schema.sql:105 sessions.last_msg_id  REFERENCES messages(id)
-                # schema.sql:206 branches.system_msg_id REFERENCES messages(id)
                 for i in range(0, len(candidate_msg_ids), _CHUNK):
                     chunk = candidate_msg_ids[i : i + _CHUNK]
                     ph = ", ".join("?" * len(chunk))
@@ -303,7 +267,6 @@ async def prune_old_data(
                         chunk,
                     )
 
-        # ── prune old terminal schedule_runs ─────────────────────────────
         # Nullify chain_parent_id for child runs whose parent will be deleted.
         await db.db.execute(
             f"UPDATE schedule_runs SET chain_parent_id = NULL WHERE chain_parent_id IN "  # noqa: S608
@@ -342,13 +305,7 @@ async def vacuum_state_db(
     *,
     actor: str = "studio_db_maintenance",
 ) -> dict[str, str]:
-    """Run ``VACUUM`` to reclaim freed pages and write an audit event.
-
-    VACUUM rebuilds the entire DB file under an exclusive lock.  Call this
-    after ``prune_old_data()`` to reclaim space freed by the deletes.
-    Returns ``{"status": "ok"}`` on success, ``{"status": "skipped"}`` when
-    the DB file does not yet exist.
-    """
+    """Run ``VACUUM`` (exclusive lock) and write an audit event; call after ``prune_old_data()``."""
     if not DEFAULT_DB_PATH.exists():
         return {"status": "skipped"}
 

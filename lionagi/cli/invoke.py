@@ -1,23 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""`li invoke` — ADR-0020 skill-level orchestration tracking.
-
-Skills (Claude Code markdown files like ``/show`` or ``/codex-pr-review``)
-spawn many sessions over minutes-to-hours. ``li invoke`` is the
-opt-in handshake that lets them group those sessions into a single
-parent record so the Studio dashboard and the runs list can collapse
-"14 sessions" into one ``/show "resolve issues"`` row.
-
-Usage::
-
-    INV=$(li invoke start --skill show --prompt "resolve lionagi issues")
-    li play backend ... --invocation "$INV"
-    li play frontend ... --invocation "$INV"
-    li invoke end "$INV" --status completed
-
-Without ``--invocation`` the spawned sessions have ``invocation_id = NULL``,
-the same behavior as before this command existed.
-"""
+"""`li invoke` — ADR-0020 skill-level orchestration tracking (opt-in session grouping)."""
 
 from __future__ import annotations
 

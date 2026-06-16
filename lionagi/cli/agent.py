@@ -46,18 +46,7 @@ def _make_coding_preset(
     effort: str | None = "high",
     system_prompt: str | None = None,
 ):
-    """Construct an ``AgentSpec.coding()`` instance.
-
-    ``system_prompt`` is forwarded to ``AgentSpec.coding`` where it becomes
-    ``spec.extra_prompt`` — appended after the role header and policy block
-    inside ``build_system_message()``.  Pass the profile's system prompt here
-    when combining a profile with this preset so both land in a single system
-    message (``MessageManager.add_message(system=...)`` calls ``set_system``
-    which replaces, not appends).
-
-    Isolated as a module-level function so tests can monkeypatch it without
-    fighting Python's lazy-import caching.
-    """
+    """Construct an AgentSpec.coding() instance; isolated for test monkeypatching."""
     from lionagi.agent.spec import AgentSpec
 
     return AgentSpec.coding(cwd=cwd, effort=effort, system_prompt=system_prompt)
@@ -72,12 +61,7 @@ _FORM_SPEC_ALLOWED_KEYS = frozenset({"title", "fields", "values"})
 
 
 def _load_form_spec(path: str) -> dict:
-    """Load a YAML or JSON work-form spec file.
-
-    Returns the parsed dict.  Raises ``ValueError`` with a user-friendly
-    message on parse failure, or ``FileNotFoundError`` when the path does
-    not point to a regular file.
-    """
+    """Load a YAML or JSON work-form spec file; raises ValueError/FileNotFoundError on failure."""
     from pathlib import Path as _Path
 
     p = _Path(path)
@@ -108,31 +92,7 @@ def _load_form_spec(path: str) -> dict:
 
 
 def _build_work_form(spec: dict, spec_path: str):
-    """Construct a :class:`~lionagi.work.WorkForm` from a parsed spec dict.
-
-    Expected YAML shape::
-
-        title: "My form"         # optional
-        fields:                   # optional; declares typed slots
-          repo:
-            type: str
-            required: true
-            description: "Repository path"
-          effort:
-            type: str
-            required: false
-            default: "high"
-        values:                   # optional; values to fill into the form
-          repo: "/path/to/repo"
-          effort: "medium"
-
-    Allowed top-level keys: ``title``, ``fields``, ``values``.  Unknown keys
-    are rejected with a ``ValueError``.
-
-    When ``fields`` is declared, every key in ``values`` must correspond to a
-    declared field name — undeclared keys are rejected.  When ``fields`` is
-    absent the spec is field-less and all values are forwarded as context.
-    """
+    """Construct a WorkForm from a parsed spec dict (keys: title, fields, values)."""
     from lionagi.work import FieldSpec, WorkForm, fill_form
 
     # Enforce closed top-level schema.
@@ -539,8 +499,7 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 def run_agent(args: argparse.Namespace) -> int:
     """Dispatch agent command."""
-    # 3b: --form: load, build, and validate BEFORE any LLM call.
-    # Validation errors exit rc=1 through the error channel (stderr).
+    # --form: load, build, and validate BEFORE any LLM call.
     form_prompt_prefix: str = ""
     if getattr(args, "form", None):
         try:

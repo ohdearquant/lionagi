@@ -28,11 +28,9 @@ class LaunchRequest(BaseModel):
 
 @router.post("/", status_code=202)
 async def launch_run(body: LaunchRequest) -> dict[str, Any]:
-    """Fire an orchestration run immediately.
+    """Fire an orchestration run immediately; process runs detached.
 
-    Returns the invocation_id created before the process is spawned.
-    The process runs detached; watch progress via GET /api/invocations/{id}
-    and GET /api/sessions/{id}/signals once a child session appears.
+    Returns invocation_id; monitor via GET /api/invocations/{id} and GET /api/sessions/{id}/signals.
     """
     try:
         return await launch_svc.launch(body.model_dump(exclude_none=True))
