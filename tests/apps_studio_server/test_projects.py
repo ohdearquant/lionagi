@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for ADR-0026 Studio /api/projects endpoints."""
+"""Tests for Studio /api/projects endpoints."""
 
 from __future__ import annotations
 

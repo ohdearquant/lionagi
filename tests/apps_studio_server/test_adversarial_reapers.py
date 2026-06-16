@@ -1,16 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Adversarial edge-case tests for the four studio lifecycle mechanisms.
-
-Focus: confirm each mechanism fires for the RIGHT reason by temporarily
-neutralising the trigger condition and asserting the row is NOT reaped.
-
-Coverage:
-  - invocation deadline reaper (false-positive guard)
-  - null-status session detector (double-write guard)
-  - phantom reaper (detection reuse + no regression on admin prune)
-  - prune old data (FK integrity, recent-data preservation)
-"""
+"""Adversarial edge-case tests for studio lifecycle reaper mechanisms."""
 
 from __future__ import annotations
 
@@ -132,11 +122,7 @@ async def _count_transitions(db_path: Path, entity_id: str) -> int:
 
 
 def test_1170_inv_with_live_sessions_not_reaped_by_zero_session_path(tmp_path, monkeypatch):
-    """Invocation with session_count > 0 is NOT reaped by the zero-session path.
-
-    The zero-session condition requires session_count == 0. Having live sessions
-    should completely prevent this path even if updated_at is very old.
-    """
+    """Invocation with session_count > 0 is NOT reaped even when updated_at is very old."""
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
@@ -181,11 +167,7 @@ def test_1170_already_terminal_invocation_not_reaped(tmp_path, monkeypatch):
 
 
 def test_1170_neutralize_condition_row_stays_running(tmp_path, monkeypatch):
-    """When condition is neutralised (huge deadline), old invocation stays running.
-
-    This confirms the reaper fires ONLY because of the deadline/grace check,
-    not for some other reason.
-    """
+    """With a huge deadline, old invocations are NOT reaped (reaper fires only on deadline/grace)."""
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
@@ -211,12 +193,7 @@ def test_1170_neutralize_condition_row_stays_running(tmp_path, monkeypatch):
 
 
 def test_1171_terminal_session_never_overwritten(tmp_path, monkeypatch):
-    """Session with status='completed' is NOT touched by the null-status reaper.
-
-    The reaper queries WHERE status IS NULL; a completed session is invisible
-    to it. This test permanently disables the live-process check so any logic
-    gap would expose itself.
-    """
+    """Completed sessions are invisible to the null-status reaper (WHERE status IS NULL)."""
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
@@ -235,11 +212,7 @@ def test_1171_terminal_session_never_overwritten(tmp_path, monkeypatch):
 
 
 def test_1171_idempotent_double_call_no_double_write(tmp_path, monkeypatch):
-    """Calling reap_null_status_sessions twice produces exactly one transition.
-
-    First call transitions the session to failed; second call finds no NULL-status
-    sessions and returns 0. Status must not be overwritten a second time.
-    """
+    """Calling reap_null_status_sessions twice produces exactly one transition."""
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
@@ -288,11 +261,7 @@ def test_1171_neutralize_condition_null_session_stays_null(tmp_path, monkeypatch
 
 
 def test_1172_phantom_reaper_driven_by_list_phantom_sessions(tmp_path, monkeypatch):
-    """reap_phantom_sessions() delegates detection to list_phantom_sessions.
-
-    Neutralising the detector (mocking it to return []) must result in zero
-    reaped sessions even when a legitimately-phantom session exists.
-    """
+    """Mocking list_phantom_sessions to [] suppresses reaping even for legitimate phantoms."""
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
@@ -323,11 +292,7 @@ def test_1172_phantom_reaper_driven_by_list_phantom_sessions(tmp_path, monkeypat
 
 
 def test_1172_admin_prune_phantom_delegates_no_delete(tmp_path, monkeypatch):
-    """prune_phantom_sessions() from admin delegates to reap_phantom_sessions.
-
-    The session row must be preserved (transition, not delete) — regression
-    guard for the old delete-based implementation.
-    """
+    """prune_phantom_sessions() transitions the row, not deletes it (regression guard)."""
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
@@ -355,11 +320,7 @@ def test_1172_admin_prune_phantom_delegates_no_delete(tmp_path, monkeypatch):
 
 
 def test_1172_phantom_reaper_skips_already_terminal_even_if_detected(tmp_path, monkeypatch):
-    """Phantom reaper will not double-write a session already in a terminal status.
-
-    Even if list_phantom_sessions returned a 'failed' session, reap_phantom_sessions
-    guards on current_status == 'running' before writing.
-    """
+    """Phantom reaper skips sessions already in a terminal status (guards on current_status == 'running')."""
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
@@ -387,10 +348,7 @@ def test_1172_phantom_reaper_skips_already_terminal_even_if_detected(tmp_path, m
 
 
 def test_1173_prune_does_not_touch_running_old_sessions(tmp_path, monkeypatch):
-    """Prune never removes a running session, even if it's very old.
-
-    The status filter is the gate; wall-clock age alone is not sufficient.
-    """
+    """Prune never removes a running session; status filter gates, not wall-clock age."""
     from lionagi.studio.services import db_maintenance as maint
 
     db_path = tmp_path / "state.db"

@@ -1,4 +1,4 @@
-"""Tests for #1012 paginated, filtered runs list."""
+"""Tests for paginated, filtered runs list."""
 
 from __future__ import annotations
 
