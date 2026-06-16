@@ -11,16 +11,8 @@ __all__ = ("Pack", "RolePolicy", "RoleConfig")
 
 @dataclass(frozen=True, slots=True)
 class RolePolicy:
-    """Runtime-facing operational policy for one role.
-
-    Not part of the prompt body — describes the role's operational envelope
-    (decision-rights, hand-off boundaries, escalation conditions) for a future
-    orchestrator / operation node to consume. Kept separate from the behavioral
-    Role so the prompt stays dense and the policy stays pluggable.
-
-    Escalations are prose conditions ("when to hand off"); they carry no routing
-    target yet — capability-based routing is added once that system exists.
-    """
+    """Runtime operational envelope for one role (decision-rights, boundaries,
+    escalations); consumed by an orchestrator, not part of the prompt body."""
 
     authority: tuple[str, ...] = ()
     boundaries: tuple[str, ...] = ()
@@ -29,19 +21,8 @@ class RolePolicy:
 
 @dataclass(frozen=True, slots=True)
 class RoleConfig:
-    """Per-role runtime configuration (ADR-0074).
-
-    The pack is the per-role configuration layer: where ``RolePolicy`` is the
-    prompt-side operational envelope, ``RoleConfig`` is the runtime tuning a
-    casts role needs to actually run — which model/effort to use, which
-    cognitive modes overlay by default, which are permitted, and whether the
-    role is part of the active roster an orchestrator selects from.
-
-    ``model``/``effort`` default to ``None`` (fall through to the caller's
-    default) — a shipped pack should NOT hardcode a provider. ``default_modes``
-    overlay onto the role body; ``modes_allow`` (empty = unrestricted) bounds a
-    per-task mode override.
-    """
+    """Per-role runtime tuning: model/effort, default and permitted modes, and
+    active-roster membership."""
 
     model: str | None = None
     effort: str | None = None
@@ -52,11 +33,8 @@ class RoleConfig:
 
 @dataclass(frozen=True, slots=True)
 class Pack:
-    """A named set of per-role overlays — policy + runtime configuration.
-
-    ``default`` ships with lionagi; users supply their own pack files to
-    override or extend it.
-    """
+    """A named set of per-role overlays (policy + runtime config); ``default``
+    ships with lionagi, users supply their own to override or extend it."""
 
     name: str
     policies: dict[str, RolePolicy] = field(default_factory=dict)

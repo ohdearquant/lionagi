@@ -53,12 +53,8 @@ def _wire_secure_guards(obj: HooksMixin, cwd: str | None) -> None:
 
 @dataclass
 class AgentSpec(HooksMixin):
-    """Universal runtime agent spec: Profile (identity) + runtime concerns.
-
-    This is the orchestration-facing composition surface. Every entry point
-    (CLI, programmatic create_agent, flow wiring) composes to AgentSpec and
-    builds a Branch from it.
-    """
+    """Universal runtime agent spec: a Profile (identity) plus runtime concerns —
+    the orchestration-facing surface every entry point builds a Branch from."""
 
     profile: Profile
     model: str | None = None
@@ -170,8 +166,8 @@ class AgentSpec(HooksMixin):
             cwd=data.get("cwd"),
             yolo=data.get("yolo", False),
         )
-        # Restore lion_system from YAML when explicitly set; compose() defaults
-        # to True so a saved False would be silently dropped (LIONAGI-AUDIT-005).
+        # compose() defaults lion_system to True, so a saved False must be
+        # restored explicitly or it would be silently dropped.
         if "lion_system" in data:
             spec.lion_system = bool(data["lion_system"])
         return spec

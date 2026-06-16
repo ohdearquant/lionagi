@@ -38,11 +38,8 @@ class PatternKind(Enum):
 
 @dataclass(init=False, frozen=True, slots=True)
 class Pattern(Params, Composable):
-    """Abstract, composable atom of agent configuration.
-
-    A frozen value object with a name and description. Concrete patterns
-    subclass it (Role, Mode) and override ``kind``.
-    """
+    """Abstract, composable atom of agent configuration — a frozen (name,
+    description); Role and Mode subclass it and override ``kind``."""
 
     _config = ModelConfig(
         none_as_sentinel=True,
@@ -115,12 +112,9 @@ class Mode(Pattern):
 
 @dataclass(init=False, frozen=True, slots=True)
 class Role(Pattern):
-    """Behavioral pattern — what an agent does and the discipline it follows.
-
-    ``body`` composes into the system prompt; ``description`` is the dense,
-    orchestrator-facing selection signal (not in the prompt). ``emits`` is the
-    role's emission contract — payloads it produces (see ``casts.emission``).
-    """
+    """Behavioral pattern — what an agent does. ``body`` composes into the system
+    prompt; ``description`` is the orchestrator-facing selection signal (not in
+    the prompt); ``emits`` is the role's emission contract (see ``casts.emission``)."""
 
     body: str = ""
     emits: tuple = ()
