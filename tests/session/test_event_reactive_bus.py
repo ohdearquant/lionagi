@@ -1,14 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Internal events on the reactive bus: ``branch.emit_and_log`` puts an Event
-(an ``APICalling``, a tool call) onto the session observer, and the compositional
-filter DSL reacts to it by type + status + field — the complement to logging.
-
-The production instance is ``observe(APICalling, EventStatus.FAILED)``; these use
-a bare ``Event`` subclass so the mechanism is exercised without a network call —
-the bus and filters key off ``Event``, not the concrete subclass.
-"""
+"""Tests for branch.emit_and_log and the session observer filter DSL (type + status + field)."""
 
 from __future__ import annotations
 
@@ -45,8 +38,7 @@ async def test_emit_and_log_reacts_to_failed_status():
     await branch.emit_and_log(ok)
     await branch.emit_and_log(bad)
 
-    assert failed == [bad]  # only the FAILED one reacted
-    # both were logged regardless of reactivity
+    assert failed == [bad]
     assert len(branch._log_manager.logs) == 2
 
 

@@ -124,8 +124,8 @@ async def test_create_session_with_invocation_bumps_count(db: StateDB):
 
 
 async def test_duplicate_create_session_does_not_inflate_session_count(db: StateDB):
-    """LIONAGI-AUDIT-003 regression: a duplicate create_session call (same id)
-    must not increment session_count a second time (INSERT OR IGNORE no-op)."""
+    """Regression: a duplicate create_session call (same id) must not increment
+    session_count a second time (INSERT OR IGNORE no-op)."""
     inv = await _make_invocation(db)
     session = await _make_session(db, invocation_id=inv["id"], status="running")
 

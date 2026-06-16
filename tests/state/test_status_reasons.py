@@ -526,7 +526,7 @@ class TestInvocationTransition:
         assert (await cur.fetchone())["n"] == 0
 
 
-# ── LIONAGI-AUDIT-002: update_session routes status through update_status ──
+# ── update_session routes status through update_status ──
 
 
 class TestUpdateSessionRoutesStatusThroughHistory:
@@ -595,7 +595,7 @@ class TestUpdateSessionRoutesStatusThroughHistory:
         assert (await cur.fetchone())["n"] == 0
 
 
-# ── LIONAGI-AUDIT-004: update_status rejects invalid source values ──────────
+# ── update_status rejects invalid source values ──────────
 
 
 class TestUpdateStatusSourceValidation:

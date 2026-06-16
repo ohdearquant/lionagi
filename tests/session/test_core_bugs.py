@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for three lionagi core bug fixes:
-- #1160: InstructionContent serialization drops response_format for dict values
-- #1214: Observer handlers run sequentially blocking the stream path
-- #1208: Reactive bus observe-by-role filter
-"""
+"""Tests for core bug fixes: InstructionContent serialization, concurrent observer dispatch, reactive bus role filter."""
 
 from __future__ import annotations
 
@@ -19,7 +15,7 @@ from lionagi.session.session import Session
 from lionagi.session.signal import Signal, StructuredOutput
 
 # ---------------------------------------------------------------------------
-# #1160 — InstructionContent dict response_format survives serialization
+# InstructionContent dict response_format survives serialization
 # ---------------------------------------------------------------------------
 
 
@@ -80,7 +76,7 @@ class TestResponseFormatSerialization:
 
 
 # ---------------------------------------------------------------------------
-# #1214 — Observer handlers run concurrently (non-blocking)
+# Observer handlers run concurrently (non-blocking)
 # ---------------------------------------------------------------------------
 
 
@@ -178,7 +174,7 @@ class TestConcurrentObserverDispatch:
 
 
 # ---------------------------------------------------------------------------
-# #1208 — Observe by emitting agent role (RoleFilter)
+# Observe by emitting agent role (RoleFilter)
 # ---------------------------------------------------------------------------
 
 

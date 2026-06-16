@@ -1,12 +1,6 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Coverage-targeted tests for:
-  - lionagi/session/branch.py          (78%, ~53 uncovered lines)
-  - lionagi/protocols/action/manager.py (82%, ~32 uncovered lines)
-"""
-
 import pytest
 
 from lionagi.protocols.action.manager import ActionManager
@@ -46,31 +40,26 @@ def greet(name: str) -> str:
 
 @pytest.fixture
 def plain_branch():
-    """Minimal Branch with no system message."""
     return Branch()
 
 
 @pytest.fixture
 def system_branch():
-    """Branch with a system message."""
     return Branch(system="You are helpful.")
 
 
 @pytest.fixture
 def branch_with_tools():
-    """Branch pre-loaded with two tools."""
     return Branch(tools=[add, multiply])
 
 
 @pytest.fixture
 def action_manager():
-    """Empty ActionManager."""
     return ActionManager()
 
 
 @pytest.fixture
 def populated_manager():
-    """ActionManager with 'add' pre-registered."""
     m = ActionManager()
     m.register_tool(add)
     return m
@@ -82,8 +71,6 @@ def populated_manager():
 
 
 class TestBranchSystemMessage:
-    """Branch(system=...) stores the system message correctly."""
-
     def test_system_message_stored(self, system_branch):
         assert system_branch.system is not None
 
@@ -91,7 +78,6 @@ class TestBranchSystemMessage:
         assert "You are helpful." in system_branch.system.rendered
 
     def test_system_message_in_messages(self, system_branch):
-        # The system message is part of the messages pile
         assert len(system_branch.messages) == 1
 
     def test_no_system_message_by_default(self, plain_branch):
@@ -100,8 +86,6 @@ class TestBranchSystemMessage:
 
 
 class TestBranchProperties:
-    """Branch exposes the three manager properties."""
-
     def test_msgs_returns_message_manager(self, plain_branch):
         assert isinstance(plain_branch.msgs, MessageManager)
 
@@ -117,8 +101,6 @@ class TestBranchProperties:
 
 
 class TestBranchMessageCount:
-    """len(branch.messages) reflects actual message count."""
-
     def test_empty_branch_message_count(self, plain_branch):
         assert len(plain_branch.messages) == 0
 
@@ -126,13 +108,10 @@ class TestBranchMessageCount:
         assert len(system_branch.messages) == 1
 
     def test_messages_pile_has_correct_length(self, system_branch):
-        msgs = system_branch.messages
-        assert len(msgs) == 1
+        assert len(system_branch.messages) == 1
 
 
 class TestBranchMessages:
-    """branch.messages returns the messages Pile."""
-
     def test_messages_is_iterable(self, system_branch):
         msgs = list(system_branch.messages)
         assert len(msgs) == 1
@@ -149,8 +128,6 @@ class TestBranchMessages:
 
 
 class TestBranchRegisterTools:
-    """register_tools([fn1, fn2]) registers multiple callables at once."""
-
     def test_register_single_tool(self, plain_branch):
         plain_branch.register_tools(add)
         assert "add" in plain_branch.acts.registry
@@ -181,8 +158,6 @@ class TestBranchRegisterTools:
 
 
 class TestBranchClone:
-    """Branch.clone() creates an independent copy."""
-
     def test_clone_returns_branch(self, system_branch):
         cloned = system_branch.clone()
         assert isinstance(cloned, Branch)
@@ -193,7 +168,6 @@ class TestBranchClone:
 
     def test_clone_messages_are_independent(self, system_branch):
         cloned = system_branch.clone()
-        # Adding a message to original should not affect clone
         original_count = len(cloned.messages)
         system_branch.msgs.add_message(instruction="extra instruction")
         assert len(cloned.messages) == original_count
@@ -204,7 +178,6 @@ class TestBranchClone:
 
     def test_clone_of_branch_with_tools(self, branch_with_tools):
         cloned = branch_with_tools.clone()
-        # Cloned branch should also have the tools
         assert "add" in cloned.acts.registry
         assert "multiply" in cloned.acts.registry
 
@@ -214,8 +187,6 @@ class TestBranchClone:
 
 
 class TestBranchSerialization:
-    """to_dict() / from_dict() serialization roundtrip."""
-
     def test_to_dict_returns_dict(self, plain_branch):
         d = plain_branch.to_dict()
         assert isinstance(d, dict)
@@ -227,7 +198,6 @@ class TestBranchSerialization:
     def test_to_dict_has_model_keys(self, plain_branch):
         d = plain_branch.to_dict()
         assert "chat_model" in d
-        # parse_model is only emitted when it differs from chat_model
         if plain_branch.parse_model is not plain_branch.chat_model:
             assert "parse_model" in d
 
@@ -241,7 +211,6 @@ class TestBranchSerialization:
         d = system_branch.to_dict()
         restored = Branch.from_dict(d)
         assert isinstance(restored, Branch)
-        # System message should be present (already in messages pile)
         assert len(restored.messages) >= 1
 
     def test_to_dict_with_system_includes_system(self, system_branch):
@@ -259,8 +228,6 @@ class TestBranchSerialization:
 
 
 class TestActionManagerInit:
-    """ActionManager() empty and populated initialization."""
-
     def test_empty_init(self):
         m = ActionManager()
         assert isinstance(m.registry, dict)
@@ -280,8 +247,6 @@ class TestActionManagerInit:
 
 
 class TestActionManagerRegisterTool:
-    """register_tool() with annotated functions."""
-
     def test_register_callable(self, action_manager):
         action_manager.register_tool(add)
         assert "add" in action_manager.registry
@@ -315,8 +280,6 @@ class TestActionManagerRegisterTool:
 
 
 class TestActionManagerRegisterTools:
-    """register_tools([fn1, fn2]) batch registration."""
-
     def test_register_list_of_two(self, action_manager):
         action_manager.register_tools([add, multiply])
         assert "add" in action_manager.registry
@@ -336,8 +299,6 @@ class TestActionManagerRegisterTools:
 
 
 class TestActionManagerContains:
-    """__contains__ checks by name, callable, and Tool object."""
-
     def test_contains_by_string(self, populated_manager):
         assert "add" in populated_manager
 
@@ -356,8 +317,6 @@ class TestActionManagerContains:
 
 
 class TestActionManagerMatchTool:
-    """match_tool() converts ActionRequest/dict to FunctionCalling."""
-
     def test_match_tool_with_dict(self, populated_manager):
         fc = populated_manager.match_tool({"function": "add", "arguments": {"a": 1, "b": 2}})
         assert fc is not None
@@ -391,8 +350,6 @@ class TestActionManagerMatchTool:
 
 
 class TestActionManagerGetToolSchema:
-    """get_tool_schema() returns correct OpenAI-compatible schema."""
-
     def test_get_schema_true_returns_all(self, populated_manager):
         result = populated_manager.get_tool_schema(True)
         assert "tools" in result
@@ -406,7 +363,6 @@ class TestActionManagerGetToolSchema:
     def test_get_schema_by_string_has_function_key(self, populated_manager):
         result = populated_manager.get_tool_schema("add")
         assert "tools" in result
-        # _get_tool_schema returns a single dict for a string lookup
         schema = result["tools"]
         assert "function" in schema
 
@@ -430,7 +386,6 @@ class TestActionManagerGetToolSchema:
             populated_manager.get_tool_schema("nonexistent")
 
     def test_get_schema_auto_register_callable(self, action_manager):
-        # Passing an unregistered callable with auto_register=True registers it
         result = action_manager.get_tool_schema(add, auto_register=True)
         assert "tools" in result
         assert "add" in action_manager.registry
@@ -441,8 +396,6 @@ class TestActionManagerGetToolSchema:
 
 
 class TestActionManagerInvoke:
-    """invoke() executes tools and returns FunctionCalling result."""
-
     @pytest.mark.asyncio
     async def test_invoke_with_dict(self, populated_manager):
         fc = await populated_manager.invoke({"function": "add", "arguments": {"a": 2, "b": 3}})
@@ -477,6 +430,5 @@ class TestActionManagerInvoke:
 
     @pytest.mark.asyncio
     async def test_invoke_unknown_tool_raises_or_errors(self, populated_manager):
-        # match_tool raises ValueError for unknown tools
         with pytest.raises(ValueError):
             await populated_manager.invoke({"function": "unknown", "arguments": {}})
