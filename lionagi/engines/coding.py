@@ -1,38 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Coding engine — the gated implement/test/fix-loop shape.
-
-A coding spec (a task description, or a pending experiment exported by a
-hypothesis run) is driven through a deterministic pipeline whose ground truth
-is a real test command, not a model's claim:
-
-```text
-WorkPlanned -> ChangeProposed -> TestsRan -> [fix loop] -> VerifyResult
-  -> CodeResultRecorded
-```
-
-- ``plan`` (analyst, no tools): the spec becomes a ``WorkPlanned`` — files to
-  touch, approach, test strategy, acceptance criteria.
-- ``implement`` (implementer WITH coding tools, ``permissions="safe"``, path-
-  guarded to the run workspace): executes the plan across its own tool turns
-  and emits a ``ChangeProposed``.
-- ``test`` (the engine itself, NOT an agent): runs the declared ``test_cmd`` in
-  a subprocess with a timeout and captured output, emitting ``TestsRan``. This
-  is ground truth — never an LLM claim.
-- the fix loop: on failure the implementer is re-prompted with the captured
-  output for a new ``ChangeProposed``, then re-tested — the test-failure
-  analogue of emission repair, bounded by ``max_fix_rounds``.
-- ``verify`` (critic, read-only): reviews the captured ``git diff`` against the
-  acceptance criteria and emits a ``VerifyResult`` (the casts ``Verdict``).
-- ``conclude``: the engine emits a ``CodeResultRecorded`` shaped so a hypothesis
-  run can ingest it (:meth:`CodingRun.to_hypothesis_seeds`).
-
-This is the *Gated-Loop* shape, complementing research's Tree, review's
-Dimensional, and hypothesis's Chain. The bus-interop bridge here is by export +
-λ ferry (:meth:`CodingRun.to_hypothesis_seeds`); standing-bus consumption of
-``ExperimentDesigned`` events is a future seam, not this engine.
-"""
+"""Coding engine — Gated-Loop shape: plan → implement → test → [fix] → verify → record."""
 
 from __future__ import annotations
 
@@ -94,8 +63,7 @@ class WorkPlanned(EngineEvent, CodingChainEvent):
 
 
 class ChangeProposed(EngineEvent, CodingChainEvent):
-    """A code change the implementer made via its tools — the unit the test
-    command then judges. Re-emitted once per fix round."""
+    """A code change the implementer made via its tools; re-emitted once per fix round."""
 
     plan_ref: str = Field(default="", description="Id of the WorkPlanned this implements.")
     summary: str = Field(description="What was changed, stated concretely.")
@@ -110,8 +78,7 @@ class ChangeProposed(EngineEvent, CodingChainEvent):
 
 
 class TestsRan(EngineEvent, CodingChainEvent):
-    """Ground truth: the outcome of the engine running the declared test command
-    in a subprocess. ``passed`` is the process exit code, never a model claim."""
+    """Ground truth: subprocess outcome of the declared test command. ``passed`` is the exit code, never a model claim."""
 
     # Not a pytest test class — the name starts with "Test" but it is an event.
     __test__ = False
@@ -136,9 +103,7 @@ class TestsRan(EngineEvent, CodingChainEvent):
 
 
 class VerifyResult(Verdict, CodingChainEvent):
-    """The critic's call on whether the change meets the acceptance criteria —
-    the casts ``Verdict`` (verdict, rationale, evidence, reversible_by) plus the
-    refs and the unmet-criteria list."""
+    """The critic's call on whether the change meets acceptance criteria — casts ``Verdict`` plus refs and unmet-criteria list."""
 
     change_ref: str = Field(default="", description="Id of the ChangeProposed being verified.")
     tests_ref: str = Field(default="", description="Id of the TestsRan that produced ground truth.")
@@ -151,13 +116,7 @@ class VerifyResult(Verdict, CodingChainEvent):
 
 
 class CodeResultRecorded(EngineEvent, CodingChainEvent):
-    """The terminal result of the coding run, shaped for hypothesis ingestion.
-
-    ``measurements`` is a dict so a coding run can carry structured outcomes
-    (rounds, files touched, returncode); :meth:`CodingRun.to_hypothesis_seeds`
-    renders it to the string ``ResultRecorded`` expects. ``experiment_ref``
-    carries the originating ``ExperimentDesigned`` eid when the spec came from a
-    pending experiment, '' otherwise."""
+    """Terminal coding-run result shaped for hypothesis ingestion via ``CodingRun.to_hypothesis_seeds``."""
 
     passed: bool = Field(description="Whether the declared test command ultimately passed.")
     measurements: dict[str, Any] = Field(
@@ -194,12 +153,7 @@ _REF_ATTRS = (
 
 
 def _normalize_spec(spec: str | dict[str, Any]) -> tuple[str, str]:
-    """Return ``(task_text, experiment_ref)`` for a coding spec.
-
-    A string is the task description. A dict is a pending experiment exported by
-    a hypothesis run (``method``/``dataset``/``procedure``/``acceptance``/``eid``)
-    — its fields are rendered into the task text and its ``eid`` becomes the
-    ``experiment_ref`` the result carries back."""
+    """Return (task_text, experiment_ref) for a string spec or a hypothesis-exported experiment dict."""
     if isinstance(spec, str):
         text = spec.strip()
         if not text:
@@ -301,13 +255,7 @@ def _verify_instruction(plan: WorkPlanned, change: ChangeProposed, t: TestsRan, 
 
 
 class CodingRun(ChainRun):
-    """Per-run state: typed event store, eid counters, the workspace + declared
-    test command, and the captured diff.
-
-    Inherits collect/emit/find/events_of from :class:`ChainRun`; adds the
-    coding-specific fields (workspace, test command, diff, workspace snapshot)
-    and the :meth:`last`, :meth:`to_hypothesis_seeds`, and :meth:`export`
-    methods."""
+    """Per-run state for a CodingEngine run: event store, eid counters, workspace, test command, and diff capture."""
 
     _chain_event_cls = CodingChainEvent
     _event_prefix_map = _EVENT_PREFIX  # filled after class definition below
@@ -343,11 +291,7 @@ class CodingRun(ChainRun):
         return evs[-1] if evs else None
 
     def to_hypothesis_seeds(self) -> list[dict[str, Any]]:
-        """Render the run's results as ``ResultRecorded`` inputs for a hypothesis
-        run — the bus-interop bridge. Each ``CodeResultRecorded`` becomes a dict
-        with ``experiment_ref`` (the originating experiment, '' if none),
-        ``measurements`` (the structured dict rendered to a string), ``passed``,
-        and ``caveats`` — exactly the fields ``HypothesisRun`` ingests."""
+        """Render each CodeResultRecorded as a ResultRecorded input dict for hypothesis ingestion."""
         seeds: list[dict[str, Any]] = []
         for k in self.events_of(CodeResultRecorded):
             seeds.append(
@@ -361,10 +305,7 @@ class CodingRun(ChainRun):
         return seeds
 
     def export(self, dir_path: str | Path, *, report: str = "") -> dict[str, str]:
-        """Write the run's record to *dir_path*: ``results.json`` (typed events +
-        refs + hypothesis seeds) and ``report.md`` (the verify rationale +
-        outcome). Full test outputs are written separately as ``test_output_N.txt``
-        during the run."""
+        """Write results.json and report.md to *dir_path*; returns paths dict. Full test output files are written separately during the run."""
         d = Path(dir_path)
         d.mkdir(parents=True, exist_ok=True)
         events = [e for evs in self.store.values() for e in evs]
@@ -427,37 +368,7 @@ def _render_report(run: CodingRun, report: str) -> str:
 
 
 class CodingEngine(Engine):
-    """Gated implement/test/fix-loop engine (stateless config).
-
-    Parameters extend :class:`Engine` with one casts role per agent stage —
-    ``plan_role`` (plans the change, no tools), ``implement_role`` (implements
-    it WITH coding tools, path-guarded), ``verify_role`` (reviews the diff
-    against acceptance) — plus:
-
-    coding_tools
-        Tool names granted to the implementer (default ``("coding",)`` — the
-        full reader/editor/bash/search toolkit). Tool-bearing agents get the
-        destructive-command guard and workspace path guards from
-        :meth:`EngineRun.make_agent` (``secure=True``).
-    implement_permissions
-        Permission preset for the implementer (default ``"safe"``).
-    max_fix_rounds
-        How many times a failed test re-prompts the implementer before the run
-        concludes with ``passed=False`` — the test-failure analogue of emission
-        repair.
-    test_timeout_s
-        Wall-clock cap on each test-command subprocess (default 600s). The
-        process group is killed on timeout; output is captured up to a hard
-        byte cap and the full capture is written to the export dir.
-    repair_retries
-        Re-prompt turns when a stage's expected emission did not arrive — the
-        loop that keeps small/weak workers in the pipeline (ADR-0077 §3).
-
-    Set ``judge_model`` (base class) to gate the fix loop on a quality judge:
-    before each extra round it asks whether another attempt is worth the budget.
-    Per-stage models route through ``models={"plan": ..., "implement": ...,
-    "verify": ...}``.
-    """
+    """Gated plan/implement/test/fix/verify engine (stateless config). See docs/reference/engines.md for parameter details."""
 
     run_context_cls: type[EngineRun] = CodingRun
 
@@ -496,17 +407,7 @@ class CodingEngine(Engine):
         session: Any = None,
         on_event: Any = None,
     ) -> CodeResultRecorded:
-        """Normalize *spec* exactly once before creating any run state.
-
-        ``_normalize_spec`` raises ``ValueError`` / ``TypeError`` for malformed
-        specs.  Without this gate those errors surface after the session and
-        observers are already initialized — callers cannot distinguish a setup
-        error from a mid-run failure.
-
-        The normalized ``(task_text, experiment_ref)`` tuple is forwarded to
-        ``_run()`` via keyword argument so that ``_run`` consumes exactly what
-        was validated here — normalization happens once, not twice.
-        """
+        """Normalize *spec* exactly once before creating run state; raises ValueError/TypeError for malformed specs before session initialization."""
         task_text, experiment_ref = _normalize_spec(spec)  # raises on bad input
         return await super().run(
             spec,
@@ -528,18 +429,7 @@ class CodingEngine(Engine):
         export_dir: str | Path | None = None,
         _normalized: tuple[str, str] | None = None,
     ) -> CodeResultRecorded:
-        """Drive *spec* through plan -> implement -> test -> [fix] -> verify ->
-        conclude. Returns the terminal :class:`CodeResultRecorded`.
-
-        *test_cmd* is the ground-truth command (a list runs ``shell=False``; a
-        string with shell-control characters runs in a shell, otherwise it is
-        split). *workspace* is the implementer's cwd and path-guard root. When
-        *export_dir* is given, ``results.json`` + ``report.md`` (and the full
-        per-round test outputs) are written there.
-
-        *_normalized* carries the pre-validated ``(task_text, experiment_ref)``
-        pair from ``run()``.  When present, this avoids a second
-        ``_normalize_spec`` call so the spec is normalized exactly once."""
+        """Drive *spec* through plan -> implement -> test -> [fix loop] -> verify -> conclude; returns the terminal CodeResultRecorded."""
         if not test_cmd:
             raise ValueError("test_cmd is required — the engine needs ground truth to gate on")
         if _normalized is not None:
@@ -654,8 +544,7 @@ class CodingEngine(Engine):
         return run.last(ChangeProposed)
 
     async def _test(self, run: CodingRun, change: ChangeProposed, *, round_no: int) -> TestsRan:
-        """Run the declared test command as a subprocess — the ground-truth
-        stage. NOT an agent: ``passed`` is the process exit code."""
+        """Run the declared test command as a subprocess; passed is the process exit code, never a model claim."""
         cmd, shell = _resolve_cmd(run.test_cmd)
         cmd_str = run.test_cmd if isinstance(run.test_cmd, str) else " ".join(run.test_cmd)
         run.notify("testing", change=change.eid, round=round_no, cmd=cmd_str)
@@ -681,9 +570,7 @@ class CodingEngine(Engine):
     async def _fix_loop(
         self, run: CodingRun, plan: WorkPlanned, change: ChangeProposed, tests: TestsRan
     ) -> tuple[ChangeProposed, TestsRan]:
-        """Re-prompt the implementer with the captured failure for a new change,
-        then re-test — bounded by ``max_fix_rounds``. The judge gate (if armed)
-        decides whether another round is worth the budget before each attempt."""
+        """Re-prompt the implementer on failure and re-test, bounded by max_fix_rounds; judge gate fires before each round."""
         agent = getattr(run, "_implementer", None)
         round_no = 0
         while not tests.passed and round_no < self.max_fix_rounds and agent is not None:
@@ -743,7 +630,7 @@ class CodingEngine(Engine):
         passed: bool,
         caveat: str = "",
     ) -> CodeResultRecorded:
-        """Emit the terminal CodeResultRecorded — shaped for hypothesis ingestion."""
+        """Emit the terminal CodeResultRecorded shaped for hypothesis ingestion."""
         tests = run.events_of(TestsRan)
         last_test = tests[-1] if tests else None
         verdict = run.last(VerifyResult)
@@ -783,11 +670,7 @@ class CodingEngine(Engine):
     # -- ground-truth helpers -------------------------------------------------
 
     async def _capture_ws_baseline(self, run: CodingRun) -> dict[str, str] | None:
-        """Snapshot ``git status --porcelain`` before the implement stage.
-
-        Returns a ``{path: xy_status}`` dict so the post-implement call can
-        compute a true delta.  Returns ``None`` when the workspace is not a git
-        repo or the subprocess fails — callers treat ``None`` as unknown state."""
+        """Snapshot git status --porcelain before the implement stage; returns {path: xy} or None on failure (unknown state)."""
         result = await run_sync(
             _subprocess_sync,
             ["git", "status", "--porcelain"],
@@ -800,19 +683,7 @@ class CodingEngine(Engine):
         return _parse_porcelain(result.get("stdout", ""))
 
     async def _workspace_changed(self, run: CodingRun) -> tuple[list[str], bool]:
-        """Return ``(delta_paths, check_failed)`` after the implement stage.
-
-        *delta_paths* is the list of paths whose porcelain status is new or
-        changed relative to the pre-implement baseline captured in
-        ``run._ws_baseline``.  A path counts as changed when it appears in the
-        post-implement output and either (a) was absent from the baseline or
-        (b) its XY status string differs from the baseline value.
-
-        *check_failed* is ``True`` when the workspace state is unknown — either
-        the pre-implement baseline capture failed (``run._ws_baseline is None``)
-        or the post-implement status call fails.  The no-change verdict requires
-        both captures to succeed and the delta to be empty; anything unknown
-        fails open to the test gate."""
+        """Return (delta_paths, check_failed) comparing current git status to the pre-implement baseline; check_failed=True when either capture failed."""
         if run._ws_baseline is None:
             # Baseline capture failed before _implement — state is unknown.
             # Do not run the post-status call; return check_failed immediately.
@@ -835,16 +706,7 @@ class CodingEngine(Engine):
         return sorted(delta), False
 
     async def _capture_diff(self, run: CodingRun) -> str:
-        """Capture the diff for the verify stage.
-
-        Combines ``git diff`` (tracked changes) with per-file
-        ``git diff --no-index /dev/null <file>`` output for any untracked paths
-        that appear in either the final ``ChangeProposed.files_touched`` or
-        ``run._ws_delta``.  Candidates are computed fresh at capture time by
-        intersecting that union with ``git ls-files --others`` so the verify
-        diff is complete for: (a) initial emission-failure writes, (b) files
-        created during fix rounds, and (c) emission-ok runs that include
-        untracked files.  No index mutation — ``--no-index`` reads directly."""
+        """Combine git diff (tracked) with --no-index diffs for untracked candidates; covers emission-failure writes and fix-round additions."""
         result = await run_sync(_subprocess_sync, ["git", "diff"], False, 30.0, run.workspace)
         tracked = result.get("stdout", "") if int(result.get("returncode", -1)) == 0 else ""
 
@@ -907,10 +769,7 @@ class CodingEngine(Engine):
         return "\n".join(parts)
 
     def _write_output(self, run: CodingRun, output: str) -> str:
-        """Write the full captured test output to the export dir, returning the
-        path. Info preservation: the event carries only a tail, the file carries
-        everything the runner captured (which is itself byte-capped + annotated
-        by the subprocess runner, never silently dropped)."""
+        """Write full captured test output to the export dir and return the path; the event carries only a tail."""
         if run.export_dir is None:
             return ""
         run._test_runs += 1
@@ -920,12 +779,7 @@ class CodingEngine(Engine):
 
 
 def _parse_porcelain(output: str) -> dict[str, str]:
-    """Parse ``git status --porcelain`` output into a ``{path: xy}`` map.
-
-    Each line is ``XY path`` or ``XY old -> new`` (rename).  We record the
-    rightmost path token (the destination for renames) mapped to its two-
-    character XY status.  Used to compute a pre/post delta without relying on
-    absolute porcelain counts."""
+    """Parse git status --porcelain into {path: xy}; for renames, records the destination path."""
     mapping: dict[str, str] = {}
     for line in output.splitlines():
         if len(line) < 4:
@@ -940,12 +794,7 @@ def _parse_porcelain(output: str) -> dict[str, str]:
 
 
 def _resolve_cmd(test_cmd: str | list[str]) -> tuple[str | list[str], bool]:
-    """Resolve a test command into ``(cmd, shell)`` for the subprocess runner.
-
-    A list runs ``shell=False`` verbatim. A string with shell-control characters
-    (pipes, redirects, ``&&``, …) runs in a shell because the caller asked for a
-    pipeline; an otherwise-plain string is ``shlex``-split and runs
-    ``shell=False`` — the safe default."""
+    """Return (cmd, shell): lists run shell=False; strings with shell-control characters run in a shell; plain strings are shlex-split."""
     if isinstance(test_cmd, (list, tuple)):
         return list(test_cmd), False
     if _SHELL_CONTROL.search(test_cmd):

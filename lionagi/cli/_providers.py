@@ -140,17 +140,7 @@ def resolve_persisted_effort(
     chat_model: Any,
     requested_effort: str | None,
 ) -> str | None:
-    """Return the effort value to persist for this provider+model+request.
-
-    - For iModel chat_model with a known PROVIDER_EFFORT_KWARG: return the
-      post-clamp value the runtime actually sent.
-    - For any provider in PROVIDERS_NO_EFFORT: return None (no effort sent).
-    - Otherwise: return requested_effort unchanged.
-
-    The PROVIDERS_NO_EFFORT reset is independent of the iModel check so that
-    gemini (and other no-effort providers) always persist None even when
-    build_chat_model returns a plain string rather than an iModel.
-    """
+    """Return the post-clamp effort to persist; None for providers in PROVIDERS_NO_EFFORT."""
     effort = requested_effort
     if isinstance(chat_model, iModel):
         _ep_kwargs = chat_model.endpoint.config.kwargs or {}

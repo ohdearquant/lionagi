@@ -83,16 +83,7 @@ class PydanticSpecAdapter(SpecAdapter):
     def fuzzy_match_fields(
         cls, data: dict, model_cls: type[BaseModel], strict: bool = False
     ) -> dict:
-        """Match data keys to Pydantic model fields with fuzzy matching.
-
-        Args:
-            data: Raw data dictionary
-            model_cls: Pydantic model class
-            strict: If True, raise on unmatched; if False, force coercion
-
-        Returns:
-            Dictionary with keys matched to model fields
-        """
+        """Match data keys to Pydantic model fields with fuzzy matching; strict=True raises on miss."""
         from lionagi.ln import fuzzy_match_keys
         from lionagi.ln.types import Undefined
 

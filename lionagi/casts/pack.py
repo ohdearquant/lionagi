@@ -11,8 +11,7 @@ __all__ = ("Pack", "RolePolicy", "RoleConfig")
 
 @dataclass(frozen=True, slots=True)
 class RolePolicy:
-    """Runtime operational envelope for one role (decision-rights, boundaries,
-    escalations); consumed by an orchestrator, not part of the prompt body."""
+    """Runtime operational envelope for one role: decision-rights, boundaries, and escalations."""
 
     authority: tuple[str, ...] = ()
     boundaries: tuple[str, ...] = ()
@@ -21,8 +20,7 @@ class RolePolicy:
 
 @dataclass(frozen=True, slots=True)
 class RoleConfig:
-    """Per-role runtime tuning: model/effort, default and permitted modes, and
-    active-roster membership."""
+    """Per-role runtime tuning: model, effort, permitted modes, and active-roster membership."""
 
     model: str | None = None
     effort: str | None = None
@@ -33,8 +31,7 @@ class RoleConfig:
 
 @dataclass(frozen=True, slots=True)
 class Pack:
-    """A named set of per-role overlays (policy + runtime config); ``default``
-    ships with lionagi, users supply their own to override or extend it."""
+    """Named set of per-role policy and config overlays; supply a custom pack to override the built-in default."""
 
     name: str
     policies: dict[str, RolePolicy] = field(default_factory=dict)

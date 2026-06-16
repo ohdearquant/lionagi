@@ -13,18 +13,7 @@ from .message import Message, MessageContent, MessageRole
 def parse_assistant_response(
     response: BaseModel | list[BaseModel] | dict | str | Any,
 ) -> tuple[str, dict | list[dict]]:
-    """Parse various AI model response formats into text and raw data.
-
-    Supports:
-    - Anthropic format (content field)
-    - OpenAI chat completions (choices field)
-    - OpenAI responses API (output field)
-    - Claude Code (result field)
-    - Raw strings
-
-    Returns:
-        tuple: (extracted_text, raw_model_response)
-    """
+    """Extract text and raw response from Anthropic/OpenAI/Claude Code formats; returns (text, raw)."""
     responses = [response] if not isinstance(response, list) else response
 
     text_contents = []
@@ -86,41 +75,32 @@ def parse_assistant_response(
 
 @dataclass(slots=True)
 class AssistantResponseContent(MessageContent):
-    """Content for assistant responses.
-
-    Fields:
-        assistant_response: Extracted text from the model
-    """
+    """Content for assistant responses; holds extracted text in assistant_response."""
 
     assistant_response: str = ""
 
     @property
     def role(self) -> MessageRole:
-        """Role for this content type (beta API compat)."""
         return MessageRole.ASSISTANT
 
     @property
     def response(self) -> str:
-        """Alias for assistant_response (beta API compat)."""
+        """Alias for assistant_response."""
         return self.assistant_response
 
     @property
     def rendered(self) -> str:
-        """Render assistant response as plain text."""
         return self.assistant_response
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AssistantResponseContent":
-        """Construct AssistantResponseContent from dictionary."""
+        """Construct from dict using assistant_response key."""
         assistant_response = data.get("assistant_response", "")
         return cls(assistant_response=assistant_response)
 
 
 class AssistantResponse(Message):
-    """Message representing an AI assistant's reply.
-
-    The raw model output is stored in metadata["model_response"].
-    """
+    """Message representing an AI assistant's reply; raw model output in metadata["model_response"]."""
 
     _role: ClassVar[MessageRole] = MessageRole.ASSISTANT
     content: AssistantResponseContent
@@ -138,12 +118,11 @@ class AssistantResponse(Message):
 
     @property
     def response(self) -> str:
-        """Access the text response from the assistant."""
         return self.content.assistant_response
 
     @property
     def model_response(self) -> dict | list[dict]:
-        """Access the underlying model's raw data from metadata."""
+        """Raw provider response stored in metadata."""
         return self.metadata.get("model_response", {})
 
     @classmethod
@@ -153,16 +132,7 @@ class AssistantResponse(Message):
         sender: SenderRecipient | None = None,
         recipient: SenderRecipient | None = None,
     ) -> "AssistantResponse":
-        """Create AssistantResponse from raw model output.
-
-        Args:
-            response: Raw model output in any supported format
-            sender: Message sender
-            recipient: Message recipient
-
-        Returns:
-            AssistantResponse with parsed content and metadata
-        """
+        """Create an AssistantResponse from raw model output in any supported provider format."""
         text, model_response = parse_assistant_response(response)
 
         return cls(

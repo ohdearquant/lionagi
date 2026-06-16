@@ -232,12 +232,7 @@ def deep_update(original: dict[Any, Any], update: dict[Any, Any]) -> dict[Any, A
 
 
 def deep_merge(base: dict, override: dict, *, mutate: bool = False) -> dict:
-    """Recursively merge override into base.
-
-    When mutate=True (default for settings), dicts recurse in-place and lists
-    are concatenated.  When mutate=False, a new dict is returned and lists are
-    overwritten by the override value.
-    """
+    """Deep merge override into base; mutate=True merges in-place and concatenates lists, False returns new dict."""
     if mutate:
         for k, v in override.items():
             if k in base and isinstance(base[k], dict) and isinstance(v, dict):

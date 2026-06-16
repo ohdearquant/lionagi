@@ -60,38 +60,7 @@ def fuzzy_validate_mapping(
     strict: bool = False,
     suppress_conversion_errors: bool = False,
 ) -> dict[str, Any]:
-    """
-    Validate and correct any input into a dictionary with expected keys.
-
-    Args:
-        d: Input to validate. Can be:
-            - Dictionary
-            - JSON string or markdown code block
-            - XML string
-            - Object with to_dict/model_dump method
-            - Any type convertible to dictionary
-        keys: List of expected keys or dictionary mapping keys to types.
-        similarity_algo: String similarity algorithm or custom function.
-        similarity_threshold: Minimum similarity score for fuzzy matching.
-        fuzzy_match: If True, use fuzzy matching for key correction.
-        handle_unmatched: How to handle unmatched keys:
-            - "ignore": Keep unmatched keys
-            - "raise": Raise error for unmatched keys
-            - "remove": Remove unmatched keys
-            - "fill": Fill missing keys with default values
-            - "force": Combine "fill" and "remove" behaviors
-        fill_value: Default value for filling unmatched keys.
-        fill_mapping: Dictionary mapping keys to default values.
-        strict: Raise error if any expected key is missing.
-        suppress_conversion_errors: Return empty dict on conversion errors.
-
-    Returns:
-        Validated and corrected dictionary.
-
-    Raises:
-        ValueError: If input cannot be converted or validation fails.
-        TypeError: If input types are invalid.
-    """
+    """Convert any dict-like input, then fuzzy-match its keys against keys; returns corrected dict."""
     if d is None:
         raise TypeError("Input cannot be None")
 

@@ -172,10 +172,7 @@ class Reason(HashableModel):
 
 
 class ActionRequestModel(HashableModel):
-    """
-    Captures a single action request, typically from a user or system message.
-    Includes the name of the function and the arguments to be passed.
-    """
+    """A single action request: function name and arguments to execute."""
 
     function: str | None = Field(
         None,
@@ -199,12 +196,7 @@ class ActionRequestModel(HashableModel):
 
     @field_validator("arguments", mode="before")
     def validate_arguments(cls, value: Any) -> dict[str, Any]:
-        """
-        Coerce arguments into a dictionary if possible, recursively.
-
-        Raises:
-            ValueError if the data can't be coerced.
-        """
+        """Coerce arguments to dict recursively; raises ValueError if impossible."""
         return to_dict(
             value,
             fuzzy_parse=True,
@@ -214,9 +206,7 @@ class ActionRequestModel(HashableModel):
 
     @field_validator("function", mode="before")
     def validate_function(cls, value: str) -> str:
-        """
-        Ensure the function name is a valid non-empty string (if provided).
-        """
+        """Ensure function name is a valid non-empty string if provided."""
         from lionagi.libs.validate.common_field_validators import (
             validate_nullable_string_field,
         )
@@ -225,12 +215,7 @@ class ActionRequestModel(HashableModel):
 
     @classmethod
     def create(cls, content: str):
-        """
-        Attempt to parse a string (usually from a conversation or JSON) into
-        one or more ActionRequestModel instances.
-
-        If no valid structure is found, returns an empty list.
-        """
+        """Parse a string or JSON into ActionRequestModel instances; returns [] if nothing valid found."""
 
         def parse_action_request(content: str | dict) -> list[dict]:
             json_blocks = []
@@ -288,10 +273,7 @@ class ActionRequestModel(HashableModel):
 
 
 class ActionResponseModel(HashableModel):
-    """
-    Encapsulates a function's output after being called. Typically
-    references the original function name, arguments, and the result.
-    """
+    """A function's output after execution: function name, arguments, and result."""
 
     function: str = Field(default_factory=str, title="Function")
     arguments: dict[str, Any] = Field(default_factory=dict)

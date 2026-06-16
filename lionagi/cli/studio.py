@@ -383,14 +383,7 @@ def _is_build_stale(frontend_dir: Path) -> bool:
 
 
 def _needs_npm_install(frontend_dir: Path) -> bool:
-    """True when npm install must be run before building.
-
-    Triggers when:
-    - node_modules/ is absent entirely, or
-    - node_modules/.bin/vite is absent (Vite not installed), or
-    - package.json or package-lock.json is newer than the install marker
-      (node_modules/.package-lock.json, falling back to node_modules/ mtime).
-    """
+    """True when node_modules/ is missing, Vite is not installed, or package.json is newer than the install marker."""
     node_modules = frontend_dir / "node_modules"
     if not node_modules.exists():
         return True

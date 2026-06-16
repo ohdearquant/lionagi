@@ -39,14 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _stream_with_deadline(model, api_call, deadline: float | None):
-    """Iterate model.stream(api_call) enforcing an optional wall-clock deadline.
-
-    Each ``__anext__`` call is wrapped individually with ``anyio.fail_after``
-    so the cancel scope is entered and exited before every ``yield``.  This
-    means the scope is never open across a suspension point visible to the
-    caller, which is safe for both asyncio and Trio backends.
-    Without a deadline the function is a plain transparent passthrough.
-    """
+    """Iterate model.stream(api_call) with per-__anext__ anyio cancel scope; transparent passthrough when deadline is None."""
     stream_iter = model.stream(api_call=api_call).__aiter__()
     while True:
         try:
@@ -67,27 +60,11 @@ async def run(
     branch: Branch,
     instruction: JsonValue | Instruction,
     param: RunParam,
-) -> AsyncGenerator[RoledMessage, None]:
-    """Stream a CLI-backed model turn, yielding messages as they arrive.
+) -> AsyncGenerator[RoledMessage]:
+    """Stream a CLI-backed model turn, yielding Instruction/AssistantResponse/ActionRequest/ActionResponse messages.
 
-    Lifecycle contract
-    ------------------
-    * A run starts when the consumer receives the first yielded ``Instruction``
-      message (not when the generator object is created — the body does not
-      execute until the first ``__anext__``).
-    * Exactly one terminal signal is emitted per ``RunStart``:
-      - ``RunEnd``    on clean completion *or* consumer abandonment
-        (``GeneratorExit`` via ``aclose()`` / ``break``).
-      - ``RunFailed`` on any other exception (including ``TimeoutError``).
-    * ``GeneratorExit`` is always re-raised after cleanup so the runtime can
-      finish generator teardown — it is never swallowed.
-    * Lifecycle emission is suppressed when the task-scoped
-      ``suppress_lifecycle_var`` ContextVar is ``True``; ``Branch.ReAct()``
-      sets this via ``ContextVar.set()`` so that the multiple nested ``run()``
-      calls inside a ReAct turn do not emit extra signals on top of the single
-      outer ``RunStart`` / ``RunEnd`` the ReAct wrapper emits.  Because asyncio
-      copies the context per task, concurrent runs on the same branch are not
-      affected by each other's suppression state.
+    Emits exactly one RunEnd (clean exit or consumer abandon) or RunFailed per RunStart.
+    suppress_lifecycle_var suppresses nested signals inside Branch.ReAct() turns.
     """
     if not param._is_sentinel(param.imodel):
         branch.chat_model = param.imodel
@@ -104,19 +81,11 @@ async def run(
     ins, kw = _prepare_run_kwargs(branch, instruction, param)
     await branch.msgs.a_add_message(instruction=ins)
 
-    # Lifecycle emission: honour the task-scoped suppression flag set by
-    # Branch.ReAct() so that nested run() calls inside a ReAct turn do not emit
-    # extra RunStart / RunEnd signals on top of the outer ones the ReAct wrapper
-    # already emits.  Using a ContextVar (copied per asyncio task) ensures
-    # concurrent runs on the same branch never suppress each other's signals.
     from lionagi.session._lifecycle_ctx import suppress_lifecycle_var
 
     _suppress_lifecycle = suppress_lifecycle_var.get()
     has_observer = branch._observer is not None and not _suppress_lifecycle
 
-    # _run_exc captures the exception (if any) so the outer finally can emit
-    # the correct terminal signal.  _terminal_emitted prevents double-emission
-    # when GeneratorExit is handled explicitly then the outer finally also runs.
     _run_exc: BaseException | None = None
     _terminal_emitted: bool = False
 
@@ -128,9 +97,6 @@ async def run(
         except Exception:
             logger.exception("run: observer raised during RunStart emission; run proceeds normally")
 
-    # The entire observable lifetime — from after RunStart through the terminal
-    # signal — is protected by this outer try/finally so consumer abandonment
-    # (GeneratorExit via break or aclose()) always produces a terminal signal.
     try:
         yield ins
 
@@ -143,9 +109,7 @@ async def run(
         bfp = None
 
         if param.stream_persist:
-            # Branch snapshot lives in snapshot_dir (when set) so it lands
-            # where find_branch() looks; the streaming buffer always lives
-            # next to the rest of the run-time chunks under persist_dir.
+            # snapshot_dir for find_branch() lookups; persist_dir for the live JSONL buffer
             snapshot_dir = param.snapshot_dir or param.persist_dir
             fp = await acreate_path(
                 snapshot_dir,
@@ -156,7 +120,6 @@ async def run(
             async with await anyio.open_file(fp, "w") as f:
                 await f.write(json_dumps(branch.to_dict()))
 
-            # JSONL buffer for real-time monitoring
             bfp = await acreate_path(
                 param.persist_dir,
                 str(branch.id) + ".buffer",
@@ -164,7 +127,6 @@ async def run(
                 file_exist_ok=True,
             )
 
-            # Inject streaming persist into imodel's chunk processor
             async def _persist_chunk(chunk):
                 if hasattr(chunk, "to_dict"):
                     async with await anyio.open_file(bfp, "a") as f:
@@ -179,20 +141,10 @@ async def run(
 
             model.streaming_process_func = _persist_chunk
 
-        # Signal emission is now universal: every a_add_message below fires the
-        # branch's on_message_added hook, which schedules the bus emission in the
-        # background (branch._signal_tasks) and is drained in `finally`. The
-        # stream loop only polls control between chunks (_check_control).
-
-        # Accumulation buffers
         thinking_parts: list[str] = []
         text_parts: list[str] = []
-        # Provider-reported usage/cost from the terminal ``result`` chunk
-        # (codex: input/output tokens; claude_code: usage, total_cost_usd,
-        # num_turns, duration_ms). Captured once at stream end and stamped onto
-        # the final AssistantResponse so callers (Studio cost tracking, the
-        # orchestration benchmark) can read real CLI usage — re-tokenizing the
-        # message history undercounts the agent's internal tool turns.
+        # Provider-reported usage from the terminal "result" chunk (codex: tokens; claude_code: cost/turns/duration).
+        # Stamped onto the final AssistantResponse; re-tokenizing message history undercounts internal tool turns.
         result_meta: dict = {}
 
         async def _flush_response() -> AssistantResponse | None:
@@ -218,13 +170,7 @@ async def run(
 
         pending_requests: dict[str, ActionRequest] = {}
 
-        # Extract caller-supplied wall-clock timeout (seconds). The CLI-provider
-        # stream loops are unbounded — without an outer deadline the codex /
-        # claude_code subprocess can run indefinitely even when the caller
-        # passed ``Branch.operate(timeout=N)`` or ``li agent --timeout N``.
-        # ``None`` / 0 / negative disables enforcement (back-compat with existing
-        # callers that never set a timeout). The downstream provider does NOT
-        # consume ``timeout`` — pop it so it doesn't pollute create_event kwargs.
+        # Pop timeout before create_event — CLI providers don't consume it; None/0/negative disables enforcement.
         _timeout = kw.pop("timeout", None)
         _stream_deadline: float | None = None
         if isinstance(_timeout, int | float) and _timeout > 0:
@@ -236,9 +182,6 @@ async def run(
 
         try:
             try:
-                # _stream_with_deadline wraps each individual __anext__ call so the
-                # cancel scope is closed before any yield — safe on both asyncio and
-                # Trio (no scope open across a suspension point the caller can close).
                 async for chunk in _stream_with_deadline(model, api_call, _stream_deadline):
                     match chunk.type:
                         case "system":
@@ -332,15 +275,7 @@ async def run(
                 # terminal signal; re-raise here so the outer try sees it too.
                 raise
             except RuntimeError as _exc:
-                # Provider subprocess failures (e.g. ndjson_from_cli raises
-                # RuntimeError(stderr) on nonzero exit) propagate here as plain
-                # RuntimeError.  Classify them so callers can distinguish quota,
-                # auth, and context-length failures from generic errors.
-                #
-                # Guard: ProviderError is already a RuntimeError subclass, so
-                # `except RuntimeError` catches it too.  Avoid double-wrapping
-                # by checking isinstance first; if already classified, propagate
-                # unchanged so the richer type is preserved for the caller.
+                # ProviderError is a RuntimeError subclass — avoid double-wrapping; re-raise if already classified.
                 from lionagi.providers._provider_errors import ProviderError
 
                 if isinstance(_exc, ProviderError):
@@ -353,11 +288,7 @@ async def run(
                 _run_exc = _exc
                 raise
         finally:
-            # Restore runtime state first — this must succeed even if lifecycle
-            # emission below raises.
             model.streaming_process_func = prev_stream_func
-
-            # Persist branch state on any exit path.
             if param.stream_persist:
                 snapshot_dir = param.snapshot_dir or param.persist_dir
                 fp = await acreate_path(
@@ -374,11 +305,7 @@ async def run(
                         await bfp_path.unlink()
 
     except GeneratorExit:
-        # GeneratorExit arrives here if:
-        #   (a) consumer called aclose() / break before model was assigned, or
-        #   (b) the inner finally re-raised it.
-        # Emit RunEnd (clean abandonment) then re-raise so the runtime can
-        # complete generator teardown.  GeneratorExit must never be suppressed.
+        # GeneratorExit must never be suppressed — emit RunEnd then re-raise for runtime teardown.
         await branch.drain_signals()
         if has_observer and not _terminal_emitted:
             _terminal_emitted = True
@@ -390,10 +317,7 @@ async def run(
                 logger.exception("run: observer raised during RunEnd emission on GeneratorExit")
         raise
     finally:
-        # This finally runs on every exit path EXCEPT GeneratorExit (which
-        # propagates through the except above before reaching here on Python ≥3.11;
-        # on earlier versions the finally also runs — _terminal_emitted guards
-        # against double emission in that case).
+        # _terminal_emitted guards against double emission on Python <3.11 where finally also runs after GeneratorExit.
         await branch.drain_signals()
 
         if has_observer and not _terminal_emitted:
@@ -431,13 +355,7 @@ async def run_and_collect(
     clear_messages: bool = False,
     skip_validation: bool = False,
 ) -> Any:
-    """Stream via run(), accumulate assistant text, optionally parse.
-
-    Satisfies the ``Middle`` protocol for operate(). Stream the model,
-    collect assistant text across chunks, then parse via ``parse_param``
-    if a response_format is set. ``clear_messages`` clears branch
-    messages before the turn.
-    """
+    """Middle-protocol implementation for CLI endpoints: stream via run(), accumulate assistant text, optionally parse."""
     if clear_messages:
         branch.msgs.clear_messages()
 
@@ -464,7 +382,6 @@ async def run_and_collect(
     if parse_param is None or parse_param.response_format is None:
         return full_text
 
-    # Pull structure from the instruction message
     from lionagi.operations.schema.structure import Structure
 
     if not isinstance(parse_param.structure, Structure) and ins_msg is not None:

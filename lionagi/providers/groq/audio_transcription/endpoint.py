@@ -7,21 +7,7 @@ from .._config import GroqConfigs
 
 @GroqConfigs.AUDIO_TRANSCRIPTION.register
 class GroqAudioTranscriptionEndpoint(Endpoint):
-    """Groq Whisper transcription endpoint.
-
-    Groq supports the Whisper model for fast audio transcription.
-    Uses multipart/form-data — pass ``file`` bytes and ``filename`` via kwargs.
-
-    Usage::
-
-        endpoint = GroqAudioTranscriptionEndpoint()
-        with open("audio.mp3", "rb") as f:
-            result = await endpoint.call(
-                {"model": "whisper-large-v3"},
-                file=f.read(),
-                filename="audio.mp3",
-            )
-    """
+    """Groq Whisper transcription endpoint; sends audio as multipart/form-data."""
 
     transport_arg_keys = ("file", "filename")
 
@@ -35,7 +21,6 @@ class GroqAudioTranscriptionEndpoint(Endpoint):
         super().__init__(config, **kwargs)
 
     async def _call(self, payload: dict, headers: dict, **kwargs):
-        """Encode audio as multipart/form-data."""
         self._assert_ssrf_safe_url()
 
         import aiohttp

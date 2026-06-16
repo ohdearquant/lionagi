@@ -191,7 +191,7 @@ class Execution:
 
 
 class _EventQuery:
-    """Field handles for querying event state via Event.q.{field}."""
+    """Field handles for Event.q.{field} filter expressions."""
 
     _PATHS: ClassVar[dict[str, str]] = {
         "status": "execution.status",

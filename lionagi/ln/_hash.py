@@ -130,21 +130,7 @@ def _generate_hashable_representation(item: Any) -> Any:
 
 
 def hash_obj(data: Any, strict: bool = False) -> int:
-    """Generate stable int hash for Python __hash__() protocol.
-
-    Use for: set/dict membership, deduplication, __hash__ implementations.
-    NOT for: cryptographic integrity, content verification (use compute_hash).
-
-    Args:
-        data: Any data structure (dicts, lists, Pydantic models, nested).
-        strict: Deep-copy data before hashing to prevent mutation effects.
-
-    Returns:
-        Stable int hash suitable for hash-based collections.
-
-    Raises:
-        TypeError: If generated representation is not hashable.
-    """
+    """Stable int hash for set/dict membership; use compute_hash for cryptographic integrity."""
     _lazy.ensure(_do_init)
 
     data_to_process = data
@@ -197,22 +183,7 @@ def compute_hash(
     algorithm: HashAlgorithm = HashAlgorithm.SHA256,
     none_as_valid: bool = False,
 ) -> str:
-    """Compute cryptographic hash for content integrity verification.
-
-    Use for: content integrity, tamper detection, evidence chains.
-    NOT for: __hash__ protocol, set/dict membership (use hash_obj).
-
-    Args:
-        obj: Data to hash (dict, str, bytes, or JSON-serializable).
-        algorithm: Hash algorithm (default SHA-256).
-        none_as_valid: Treat None as valid input (hashes as "null").
-
-    Returns:
-        Hex-encoded hash digest string.
-
-    Raises:
-        ValueError: If payload exceeds MAX_HASH_INPUT_BYTES (10MB).
-    """
+    """Cryptographic hash for content integrity; use hash_obj for __hash__ protocol. Raises ValueError if payload >10MB."""
     payload: bytes
     if none_as_valid and obj is None:
         payload = b"null"
@@ -235,17 +206,6 @@ def compute_chain_hash(
     previous_hash: str | None = None,
     algorithm: HashAlgorithm = HashAlgorithm.SHA256,
 ) -> str:
-    """Compute chain hash linking current entry to previous.
-
-    Formula: HASH("{payload_hash}:{previous_hash or 'GENESIS'}")
-
-    Args:
-        payload_hash: Hash of current entry's payload.
-        previous_hash: Hash of previous entry (None for genesis entry).
-        algorithm: Hash algorithm to use.
-
-    Returns:
-        Hex-encoded chain hash for tamper-evident linking.
-    """
+    """Hash of ``"{payload_hash}:{previous_hash|GENESIS}"`` for tamper-evident chain linking."""
     chain_input = f"{payload_hash}:{previous_hash or GENESIS_HASH}"
     return compute_hash(chain_input, algorithm)

@@ -23,28 +23,7 @@ P = TypeVar("P", bound=Progression)
 
 
 class Flow(Element, Generic[E, P]):
-    """Workflow state container pairing items (Pile) with named progressions.
-
-    Progressions reference items by UUID. Referential integrity is
-    validated: every UUID in a progression must exist in the items pile.
-
-    Thread Safety:
-        Flow methods are protected by ``_lock`` (an ``RLock``).
-        The lock ordering invariant is: **Flow._lock > Pile._lock** —
-        always acquire Flow's lock before any child Pile lock.  Since
-        ``_lock`` is reentrant, internal methods that call other locked
-        Flow methods (e.g. ``add_item`` → ``get_progression``) are safe
-        within the same thread.
-
-        **Do not mutate** ``flow.items`` or ``flow.progressions``
-        directly from external code in a concurrent context — use the
-        Flow methods instead, which hold the lock.
-
-    Attributes:
-        name: Optional flow identifier.
-        items: Element storage (Pile[E]).
-        progressions: Named UUID sequences (Pile[P]).
-    """
+    """Workflow state: item Pile + named Progressions with referential integrity and RLock."""
 
     name: str | None = Field(
         default=None,
@@ -83,12 +62,7 @@ class Flow(Element, Generic[E, P]):
     # ==================== Serialization ====================
 
     def to_dict(self, mode="python", **kw):
-        """Override to properly serialize nested Piles.
-
-        Ensures ``items`` and ``progressions`` are serialized via their
-        own ``to_dict`` so that ``lion_class`` metadata is preserved for
-        polymorphic deserialization.
-        """
+        """Serialize with nested Pile.to_dict() to preserve lion_class for polymorphic round-trips."""
         if mode == "python":
             dict_ = self._to_dict(**kw)
             dict_["items"] = self.items.to_dict()
@@ -98,7 +72,7 @@ class Flow(Element, Generic[E, P]):
 
     @classmethod
     def _coerce_pile(cls, value: Any) -> Pile:
-        """Convert a dict, list, or Pile into a Pile instance."""
+        """Coerce dict, list, or Pile to a Pile instance."""
         if isinstance(value, Pile):
             return value
         if isinstance(value, dict):
@@ -109,16 +83,7 @@ class Flow(Element, Generic[E, P]):
 
     @classmethod
     def from_dict(cls, data: dict) -> Flow:
-        """Deserialize from dict with proper Pile reconstruction.
-
-        Pydantic V2 cannot round-trip Pile fields through
-        ``model_validate`` because Pile uses custom
-        ``__pydantic_extra__``/``__pydantic_private__`` hooks that
-        conflict with nested-model validation.  This method
-        reconstructs Pile objects explicitly, then uses
-        ``model_construct`` to assemble the Flow, followed by manual
-        referential-integrity validation and index rebuilding.
-        """
+        """Deserialize from dict; reconstructs Pile fields explicitly (model_validate can't round-trip them)."""
         data = data.copy()
         metadata = data.pop("metadata", {})
         metadata.pop("lion_class", None)
@@ -156,15 +121,7 @@ class Flow(Element, Generic[E, P]):
     # ==================== Progression Management ====================
 
     def add_progression(self, progression: P) -> None:
-        """Add progression with name uniqueness and referential integrity.
-
-        Args:
-            progression: Progression to add.
-
-        Raises:
-            ItemExistsError: If name already registered.
-            ItemNotFoundError: If progression contains UUIDs not in items.
-        """
+        """Add progression; raises ItemExistsError on duplicate name, ItemNotFoundError on missing items."""
         with self._lock:
             if progression.name and progression.name in self._progression_names:
                 raise ItemExistsError(f"Progression with name '{progression.name}' already exists.")
@@ -179,14 +136,7 @@ class Flow(Element, Generic[E, P]):
                 self._progression_names[progression.name] = progression.id
 
     def remove_progression(self, key: UUID | str | P) -> None:
-        """Remove progression by UUID or name.
-
-        Args:
-            key: UUID, name string, or Progression instance.
-
-        Raises:
-            ItemNotFoundError: If progression not found.
-        """
+        """Remove progression by UUID, name, or instance; raises ItemNotFoundError if absent."""
         with self._lock:
             if isinstance(key, str) and key in self._progression_names:
                 uid = self._progression_names.pop(key)
@@ -200,17 +150,7 @@ class Flow(Element, Generic[E, P]):
             self.progressions.pop(uid)
 
     def get_progression(self, key: UUID | str | P) -> P:
-        """Get progression by UUID or name.
-
-        Args:
-            key: UUID, name string, or Progression instance.
-
-        Returns:
-            Matching progression.
-
-        Raises:
-            ItemNotFoundError: If not found.
-        """
+        """Return progression by UUID, name, or instance; raises ItemNotFoundError if absent."""
         with self._lock:
             if isinstance(key, str) and key in self._progression_names:
                 uid = self._progression_names[key]
@@ -233,16 +173,7 @@ class Flow(Element, Generic[E, P]):
         item: E,
         progressions: list[UUID | str | P] | UUID | str | P | None = None,
     ) -> None:
-        """Add item and optionally append to progressions.
-
-        Args:
-            item: Element to add.
-            progressions: Progression(s) to append item to (by instance, UUID, or name).
-
-        Raises:
-            ItemExistsError: If item UUID already in pile.
-            KeyError: If any progression not found.
-        """
+        """Add item to the pile and optionally append it to named progressions."""
         with self._lock:
             resolved: list[P] = []
             if progressions is not None:
@@ -263,14 +194,7 @@ class Flow(Element, Generic[E, P]):
                 prog.append(item)
 
     def remove_item(self, item_id: UUID | str | Element) -> None:
-        """Remove item from storage and all progressions.
-
-        Args:
-            item_id: UUID, UUID string, or Element instance.
-
-        Raises:
-            ItemNotFoundError: If item not in pile.
-        """
+        """Remove item from the pile and all progressions; raises ItemNotFoundError if absent."""
         with self._lock:
             uid = ID.get_id(item_id)
 

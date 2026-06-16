@@ -1,25 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""AG2 beta Agent endpoint for lionagi.
-
-Wraps autogen.beta.Agent as a lionagi agentic endpoint.
-Events from the beta stream are converted to StreamChunks.
-
-Pre-built agent passthrough
----------------------------
-Pass a pre-constructed ``autogen.beta.Agent`` object via
-``AG2AgentRequest.agent`` (or the ``"agent"`` key in a dict request) to
-bypass the config-driven ``Agent(**kwargs)`` construction that normally
-happens on every call.  When ``agent`` is provided it takes precedence over
-``agent_config``; ``agent_config`` is silently ignored and a log message is
-emitted.  This allows reuse of agents with expensive initialization (custom
-tools, observers, populated knowledge stores) across many ``stream()`` calls
-while preserving their accumulated state.
-
-When neither ``agent`` nor ``agent_config`` is supplied a ``ValueError`` is
-raised, preserving the existing validation behavior.
-"""
+"""AG2 beta Agent endpoint: wraps autogen.beta.Agent and streams events as StreamChunks."""
 
 from __future__ import annotations
 
@@ -40,11 +22,7 @@ logger = logging.getLogger(__name__)
 
 @AG2Configs.AGENT.register
 class AG2BetaEndpoint(AgenticEndpoint):
-    """Wraps AG2 beta Agent as a lionagi endpoint.
-
-    Single-agent execution with full middleware stack:
-    tools, observers, policies, knowledge, subtasks.
-    """
+    """Wraps AG2 beta Agent as a lionagi agentic endpoint; stream-only."""
 
     DEFAULT_CONCURRENCY_LIMIT = 1
     DEFAULT_QUEUE_CAPACITY = 3

@@ -13,15 +13,7 @@ if TYPE_CHECKING:
 
 
 class Operative:
-    """Framework-agnostic operation handler using Spec/Operable system.
-
-    Manages request/response field specifications, delegating framework-specific
-    operations to adapters. Single source of truth pattern with one Operable
-    containing all fields.
-
-    Architecture:
-        Spec Definition → Operable Collection → Adapter → Framework Model
-    """
+    """Operation handler: one Operable as single source of truth, delegates field materialization to an adapter."""
 
     def __init__(
         self,
@@ -34,18 +26,6 @@ class Operative:
         operable: Operable | None = None,
         request_exclude: set[str] | None = None,
     ):
-        """Initialize Operative with a single immutable Operable.
-
-        Args:
-            name: Operation name
-            adapter: Validation framework ("pydantic" only for now)
-            strict: If True, raise on validation errors
-            auto_retry_parse: Auto-retry validation with fuzzy matching
-            max_retries: Maximum validation retry attempts
-            base_type: Base Pydantic model to extend
-            operable: Single Operable with all fields
-            request_exclude: Fields to exclude from request (e.g., {"action_responses"})
-        """
         self.name = name or (base_type.__name__ if base_type else "Operative")
         self.adapter = adapter
         self.strict = strict
@@ -67,7 +47,6 @@ class Operative:
         self._should_retry = None
 
     def _get_adapter(self):
-        """Get adapter class for current adapter type."""
         if self.adapter == "pydantic":
             from lionagi.adapters.spec_adapters import PydanticSpecAdapter
 
@@ -76,7 +55,7 @@ class Operative:
             raise ValueError(f"Unsupported adapter: {self.adapter}")
 
     def create_request_model(self) -> type:
-        """Materialize request specs into model (excluding certain fields)."""
+        """Materialize request specs into a Pydantic model, excluding ``request_exclude`` fields."""
         if self._request_model_cls:
             return self._request_model_cls
 
@@ -89,15 +68,13 @@ class Operative:
         return self._request_model_cls
 
     def create_response_model(self) -> type:
-        """Materialize all specs into response model."""
+        """Materialize all specs into a response model (superset of request model)."""
         if self._response_model_cls:
             return self._response_model_cls
 
-        # Ensure request model exists first
         if not self._request_model_cls:
             self.create_request_model()
 
-        # Response model uses ALL fields and inherits from request
         self._response_model_cls = self.operable.create_model(
             adapter=self.adapter,
             model_name=f"{self.name}Response",
@@ -107,15 +84,7 @@ class Operative:
         return self._response_model_cls
 
     def validate_response(self, text: str, strict: bool | None = None) -> Any:
-        """Validate response text using adapter.
-
-        Args:
-            text: Raw response text
-            strict: If True, raise on validation errors
-
-        Returns:
-            Validated model instance or None
-        """
+        """Validate raw response text; returns model instance or None on failure (raises if strict)."""
         strict = self.strict if strict is None else strict
 
         if not self._response_model_cls:
@@ -160,15 +129,7 @@ class Operative:
             return None
 
     def update_response_model(self, text: str | None = None, data: dict | None = None) -> Any:
-        """Update response model from text or dict.
-
-        Args:
-            text: Raw response text to validate
-            data: Dictionary updates to merge
-
-        Returns:
-            Updated model instance or raw data
-        """
+        """Update response model from raw text or a dict of field overrides; returns updated model or raw data."""
         if text is None and data is None:
             raise ValueError("Either text or data must be provided")
 
@@ -186,14 +147,12 @@ class Operative:
 
     @property
     def request_type(self) -> type | None:
-        """Get request model type."""
         if not self._request_model_cls:
             self.create_request_model()
         return self._request_model_cls
 
     @property
     def response_type(self) -> type | None:
-        """Get response model type."""
         if not self._response_model_cls:
             self.create_response_model()
         return self._response_model_cls

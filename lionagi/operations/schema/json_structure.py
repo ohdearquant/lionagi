@@ -26,10 +26,7 @@ _DEFAULT_FUZZY = FuzzyMatchKeysParams(
 
 
 class JsonStructure(Structure):
-    """JSON-format structure using lionagi's established rendering and parsing.
-
-    Handles both BaseModel and dict response formats.
-    """
+    """JSON-format structure; renders to fenced JSON prompt and parses LLM output back to model or dict."""
 
     def render(self) -> str:
         if self.is_dict_mode:

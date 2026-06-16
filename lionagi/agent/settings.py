@@ -1,33 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Load agent settings from .lionagi/settings.yaml — global + project-local merge.
-
-Settings resolution (project-local wins, only when trust_project_settings=True):
-    1. ~/.lionagi/settings.yaml        (global defaults, always loaded)
-    2. .lionagi/settings.yaml          (project-local, requires explicit trust)
-
-Hook configuration format::
-
-    hooks:
-      pre:
-        bash:
-          - command: ["python", "~/.lionagi/hooks/guard.py"]
-          - python: "lionagi.agent.hooks:guard_destructive"
-        "*":
-          - python: "lionagi.agent.hooks:custom_guard"
-      post:
-        editor:
-          - command: ["ruff", "format", "{file_path}"]
-        "*":
-          - python: "lionagi.agent.hooks:log_tool_use"
-      on_error:
-        "*":
-          - python: "lionagi.agent.hooks:error_reporter"
-
-Note: shell hook commands must be argv lists, not shell strings.
-Python hook modules must be in the trusted_hook_modules allowlist.
-"""
+"""Load and merge agent settings from global + project-local .lionagi/settings.yaml."""
 
 from __future__ import annotations
 
@@ -62,13 +36,7 @@ def load_settings(
     *,
     include_project: bool = True,
 ) -> dict[str, Any]:
-    """Load and merge settings from global + project-local .lionagi/settings.yaml.
-
-    Args:
-        project_dir: Project root for settings resolution. Auto-detected if None.
-        include_project: If False, skip project-local settings entirely (safer default
-            for untrusted project directories).
-    """
+    """Load and merge ~/.lionagi/settings.yaml with project-local override; auto-detects cwd."""
     merged: dict[str, Any] = {}
 
     global_path = Path.home() / ".lionagi" / "settings.yaml"
@@ -105,16 +73,7 @@ def apply_hooks_from_settings(
     *,
     trusted_hook_modules: set[str] | frozenset[str] | None = None,
 ) -> AgentSpec:
-    """Apply hook configuration from settings dict to an AgentSpec.
-
-    Resolves hook specs (shell commands, Python import paths) into callables
-    and registers them on the config.
-
-    Args:
-        trusted_hook_modules: Python module paths allowed for import-based hooks.
-            Defaults to {"lionagi.agent.hooks"}. Set to a wider set only for
-            explicitly trusted project contexts.
-    """
+    """Resolve hook specs from settings and register them on the AgentSpec; returns config."""
     if settings is None:
         settings = load_settings()
 
@@ -148,13 +107,7 @@ def _resolve_hook_spec(
     tool_name: str,
     trusted_hook_modules: set[str] | frozenset[str],
 ) -> Callable | None:
-    """Resolve a hook spec into an async callable.
-
-    Spec formats:
-        {"python": "module.path:function_name"}  → import and return (allowlisted only)
-        {"command": ["prog", "arg", "{file_path}"]}  → wrap in async argv executor
-        "module.path:function_name"               → shorthand for python import
-    """
+    """Resolve a hook spec dict or import-path string to an async callable."""
     if isinstance(spec, str):
         return _import_hook(spec, trusted_hook_modules=trusted_hook_modules)
 
@@ -216,11 +169,7 @@ async def _wait_proc(proc: asyncio.subprocess.Process, grace: float = 2.0) -> No
 
 
 def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) -> Callable:
-    """Create an async hook that runs a shell command via argv list (shell=False).
-
-    Pre-hooks: args passed as JSON on stdin. Non-zero exit = PermissionError.
-    Post-hooks: result passed as JSON on stdin. Stdout captured but ignored.
-    """
+    """Create an async hook running an argv command; pre-hooks raise PermissionError on non-zero exit."""
     if not isinstance(command_template, list) or not all(
         isinstance(x, str) for x in command_template
     ):

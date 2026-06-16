@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Prompt fragments used by orchestration patterns.
-
-Role *behaviour* lives in the casts roles (each role's ``body``); these are the
-small orchestration-level framings that sit on top — how to plan, synthesize,
-and grow the DAG. Kept here so they are curated in one place rather than inlined.
-"""
+"""Prompt fragments for orchestration: planning, synthesis, spawn guidance, and decomposition."""
 
 from __future__ import annotations
 

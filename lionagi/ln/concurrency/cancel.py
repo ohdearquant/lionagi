@@ -26,18 +26,7 @@ __all__ = (
 
 @contextmanager
 def fail_after(seconds: float | None) -> Iterator[CancelScope]:
-    """Create a context with a timeout that raises TimeoutError on expiry.
-
-    Args:
-        seconds: Timeout duration in seconds. None means no timeout
-            (but still cancellable by outer scopes).
-
-    Yields:
-        CancelScope that can be cancelled after the timeout.
-
-    Raises:
-        TimeoutError: If the timeout expires before the block completes.
-    """
+    """Context manager that raises TimeoutError after seconds (None = no timeout, still cancellable)."""
     if seconds is None:
         # No timeout, but still cancellable by outer scopes
         with CancelScope() as scope:
@@ -49,15 +38,7 @@ def fail_after(seconds: float | None) -> Iterator[CancelScope]:
 
 @contextmanager
 def move_on_after(seconds: float | None) -> Iterator[CancelScope]:
-    """Create a context with a timeout that silently cancels on expiry.
-
-    Args:
-        seconds: Timeout duration in seconds. None means no timeout
-            (but still cancellable by outer scopes).
-
-    Yields:
-        CancelScope with cancelled_caught attribute to check if timeout occurred.
-    """
+    """Context manager that silently cancels after seconds; check scope.cancelled_caught on exit."""
     if seconds is None:
         # No timeout, but still cancellable by outer scopes
         with CancelScope() as scope:
@@ -69,18 +50,7 @@ def move_on_after(seconds: float | None) -> Iterator[CancelScope]:
 
 @contextmanager
 def fail_at(deadline: float | None) -> Iterator[CancelScope]:
-    """Create a context that raises TimeoutError at an absolute deadline.
-
-    Args:
-        deadline: Absolute monotonic timestamp for timeout.
-            None means no timeout (but still cancellable).
-
-    Yields:
-        CancelScope that expires at the specified deadline.
-
-    Raises:
-        TimeoutError: If the deadline is reached before the block completes.
-    """
+    """Like fail_after but takes an absolute monotonic deadline instead of a duration."""
     if deadline is None:
         # No timeout, but still cancellable by outer scopes
         with CancelScope() as scope:
@@ -94,15 +64,7 @@ def fail_at(deadline: float | None) -> Iterator[CancelScope]:
 
 @contextmanager
 def move_on_at(deadline: float | None) -> Iterator[CancelScope]:
-    """Create a context that silently cancels at an absolute deadline.
-
-    Args:
-        deadline: Absolute monotonic timestamp for timeout.
-            None means no timeout (but still cancellable).
-
-    Yields:
-        CancelScope with cancelled_caught attribute to check if deadline was reached.
-    """
+    """Like move_on_after but takes an absolute monotonic deadline instead of a duration."""
     if deadline is None:
         # No timeout, but still cancellable by outer scopes
         with CancelScope() as scope:
@@ -115,14 +77,6 @@ def move_on_at(deadline: float | None) -> Iterator[CancelScope]:
 
 
 def effective_deadline() -> float | None:
-    """Return current effective deadline from enclosing cancel scopes.
-
-    Returns:
-        Absolute deadline time, -inf if already cancelled, or None if unlimited.
-
-    Note:
-        AnyIO uses +inf for "no deadline" and -inf for "already cancelled".
-        This function returns None for +inf but preserves -inf for detection.
-    """
+    """Innermost cancel scope deadline; None if unlimited, -inf if already cancelled."""
     d = anyio.current_effective_deadline()
     return None if d == _INF else d

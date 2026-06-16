@@ -213,11 +213,7 @@ async def _query_plays_for_show(db: Any, show_id: str) -> list[dict[str, Any]]:
 
 
 async def _find_entity(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | None:
-    """Try to resolve entity_id across all entity tables.
-
-    Returns (entity_type, row) or None if not found.
-    Uses exact match first, then prefix match.
-    """
+    """Resolve entity_id across all entity tables; returns (entity_type, row) or None."""
     searches = [
         ("session", "sessions"),
         ("invocation", "invocations"),

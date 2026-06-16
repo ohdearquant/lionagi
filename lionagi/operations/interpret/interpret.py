@@ -19,9 +19,7 @@ def prepare_interpret_kw(
     interpret_model: "iModel | None" = None,
     **kwargs,
 ) -> str:
-    """Interpret and refine user input into clearer prompts."""
-
-    # Build InterpretParam
+    """Build InterpretParam kwargs dict for interpret()."""
     intp_param = InterpretParam(
         domain=domain or "general",
         style=style or "concise",
@@ -40,7 +38,7 @@ async def interpret(
     text: str,
     intp_param: InterpretParam,
 ) -> str:
-    """Execute interpretation with context - clean implementation."""
+    """Rewrite raw user text into a clearer, explicit LLM prompt using InterpretParam settings."""
 
     from ..chat.chat import chat
 

@@ -1,24 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Hypothesis-driven development engine — the evidence-chain shape.
-
-Every architectural decision should be a hypothesis with evidence, not taste.
-This engine automates the pipeline that produces that evidence: a posted
-``FindingPosted`` is decomposed into ``QuestionRaised`` (the implicit choices);
-each question gathers ``EvidenceCollected`` and forms a ``HypothesisFormed``
-(or concludes directly as taste/theoretical); a hypothesis gets an
-``ExperimentDesigned``; executable experiments produce ``ResultRecorded``;
-results become ``ConclusionDrawn`` (empirical | quantitative | theoretical |
-taste); conclusions are mapped onto the decision register as
-``ApplicationMapped`` (supports | challenges | qualifies).
-
-Events reference each other by engine-assigned ids — the reference graph IS
-the audit trail (:func:`trace_chains` reconstructs it). Back-edges are first
-class: a result may post a new finding, a conclusion may raise a follow-up
-question — bounded by ``max_depth`` cycle generations and topic dedup. This is
-the *Chain* shape, complementing research's Tree and review's Dimensional.
-"""
+"""Hypothesis engine — Chain shape: finding → question → evidence → hypothesis → experiment → result → conclusion → application."""
 
 from __future__ import annotations
 
@@ -64,9 +47,7 @@ class ChainEvent(BaseModel):
 
 
 class FindingPosted(Finding, ChainEvent):
-    """An observation entering the pipeline — the casts ``Finding`` plus the
-    cycle generation and an optional upstream ref (set on back-edge findings
-    surfaced during validation)."""
+    """An observation entering the pipeline; extends Finding with cycle generation and an optional upstream ref."""
 
     gen: int = Field(default=0, description="Cycle generation — copy from your instruction.")
     parent_ref: str = Field(
@@ -75,9 +56,7 @@ class FindingPosted(Finding, ChainEvent):
 
 
 class QuestionRaised(Gap, ChainEvent):
-    """An implicit choice extracted from a finding — the casts ``Gap`` (area,
-    what_is_unknown) plus the alternatives that were rejected and the decision
-    it bears on."""
+    """An implicit choice extracted from a finding; extends Gap with rejected alternatives and a decision ref."""
 
     gen: int = Field(default=0, description="Cycle generation — copy from your instruction.")
     parent_ref: str = Field(default="", description="Id of the event that raised this question.")
@@ -91,8 +70,7 @@ class QuestionRaised(Gap, ChainEvent):
 
 
 class EvidenceCollected(Finding, ChainEvent):
-    """One piece of evidence for a question — the casts ``Finding`` plus the
-    question ref and the evidence kind."""
+    """One piece of evidence for a question; extends Finding with a question ref and evidence kind."""
 
     question_ref: str = Field(description="Id of the question this evidence addresses.")
     kind: str = Field(
@@ -137,9 +115,7 @@ class ResultRecorded(EngineEvent, ChainEvent):
 
 
 class ConclusionDrawn(Verdict, ChainEvent):
-    """The typed conclusion on a question — the casts ``Verdict`` plus the
-    evidence basis. ``basis='taste'`` is legitimate when no stronger backing
-    exists; it must be acknowledged, not disguised."""
+    """The typed conclusion on a question; extends Verdict with basis, confidence, and limitations. basis='taste' is legitimate when no stronger evidence exists."""
 
     question_ref: str = Field(description="Id of the question being concluded.")
     result_ref: str = Field(
@@ -190,11 +166,7 @@ _REF_ATTRS = (
 
 
 def trace_chains(events: list[ChainEvent]) -> list[list[ChainEvent]]:
-    """Reconstruct evidence chains (root → terminal) from event refs.
-
-    Terminals are ``ApplicationMapped`` events plus any ``ConclusionDrawn``
-    no application references. Each chain walks upstream refs to its root.
-    """
+    """Reconstruct evidence chains (root to terminal) from event refs; terminals are ApplicationMapped or unapplied ConclusionDrawn events."""
     index = {e.eid: e for e in events if e.eid}
     applied = {e.conclusion_ref for e in events if isinstance(e, ApplicationMapped)}
     terminals = [e for e in events if isinstance(e, ApplicationMapped)]
@@ -378,9 +350,7 @@ def _apply_instruction(c: ConclusionDrawn, decisions: str) -> str:
 
 
 def render_evidence(run: HypothesisRun) -> str:
-    """Render the run's evidence trail — chains, conclusions, applications,
-    pending experiments, open questions. Shared by the synthesis instruction
-    and the exported ``report.md`` appendix."""
+    """Render the run's evidence trail (chains, conclusions, applications, pending experiments, open questions) as a markdown string."""
     events: list[ChainEvent] = [e for evs in run.store.values() for e in evs]
     chains = trace_chains(events)
     concluded = {c.question_ref for c in run.events_of(ConclusionDrawn)}
@@ -427,11 +397,7 @@ def _synthesis_instruction(run: HypothesisRun) -> str:
 
 
 class HypothesisRun(ChainRun):
-    """Per-run state: typed event store, eid counters, pending experiments.
-
-    Inherits collect/emit/find/events_of from :class:`ChainRun`; adds the
-    hypothesis-specific fields (pending experiments, decisions text) and the
-    :meth:`export` method."""
+    """Per-run state for a HypothesisEngine run: event store, eid counters, pending experiments, and decisions text."""
 
     _chain_event_cls = ChainEvent
     _event_prefix_map = _EVENT_PREFIX
@@ -453,9 +419,7 @@ class HypothesisRun(ChainRun):
         return self.store.get(event_type, [])
 
     def export(self, dir_path: str | Path, *, report: str = "") -> dict[str, str]:
-        """Write the run's evidence to *dir_path*: ``chains.json`` (the full
-        typed event graph, machine-readable for downstream KG ingestion) and
-        ``report.md`` (synthesis + evidence-trail appendix)."""
+        """Write chains.json (event graph) and report.md (synthesis + evidence trail) to *dir_path*; returns paths dict."""
         d = Path(dir_path)
         d.mkdir(parents=True, exist_ok=True)
         events = [e for evs in self.store.values() for e in evs]
@@ -489,39 +453,7 @@ class HypothesisRun(ChainRun):
 
 
 class HypothesisEngine(Engine):
-    """Evidence-chain engine for hypothesis-driven development (stateless config).
-
-    Parameters extend :class:`Engine` with one casts role per stage —
-    ``question_role`` (extracts questions from findings), ``research_role``
-    (gathers evidence), ``hypothesis_role`` (forms falsifiable predictions),
-    ``design_role`` (designs the decisive experiment), ``validate_role``
-    (executes it), ``conclude_role`` (draws the typed conclusion),
-    ``apply_role`` (maps conclusions onto the decision register) and
-    ``synthesis_role`` (writes the final evidence report) — plus:
-
-    executable_methods
-        Experiment methods agents can run inline. Others (``benchmark`` by
-        default) queue on ``run.pending`` with their full spec for CI/human
-        execution. Add ``"benchmark"`` only when the validator has real tools.
-    validate_tools / validate_cwd / validate_permissions
-        Sandbox for the validator: tool names granted so experiments measure
-        for real, the workspace they are path-guarded to, and the permission
-        preset (default ``"safe"``). Tool-bearing agents also get the
-        destructive-command guard from :meth:`EngineRun.make_agent`.
-    max_questions
-        Per-extraction cap threaded into the prompt (soft; the judge gate and
-        the run budget are the hard bounds).
-    repair_retries
-        Re-prompt turns when an expected emission did not arrive — the loop
-        that keeps small/weak models productive instead of silently dropped.
-
-    ``max_depth`` bounds back-edge *cycles*: follow-up questions and findings
-    raised at ``gen > max_depth`` are recorded but not expanded. Set
-    ``judge_model`` (base class) to gate question expansion on a quality judge.
-    Per-stage models route through ``models={"extract": ..., "research": ...,
-    "hypothesize": ..., "design": ..., "validate": ..., "conclude": ...,
-    "apply": ..., "synthesize": ...}``.
-    """
+    """Evidence-chain engine for hypothesis-driven development (stateless config). See docs/reference/engines.md for parameter details."""
 
     run_context_cls: type[EngineRun] = HypothesisRun
 
@@ -570,17 +502,7 @@ class HypothesisEngine(Engine):
         decisions: str = "",
         export_dir: str | Path | None = None,
     ) -> str:
-        """Synthesize and export whatever the pipeline collected before the
-        budget/deadline cut in.
-
-        Called by Engine.run() when the engine's own watchdog cancels the run
-        and at least some state exists.  Runs outside the cancelled scope
-        (asyncio.shield in Engine.run) so awaiting is safe.
-
-        The report carries ``status: budget_exhausted`` in the evidence trail
-        header so consumers know this is a partial result.  If no events were
-        collected at all, returns an empty string without writing files.
-        """
+        """Synthesize and export collected events after budget cancellation; returns empty string if nothing was collected."""
         events_collected = sum(len(v) for v in run.store.values())
         if events_collected == 0:
             return ""
@@ -607,11 +529,7 @@ class HypothesisEngine(Engine):
         decisions: str = "",
         export_dir: str | Path | None = None,
     ) -> str:
-        """Push *findings* through the pipeline, then write the evidence report.
-
-        When *export_dir* is given, also writes ``chains.json`` + ``report.md``
-        there (the files-now persistence layer for downstream KG ingestion).
-        """
+        """Push *findings* through the pipeline and return the synthesis report; writes chains.json + report.md when export_dir is set."""
         seeds = [findings] if isinstance(findings, str) else list(findings)
         seeds = [s.strip() for s in seeds if s and s.strip()]
         if not seeds:
@@ -679,9 +597,7 @@ class HypothesisEngine(Engine):
     # -- stages ---------------------------------------------------------------
 
     async def _guard(self, run: HypothesisRun, stage: str, fn: Any, event: Any) -> None:
-        """A stage failure must not kill the pipeline. Takes the stage function
-        (not a coroutine) so a budget-declined spawn closes cleanly without an
-        orphaned never-awaited inner coroutine."""
+        """Run a stage function, logging and notifying on failure so a stage error never kills the pipeline."""
         try:
             await fn(run, event)
         except Exception as exc:

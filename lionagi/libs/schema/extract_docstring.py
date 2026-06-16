@@ -9,8 +9,7 @@ from typing import Literal
 def extract_docstring(
     func: Callable, style: Literal["google", "rest"] = "google"
 ) -> tuple[str | None, dict[str, str]]:
-    """
-    Extract function description and parameter descriptions from docstring.
+    """Extract function description and parameter descriptions from a Google- or reST-style docstring.
 
     Args:
         func: The function from which to extract docstring details.
@@ -53,8 +52,7 @@ def extract_docstring(
 def _extract_docstring_details_google(
     func: Callable,
 ) -> tuple[str | None, dict[str, str]]:
-    """
-    Extract details from Google-style docstring.
+    """Extract description and parameter map from a Google-style docstring.
 
     Args:
         func: The function from which to extract docstring details.
@@ -123,8 +121,7 @@ def _extract_docstring_details_google(
 def _extract_docstring_details_rest(
     func: Callable,
 ) -> tuple[str | None, dict[str, str]]:
-    """
-    Extract details from reStructuredText-style docstring.
+    """Extract description and parameter map from a reST-style docstring.
 
     Args:
         func: The function from which to extract docstring details.

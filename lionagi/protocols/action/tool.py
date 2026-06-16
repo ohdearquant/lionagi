@@ -20,14 +20,7 @@ __all__ = (
 
 
 class Tool(Element):
-    """
-    Wraps a callable function with optional:
-      - Preprocessing of arguments,
-      - Postprocessing of results,
-      - Strict or partial argument matching.
-
-    `tool_schema` is auto-generated from the function signature if not provided.
-    """
+    """Wraps a callable with optional pre/postprocessing; auto-generates tool_schema from the function signature."""
 
     func_callable: Callable[..., Any] = Field(
         ...,  # ... indicates required field
@@ -125,10 +118,7 @@ class Tool(Element):
 
     @property
     def minimum_acceptable_fields(self) -> set[str]:
-        """
-        Return the set of parameters that have no default values,
-        ignoring `*args` or `**kwargs`.
-        """
+        """Return parameters with no defaults, excluding *args/**kwargs."""
         try:
             a = {
                 k
@@ -148,34 +138,19 @@ class Tool(Element):
         raise NotImplementedError("`Tool.from_dict` is not supported.")
 
     def to_dict(self, mode: Literal["python", "json", "db"] = "python", **kw) -> dict[str, Any]:
-        """
-        Serialize the Tool to a dict, including the `function` name.
-
-        Args:
-            mode: Serialization mode — "python" (default), "json", or "db".
-            **kw: Additional keyword arguments forwarded to Element.to_dict().
-
-        Returns:
-            dict[str, Any]: The dictionary form (excluding callables).
-        """
+        """Serialize to dict including the function name; callables are excluded."""
         dict_ = super().to_dict(mode=mode, **kw)
         dict_["function"] = self.function
         return dict_
 
 
 FuncTool: TypeAlias = Tool | Callable[..., Any] | dict
-"""Represents either a `Tool` instance, a raw callable function or mcp config."""
+"""Tool instance, raw callable, or MCP config dict."""
 
 FuncToolRef: TypeAlias = FuncTool | str
-"""
-A reference to a function-based tool, by either the actual object,
-the raw callable, or the function name as a string.
-"""
+"""FuncTool or function name string."""
 
 ToolRef: TypeAlias = FuncToolRef | list[FuncToolRef] | bool
-"""
-Used for specifying one or more tool references, or a boolean
-indicating 'all' or 'none'.
-"""
+"""One or more tool references, or a bool (True=all, False=none)."""
 
 # File: lionagi/protocols/action/tool.py

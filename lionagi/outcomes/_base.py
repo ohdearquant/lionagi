@@ -10,12 +10,7 @@ from lionagi.models import HashableModel
 
 
 class SkillOutcome(HashableModel):
-    """Base for all structured skill outputs.
-
-    Concrete subclasses set ``outcome_kind`` to a literal string. The
-    string ends up as ``artifacts.kind`` in the DB and as the dispatch
-    key for the frontend's kind-aware renderer.
-    """
+    """Base for all structured skill outputs; subclasses set ``outcome_kind`` to a Literal string."""
 
     outcome_kind: str = Field(
         description=(

@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Token budget tracking — know how much context you've used and how much remains.
-
-Model context windows live in each provider module as CONTEXT_WINDOWS dicts.
-Resolution: endpoint config.context_window > provider lookup > default (128_000).
-"""
+"""Token budget tracking — context window lookup and usage calculation per branch."""
 
 from __future__ import annotations
 
@@ -17,10 +13,8 @@ if TYPE_CHECKING:
 
 _DEFAULT_CONTEXT_WINDOW = 128_000
 
-# Lazy-loaded cache: provider name → CONTEXT_WINDOWS dict
 _provider_cache: dict[str, dict[str, int]] = {}
 
-# Map of known provider names to their module paths
 _PROVIDER_MODULES: dict[str, str] = {
     "openai": "lionagi.providers.openai._config",
     "anthropic": "lionagi.providers.anthropic.messages.endpoint",
@@ -92,11 +86,7 @@ def _longest_prefix_match(model_name: str, windows: dict[str, int]) -> int | Non
 
 
 def lookup_context_window(model_name: str, provider: str | None = None) -> int:
-    """Look up context window from provider's CONTEXT_WINDOWS dict.
-
-    Tries provider-specific lookup first, then scans all providers.
-    Uses longest-prefix match within each provider's dict.
-    """
+    """Return context window for model_name via longest-prefix match; tries provider-specific dict first."""
     if provider:
         windows = _get_provider_windows(provider)
         if windows:
@@ -136,10 +126,7 @@ class TokenBudget:
 
 
 def get_context_window(branch: Branch) -> int:
-    """Get context window size for branch's chat model.
-
-    Resolution: endpoint config.context_window > provider lookup > default.
-    """
+    """Resolve context window: endpoint config > provider lookup > default (128k)."""
     try:
         endpoint = branch.chat_model.endpoint
         if getattr(endpoint.config, "context_window", None):

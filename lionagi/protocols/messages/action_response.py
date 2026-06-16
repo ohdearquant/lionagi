@@ -11,14 +11,7 @@ from .message import Message, MessageContent, MessageRole
 
 @dataclass(slots=True)
 class ActionResponseContent(MessageContent):
-    """Content for action/function call responses.
-
-    Fields:
-        function: Function name that was invoked
-        arguments: Arguments used in the function call
-        output: Result returned from the function
-        action_request_id: Link to the original request
-    """
+    """Content for function call results, linked back to the originating ActionRequest."""
 
     function: str = ""
     arguments: dict[str, Any] = field(default_factory=dict)
@@ -28,17 +21,16 @@ class ActionResponseContent(MessageContent):
 
     @property
     def role(self) -> MessageRole:
-        """Role for this content type (beta API compat)."""
         return MessageRole.ACTION
 
     @property
     def request_id(self) -> str | None:
-        """Alias for action_request_id (beta API compat)."""
+        """Alias for action_request_id."""
         return self.action_request_id
 
     @property
     def result(self) -> Any:
-        """Alias for output (beta API compat)."""
+        """Alias for output."""
         return self.output
 
     @property
@@ -74,7 +66,7 @@ class ActionResponseContent(MessageContent):
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ActionResponseContent":
-        """Construct ActionResponseContent from dictionary."""
+        """Construct ActionResponseContent from a dict; handles legacy nested action_response key."""
         # Handle nested structure from old format
         if "action_response" in data:
             resp = data["action_response"]
@@ -99,7 +91,7 @@ class ActionResponseContent(MessageContent):
 
 
 class ActionResponse(Message):
-    """Message containing the result of an action/function execution."""
+    """Message carrying the result of an executed action/function."""
 
     _role: ClassVar[MessageRole] = MessageRole.ACTION
     content: ActionResponseContent
@@ -116,15 +108,12 @@ class ActionResponse(Message):
 
     @property
     def function(self) -> str:
-        """Access the function name."""
         return self.content.function
 
     @property
     def arguments(self) -> dict[str, Any]:
-        """Access the function arguments."""
         return self.content.arguments
 
     @property
     def output(self) -> Any:
-        """Access the function output."""
         return self.content.output

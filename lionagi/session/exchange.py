@@ -1,11 +1,7 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Exchange: async message router between entity mailboxes.
-
-Manages Flow per entity with outbox/inbox progressions.
-Supports broadcast, direct messaging, and continuous sync loops.
-"""
+"""Exchange: async message router between entity mailboxes (outbox/inbox per Flow)."""
 
 from __future__ import annotations
 
@@ -31,32 +27,13 @@ def _inbox_name(sender: UUID) -> str:
 
 
 class Exchange(Element):
-    """Async message router between entity mailboxes.
-
-    Each registered entity gets a Flow with:
-        - "outbox" progression: queued outbound messages
-        - "inbox_{sender}" progressions: received messages by sender
-
-    Lifecycle:
-        1. register(owner_id) - create entity mailbox
-        2. send(sender, recipient, content) - queue message
-        3. collect(owner_id) or sync() - route queued messages
-        4. receive(owner_id) / pop_message() - read delivered messages
-
-    Thread Safety:
-        Uses Flow locks for concurrent access. collect() releases
-        lock before parallel delivery to avoid deadlocks.
-
-    Attributes:
-        flows: Pile of entity Flow mailboxes.
-    """
+    """Async message router; each entity gets a Flow with outbox and per-sender inboxes."""
 
     flows: Pile[Flow[Message, Progression]] = None  # type: ignore
     _owner_index: dict[UUID, UUID] = PrivateAttr(default_factory=dict)
     _stop: bool = PrivateAttr(default=False)
 
     def __init__(self, **kwargs: Any) -> None:
-        """Initialize with empty flows pile."""
         super().__init__(**kwargs)
         if self.flows is None:
             self.flows = Pile()
@@ -100,14 +77,7 @@ class Exchange(Element):
         return list(self._owner_index.keys())
 
     async def collect(self, owner_id: UUID) -> int:
-        """Route outbox messages to recipients. Returns count of unique messages routed.
-
-        Two-phase: collect under lock, then parallel delivery (lock released).
-        Broadcasts copy message per recipient. Unregistered recipients dropped.
-
-        Raises:
-            ValueError: If owner not registered.
-        """
+        """Route outbox to recipient inboxes (two-phase lock); raises ValueError if unregistered."""
         deliveries: list[tuple[UUID, Message]] = []
 
         async with self.flows:

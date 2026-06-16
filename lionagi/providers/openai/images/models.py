@@ -7,11 +7,7 @@ from pydantic import BaseModel, Field
 
 
 class ImageGenerationRequest(BaseModel):
-    """Request body for OpenAI Image Generation (DALL-E / gpt-image-1).
-
-    Endpoint: POST https://api.openai.com/v1/images/generations
-    Docs: https://platform.openai.com/docs/api-reference/images/create
-    """
+    """Request body for OpenAI image generation (POST /v1/images/generations)."""
 
     prompt: str = Field(
         ...,
@@ -54,13 +50,7 @@ class ImageGenerationRequest(BaseModel):
 
 
 class ImageEditRequest(BaseModel):
-    """Request body for OpenAI Image Edit.
-
-    Endpoint: POST https://api.openai.com/v1/images/edits
-    Docs: https://platform.openai.com/docs/api-reference/images/createEdit
-
-    Note: Requires multipart/form-data with image file(s); see endpoint implementation.
-    """
+    """Request body for OpenAI image editing (POST /v1/images/edits); image sent as multipart/form-data."""
 
     prompt: str = Field(
         ...,

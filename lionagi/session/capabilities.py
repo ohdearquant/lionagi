@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render an agent's capability grant into a system-prompt instruction block.
-
-The instruction is rendered *from* the ``Operable`` grant, so the prose the
-model sees can never drift from what the run loop will actually extract and
-validate (``operable.create_model(...).model_validate(...)``, keys ⊆ grant).
-"""
+"""Render an agent's capability grant into a system-prompt instruction block."""
 
 from __future__ import annotations
 
@@ -27,12 +22,7 @@ __all__ = (
 
 
 class CapabilityViolation(BaseModel):
-    """An agent tried to emit a capability outside its grant.
-
-    Raised onto the bus (not silently dropped) so governance can react —
-    ``session.observe(CapabilityViolation)`` to warn/steer/halt, or inspect via
-    the bus audit trail. The offending block is not validated or honored.
-    """
+    """Emitted when an agent emits a key outside its grant; the block is not honored."""
 
     offending: list[str] = Field(description="Emitted keys outside the grant.")
     allowed: list[str] = Field(description="The granted capability names.")
@@ -40,12 +30,7 @@ class CapabilityViolation(BaseModel):
 
 
 class EmissionRejected(BaseModel):
-    """An in-grant capability block failed schema validation — not honored.
-
-    Surfaced onto the bus (not silently dropped) so a repair loop can re-prompt
-    the agent with the concrete validation error — the difference between a
-    weak model recovering and its work vanishing.
-    """
+    """Emitted when an in-grant capability block fails schema validation; carries the verbatim error."""
 
     branch_name: str = Field(default="", description="The emitting branch, for attribution.")
     error: str = Field(description="The validation error, verbatim.")
@@ -58,11 +43,7 @@ CAP_END = "<!-- /lionagi:capabilities -->"
 
 
 def render_capabilities_prompt(operable: Operable) -> str:
-    """Render the capability grant into a system-prompt section.
-
-    Includes the exact JSON schema the extractor validates against, plus the
-    rule mirroring ``keys ⊆ grant``: only the listed keys are honored.
-    """
+    """Render the capability grant into a system-prompt section with its JSON schema."""
     model = operable.create_model(model_name=operable.name or "Capabilities")
     schema = model.model_json_schema()
     contract: dict = {"properties": schema.get("properties", {})}

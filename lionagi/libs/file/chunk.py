@@ -9,25 +9,7 @@ from typing import Any, Literal
 def chunk_by_chars(
     text: str, chunk_size: int = 2048, overlap: float = 0, threshold: int = 256
 ) -> list[str]:
-    """
-    Split a text into chunks of approximately equal size, with optional overlap.
-
-    This function divides the input text into chunks based on the specified
-    chunk size. It handles different scenarios based on the number of chunks
-    required and provides options for overlap between chunks.
-
-    Args:
-        text (str): The input text to be chunked.
-        chunk_size (int, optional): The target size for each chunk. Defaults to 2048.
-        overlap (float, optional): The fraction of overlap between chunks. Defaults to 0.
-        threshold (int, optional): The minimum size for the last chunk. Defaults to 256.
-
-    Returns:
-        List[str]: A list of text chunks.
-
-    Raises:
-        ValueError: If an error occurs during the chunking process.
-    """
+    """Split text into overlapping character chunks; raises ValueError on error."""
     try:
         n_chunks = math.ceil(len(text) / chunk_size)
         overlap_size = int(chunk_size * overlap / 2)
@@ -81,27 +63,7 @@ def chunk_by_tokens(
     threshold: int = 128,
     return_tokens: bool = False,
 ) -> list[str | list[str]]:
-    """
-    Split a list of tokens into chunks of approximately equal size, with optional overlap.
-
-    This function divides the input tokens into chunks based on the specified
-    chunk size. It handles different scenarios based on the number of chunks
-    required and provides options for overlap between chunks.
-
-    Args:
-        tokens (list[str]): The input list of tokens to be chunked.
-        chunk_size (int, optional): The target size for each chunk. Defaults to 1024.
-        overlap (float, optional): The fraction of overlap between chunks. Defaults to 0.
-        threshold (int, optional): The minimum size for the last chunk. Defaults to 128.
-        return_tokens (bool, optional): If True, return chunks as lists of tokens;
-                                        if False, return as joined strings. Defaults to False.
-
-    Returns:
-        list[Union[str, list[str]]]: A list of chunked tokens, either as strings or token lists.
-
-    Raises:
-        ValueError: If an error occurs during the chunking process.
-    """
+    """Split token list into overlapping chunks; return_tokens=True yields lists, else joined strings."""
     try:
         n_chunks = math.ceil(len(tokens) / chunk_size)
         overlap_size = int(overlap * chunk_size / 2)
@@ -198,25 +160,7 @@ def chunk_content(
     as_node: bool = False,
     **kwargs: Any,
 ) -> list[dict[str, Any]]:
-    """
-    Split content into chunks and add metadata.
-
-    This function takes a string content, splits it into chunks using the provided
-    chunking function, and adds metadata to each chunk.
-
-    Args:
-        content (str): The content to be chunked.
-        chunk_by(str): The method to use for chunking: "chars" or "tokens".
-        tokenizer (Callable): The function to use for tokenization. defaults to str.split.
-        chunk_size (int): The target size for each chunk.
-        overlap (float): The fraction of overlap between chunks.
-        threshold (int): The minimum size for the last chunk.
-        metadata (Dict[str, Any]): Metadata to be included with each chunk.
-        kwargs for tokenizer, if needed.
-
-    Returns:
-        List[Dict[str, Any]]: A list of dictionaries, each representing a chunk with metadata.
-    """
+    """Chunk content by chars or tokens; as_node=True returns Node objects, else dicts with metadata."""
 
     if chunk_by == "tokens":
         chunks = chunk_by_tokens(

@@ -1,9 +1,4 @@
-"""
-OpenAI Model Names extracted from generated models.
-
-This module provides lists of allowed model names for different OpenAI services,
-extracted from the auto-generated openai_models.py file.
-"""
+"""OpenAI chat, embedding, image, and audio model name lists and request models."""
 
 from __future__ import annotations
 
@@ -16,8 +11,6 @@ from pydantic import BaseModel, Field, model_validator
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
 
-# Manually define the chat models from the ChatModel class in openai_models.py
-# These are extracted from the Literal type definition
 CHAT_MODELS = (
     "gpt-5",
     "gpt-5-mini",
@@ -296,10 +289,7 @@ class StreamOptions(BaseModel):
 
 
 class OpenAIChatCompletionsRequest(BaseModel):
-    """
-    Request body for OpenAI Chat Completions.
-    Endpoint: POST https://api.openai.com/v1/chat/completions
-    """
+    """Request body for OpenAI Chat Completions (POST /v1/chat/completions)."""
 
     # Required
     model: str = Field(..., description="Model name, e.g., 'gpt-4o', 'gpt-4o-mini'.")  # type: ignore

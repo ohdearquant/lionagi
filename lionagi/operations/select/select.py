@@ -27,22 +27,7 @@ async def select(
     verbose: bool = False,
     **kwargs: Any,
 ) -> SelectionModel | tuple[SelectionModel, "Branch"]:
-    """
-    Select from choices using LLM - legacy wrapper with backwards compatibility.
-
-    Args:
-        branch: Branch instance to use
-        instruct: Instruction for selection
-        choices: Available choices (list, dict, or Enum)
-        max_num_selections: Max number of selections
-        branch_kwargs: Kwargs for branch creation (deprecated)
-        return_branch: Return (result, branch) tuple
-        verbose: Print progress
-        **kwargs: Additional operate kwargs
-
-    Returns:
-        SelectionModel or (SelectionModel, Branch) tuple
-    """
+    """Legacy wrapper around select_v1; supports deprecated branch_kwargs and optional return_branch tuple."""
     if verbose:
         logger.debug("Starting selection with up to %d choices.", max_num_selections)
 
@@ -74,43 +59,25 @@ async def select_v1(
     verbose: bool = False,
     **operate_kwargs: Any,
 ) -> SelectionModel:
-    """
-    Context-based selection implementation.
-
-    Args:
-        branch: Branch instance
-        instruct: Selection instruction
-        choices: Available choices
-        max_num_selections: Maximum selections allowed
-        verbose: Print progress
-        **operate_kwargs: Additional operate parameters
-
-    Returns:
-        SelectionModel with corrected selections
-    """
-    # Parse choices into keys and representations
+    """Operate-based selection: build prompt from choices, call branch.operate(SelectionModel), parse back to original values."""
     selections, contents = parse_to_representation(choices)
     prompt = SelectionModel.PROMPT.format(max_num_selections=max_num_selections, choices=selections)
 
-    # Build instruction dictionary
     if isinstance(instruct, Instruct):
         instruct_dict = instruct.to_dict()
     else:
         instruct_dict = instruct or {}
 
-    # Append selection prompt to instruction
     if instruct_dict.get("instruction", None) is not None:
         instruct_dict["instruction"] = f"{instruct_dict['instruction']}\n\n{prompt} \n\n "
     else:
         instruct_dict["instruction"] = prompt
 
-    # Add choice representations to context
     context = instruct_dict.get("context", None) or []
     context = [context] if not isinstance(context, list) else context
     context.extend([{k: v} for k, v in zip(selections, contents, strict=False)])
     instruct_dict["context"] = context
 
-    # Call branch.operate with SelectionModel as response format
     response_model: SelectionModel = await branch.operate(
         response_format=SelectionModel,
         **operate_kwargs,
@@ -120,16 +87,13 @@ async def select_v1(
     if verbose:
         logger.debug("Received selection: %s", response_model.selected)
 
-    # Extract and normalize selected values
     selected = response_model
     if isinstance(response_model, BaseModel) and hasattr(response_model, "selected"):
         selected = response_model.selected
     selected = [selected] if not isinstance(selected, list) else selected
 
-    # Parse selections back to original choice values
     corrected_selections = [parse_selection(i, choices) for i in selected]
 
-    # Update response model with corrected selections
     if isinstance(response_model, BaseModel):
         response_model.selected = corrected_selections
     elif isinstance(response_model, dict):

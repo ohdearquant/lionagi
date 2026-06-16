@@ -200,6 +200,13 @@ nav:
   - Reference:
       - Advanced: reference/advanced.md
       - Providers: reference/providers.md
+      - Protocols (core): reference/protocols-core.md
+      - Engines: reference/engines.md
+      - Operations & Service: reference/operations-service.md
+      - Casts: reference/casts.md
+      - Outcomes & Work: reference/outcomes-work.md
+      - Agent & Hooks: reference/agent-hooks.md
+      - Testing, State & Session: reference/testing-state-session.md
       - Migrate Logs: reference/migrate-logs.md
       - Troubleshooting: reference/troubleshooting.md
 

@@ -22,15 +22,7 @@ CONTEXT_WINDOWS: dict[str, int] = {
 
 @OpenRouterConfigs.CHAT.register
 class OpenRouterEndpoint(Endpoint):
-    """OpenRouter API endpoint with reasoning control.
-
-    Extends the standard OpenAI-compatible endpoint with:
-    - reasoning effort control (none/low/medium/high)
-    - reasoning token inclusion in response metadata
-
-    Note: CONTEXT_WINDOWS lists common models; the actual context window depends
-    on the underlying model routed through OpenRouter.
-    """
+    """OpenRouter chat endpoint; adds reasoning effort control over the OpenAI-compatible base."""
 
     def __init__(
         self,

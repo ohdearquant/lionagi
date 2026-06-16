@@ -1,20 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""``TestBranch`` and ``scripted_imodel`` — ergonomic builders for tests.
-
-Idiomatic usage::
-
-    from lionagi.testing import TestBranch
-
-    branch = TestBranch.from_responses([
-        {"type": "text", "content": "hi"},
-    ])
-    assert await branch.chat("hello") == "hi"
-
-    # Inspect what the agent sent:
-    assert TestBranch.scripted(branch).calls[0].last_user_message == "hello"
-"""
+"""``TestBranch`` and ``scripted_imodel`` — ergonomic builders for scripted-endpoint tests."""
 
 from __future__ import annotations
 
@@ -62,12 +49,7 @@ def scripted_imodel(
 
 
 class TestBranch:
-    """Factory + introspection helpers for scripted branches.
-
-    Don't instantiate — use the classmethods. They return real ``Branch``
-    objects with a ``ScriptedEndpoint`` underneath, so every operation
-    (chat, parse, operate, ReAct) goes through the production code path.
-    """
+    """Factory + introspection helpers for scripted branches (use the classmethods, don't instantiate)."""
 
     # ─────────────────────────────── factories ────────────────────────────
 

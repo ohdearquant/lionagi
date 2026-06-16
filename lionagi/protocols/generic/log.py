@@ -55,39 +55,27 @@ class DataLoggerConfig(BaseModel):
 
 
 class Log(Element):
-    """
-    An immutable log entry that wraps a dictionary of content.
-
-    Once created or restored from a dictionary, the log is marked
-    as read-only.
-    """
+    """Immutable log entry wrapping a dict snapshot; mutations raise AttributeError."""
 
     content: dict[str, Any]
     _immutable: bool = PrivateAttr(False)
 
     def __setattr__(self, name: str, value: Any) -> None:
-        """Prevent mutation if log is immutable."""
+        """Raise AttributeError if the log is immutable."""
         if getattr(self, "_immutable", False):
             raise AttributeError("This Log is immutable.")
         super().__setattr__(name, value)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Log:
-        """
-        Create a Log from a dictionary previously produced by `to_dict`.
-
-        The dictionary must contain keys in `serialized_keys`.
-        """
+        """Deserialize a dict from to_dict() into an immutable Log."""
         self = cls.model_validate(data)
         self._immutable = True
         return self
 
     @classmethod
     def create(cls, content: Element | dict) -> Log:
-        """
-        Create a new Log from an Element, storing a dict snapshot
-        of the element's data.
-        """
+        """Create a mutable Log from an Element or dict; marks immutable on from_dict only."""
         if isinstance(content, Element | HashableModel):
             content = content.to_dict(mode="json")
         else:
@@ -103,10 +91,7 @@ class Log(Element):
 
 
 class DataLogger:
-    """
-    Manages a collection of logs, optionally auto-dumping them
-    to CSV or JSON when capacity is reached or at program exit.
-    """
+    """Log collection with optional auto-dump to CSV/JSON at capacity or program exit."""
 
     def __init__(
         self,
@@ -115,19 +100,6 @@ class DataLogger:
         _config: DataLoggerConfig = None,
         **kwargs,
     ):
-        """
-        Args:
-            logs: Initial logs (list or Pile of Log objects).
-            persist_dir: Directory for log files (default "./data/logs").
-            subfolder: Subdirectory within `persist_dir`.
-            file_prefix: Filename prefix for log files.
-            capacity: Max number of logs before auto-dump. None = unlimited.
-            extension: File extension (".csv" or ".json").
-            use_timestamp: Whether to include timestamps in filenames.
-            hash_digits: Random hash length in filenames.
-            auto_save_on_exit: Auto-save logs at program exit.
-            clear_after_dump: Whether to clear logs after saving.
-        """
         if _config is None:
             _config = DataLoggerConfig(**kwargs)
 
@@ -142,9 +114,7 @@ class DataLogger:
             atexit.register(self.save_at_exit)
 
     def log(self, log_: Any) -> None:
-        """
-        Add a log synchronously. If capacity is reached, auto-dump to file.
-        """
+        """Add a log entry; auto-dumps to file if capacity is reached."""
         log_ = Log.create(log_) if not isinstance(log_, Log) else log_
         if self._config.capacity and len(self.logs) >= self._config.capacity:
             try:
@@ -154,9 +124,7 @@ class DataLogger:
         self.logs.include(log_)
 
     async def alog(self, log_: Any) -> None:
-        """
-        Add a log asynchronously. If capacity is reached, auto-dump to file.
-        """
+        """Async variant of log(); auto-dumps to file if capacity is reached."""
         async with self.logs:
             self.log(log_)
 
@@ -165,10 +133,7 @@ class DataLogger:
         clear: bool | None = None,
         persist_path: str | Path | None = None,
     ) -> None:
-        """
-        Dump the logs to a file (CSV or JSON). If file extension is
-        unsupported, raise ValueError. Optionally clear logs after.
-        """
+        """Write logs to CSV or JSON; clears afterward if configured."""
         if not self.logs:
             logger.debug("No logs to dump.")
             return
@@ -243,10 +208,7 @@ class DataLogger:
                     self.logs.collections.pop(uid, None)
 
     def _create_path(self) -> Path:
-        """
-        Build a file path from the manager's config using
-        `create_path`.
-        """
+        """Build an output file path from the logger config."""
         path_str = str(self._config.persist_dir)
         if self._config.subfolder:
             path_str = f"{path_str}/{self._config.subfolder}"
@@ -273,9 +235,7 @@ class DataLogger:
 
     @classmethod
     def from_config(cls, config: DataLoggerConfig, logs: Any = None) -> DataLogger:
-        """
-        Construct a LogManager from a LogManagerConfig.
-        """
+        """Construct a DataLogger from a DataLoggerConfig."""
         return cls(_config=config, logs=logs)
 
 

@@ -1,28 +1,7 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""LNDL — Lion Notation Definition Language (Phase 1).
-
-Structured-output format for LLM responses. This module ships the Phase 1
-minimal core as an opt-in feature. It is intentionally excluded from any
-default routing in ``operations/parse``; callers must explicitly pass an
-LNDL schema to activate this path.
-
-Phase 1 exports
----------------
-- Types: :class:`LNDLOutput`, :class:`ActionCall`, :class:`LvarMetadata`,
-  :class:`RLvarMetadata`, :class:`LactMetadata`, :class:`ParsedConstructor`
-- Errors: :class:`LNDLError` and all subclasses
-- Prompt: :func:`get_lndl_system_prompt`
-- Extract: :func:`extract_lndl_blocks`
-- Normalize: :func:`normalize_lndl_text`
-
-Phase 2 (deferred — see issue #966)
-------------------------------------
-Lexer / Parser / AST / Resolver / Orchestrator / Symbolic-AST modules.
-:func:`parse_lndl_fuzzy` is present but raises ``NotImplementedError``
-until Phase 2 lands.
-"""
+"""LNDL — Lion Notation Definition Language Phase 1: types, errors, prompt, extract, normalize."""
 
 from .errors import (
     AmbiguousMatchError,

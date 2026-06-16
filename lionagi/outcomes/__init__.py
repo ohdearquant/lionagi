@@ -1,19 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Artifact outcome contracts persisted for Studio (ops plane) — distinct from lionagi.casts.emission (reactive bus).
-
-ADR-0021: structured outputs that skills produce and Studio renders.
-
-The shared contract between CLI skill runners (producers) and Studio
-(consumer). Outcomes are persisted as ``artifacts`` table rows with
-``kind = outcome_kind`` so the frontend's kind-dispatched renderer can
-pick the right card component.
-
-This package holds *domain* types (review outcomes, CI results, gate
-outcomes). Infrastructure types live in :mod:`lionagi.models`; the
-separation is deliberate so a future Studio-only consumer can import
-outcomes without pulling in framework machinery.
-"""
+"""ADR-0021 outcome contracts — domain types (review, CI, gate) persisted as Studio artifact rows."""
 
 from __future__ import annotations
 

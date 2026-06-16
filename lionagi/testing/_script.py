@@ -1,24 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""``ScriptModel`` — the parsed, matchable form of a test fixture.
-
-A ScriptModel is the user-facing source of truth: either a YAML file, a JSON
-file, a Python dict, or a list of dicts. It parses to a sequence of
-``ResponseEntry`` objects and exposes a single operation: ``next(payload, idx)``
-returning the response to serve at this call site.
-
-Matching strategy:
-
-1. ``when:`` matchers are checked first (in declaration order). Any entry whose
-   matcher succeeds and which has not been exhausted is served.
-2. Otherwise, the positional cursor advances and serves the next un-``when:``-d
-   entry.
-
-This means you can mix ordered positional entries with out-of-order content
-matchers — useful when an agent's middle-of-loop call depends on a previous
-tool result.
-"""
+"""``ScriptModel`` — parsed, matchable test fixture: positional + ``when:`` conditional response entries."""
 
 from __future__ import annotations
 
@@ -63,19 +46,7 @@ def _build_entry(data: dict[str, Any]) -> ResponseEntry:
 
 
 class ScriptModel(BaseModel):
-    """Parsed test script. The matchable source of truth.
-
-    Build from any of:
-      - ``ScriptModel.from_yaml(path)``
-      - ``ScriptModel.from_json(path)``
-      - ``ScriptModel.from_responses([{...}, ...])``
-      - ``ScriptModel(responses=[TextResponse(content='hi')])``  (direct)
-
-    Inspect from tests:
-      - ``script.exhausted`` — all positional entries consumed?
-      - ``script.cursor`` — current positional index
-      - ``script.remaining`` — entries left to serve
-    """
+    """Parsed test script — load via ``from_yaml``, ``from_json``, ``from_responses``, or ``coerce``."""
 
     model_config = {"extra": "forbid"}
 
@@ -271,8 +242,7 @@ class ScriptModel(BaseModel):
 
 
 class ScriptExhaustedError(RuntimeError):
-    """Raised when no response is available for a call. Tests should catch this
-    or extend the script."""
+    """Raised when no response is available for a call — extend the script or add a ``when:`` entry."""
 
 
 def _extract_last_user(payload: dict[str, Any]) -> str | None:

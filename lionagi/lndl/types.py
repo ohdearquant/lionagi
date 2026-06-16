@@ -127,19 +127,7 @@ _SCALAR_TYPES: tuple[type, ...] = (str, int, float, bool)
 
 
 def _unwrap_scalar(annotation: Any) -> type | None:
-    """Extract the scalar type from a plain or Optional scalar annotation.
-
-    Returns the scalar type if *annotation* is ``str``, ``int``, ``float``,
-    ``bool``, or a ``Union``/PEP-604 union of one of those with ``None``.
-    Returns ``None`` otherwise.
-
-    Examples::
-
-        _unwrap_scalar(str)          → str
-        _unwrap_scalar(str | None)   → str
-        _unwrap_scalar(int | None)   → int
-        _unwrap_scalar(list[str])    → None
-    """
+    """Return the scalar type from ``str/int/float/bool`` or Optional-scalar annotations, else None."""
     if annotation in _SCALAR_TYPES:
         return annotation  # type: ignore[return-value]
 
@@ -154,13 +142,7 @@ def _unwrap_scalar(annotation: Any) -> type | None:
 
 
 def _coerce_result(result: Any, target_type: Any) -> Any:
-    """Coerce a tool result to match the target field type.
-
-    Handles both plain scalar types (``str``, ``int``, ``float``, ``bool``)
-    and optional scalar types (e.g. ``str | None``, ``Optional[int]``).
-    Dict results targeting a scalar are serialised to JSON via
-    :func:`lionagi.ln.json_dumps`.
-    """
+    """Coerce tool result to target scalar type; dicts are JSON-serialised via json_dumps."""
     scalar = _unwrap_scalar(target_type)
     if scalar is None:
         return result

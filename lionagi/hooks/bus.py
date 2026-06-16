@@ -30,32 +30,7 @@ __all__ = (
 
 
 class HookPoint(str, Enum):
-    """Closed vocabulary of hook points.
-
-    Dispatched (production callsites that call ``bus.emit`` or
-    ``bus.blocking_emit`` with this point):
-
-    * ``MESSAGE_ADD``  — branch.py ``_persist_via_bus`` on every inbound message.
-
-    Registered in ``DEFAULT_HOOKS`` (handlers wired, but the emit callsite is
-    deferred to ADR-0023b; wiring is in-progress):
-
-    * ``SESSION_START``  — ``persist_session_start`` registered, emit pending.
-    * ``SESSION_END``    — ``persist_session_end`` registered, emit pending.
-    * ``BRANCH_CREATE``  — ``persist_branch_provenance`` registered, emit pending.
-
-    Reserved — defined for vocabulary completeness, no handler registered and no
-    emit callsite exists yet (planned future hook surfaces, per ADR-0023):
-
-    * ``API_PRE_CALL``    — before each iModel API call.
-    * ``API_POST_CALL``   — after each iModel API call (tokens / latency).
-    * ``API_STREAM_CHUNK`` — per-chunk during streaming responses.
-    * ``TOOL_PRE``        — before tool invocation; intended to be blocking
-                           (``blocking_emit`` route already wired in bus.py).
-    * ``TOOL_POST``       — after successful tool invocation.
-    * ``TOOL_ERROR``      — on tool invocation failure.
-    * ``ARTIFACT_CREATED`` — when an artifact is persisted to disk.
-    """
+    """Closed vocabulary of session lifecycle hook points (see docs/reference/agent-hooks.md)."""
 
     SESSION_START = "session.start"
     SESSION_END = "session.end"

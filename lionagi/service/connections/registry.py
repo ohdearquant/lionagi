@@ -26,11 +26,7 @@ class EndpointType(Enum):
 
 @dataclass(frozen=True, slots=True)
 class EndpointMeta:
-    """Injected onto endpoint classes as ``_ENDPOINT_META``.
-
-    Carries enough info to auto-generate ``EndpointConfig`` —
-    individual endpoints no longer need ``_get_config()``.
-    """
+    """Injected onto endpoint classes as ``_ENDPOINT_META``; drives auto-generated ``EndpointConfig``."""
 
     provider: str
     endpoint: str
@@ -88,8 +84,6 @@ class EndpointRegistry:
         auth_type: str | None = None,
         content_type: str | None = None,
     ):
-        """Decorator that registers an endpoint and injects _ENDPOINT_META."""
-
         def decorator(endpoint_cls: type) -> type:
             meta = EndpointMeta(
                 provider=provider,
@@ -124,11 +118,7 @@ class EndpointRegistry:
                 return entry.cls(None, **kwargs)
 
         if first_for_provider is not None:
-            # Single-endpoint providers (claude_code, codex, pi, etc.) always
-            # return their only endpoint — iModel defaults endpoint="chat"
-            # which won't alias-match these providers. Multi-endpoint providers
-            # only fall back when endpoint is empty; a non-empty unmatched
-            # endpoint falls through to generic Endpoint.
+            # Single-endpoint providers (claude_code, codex, pi) always match; non-empty unmatched falls through.
             if not endpoint:
                 return first_for_provider.cls(None, **kwargs)
             prov = first_for_provider.meta.provider

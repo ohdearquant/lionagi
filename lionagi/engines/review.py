@@ -1,17 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dimensional review engine — the second domain engine on the Engine base.
-
-The artifact is reviewed along several *dimensions* in parallel (one reviewer
-each, optionally in a dimension-appropriate cognitive mode). Reviewers emit
-``IssueFound``; a high-severity issue reactively spawns an adversarial verifier
-that tries to refute it (``VerifyResult``). When everything quiesces, a
-synthesizer reads the emission store and issues a single ``ReviewVerdict``.
-
-This is the *Dimensional* shape (fan-out lenses → adversarial verify →
-converge), the complement to research's recursive *Tree* shape.
-"""
+"""Dimensional review engine — fan-out per-dimension reviewers, adversarial verify, converge to a single ReviewVerdict."""
 
 from __future__ import annotations
 
@@ -34,9 +24,7 @@ __all__ = (
 
 
 class IssueFound(Finding):
-    """One issue a reviewer found along a dimension — the casts ``Finding``
-    (description, confidence, severity, evidence, source) plus the review locus.
-    Reusing ``Finding`` means ``by_type(Finding)`` also surfaces review issues."""
+    """One issue found along a review dimension; extends Finding so by_type(Finding) also surfaces review issues."""
 
     dimension: str = Field(description="The review lens that surfaced this (e.g. security).")
     location: str = Field(
@@ -46,8 +34,7 @@ class IssueFound(Finding):
 
 
 class VerifyResult(EngineEvent):
-    """An adversarial verifier's call on whether an issue survives refutation —
-    a refutation outcome, with no casts twin (neither a discovery nor a verdict)."""
+    """Adversarial verifier's call on whether an issue survives refutation; no casts twin."""
 
     issue: str = Field(description="The issue description being verified.")
     holds: bool = Field(
@@ -57,8 +44,7 @@ class VerifyResult(EngineEvent):
 
 
 class ReviewVerdict(Verdict):
-    """The terminal review decision — the casts ``Verdict`` (verdict, rationale,
-    evidence, reversible_by) plus the set of blocking issues."""
+    """Terminal review decision; extends Verdict with the list of blocking issues."""
 
     blocking: list[str] = Field(
         default_factory=list, description="Issues that must be fixed before approval."
@@ -128,22 +114,7 @@ def _verdict_instruction(
 
 
 class ReviewEngine(Engine):
-    """Dimensional review engine (stateless config).
-
-    Parameters extend :class:`Engine` with:
-
-    dimensions
-        Review lenses; each runs a reviewer in parallel.
-    reviewer_role / verifier_role / synthesis_role
-        Casts roles for the reviewers, the adversarial verifier, and the final
-        verdict author.
-    verify_severities
-        Issue severities that reactively spawn an adversarial verifier.
-    repair_retries
-        Re-prompt turns when a reviewer or verifier emits no valid event — the
-        loop that keeps small/weak workers in the pipeline instead of silently
-        dropping their stage (ADR-0077 §3).
-    """
+    """Dimensional review engine (stateless config). See docs/reference/engines.md for parameter details."""
 
     def __init__(
         self,

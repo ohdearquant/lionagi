@@ -1,35 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Mixin for per-provider config enums.
-
-Tuple format (positional by index)::
-
-    MEMBER = (endpoint, aliases, type, options, base_url, auth_type, content_type)
-    # idx:     0        1        2      3        4         5          6
-
-    # Short form (agentic — no HTTP config needed):
-    GROUP_CHAT = ("group_chat", ["chat"], EndpointType.AGENTIC, LazyType("...:Request"))
-
-    # Full form (API — HTTP config included):
-    CHAT = ("chat/completions", ["chat"], EndpointType.API, LazyType("...:Request"),
-            "https://api.openai.com/v1", "bearer", "application/json")
-
-Usage::
-
-    class OpenAIConfigs(ProviderConfig, Enum):
-        _ignore_ = ["_PROVIDER", "_PROVIDER_ALIASES"]
-        _PROVIDER = "openai"
-        _PROVIDER_ALIASES = []
-
-        CHAT = ("chat/completions", ["chat"], EndpointType.API,
-                LazyType("lionagi.providers.openai.chat.models:OpenAIChatCompletionsRequest"),
-                "https://api.openai.com/v1", "bearer")
-
-    @OpenAIConfigs.CHAT.register
-    class OpenaiChatEndpoint(Endpoint): ...
-    # config auto-created — no _get_config() needed
-"""
+"""Mixin for per-provider config enums — tuple members drive EndpointMeta auto-creation via ``@config.register``."""
 
 from __future__ import annotations
 
@@ -42,14 +14,7 @@ from .registry import EndpointType, register_endpoint
 
 
 class LazyType:
-    """Deferred type import. Resolves on first access.
-
-    Usage in config enum::
-
-        CHAT = (..., LazyType("lionagi.providers.openai.chat.models:OpenAIChatCompletionsRequest"))
-
-    Hashable (required for Enum member tuples).
-    """
+    """Deferred type import resolved on first ``.resolve()`` call; hashable for use in Enum member tuples."""
 
     __slots__ = ("_ref", "_resolved")
 
@@ -84,11 +49,7 @@ def _get(value: tuple, idx: int, default=None):
 
 
 class ProviderConfig:
-    """Mixin for provider endpoint Enum classes.
-
-    Concrete classes extend ``(ProviderConfig, Enum)`` and declare
-    members as tuples with 4-7 elements (see module docstring).
-    """
+    """Mixin for provider endpoint Enum classes; members are 4-7-element tuples (see module docstring)."""
 
     # --- Tuple accessors ---
 
@@ -149,13 +110,7 @@ class ProviderConfig:
         }
 
     def register(self, cls=None):
-        """Decorator: register an endpoint class for this config member.
-
-        Usage::
-
-            @OpenAIConfigs.CHAT.register
-            class OpenaiChatEndpoint(Endpoint): ...
-        """
+        """Decorator: register an endpoint class for this config member."""
         decorator = register_endpoint(**self.as_registry_kwargs())
         if cls is not None:
             return decorator(cls)

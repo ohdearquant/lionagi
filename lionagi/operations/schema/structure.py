@@ -13,17 +13,7 @@ __all__ = ("Structure",)
 
 
 class Structure:
-    """Composable schema builder for structured LLM interactions.
-
-    Wraps an Operable with a base model or dict reference and convenience
-    flags for actions/reason. Subclasses implement format-specific render/parse.
-
-    Accepts either a BaseModel class or a dict as the response format:
-    - BaseModel: full Pydantic model with validation, Operable composition
-    - dict: raw key→type mapping for prompting and fuzzy-key parsing
-
-    Immutable — each ``with_*`` returns a new instance.
-    """
+    """Composable schema builder for structured LLM interactions; immutable, each ``with_*`` returns a new instance."""
 
     __slots__ = (
         "_base",

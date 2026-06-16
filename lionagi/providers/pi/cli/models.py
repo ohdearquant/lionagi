@@ -275,10 +275,7 @@ class PiCodeRequest(BaseModel):
     # ── CLI command builder ───────────────────────────────────────
 
     def as_cmd_args(self) -> list[str]:
-        """Build argument list for ``pi`` invocation.
-
-        Structure: ``-p --mode json [flags] [--] [prompt] [@files...]``
-        """
+        """Build argument list for ``pi`` invocation: ``-p --mode json [flags] [prompt] [@files...]``."""
         args: list[str] = ["-p", "--mode", "json"]
 
         # declarative flags
@@ -530,12 +527,7 @@ async def stream_pi_cli(
     on_tool_result: Callable[[dict[str, Any]], None] | None = None,
     on_final: Callable[[PiSession], None] | None = None,
 ) -> AsyncIterator[PiChunk | dict | PiSession]:
-    """Consume JSONL stream from Pi CLI and return a populated PiSession.
-
-    Pi events follow the AgentEvent schema. Assistant deltas are carried by
-    message_update.assistantMessageEvent and use the pi-ai
-    AssistantMessageEvent discriminated union.
-    """
+    """Consume JSONL stream from Pi CLI and return a populated PiSession."""
     if session is None:
         session = PiSession()
     theme = request.cli_display_theme or "light"

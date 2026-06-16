@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Ollama embeddings endpoint.
-
-Endpoint: POST http://localhost:11434/api/embeddings
-Docs: https://github.com/ollama/ollama/blob/main/docs/api.md#generate-embeddings
-"""
+"""Ollama embeddings endpoint (POST /api/embeddings)."""
 
 from __future__ import annotations
 
@@ -22,18 +18,7 @@ _HAS_OLLAMA = is_import_installed("ollama")
 
 @OllamaConfigs.EMBED.register
 class OllamaEmbedEndpoint(Endpoint):
-    """Ollama embeddings endpoint.
-
-    Calls the native Ollama /api/embeddings endpoint (not the OpenAI-compat one)
-    so it supports the full Ollama embedding API including ``keep_alive`` and
-    ``options``.
-
-    Usage::
-
-        endpoint = OllamaEmbedEndpoint()
-        result = await endpoint.call({"model": "nomic-embed-text", "prompt": "Hello"})
-        # result["embedding"]  — list[float]
-    """
+    """Ollama native /api/embeddings endpoint; supports keep_alive and options."""
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         if not _HAS_OLLAMA:

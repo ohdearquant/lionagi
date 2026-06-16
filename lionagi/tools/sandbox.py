@@ -1,17 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Sandbox execution via git worktrees.
-
-Agent works in an isolated worktree branch. Changes are tracked as git diff.
-If approved, merge the branch back. If rejected, delete the worktree.
-
-Why worktrees over tempdir:
-- Based on real repo state (same files, same history)
-- Changes are a proper git branch (reviewable, mergeable)
-- No need to copy files — worktree shares the git objects
-- Agent sees the real codebase, not a synthetic environment
-"""
+"""Sandbox execution via git worktrees — isolated branch per session, merge or discard."""
 
 from __future__ import annotations
 

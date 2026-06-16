@@ -1,45 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Permission system for agent tool access control.
-
-Three modes:
-    - allow_all: everything permitted (default for orchestrators)
-    - deny_all: nothing permitted (safe mode)
-    - rules: per-tool allow/deny/escalate rules
-
-Rules are checked in order: deny first, then allow, then default.
-Escalation lets a worker agent request permission from its orchestrator.
-
-Usage::
-
-    policy = PermissionPolicy(
-        mode="rules",
-        allow={"reader": ["*"], "search": ["*"], "bash": ["git *", "cargo *"]},
-        deny={"bash": ["rm *", "sudo *"], "editor": [".env", "*.key"]},
-        escalate={"bash": ["*"]},  # anything not explicitly allowed → escalate
-    )
-
-    # As AgentSpec
-    spec = AgentSpec.coding()
-    spec.permissions = {
-        "mode": "rules",
-        "allow": {"reader": ["*"], "search": ["*"]},
-        "deny": {"bash": ["rm *"]},
-        "escalate": {"bash": ["*"]},
-    }
-
-    # In settings.yaml
-    permissions:
-      mode: rules
-      allow:
-        reader: ["*"]
-        search: ["*"]
-        bash: ["git *", "cargo *", "uv *"]
-      deny:
-        bash: ["rm -rf *", "sudo *"]
-        editor: [".env", "credentials*"]
-"""
+"""Per-tool allow/deny/escalate permission policy for agent tool access control."""
 
 from __future__ import annotations
 

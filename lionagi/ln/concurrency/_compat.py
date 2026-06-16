@@ -1,10 +1,7 @@
 # Copyright (c) 2025-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compatibility layer for Python 3.10+ support.
-
-Provides ExceptionGroup backport and other compatibility utilities.
-"""
+"""ExceptionGroup backport and other compatibility shims for Python 3.10+."""
 
 from __future__ import annotations
 
@@ -47,8 +44,6 @@ else:
                 )
 
         class ExceptionGroup(BaseExceptionGroup, Exception):  # type: ignore  # noqa: N818  # compat shim must match stdlib ExceptionGroup name
-            """Minimal ExceptionGroup implementation for Python 3.10 without exceptiongroup."""
-
             pass
 
 

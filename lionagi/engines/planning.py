@@ -1,21 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Generic planning engine — the reactive DAG flow as an Engine (ADR-0075 §4).
-
-Where research/review encode a *fixed* domain decomposition as reaction rules,
-the planning engine decomposes a *novel* prompt per run: an orchestrator emits a
-``list[TaskAssignment]`` (the casts coordination emission), the assignments wire
-into a dependency DAG on casts-role branches, and execution is the reactive
-self-expanding executor (a worker granted ``SpawnRequest`` may grow the live
-DAG). A synthesizer reads the worker outputs and writes the deliverable.
-
-This is the engine ``li o flow`` is the CLI front-end of: the same plan → build
-DAG → execute → synthesize shape, with the CLI adding its own persistence,
-Studio, and budget concerns as observers/policy on top. The engine reuses the
-``lionagi.orchestration`` glue (``plan`` / ``spawn_roles`` / ``build_dag_graph``
-/ ``role_node_builder``) rather than re-implementing it.
-"""
+"""Planning engine — reactive DAG flow as an Engine (ADR-0075 §4); the library-level backend for ``li o flow``."""
 
 from __future__ import annotations
 
@@ -35,12 +21,7 @@ __all__ = ("PlanningEngine", "PlanError")
 
 
 class PlanError(RuntimeError):
-    """The orchestrator produced no usable plan (an empty ``TaskAssignment`` list).
-
-    Raised — rather than returning an empty result — so a planning run never
-    silently no-ops. The CLI front-end has its own richer ``FlowPlanError`` with
-    the raw response attached (#1236); this is the library-level equivalent.
-    """
+    """Raised when the orchestrator produces an empty TaskAssignment list, so a planning run never silently no-ops."""
 
 
 # A small default roster the orchestrator may assign to. Callers pass their own
@@ -61,23 +42,7 @@ def _synthesis_instruction(prompt: str, outputs: list[str]) -> str:
 
 
 class PlanningEngine(Engine):
-    """Plan-then-execute engine over the reactive DAG executor.
-
-    Parameters extend :class:`Engine` with:
-
-    orchestrator_role
-        Casts role that decomposes the prompt into a ``list[TaskAssignment]``.
-    roles
-        Roster the orchestrator may assign workers to.
-    synthesis_role
-        Casts role that writes the final deliverable from the worker outputs.
-    reactive
-        When True (default), every worker is granted ``SpawnRequest`` so the
-        live DAG self-expands; False runs a flat, fully-planned DAG.
-
-    All run-state (session, dedup, in-flight tasks) lives on the per-call
-    :class:`EngineRun`, so one engine runs many prompts concurrently.
-    """
+    """Plan-then-execute engine over the reactive DAG executor (stateless config). See docs/reference/engines.md for parameter details."""
 
     def __init__(
         self,
@@ -97,7 +62,7 @@ class PlanningEngine(Engine):
     # -- lifecycle ------------------------------------------------------------
 
     async def _run(self, run: EngineRun, prompt: str, *, max_ops: int = 0) -> str:
-        """Plan *prompt* into a DAG, execute it reactively, then synthesize."""
+        """Plan *prompt* into a DAG, execute it (reactively when self.reactive), then synthesize worker outputs."""
         prompt = prompt.strip()
         if not prompt:
             raise ValueError("prompt is empty")
@@ -126,7 +91,7 @@ class PlanningEngine(Engine):
     # -- stages ---------------------------------------------------------------
 
     async def _plan(self, run: EngineRun, prompt: str, max_ops: int) -> list:
-        """Decompose *prompt* into assignments — one reinforced retry, then fail loud."""
+        """Decompose *prompt* into TaskAssignment list; retries once with explicit guidance, then raises PlanError."""
         orchestrator = await run.make_agent(self.orchestrator_role, name="orchestrator")
         roster = list(self.roles)
         assignments = await plan(orchestrator, prompt, roles=roster, dag=True, max_tasks=max_ops)
@@ -148,7 +113,7 @@ class PlanningEngine(Engine):
     async def _synthesize(
         self, run: EngineRun, prompt: str, assignments: list, node_ids: list, result: dict
     ) -> str:
-        """Read each worker's output from the DAG result and write the deliverable."""
+        """Collect worker outputs from the DAG result and synthesize a single cohesive deliverable."""
         op_results = result.get("operation_results", {})
         outputs: list[str] = []
         for ta, nid in zip(assignments, node_ids, strict=True):

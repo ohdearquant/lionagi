@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Observable envelope carrying payloads into the reactive bus.
-
-``NodeLifecycleState`` and ``lane_for`` provide the canonical per-node
-lifecycle projection (ADR-0083). Callers pre-filter signals to one node id
-and call ``lane_for`` to derive the current lane without bespoke parsing.
-"""
+"""Signal types and per-node lifecycle projection for the reactive bus (ADR-0083)."""
 
 from __future__ import annotations
 
@@ -118,15 +113,7 @@ class NodeAwaitingApproval(Signal):
 
 
 class NodeEscalated(Signal):
-    """A DAG operation node escalated — out of depth or no higher tier available.
-
-    ``route`` is ``"higher_tier"`` when a re-dispatch is scheduled or
-    ``"give_up"`` when no escalation path is configured. The
-    ``escalation_request`` field carries the original request payload for
-    the audit trail; it is stored in a named field rather than ``Signal.data``
-    to prevent the observer's payload-matching from re-firing the escalation
-    handler when this signal is emitted.
-    """
+    """A DAG node escalated; route is "higher_tier" or "give_up" (see docs/reference/testing-state-session.md)."""
 
     op_id: str = ""
     name: str = ""
@@ -169,17 +156,7 @@ def _signal_to_state(sig: Any) -> NodeLifecycleState | None:
 
 
 def lane_for(signals: Iterable[Signal | Any]) -> NodeLifecycleState:
-    """Project an ordered, single-node signal stream into its current lifecycle lane.
-
-    Callers must pre-filter *signals* to one operation/node id. The default
-    state (empty stream) is ``"queued"``. Terminal states (``succeeded``,
-    ``failed``, ``escalated``) are sticky: later non-retry signals cannot
-    override them. A subsequent ``NodeQueued`` or ``NodeStarted`` signal
-    represents a new attempt and resets the state.
-
-    ``RunStart`` / ``RunEnd`` are run-scoped fallbacks — valid only for
-    single-run cards where no node-specific signal is present.
-    """
+    """Project a pre-filtered single-node signal stream to its current lifecycle lane; terminal states are sticky."""
     state: NodeLifecycleState = "queued"
     in_terminal: bool = False
     for sig in signals:

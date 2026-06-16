@@ -1,11 +1,5 @@
 def _ensure_headless_backend(save_path) -> None:
-    """Force Agg backend when saving to disk — works from any thread.
-
-    Must run BEFORE ``import matplotlib.pyplot`` in the calling scope,
-    since matplotlib binds its backend on the first pyplot import.
-    macOS default backend (``macosx``) creates an ``NSWindow`` which
-    Cocoa forbids off the main thread; Agg has no GUI at all.
-    """
+    """Force Agg backend before pyplot import; macOS default (macosx) creates NSWindow forbidden off main thread."""
     if not save_path:
         return
     try:
@@ -22,10 +16,7 @@ def visualize_graph(
     figsize=(14, 10),
     save_path: str | None = None,
 ):
-    """Visualize an executed or in-progress operation graph.
-
-    Reads node status from ``builder._executed`` and metadata on each node.
-    """
+    """Visualize an executed or in-progress operation graph; reads node status from builder._executed."""
     from lionagi.utils import is_import_installed
 
     if not is_import_installed("matplotlib"):
@@ -47,16 +38,13 @@ def visualize_graph(
 
     graph = builder.get_graph()
 
-    # Convert to networkx
     G = nx.DiGraph()  # noqa: N806 — networkx convention for a graph object
 
-    # Track node positions for hierarchical layout
     node_levels = {}
     node_labels = {}
     node_colors = []
     node_sizes = []
 
-    # First pass: add nodes and determine levels
     for node in graph.internal_nodes.values():
         node_id = str(node.id)[:8]
         G.add_node(node_id)
@@ -76,7 +64,6 @@ def visualize_graph(
 
         node_levels[node_id] = level
 
-        # Create label
         ref_id = node.metadata.get("reference_id", "")
         if ref_id:
             label = f"{node.operation}\n[{ref_id}]"
@@ -84,7 +71,6 @@ def visualize_graph(
             label = f"{node.operation}\n{node_id}"
         node_labels[node_id] = label
 
-        # Color and size based on status and type
         if node.id in builder._executed:
             node_colors.append("#90EE90")  # Light green
             node_sizes.append(4000)
@@ -101,7 +87,6 @@ def visualize_graph(
             node_colors.append("#E0E0E0")  # Light gray
             node_sizes.append(3000)
 
-    # Add edges
     edge_colors = []
     edge_styles = []
     edge_widths = []
@@ -112,7 +97,6 @@ def visualize_graph(
         tail_id = str(edge.tail)[:8]
         G.add_edge(head_id, tail_id)
 
-        # Style edges based on type
         edge_label = edge.label[0] if edge.label else ""
         edge_labels[(head_id, tail_id)] = edge_label
 
@@ -129,7 +113,6 @@ def visualize_graph(
             edge_styles.append("solid")
             edge_widths.append(1.5)
 
-    # Create improved hierarchical layout
     pos = {}
     nodes_by_level = {}
 
@@ -138,32 +121,25 @@ def visualize_graph(
             nodes_by_level[level] = []
         nodes_by_level[level].append(node_id)
 
-    # Position nodes with better spacing algorithm
     y_spacing = 2.5
 
     for level, nodes in nodes_by_level.items():
         num_nodes = len(nodes)
 
         if num_nodes <= 6:
-            # Normal spacing for small levels
             x_spacing = 2.5
             x_offset = -(num_nodes - 1) * x_spacing / 2
             for i, node_id in enumerate(nodes):
                 pos[node_id] = (x_offset + i * x_spacing, -level * y_spacing)
         else:
-            # Multi-row layout for large levels
             nodes_per_row = min(6, int(np.ceil(np.sqrt(num_nodes * 1.5))))
 
             for i, node_id in enumerate(nodes):
                 row = i // nodes_per_row
                 col = i % nodes_per_row
-
-                # Calculate row width
                 nodes_in_row = min(nodes_per_row, num_nodes - row * nodes_per_row)
                 x_spacing = 2.5
                 x_offset = -(nodes_in_row - 1) * x_spacing / 2
-
-                # Add slight y offset for different rows
                 y_offset = row * 0.8
 
                 pos[node_id] = (
@@ -171,10 +147,8 @@ def visualize_graph(
                     -level * y_spacing - y_offset,
                 )
 
-    # Create figure
     plt.figure(figsize=figsize)
 
-    # Draw nodes
     nx.draw_networkx_nodes(
         G,
         pos,
@@ -185,13 +159,9 @@ def visualize_graph(
         edgecolors="black",
     )
 
-    # Draw edges with different styles - use curved edges for better visibility
     for i, (u, v) in enumerate(G.edges()):
-        # Calculate curve based on node positions
         u_pos = pos[u]
         v_pos = pos[v]
-
-        # Determine connection style based on relative positions
         if abs(u_pos[0] - v_pos[0]) > 5:  # Far apart horizontally
             connectionstyle = "arc3,rad=0.2"
         else:
@@ -211,7 +181,6 @@ def visualize_graph(
             connectionstyle=connectionstyle,
         )
 
-    # Draw labels
     nx.draw_networkx_labels(
         G,
         pos,
@@ -221,7 +190,6 @@ def visualize_graph(
         font_family="monospace",
     )
 
-    # Draw edge labels (only for smaller graphs)
     if len(G.edges()) < 20:
         nx.draw_networkx_edge_labels(
             G,
@@ -240,7 +208,6 @@ def visualize_graph(
     plt.title(title, fontsize=18, fontweight="bold", pad=20)
     plt.axis("off")
 
-    # Enhanced legend
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
 
@@ -279,7 +246,6 @@ def visualize_graph(
         ncol=2,
     )
 
-    # Add statistics box
     stats_text = (
         f"Nodes: {len(G.nodes())}\nEdges: {len(G.edges())}\nExecuted: {len(builder._executed)}"
     )

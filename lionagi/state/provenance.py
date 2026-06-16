@@ -1,12 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0022: provenance helpers.
-
-These are tiny one-shot utilities that the CLI call sites use to write
-the resolved model / provider / effort / agent_hash columns at session
-creation time. Keeping them in one file makes the write-side responsibilities
-easy to audit (every CLI entry point should pass through here).
-"""
+"""ADR-0022: provenance helpers for writing model/provider/agent_hash columns at session creation."""
 
 from __future__ import annotations
 
@@ -18,15 +12,7 @@ _AGENT_HASH_LEN = 16
 
 
 def agent_definition_hash(agent_name: str | None) -> str | None:
-    """Return a short SHA-256 fingerprint of an agent profile's content.
-
-    Uses the same resolution order as
-    :func:`lionagi.cli._agents.load_agent_profile`: project-local
-    ``.lionagi/agents/`` directories first (git root, then cwd walk),
-    then ``~/.lionagi/agents/``. Returns ``None`` when the agent name is
-    missing or no profile is found; callers should write ``None`` to
-    ``sessions.agent_hash`` in that case.
-    """
+    """Return a short SHA-256 fingerprint of the agent profile, or None if not found."""
     if not agent_name:
         return None
     from lionagi._paths import find_lionagi_dirs
@@ -48,13 +34,7 @@ def _hash_file(path: Path) -> str:
 
 
 def resolve_model_spec(provider: str | None, model: str | None) -> str | None:
-    """Produce the canonical ``"provider/model"`` string for storage.
-
-    ADR-0022 requires the stored value to be the resolved spec, not the
-    user input. The CLI already does the parsing — this helper just
-    re-joins the parts so callers don't need to remember the separator.
-    Returns ``None`` when neither part is known.
-    """
+    """Return the canonical "provider/model" string for ADR-0022 storage, or None if both absent."""
     if not provider and not model:
         return None
     if provider and model:

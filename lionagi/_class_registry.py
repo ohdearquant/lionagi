@@ -67,25 +67,7 @@ _PACKAGE_PARENT: str = os.path.dirname(_PACKAGE_DIR)
 
 
 def get_class_objects(file_path):
-    """Return a mapping of {class_name: class} for all classes in *file_path*.
-
-    Instead of loading the file as an isolated module via
-    ``spec_from_file_location`` (which breaks relative imports), we derive the
-    canonical dotted module name from *file_path* relative to the package root
-    and use ``importlib.import_module``.  This preserves full package context
-    so relative imports (``from .x import Y``) resolve correctly.
-
-    Args:
-        file_path: Absolute path to a ``.py`` file inside the lionagi package.
-
-    Returns:
-        Dict mapping class names to class objects found in the module.
-
-    Raises:
-        ValueError: If *file_path* is not located under the package root (i.e.
-            the dotted name cannot be derived) or the module has no classes.
-        ImportError: Propagated if the derived module fails to import.
-    """
+    """Return {class_name: class} for all classes in *file_path* via canonical import."""
     abs_path = os.path.abspath(file_path)
 
     # Guard: the file must live inside the `lionagi/` package directory itself,
@@ -123,31 +105,7 @@ def get_class_objects(file_path):
 
 
 def get_class(class_name: str) -> type:
-    """
-    Retrieve a class by name from the registry or dynamically import it.
-
-    This function first checks the LION_CLASS_REGISTRY for the requested class.
-    If not found, it uses mor to dynamically import the class. The
-    function ensures that the retrieved class is a subclass of the specified
-    base_class.
-
-    Args:
-        class_name: The name of the class to retrieve.
-
-    Returns:
-        The requested class, which is a subclass of base_class.
-
-    Raises:
-        ValueError: If the class is not found or not a subclass of base_class.
-
-    Usage:
-        MyClass = get_class("MyClassName", BaseClass)
-        instance = MyClass()
-
-    Note:
-        This function automatically registers newly found classes in the
-        LION_CLASS_REGISTRY for future quick access.
-    """
+    """Retrieve a class by name from the registry or by dynamic import; raises ValueError if not found."""
     if class_name in LION_CLASS_REGISTRY:
         return LION_CLASS_REGISTRY[class_name]
 

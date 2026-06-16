@@ -1,15 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Recursive research engine — the first domain engine on the Engine base.
-
-A team of casts-role agents explores a topic; when one emits a high-novelty
-``FindingEmitted`` (or an explicit ``DepthRequested``), the engine spawns a
-deeper exploration node — recursively, bounded by ``max_depth`` and topic
-dedup. When the tree quiesces, a synthesizer reads every finding from the
-emission store and writes the result. The decomposition logic lives in the
-reaction rules, not a per-task DAG plan.
-"""
+"""Recursive research engine — agent teams explore a topic, spawning deeper nodes on high-novelty findings until quiescence."""
 
 from __future__ import annotations
 
@@ -31,9 +23,7 @@ __all__ = (
 
 
 class FindingEmitted(Finding):
-    """A discovered claim — the casts ``Finding`` (description, evidence,
-    confidence, severity, source) plus the two fields that gate depth expansion.
-    It rides the bus inside a ``Signal``; no Observable base needed."""
+    """A discovered claim extending Finding with novelty and depth fields that gate recursive expansion."""
 
     novelty: float = Field(
         default=0.5,
@@ -48,10 +38,7 @@ class FindingEmitted(Finding):
 
 
 class DepthRequested(EngineEvent):
-    """An explicit request to explore a sub-question one level deeper.
-
-    Research-specific recursion control — no casts equivalent (it is a signal to
-    the engine, not a discovery)."""
+    """Explicit request to explore a sub-question one level deeper; research-specific, no casts twin."""
 
     question: str = Field(description="The sub-question worth its own deeper investigation.")
     parent_depth: int = Field(
@@ -60,8 +47,7 @@ class DepthRequested(EngineEvent):
 
 
 class ContradictionFound(Conflict):
-    """Two findings that conflict — the casts ``Conflict`` (``sources`` +
-    ``nature``) scored by ``severity``."""
+    """Two conflicting findings; extends Conflict with a severity score."""
 
     severity: float = Field(
         default=0.5,
@@ -115,13 +101,7 @@ def _synthesis_instruction(topic: str, findings: list[FindingEmitted], contradic
 
 
 def _branch_emitted(branch: Any) -> bool:
-    """True when *branch*'s own assistant responses carry a ``FindingEmitted``
-    or ``DepthRequested`` emission.
-
-    Stage-local by construction: only THIS member's messages are inspected, so
-    a concurrent child node's emission (spawned by ``_on_finding`` mid-stage)
-    can never satisfy another stage's repair check.  Run-store deltas cannot
-    give this guarantee — the bus does not attribute signals to branches."""
+    """True when *branch*'s own messages carry a FindingEmitted or DepthRequested emission (branch-local check, not run-store)."""
     caps = getattr(branch, "_capabilities", None)
     if caps is None:
         return False
@@ -143,25 +123,7 @@ def _branch_emitted(branch: Any) -> bool:
 
 
 class ResearchEngine(Engine):
-    """Recursive, reaction-driven research engine (stateless config).
-
-    Parameters extend :class:`Engine` with:
-
-    novelty_threshold
-        A ``FindingEmitted`` above this novelty spawns a deeper node.
-    roles
-        Casts roles forming each exploration team (run in sequence, sharing
-        output). Each is granted the research emissions.
-    synthesis_role
-        Casts role that writes the final synthesis from the emission store.
-    repair_retries
-        Re-prompt turns when an exploration node's whole team emitted no finding
-        — the loop that keeps small/weak workers in the pipeline instead of a
-        node silently producing nothing (ADR-0077 §3).
-
-    All run-state (session, seen topics, in-flight nodes) lives on the
-    per-call :class:`EngineRun`, so one engine runs many topics concurrently.
-    """
+    """Recursive, reaction-driven research engine (stateless config). See docs/reference/engines.md for parameter details."""
 
     def __init__(
         self,
@@ -185,11 +147,7 @@ class ResearchEngine(Engine):
         run: EngineRun,
         topic: str,
     ) -> str:
-        """Synthesize whatever findings were collected before the budget cut in.
-
-        Called by Engine.run() when the engine's own watchdog cancels the run.
-        Returns an empty string if no findings exist yet.
-        """
+        """Synthesize collected findings after budget cancellation; returns empty string if no findings exist."""
         findings = run.by_type(FindingEmitted)
         if not findings:
             return ""
@@ -203,7 +161,7 @@ class ResearchEngine(Engine):
         return status_header + (report or "")
 
     async def _run(self, run: EngineRun, topic: str) -> str:
-        """Explore *topic* recursively, then synthesize. Returns the synthesis text."""
+        """Explore *topic* recursively via reaction rules, wait for quiescence, then return the synthesis text."""
         topic = topic.strip()
         if not topic:
             raise ValueError("topic is empty")
@@ -256,20 +214,7 @@ class ResearchEngine(Engine):
             await self._drive_node(run, team, _node_instruction(topic, depth, self.max_depth))
 
     async def _drive_node(self, run: EngineRun, team: list, instruction: str) -> None:
-        """Run an exploration team with per-stage repair, then node-level repair.
-
-        Each member runs sequentially via ``operate_with_repair``, so a stage
-        that emits nothing (weak model, pure prose) gets up to
-        ``repair_retries`` extra turns before the next member runs.  This is
-        the per-stage repair pattern from coding/hypothesis — each stage's
-        ``arrived`` closure inspects the member branch's OWN messages
-        (:func:`_branch_emitted`), so an emission from a concurrently running
-        child node can never mask this member's silence.
-
-        After all members have run, a node-level guard fires if the *whole*
-        node still produced nothing — the outer repair that was already present
-        — to keep the global count moving even when every per-stage repair
-        turn also failed.  An empty team has nothing to drive or repair."""
+        """Run team members sequentially with per-stage repair; falls back to a node-level repair if the whole node produced nothing."""
         if not team:
             return
         before = len(run.by_type(FindingEmitted)) + len(run.by_type(DepthRequested))

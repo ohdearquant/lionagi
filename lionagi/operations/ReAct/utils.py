@@ -9,17 +9,7 @@ from lionagi.models import HashableModel
 
 
 class ReActAnalysis(HashableModel):
-    """
-    Captures the ReAct chain-of-thought output each round:
-    1) The LLM's 'analysis' (reasoning),
-    2) Indication whether more rounds are needed to finish the task,
-    3) Additional tuning knobs: how to handle validation, how to execute actions, etc.
-
-    Note:
-    - Make real progress toward completing the task each round.
-    - Avoid needless repetition, but do not cut the work short — finish and verify
-      the task before you finalize.
-    """
+    """Chain-of-thought output for one ReAct round: analysis, extension flag, and action strategy."""
 
     # Standard ReAct strings. The round budget is given as HEADROOM for planning, not
     # as a countdown: "you have N steps left, be efficient" reads as scarcity and makes

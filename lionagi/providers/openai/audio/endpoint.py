@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""OpenAI Audio endpoints: Text-to-Speech and Speech-to-Text (Whisper).
-
-TTS:  POST https://api.openai.com/v1/audio/speech
-STT:  POST https://api.openai.com/v1/audio/transcriptions
-"""
+"""OpenAI Audio endpoints: TTS (/v1/audio/speech) and STT/Whisper (/v1/audio/transcriptions)."""
 
 from __future__ import annotations
 
@@ -23,13 +19,7 @@ __all__ = ("OpenaiAudioSpeechEndpoint", "OpenaiAudioTranscriptionEndpoint")
 
 @OpenAIConfigs.AUDIO_SPEECH.register
 class OpenaiAudioSpeechEndpoint(Endpoint):
-    """Text-to-Speech endpoint.  Returns raw audio bytes.
-
-    Usage::
-
-        endpoint = OpenaiAudioSpeechEndpoint()
-        audio_bytes = await endpoint.call({"input": "Hello!", "voice": "nova"})
-    """
+    """TTS endpoint; returns raw audio bytes."""
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         if config is None:
@@ -77,22 +67,7 @@ class OpenaiAudioSpeechEndpoint(Endpoint):
 
 @OpenAIConfigs.AUDIO_TRANSCRIPTION.register
 class OpenaiAudioTranscriptionEndpoint(Endpoint):
-    """Speech-to-Text endpoint (Whisper).
-
-    The OpenAI transcription API uses multipart/form-data with an audio file.
-    Pass ``file`` as bytes or a file-like object via kwargs; the endpoint will
-    encode the request correctly.
-
-    Usage::
-
-        endpoint = OpenaiAudioTranscriptionEndpoint()
-        with open("audio.mp3", "rb") as f:
-            result = await endpoint.call(
-                {"model": "whisper-1"},
-                file=f.read(),
-                filename="audio.mp3",
-            )
-    """
+    """STT/Whisper endpoint; pass file bytes via kwargs, encodes as multipart/form-data."""
 
     transport_arg_keys = ("file", "filename")
 

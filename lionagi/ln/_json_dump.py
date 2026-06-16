@@ -1,14 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""JSON serialization utilities built on orjson.
-
-Provides flexible serialization with:
-- Configurable type handling (Decimal, Enum, datetime, sets)
-- Safe fallback mode for logging non-serializable objects
-- NDJSON streaming for iterables
-- Caching of default handlers for performance
-"""
+"""JSON serialization utilities built on orjson with configurable type handling and NDJSON streaming."""
 
 from __future__ import annotations
 
@@ -102,18 +95,7 @@ def get_orjson_default(
     safe_fallback: bool = False,
     fallback_clip: int = 2048,
 ) -> Callable[[Any], Any]:
-    """
-    Build a fast, extensible `default=` callable for orjson.dumps.
-
-    - deterministic_sets: sort set/frozenset deterministically (slower).
-    - decimal_as_float: serialize Decimal as float (faster/smaller; precision loss).
-    - enum_as_name: serialize Enum as .name (else orjson uses .value by default).
-    - passthrough_datetime: if True, also pass OPT_PASSTHROUGH_DATETIME in options.
-    - safe_fallback: if True, unknown objects never raise (for logs);
-      Exceptions become a tiny dict; all else becomes clipped repr(str).
-
-    'order' and 'additional' preserve your override semantics.
-    """
+    """Build an extensible default= callable for orjson.dumps with set/Decimal/Enum/datetime handling."""
     ser = _default_serializers(
         deterministic_sets=deterministic_sets,
         decimal_as_float=decimal_as_float,
@@ -205,9 +187,7 @@ def make_options(
     passthrough_datetime: bool = False,
     allow_non_str_keys: bool = False,
 ) -> int:
-    """
-    Compose orjson 'option' bit flags succinctly.
-    """
+    """Compose orjson option bit flags from keyword arguments."""
     opt = 0
     if append_newline:
         opt |= orjson.OPT_APPEND_NEWLINE
@@ -247,13 +227,7 @@ def json_dumpb(
     default: Callable[[Any], Any] | None = None,
     options: int | None = None,
 ) -> bytes:
-    """
-    Serialize to **bytes** (fast path). Prefer this in hot code.
-
-    Notes:
-      - If you set passthrough_datetime=True, you likely also want it in options.
-      - safe_fallback=True is recommended for LOGGING ONLY.
-    """
+    """Serialize to bytes via orjson (fast path); safe_fallback=True for logging only."""
     if default is None:
         default = _cached_default(
             deterministic_sets=deterministic_sets,
@@ -287,20 +261,7 @@ def json_dumps(
     as_loaded: bool = False,
     **kwargs: Any,
 ) -> str | bytes | Any:
-    """Serialize to JSON with flexible output format.
-
-    Args:
-        obj: Object to serialize.
-        decode: Return str instead of bytes (default True).
-        as_loaded: Parse output back to dict/list (requires decode=True).
-        **kwargs: Passed to json_dumpb.
-
-    Returns:
-        str (default), bytes (decode=False), or dict/list (as_loaded=True).
-
-    Raises:
-        ValueError: If as_loaded=True without decode=True.
-    """
+    """Serialize to str (default), bytes, or re-parsed dict/list; raises ValueError if as_loaded without decode."""
     if as_loaded and not decode:
         raise ValueError("as_loaded=True requires decode=True")
     out = json_dumpb(obj, **kwargs)
@@ -330,11 +291,7 @@ def json_lines_iter(
     default: Callable[[Any], Any] | None = None,
     options: int | None = None,
 ) -> Iterable[bytes]:
-    """
-    Stream an iterable as **NDJSON** (one JSON object per line) in **bytes**.
-
-    Always ensures a trailing newline per line (OPT_APPEND_NEWLINE).
-    """
+    """Stream iterable as NDJSON bytes (one orjson-serialized object per line, always newline-terminated)."""
     if default is None:
         default = _cached_default(
             deterministic_sets=deterministic_sets,

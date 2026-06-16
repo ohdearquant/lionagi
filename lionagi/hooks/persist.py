@@ -1,18 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Route per-branch live persistence through the session hook bus (ADR-0023b).
-
-The CLI used to register its message-persist callback directly on
-``branch.on_message_added`` — a parallel dispatch path beside the observer. This
-moves it onto the one transport: the branch emits ``MESSAGE_ADD`` (ordered,
-awaited) and a thin per-branch handler on ``session.hooks`` invokes the SAME
-persist callback. The existing callback body is unchanged; only its dispatch
-route moves, so the migration carries no persistence-logic risk.
-
-The built-in ``persist_message`` default is disabled here because the CLI
-callback is richer (resume-dedup, lazy per-branch row creation, dual
-progression) — there must be exactly one persistence path.
-"""
+"""ADR-0023b: route per-branch live persistence through the session hook bus."""
 
 from __future__ import annotations
 
@@ -32,14 +20,7 @@ def route_message_persistence(
     branch: Any,
     on_message: Callable[[Any], Awaitable[None]],
 ) -> HookHandler:
-    """Route ``on_message`` for ``branch`` through the session hook bus.
-
-    Replaces ``branch.on_message_added.append(on_message)``. Ensures the session
-    bus exists, disables the default ``persist_message`` (the CLI owns
-    persistence), attaches the bus to the branch so it emits ``MESSAGE_ADD``, and
-    registers a handler scoped to this branch. Returns the registered handler so
-    the caller can detach it at teardown.
-    """
+    """Wire ``on_message`` for ``branch`` through the session bus; returns handler for teardown."""
     from .builtins import persist_message
 
     bus = session.hooks  # lazily builds the bus, bound to session.observer
@@ -67,13 +48,7 @@ def route_message_persistence(
 
 
 def unroute_message_persistence(holder: Any, handler: HookHandler) -> None:
-    """Detach a handler registered by :func:`route_message_persistence`.
-
-    ``holder`` is the branch whose persistence was routed (it carries the shared
-    session bus as ``_hooks`` and the ``_persist_via_bus`` emit hook). Removes the
-    handler from the bus and the emit hook from the branch so neither fires after
-    teardown.
-    """
+    """Detach handler and emit hook registered by :func:`route_message_persistence`."""
     bus = getattr(holder, "_hooks", None)
     if bus is not None:
         bus.off(HookPoint.MESSAGE_ADD, handler)

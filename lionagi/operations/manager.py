@@ -1,11 +1,9 @@
+"""Experimental operation registry."""
+
 from collections.abc import Callable
 
 from lionagi.protocols._concepts import Manager
 from lionagi.utils import is_coro_func
-
-"""
-experimental
-"""
 
 
 class OperationManager(Manager):
