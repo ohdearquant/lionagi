@@ -1,13 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0076 — HookBus re-based onto the observer transport.
-
-The observer is the single event *record*; HookBus is the ordered /
-blocking dispatch *discipline* over it. These tests prove a bound bus
-records a HookSignal per emit, reactive observers can subscribe, and the
-ordered / StopHook / blocking semantics are unchanged.
-"""
+"""ADR-0076 — HookBus observer transport: bound bus records HookSignals, reactive subscription, and dispatch semantics."""
 
 from __future__ import annotations
 

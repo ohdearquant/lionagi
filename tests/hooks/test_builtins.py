@@ -122,13 +122,7 @@ async def test_persist_message_legacy_progression_id_still_works():
 
 
 class TestPersistSessionStartReasonCode:
-    """Codex finding: persist_session_start writes status='running', which
-    routes through update_status() and REQUIRES a reason_code. There is no
-    canonical default for (session, running), so without an explicit code the
-    deprecation shim raises ValueError — and HookBus.emit() swallows it,
-    silently dropping every provenance field. Regression: the hook must run
-    against a real StateDB without raising and persist provenance + a reason.
-    """
+    """persist_session_start must write a reason_code or the bus silently drops every provenance field."""
 
     async def test_persist_session_start_persists_provenance_with_reason(
         self, monkeypatch, tmp_path
