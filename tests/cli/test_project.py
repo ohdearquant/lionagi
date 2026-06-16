@@ -125,7 +125,7 @@ class TestDetectProjectGlobalOverrides:
 
 
 class TestReadProjectFromTomlFallback:
-    """LIONAGI-AUDIT-003: the 3.10 TOML fallback must use `toml`, not `tomli`."""
+    """Python 3.10 TOML fallback must use `toml`, not `tomli`."""
 
     def test_falls_back_to_toml_when_tomllib_absent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

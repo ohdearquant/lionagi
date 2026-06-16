@@ -1,20 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for 'li agent --preset' (3a) and 'li agent --form' (3b).
-
-Parser-level tests: flag parsing, choices rejection, file-not-found, invalid
-spec → rc!=0 + error message.
-
-Behaviour tests with runner patched: assert _make_coding_preset() is used when
---preset coding is given; assert WorkForm validation gate fires before any LLM
-call.
-
-Error-channel assertions use ``log_error`` capture rather than capsys because
-``configure_cli_logging()`` sets ``propagate=False`` on ``lionagi.cli.*``
-loggers so pytest's caplog/capsys may not receive the output.  We monkeypatch
-``log_error`` directly and inspect the captured message list.
-"""
+"""Tests for 'li agent --preset' and 'li agent --form': parser, validation, and error routing."""
 
 from __future__ import annotations
 
@@ -644,7 +631,7 @@ async def test_run_agent_continue_last_with_preset_raises(monkeypatch, tmp_path)
 
 
 # ---------------------------------------------------------------------------
-# Finding 1: profile + preset system prompt composition
+# profile + preset system prompt composition
 # ---------------------------------------------------------------------------
 
 
@@ -768,7 +755,7 @@ async def test_run_agent_profile_without_preset_system_prompt_unchanged(monkeypa
 
 
 # ---------------------------------------------------------------------------
-# Finding 2: form spec closed schema enforcement
+# form spec closed schema enforcement
 # ---------------------------------------------------------------------------
 
 
@@ -873,7 +860,7 @@ class TestFormSpecClosedSchema:
 
 
 # ---------------------------------------------------------------------------
-# Finding 3: directory --form path → rc=1, clear error, no traceback
+# directory --form path → rc=1, clear error, no traceback
 # ---------------------------------------------------------------------------
 
 
@@ -907,7 +894,7 @@ class TestFormDirectoryPath:
 
 
 # ---------------------------------------------------------------------------
-# Round-2 Finding 1: non-mapping fields / values probe shapes
+# non-mapping fields / values probe shapes
 # ---------------------------------------------------------------------------
 
 
@@ -977,7 +964,7 @@ class TestFormNonMappingTypes:
 
 
 # ---------------------------------------------------------------------------
-# Round-2 Finding 2: LION_SYSTEM_MESSAGE dedup with real profile files
+# LION_SYSTEM_MESSAGE dedup with real profile files
 # ---------------------------------------------------------------------------
 
 

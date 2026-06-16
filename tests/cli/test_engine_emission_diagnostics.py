@@ -1,15 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for engine emission-missing diagnostics written to engine_runs DB (issue #1397).
-
-Covers:
-  - Zero-emission run → engine_runs row has status='completed' AND
-    error containing 'emission_missing'
-  - Normal run (no emission failures) → error column stays NULL
-  - EngineRun._emission_failures accumulates correctly
-  - EngineRun.operate_with_repair notifies and records emission_missing
-"""
+"""Tests for engine emission-missing diagnostics: DB error column, failure accumulation, and repair path."""
 
 from __future__ import annotations
 
@@ -70,8 +62,7 @@ class MockStateDB:
 
 
 async def test_emission_failures_written_to_db_error_on_completed(monkeypatch):
-    """When an engine run completes but emission failures occurred, the DB row
-    must have status='completed' AND a non-None error with 'emission_missing'."""
+    """Completed run with emission failures must have status='completed' and error containing 'emission_missing'."""
     import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
@@ -198,8 +189,7 @@ def test_engine_run_emission_failures_starts_empty():
 
 
 async def test_operate_with_repair_records_emission_failure(monkeypatch):
-    """When arrived() never returns True and retries are exhausted,
-    _emission_failures must contain a descriptive entry."""
+    """Exhausted retries with arrived() always False must add a descriptive entry to _emission_failures."""
     from lionagi.engines.engine import EngineRun
 
     engine = MagicMock()
@@ -286,8 +276,7 @@ async def test_operate_with_repair_no_failure_when_arrived(monkeypatch):
 
 
 async def test_completed_run_with_error_column_in_real_db(tmp_path):
-    """Verify the real StateDB allows writing error='emission_missing: x2' with
-    status='completed' — confirms no DB-level constraint prevents it."""
+    """Real StateDB allows error='emission_missing: ...' alongside status='completed' (no DB constraint blocks it)."""
     aiosqlite = pytest.importorskip("aiosqlite")
 
     from lionagi.state.db import StateDB
@@ -373,12 +362,7 @@ async def _build_zero_emission_engine():
 
 
 async def test_real_engine_emission_failure_propagates_to_cli(monkeypatch):
-    """Integration: real Engine subclass with a branch that never emits →
-    _do_engine_run writes error='emission_missing: ...' with status='completed'.
-
-    This is the test codex identified as missing: the mock-based test above
-    only tested the CLI read path (manually set attr), not the real
-    Engine.run() → engine._emission_failures handoff."""
+    """Integration: real Engine subclass with a never-emitting branch → _do_engine_run writes error='emission_missing: ...' with status='completed'."""
     import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
@@ -464,8 +448,7 @@ async def test_real_engine_clean_run_leaves_error_null(monkeypatch):
 
 
 async def test_engine_reuse_second_run_resets_emission_failures(monkeypatch):
-    """Engine instance reused for a second clean run must NOT carry emission
-    failures from the first run (no cross-run leak)."""
+    """Engine reused for a second clean run must not carry emission_failures from the first run."""
     import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
@@ -489,8 +472,6 @@ async def test_engine_reuse_second_run_resets_emission_failures(monkeypatch):
             return None
 
     class TwoRunEngine(Engine):
-        """First run: emission_missing. Second run: clean."""
-
         async def _run(self, run: EngineRun, spec: str, **kwargs) -> str:  # type: ignore[override]
             call_count[0] += 1
             branch = _ConditionalBranch()

@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for #1144 — smart play/show staleness in `li kill --all-stale`."""
+"""Tests for smart play/show staleness in `li kill --all-stale`: child-derived staleness detection."""
 
 from __future__ import annotations
 
@@ -180,12 +180,7 @@ async def test_do_kill_all_stale_sweeps_play_with_dead_session(
 async def test_do_kill_all_stale_does_not_sweep_play_with_live_session(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A play whose linked session is still running is NOT swept.
-
-    The session is given the current process PID so it survives the
-    PID-based sweep and remains running, which means the play must also
-    remain untouched by the child-derived staleness pass.
-    """
+    """A play whose linked session is still running (live PID) is NOT swept by the child-derived pass."""
     import os
 
     own_pid = os.getpid()

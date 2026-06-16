@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for --timeout deadline preamble injection (issue #1087).
-
-Verifies that ``build_deadline_preamble`` produces the expected format and
-that ``_run_agent`` prepends it to the user prompt when ``--timeout`` is set.
-No real API calls are made — the branch.operate() path is mocked.
-"""
+"""Tests for --timeout deadline preamble: format, content, and injection into _run_agent."""
 
 from __future__ import annotations
 

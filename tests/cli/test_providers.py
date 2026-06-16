@@ -41,13 +41,7 @@ def test_build_imodel_from_spec_maps_effort_and_yolo_without_network(monkeypatch
 
 
 def test_resolve_persisted_effort_gemini_returns_none():
-    """Gemini + effort='high' must always resolve to None.
-
-    Previously the PROVIDERS_NO_EFFORT reset was inside ``if isinstance(chat_model,
-    iModel)``.  build_chat_model returns a plain str for gemini (no effort kwarg,
-    extra stays empty), so the isinstance guard was False and effort stayed 'high'.
-    The helper must collapse this to None regardless of chat_model type.
-    """
+    """Gemini + effort='high' must resolve to None regardless of chat_model type (gemini returns str)."""
     from lionagi.cli._providers import (
         PROVIDER_EFFORT_KWARG,
         PROVIDERS_NO_EFFORT,
@@ -73,12 +67,7 @@ def test_resolve_persisted_effort_gemini_returns_none():
 
 
 def test_resolve_persisted_effort_codex_max_clamps_to_xhigh():
-    """codex + effort='max' must resolve to persisted 'xhigh' (post-clamp).
-
-    build_chat_model adds reasoning_effort='xhigh' to the iModel kwargs when
-    the input is 'max'. The helper must read that clamped value from the iModel
-    endpoint config and return it.
-    """
+    """codex + effort='max' resolves to 'xhigh' (build_chat_model clamps max→xhigh in the iModel kwargs)."""
     from lionagi import iModel
     from lionagi.cli._providers import (
         PROVIDER_EFFORT_KWARG,
@@ -107,15 +96,7 @@ def test_resolve_persisted_effort_codex_max_clamps_to_xhigh():
 
 
 def test_resolve_persisted_effort_no_effort_wins_over_imodel():
-    """If a provider were somehow in both sets, PROVIDERS_NO_EFFORT wins.
-
-    The module-level assert prevents this in practice, but the helper's own
-    ordering (iModel read first, then no-effort override) is the correct
-    defence-in-depth — no-effort always wins.
-
-    We test this by calling the helper directly with a fake iModel-shaped
-    object so we don't depend on real network config.
-    """
+    """PROVIDERS_NO_EFFORT overrides even an iModel with an effort kwarg (defence-in-depth)."""
     from lionagi.cli._providers import resolve_persisted_effort
 
     class _FakeEndpointConfig:
@@ -144,11 +125,7 @@ def test_resolve_persisted_effort_no_effort_wins_over_imodel():
 
 
 def test_module_invariant_sets_are_disjoint():
-    """PROVIDERS_NO_EFFORT and PROVIDER_EFFORT_KWARG must be disjoint.
-
-    The module-level assert enforces this at import time. Re-check here so a
-    test failure gives a readable message rather than an opaque ImportError.
-    """
+    """PROVIDERS_NO_EFFORT and PROVIDER_EFFORT_KWARG must be disjoint (re-checked for a readable failure message)."""
     from lionagi.cli._providers import PROVIDER_EFFORT_KWARG, PROVIDERS_NO_EFFORT
 
     overlap = PROVIDERS_NO_EFFORT & PROVIDER_EFFORT_KWARG.keys()

@@ -1,18 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Regression tests for the anyio.NoEventLoopError fix (#1082).
-
-Root cause: ``lionagi/cli/agent.py`` called ``anyio.get_cancelled_exc_class()``
-inside an ``except BaseException`` block that executes *after* ``run_async``
-has torn down the event loop.  ``anyio.get_cancelled_exc_class()`` queries the
-running backend and raises ``NoEventLoopError`` when there is none.
-
-Fix: ``cache_cancelled_exc_class()`` captures the class from inside a live loop;
-``cancelled_exc_classes()`` returns the cached tuple (or a safe asyncio fallback)
-so it never touches anyio after the loop exits.
-"""
+"""Regression tests for the anyio.NoEventLoopError fix after event-loop teardown."""
 
 from __future__ import annotations
 
@@ -148,21 +137,7 @@ class TestCacheAndReaderFunctions:
 
 
 class TestRunAgentCancelledExcPath:
-    """
-    Simulate the exact failure scenario from issue #1082.
-
-    In production:
-      1. ``run_async(_run_agent(...))`` runs the coroutine to completion.
-      2. ``run_async`` tears down the event loop.
-      3. Inside the ``except BaseException`` block in ``run_agent``, the code
-         previously called ``anyio.get_cancelled_exc_class()`` — which raises
-         ``NoEventLoopError`` because the loop is gone.
-
-    Here we reproduce that by:
-      - Running a dummy coroutine with ``run_async`` (which starts + stops a loop).
-      - Verifying that a ``CancelledError`` raised *after* ``run_async`` returns
-        is still correctly classified by ``cancelled_exc_classes()``.
-    """
+    """Simulate the exception-classification path after the event loop has been torn down."""
 
     def setup_method(self) -> None:
         """Reset module-level cache before each test."""
@@ -204,17 +179,7 @@ class TestRunAgentCancelledExcPath:
     def test_run_agent_uses_cancelled_exc_classes_not_get_cancelled_exc_class(
         self,
     ) -> None:
-        """Verify the *sync* run_agent() no longer calls get_cancelled_exc_class.
-
-        There are two ``except BaseException`` handlers in agent.py:
-        - One inside ``_run_agent`` (async) — runs inside the event loop, safe.
-        - One inside ``run_agent`` (sync) — runs AFTER run_async() exits the loop;
-          calling anyio.get_cancelled_exc_class() there raises NoEventLoopError.
-
-        This test checks only the handler belonging to the *sync* ``run_agent``
-        function definition, so the safe in-loop usage in ``_run_agent`` does not
-        trigger a false positive.
-        """
+        """Sync run_agent() BaseException handler must not call get_cancelled_exc_class (raises NoEventLoopError after loop exit)."""
         import ast
         import pathlib
 

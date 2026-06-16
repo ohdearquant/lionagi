@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for #1150 — per-op heartbeat + idle-child watchdog in li play/flow."""
+"""Tests for per-op heartbeat and idle-child watchdog in li play/flow."""
 
 from __future__ import annotations
 
@@ -207,12 +207,7 @@ async def test_heartbeat_does_not_fire_before_interval():
 
 
 def test_op_segment_schema_includes_heartbeat_field():
-    """_record_segment must add last_heartbeat_at to new running segments.
-
-    This is a structural test: we verify the segment dict shape that
-    _record_segment produces is present in the flow.py source, since
-    the full DAG execution requires live LLM calls that we don't mock.
-    """
+    """Structural: flow.py source must contain all heartbeat-related fields and symbols."""
     import inspect
 
     from lionagi.cli.orchestrate import flow as flow_mod

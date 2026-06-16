@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for CLI security hardening: spec validation + save-path containment.
-
-DAG topology validation and plan-id path safety moved with the clean break:
-topology is covered in ``tests/orchestration/test_patterns.py``; artifact-dir
-containment in ``tests/operations/test_flow_id_containment.py``.
-"""
+"""Tests for CLI security hardening: spec validation and save-path containment."""
 
 import argparse
 from pathlib import Path

@@ -1,18 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Parser-level regression tests for CWE-88 fix (closes #1404, codex round 2).
-
-These tests take the BUILT argv from build_argv() for each action_kind and run
-it through the real lionagi.cli.main.main() parser with terminal run functions
-patched.  They assert that hostile action_prompt values (--bypass, --yolo,
---fast, --verbose) arrive as the prompt VALUE rather than toggling the
-corresponding boolean flags.
-
-The structural fix: build_argv places a '--' end-of-options sentinel before
-positionals for agent/flow/fanout, and drops the prompt positional entirely
-for flow_yaml (the YAML file supplies the prompt via spec.get("prompt")).
-"""
+"""Parser-level regression tests: hostile action_prompt values must arrive as VALUE, not toggle flags (CWE-88)."""
 
 from __future__ import annotations
 
@@ -263,13 +252,7 @@ class TestFanoutParserPromptInjection:
 
 
 class TestFlowYamlParserPromptExclusion:
-    """flow_yaml: hostile action_prompt must not appear in argv at all.
-
-    The YAML spec file supplies the prompt (spec.get('prompt') overwrites
-    args.prompt at orchestrate/__init__.py ~line 431).  The built argv must
-    not contain the hostile string, and bypass/yolo/fast must all be False
-    when run through the real parser.
-    """
+    """flow_yaml: hostile action_prompt must not appear in argv; YAML spec supplies the prompt."""
 
     @pytest.mark.parametrize("hostile", HOSTILE_PROMPTS)
     def test_hostile_prompt_absent_from_argv(self, hostile: str) -> None:
@@ -476,13 +459,7 @@ class TestSentinelPlacement:
 
 
 class TestDoubleDashSentinelEdgeCases:
-    """Pin that '-- --' and '-- trailing' reach the runner as prompt values.
-
-    Codex verified '-- --' works today; these tests pin that behaviour so a
-    future change does not silently regress it.  The exact token '--' is
-    rejected by validation (tested in test_argv_injection.py); these tests
-    cover the multi-token or longer forms that must remain permitted.
-    """
+    """Pin that '-- --' and '-- trailing' reach the runner as prompt values (multi-token forms permitted)."""
 
     def test_double_dash_space_double_dash_passes_through(self) -> None:
         """action_prompt='-- --' must reach _run_agent as the prompt VALUE."""
@@ -562,17 +539,9 @@ class TestDoubleDashSentinelEdgeCases:
 
 
 class TestTemplateRenderedSentinelRejection:
-    """build_argv must validate action_prompt AFTER _render_template.
-
-    Codex round 3 finding: a stored '{{payload}}' passes pre-render validation,
-    but trigger_context {"payload": "--"} renders it into the forbidden sentinel
-    before argv construction.  The fix moves _validate_prompt to post-render.
-    These tests run through real build_argv (not the parser) to confirm that
-    the rendered reconstruction is caught at spawn time, not silently passed.
-    """
+    """build_argv must validate action_prompt AFTER template rendering so '{{payload}}'+sentinel fails."""
 
     def test_template_payload_renders_sentinel_agent_raises(self) -> None:
-        """agent: '{{payload}}' + {"payload": "--"} → ValueError before argv built."""
         import pytest as _pytest
 
         from lionagi.studio.scheduler.subprocess import build_argv
@@ -592,7 +561,6 @@ class TestTemplateRenderedSentinelRejection:
             )
 
     def test_template_payload_renders_sentinel_flow_raises(self) -> None:
-        """flow: '{{payload}}' + {"payload": "--"} → ValueError before argv built."""
         import pytest as _pytest
 
         from lionagi.studio.scheduler.subprocess import build_argv
@@ -612,7 +580,6 @@ class TestTemplateRenderedSentinelRejection:
             )
 
     def test_template_payload_renders_sentinel_fanout_raises(self) -> None:
-        """fanout: '{{payload}}' + {"payload": "--"} → ValueError before argv built."""
         import pytest as _pytest
 
         from lionagi.studio.scheduler.subprocess import build_argv
