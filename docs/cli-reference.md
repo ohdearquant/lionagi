@@ -32,7 +32,7 @@ Available on `li agent`, `li o fanout`, `li o flow`. Source: `cli/_providers.py:
 | `--theme {light,dark}` | none | Terminal theme |
 | `--effort LEVEL` | none | Override effort; claude: `low medium high xhigh max`; codex: `none minimal low medium high xhigh`; gemini: unsupported (`cli/_providers.py:24,44`) |
 | `--cwd DIR` | none | Working directory for CLI endpoint |
-| `--timeout SECONDS` | none | Hard timeout; partial branches saved |
+| `--timeout SECONDS` | none | Hard wall-clock timeout; partial branches saved. Injects a `[DEADLINE]` preamble into the agent's first message so it can pace itself |
 
 **Model spec**: `provider/model[-effort]` — e.g. `claude/opus-4-7-high`, `codex/gpt-5.4-xhigh`. Bare aliases: `claude` → `claude_code/sonnet`, `codex` → `codex/gpt-5.3-codex-spark`, `gemini-code` → `gemini_code/gemini-3.1-flash-lite-preview`. Source: `cli/_providers.py:72,145`
 
@@ -398,6 +398,83 @@ See [`examples/skills/`](../examples/skills/) for templates.
 
 ---
 
+## `li monitor`
+
+Observe play/agent/run progress in real time. Replaces fragile file-polling and
+log-tailing with a single surface. Source: `cli/monitor.py` (`add_monitor_subparser`).
+Alias: `li mon`.
+
+```bash
+li monitor                      # table of all running entities
+li monitor <id>                 # detail view for one run/play/agent/invocation
+li monitor --watch              # live-refresh table
+li monitor --watch <id>         # live-refresh detail view
+li monitor --since 1h           # entities updated in the last hour
+li monitor --type session       # filter table by entity type
+li monitor --project myproject  # filter sessions by project
+```
+
+| Arg/Flag | Default | Notes |
+|----------|---------|-------|
+| `id` | none | Entity ID or prefix; omit for the table view |
+| `-w, --watch` | false | Live-refresh every `--refresh` seconds |
+| `--refresh SECS` | 2 | Refresh interval for `--watch` |
+| `--since WINDOW` | all | Time window: `30m`, `1h`, `2d` |
+| `-t, --type` | none | One of `session`, `invocation`, `show`, `play` |
+| `-p, --project` | none | Filter sessions by project name |
+
+---
+
+## `li invoke`
+
+Group the sessions a skill spawns (e.g. `/show`, `/codex-pr-review`) into one parent
+invocation record, so the runs list and Studio dashboard collapse "14 sessions" into a
+single row. Opt-in — sessions spawned without `--invocation` behave exactly as before.
+See [ADR-0020](adrs/ADR-0020-skill-invocations.md). Source: `cli/invoke.py`.
+
+```bash
+INV=$(li invoke start --skill show --prompt "resolve lionagi issues")
+li play backend  ... --invocation "$INV"
+li play frontend ... --invocation "$INV"
+li invoke end "$INV" --status completed
+```
+
+| Subcommand | Flags | Notes |
+|------------|-------|-------|
+| `start` | `--skill` (required), `--plugin`, `--prompt`, `--metadata` | Opens an invocation; prints its id to stdout |
+| `end ID` | `--status` (default `completed`), `--metadata` | Closes it; status from the [ADR-0025](adrs/ADR-0025-session-status-vocabulary.md) vocabulary |
+| `list` | `--skill`, `--status`, `--limit` (default 20) | Lists recent invocations |
+
+---
+
+## `li engine run`
+
+Run a domain-specific multi-agent engine pipeline without writing Python. Progress
+events stream to stderr; the final result is emitted as JSON on stdout for piping.
+Run records persist in the StateDB `engine_runs` table. Source: `cli/engine.py`.
+
+```bash
+li engine run research 'What are the latest advances in GQA?'
+li engine run review   'See artifact.py' --model claude/sonnet
+li engine run coding   'Implement a BFS traversal' --test-cmd 'pytest'
+li engine run hypothesis 'Finding: X causes Y' --export-dir ./out
+li engine run planning 'Build a REST API'
+```
+
+| Arg/Flag | Default | Notes |
+|----------|---------|-------|
+| `kind` | — | Engine kind (e.g. `research`, `review`, `coding`, `hypothesis`, `planning`) |
+| `spec` | — | Main input: topic / artifact / spec / findings / prompt |
+| `--test-cmd CMD` | none | Validation command; required for the `coding` kind |
+| `--export-dir DIR` | none | Output directory (`coding`, `hypothesis`) |
+| `--model MODEL` | default | Provider/model override |
+| `--max-depth N` | kind default | Max recursion/expansion depth |
+| `--max-agents N` | none | Cap on spawned sub-agents |
+| `--session-id ID` | none | Associate with an existing StateDB session |
+| `--no-persist` | false | Skip writing the run record to StateDB |
+
+---
+
 ## Agent profile layout
 
 A profile is resolved by name. Two layouts are supported:
@@ -423,6 +500,36 @@ Project-local `.lionagi/agents/` takes precedence over `~/.lionagi/agents/`.
 See [`examples/agents/`](../examples/agents/) for `minimal/` and `with-refs/`
 templates.
 
+### Profile format
+
+A profile is YAML frontmatter followed by a markdown body (the system prompt).
+Source: `cli/_agents.py` (`AgentProfile`).
+
+```markdown
+---
+model: claude_code/opus
+effort: high
+yolo: true
+---
+
+You are an implementer. Write production code, not stubs...
+```
+
+All frontmatter fields are optional; matching CLI flags override them at invocation.
+
+| Field | Notes |
+|-------|-------|
+| `model` | Provider/model spec (e.g. `claude_code/opus`, `codex/gpt-5.4-xhigh`) |
+| `effort` | Reasoning effort level (e.g. `high`, `xhigh`) |
+| `yolo` | Auto-approve tool calls |
+| `fast_mode` | Route via the OpenAI priority tier (codex only) |
+| `lion_system` | Prepend `LION_SYSTEM_MESSAGE` to the body (default: `true`) |
+| `artifact_defaults` | Expected-artifact defaults; see [ADR-0029](adrs/ADR-0029-artifact-contract.md) |
+
+When `lion_system: true`, the global Lion system preamble is prepended to the body
+to form the system prompt. Set it to `false` for a verbatim body (e.g. when the
+profile already carries its own complete system prompt).
+
 ---
 
 ## Run-ID and persistence
@@ -434,7 +541,17 @@ Every CLI invocation allocates a run directory. Source: `cli/_runs.py:14`. Run I
   run.json                        manifest (command, branches, artifact_root)
   branches/{branch_id}.json       branch snapshot — resumable via -r / -c
   stream/{branch_id}.buffer.jsonl live chunk buffer during streaming
+  artifacts/                      deliverables — only when --save was NOT given
 ```
+
+Authoritative state always lives under `~/.lionagi/runs/{run_id}/`, so any branch is
+resumable from anywhere. User-facing artifacts (per-agent working dirs, `synthesis.md`,
+`flow.log`, `flow_dag.png`) land in the `--save` directory when one is provided,
+otherwise in `artifacts/` under the run dir. The `--save` directory is **not**
+authoritative state — deleting it does not break `-r`.
+
+Pre-run-scoped sessions (legacy `~/.lionagi/logs/agents/{provider}/{branch_id}`) are
+still read as a fallback on resume.
 
 Resume any prior branch:
 
