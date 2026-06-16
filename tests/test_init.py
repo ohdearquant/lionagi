@@ -13,7 +13,6 @@ class TestMainImports:
     """Tests for main lionagi package imports."""
 
     # All exports from lionagi.__all__ (dunders first, then alphabetical).
-    # Updated for PR #1122: lndl and adapters symbols added.
     EXPECTED_EXPORTS = (
         "__version__",
         "Adaptable",

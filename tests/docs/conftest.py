@@ -1,8 +1,4 @@
-"""Shared fixtures for documentation example tests.
-
-Overrides the default ``mocked_branch`` from ``lionagi.testing.pytest_plugin``
-with a doc-specific default response, and adds a structured-response variant.
-"""
+"""Shared fixtures for documentation example tests."""
 
 import pytest
 

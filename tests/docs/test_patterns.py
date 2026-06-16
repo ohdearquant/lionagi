@@ -1,8 +1,4 @@
-"""Tests for pattern documentation examples.
-
-Covers: fan-out-in.md, sequential-analysis.md, tournament-validation.md,
-conditional-flows.md, react-with-rag.md.
-"""
+"""Tests for pattern documentation examples."""
 
 import asyncio
 

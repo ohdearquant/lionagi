@@ -1,10 +1,4 @@
-"""Tests for code examples from cookbook documentation.
-
-Covers: brainstorming.md, code-review-crew.md, claim-extraction.md,
-research-synthesis.md, data-persistence.md, hr-automation.md.
-
-All tests use mocked iModels -- no real API calls are made.
-"""
+"""Tests for code examples from cookbook documentation."""
 
 import asyncio
 

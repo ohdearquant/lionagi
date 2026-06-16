@@ -1,27 +1,6 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for lionagi/_class_registry.py
-
-Module path: lionagi/_class_registry.py
-
-Covers:
-- FILE_REGISTRY population at import (filesystem scan)
-- LION_CLASS_REGISTRY population via Node.__pydantic_init_subclass__
-- get_class: hit (registry) + miss (unknown name)
-- get_class file-registry fallback path (fixed in #1407; package-boundary guard)
-- Duplicate-name handling: real-path collision via actual subclass creation
-- Registry isolation: autouse fixture snapshots/restores both registries
-- Polymorphic round-trip: Node subclass -> to_dict -> Element.from_dict -> type preserved
-- db-mode round-trip (node_metadata key instead of metadata)
-- get_file_classes on a single file
-- get_class_file_registry with non-existent folder and empty patterns
-
-NOTE: Node subclasses used in tests are defined at MODULE LEVEL so their
-full-qualified names are importable (required by Element.from_dict fallback
-path via import_module).  Subclasses defined inside test-function local scope
-would produce un-importable qualified names, causing ImportError in the
-fallback deserialization path.
-"""
+"""Tests for lionagi/_class_registry.py: FILE_REGISTRY, LION_CLASS_REGISTRY, get_class, round-trips."""
 
 import os
 import tempfile
@@ -346,7 +325,7 @@ class TestGetClassMiss:
 
 
 # ---------------------------------------------------------------------------
-# 4b. get_class file-registry fallback path — fixed (issue #1407)
+# 4b. get_class file-registry fallback path
 #
 # Previously latent bug: get_class()'s fallback called get_class_objects()
 # which used importlib.util.spec_from_file_location with a dummy module name.
@@ -364,11 +343,9 @@ class TestGetClassMiss:
 class TestGetClassFileRegistryFallback:
     """Pin the fixed file-registry fallback in get_class().
 
-    get_class_objects() now derives the canonical dotted module name from
-    the file path relative to the package root and uses
-    ``importlib.import_module`` instead of ``spec_from_file_location`` with a
-    bare context-less name.  This restores full package context so relative
-    imports resolve correctly.  Fixes issue #1407.
+    get_class_objects() derives the canonical dotted module name from the file
+    path relative to the package root and uses importlib.import_module so that
+    relative imports resolve correctly.
     """
 
     def test_file_registry_fallback_works_for_relative_import_module(self):
@@ -436,11 +413,7 @@ class TestGetClassFileRegistryFallback:
             get_class_objects("/tmp/some_random_file_outside_package.py")
 
     def test_file_registry_fallback_repo_root_outside_package_raises(self):
-        """A file under the project root but OUTSIDE the lionagi package (e.g. a
-        test module) must be rejected.  Otherwise a stale or polluted
-        LION_CLASS_FILE_REGISTRY entry could import arbitrary top-level modules
-        from the checkout instead of failing cleanly (regression for #1422
-        codex review: guard must use the package dir, not its parent)."""
+        """A file outside the lionagi package must be rejected to prevent arbitrary module imports."""
         from lionagi._class_registry import get_class_objects
 
         # This very test file lives under the repo root but NOT under lionagi/.

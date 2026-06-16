@@ -1,9 +1,4 @@
-"""
-Performance Monitoring Utilities for LionAGI Test Suite
-
-Provides tools for monitoring test execution time, memory usage, and identifying
-performance regressions in the test suite.
-"""
+"""Performance monitoring utilities for the LionAGI test suite."""
 
 import asyncio
 import functools
@@ -40,18 +35,7 @@ class TestPerformanceMonitor:
 
     @contextmanager
     def monitor_sync(self, test_name: str):
-        """
-        Context manager for monitoring synchronous test performance.
-
-        Args:
-            test_name: Name of the test being monitored
-
-        Usage:
-            with monitor.monitor_sync("test_my_function"):
-                # Test code here
-                pass
-        """
-        # Start monitoring
+        """Sync context manager that records duration and memory for the named test."""
         start_time = time.time()
         start_memory = None
 
@@ -64,7 +48,6 @@ class TestPerformanceMonitor:
         try:
             yield
         finally:
-            # End monitoring
             end_time = time.time()
             duration = end_time - start_time
 
@@ -89,18 +72,7 @@ class TestPerformanceMonitor:
 
     @asynccontextmanager
     async def monitor_async(self, test_name: str):
-        """
-        Async context manager for monitoring asynchronous test performance.
-
-        Args:
-            test_name: Name of the test being monitored
-
-        Usage:
-            async with monitor.monitor_async("test_my_async_function"):
-                # Async test code here
-                await some_async_function()
-        """
-        # Start monitoring
+        """Async context manager that records duration and memory for the named test."""
         start_time = time.time()
         start_memory = None
 
@@ -113,7 +85,6 @@ class TestPerformanceMonitor:
         try:
             yield
         finally:
-            # End monitoring
             end_time = time.time()
             duration = end_time - start_time
 
@@ -145,15 +116,7 @@ class TestPerformanceMonitor:
         return self.metrics.copy()
 
     def get_slow_tests(self, threshold: float = 1.0) -> dict[str, dict[str, Any]]:
-        """
-        Get tests that exceed duration threshold.
-
-        Args:
-            threshold: Duration threshold in seconds
-
-        Returns:
-            Dictionary of slow tests with their metrics
-        """
+        """Return tests whose duration exceeds the given threshold in seconds."""
         return {
             name: metrics
             for name, metrics in self.metrics.items()
@@ -161,15 +124,7 @@ class TestPerformanceMonitor:
         }
 
     def get_memory_heavy_tests(self, threshold: float = 50.0) -> dict[str, dict[str, Any]]:
-        """
-        Get tests that exceed memory usage threshold.
-
-        Args:
-            threshold: Memory threshold in MB
-
-        Returns:
-            Dictionary of memory-heavy tests with their metrics
-        """
+        """Return tests whose RSS memory usage exceeds the given threshold in MB."""
         return {
             name: metrics
             for name, metrics in self.metrics.items()
@@ -202,7 +157,6 @@ Memory Heavy Tests (>50MB): {len(memory_heavy)}
 Top 5 Slowest Tests:
 """
 
-        # Sort by duration and show top 5
         sorted_tests = sorted(
             self.metrics.items(),
             key=lambda x: x[1].get("duration", 0),
@@ -234,23 +188,7 @@ def performance_monitor():
 
 
 def monitor_performance(test_name: str | None = None):
-    """
-    Decorator for monitoring test performance.
-
-    Args:
-        test_name: Custom test name (if None, uses function name)
-
-    Usage:
-        @monitor_performance()
-        def test_my_function():
-            # Test code here
-            pass
-
-        @monitor_performance("custom_test_name")
-        async def test_my_async_function():
-            # Async test code here
-            await some_function()
-    """
+    """Decorator that wraps sync or async test functions with performance monitoring."""
 
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         name = test_name or func.__name__
@@ -277,12 +215,7 @@ def monitor_performance(test_name: str | None = None):
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_performance_monitoring():
-    """
-    Auto-setup performance monitoring for the test session.
-
-    This fixture automatically enables performance monitoring for all tests
-    and generates a report at the end of the test session.
-    """
+    """Enable memory tracking for the test session and print a report at teardown."""
     # Setup
     monitor = performance_monitor()
     monitor.enable_memory_tracking()
@@ -343,18 +276,7 @@ class PerformanceRegression:
         max_memory_mb: float = None,
         monitor: TestPerformanceMonitor = None,
     ):
-        """
-        Assert that test performance is within specified bounds.
-
-        Args:
-            test_name: Name of the test to check
-            max_duration: Maximum allowed duration in seconds
-            max_memory_mb: Maximum allowed memory usage in MB
-            monitor: Performance monitor instance (uses global if None)
-
-        Raises:
-            AssertionError: If performance exceeds bounds
-        """
+        """Raise AssertionError if the named test's duration or memory exceeds the given bounds."""
         if monitor is None:
             monitor = performance_monitor()
 
@@ -381,17 +303,7 @@ class PerformanceRegression:
         baseline_metrics: dict[str, Any],
         tolerance_percent: float = 10.0,
     ) -> dict[str, bool]:
-        """
-        Compare current metrics with baseline and check for regressions.
-
-        Args:
-            current_metrics: Current test metrics
-            baseline_metrics: Baseline metrics to compare against
-            tolerance_percent: Allowed performance degradation percentage
-
-        Returns:
-            Dictionary indicating which metrics have regressed
-        """
+        """Return a dict of metric names to bool indicating whether each has regressed beyond the tolerance."""
         regressions = {}
 
         for metric_name in ["duration", "memory_rss"]:
