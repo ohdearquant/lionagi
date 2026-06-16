@@ -1,12 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Shared formatting, team helpers, and worker-prompt fragments.
-
-The orchestrator's plan vocabulary is now ``casts.emission.TaskAssignment``
-(see ``lionagi.orchestration.plan``) — there is no bespoke ``AgentRequest``
-model. This module keeps only the cross-pattern output/team helpers and the
-bare worker prompt.
-"""
+"""Shared formatting, team helpers, and worker-prompt fragments."""
 
 from __future__ import annotations
 
@@ -172,12 +166,7 @@ def _post_results_to_team(
     worker_names: list[str],
     synthesis_result: dict | None = None,
 ) -> None:
-    """Append one message per worker result + optional synthesis, under a
-    lock so post-flow commits don't race concurrent worker sends.
-
-    Each message carries ``from_op`` so downstream consumers can tell
-    which op produced the payload (important when one agent ran several
-    ops)."""
+    """Post worker results + optional synthesis to the team inbox under a lock."""
     from uuid import uuid4
 
     with _locked_team(team_data["id"]) as data:

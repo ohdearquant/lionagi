@@ -1,14 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0026: project detection for session organization.
-
-Detection cascade (at session creation):
-  1. Walk up from cwd → find .lionagi/config.toml → read [project].name
-  2. Global ~/.lionagi/settings.yaml → project_overrides (remote or path match)
-  3. Parse git remote URL → derive org/repo as fallback
-  4. Non-git → (None, None)
-"""
+"""ADR-0026: project detection cascade (config.toml → global overrides → git remote → None)."""
 
 from __future__ import annotations
 
@@ -59,12 +52,7 @@ def _from_config_toml(cwd: Path) -> tuple[str | None, str | None]:
 
 
 def _read_project_from_toml(path: Path) -> str | None:
-    """Parse [project].name from a TOML file.
-
-    Uses stdlib ``tomllib`` on Python 3.11+; falls back to the declared
-    ``toml`` runtime dependency on Python 3.10.  ``tomli`` is NOT a
-    declared dependency and must not be imported here.
-    """
+    """Parse [project].name from a TOML file; uses tomllib (3.11+) or the declared toml dep (3.10)."""
     try:
         try:
             import tomllib
@@ -150,13 +138,7 @@ def _git_remote_slug(git_root: Path) -> str | None:
 
 
 def _parse_remote_url(url: str) -> str | None:
-    """Extract org/repo from various git remote URL formats.
-
-    Handles:
-      - https://github.com/org/repo.git
-      - git@github.com:org/repo.git
-      - ssh://git@github.com/org/repo.git
-    """
+    """Extract org/repo from https://, git@, or ssh:// remote URL formats."""
     url = url.rstrip("/")
     if url.endswith(".git"):
         url = url[:-4]

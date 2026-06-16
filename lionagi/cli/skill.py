@@ -1,16 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""`li skill` — CC-compatible skill reader.
-
-Skills live at ``~/.lionagi/skills/<NAME>/SKILL.md``, using the same
-directory/file convention as Claude Code skills. This lets the same
-source file (or a symlink into ``.claude/skills/``) serve both CC and
-lionagi agents.
-
-``li skill NAME`` prints the skill body (content after YAML frontmatter)
-to stdout. An orchestrator can shell out and inject the body into its
-own context on demand — zero extra protocol.
-"""
+"""`li skill` — CC-compatible skill reader (~/.lionagi/skills/<NAME>/SKILL.md)."""
 
 from __future__ import annotations
 

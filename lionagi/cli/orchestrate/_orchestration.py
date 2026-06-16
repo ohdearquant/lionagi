@@ -245,9 +245,7 @@ def resolve_worker_spec(
         return token, None
     try:
         profile = load_agent_profile(token)
-        # Profile model MUST be set when present; callers that need a
-        # default apply it themselves (so we don't hardcode a fallback
-        # that rots as the default model changes).
+        # No hardcoded fallback — callers apply their own default so it doesn't rot.
         return profile.model or token, profile
     except FileNotFoundError:
         return token, None
@@ -276,13 +274,10 @@ class OrchestrationEnv:
     cwd: str | None
     team_data: dict | None = None
 
-    # Selected routing pack (--pack PATH). None means fall through to the
-    # default pack for role_config / resolve_modes lookups.
+    # None falls through to the default pack for role_config / resolve_modes.
     pack: Pack | None = None
 
-    # Time budget: total seconds for the entire flow (from --timeout or
-    # playbook timeout:). None means no budget was configured — workers
-    # will not receive a BUDGET preamble.
+    # None = no budget configured; workers skip the BUDGET preamble.
     total_budget: int | None = None
     _live_persist: dict | None = field(default=None, repr=False)
     _name_counts: dict[str, int] = field(default_factory=dict)
@@ -354,7 +349,7 @@ async def setup_orchestration(
 
     orc_log_config = DataLoggerConfig(auto_save_on_exit=False)
     if orc_profile:
-        # User profile supplies a verbatim system prompt (no casts composition).
+        # User profile: verbatim system prompt, no casts composition.
         orc_branch = Branch(
             chat_model=orc_imodel,
             system=orc_profile.system_prompt,
@@ -362,9 +357,7 @@ async def setup_orchestration(
             name="orchestrator",
         )
     else:
-        # Canonical path: the built-in "orchestrator" casts role composed +
-        # built by the factory (LION prepend + policy block), byte-identical to
-        # the old casts_role_system("orchestrator").
+        # Built-in "orchestrator" casts role via AgentSpec.compose + factory.
         orc_spec = AgentSpec.compose("orchestrator", grant_emissions=False)
         orc_branch = await create_agent(
             orc_spec,
@@ -418,14 +411,7 @@ async def build_worker_branch(
     grant_spawn: bool = False,
     modes: list[str] | None = None,
 ) -> tuple[Branch, str, AgentProfile | None]:
-    """Resolve model/profile/system and build a worker Branch.
-
-    Casts-role workers route through ``AgentSpec.compose`` + ``create_agent``
-    (the canonical construction path — factory wires settings/system/model/
-    emissions consistently). Verbatim-prompt workers (explicit override, a user
-    profile's own ``system_prompt``, or ``--bare``) have no casts Role to
-    compose, so their Branch is built directly with the literal prompt.
-    """
+    """Resolve model/profile/system and build a worker Branch."""
     from ._common import BARE_WORKER_SYSTEM
 
     # Pack per-role config (ADR-0074): model/effort/modes defaults for casts
@@ -485,10 +471,8 @@ async def build_worker_branch(
     resolved_modes = [] if env.bare else resolve_modes(role, modes, env.pack)
     team_section = team_worker_system(env.team_data, wname)
 
-    # A worker's system is either a casts-role composition or a verbatim string
-    # (explicit override / user-profile prompt / bare default). Only the casts
-    # case routes its prompt through the factory; the verbatim cases have no
-    # casts Role to compose from, so their string is set after construction.
+    # Casts-role workers route through the factory; verbatim-prompt workers set
+    # the string directly (no Role to compose from).
     verbatim_system: str | None = None
     if system_prompt_override is not None:
         verbatim_system = system_prompt_override
@@ -499,11 +483,8 @@ async def build_worker_branch(
 
     log_config = DataLoggerConfig(auto_save_on_exit=False)
     if verbatim_system is None:
-        # Casts-role worker: AgentSpec.compose + create_agent is the canonical
-        # construction. The factory prepends LION_SYSTEM and renders the role's
-        # policy block, so the result is byte-identical to the old
-        # casts_role_system(role, modes) + team_section path. grant_emissions is
-        # off — spawn rights (if any) are granted below exactly as before.
+        # Casts-role path: factory prepends LION_SYSTEM and renders the policy
+        # block; grant_emissions off — spawn rights granted below if needed.
         spec = AgentSpec.compose(
             role,
             modes=resolved_modes,
@@ -556,9 +537,7 @@ def finalize_orchestration(
         provider = branch.chat_model.endpoint.config.provider
         branch_ids.append((provider, str(branch.id), branch.name))
 
-        # Write the resume snapshot. Failure here must NOT abort the
-        # finalize — the run already completed; missing JSON only
-        # affects ``li agent -r`` for this branch.
+        # Snapshot failure must not abort finalize; only `li agent -r` is affected.
         try:
             snap_path = env.run.branch_path(str(branch.id))
             snap_path.write_text(json.dumps(branch.to_dict(), default=str))
@@ -660,9 +639,7 @@ async def setup_orchestration_persist(
             "identity_markers": _identity_markers,
         }
 
-        # Bind signal persistence through the already-open DB connection so that
-        # every Signal emitted on this session's observer is written to
-        # session_signals at the same cost as a message write (no per-signal open).
+        # Bind to the already-open DB so signals write without a per-signal open.
         session.observer.bind_db_persistence(session_id, db=db)
 
         for branch in branches or []:

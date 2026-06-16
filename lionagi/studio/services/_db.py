@@ -23,9 +23,8 @@ def get_active_connection_count() -> int:
 async def open_db(path: str) -> AsyncIterator[aiosqlite.Connection]:
     """Studio-local SQLite connection with WAL mode and busy_timeout.
 
-    Always enables WAL journal mode and sets busy_timeout = 5000 ms so
-    concurrent readers and the single writer do not immediately receive
-    "database is locked" under modest concurrency (#992).
+    WAL journal mode + busy_timeout = 5000 ms prevents "database is locked"
+    errors under modest concurrency from concurrent readers and the single writer.
     """
     global _ACTIVE_CONNECTIONS
     async with aiosqlite.connect(path) as db:

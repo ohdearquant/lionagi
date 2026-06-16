@@ -10,20 +10,8 @@ from ._path_safety import public_path, safe_path_join
 
 _PLAYBOOKS_ROOT = LIONAGI_HOME / "playbooks"
 
-# ---------------------------------------------------------------------------
-# Spec-field validation
-#
-# _validate_spec_fields lives in lionagi/cli/orchestrate/__init__.py, not the
-# _common sub-module the critic expected. Importing it directly would load the
-# entire orchestrate module (pydantic models, lionagi core, operations/fields)
-# into the web-server process — significant startup cost and unnecessary
-# coupling between the Studio API and CLI internals.
-#
-# Instead we mirror the logic inline. If the CLI validator ever changes its
-# rules, update this block to match. The authoritative source is:
-#   lionagi/cli/orchestrate/__init__.py :: _validate_spec_fields()
-# ---------------------------------------------------------------------------
-
+# Mirrors lionagi/cli/orchestrate/__init__.py::_validate_spec_fields() inline to avoid
+# importing the full orchestrate module into the web-server process.
 _VALID_EFFORT_LEVELS: frozenset[str] = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
@@ -165,21 +153,11 @@ _DECLARATIVE_KEYS: tuple[str, ...] = (
 
 
 def update_playbook(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
-    """Write a playbook YAML back to disk.
+    """Write a playbook YAML back to disk with conservative merge.
 
-    Conservative merge:
-
-    - ``description`` always overwrites if present in the payload.
-    - Graph-format keys (``use``, ``steps``, ``links``) overwrite only when
-      they carry content, so a declarative playbook opened in the graph
-      editor doesn't get stamped with empty ``steps: {}``.
-    - Declarative keys (``agent``, ``effort``, ``max-ops``, ``prompt``,
-      ``args``, ``yolo``, ``show-graph``, ``argument-hint``) overwrite when
-      present in the payload; ``None`` / empty-string removes the key.
-    - Every other key already on disk is preserved untouched.
-
-    Symlinks: ``~/.lionagi/playbooks/*`` may be symlinks; ``write_text`` on
-    a symlinked path writes through to the target.
+    description overwrites when present; graph keys (use/steps/links) only when
+    non-empty; declarative keys overwrite or are cleared on None/""; all other
+    disk keys preserved.  Writes through symlinks to the real source file.
     """
     stem = name.removesuffix(".playbook.yaml").removesuffix(".yaml")
     safe_path_join(_PLAYBOOKS_ROOT, f"{stem}.playbook.yaml")
@@ -187,11 +165,9 @@ def update_playbook(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     if not path.exists():
         return None
 
-    # Validate spec fields from the incoming payload BEFORE the conservative
-    # merge.  The merge filters out unknown keys (like 'workers') so they never
-    # reach validate_playbook() — checking the raw payload here ensures an
-    # invalid spec value (e.g. workers: 999) is rejected with 422 even when the
-    # key would otherwise be silently dropped.
+    # Validate spec fields before the merge: the merge silently drops unknown
+    # keys (e.g. 'workers'), so validating the raw payload catches bad values
+    # that would otherwise pass through to validate_playbook() undetected.
     spec_err = _check_spec_fields(_normalize_spec_keys(data))
     if spec_err:
         raise ValueError(spec_err)
@@ -209,7 +185,6 @@ def update_playbook(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     if "description" in data:
         merged["description"] = data["description"] or ""
 
-    # Graph-format keys: only write when non-empty.
     use = data.get("use")
     if isinstance(use, dict) and use.get("models"):
         merged["use"] = use
@@ -222,8 +197,6 @@ def update_playbook(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(links, list) and len(links) > 0:
         merged["links"] = links
 
-    # Declarative-format keys: drop on explicit None/"" so the editor can
-    # clear an optional field; otherwise overwrite.
     for key in _DECLARATIVE_KEYS:
         if key not in data:
             continue

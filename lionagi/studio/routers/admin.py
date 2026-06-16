@@ -24,14 +24,7 @@ _LEGACY_ADMIN_REASON_CODES: dict[str, str] = {
 
 
 class MaintenanceBody(BaseModel):
-    """Request body for POST /api/admin/maintenance.
-
-    The schema is closed (``extra="forbid"``) so any unknown field causes a
-    422 before the action string is even inspected.  ``action`` is typed as a
-    ``Literal`` — Pydantic rejects out-of-vocabulary values at parse time with
-    a validation error that already carries the allowed values, so the manual
-    frozenset check is no longer needed.
-    """
+    """Request body for POST /api/admin/maintenance."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -53,14 +46,7 @@ class PruneOldDataBody(BaseModel):
 
 
 class TransitionBody(BaseModel):
-    """ADR-0024/ADR-0028 admin session transition.
-
-    ``reason_code`` is the preferred field (ADR-0028). The deprecated
-    ``reason`` free-text field is kept for backwards compatibility: old
-    clients that omit ``reason_code`` and provide ``reason`` get a
-    synthesised code from the target_status→code map. New clients should
-    supply ``reason_code`` from the controlled vocabulary.
-    """
+    """ADR-0024/ADR-0028 admin session transition; reason_code preferred over deprecated reason field."""
 
     session_ids: list[str] = Field(..., min_length=1)
     target_status: Literal["failed", "aborted", "cancelled"]
@@ -144,16 +130,8 @@ async def prune_old_data(body: PruneOldDataBody) -> dict[str, int]:
 async def run_maintenance(body: MaintenanceBody) -> dict[str, Any]:
     """Run a DB maintenance action (vacuum | checkpoint | prune).
 
-    ``action`` is validated as a ``Literal`` by Pydantic at parse time; the
-    schema is closed (``extra="forbid"``), so unknown fields and out-of-
-    vocabulary action values return 422 before this handler runs.
-
-    Returns 409 with a structured detail when the state database is held by
-    another writer and the operation cannot acquire the write lock within
-    SQLite's configured busy_timeout (5 s).  The global busy_timeout in
-    db.py is intentionally left unchanged — this 409 is the maintenance-
-    specific policy so the operator sees an actionable message instead of a
-    generic 500.
+    Returns 409 when SQLite cannot acquire the write lock (busy/locked); this is
+    intentional policy so the operator sees a retryable error instead of a generic 500.
     """
     from ..services.db_maintenance import (
         checkpoint_state_db,

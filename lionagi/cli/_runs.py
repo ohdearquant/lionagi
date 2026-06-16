@@ -1,32 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Run-scoped file persistence — one invocation of the CLI = one RunDir.
-
-Split between authoritative state (always in ``LIONAGI_HOME/runs/{run_id}/``)
-and user-facing artifacts (``--save`` dir if provided, else nested under the
-state root). This separation lets you resume any branch from anywhere
-(``li agent -r <branch_id>``) while giving users control over where their
-deliverables land.
-
-Layout
-------
-
-``~/.lionagi/runs/{run_id}/``   — authoritative state (always)
-
-- ``run.json``                    run manifest (command, ts, branches, artifact_root)
-- ``branches/{branch_id}.json``   final branch snapshot — canonical location
-- ``stream/{branch_id}.buffer.jsonl``  live chunk buffer during a stream
-- ``artifacts/``                  only when ``--save`` was NOT provided
-
-``<user --save dir>/``           — user-facing artifacts (optional)
-
-Contains whatever the agents wrote (per-agent cwds, synthesis.md),
-plus ``flow.log`` and ``flow_dag.png`` if applicable. This directory
-is not authoritative state — deleting it does not break ``-r``.
-
-Legacy layout (``~/.lionagi/logs/agents/{provider}/{branch_id}``) is still
-read on resume as a fallback for pre-run-scoped sessions.
-"""
+"""Run-scoped file layout: authoritative state in LIONAGI_HOME/runs/{run_id}/, artifacts in --save dir or state_root/artifacts/."""
 
 from __future__ import annotations
 
@@ -69,13 +43,7 @@ def current_run_id() -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class RunDir:
-    """Resolved paths for one run's state and artifacts.
-
-    ``state_root`` is always under ``LIONAGI_HOME/runs/``. ``artifact_root``
-    is the user's ``--save`` directory when provided, otherwise a subdir
-    of state_root. The two roots can point to the same directory (when
-    ``--save`` is nested inside ``LIONAGI_HOME``) or diverge entirely.
-    """
+    """Resolved state and artifact paths for one CLI run."""
 
     run_id: str
     state_root: Path
@@ -102,14 +70,7 @@ class RunDir:
         return self.stream_dir / f"{branch_id}.buffer.jsonl"
 
     def agent_artifact_dir(self, agent_id: str) -> Path:
-        """Return the artifact directory for an agent.
-
-        Authoritative path-containment guard: agent ids become filesystem path
-        segments, so reject any with separators, leading dots, or that resolve
-        outside the artifact root. Orchestrate ids are CLI-generated from
-        roster-validated role names, but any caller constructing a RunDir path
-        from an untrusted identifier picks up the same safety guarantee.
-        """
+        """Return artifact dir for agent_id, rejecting any id that resolves outside artifact_root (path-traversal guard)."""
         try:
             validate_path_component(agent_id, label="agent_id")
         except ValueError as exc:
@@ -167,17 +128,7 @@ def allocate_run(
     save_dir: str | os.PathLike | None = None,
     run_id: str | None = None,
 ) -> RunDir:
-    """Allocate a new run (or attach to an inherited one via env var).
-
-    Parameters
-    ----------
-    save_dir
-        If provided, becomes the ``artifact_root``. Otherwise artifacts land
-        under ``state_root/artifacts/``.
-    run_id
-        Override for the run identifier. When ``None``, tries
-        ``LIONAGI_RUN_ID`` env var (subprocess handoff) then generates new.
-    """
+    """Allocate a run dir, inheriting run_id from LIONAGI_RUN_ID env var if set (subprocess handoff)."""
     rid = run_id or current_run_id() or _new_run_id()
     state_root = RUNS_ROOT / rid
 
@@ -195,16 +146,7 @@ def allocate_run(
 
 
 def find_branch(branch_id: str) -> tuple[str | None, Path]:
-    """Locate a branch JSON by id.
-
-    Returns (run_id, path). ``run_id`` is ``None`` when the branch was
-    found in legacy ``logs/agents/{provider}/`` storage. Raises
-    ``FileNotFoundError`` if no match exists.
-
-    Lookup order:
-      1. ``runs/*/branches/{branch_id}.json`` — the canonical location
-      2. ``logs/agents/{provider}/{branch_id}`` — legacy fallback
-    """
+    """Locate a branch JSON; returns (run_id, path), run_id=None for legacy logs/agents/ storage."""
     if RUNS_ROOT.exists():
         # Prefer an exact hit, fall back to prefix match (branch UUIDs may
         # have been truncated by the user when resuming).
@@ -241,11 +183,7 @@ def find_branch(branch_id: str) -> tuple[str | None, Path]:
 
 
 def load_last_branch() -> tuple[str | None, str]:
-    """Read the last-branch pointer. Returns (run_id, branch_id).
-
-    ``run_id`` is ``None`` when the pointer predates the run-scoped
-    refactor (old schema: ``{provider, branch_id}``).
-    """
+    """Read the last-branch pointer; returns (run_id, branch_id), run_id=None for pre-run-scoped schema."""
     if not _LAST_BRANCH_POINTER.exists():
         raise FileNotFoundError(
             f"No last-branch pointer at {_LAST_BRANCH_POINTER}. "

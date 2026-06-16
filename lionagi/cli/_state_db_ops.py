@@ -1,12 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""DB operation helpers for `li state` maintenance subcommands.
-
-Covers: ls, stats, checkpoint, vacuum, prune, doctor.
-
-All public names are re-exported from ``cli/state.py`` so existing import
-paths remain stable.
-"""
+"""DB operation helpers for ``li state`` maintenance subcommands (ls, stats, checkpoint, vacuum, prune, doctor)."""
 
 from __future__ import annotations
 

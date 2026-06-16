@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Studio service: read path for the engine_runs table (Phase C Move 2)."""
+"""Studio service: read path for the engine_runs table."""
 
 from __future__ import annotations
 

@@ -14,7 +14,7 @@ async def list_runs(
     page: int = Query(default=1, ge=1, description="1-based page number"),
     per_page: int = Query(default=20, ge=1, le=5000, description="Rows per page"),
     status: list[str] | None = Query(default=None, description="Repeated status filter"),  # noqa: B008
-    # F-A3-7 (ADR-0005): renamed from ?worker= to ?playbook= — "worker" is
+    # ADR-0005: renamed from ?worker= to ?playbook= — "worker" is
     # not in lionagi's Studio vocabulary per ADR-0005.
     playbook: str | None = Query(
         default=None, description="Case-insensitive playbook contains filter"
@@ -34,11 +34,11 @@ async def get_run(run_id: str) -> dict[str, Any]:
     return run
 
 
-# F-A2-5 (ADR-0008): removed /api/runs/{id}/events SSE route — it read
+# ADR-0008: removed /api/runs/{id}/events SSE route — it read
 # stream/*.buffer.jsonl files forbidden by ADR-0004.  Live monitoring uses
 # /api/sessions/{id}/stream instead.
 #
-# F-A2-5 (ADR-0008 Write Policy): removed POST /{run_id}/rerun and
+# ADR-0008 Write Policy: removed POST /{run_id}/rerun and
 # DELETE /{run_id} stub routes.  Run data is explicitly read-only per
 # ADR-0008.  Re-running requires switching to the terminal (`li play ...`).
 # If re-run support is ever reconsidered, it requires an ADR-0008 amendment

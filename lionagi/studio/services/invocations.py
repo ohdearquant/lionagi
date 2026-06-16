@@ -1,10 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0020 invocations service.
-
-Backs the /api/invocations endpoints. Reads from state.db's
-``invocations`` and ``sessions`` tables.
-"""
+"""ADR-0020 invocations service — backs /api/invocations endpoints."""
 
 from __future__ import annotations
 
@@ -71,11 +67,7 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
             except json.JSONDecodeError:
                 node_meta = None
         sessions = await db.list_sessions_for_invocation(invocation_id)
-        # ADR-0021: surface structured outcomes alongside child sessions
-        # so the invocation detail page can render verdict / CI / gate
-        # cards inline. Filesystem blobs (file_path) are included by
-        # reference; the frontend renders them as JSON when the kind is
-        # unknown.
+        # ADR-0021: structured outcomes alongside child sessions for the invocation detail page.
         artifacts = await db.list_artifacts_for_invocation(invocation_id)
     return {
         "id": row["id"],
@@ -89,8 +81,6 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "node_metadata": node_meta,
-        # Sessions ordered by creation; minimal projection — Studio's
-        # session detail page is the authority for any single session.
         "sessions": [
             {
                 "id": s["id"],
@@ -113,15 +103,10 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
 
 
 def _serialize_artifact(row: dict[str, Any]) -> dict[str, Any]:
-    """Common artifact projection for /api/invocations and /api/artifacts.
-
-    SQLite returns JSON columns as strings; decode here so the frontend
-    gets a real object instead of a doubly-encoded string.
-    """
+    """Common artifact projection — decodes JSON content columns so the frontend gets real objects."""
     raw_content = row.get("content")
     if isinstance(raw_content, str):
         parsed = _parse_json_col(raw_content)
-        # If still a string, parse failed — surface None rather than a doubly-encoded string
         content = parsed if not isinstance(parsed, str) else None
     else:
         content = raw_content

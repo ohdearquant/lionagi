@@ -135,7 +135,7 @@ async def list_sessions() -> list[dict[str, Any]]:
             "updated_at": row["updated_at"] or 0.0,
             "branch_count": row["branch_count"],
             "message_count": row["message_count"],
-            # F-A1-2 / F-A1-8 (ADR-0017): read status directly from column;
+            # ADR-0017: read status directly from column;
             # fall back to "completed" only for legacy rows where status is NULL.
             "status": row["status"] or "completed",
             "started_at": row["started_at"],
@@ -172,7 +172,7 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
 
     async with _open_db(_DB) as db:
         cur = await db.execute(
-            # F-A1-4 (ADR-0017): include lifecycle columns in session detail
+            # ADR-0017: include lifecycle columns in session detail
             # ADR-0022: include provenance columns (model/provider/effort/agent_hash)
             """SELECT id, name, created_at, updated_at,
                       playbook_name, agent_name, invocation_kind,
@@ -188,7 +188,6 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
         if not session_row:
             return None
 
-        # Reverse lookup: find the play that references this session
         play_cur = await db.execute(
             """SELECT sh.topic AS show_topic, p.name AS play_name
                FROM plays p
@@ -264,7 +263,6 @@ async def get_session(session_id: str) -> dict[str, Any] | None:
                 }
             )
 
-    # F-A1-4 (ADR-0017): compute duration_ms from lifecycle timestamps
     started_at = session_row["started_at"]
     ended_at = session_row["ended_at"]
     duration_ms = (

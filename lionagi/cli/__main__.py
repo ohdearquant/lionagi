@@ -1,10 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Entry point for ``python -m lionagi.cli``.
-
-Used by the ``--background`` flag in ``li o flow`` to respawn the CLI
-in a detached subprocess. Direct users should call ``li`` instead.
-"""
+"""Entry point for ``python -m lionagi.cli`` (used by ``--background`` in ``li o flow``)."""
 
 from __future__ import annotations
 

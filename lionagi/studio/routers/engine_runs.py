@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""GET /api/engine-runs/ and /api/engine-runs/{id} — engine run read path.
-
-Phase C Move 2: exposes the ``engine_runs`` table written by ``li engine run``
-so Studio can display engine run history alongside session runs.
-"""
+"""GET /api/engine-runs/ and /api/engine-runs/{id} — engine run read path."""
 
 from __future__ import annotations
 

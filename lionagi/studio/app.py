@@ -57,12 +57,10 @@ _GUARDED_NON_API_PATHS = frozenset(
 def _collect_cors_methods(application: FastAPI) -> list[str]:
     """Derive the CORS method allowlist from the app's actual route table.
 
-    Hardcoding the list is brittle: FastAPI auto-generates ``HEAD`` for every
-    ``GET`` route and serves docs/OpenAPI endpoints, so a manual list silently
-    omits methods that are really served (CORS preflight for them then 400s).
-    Walking ``application.routes`` after all routers are mounted keeps the
-    allowlist exactly in sync with what is served.  ``OPTIONS`` is always
-    included so CORSMiddleware can answer preflight requests.
+    Hardcoding is brittle: FastAPI auto-generates HEAD for every GET route, so
+    a manual list silently omits served methods (CORS preflight then 400s).
+    Walking routes after all routers are mounted keeps the allowlist in sync.
+    OPTIONS is always included so CORSMiddleware can answer preflight requests.
     """
     methods: set[str] = {"OPTIONS"}
     for route in application.routes:
@@ -176,19 +174,16 @@ async def health() -> dict[str, Any]:
 
 @app.get("/api/stats")
 async def get_stats() -> dict[str, Any]:
-    # F-A2-1 (ADR-0012 §10): "runs" count must come from SQLite sessions so
-    # the dashboard shows the same number as the Runs list page.  Previously
-    # called runs_svc.list_runs() which read filesystem dirs and returned a
-    # different count than the sessions-backed list endpoint.
+    # ADR-0012 §10: "runs" count must come from SQLite sessions so the dashboard
+    # matches the Runs list page; runs_svc.list_runs() reads filesystem dirs and
+    # returns a different count than the sessions-backed list endpoint.
     return await stats_svc.get_stats()
 
 
 def _resolve_frontend_dist() -> Path | None:
     """Return the dist/ directory to serve, or None if absent.
 
-    Reads the LIONAGI_STUDIO_FRONTEND_DIST env var.  The CLI (studio.py) sets
-    this before starting uvicorn; the Dockerfile sets it at image build time.
-    When the var is unset (e.g. raw ``uvicorn lionagi.studio.app:app`` without
+    Reads LIONAGI_STUDIO_FRONTEND_DIST; when unset (e.g. raw uvicorn without
     the CLI), the app starts in API-only mode.
     """
     env_override = os.environ.get("LIONAGI_STUDIO_FRONTEND_DIST")
@@ -201,18 +196,10 @@ def _resolve_frontend_dist() -> Path | None:
 def _mount_spa(application: FastAPI, dist: Path) -> None:
     """Mount static assets and register an SPA 404 fallback.
 
-    Assets (/assets/*) are served directly by StaticFiles with long-lived
-    cache headers (the filenames are content-hashed by Vite).  Every other
-    GET/HEAD path that does NOT start with /api and has no registered route
-    returns index.html so client-side deep-links work.
-
-    Implementation: the fallback is installed as a custom HTTP 404 exception
-    handler rather than a catch-all route.  A catch-all ``/{full_path:path}``
-    route intercepts ``/api/shows`` before FastAPI's trailing-slash redirect
-    runs (router registers ``/api/shows/`` but the redirect from ``/api/shows``
-    is emitted by Starlette's routing layer after route lookup fails — the
-    catch-all grabs it first).  An exception handler runs AFTER all routes
-    have been tried and none matched, so it never competes with real routes.
+    Uses a 404 exception handler (not a catch-all route) for the SPA fallback:
+    a catch-all /{full_path:path} route intercepts /api/shows before FastAPI's
+    trailing-slash redirect fires, whereas an exception handler runs only after
+    all routes have been tried and none matched.
     """
     assets_dir = dist / "assets"
     if assets_dir.is_dir():

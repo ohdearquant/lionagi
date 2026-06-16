@@ -282,7 +282,6 @@ class SchedulerEngine:
     async def _tick(self) -> None:
         now = time.time()
 
-        # Throttled periodic lifecycle reapers.
         from lionagi.studio.config import REAPER_INTERVAL_SECONDS
         from lionagi.studio.services.lifecycle import run_periodic_reapers
 
@@ -403,7 +402,6 @@ class SchedulerEngine:
                 }
             )
 
-        # Build argv (and optional temp file for flow_yaml kind)
         try:
             argv, _tmp_path = build_argv(schedule, trigger_context)
         except Exception as exc:
@@ -459,11 +457,9 @@ class SchedulerEngine:
                 await db.update_schedule(sid, **update_fields)
             return
 
-        # Guard: ensure any tmp file created by build_argv is removed even
-        # if an exception or scheduler-shutdown cancellation fires in the DB
-        # operations below, before spawn_and_wait() has a chance to run its
-        # own cleanup finally.  contextlib.suppress(OSError) makes the unlink
-        # harmless if spawn_and_wait already deleted it (double-unlink safe).
+        # Ensure the flow_yaml tmp file is removed on any exception or
+        # cancellation in the DB ops below, before spawn_and_wait() runs.
+        # suppress(OSError) makes double-unlink (spawn_and_wait already cleaned up) safe.
         try:
             async with StateDB() as db:
                 await db.create_schedule_run(
@@ -663,10 +659,8 @@ class SchedulerEngine:
         finally:
             if chain_depth == 0:
                 self._running.pop(sid, None)
-            # Clean up the flow_yaml temp file if spawn_and_wait never ran
-            # (exception or cancellation in the pre-spawn DB ops).
-            # OSError is suppressed so a double-unlink (spawn_and_wait already
-            # cleaned up in its own finally) is harmless.
+            # Clean up flow_yaml tmp file if spawn_and_wait never ran;
+            # suppress OSError so double-unlink is harmless.
             if _tmp_path is not None:
                 with contextlib.suppress(OSError):
                     os.unlink(_tmp_path)

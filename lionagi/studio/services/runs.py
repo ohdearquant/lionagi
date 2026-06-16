@@ -30,11 +30,6 @@ def _normalize_status_filter(status: str | list[str] | None) -> set[str] | None:
     return result or None
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _adapt_summary(
     manifest: dict[str, Any], run_id: str, state_root: Path, artifact_root: Path
 ) -> dict[str, Any]:
@@ -469,11 +464,6 @@ def _adapt_detail(
     }
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-
 async def list_runs(
     playbook: str | None = None,
     status: str | list[str] | None = None,
@@ -499,7 +489,6 @@ async def list_runs(
             has_artifacts=bool(s.get("artifacts_path")),
             has_stale_locks=False,
         )
-        # Map UNRESPONSIVE -> 'stale' for dashboard consistency.
         effective_health = (
             SessionHealth.STALE.value if health == SessionHealth.UNRESPONSIVE else health.value
         )
@@ -559,22 +548,10 @@ def paginate_runs(
 
 
 async def get_run(run_id: str) -> dict[str, Any] | None:
-    """Return run detail for *run_id* by reading from StateDB.
+    """Return run detail from StateDB; flat-file run.json path was removed (write_manifest had zero callers).
 
-    Uses the same data source as list_runs() (StateDB sessions/branches).
-    The flat-file run.json read path was removed because write_manifest()
-    had zero callers — all live runs persist to SQLite via create_session().
-    Keys in the returned dict are kept identical to the old flat-file path so
-    the frontend contract is unchanged.
-
-    Fields with no direct DB equivalent:
-      state_root            — derived from artifacts_path if stored, else None
-      artifact_root         — derived from artifacts_path column, else None
-      task                  — not persisted in DB; returns ""
-      step_count            — count of branches (proxy for steps)
-      error                 — not persisted in DB; returns None
-      cwd                   — not persisted in DB; returns None
-      manifest              — returns {} (no flat-file manifest exists)
+    Fields absent from DB (state_root, artifact_root, task, error, cwd, manifest) return None/""/{}
+    to keep the frontend contract unchanged.
     """
     session = await _sessions_svc.get_session(run_id)
     if session is None:
@@ -586,7 +563,6 @@ async def get_run(run_id: str) -> dict[str, Any] | None:
     branches: list[dict[str, Any]] = session.get("branches") or []
     step_count = len(branches)
 
-    # Derive state_root from artifact_root (artifact_root is inside state_root)
     state_root: Path | None = artifact_root.parent if artifact_root else None
 
     summary: dict[str, Any] = {
@@ -616,11 +592,7 @@ async def get_run(run_id: str) -> dict[str, Any] | None:
 
 
 def _build_steps_from_db(branches: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
-    """Build a steps list from DB-hydrated branch dicts.
-
-    Each branch dict from get_session() has: id, name, messages (list),
-    model, provider, agent_name, status, started_at, ended_at.
-    """
+    """Build a steps list from DB-hydrated branch dicts."""
     if not branches:
         return None
     steps = []

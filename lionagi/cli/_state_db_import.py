@@ -1,14 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""DB import / migration helpers for `li state import` and `li state import-teams`.
-
-Pure helpers: single-run parsing, status derivation, message normalisation.
-The scan loops (_import_runs, _import_teams) live in state.py so they can
-reference RUNS_ROOT from the module namespace (test monkeypatch-friendly).
-
-All public names are re-exported from ``cli/state.py`` so existing import
-paths remain stable.
-"""
+"""Helpers for ``li state import``: run parsing, status derivation, message normalisation."""
 
 from __future__ import annotations
 

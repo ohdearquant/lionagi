@@ -1,24 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""CLI logging channels.
-
-The CLI has four distinct output concerns that were previously all mixed
-into raw `print(..., file=sys.stderr)` calls:
-
-    stdout  ──  result          (the answer the user came for)
-    stderr  ──  progress        ("Phase 1 done (12.3s)", "▶ agent started")
-            ──  error           ("error: model or --agent is required")
-            ──  hint            ("[to resume] li agent -r ... ")
-
-This module centralizes the three non-stdout channels as named loggers.
-
-Verbose mode flips two switches simultaneously:
-  - CLI progress goes silent (provider's own stream takes over the terminal)
-  - Provider library loggers (claude-cli / codex-cli / lionagi) unmute
-
-Call `configure_cli_logging(verbose)` once from `main()` before anything
-emits, then use the helpers `progress()`, `hint()`, `log_error()` freely.
-"""
+"""Named logging channels for CLI stdout/stderr output (progress, hint, warn, error)."""
 
 from __future__ import annotations
 
@@ -70,15 +52,7 @@ class _WarnFormatter(logging.Formatter):
 
 
 class _LazyStderrHandler(logging.StreamHandler):
-    """StreamHandler that resolves ``sys.stderr`` lazily at emit time.
-
-    ``logging.StreamHandler(sys.stderr)`` binds to the process's ``sys.stderr``
-    at construction. When pytest captures stderr and later closes the capture
-    stream between tests, the handler's cached reference becomes a closed
-    file, and subsequent emits raise ``ValueError: I/O operation on closed
-    file``. This subclass re-binds to the current ``sys.stderr`` on every
-    emit so pytest's capture swapping is honored.
-    """
+    """Re-bind to ``sys.stderr`` on every emit so pytest capture-swapping doesn't leave a closed file reference."""
 
     def __init__(self) -> None:
         super().__init__(stream=sys.stderr)
