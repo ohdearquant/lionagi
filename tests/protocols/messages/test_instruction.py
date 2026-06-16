@@ -7,11 +7,7 @@ from lionagi.protocols.messages.message import MessageRole
 
 @pytest.fixture(autouse=True)
 def _allow_public_image_hosts(monkeypatch):
-    """These tests exercise rendering/structure, not live SSRF resolution.
-
-    Stub is_ssrf_safe -> True so example.com image URLs validate without a real
-    DNS lookup. Actual SSRF rejection is covered by test_instruction_url_security.
-    """
+    """Stub is_ssrf_safe -> True so example.com URLs validate without live DNS."""
     monkeypatch.setattr("lionagi.protocols.messages.validators.is_ssrf_safe", lambda host: True)
 
 
@@ -28,11 +24,6 @@ class NestedRequestModel(BaseModel):
 
     user: SampleRequestModel
     timestamp: str
-
-
-# ============================================================================
-# InstructionContent Tests
-# ============================================================================
 
 
 def test_instruction_content_basic_initialization():
@@ -167,11 +158,6 @@ def test_instruction_content_base64_image_handling():
     rendered = content.rendered
     assert rendered[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
     assert base64_str in rendered[1]["image_url"]["url"]
-
-
-# ============================================================================
-# InstructionContent.from_dict() Tests
-# ============================================================================
 
 
 def test_from_dict_basic():
@@ -334,11 +320,6 @@ def test_from_dict_empty_dict():
     assert content.instruction is None
     assert content.guidance is None
     assert content.prompt_context == []
-
-
-# ============================================================================
-# Instruction (Message) Tests
-# ============================================================================
 
 
 def test_instruction_basic_initialization():
@@ -565,11 +546,6 @@ def test_instruction_serialization():
     assert restored.content.guidance == original.content.guidance
 
 
-# ============================================================================
-# Minimal YAML Rendering Tests
-# ============================================================================
-
-
 def test_minimal_yaml_rendering_strips_empty_fields():
     """Test minimal_yaml rendering strips None, empty lists, empty dicts"""
     content = InstructionContent(
@@ -630,11 +606,6 @@ def test_minimal_yaml_response_schema_included():
     content2 = InstructionContent(instruction="Test", response_format=SampleRequestModel)
     rendered2 = content2.rendered
     assert "responseschema" in rendered2.lower() or "ResponseSchema:" in rendered2
-
-
-# ============================================================================
-# Edge Cases and Error Handling
-# ============================================================================
 
 
 def test_instruction_content_empty():
@@ -754,15 +725,7 @@ def test_instruction_model_fields_immutable_slots():
 
 
 def test_with_updates_preserves_response_schema():
-    """Regression: with_updates() must preserve the response schema.
-
-    response_format/structure/_structure_instance are excluded from to_dict
-    (types can't round-trip through JSON), so the generic with_updates — which
-    goes through to_dict → constructor — used to silently drop the response
-    schema. In chat prep the instruction is rebuilt via with_updates() to fold
-    the system message into its guidance; dropping the schema there meant roled
-    agents never saw the action_requests format and never called tools.
-    """
+    """Regression: with_updates() must preserve response_format, _structure_instance, and tool_schemas through the to_dict→constructor cycle."""
     content = InstructionContent.from_dict(
         {
             "instruction": "do it",
@@ -782,8 +745,7 @@ def test_with_updates_preserves_response_schema():
 
 
 def test_with_updates_explicit_response_format_none_clears_schema():
-    """Passing response_format=None explicitly still clears it (chat prep relies
-    on this to strip prior turns' schemas)."""
+    """Passing response_format=None explicitly clears the schema (chat prep relies on this)."""
     content = InstructionContent.from_dict(
         {"instruction": "do it", "response_format": SampleRequestModel}
     )

@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Enhanced tests for Progression covering PR1 (_members sync) and PR2 (move/swap/reverse)."""
+"""Enhanced tests for Progression: _members sync, move, swap, and reverse operations."""
 
 from __future__ import annotations
 
@@ -17,10 +17,6 @@ from lionagi._errors import ItemNotFoundError
 from lionagi.protocols.generic.element import Element
 from lionagi.protocols.generic.progression import Progression
 from lionagi.testing import MockElement
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -46,11 +42,6 @@ def single_prog():
     """A Progression with exactly one element."""
     e = MockElement(value="only")
     return Progression(order=[e.id]), e
-
-
-# ===================================================================
-# PR1: _members initialization and synchronization
-# ===================================================================
 
 
 class TestMembersInitialization:
@@ -328,11 +319,6 @@ class TestMembersThreadSafety:
         assert 50 <= len(p) <= 100
 
 
-# ===================================================================
-# PR2: _validate_index, move, swap, reverse
-# ===================================================================
-
-
 class TestValidateIndex:
     """_validate_index normalizes negative indices and checks bounds."""
 
@@ -568,11 +554,6 @@ class TestMembersUnaffectedByReorderOps:
         prog.swap(0, -1)
         assert prog._members == expected
         assert len(prog) == 5
-
-
-# ===================================================================
-# Integration: combined PR1 + PR2 scenarios
-# ===================================================================
 
 
 class TestIntegrationScenarios:

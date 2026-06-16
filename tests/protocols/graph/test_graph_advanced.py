@@ -14,7 +14,6 @@ class TestGraphPerformance:
     """Test graph performance with large datasets"""
 
     def test_large_graph_creation(self):
-        """Test creating large graph"""
         graph = Graph()
         num_nodes = 1000
         num_edges = 5000
@@ -46,7 +45,6 @@ class TestGraphPerformance:
         assert edge_count > 0
 
     def test_large_graph_operations(self):
-        """Test operations on large graph"""
         graph = Graph()
         num_nodes = 1000
 
@@ -80,7 +78,6 @@ class TestGraphPerformance:
         assert path_length == num_nodes - 1
 
     def test_bulk_operations(self):
-        """Test bulk operations performance"""
         graph = Graph()
         num_operations = 1000
 
@@ -121,7 +118,6 @@ class TestGraphConcurrency:
     """Test concurrent graph operations"""
 
     async def test_concurrent_node_additions(self):
-        """Test adding nodes concurrently"""
         graph = Graph()
         num_operations = 100
 
@@ -137,7 +133,6 @@ class TestGraphConcurrency:
         assert all(node.id in graph.internal_nodes for node in nodes)
 
     async def test_concurrent_edge_additions(self):
-        """Test adding edges concurrently"""
         graph = Graph()
         num_nodes = 100
 
@@ -165,7 +160,6 @@ class TestGraphConcurrency:
         assert all(edge.id in graph.internal_edges for edge in edges)
 
     async def test_concurrent_mixed_operations(self):
-        """Test mixed operations concurrently"""
         graph = Graph()
         num_operations = 100
 
@@ -202,7 +196,6 @@ class TestGraphAdvancedOperations:
     """Test advanced graph operations"""
 
     def test_graph_merge(self):
-        """Test merging two graphs"""
         # Create first graph
         graph1 = Graph()
         nodes1 = [create_test_node("G1_Node1"), create_test_node("G1_Node2")]
@@ -249,7 +242,6 @@ class TestGraphAdvancedOperations:
         assert len(merged.internal_edges) == 2
 
     def test_graph_with_large_properties(self):
-        """Test graph with large property values"""
         graph = Graph()
         large_content = "a" * 1000000  # 1MB string
 
@@ -271,17 +263,14 @@ class TestGraphAdvancedOperations:
         assert len(graph.internal_edges[edge.id].properties.get("large_property")) == 1000000
 
     def test_graph_stress(self):
-        """Test graph under stress conditions"""
         graph = Graph()
         num_nodes = 1000
         operations_per_node = 10
 
-        # Add initial nodes
         nodes = [create_test_node(f"Node{i}") for i in range(num_nodes)]
         for node in nodes:
             graph.add_node(node)
 
-        # Perform random operations
         for _ in range(num_nodes * operations_per_node):
             operation = random.choice(["add_edge", "remove_node", "add_node"])
 
@@ -310,7 +299,6 @@ class TestGraphAdvancedOperations:
                 graph.add_node(node)
                 nodes.append(node)
 
-        # Verify graph integrity
         for node in graph.internal_nodes.values():
             assert node.id in graph.node_edge_mapping
 

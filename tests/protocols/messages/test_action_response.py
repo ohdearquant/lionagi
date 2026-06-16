@@ -9,10 +9,6 @@ from lionagi.protocols.messages.action_response import (
 )
 from lionagi.protocols.messages.message import MessageRole
 
-# ============================================================================
-# ActionResponseContent Tests
-# ============================================================================
-
 
 def test_action_response_content_initialization_defaults():
     """Test ActionResponseContent initialization with default values."""
@@ -43,10 +39,8 @@ def test_action_response_content_dataclass_immutable_slots():
     """Test that ActionResponseContent uses slots for memory efficiency."""
     content = ActionResponseContent(function="test")
 
-    # Verify slots are defined
     assert hasattr(ActionResponseContent, "__slots__")
 
-    # Verify we cannot add arbitrary attributes
     with pytest.raises(AttributeError):
         content.arbitrary_attribute = "value"
 
@@ -56,10 +50,8 @@ def test_action_response_content_arguments_default_factory():
     content1 = ActionResponseContent()
     content2 = ActionResponseContent()
 
-    # Modify one instance's arguments
     content1.arguments["key"] = "value"
 
-    # Verify the other instance is not affected
     assert "key" not in content2.arguments
     assert content1.arguments != content2.arguments
 
@@ -119,11 +111,6 @@ def test_action_response_content_rendered_with_none_output():
     assert isinstance(rendered, str)
     assert "Function: void_function" in rendered
     # Output is None, so minimal_yaml drops it - don't assert presence
-
-
-# ============================================================================
-# ActionResponseContent.from_dict() Tests - Backward Compatibility
-# ============================================================================
 
 
 def test_action_response_content_from_dict_flat_structure():
@@ -220,11 +207,6 @@ def test_action_response_content_from_dict_nested_with_partial_fields():
     assert content.arguments == {}
     assert content.output == "simple_output"
     assert content.action_request_id is None
-
-
-# ============================================================================
-# ActionResponse Tests
-# ============================================================================
 
 
 def test_action_response_initialization_with_content_dict():
@@ -360,11 +342,6 @@ def test_action_response_content_access():
     assert response.content.action_request_id == "test_req_id"
 
 
-# ============================================================================
-# Edge Cases and Integration Tests
-# ============================================================================
-
-
 def test_action_response_content_with_empty_strings():
     """Test ActionResponseContent with empty string values."""
     content = ActionResponseContent(
@@ -407,31 +384,24 @@ def test_action_response_content_with_complex_arguments():
 
 def test_action_response_content_output_types():
     """Test ActionResponseContent with various output types."""
-    # String output
     content_str = ActionResponseContent(function="f", output="string output")
     assert content_str.output == "string output"
 
-    # Integer output
     content_int = ActionResponseContent(function="f", output=42)
     assert content_int.output == 42
 
-    # Float output
     content_float = ActionResponseContent(function="f", output=3.14159)
     assert content_float.output == 3.14159
 
-    # Boolean output
     content_bool = ActionResponseContent(function="f", output=True)
     assert content_bool.output is True
 
-    # List output
     content_list = ActionResponseContent(function="f", output=[1, 2, 3])
     assert content_list.output == [1, 2, 3]
 
-    # Dict output
     content_dict = ActionResponseContent(function="f", output={"key": "value"})
     assert content_dict.output == {"key": "value"}
 
-    # None output
     content_none = ActionResponseContent(function="f", output=None)
     assert content_none.output is None
 
@@ -459,10 +429,8 @@ def test_action_response_dataclass_equality():
         action_request_id="req1",
     )
 
-    # Same values should be equal
     assert content1 == content2
 
-    # Different values should not be equal
     assert content1 != content3
 
 

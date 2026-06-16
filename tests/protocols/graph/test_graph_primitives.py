@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for Graph.replace_node() and Graph.splice_after().
-
-Also exercises the Edge constructor's relaxation from ``EdgeCondition``
-to any ``Condition`` subclass.
-"""
+"""Tests for expanded NodeConfig fields, create_node() audit field generation, and Node lifecycle with real Pydantic fields."""
 
 from uuid import uuid4
 
@@ -33,9 +29,6 @@ class _AsyncYesCondition(Condition):
 
     async def apply(self, *args, **kwargs) -> bool:
         return self.value
-
-
-# ── replace_node ────────────────────────────────────────────────────────
 
 
 def test_replace_node_preserves_incoming_and_outgoing_edges():
@@ -92,9 +85,6 @@ def test_replace_node_rejects_replacement_already_in_graph():
     g.add_node(b)
     with pytest.raises(RelationError, match="already in graph"):
         g.replace_node(a, b)
-
-
-# ── splice_after ────────────────────────────────────────────────────────
 
 
 def test_splice_after_inserts_between_anchor_and_successors():
@@ -163,9 +153,6 @@ def test_splice_after_rejects_new_already_in_graph():
         g.splice_after(a, b)
 
 
-# ── Edge accepts arbitrary Condition subclass ──────────────────────────
-
-
 def test_edge_accepts_custom_condition_subclass():
     a, b = Node(), Node()
     cond = _AsyncYesCondition()
@@ -201,11 +188,6 @@ def test_edge_setter_rejects_non_condition():
 
     with pytest.raises(ValueError, match="Condition subclass"):
         e.condition = _NotACondition()
-
-
-# ---------------------------------------------------------------------------
-# D5 – replace_node rewires inbound and outbound edges
-# ---------------------------------------------------------------------------
 
 
 def test_graph_replace_node_rewires_inbound_and_outbound_edges():

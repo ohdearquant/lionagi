@@ -1,18 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Comprehensive tests for Node with NodeConfig, create_node factory,
-and lifecycle methods (touch, soft_delete, restore, rehash).
-
-Covers:
-- NodeConfig frozen dataclass (defaults, properties, immutability)
-- compute_hash (via ln) determinism and input variants
-- create_node() factory (class generation, config wiring, extra fields,
-  real Pydantic fields for audit features)
-- Node lifecycle methods with various config combinations
-- Backwards compatibility (base Node has node_config=None)
-- Manual subclass with node_config ClassVar (metadata fallback)
-"""
+"""Tests for NodeConfig defaults, compute_hash, create_node factory, and Node lifecycle methods."""
 
 from __future__ import annotations
 
@@ -30,11 +19,6 @@ from lionagi.protocols.graph.node_factory import NodeConfig, create_node
 def _content_hash(content):
     """Wrapper for compute_hash matching the old rehash() calling convention."""
     return compute_hash(content, none_as_valid=True)
-
-
-# ===================================================================
-# 1. NodeConfig
-# ===================================================================
 
 
 class TestNodeConfigDefaults:
@@ -144,11 +128,6 @@ class TestNodeConfigImmutability:
             cfg.track_updated_at = True
 
 
-# ===================================================================
-# 2. compute_hash (via ln)
-# ===================================================================
-
-
 class TestComputeContentHash:
     """compute_hash input variants and determinism."""
 
@@ -220,11 +199,6 @@ class TestComputeContentHash:
         result = _content_hash("anything")
         assert len(result) == 64
         assert all(c in "0123456789abcdef" for c in result)
-
-
-# ===================================================================
-# 3. create_node factory
-# ===================================================================
 
 
 class TestCreateNodeBasic:
@@ -361,11 +335,6 @@ class TestCreateNodeConfigPropagation:
         assert cfg.track_updated_at is True
         assert cfg.is_persisted is True
         assert cfg.has_audit_fields is True
-
-
-# ===================================================================
-# 4. Node lifecycle methods
-# ===================================================================
 
 
 class TestNodeTouch:

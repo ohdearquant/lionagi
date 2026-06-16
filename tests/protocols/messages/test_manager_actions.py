@@ -21,9 +21,6 @@ def message_manager():
     return MessageManager()
 
 
-"""Tests for MessageManager clear, last_*, and properties."""
-
-
 def test_clear_messages_no_system(message_manager):
     """Test clearing messages when no system message exists"""
     message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
@@ -66,20 +63,16 @@ async def test_async_clear_messages(message_manager):
 
 def test_last_response(message_manager):
     """Test last_response property"""
-    # No responses initially
     assert message_manager.last_response is None
 
-    # Add an instruction
     message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
     assert message_manager.last_response is None
 
-    # Add first response
     response1 = message_manager.add_message(
         assistant_response="Response 1", sender="assistant", recipient="user"
     )
     assert message_manager.last_response == response1
 
-    # Add second response
     response2 = message_manager.add_message(
         assistant_response="Response 2", sender="assistant", recipient="user"
     )
@@ -88,20 +81,16 @@ def test_last_response(message_manager):
 
 def test_last_instruction(message_manager):
     """Test last_instruction property"""
-    # No instructions initially
     assert message_manager.last_instruction is None
 
-    # Add first instruction
     instruction1 = message_manager.add_message(
         instruction="First", sender="user", recipient="assistant"
     )
     assert message_manager.last_instruction == instruction1
 
-    # Add a response
     message_manager.add_message(assistant_response="Response", sender="assistant", recipient="user")
     assert message_manager.last_instruction == instruction1
 
-    # Add second instruction
     instruction2 = message_manager.add_message(
         instruction="Second", sender="user", recipient="assistant"
     )
@@ -112,11 +101,9 @@ def test_assistant_responses_property(message_manager):
     """Test assistant_responses property"""
     assert len(message_manager.assistant_responses) == 0
 
-    # Add instruction (not included)
     message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
     assert len(message_manager.assistant_responses) == 0
 
-    # Add responses
     response1 = message_manager.add_message(
         assistant_response="Response 1", sender="assistant", recipient="user"
     )
@@ -135,7 +122,6 @@ def test_instructions_property(message_manager):
     """Test instructions property"""
     assert len(message_manager.instructions) == 0
 
-    # Add instructions
     instruction1 = message_manager.add_message(
         instruction="First", sender="user", recipient="assistant"
     )
@@ -143,7 +129,6 @@ def test_instructions_property(message_manager):
         instruction="Second", sender="user", recipient="assistant"
     )
 
-    # Add response (not included)
     message_manager.add_message(assistant_response="Response", sender="assistant", recipient="user")
 
     instructions = message_manager.instructions
@@ -157,7 +142,6 @@ def test_action_requests_property(message_manager):
     """Test action_requests property"""
     assert len(message_manager.action_requests) == 0
 
-    # Add action requests
     request1 = message_manager.add_message(
         action_function="func1", action_arguments={}, sender="user"
     )
@@ -176,7 +160,6 @@ def test_action_responses_property(message_manager):
     """Test action_responses property"""
     assert len(message_manager.action_responses) == 0
 
-    # Add action request and response
     request = message_manager.add_message(
         action_function="func", action_arguments={}, sender="user"
     )
@@ -194,13 +177,11 @@ def test_actions_property(message_manager):
     """Test actions property (both requests and responses)"""
     assert len(message_manager.actions) == 0
 
-    # Add action request
     request = message_manager.add_message(
         action_function="func", action_arguments={}, sender="user"
     )
     assert len(message_manager.actions) == 1
 
-    # Add action response
     response = message_manager.add_message(
         action_request=request, action_output={"result": "success"}
     )

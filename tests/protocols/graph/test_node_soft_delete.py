@@ -216,11 +216,6 @@ class TestNodeRehash:
         assert pn.rehash() is None
 
 
-# ===================================================================
-# 5. Full delete-restore cycle
-# ===================================================================
-
-
 class TestDeleteRestoreCycle:
     """End-to-end soft_delete -> restore cycle with full audit trail."""
 
@@ -291,8 +286,3 @@ class TestDeleteRestoreCycle:
         r.restore()
         assert r.is_deleted is False
         assert r.version == 3
-
-
-# ===================================================================
-# 6. Backwards compatibility
-# ===================================================================

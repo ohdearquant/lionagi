@@ -24,21 +24,17 @@ def test_systemcontent_from_dict_datetime_handling():
     """Test SystemContent.from_dict datetime handling"""
     message = "Test system message"
 
-    # Without datetime
     content = SystemContent.from_dict({"system_message": message})
     assert content.system_message == message
     assert content.system_datetime is None
 
-    # With datetime boolean True
     content = SystemContent.from_dict({"system_datetime": True})
     assert content.system_datetime is not None
     assert isinstance(content.system_datetime, str)
 
-    # With datetime boolean False
     content = SystemContent.from_dict({"system_datetime": False})
     assert content.system_datetime is None
 
-    # With custom datetime string
     custom_datetime = "2023-01-01"
     content = SystemContent.from_dict({"system_datetime": custom_datetime})
     assert content.system_datetime == custom_datetime
@@ -56,18 +52,15 @@ def test_json_structure_format_response_format():
     assert "name" in result
     assert "age" in result
 
-    # Test with None
     result = JsonStructure._format_response_format(None)
     assert result == ""
 
-    # Test with empty dict
     result = JsonStructure._format_response_format({})
     assert result == ""
 
 
 def test_instructioncontent_format_image_item():
     """Test InstructionContent._format_image_item static method"""
-    # Base64 image
     image_id = "test_image_base64"
     detail = "low"
     result = InstructionContent._format_image_item(image_id, detail)
@@ -76,13 +69,11 @@ def test_instructioncontent_format_image_item():
     assert "data:image/jpeg;base64" in result["image_url"]["url"]
     assert result["image_url"]["detail"] == detail
 
-    # HTTP URL
     http_url = "http://example.com/image.jpg"
     result = InstructionContent._format_image_item(http_url, "high")
     assert result["image_url"]["url"] == http_url
     assert result["image_url"]["detail"] == "high"
 
-    # Data URL
     data_url = "data:image/png;base64,abc123"
     result = InstructionContent._format_image_item(data_url, "auto")
     assert result["image_url"]["url"] == data_url
@@ -139,25 +130,20 @@ def test_instructioncontent_from_dict_with_images():
 
 def test_validate_sender_recipient(sample_element):
     """Test sender/recipient validation"""
-    # Test valid MessageRole enum
     assert validate_sender_recipient(MessageRole.SYSTEM) == MessageRole.SYSTEM
     assert validate_sender_recipient(MessageRole.USER) == MessageRole.USER
 
-    # Test valid string roles
     assert validate_sender_recipient("system") == MessageRole.SYSTEM
     assert validate_sender_recipient("user") == MessageRole.USER
     assert validate_sender_recipient("assistant") == MessageRole.ASSISTANT
     assert validate_sender_recipient("action") == MessageRole.ACTION
     assert validate_sender_recipient("unset") == MessageRole.UNSET
 
-    # Test None value
     assert validate_sender_recipient(None) == MessageRole.UNSET
 
-    # Test with valid Element instance (returns ID)
     result = validate_sender_recipient(sample_element)
     assert result == sample_element.id
 
-    # Test invalid values
     with pytest.raises(ValueError):
         validate_sender_recipient(123)
 

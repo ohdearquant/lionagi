@@ -1,13 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for Event.as_fresh_event().
-
-Previously used ``to_dict()`` which unconditionally touched excluded
-keys (raising KeyError on ``metadata`` in some subclasses) and
-shallow-copied excluded fields so retry clones shared mutable state
-with the original.
-"""
+"""Regression tests for Event.as_fresh_event() fixing KeyError on excluded fields and shared mutable-state bugs."""
 
 from typing import Any
 
@@ -81,13 +75,10 @@ def test_as_fresh_event_falls_back_for_uncopyable_values():
 
     fresh = orig.as_fresh_event()
 
-    # The closure comes back intact (either copied or referenced).
     assert fresh.parameters["fn"]() == 1
 
 
 def test_as_fresh_event_does_not_raise_on_event_without_metadata_subfield():
-    # Base Event has no extra excluded fields; prove the path does not
-    # require them to exist.
     orig = Event()
 
     fresh = orig.as_fresh_event()

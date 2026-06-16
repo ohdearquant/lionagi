@@ -4,7 +4,6 @@ from lionagi.protocols.generic.element import Element
 from lionagi.protocols.generic.log import Log, LogManager, LogManagerConfig
 
 
-# Test LogManagerConfig
 class TestLogManagerConfig:
     def test_default_initialization(self):
         config = LogManagerConfig()
@@ -41,33 +40,26 @@ class TestLogManagerConfig:
         assert config.clear_after_dump is False
 
     def test_extension_validation(self):
-        # Test adding dot to extension
         config = LogManagerConfig(extension="csv")
         assert config.extension == ".csv"
 
-        # Test keeping existing dot
         config = LogManagerConfig(extension=".json")
         assert config.extension == ".json"
 
     def test_edge_cases(self):
-        # Test zero capacity
         config = LogManagerConfig(capacity=0)
         assert config.capacity == 0
 
-        # Test zero hash digits
         config = LogManagerConfig(hash_digits=0)
         assert config.hash_digits == 0
 
-        # Test negative capacity
         with pytest.raises(ValueError):
             LogManagerConfig(capacity=-1)
 
-        # Test negative hash digits
         with pytest.raises(ValueError):
             LogManagerConfig(hash_digits=-1)
 
 
-# Test Log
 class TestLog:
     def test_create_from_dict(self):
         data = {"content": {"key": "value"}}
@@ -87,11 +79,9 @@ class TestLog:
     def test_immutability(self):
         log = Log.from_dict({"content": {"key": "value"}})
 
-        # Test modifying content
         with pytest.raises(AttributeError):
             log.content = {"new": "value"}
 
-        # Test adding new attribute
         with pytest.raises(AttributeError):
             log.new_field = "value"
 
@@ -105,7 +95,6 @@ class TestLog:
             Log.from_dict("invalid")
 
 
-# Test LogManager
 class TestLogManager:
     @pytest.fixture
     def temp_dir(self, tmp_path):

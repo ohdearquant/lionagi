@@ -1,17 +1,7 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for custom render/parser protocols (Phase 1 — #1092).
-
-Covers:
-- StructureFormat enum
-- CustomRenderer / CustomParser protocols (structural typing)
-- validate_image_url security guards
-- InstructionContent.with_updates / .render / .create additions
-- ActionRequestContent.render_compact / .render additions
-- ActionResponseContent.render_summary / .error / .success additions
-- prepare_messages_for_chat pipeline basics
-"""
+"""Tests for custom render/parser protocols: StructureFormat, CustomRenderer/Parser, validate_image_url, and message content additions."""
 
 from typing import Any
 
@@ -43,11 +33,6 @@ def _allow_public_image_hosts(monkeypatch):
     monkeypatch.setattr("lionagi.protocols.messages.validators.is_ssrf_safe", lambda host: True)
 
 
-# ---------------------------------------------------------------------------
-# StructureFormat
-# ---------------------------------------------------------------------------
-
-
 class TestStructureFormat:
     def test_enum_values(self):
         assert StructureFormat.JSON.value == "json"
@@ -56,11 +41,6 @@ class TestStructureFormat:
 
     def test_three_members(self):
         assert len(StructureFormat) == 3
-
-
-# ---------------------------------------------------------------------------
-# CustomRenderer protocol
-# ---------------------------------------------------------------------------
 
 
 class TestCustomRendererProtocol:
@@ -86,11 +66,6 @@ class TestCustomRendererProtocol:
         assert not isinstance(None, CustomRenderer)
 
 
-# ---------------------------------------------------------------------------
-# CustomParser protocol
-# ---------------------------------------------------------------------------
-
-
 class TestCustomParserProtocol:
     def test_callable_satisfies_protocol(self):
         def my_parser(text: str, target_keys: list[str], **kwargs: Any) -> dict[str, Any]:
@@ -104,11 +79,6 @@ class TestCustomParserProtocol:
                 return {k: text.upper() for k in target_keys}
 
         assert isinstance(UpperCaseParser(), CustomParser)
-
-
-# ---------------------------------------------------------------------------
-# validate_image_url
-# ---------------------------------------------------------------------------
 
 
 class TestValidateImageUrl:
@@ -151,11 +121,6 @@ class TestValidateImageUrl:
             validate_image_url("https://")
 
 
-# ---------------------------------------------------------------------------
-# InstructionContent additions
-# ---------------------------------------------------------------------------
-
-
 class TestInstructionContentAdditions:
     def test_instruction_field(self):
         c = InstructionContent(instruction="hello world")
@@ -188,11 +153,6 @@ class TestInstructionContentAdditions:
         assert "hello" in result
 
 
-# ---------------------------------------------------------------------------
-# ActionRequestContent additions
-# ---------------------------------------------------------------------------
-
-
 class TestActionRequestContentAdditions:
     def test_render_delegates_to_rendered(self):
         c = ActionRequestContent(function="my_fn", arguments={"a": 1})
@@ -213,11 +173,6 @@ class TestActionRequestContentAdditions:
 
         c = ActionRequestContent(function="f")
         assert c.role == MessageRole.ACTION
-
-
-# ---------------------------------------------------------------------------
-# ActionResponseContent additions
-# ---------------------------------------------------------------------------
 
 
 class TestActionResponseContentAdditions:
@@ -266,11 +221,6 @@ class TestActionResponseContentAdditions:
         assert c.role == MessageRole.ACTION
 
 
-# ---------------------------------------------------------------------------
-# AssistantResponseContent additions
-# ---------------------------------------------------------------------------
-
-
 class TestAssistantResponseContentAdditions:
     def test_render_delegates_to_rendered(self):
         c = AssistantResponseContent(assistant_response="hello")
@@ -285,11 +235,6 @@ class TestAssistantResponseContentAdditions:
     def test_response_alias(self):
         c = AssistantResponseContent(assistant_response="foo")
         assert c.response == "foo"
-
-
-# ---------------------------------------------------------------------------
-# prepare_messages_for_chat basics
-# ---------------------------------------------------------------------------
 
 
 class TestPrepareMessagesForChat:

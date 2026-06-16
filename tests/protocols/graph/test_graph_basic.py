@@ -17,15 +17,12 @@ def simple_graph():
     """Fixture for simple graph with two connected nodes"""
     graph = Graph()
 
-    # Create nodes
     node1 = create_test_node("Node1")
     node2 = create_test_node("Node2")
 
-    # Add nodes
     graph.add_node(node1)
     graph.add_node(node2)
 
-    # Create and add edge
     edge = Edge(head=node1, tail=node2)
     graph.add_edge(edge)
 
@@ -37,14 +34,11 @@ def complex_graph():
     """Fixture for complex graph with multiple nodes and edges"""
     graph = Graph()
 
-    # Create nodes
     nodes = [create_test_node(f"Node{i}") for i in range(4)]
 
-    # Add nodes
     for node in nodes:
         graph.add_node(node)
 
-    # Create edges
     edges = [
         Edge(head=nodes[0], tail=nodes[1]),  # 0 -> 1
         Edge(head=nodes[1], tail=nodes[2]),  # 1 -> 2
@@ -52,7 +46,6 @@ def complex_graph():
         Edge(head=nodes[0], tail=nodes[3]),  # 0 -> 3
     ]
 
-    # Add edges
     for edge in edges:
         graph.add_edge(edge)
 
@@ -63,13 +56,11 @@ class TestGraphBasics:
     """Test basic graph operations"""
 
     def test_empty_graph_creation(self, empty_graph):
-        """Test creation of empty graph"""
         assert len(empty_graph.internal_nodes) == 0
         assert len(empty_graph.internal_edges) == 0
         assert isinstance(empty_graph.node_edge_mapping, dict)
 
     def test_add_node(self, empty_graph):
-        """Test adding a node"""
         node = create_test_node("TestNode")
         empty_graph.add_node(node)
         assert node.id in empty_graph.internal_nodes
@@ -79,31 +70,26 @@ class TestGraphBasics:
         }
 
     def test_add_invalid_node(self, empty_graph):
-        """Test adding invalid node type"""
         with pytest.raises(RelationError):
             empty_graph.add_node("not a node")
 
     def test_add_duplicate_node(self, empty_graph):
-        """Test adding duplicate node"""
         node = create_test_node("TestNode")
         empty_graph.add_node(node)
         with pytest.raises(RelationError):
             empty_graph.add_node(node)
 
     def test_add_edge(self, simple_graph):
-        """Test adding an edge"""
         graph, node1, node2, edge = simple_graph
         assert edge.id in graph.internal_edges
         assert graph.node_edge_mapping[node1.id]["out"][edge.id] == node2.id
         assert graph.node_edge_mapping[node2.id]["in"][edge.id] == node1.id
 
     def test_add_invalid_edge(self, empty_graph):
-        """Test adding invalid edge"""
         with pytest.raises(RelationError):
             empty_graph.add_edge("not an edge")
 
     def test_add_edge_missing_nodes(self, empty_graph):
-        """Test adding edge with missing nodes"""
         node1 = create_test_node("Node1")
         node2 = create_test_node("Node2")
         edge = Edge(head=node1, tail=node2)
@@ -115,7 +101,6 @@ class TestGraphModification:
     """Test graph modification operations"""
 
     def test_remove_node(self, simple_graph):
-        """Test removing a node"""
         graph, node1, node2, edge = simple_graph
         graph.remove_node(node1)
         assert node1.id not in graph.internal_nodes
@@ -123,7 +108,6 @@ class TestGraphModification:
         assert node1.id not in graph.node_edge_mapping
 
     def test_remove_edge(self, simple_graph):
-        """Test removing an edge"""
         graph, node1, node2, edge = simple_graph
         graph.remove_edge(edge)
         assert edge.id not in graph.internal_edges
@@ -131,14 +115,12 @@ class TestGraphModification:
         assert edge.id not in graph.node_edge_mapping[node2.id]["in"]
 
     def test_remove_nonexistent_node(self, simple_graph):
-        """Test removing non-existent node"""
         graph, _, _, _ = simple_graph
         non_existent_node = create_test_node("NonExistent")
         with pytest.raises(RelationError):
             graph.remove_node(non_existent_node)
 
     def test_remove_nonexistent_edge(self, simple_graph):
-        """Test removing non-existent edge"""
         graph, node1, node2, _ = simple_graph
         non_existent_edge = Edge(head=node1, tail=node2)
         with pytest.raises(RelationError):
@@ -149,20 +131,17 @@ class TestGraphContainment:
     """Test graph containment operations"""
 
     def test_contains_node(self, simple_graph):
-        """Test node containment check"""
         graph, node1, node2, _ = simple_graph
         assert node1 in graph
         assert node2 in graph
         assert create_test_node("NonExistent") not in graph
 
     def test_contains_edge(self, simple_graph):
-        """Test edge containment check"""
         graph, _, _, edge = simple_graph
         assert edge in graph
         assert Edge(head=create_test_node("Node1"), tail=create_test_node("Node2")) not in graph
 
     def test_empty_graph_contains(self, empty_graph):
-        """Test containment checks on empty graph"""
         node = create_test_node("TestNode")
         edge = Edge(head=node, tail=node)
         assert node not in empty_graph
@@ -173,13 +152,11 @@ class TestGraphProperties:
     """Test graph property checks"""
 
     def test_empty_graph_properties(self, empty_graph):
-        """Test properties of empty graph"""
         assert len(empty_graph.internal_nodes) == 0
         assert len(empty_graph.internal_edges) == 0
         assert len(empty_graph.node_edge_mapping) == 0
 
     def test_single_node_graph(self):
-        """Test graph with single node"""
         graph = Graph()
         node = create_test_node("SingleNode")
         graph.add_node(node)
@@ -188,7 +165,6 @@ class TestGraphProperties:
         assert node.id in graph.node_edge_mapping
 
     def test_self_loop(self):
-        """Test graph with self-loop"""
         graph = Graph()
         node = create_test_node("SelfLoop")
         graph.add_node(node)

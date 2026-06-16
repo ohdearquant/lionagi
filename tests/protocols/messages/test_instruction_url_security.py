@@ -1,18 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Attack regression tests for InstructionContent image URL validation.
-
-Audit finding: LIONAGI-AUDIT-006 — image URL validation was not enforced on
-the public instruction path. The existing validate_image_url helper in
-messages/validators.py was never called from _format_image_item, so
-file://, javascript:, data:text/html and other dangerous URLs could reach
-provider payload construction without the repository's own guard.
-
-Fix: _format_image_item now calls validate_image_url for http/https URLs
-and restricts data: URIs to well-formed data:image/*;base64,… only.
-This test asserts the guard fires BEFORE the provider payload is built.
-"""
+"""Regression tests for InstructionContent image URL validation: rejects dangerous schemes, null bytes, and SSRF targets."""
 
 from __future__ import annotations
 
@@ -95,11 +84,7 @@ class TestImageUrlSafeInputs:
     """Well-formed image URLs must pass through unchanged."""
 
     def test_https_url_accepted(self, monkeypatch):
-        """Standard HTTPS image URL with a public host must be accepted.
-
-        is_ssrf_safe is stubbed True so the test asserts the accept-path without
-        a real DNS lookup (the SSRF resolver is unit-tested separately).
-        """
+        """Standard HTTPS image URL with a public host must be accepted; is_ssrf_safe is stubbed to avoid DNS."""
         monkeypatch.setattr("lionagi.protocols.messages.validators.is_ssrf_safe", lambda host: True)
         content = InstructionContent(
             instruction="test",
