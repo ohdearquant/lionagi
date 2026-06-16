@@ -49,7 +49,7 @@ custom orchestration, and programmatic control the CLI doesn't expose.
 | [team.md](team.md) | `Session` exchange | Inter-branch messaging |
 | [imodel.md](imodel.md) | `iModel` | Configure providers, rate limits, hooks |
 | [operations.md](operations.md) | `Middle`, param types | Extend `operate()`, build custom middles |
-| [agent-config.md](agent-config.md) | `AgentConfig`, `create_agent()`, `PermissionPolicy` | Preset agent configurations with hooks and permissions |
+| [agent-config.md](agent-config.md) | `AgentSpec`, `create_agent()`, `PermissionPolicy` | Preset agent configurations with hooks and permissions |
 | [sandbox.md](sandbox.md) | `SandboxSession` | Isolated git worktree execution for safe agent edits |
 
 ## Import surface

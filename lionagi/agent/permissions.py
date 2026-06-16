@@ -20,9 +20,9 @@ Usage::
         escalate={"bash": ["*"]},  # anything not explicitly allowed → escalate
     )
 
-    # As AgentConfig
-    config = AgentConfig.coding()
-    config.permissions = {
+    # As AgentSpec
+    spec = AgentSpec.coding()
+    spec.permissions = {
         "mode": "rules",
         "allow": {"reader": ["*"], "search": ["*"]},
         "deny": {"bash": ["rm *"]},

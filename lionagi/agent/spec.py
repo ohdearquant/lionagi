@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from lionagi.agent.config import HooksMixin, _wire_secure_guards
 from lionagi.casts.pack import Pack
 from lionagi.casts.profile import Profile
 
@@ -17,7 +16,39 @@ if TYPE_CHECKING:
 
     from .permissions import PermissionPolicy
 
-__all__ = ("AgentSpec",)
+__all__ = ("AgentSpec", "HooksMixin")
+
+
+class HooksMixin:
+    """Shared hook-registration helpers for agent spec dataclasses."""
+
+    hook_handlers: dict[str, list[Callable]]
+
+    def pre(self, tool_name: str, handler: Callable) -> HooksMixin:
+        self.hook_handlers.setdefault(f"pre:{tool_name}", []).append(handler)
+        return self
+
+    def post(self, tool_name: str, handler: Callable) -> HooksMixin:
+        self.hook_handlers.setdefault(f"post:{tool_name}", []).append(handler)
+        return self
+
+    def on_error(self, tool_name: str, handler: Callable) -> HooksMixin:
+        self.hook_handlers.setdefault(f"error:{tool_name}", []).append(handler)
+        return self
+
+
+def _wire_secure_guards(obj: HooksMixin, cwd: str | None) -> None:
+    """Register the standard destructive-command + path-containment guards.
+
+    ``obj`` must support .pre() (HooksMixin).
+    """
+    from lionagi.agent.hooks import guard_destructive, guard_paths
+
+    obj.pre("bash", guard_destructive)
+    workspace_root = str(Path(cwd) if cwd else Path.cwd())
+    path_guard = guard_paths(allowed_paths=[workspace_root])
+    obj.pre("reader", path_guard)
+    obj.pre("editor", path_guard)
 
 
 @dataclass
@@ -219,38 +250,6 @@ class AgentSpec(HooksMixin):
             )
             lines.extend(f"- {e}" for e in policy.escalations)
         return "\n".join(lines)
-
-    @classmethod
-    def from_legacy(cls, config: Any) -> AgentSpec:
-        """Bridge a legacy AgentConfig into an AgentSpec."""
-        from .permissions import PermissionPolicy
-
-        perm: PermissionPolicy | None = None
-        if config.permissions:
-            if isinstance(config.permissions, PermissionPolicy):
-                perm = config.permissions
-            elif isinstance(config.permissions, dict):
-                perm = PermissionPolicy.from_dict(config.permissions)
-
-        role = config.role or "implementer"
-        prof = Profile.compose(role=role, modes=config.modes or [])
-
-        return cls(
-            profile=prof,
-            model=config.model,
-            effort=config.effort,
-            tools=tuple(config.tools or []),
-            permissions=perm,
-            grant_emissions=True,
-            pack="default",
-            lion_system=config.lion_system,
-            extra_prompt=config.system_prompt or None,
-            hook_handlers={k: list(v) for k, v in config.hook_handlers.items()},
-            cwd=config.cwd,
-            yolo=config.yolo,
-            mcp_servers=config.mcp_servers,
-            mcp_config_path=config.mcp_config_path,
-        )
 
 
 def _resolve_permissions(permissions: Any) -> PermissionPolicy | None:

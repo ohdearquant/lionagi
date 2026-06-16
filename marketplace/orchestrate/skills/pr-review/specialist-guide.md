@@ -127,7 +127,7 @@ Every finding MUST cite `file:line`. No vague "there are issues."
 | `lionagi/cli/orchestrate/flow.py` | `li o flow` — FlowAgent + FlowOp DAG with critic synthesis |
 | `lionagi/cli/orchestrate/_common.py` | AgentRequest schema, worker prompt template |
 | `lionagi/cli/orchestrate/_orchestration.py` | Shared setup/finalize, project detection |
-| `lionagi/agent/config.py` | AgentConfig presets for specialist agents |
+| `lionagi/agent/spec.py` | AgentSpec presets for specialist agents |
 | `lionagi/agent/factory.py` | create_agent() — wires Branch + tools + hooks |
 | `lionagi/session/branch.py` | Branch facade — each specialist runs in its own Branch |
 | `lionagi/cli/_runs.py` | Run manifest layout: ~/.lionagi/runs/{run_id}/ |

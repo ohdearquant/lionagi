@@ -8,13 +8,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from lionagi.agent.config import AgentConfig
 from lionagi.agent.settings import (
     _import_hook,
     _make_shell_hook,
     _resolve_hook_spec,
     apply_hooks_from_settings,
 )
+from lionagi.agent.spec import AgentSpec
 
 # ---------------------------------------------------------------------------
 # _import_hook: untrusted module raises, no colon returns None, ImportError
@@ -177,9 +177,9 @@ def test_apply_hooks_from_settings_wraps_single_dict_in_list():
             }
         }
     }
-    config = AgentConfig()
+    config = AgentSpec.compose("implementer")
     apply_hooks_from_settings(config, settings)
-    # AgentConfig stores hooks as "pre:bash" → list
+    # AgentSpec stores hooks as "pre:bash" → list
     assert len(config.hook_handlers.get("pre:bash", [])) == 1
 
 
@@ -191,7 +191,7 @@ def test_apply_hooks_skips_none_handlers():
             }
         }
     }
-    config = AgentConfig()
+    config = AgentSpec.compose("implementer")
     apply_hooks_from_settings(config, settings)
     assert config.hook_handlers.get("pre:bash", []) == []
 
@@ -204,7 +204,7 @@ def test_apply_hooks_all_phases_registered():
             "on_error": {"bash": [{"command": ["logger", "error"]}]},
         }
     }
-    config = AgentConfig()
+    config = AgentSpec.compose("implementer")
     apply_hooks_from_settings(config, settings)
     assert len(config.hook_handlers.get("pre:reader", [])) == 1
     assert len(config.hook_handlers.get("post:editor", [])) == 1
@@ -213,6 +213,6 @@ def test_apply_hooks_all_phases_registered():
 
 def test_apply_hooks_from_settings_loads_defaults_when_none(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    config = AgentConfig()
+    config = AgentSpec.compose("implementer")
     result = apply_hooks_from_settings(config, settings=None)
     assert result is config

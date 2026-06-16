@@ -25,7 +25,7 @@ def test_lionagi_agent_public_surface_imports():
     """``import lionagi.agent`` exposes its documented public surface."""
     mod = importlib.import_module("lionagi.agent")
 
-    assert hasattr(mod, "AgentConfig"), "AgentConfig must be accessible after import"
+    assert hasattr(mod, "AgentSpec"), "AgentSpec must be accessible after import"
     assert hasattr(mod, "load_settings"), "load_settings must be accessible after import"
     assert hasattr(mod, "create_agent"), "create_agent must be accessible after import"
 

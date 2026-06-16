@@ -23,7 +23,7 @@ the full Verified-500, ~5 GB vs ~130 GB of images).
 load.py     50 real instances → benchmark-agnostic Task (cached locally, no Docker)
    ↓
 runner      clone repo @ base_commit into an ISOLATED sandbox → lionagi's OWN
-            coding agent (AgentConfig.coding: reader/editor/bash/search) resolves
+            coding agent (AgentSpec.coding: reader/editor/bash/search) resolves
             the issue → git diff = model_patch.  Orchestration patterns
             (single | fanout | flow) coordinate the coder(s).
    ↓

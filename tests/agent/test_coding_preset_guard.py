@@ -3,22 +3,22 @@
 
 """Attack-driven regression tests for the coding preset security gate.
 
-The AgentConfig.coding() and AgentSpec.coding() presets advertise
-"guard hooks + strict path policy" but previously wired NO default security
-hook. An agent using the coding preset could execute destructive shell commands
-(rm -rf, git reset --hard, etc.) without any barrier.
+The AgentSpec.coding() preset advertises "guard hooks + strict path policy"
+but previously wired NO default security hook. An agent using the coding preset
+could execute destructive shell commands (rm -rf, git reset --hard, etc.)
+without any barrier.
 
 These tests prove that:
 1. The preset's default bash preprocessor blocks known-destructive commands.
 2. A benign command passes through the guard unchanged.
 3. Callers who opt out via secure=False receive no preprocessor from the preset.
+4. The path policy contains file access to the configured workspace root.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from lionagi.agent.config import AgentConfig
 from lionagi.agent.spec import AgentSpec
 
 # ---------------------------------------------------------------------------
@@ -26,20 +26,14 @@ from lionagi.agent.spec import AgentSpec
 # ---------------------------------------------------------------------------
 
 
-async def _make_branch(config: AgentConfig):
-    from lionagi.agent.factory import create_agent
-
-    return await create_agent(config, load_settings=False)
-
-
-async def _make_branch_from_spec(spec: AgentSpec):
+async def _make_branch(spec: AgentSpec):
     from lionagi.agent.factory import create_agent
 
     return await create_agent(spec, load_settings=False)
 
 
 # ---------------------------------------------------------------------------
-# AgentConfig.coding() — attack-driven tests
+# AgentSpec.coding() — destructive-command guard
 # ---------------------------------------------------------------------------
 
 
@@ -50,8 +44,8 @@ async def test_coding_preset_blocks_rm_rf():
     command without explicit human confirmation; the guard must intercept it
     before the bash tool executes.
     """
-    config = AgentConfig.coding()
-    branch = await _make_branch(config)
+    spec = AgentSpec.coding()
+    branch = await _make_branch(spec)
     bash_tool = branch.acts.registry["bash"]
 
     assert bash_tool.preprocessor is not None, "coding preset must wire a bash preprocessor"
@@ -62,8 +56,8 @@ async def test_coding_preset_blocks_rm_rf():
 
 async def test_coding_preset_blocks_git_reset_hard():
     """'git reset --hard' is a history-destroying operation and must be blocked."""
-    config = AgentConfig.coding()
-    branch = await _make_branch(config)
+    spec = AgentSpec.coding()
+    branch = await _make_branch(spec)
     bash_tool = branch.acts.registry["bash"]
 
     with pytest.raises(PermissionError, match="Blocked destructive command"):
@@ -72,8 +66,8 @@ async def test_coding_preset_blocks_git_reset_hard():
 
 async def test_coding_preset_blocks_git_push_force():
     """Force-push can rewrite shared history; the preset must refuse it."""
-    config = AgentConfig.coding()
-    branch = await _make_branch(config)
+    spec = AgentSpec.coding()
+    branch = await _make_branch(spec)
     bash_tool = branch.acts.registry["bash"]
 
     with pytest.raises(PermissionError, match="Blocked destructive command"):
@@ -82,8 +76,8 @@ async def test_coding_preset_blocks_git_push_force():
 
 async def test_coding_preset_allows_benign_command():
     """A safe read-only command must pass through the guard without error."""
-    config = AgentConfig.coding()
-    branch = await _make_branch(config)
+    spec = AgentSpec.coding()
+    branch = await _make_branch(spec)
     bash_tool = branch.acts.registry["bash"]
 
     # Must not raise; return value is None (pass-through) or a dict.
@@ -94,8 +88,8 @@ async def test_coding_preset_allows_benign_command():
 
 async def test_coding_preset_allows_uv_run():
     """'uv run pytest' is a common safe command that must not be blocked."""
-    config = AgentConfig.coding()
-    branch = await _make_branch(config)
+    spec = AgentSpec.coding()
+    branch = await _make_branch(spec)
     bash_tool = branch.acts.registry["bash"]
 
     result = await bash_tool.preprocessor({"action": "run", "command": "uv run pytest -q"})
@@ -108,8 +102,8 @@ async def test_coding_preset_secure_false_has_no_default_guard():
     Callers who opt out must be able to manage hooks themselves without the
     preset silently injecting a guard they did not request.
     """
-    config = AgentConfig.coding(secure=False)
-    branch = await _make_branch(config)
+    spec = AgentSpec.coding(secure=False)
+    branch = await _make_branch(spec)
     bash_tool = branch.acts.registry["bash"]
 
     # No preprocessor at all — the preset contributed nothing.
@@ -120,37 +114,11 @@ async def test_coding_preset_guard_destructive_in_hook_handlers():
     """The default guard hook must appear in hook_handlers before create_agent."""
     from lionagi.agent.hooks import guard_destructive
 
-    config = AgentConfig.coding()
-    handlers = config.hook_handlers.get("pre:bash", [])
+    spec = AgentSpec.coding()
+    handlers = spec.hook_handlers.get("pre:bash", [])
     assert guard_destructive in handlers, (
         "guard_destructive must be in pre:bash hook_handlers for the coding preset"
     )
-
-
-# ---------------------------------------------------------------------------
-# AgentSpec.coding() — same attack surface via the modern API
-# ---------------------------------------------------------------------------
-
-
-async def test_spec_coding_preset_blocks_rm_rf():
-    """AgentSpec.coding() must wire the same guard as AgentConfig.coding()."""
-    spec = AgentSpec.coding()
-    branch = await _make_branch_from_spec(spec)
-    bash_tool = branch.acts.registry["bash"]
-
-    assert bash_tool.preprocessor is not None, "AgentSpec.coding() must wire a bash preprocessor"
-
-    with pytest.raises(PermissionError, match="Blocked destructive command"):
-        await bash_tool.preprocessor({"action": "run", "command": "rm -rf /"})
-
-
-async def test_spec_coding_preset_secure_false_no_guard():
-    """AgentSpec.coding(secure=False) must not inject any default guard."""
-    from lionagi.agent.hooks import guard_destructive
-
-    spec = AgentSpec.coding(secure=False)
-    handlers = spec.hook_handlers.get("pre:bash", [])
-    assert guard_destructive not in handlers
 
 
 # ---------------------------------------------------------------------------
@@ -173,8 +141,8 @@ async def test_coding_preset_reader_blocks_outside_workspace(tmp_path):
     secrets from outside its workspace (e.g. /etc/passwd, ~/.ssh/id_rsa,
     or a parent-directory traversal).
     """
-    config = AgentConfig.coding(cwd=str(tmp_path))
-    branch = await _make_branch(config)
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch(spec)
 
     with pytest.raises(PermissionError):
         await _invoke_pre_hooks(branch, "reader", {"action": "read", "path": "/etc/passwd"})
@@ -186,8 +154,8 @@ async def test_coding_preset_editor_blocks_outside_workspace(tmp_path):
     Writing to arbitrary paths would let an agent corrupt system files or
     overwrite SSH keys; the preset path guard must refuse it.
     """
-    config = AgentConfig.coding(cwd=str(tmp_path))
-    branch = await _make_branch(config)
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch(spec)
 
     with pytest.raises(PermissionError):
         await _invoke_pre_hooks(
@@ -199,8 +167,8 @@ async def test_coding_preset_editor_blocks_outside_workspace(tmp_path):
 
 async def test_coding_preset_reader_allows_inside_workspace(tmp_path):
     """reader called with a path INSIDE the workspace root must be allowed."""
-    config = AgentConfig.coding(cwd=str(tmp_path))
-    branch = await _make_branch(config)
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch(spec)
 
     inside = str(tmp_path / "src" / "main.py")
     # Must not raise — path is within the allowed root.
@@ -210,8 +178,8 @@ async def test_coding_preset_reader_allows_inside_workspace(tmp_path):
 
 async def test_coding_preset_editor_allows_inside_workspace(tmp_path):
     """editor called with a file_path INSIDE the workspace root must be allowed."""
-    config = AgentConfig.coding(cwd=str(tmp_path))
-    branch = await _make_branch(config)
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch(spec)
 
     inside = str(tmp_path / "output.txt")
     result = await branch.acts.registry["editor"].preprocessor(
@@ -226,8 +194,8 @@ async def test_coding_preset_parent_dir_traversal_blocked(tmp_path):
     Even when an absolute path technically resolves to a parent directory,
     the path guard must detect and block it.
     """
-    config = AgentConfig.coding(cwd=str(tmp_path))
-    branch = await _make_branch(config)
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch(spec)
 
     # One level above tmp_path — clearly outside the workspace.
     outside = str(tmp_path.parent / "secret.txt")
@@ -237,49 +205,27 @@ async def test_coding_preset_parent_dir_traversal_blocked(tmp_path):
 
 async def test_coding_preset_reader_guard_in_hook_handlers(tmp_path):
     """guard_paths hook must appear in pre:reader hook_handlers for coding preset."""
-    config = AgentConfig.coding(cwd=str(tmp_path))
-    handlers = config.hook_handlers.get("pre:reader", [])
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    handlers = spec.hook_handlers.get("pre:reader", [])
     assert len(handlers) >= 1, "guard_paths must be wired into pre:reader for the coding preset"
 
 
 async def test_coding_preset_editor_guard_in_hook_handlers(tmp_path):
     """guard_paths hook must appear in pre:editor hook_handlers for coding preset."""
-    config = AgentConfig.coding(cwd=str(tmp_path))
-    handlers = config.hook_handlers.get("pre:editor", [])
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    handlers = spec.hook_handlers.get("pre:editor", [])
     assert len(handlers) >= 1, "guard_paths must be wired into pre:editor for the coding preset"
 
 
 async def test_coding_preset_secure_false_no_path_guard():
     """secure=False must not wire any path guard on reader or editor."""
-    config = AgentConfig.coding(secure=False)
-    assert not config.hook_handlers.get("pre:reader"), (
+    spec = AgentSpec.coding(secure=False)
+    assert not spec.hook_handlers.get("pre:reader"), (
         "secure=False must not wire any pre:reader hook"
     )
-    assert not config.hook_handlers.get("pre:editor"), (
+    assert not spec.hook_handlers.get("pre:editor"), (
         "secure=False must not wire any pre:editor hook"
     )
-
-
-async def test_spec_coding_preset_reader_blocks_outside_workspace(tmp_path):
-    """AgentSpec.coding() — reader outside workspace must be blocked."""
-    spec = AgentSpec.coding(cwd=str(tmp_path))
-    branch = await _make_branch_from_spec(spec)
-
-    with pytest.raises(PermissionError):
-        await _invoke_pre_hooks(branch, "reader", {"action": "read", "path": "/etc/passwd"})
-
-
-async def test_spec_coding_preset_editor_blocks_outside_workspace(tmp_path):
-    """AgentSpec.coding() — editor outside workspace must be blocked."""
-    spec = AgentSpec.coding(cwd=str(tmp_path))
-    branch = await _make_branch_from_spec(spec)
-
-    with pytest.raises(PermissionError):
-        await _invoke_pre_hooks(
-            branch,
-            "editor",
-            {"action": "write", "file_path": "/etc/passwd", "content": "bad"},
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -297,8 +243,8 @@ async def test_coding_preset_reader_allows_relative_in_workspace(tmp_path):
     the process cwd, so agents can use natural relative paths inside their
     workspace.
     """
-    config = AgentConfig.coding(cwd=str(tmp_path))
-    branch = await _make_branch(config)
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch(spec)
 
     result = await branch.acts.registry["reader"].preprocessor(
         {"action": "read", "path": "src/foo.py"}
@@ -308,8 +254,8 @@ async def test_coding_preset_reader_allows_relative_in_workspace(tmp_path):
 
 async def test_coding_preset_editor_allows_relative_in_workspace(tmp_path):
     """A workspace-relative editor path ("output.txt") must be allowed."""
-    config = AgentConfig.coding(cwd=str(tmp_path))
-    branch = await _make_branch(config)
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch(spec)
 
     result = await branch.acts.registry["editor"].preprocessor(
         {"action": "write", "file_path": "output.txt", "content": "hello"}
@@ -324,8 +270,8 @@ async def test_coding_preset_reader_blocks_relative_traversal(tmp_path):
     root must be rejected — resolving relative against the workspace root
     must not weaken the escape check.
     """
-    config = AgentConfig.coding(cwd=str(tmp_path))
-    branch = await _make_branch(config)
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch(spec)
 
     with pytest.raises(PermissionError):
         await _invoke_pre_hooks(branch, "reader", {"action": "read", "path": "../../etc/passwd"})
@@ -333,56 +279,12 @@ async def test_coding_preset_reader_blocks_relative_traversal(tmp_path):
 
 async def test_coding_preset_editor_blocks_relative_traversal(tmp_path):
     """A relative traversal via editor ("../../etc/cron.d/evil") must be blocked."""
-    config = AgentConfig.coding(cwd=str(tmp_path))
-    branch = await _make_branch(config)
+    spec = AgentSpec.coding(cwd=str(tmp_path))
+    branch = await _make_branch(spec)
 
     with pytest.raises(PermissionError):
         await _invoke_pre_hooks(
             branch,
             "editor",
             {"action": "write", "file_path": "../../etc/cron.d/evil", "content": "bad"},
-        )
-
-
-async def test_spec_coding_preset_reader_allows_relative_in_workspace(tmp_path):
-    """AgentSpec.coding() — workspace-relative reader path must be allowed."""
-    spec = AgentSpec.coding(cwd=str(tmp_path))
-    branch = await _make_branch_from_spec(spec)
-
-    result = await branch.acts.registry["reader"].preprocessor(
-        {"action": "read", "path": "src/main.py"}
-    )
-    assert result is None or isinstance(result, dict)
-
-
-async def test_spec_coding_preset_editor_allows_relative_in_workspace(tmp_path):
-    """AgentSpec.coding() — workspace-relative editor path must be allowed."""
-    spec = AgentSpec.coding(cwd=str(tmp_path))
-    branch = await _make_branch_from_spec(spec)
-
-    result = await branch.acts.registry["editor"].preprocessor(
-        {"action": "write", "file_path": "lib/util.py", "content": "# util"}
-    )
-    assert result is None or isinstance(result, dict)
-
-
-async def test_spec_coding_preset_reader_blocks_relative_traversal(tmp_path):
-    """AgentSpec.coding() — relative traversal on reader must be blocked."""
-    spec = AgentSpec.coding(cwd=str(tmp_path))
-    branch = await _make_branch_from_spec(spec)
-
-    with pytest.raises(PermissionError):
-        await _invoke_pre_hooks(branch, "reader", {"action": "read", "path": "../../etc/passwd"})
-
-
-async def test_spec_coding_preset_editor_blocks_relative_traversal(tmp_path):
-    """AgentSpec.coding() — relative traversal on editor must be blocked."""
-    spec = AgentSpec.coding(cwd=str(tmp_path))
-    branch = await _make_branch_from_spec(spec)
-
-    with pytest.raises(PermissionError):
-        await _invoke_pre_hooks(
-            branch,
-            "editor",
-            {"action": "write", "file_path": "../../etc/passwd", "content": "bad"},
         )

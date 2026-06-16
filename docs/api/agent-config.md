@@ -1,49 +1,66 @@
-# `AgentConfig` and `create_agent()`
+# `AgentSpec` and `create_agent()`
 
 ```python
-from lionagi.agent import AgentConfig, create_agent, PermissionPolicy
+from lionagi.agent import AgentSpec, create_agent, PermissionPolicy
 from lionagi.agent.hooks import guard_destructive, guard_paths, log_tool_use
 ```
 
-`AgentConfig` captures what a coding agent needs — model, tools, hooks, permissions, system
-prompt — in a single serializable object. `create_agent()` wires it into a ready-to-use `Branch`.
+`AgentSpec` captures what an agent needs — role/identity, model, tools, hooks, permissions,
+emission grants — in a single serializable object. `create_agent()` wires it into a
+ready-to-use `Branch`.
 
 ---
 
-## `AgentConfig`
+## `AgentSpec`
 
 ```python
 @dataclass
-class AgentConfig
+class AgentSpec(HooksMixin)
 ```
 
-Source: `lionagi/agent/config.py`
+Source: `lionagi/agent/spec.py`
+
+An `AgentSpec` pairs a `Profile` (role + modes identity) with runtime concerns. Build one with
+`AgentSpec.compose(role, ...)` or the `AgentSpec.coding()` preset rather than constructing the
+dataclass directly.
 
 ### Fields
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `name` | `str` | `"agent"` | Human label for the agent |
+| `profile` | `Profile` | — | Role + modes identity (set by `compose()`) |
 | `model` | `str \| None` | `None` | Model spec: `"provider/model"` or bare alias |
 | `effort` | `str \| None` | `None` | Override effort level (e.g. `"high"`, `"xhigh"`) |
-| `system_prompt` | `str` | `""` | System prompt text |
-| `tools` | `list[str]` | `[]` | Tool presets to register: `"coding"`, `"reader"`, `"editor"`, `"bash"`, `"search"` |
+| `tools` | `tuple[str, ...]` | `()` | Tool presets to register: `"coding"`, `"reader"`, `"editor"`, `"bash"`, `"search"` |
+| `permissions` | `PermissionPolicy \| None` | `None` | Permission rules; see `PermissionPolicy` |
+| `grant_emissions` | `bool` | `True` | Grant the role's declared capability-emission models |
+| `emits` | `tuple \| None` | `None` | Override *what* is granted; `None` uses the role contract |
+| `pack` | `str \| Pack \| None` | `"default"` | Policy pack for the role-policy prompt block |
+| `lion_system` | `bool` | `True` | Prepend the lionagi system preamble to the system prompt |
+| `extra_prompt` | `str \| None` | `None` | Extra literal prompt text (set via `system_prompt=`) |
 | `hook_handlers` | `dict[str, list[Callable]]` | `{}` | Phase-keyed hooks (`"pre:bash"`, `"post:*"`, `"error:editor"`) |
-| `permissions` | `dict \| PermissionPolicy` | `{}` | Permission rules; see `PermissionPolicy` |
+| `cwd` | `str \| None` | `None` | Working directory for tools and MCP discovery |
+| `yolo` | `bool` | `False` | Auto-approve all tool calls (pass-through to provider kwargs) |
 | `mcp_servers` | `list[str] \| None` | `None` | MCP server names to load from `.mcp.json` |
 | `mcp_config_path` | `str \| None` | `None` | Explicit path to `.mcp.json` (overrides auto-discovery) |
-| `max_extensions` | `int` | `20` | Max tool-use rounds per agent invocation |
-| `yolo` | `bool` | `False` | Auto-approve all tool calls (pass-through to provider kwargs) |
-| `lion_system` | `bool` | `True` | Prepend lionagi system preamble to `system_prompt` |
-| `cwd` | `str \| None` | `None` | Working directory for tools and MCP discovery |
-| `extra` | `dict` | `{}` | Additional YAML fields preserved on round-trip |
+
+`mcp_servers` and `mcp_config_path` are not `compose()` keyword arguments — set them as
+attributes after building the spec:
+
+```python
+spec = AgentSpec.coding()
+spec.mcp_servers = ["khive"]
+spec.mcp_config_path = "/Users/me/project/.mcp.json"
+```
 
 ### Hook methods
 
+Inherited from `HooksMixin`:
+
 ```python
-config.pre("bash", handler)       # register a pre-hook for the bash tool
-config.post("editor", handler)    # register a post-hook for the editor tool
-config.on_error("*", handler)     # register an error hook for all tools
+spec.pre("bash", handler)       # register a pre-hook for the bash tool
+spec.post("editor", handler)    # register a post-hook for the editor tool
+spec.on_error("*", handler)     # register an error hook for all tools
 ```
 
 - `pre` hooks: `async (tool_name: str, action: str, args: dict) -> dict | None`
@@ -52,42 +69,80 @@ config.on_error("*", handler)     # register an error hook for all tools
   Return a modified `result` dict, or `None` to pass through unchanged.
 - Tool name `"*"` matches all tools.
 
-### Preset methods
+### `AgentSpec.compose()`
 
-#### `AgentConfig.coding()`
+```python
+@classmethod
+def compose(
+    cls,
+    role: Any,
+    *,
+    modes: list[Any] | None = None,
+    model: str | None = None,
+    effort: str | None = None,
+    tools: tuple[str, ...] | list[str] = (),
+    permissions: Any = None,
+    pack: str | Pack | None = "default",
+    grant_emissions: bool = True,
+    emits: tuple | None = None,
+    system_prompt: str | None = None,
+    cwd: str | None = None,
+    yolo: bool = False,
+) -> AgentSpec
+```
+
+Build an `AgentSpec` from a role name/object plus optional overrides. `permissions` accepts a
+`PermissionPolicy`, a plain dict (YAML-shaped), or a preset name (`"safe"`, `"read_only"`,
+`"allow_all"`, `"deny_all"`). `system_prompt` becomes the spec's `extra_prompt`.
+
+```python
+spec = AgentSpec.compose("implementer", tools=["coding"], model="openai/gpt-4.1")
+```
+
+### `AgentSpec.coding()`
 
 ```python
 @classmethod
 def coding(
     cls,
-    name: str = "coder",
+    *,
     model: str | None = None,
     effort: str | None = "high",
     system_prompt: str | None = None,
     cwd: str | None = None,
+    secure: bool = True,
     **kwargs,
-) -> AgentConfig
+) -> AgentSpec
 ```
 
-Preset for a coding agent. Registers `tools=["coding"]` (reader, editor, bash, search, context,
-subagent) and uses the built-in coding system prompt when `system_prompt` is not provided.
+Preset for a coding agent — `implementer` role + `tools=["coding"]` (reader, editor, bash,
+search, context, subagent). Extra `**kwargs` flow through to `compose()`.
+
+By default (`secure=True`) it wires two guards:
+
+- `guard_destructive` as a pre-hook on `bash` — blocks destructive shell commands
+  (`rm -rf`, force-push, etc.).
+- `guard_paths` as a pre-hook on `reader` and `editor` — restricts file access to the
+  workspace root (`cwd` if provided, else `Path.cwd()` at call time).
+
+Set `secure=False` to disable these defaults and manage hooks manually.
 
 ```python
-config = AgentConfig.coding(model="openai/gpt-4.1", cwd="/Users/me/project")
+spec = AgentSpec.coding(model="openai/gpt-4.1", cwd="/Users/me/project")
 ```
 
-#### `AgentConfig.from_yaml()`
+### `AgentSpec.from_yaml()`
 
 ```python
 @classmethod
-def from_yaml(cls, path: str | Path) -> AgentConfig
+def from_yaml(cls, path: str | Path) -> AgentSpec
 ```
 
-Load config from a YAML file. Hook callables are code-only and are not serialized.
+Load a spec from a YAML file. Hook callables are code-only and are not serialized.
 
 ```yaml
 # example .lionagi/agents/coder/coder.yaml
-name: coder
+role: implementer
 model: openai/gpt-4.1
 effort: high
 tools: [coding]
@@ -103,13 +158,13 @@ permissions:
     bash: ["rm -rf *", "sudo *"]
 ```
 
-#### `AgentConfig.to_yaml()`
+### `AgentSpec.to_yaml()`
 
 ```python
 def to_yaml(self, path: str | Path) -> None
 ```
 
-Save config fields to YAML. `hook_handlers` (callables) are omitted.
+Save spec fields to YAML. `hook_handlers` (callables) are omitted.
 
 ---
 
@@ -117,33 +172,37 @@ Save config fields to YAML. `hook_handlers` (callables) are omitted.
 
 ```python
 async def create_agent(
-    config: AgentConfig,
+    config: AgentSpec,
     *,
     load_settings: bool = True,
     project_dir: str | None = None,
     trust_project_settings: bool = False,
     trusted_hook_modules: set[str] | frozenset[str] | None = None,
+    chat_model: Any = None,
+    log_config: Any = None,
 ) -> Branch
 ```
 
 Source: `lionagi/agent/factory.py`
 
-Creates a fully configured `Branch` from an `AgentConfig`. Wires: settings → hooks →
-system prompt → model → tools → MCP.
+Creates a fully configured `Branch` from an `AgentSpec`. Wires: settings → hooks →
+system prompt → model → tools → MCP → emissions.
 
 | Param | Type | Default | Notes |
 |-------|------|---------|-------|
-| `config` | `AgentConfig` | — | Agent configuration |
+| `config` | `AgentSpec` | — | Agent specification |
 | `load_settings` | `bool` | `True` | Load hooks from `~/.lionagi/settings.yaml` |
 | `project_dir` | `str \| None` | `None` | Project root for settings resolution; auto-detected if `None` |
 | `trust_project_settings` | `bool` | `False` | Also load `.lionagi/settings.yaml` from the project dir |
 | `trusted_hook_modules` | `set[str] \| None` | `None` | Python modules allowed for import-based hooks; defaults to `{"lionagi.agent.hooks"}` |
+| `chat_model` | `iModel \| None` | `None` | Prebuilt model to use verbatim; skips `spec.model` parsing |
+| `log_config` | `DataLoggerConfig \| dict \| None` | `None` | Logging config forwarded to the `Branch` |
 
 Returns a `Branch` ready for use with all tools registered and hooks attached.
 
 ```python
-config = AgentConfig.coding(model="openai/gpt-4.1")
-branch = await create_agent(config)
+spec = AgentSpec.coding(model="openai/gpt-4.1")
+branch = await create_agent(spec)
 response = await branch.chat("Refactor the auth module")
 ```
 
@@ -221,18 +280,21 @@ For `editor` and `reader`, patterns are matched against the file path.
 Shell control operators (`;`, `&&`, `||`, `|`, backticks, `$()`, redirects) in bash commands
 are blocked unconditionally before pattern matching — they cannot be allow-listed.
 
-### Using with `AgentConfig`
+### Using with `AgentSpec`
 
 ```python
+# Preset name (resolved by compose())
+spec = AgentSpec.compose("implementer", tools=["coding"], permissions="safe")
+
 # Dict form (round-trips through YAML)
-config.permissions = {
+spec.permissions = PermissionPolicy.from_dict({
     "mode": "rules",
     "allow": {"reader": ["*"], "bash": ["git *"]},
     "deny": {"bash": ["rm *"]},
-}
+})
 
 # Object form (code-only)
-config.permissions = PermissionPolicy.safe()
+spec.permissions = PermissionPolicy.safe()
 ```
 
 ---
@@ -252,7 +314,7 @@ Pre-hook for `bash`. Raises `PermissionError` when the command matches a destruc
 `DROP DATABASE`, `TRUNCATE TABLE`, `mkfs`, `dd if=`, writes to `/dev/sd*`.
 
 ```python
-config.pre("bash", guard_destructive)
+spec.pre("bash", guard_destructive)
 ```
 
 ### `guard_paths()`
@@ -270,8 +332,8 @@ Factory that returns a pre-hook restricting file access by path. Applied to `rea
 - `denied_paths`: patterns (absolute paths, filenames, or substrings) that are always blocked.
 
 ```python
-config.pre("reader", guard_paths(allowed_paths=["/Users/me/project/"]))
-config.pre("editor", guard_paths(denied_paths=[".env", "*.key"]))
+spec.pre("reader", guard_paths(allowed_paths=["/Users/me/project/"]))
+spec.pre("editor", guard_paths(denied_paths=[".env", "*.key"]))
 ```
 
 ### `log_tool_use`
@@ -284,7 +346,7 @@ Post-hook for any tool. Logs `tool=<name> action=<action> success=<bool>` at `IN
 via the standard `logging` module. Returns `None` (does not modify result).
 
 ```python
-config.post("*", log_tool_use)
+spec.post("*", log_tool_use)
 ```
 
 ### `auto_format_python`
@@ -296,7 +358,7 @@ async def auto_format_python(tool_name: str, action: str, args: dict, result: di
 Post-hook for `editor`. Runs `ruff format <file_path>` on successfully edited `.py` files.
 
 ```python
-config.post("editor", auto_format_python)
+spec.post("editor", auto_format_python)
 ```
 
 ---

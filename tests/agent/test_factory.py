@@ -5,8 +5,8 @@
 
 import pytest
 
-from lionagi.agent.config import AgentConfig
 from lionagi.agent.factory import create_agent
+from lionagi.agent.spec import AgentSpec
 from lionagi.session.branch import Branch
 
 # ---------------------------------------------------------------------------
@@ -14,7 +14,7 @@ from lionagi.session.branch import Branch
 # ---------------------------------------------------------------------------
 
 
-async def _make(config: AgentConfig) -> Branch:
+async def _make(config: AgentSpec) -> Branch:
     return await create_agent(config, load_settings=False)
 
 
@@ -24,14 +24,14 @@ async def _make(config: AgentConfig) -> Branch:
 
 
 async def test_create_agent_default_config_returns_branch():
-    config = AgentConfig()
+    config = AgentSpec.compose("implementer")
     branch = await _make(config)
     assert isinstance(branch, Branch)
 
 
 async def test_create_agent_default_no_coding_tools():
     """Default config with no tools= list should not register coding tools."""
-    config = AgentConfig()
+    config = AgentSpec.compose("implementer")
     branch = await _make(config)
     coding_tools = {
         "reader",
@@ -56,7 +56,7 @@ _EXTRA_CODING_TOOLS = {"context", "sandbox", "subagent"}
 
 
 async def test_create_agent_coding_preset_registers_core_tools():
-    config = AgentConfig.coding()
+    config = AgentSpec.coding()
     branch = await _make(config)
     registry = set(branch.acts.registry.keys())
     assert _CODING_TOOLS.issubset(registry)
@@ -65,7 +65,7 @@ async def test_create_agent_coding_preset_registers_core_tools():
 
 
 async def test_create_agent_coding_preset_tool_names():
-    config = AgentConfig.coding()
+    config = AgentSpec.coding()
     branch = await _make(config)
     assert _CODING_TOOLS.issubset(branch.acts.registry.keys())
 
@@ -74,7 +74,7 @@ async def test_create_agent_coding_all_tools_async():
     """Every registered tool's callable must be a coroutine function."""
     import asyncio
 
-    config = AgentConfig.coding()
+    config = AgentSpec.coding()
     branch = await _make(config)
     for name, tool in branch.acts.registry.items():
         assert asyncio.iscoroutinefunction(tool.func_callable), f"Tool '{name}' is not async"
@@ -88,7 +88,7 @@ async def test_create_agent_coding_all_tools_async():
 async def test_create_agent_with_permissions_sets_preprocessor():
     from lionagi.agent.permissions import PermissionPolicy
 
-    config = AgentConfig.coding()
+    config = AgentSpec.coding()
     config.permissions = PermissionPolicy.read_only()
     branch = await _make(config)
 
@@ -103,7 +103,7 @@ async def test_create_agent_permission_deny_all_preprocessor_raises():
     """If deny_all policy is set, preprocessor on any tool should raise PermissionError."""
     from lionagi.agent.permissions import PermissionPolicy
 
-    config = AgentConfig.coding()
+    config = AgentSpec.coding()
     config.permissions = PermissionPolicy.deny_all()
     branch = await _make(config)
 
@@ -119,7 +119,7 @@ async def test_create_agent_coding_permissions_recheck_user_mutated_args(tmp_pat
     """User pre-hooks must not be able to rewrite safe args after permission checks."""
     from lionagi.agent.permissions import PermissionPolicy
 
-    config = AgentConfig.coding(cwd=str(tmp_path))
+    config = AgentSpec.coding(cwd=str(tmp_path))
     config.permissions = PermissionPolicy(
         mode="rules",
         allow={"bash": ["echo *"]},
@@ -141,7 +141,7 @@ async def test_create_agent_standalone_permissions_recheck_user_mutated_args():
     """Standalone tools get the same post-mutation permission validation."""
     from lionagi.agent.permissions import PermissionPolicy
 
-    config = AgentConfig(tools=["bash"])
+    config = AgentSpec.compose("implementer", tools=["bash"])
     config.permissions = PermissionPolicy(
         mode="rules",
         allow={"bash": ["echo *"]},
@@ -174,7 +174,7 @@ async def test_create_agent_load_settings_false_no_side_effects(monkeypatch):
 
     monkeypatch.setattr("lionagi.agent.settings.load_settings", fake_load, raising=False)
 
-    config = AgentConfig()
+    config = AgentSpec.compose("implementer")
     await create_agent(config, load_settings=False)
     assert called == [], "load_settings was called despite load_settings=False"
 
@@ -196,7 +196,7 @@ async def test_create_agent_does_not_autoload_project_mcp_without_trust(tmp_path
     monkeypatch.setattr(ActionManager, "load_mcp_config", fake_load_mcp_config)
 
     await create_agent(
-        AgentConfig(cwd=str(project)),
+        AgentSpec.compose("implementer", cwd=str(project)),
         load_settings=False,
         trust_project_settings=False,
     )
@@ -222,7 +222,7 @@ async def test_create_agent_autoloads_project_mcp_when_trusted(tmp_path, monkeyp
     monkeypatch.setattr(ActionManager, "load_mcp_config", fake_load_mcp_config)
 
     await create_agent(
-        AgentConfig(cwd=str(project)),
+        AgentSpec.compose("implementer", cwd=str(project)),
         load_settings=False,
         trust_project_settings=True,
     )
@@ -236,7 +236,7 @@ async def test_create_agent_autoloads_project_mcp_when_trusted(tmp_path, monkeyp
 
 
 async def test_pre_hook_registered_on_tool():
-    config = AgentConfig.coding()
+    config = AgentSpec.coding()
     calls = []
 
     async def my_hook(tool_name, action, args):
@@ -254,7 +254,7 @@ async def test_pre_hook_registered_on_tool():
 
 
 async def test_post_hook_registered_on_tool():
-    config = AgentConfig.coding()
+    config = AgentSpec.coding()
     calls = []
 
     async def my_post(tool_name, action, args, result):
@@ -292,7 +292,7 @@ async def test_create_agent_parses_model_provider_effort_and_yolo_kwargs(monkeyp
 
     monkeypatch.setattr(imodel_mod.iModel, "__init__", spy_init)
 
-    config = AgentConfig(model="openai/gpt-4.1-mini", effort="high", yolo=True)
+    config = AgentSpec.compose("implementer", model="openai/gpt-4.1-mini", effort="high", yolo=True)
     branch = await create_agent(config, load_settings=False)
 
     assert isinstance(branch, Branch)
@@ -322,7 +322,7 @@ async def test_create_agent_does_not_load_project_settings_without_trust(tmp_pat
 
     monkeypatch.setattr(settings_mod, "load_settings", spy_load)
 
-    config = AgentConfig()
+    config = AgentSpec.compose("implementer")
     await create_agent(config, load_settings=True, trust_project_settings=False)
 
     assert calls == [False], f"load_settings called with include_project={calls}"
@@ -367,7 +367,7 @@ async def test_create_agent_model_without_slash_uses_model_as_provider(monkeypat
 
     monkeypatch.setattr(imodel_mod.iModel, "__init__", spy_init)
 
-    config = AgentConfig(model="gpt-4o")
+    config = AgentSpec.compose("implementer", model="gpt-4o")
     await create_agent(config, load_settings=False)
 
     assert captured.get("provider") == "gpt-4o"
@@ -380,7 +380,8 @@ async def test_create_agent_model_without_slash_uses_model_as_provider(monkeypat
 
 
 async def test_create_agent_system_prompt_without_lion_system():
-    config = AgentConfig(system_prompt="You are a helpful assistant.", lion_system=False)
+    config = AgentSpec.compose("implementer", system_prompt="You are a helpful assistant.")
+    config.lion_system = False
     branch = await create_agent(config, load_settings=False)
     sys_msg = branch.msgs.system
     assert sys_msg is not None
@@ -395,7 +396,7 @@ async def test_create_agent_system_prompt_without_lion_system():
 async def test_apply_permissions_invalid_type_returns_early():
     from lionagi.agent.factory import _apply_permissions
 
-    config = AgentConfig()
+    config = AgentSpec.compose("implementer")
     config.permissions = "invalid_permissions_type"
     _apply_permissions(config)
     assert config.hook_handlers.get("security_pre:*", []) == []
@@ -452,25 +453,25 @@ async def test_chain_post_hooks_non_dict_result_returned_unchanged():
 
 
 async def test_create_agent_registers_standalone_reader():
-    config = AgentConfig(tools=["reader"])
+    config = AgentSpec.compose("implementer", tools=["reader"])
     branch = await _make(config)
     assert "reader_tool" in branch.acts.registry
 
 
 async def test_create_agent_registers_standalone_editor():
-    config = AgentConfig(tools=["editor"])
+    config = AgentSpec.compose("implementer", tools=["editor"])
     branch = await _make(config)
     assert "editor_tool" in branch.acts.registry
 
 
 async def test_create_agent_registers_standalone_search():
-    config = AgentConfig(tools=["search"])
+    config = AgentSpec.compose("implementer", tools=["search"])
     branch = await _make(config)
     assert "search_tool" in branch.acts.registry
 
 
 async def test_attach_hooks_adds_postprocessor_for_standalone_tool():
-    config = AgentConfig(tools=["reader"])
+    config = AgentSpec.compose("implementer", tools=["reader"])
 
     async def my_post(tool_name, action, args, result):
         return result
@@ -487,14 +488,14 @@ async def test_attach_hooks_adds_postprocessor_for_standalone_tool():
 
 
 async def test_register_coding_tools_skips_malformed_keys():
-    config = AgentConfig.coding()
+    config = AgentSpec.coding()
     config.hook_handlers["malformed_no_colon"] = [lambda *a: None]
     branch = await _make(config)
     assert isinstance(branch, Branch)
 
 
 async def test_register_coding_tools_error_hook_wired():
-    config = AgentConfig.coding()
+    config = AgentSpec.coding()
     error_calls = []
 
     async def my_error(tool_name, action, args, error):
@@ -524,7 +525,8 @@ async def test_load_mcp_explicit_config_path_used(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ActionManager, "load_mcp_config", fake_load_mcp)
 
-    config = AgentConfig(mcp_config_path=str(mcp_file))
+    config = AgentSpec.compose("implementer")
+    config.mcp_config_path = str(mcp_file)
     await create_agent(config, load_settings=False)
 
     assert calls == [str(mcp_file)]
@@ -555,7 +557,7 @@ async def test_load_mcp_breaks_at_lionagi_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(ActionManager, "load_mcp_config", fake_load_mcp)
 
     await create_agent(
-        AgentConfig(cwd=str(project)),
+        AgentSpec.compose("implementer", cwd=str(project)),
         load_settings=False,
         trust_project_settings=True,
     )
@@ -580,7 +582,7 @@ async def test_search_tool_gets_workspace_root_from_cwd(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
 
-    config = AgentConfig(tools=["search"], cwd=str(ws))
+    config = AgentSpec.compose("implementer", tools=["search"], cwd=str(ws))
     branch = await _make(config)
 
     key = next(k for k in branch.acts.registry.keys() if "search" in k)

@@ -5,8 +5,8 @@
 
 import pytest
 
-from lionagi.agent.config import AgentConfig
 from lionagi.agent.settings import apply_hooks_from_settings, load_settings
+from lionagi.agent.spec import AgentSpec
 
 
 def test_load_settings_skips_project_settings_when_untrusted(tmp_path, monkeypatch):
@@ -41,14 +41,14 @@ def test_apply_hooks_rejects_untrusted_python_modules():
     settings = {"hooks": {"pre": {"bash": [{"python": "os:path"}]}}}
 
     with pytest.raises(PermissionError, match="Untrusted hook module"):
-        apply_hooks_from_settings(AgentConfig(), settings)
+        apply_hooks_from_settings(AgentSpec.compose("implementer"), settings)
 
 
 def test_apply_hooks_rejects_shell_string_commands():
     settings = {"hooks": {"pre": {"bash": [{"command": "echo unsafe"}]}}}
 
     with pytest.raises(ValueError, match="argv list"):
-        apply_hooks_from_settings(AgentConfig(), settings)
+        apply_hooks_from_settings(AgentSpec.compose("implementer"), settings)
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ def test_apply_hooks_from_settings_rejects_untrusted_python_hook():
 
     with pytest.raises(PermissionError, match="Untrusted hook module"):
         apply_hooks_from_settings(
-            AgentConfig(),
+            AgentSpec.compose("implementer"),
             settings,
             trusted_hook_modules={"lionagi.agent.hooks"},
         )

@@ -7,9 +7,9 @@ Usage::
 
     from lionagi.agent.hooks import guard_destructive, log_tool_use
 
-    config = AgentConfig.coding()
-    config.pre("bash", guard_destructive)
-    config.post("*", log_tool_use)
+    spec = AgentSpec.coding()
+    spec.pre("bash", guard_destructive)
+    spec.post("*", log_tool_use)
 """
 
 from __future__ import annotations

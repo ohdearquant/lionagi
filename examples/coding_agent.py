@@ -31,14 +31,14 @@ from pathlib import Path
 async def basic_coding_agent() -> None:
     """Simplest case: create a coding agent and inspect its registered tools.
 
-    AgentConfig.coding() is the standard preset.  It registers CodingToolkit
+    AgentSpec.coding() is the standard preset.  It registers CodingToolkit
     (reader, editor, bash, search, context) and sets the coding system prompt.
     Pass model= to wire a chat model; omit it to create a tool-only branch.
     """
-    from lionagi.agent import AgentConfig, create_agent
+    from lionagi.agent import AgentSpec, create_agent
 
     # Preset with no model specified (tool infrastructure only — no API key needed).
-    config = AgentConfig.coding()
+    config = AgentSpec.coding()
     branch = await create_agent(config, load_settings=False)
 
     tool_names = sorted(branch.acts.registry.keys())
@@ -56,7 +56,7 @@ async def basic_coding_agent() -> None:
     # With a model configured, the branch is ready for:
     #   result = await branch.operate(instruction="Fix the bug in utils.py")
     # Or load with a model (requires API key):
-    #   config = AgentConfig.coding(model="openai/gpt-4.1")
+    #   config = AgentSpec.coding(model="openai/gpt-4.1")
     print("Agent ready.")
 
 
@@ -80,9 +80,9 @@ async def react_loop() -> None:
     """
     import inspect
 
-    from lionagi.agent import AgentConfig, create_agent
+    from lionagi.agent import AgentSpec, create_agent
 
-    config = AgentConfig.coding()
+    config = AgentSpec.coding()
     branch = await create_agent(config, load_settings=False)
 
     # Inspect the ReAct signature to understand the loop parameters.
@@ -113,12 +113,12 @@ async def context_management() -> None:
     active progression without deleting them from the conversation record.
     branch.progression respects evictions; branch.token_budget uses it.
     """
-    from lionagi.agent import AgentConfig, create_agent
+    from lionagi.agent import AgentSpec, create_agent
     from lionagi.protocols.messages import ActionResponse
     from lionagi.protocols.messages.action_request import ActionRequestContent
     from lionagi.protocols.messages.action_response import ActionResponseContent
 
-    config = AgentConfig.coding()
+    config = AgentSpec.coding()
     branch = await create_agent(config, load_settings=False)
 
     pile = branch.msgs.messages
@@ -194,15 +194,15 @@ async def permission_controlled_worker() -> None:
     escalates all bash calls.  A denied call raises PermissionError.
     An escalated call invokes the on_escalate handler for runtime approval.
     """
-    from lionagi.agent import AgentConfig, PermissionPolicy, create_agent
+    from lionagi.agent import AgentSpec, PermissionPolicy, create_agent
 
     # Orchestrator — unrestricted (allow_all mode).
-    orch_config = AgentConfig.coding()
+    orch_config = AgentSpec.coding()
     orchestrator = await create_agent(orch_config, load_settings=False)
     print("Orchestrator tools:", sorted(orchestrator.acts.registry.keys()))
 
     # Worker — PermissionPolicy.safe(): read/edit/search OK; bash escalated.
-    worker_config = AgentConfig.coding()
+    worker_config = AgentSpec.coding()
     worker_config.permissions = PermissionPolicy.safe()
 
     # Escalation handler: mimics the orchestrator deciding at runtime.
@@ -220,7 +220,7 @@ async def permission_controlled_worker() -> None:
         return False
 
     worker_config.permissions.on_escalate = escalate_to_orchestrator
-    worker = await create_agent(worker_config, load_settings=False)
+    await create_agent(worker_config, load_settings=False)
 
     policy: PermissionPolicy = worker_config.permissions
 
@@ -256,10 +256,10 @@ async def hooks_pipeline() -> None:
     the call entirely.  Post-hooks run after and receive the result dict.
     Wildcard phase key 'post:*' fires after every tool.
     """
-    from lionagi.agent import AgentConfig, create_agent
+    from lionagi.agent import AgentSpec, create_agent
     from lionagi.agent.hooks import auto_format_python, guard_destructive, log_tool_use
 
-    config = AgentConfig.coding()
+    config = AgentSpec.coding()
 
     # guard_destructive: pre-hook — blocks rm -rf, force-push, drop table, etc.
     config.pre("bash", guard_destructive)
@@ -270,7 +270,7 @@ async def hooks_pipeline() -> None:
     # log_tool_use: post-hook on ALL tools — structured log line per call.
     config.post("*", log_tool_use)
 
-    branch = await create_agent(config, load_settings=False)
+    await create_agent(config, load_settings=False)
     print("Hook handlers registered:", sorted(config.hook_handlers.keys()))
     # -> ['post:*', 'post:editor', 'pre:bash']
 
@@ -306,7 +306,7 @@ async def settings_yaml_config() -> None:
     """
     import yaml
 
-    from lionagi.agent import AgentConfig, apply_hooks_from_settings
+    from lionagi.agent import AgentSpec, apply_hooks_from_settings
 
     settings_content = """\
 hooks:
@@ -325,7 +325,7 @@ hooks:
         raw = yaml.safe_load(settings_path.read_text())
         print("Loaded settings keys:", list(raw.get("hooks", {}).keys()))
 
-        config = AgentConfig.coding()
+        config = AgentSpec.coding()
         apply_hooks_from_settings(
             config,
             raw,
@@ -350,7 +350,7 @@ async def custom_toolkit() -> None:
     calendar, student records).  Wrap plain async functions as Tool objects
     and call branch.register_tools() after create_agent().
     """
-    from lionagi.agent import AgentConfig, create_agent
+    from lionagi.agent import AgentSpec, create_agent
     from lionagi.protocols.action.tool import Tool
 
     # --- Define domain tools (plain async functions with docstrings) ---
@@ -384,8 +384,8 @@ async def custom_toolkit() -> None:
     student_tool = Tool(func_callable=lookup_student)
 
     # Build agent with coding tools (via preset) then add domain tools.
-    config = AgentConfig(
-        name="sage-agent",
+    config = AgentSpec.compose(
+        "implementer",
         tools=["coding"],  # registers CodingToolkit
         system_prompt=(
             "You are an academic support agent. "
@@ -413,12 +413,12 @@ async def token_budget_awareness() -> None:
     is_critical (>=90%).  CodingToolkit appends a budget summary to every tool
     result when notify=True (the default) so the LLM always knows its headroom.
     """
-    from lionagi.agent import AgentConfig, create_agent
+    from lionagi.agent import AgentSpec, create_agent
     from lionagi.protocols.messages import ActionRequest, ActionResponse
     from lionagi.protocols.messages.action_request import ActionRequestContent
     from lionagi.protocols.messages.action_response import ActionResponseContent
 
-    config = AgentConfig.coding()
+    config = AgentSpec.coding()
     branch = await create_agent(config, load_settings=False)
     sender_id = branch.id
 
@@ -491,7 +491,7 @@ async def mcp_integration() -> None:
     """
     import json
 
-    from lionagi.agent import AgentConfig
+    from lionagi.agent import AgentSpec
 
     mcp_config = {
         "mcpServers": {
@@ -507,10 +507,9 @@ async def mcp_integration() -> None:
         mcp_path = Path(tmpdir) / ".mcp.json"
         mcp_path.write_text(json.dumps(mcp_config))
 
-        config = AgentConfig.coding(
-            mcp_servers=["khive"],  # only connect the 'khive' server
-            mcp_config_path=str(mcp_path),  # explicit path overrides discovery
-        )
+        config = AgentSpec.coding()
+        config.mcp_servers = ["khive"]  # only connect the 'khive' server
+        config.mcp_config_path = str(mcp_path)  # explicit path overrides discovery
 
         print("config.mcp_servers:", config.mcp_servers)
         print("config.mcp_config_path:", config.mcp_config_path)

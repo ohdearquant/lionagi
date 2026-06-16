@@ -114,8 +114,9 @@ def test_get_agent_lion_system_defaults_true(tmp_path, monkeypatch):
     """get_agent() on a profile WITHOUT lion_system: key returns lion_system: True.
 
     The CLI treats absent lion_system as True (lionagi/cli/_agents.py:180,
-    lionagi/agent/config.py:53). Studio must emit the same default so callers
-    see consistent behaviour regardless of whether the key is present.
+    AgentSpec.lion_system default in lionagi/agent/spec.py). Studio must emit
+    the same default so callers see consistent behaviour regardless of whether
+    the key is present.
     """
     from lionagi.studio.services.agents import get_agent
 

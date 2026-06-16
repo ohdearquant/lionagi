@@ -4,6 +4,16 @@
 All notable changes to lionagi are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Removed
+
+- **`AgentConfig`** — the deprecated `lionagi.agent.config` module is removed.
+  Use `AgentSpec` (`lionagi.agent.spec`) instead: `AgentSpec.compose(role, ...)`
+  for the general case and `AgentSpec.coding(...)` for the coding preset.
+  `create_agent()` now takes an `AgentSpec`. The `HooksMixin` and secure-guard
+  wiring previously in `config.py` now live in `spec.py`.
+
 ## [0.27.0] - 2026-06-11
 
 Phase C control center (engine runs, CLI coding presets, studio maintenance),
