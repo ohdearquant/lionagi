@@ -1,13 +1,6 @@
-"""Tests for lionagi/ln/fuzzy/_extract_json.py
-
-Target: Cover lines 70-72 (exception handling for invalid JSON in multiple blocks)
-"""
+"""Tests for lionagi/ln/fuzzy/_extract_json.py"""
 
 from lionagi.ln.fuzzy._extract_json import extract_json
-
-# ============================================================================
-# Test extract_json basic functionality
-# ============================================================================
 
 
 def test_extract_json_direct_parse():
@@ -73,7 +66,6 @@ def test_extract_json_invalid_markdown_block():
 
 def test_extract_json_multiple_with_invalid():
     """Test multiple blocks where some are invalid - covers lines 70-72"""
-    # This will test the exception handling in the loop (lines 70-72)
     input_str = """
 ```json
 {"valid": "first"}
@@ -86,7 +78,6 @@ def test_extract_json_multiple_with_invalid():
 ```
 """
     result = extract_json(input_str, return_one_if_single=False)
-    # Should skip the invalid block and return only valid ones
     assert isinstance(result, list)
     assert len(result) == 2
     assert result[0] == {"valid": "first"}
@@ -107,9 +98,7 @@ def test_extract_json_multiple_with_invalid_fuzzy():
 ```
 """
     result = extract_json(input_str, fuzzy_parse=True, return_one_if_single=False)
-    # Fuzzy parse might handle some, but completely broken should be skipped
     assert isinstance(result, list)
-    # Should have at least the valid ones
     assert len(result) >= 2
 
 
@@ -176,9 +165,7 @@ More text
 ```
 """
     result = extract_json(input_str, return_one_if_single=False)
-    # Should extract only the valid blocks
     assert isinstance(result, list)
-    # We expect at least 3 valid blocks: block1, array, block2
     assert len(result) == 3
     assert {"block1": "valid"} in result
     assert ["valid", "array"] in result

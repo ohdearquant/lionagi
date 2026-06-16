@@ -52,13 +52,6 @@ class ComplexObject:
         return f"ComplexObject(value={self.value})"
 
 
-"""Tests for JSON dump edge cases: nested structures, caching, non-serializable."""
-
-# ============================================================================
-# Test Edge Cases
-# ============================================================================
-
-
 def test_nested_structures():
     """Test serialization of deeply nested structures."""
     nested = {
@@ -92,7 +85,6 @@ def test_list_with_special_types():
 
     assert parsed[0] == "/tmp"
     assert parsed[1] == "1.23"
-    # Enum returns value (1) due to orjson native handling
     assert parsed[2] == 1
     assert isinstance(parsed[3], list)
 
@@ -130,16 +122,9 @@ def test_numeric_types():
     assert parsed == data
 
 
-# ============================================================================
-# Test Caching Behavior
-# ============================================================================
-
-
 def test_cached_default_reuse():
     """Test that cached default is reused for same parameters."""
-    # First call
     result1 = json_dumps(Path("/tmp/test1"))
-    # Second call with same parameters should use cached default
     result2 = json_dumps(Path("/tmp/test2"))
 
     assert result1 == '"/tmp/test1"'
@@ -148,17 +133,11 @@ def test_cached_default_reuse():
 
 def test_type_cache_in_default():
     """Test that type cache works correctly in default function."""
-    # Serialize multiple Path objects to test caching
     paths = [Path(f"/tmp/test{i}") for i in range(10)]
 
     for path in paths:
         result = json_dumps(path)
         assert result == f'"/tmp/test{paths.index(path)}"'
-
-
-# ============================================================================
-# Test Error Handling
-# ============================================================================
 
 
 def test_non_serializable_without_safe_fallback():
@@ -182,7 +161,6 @@ def test_non_serializable_with_safe_fallback():
     obj = NotSerializable()
     result = json_dumps(obj, safe_fallback=True)
 
-    # Should contain class name
     assert "NotSerializable" in result
 
 
@@ -193,5 +171,4 @@ def test_allow_non_str_keys():
     result = json_dumps(data, allow_non_str_keys=True)
     parsed = orjson.loads(result)
 
-    # Keys will be converted to strings by orjson
     assert parsed == {"1": "one", "2": "two", "3": "three"}

@@ -250,12 +250,7 @@ class TestCommonMetaFalsyValueHandling:
     """Attack-driven tests: falsy-but-valid values must not bypass validation."""
 
     def test_default_zero_and_factory_conflict_raises(self):
-        """default=0 (falsy) alongside default_factory must still be detected as a conflict.
-
-        Previously, truthiness on kw.get('default') treated 0 as absent, silently
-        accepting an invalid combination that would produce undefined behaviour at
-        instantiation time.
-        """
+        """default=0 (falsy) with default_factory must still raise; truthiness bug treated 0 as absent."""
         with pytest.raises(ValueError, match="both 'default' and 'default_factory'"):
             CommonMeta._validate_common_metas(default=0, default_factory=list)
 
@@ -265,22 +260,12 @@ class TestCommonMetaFalsyValueHandling:
             CommonMeta._validate_common_metas(default=False, default_factory=list)
 
     def test_default_factory_zero_non_callable_raises(self):
-        """default_factory=0 is not callable and must be rejected.
-
-        Previously the walrus assignment ``if _df := kw.get('default_factory')``
-        skipped the callable check for falsy non-callables, silently producing a
-        broken Spec that would fail at runtime when the factory was invoked.
-        """
+        """default_factory=0 is not callable and must be rejected; walrus on falsy skipped the check."""
         with pytest.raises(ValueError, match="must be callable"):
             CommonMeta._validate_common_metas(default_factory=0)
 
     def test_validator_zero_non_callable_raises(self):
-        """validator=0 is not callable and must be rejected.
-
-        Previously the walrus assignment ``if _val := kw.get('validator')`` skipped
-        validator-callability checks when the value was falsy, allowing invalid
-        validators to be stored without error.
-        """
+        """validator=0 must be rejected; walrus on falsy skipped callability check, allowing invalid validators."""
         with pytest.raises(ValueError, match="must be a list of functions or a function"):
             CommonMeta._validate_common_metas(validator=0)
 

@@ -17,7 +17,6 @@ from lionagi.ln._json_dump import (
 )
 
 
-# Test fixtures and helpers
 class Color(Enum):
     RED = 1
     GREEN = 2
@@ -55,13 +54,6 @@ class ComplexObject:
         return f"ComplexObject(value={self.value})"
 
 
-"""Tests for JSON dump core serialization: basic, types, enum, set."""
-
-# ============================================================================
-# Test Basic Serialization
-# ============================================================================
-
-
 def test_json_dumpb_basic():
     """Test basic JSON serialization to bytes."""
     result = json_dumpb({"key": "value"})
@@ -81,11 +73,6 @@ def test_json_dumps_bytes_mode():
     result = json_dumps({"key": "value"}, decode=False)
     assert isinstance(result, bytes)
     assert orjson.loads(result) == {"key": "value"}
-
-
-# ============================================================================
-# Test Special Types Serialization
-# ============================================================================
 
 
 def test_path_serialization():
@@ -140,11 +127,6 @@ def test_time_serialization():
     assert "12:30:45" in result
 
 
-# ============================================================================
-# Test Enum Serialization
-# ============================================================================
-
-
 def test_enum_default_value():
     """Test Enum serialization with default (value)."""
     result = json_dumps(Color.RED)
@@ -152,19 +134,9 @@ def test_enum_default_value():
 
 
 def test_enum_as_name():
-    """Test Enum serialization as name.
-
-    Note: orjson handles Enum natively using .value, so enum_as_name
-    doesn't override the native behavior. This test verifies current behavior.
-    """
+    """Test Enum serialization as name; orjson native handling overrides enum_as_name, returns value."""
     result = json_dumps(Color.RED, enum_as_name=True)
-    # Currently returns value (1) due to orjson native handling
     assert result == "1"
-
-
-# ============================================================================
-# Test Set Serialization (Lines 39-40, 49) - KEY FOR COVERAGE
-# ============================================================================
 
 
 def test_set_basic():
@@ -209,11 +181,6 @@ def test_set_with_objects_deterministic():
     data = orjson.loads(result)
     assert isinstance(data, list)
     assert len(data) == 2
-
-
-# ============================================================================
-# Test Safe Fallback (Lines 34, 55) - KEY FOR COVERAGE
-# ============================================================================
 
 
 def test_safe_fallback_exception():
@@ -279,11 +246,6 @@ def test_safe_fallback_without_error():
     # Without safe_fallback, should raise
     with pytest.raises(TypeError, match="not JSON serializable"):
         json_dumps(obj, safe_fallback=False)
-
-
-# ============================================================================
-# Test Duck-Typed Objects
-# ============================================================================
 
 
 def test_model_dump_method():

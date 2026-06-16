@@ -1,8 +1,4 @@
-"""Comprehensive tests for lionagi/ln/fuzzy/_to_dict.py
-
-Target: 90%+ coverage (currently 70.73%, 36 missing lines)
-Missing lines: 30-33, 50-52, 91, 127, 134-138, 164-182, 186-200, 208, 245, 276, 285-290, 305, 345, 349
-"""
+"""Tests for lionagi/ln/fuzzy/_to_dict.py"""
 
 import dataclasses
 from collections import OrderedDict
@@ -18,10 +14,6 @@ from lionagi.ln.fuzzy._to_dict import (
     _parse_str,
     _preprocess_recursive,
 )
-
-# ============================================================================
-# Mock Classes for Testing
-# ============================================================================
 
 
 class Color(Enum):
@@ -119,11 +111,6 @@ class IterableObject:
         return iter([1, 2, 3])
 
 
-# ============================================================================
-# Test _is_na
-# ============================================================================
-
-
 def test_is_na_with_none():
     """Test _is_na with None"""
     assert _is_na(None) is True
@@ -141,11 +128,6 @@ def test_is_na_with_regular_object():
     assert _is_na("string") is False
     assert _is_na(42) is False
     assert _is_na([]) is False
-
-
-# ============================================================================
-# Test _enum_class_to_dict (Lines 30-33)
-# ============================================================================
 
 
 def test_enum_class_to_dict_with_values():
@@ -172,11 +154,6 @@ def test_enum_class_to_dict_string_values():
         "INACTIVE": "inactive",
         "PENDING": "pending",
     }
-
-
-# ============================================================================
-# Test _parse_str (Lines 50-52 for XML)
-# ============================================================================
 
 
 def test_parse_str_with_custom_parser():
@@ -209,11 +186,6 @@ def test_parse_str_fuzzy():
     # Fuzzy parse should handle single quotes
     result = _parse_str("{'a': 1}", fuzzy_parse=True, str_type="json", parser=None)
     assert result == {"a": 1}
-
-
-# ============================================================================
-# Test _object_to_mapping_like
-# ============================================================================
 
 
 def test_object_to_mapping_like_pydantic():
@@ -261,11 +233,6 @@ def test_object_to_mapping_like_dunder_dict():
     obj = ObjectWithDunderDict()
     result = _object_to_mapping_like(obj, prioritize_model_dump=False)
     assert result == {"a": 1, "b": 2}
-
-
-# ============================================================================
-# Test _preprocess_recursive
-# ============================================================================
 
 
 def test_preprocess_recursive_max_depth():
@@ -498,11 +465,6 @@ def test_preprocess_recursive_dict():
     assert result["a"] == 1
     assert result["b"] == {"nested": True}
     assert result["c"] == [1, 2, 3]
-
-
-# ============================================================================
-# Test _convert_top_level_to_dict
-# ============================================================================
 
 
 def test_convert_top_level_set():

@@ -55,13 +55,6 @@ class ComplexObject:
         return f"ComplexObject(value={self.value})"
 
 
-"""Tests for JSON dump model methods, options, and json_lines_iter."""
-
-# ============================================================================
-# Test Options
-# ============================================================================
-
-
 def test_make_options_default():
     """Test make_options with defaults."""
     opt = make_options()
@@ -118,11 +111,6 @@ def test_make_options_combined():
     assert opt & orjson.OPT_APPEND_NEWLINE
 
 
-# ============================================================================
-# Test Advanced Features
-# ============================================================================
-
-
 def test_custom_default_function():
     """Test providing custom default function."""
 
@@ -142,7 +130,6 @@ def test_custom_options():
     opt = orjson.OPT_SORT_KEYS | orjson.OPT_INDENT_2
     result = json_dumpb({"b": 2, "a": 1}, options=opt)
 
-    # Should be sorted and pretty-printed
     result_str = result.decode("utf-8")
     assert result_str.index('"a"') < result_str.index('"b"')
     assert "\n" in result_str
@@ -170,14 +157,12 @@ def test_get_orjson_default_extend_default():
     class CustomType:
         pass
 
-    # With extend_default=True (default), should include both
     default = get_orjson_default(
         order=[CustomType],
         additional={CustomType: lambda x: "custom"},
         extend_default=True,
     )
 
-    # Path should still work
     path = Path("/tmp/test")
     result = default(path)
     assert result == "/tmp/test"
@@ -189,7 +174,6 @@ def test_get_orjson_default_no_extend():
     class CustomType:
         pass
 
-    # With extend_default=False, should only use custom order
     default = get_orjson_default(
         order=[CustomType],
         additional={CustomType: lambda x: "custom"},
@@ -205,16 +189,10 @@ def test_passthrough_datetime_option():
     """Test passthrough_datetime option."""
     dt_val = dt.datetime(2024, 1, 1, 12, 0, 0)
 
-    # With passthrough_datetime, datetime should use custom handler
     result = json_dumps(dt_val, passthrough_datetime=True)
     data = orjson.loads(result)
     assert isinstance(data, str)
     assert "2024-01-01" in data
-
-
-# ============================================================================
-# Test json_lines_iter
-# ============================================================================
 
 
 def test_json_lines_iter_basic():
