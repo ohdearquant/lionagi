@@ -1,17 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for `li kill` — issue #1094.
-
-Coverage targets:
-- Entity resolution by short id prefix and full UUID
-- _pid_alive / _terminate_pid signal flow (mocked os.kill)
-- _persist_cancel: status update + status_transitions row
-- _do_kill: end-to-end single entity kill
-- _do_kill_all_stale: sweep stale running rows
-- cascade kill (--recursive) for children
-- Correctly skips non-running entities
-- Correctly skips live PIDs in --all-stale
-"""
+"""Tests for `li kill`: entity resolution, pid signal flow, cascade kill, stale sweep."""
 
 from __future__ import annotations
 

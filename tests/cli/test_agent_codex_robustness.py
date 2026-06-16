@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for li agent codex robustness fixes — issues #1158, #1152, #1154.
-
-#1158: naked model spec fails without --bypass; -a profile works
-#1152: li agent timeout discards all partial output
-#1154: li agent codex: add timeout and progress tracking for long-running agents
-"""
+"""Tests for li agent codex robustness: bypass kwarg threading, timeout partial output, and heartbeat."""
 
 from __future__ import annotations
 

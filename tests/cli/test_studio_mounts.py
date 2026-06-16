@@ -1,20 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Attack-driven regression tests for the Studio Docker symlink mount guard.
-
-Background: the Studio Docker launcher auto-mounts symlink targets found inside
-~/.lionagi/{agents,skills,playbooks,teams} so that symlinked content from
-project directories is accessible inside the container.  Before this fix, the
-resolved (real) target path was added to the docker run argv without any
-boundary check, so a symlink pointing at an arbitrary host path (e.g. /etc or
-/proc) would cause that path to be mounted into the container.
-
-The guard resolves every symlink to its real path and rejects any target that
-falls outside the declared allowlist of safe roots BEFORE the docker run argv
-is constructed.  Rejection is fail-closed: the mount is dropped (with a warning)
-so the docker run argv is never contaminated by an escape path.
-"""
+"""Tests for the Studio Docker symlink mount guard: symlinks outside allowed roots must never appear in docker run argv."""
 
 from __future__ import annotations
 
@@ -100,13 +87,8 @@ class TestIsMountAllowed:
 
 
 class TestSymlinkEscapeIsRejected:
-    """Symlink pointing outside the allowed roots must never appear in docker argv."""
-
     def _build_docker_cmd(self, tmp_path, monkeypatch, symlink_target: Path) -> list[str]:
-        """Set up a fake ~/.lionagi with a single symlink and capture docker argv.
-
-        Returns the list passed to subprocess.run (the first positional arg).
-        """
+        """Set up a fake ~/.lionagi with a single evil symlink and capture docker run argv."""
         from lionagi.cli._logging import configure_cli_logging
 
         configure_cli_logging(verbose=False)

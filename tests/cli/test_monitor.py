@@ -283,7 +283,7 @@ def test_session_to_row_no_optional():
 
 
 def test_session_to_row_current_phase_wins():
-    """#1235: a live flow phase overrides the static orchestrator/playbook name."""
+    """A live flow phase overrides the static orchestrator/playbook name."""
     sess = {
         "id": "abc123def456",
         "invocation_kind": "play",
@@ -641,12 +641,12 @@ def test_main_registers_monitor():
 # ── Watch mode: SIGINT terminates cleanly ─────────────────────────────────────
 
 
-# ── Regression: #1192 --type play filter ─────────────────────────────────────
+# ── Regression: --type play filter ───────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_type_play_filter_includes_play_sessions(temp_db_path: Path) -> None:
-    """#1192: sessions with invocation_kind='play' must appear under --type play."""
+    """Sessions with invocation_kind='play' must appear under --type play."""
     async with StateDB() as db:
         # Session that shows as TYPE=play in the all-rows view
         play_sess_id = await _make_session(db, invocation_kind="play", project="myproject")
@@ -664,7 +664,7 @@ async def test_type_play_filter_includes_play_sessions(temp_db_path: Path) -> No
 
 @pytest.mark.asyncio
 async def test_type_play_filter_includes_both_sessions_and_plays(temp_db_path: Path) -> None:
-    """#1192: --type play returns both play-kind sessions AND play table rows."""
+    """--type play must return both play-kind sessions and play table rows."""
     async with StateDB() as db:
         # Session with invocation_kind="play" (from `li play NAME`)
         play_sess_id = await _make_session(db, invocation_kind="play")
@@ -679,12 +679,12 @@ async def test_type_play_filter_includes_both_sessions_and_plays(temp_db_path: P
     assert play_row_id[:16] in ids, "play table row not in --type play results"
 
 
-# ── Regression: #1193 AGENTS column ──────────────────────────────────────────
+# ── Regression: AGENTS column ────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_session_agents_column_reflects_branch_count(temp_db_path: Path) -> None:
-    """#1193: AGENTS column shows branch count, not '-', for sessions."""
+    """AGENTS column shows branch count, not '-', for sessions."""
     async with StateDB() as db:
         sid = await _make_session(db)
         # Insert two branches for this session
@@ -712,7 +712,7 @@ async def test_session_agents_column_reflects_branch_count(temp_db_path: Path) -
 
 @pytest.mark.asyncio
 async def test_session_agents_column_zero_when_no_branches(temp_db_path: Path) -> None:
-    """#1193: AGENTS column is '0' (not '-') for a session with no branches."""
+    """AGENTS column is '0' (not '-') for a session with no branches."""
     async with StateDB() as db:
         sid = await _make_session(db)
         rows = await _gather_table_rows(db, since=None, entity_type=None, project=None)
@@ -724,7 +724,7 @@ async def test_session_agents_column_zero_when_no_branches(temp_db_path: Path) -
 
 @pytest.mark.asyncio
 async def test_play_agents_column_reflects_branch_count(temp_db_path: Path) -> None:
-    """#1193: AGENTS column shows branch count for plays that have a linked session."""
+    """AGENTS column shows branch count for plays that have a linked session."""
     async with StateDB() as db:
         show_id = await _make_show(db)
         play_session_id = await _make_session(db, status="running")
@@ -752,11 +752,11 @@ async def test_play_agents_column_reflects_branch_count(temp_db_path: Path) -> N
     assert play_rows[0]["agents"] == "1", f"expected agents='1', got {play_rows[0]['agents']!r}"
 
 
-# ── Regression: #1191 background correlation handle ──────────────────────────
+# ── Regression: background correlation handle ─────────────────────────────────
 
 
 def test_session_id_env_var_used_as_session_id(monkeypatch: pytest.MonkeyPatch) -> None:
-    """#1191: LIONAGI_SESSION_ID env var is used as the orchestration session id."""
+    """LIONAGI_SESSION_ID env var is used as the orchestration session id."""
     import uuid
 
     from lionagi import Branch, Session
@@ -779,7 +779,7 @@ def test_session_id_env_var_used_as_session_id(monkeypatch: pytest.MonkeyPatch) 
 def test_background_hint_includes_session_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#1191: li o flow --background prints a 'li monitor <id>' hint."""
+    """li o flow --background prints a 'li monitor <id>' hint."""
     import subprocess
     import sys
 

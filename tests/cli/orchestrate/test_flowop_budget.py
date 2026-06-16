@@ -1,18 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for flow budget propagation (issue #1091).
-
-Verifies that:
-  - _format_budget_preamble produces correct text
-  - A total timeout splits equally across initial assignments (total / N)
-  - No BUDGET preamble when total_budget is None
-  - OrchestrationEnv.total_budget is set by setup_orchestration when
-    total_budget kwarg is provided
-
-(The clean break replaced per-op ``FlowOp.budget_weight`` with an equal split:
-TaskAssignment carries no weight field.)
-"""
+"""Tests for flow budget propagation: _format_budget_preamble, equal-split arithmetic, and OrchestrationEnv.total_budget wiring."""
 
 from __future__ import annotations
 
@@ -68,10 +57,6 @@ def test_format_budget_preamble_index_and_count():
 
 
 # ── Budget split (equal share across assignments) ──────────────────────────
-#
-# The reactive flow splits a total timeout equally across initial assignments:
-# ``share = int(total_budget / N)``. We test the arithmetic + the None guard
-# directly rather than invoking _run_flow_inner (which needs a live backend).
 
 
 def _equal_split(n: int, total_budget: int) -> int:
@@ -88,7 +73,7 @@ def test_equal_split_rounds_down():
 
 
 def test_no_budget_preamble_when_total_budget_none():
-    """The `if env.total_budget and assignments` guard stays empty without a timeout."""
+    """The total_budget None guard produces no preamble entries."""
     total_budget = None
     n = 2
     preambles: dict[int, str] = {}
@@ -103,9 +88,6 @@ def test_no_budget_preamble_when_total_budget_none():
 
 def test_orchestration_env_has_total_budget_field():
     """OrchestrationEnv must expose a total_budget attribute (None by default)."""
-    # Spot-check that the field exists at the class level. We cannot
-    # construct a full OrchestrationEnv without a live Session/Branch,
-    # so we inspect the dataclass fields.
     import dataclasses
 
     from lionagi.cli.orchestrate._orchestration import OrchestrationEnv

@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the flow_yaml schedule action kind (#1174)."""
+"""Tests for the flow_yaml schedule action kind: build_argv, validation, DB persistence, and lifecycle."""
 
 from __future__ import annotations
 
@@ -201,14 +201,8 @@ def test_create_schedule_rejects_malformed_flow_yaml():
 
 
 def test_flow_yaml_lifecycle_parity_with_play():
-    """flow_yaml and play both go through the same fire → running → terminal path.
-
-    This test mocks build_argv and spawn_and_wait and verifies that the engine
-    records the same status-transition sequence for flow_yaml as it does for
-    play, confirming uniform treatment by reapers and monitor.
-    """
-    # We verify parity at the subprocess layer (same build_argv / spawn_and_wait
-    # contract) rather than running the full engine, which requires a live DB.
+    """flow_yaml and play follow the same subprocess contract (both via build_argv / spawn_and_wait)."""
+    # We verify parity at the subprocess layer rather than running the full engine.
 
     from lionagi.studio.scheduler.subprocess import build_argv
 
@@ -265,10 +259,7 @@ def test_cli_flow_yaml_choice_accepted():
 
 
 # ---------------------------------------------------------------------------
-# Persistence round-trip test (MAJ-1)
-# This test verifies that action_flow_yaml survives CREATE and UPDATE through
-# the real DB layer (not just dict manipulation). It MUST fail before the
-# CRIT-1/2/3 fixes and pass after.
+# Persistence round-trip test
 # ---------------------------------------------------------------------------
 
 
@@ -322,7 +313,6 @@ def test_flow_yaml_db_roundtrip():
 
 # ---------------------------------------------------------------------------
 # Regression tests: tmp-file lifecycle under cancellation / exception
-# (Fix 1 — pre-spawn window leak)
 # ---------------------------------------------------------------------------
 
 
@@ -363,12 +353,7 @@ def test_spawn_and_wait_cancellation_cleans_tmp_file():
 
 
 def test_fire_pre_spawn_exception_cleans_tmp_file():
-    """Exception in the DB ops between build_argv and spawn_and_wait removes the tmp file.
-
-    This is the pre-spawn window described in codex finding HIGH-1.  We simulate
-    it by verifying that the outer finally pattern used in _fire() cleans up the
-    tmp file when an exception fires before spawn_and_wait is entered.
-    """
+    """Exception between build_argv and spawn_and_wait (pre-spawn window) must still clean up the tmp file."""
     import asyncio
     import contextlib
     import os
@@ -407,18 +392,11 @@ def test_fire_pre_spawn_exception_cleans_tmp_file():
 
 # ---------------------------------------------------------------------------
 # Regression tests: legacy schedules table migration
-# (Fix 1 — codex manual probe encoded as a test)
 # ---------------------------------------------------------------------------
 
 
 def test_legacy_schedules_table_upgraded_and_flow_yaml_insert_succeeds():
-    """Pre-PR schedules table (no action_flow_yaml, old CHECK) is upgraded by StateDB.
-
-    Reproduces the codex manual probe: create a schedules table with the
-    old 4-value action_kind CHECK and without the action_flow_yaml column,
-    then open it through StateDB and verify the column is added and a
-    flow_yaml schedule can be inserted.
-    """
+    """Old schedules table (4-value CHECK, no action_flow_yaml) is upgraded by StateDB on open."""
     import asyncio
     import os
     import tempfile
@@ -474,16 +452,11 @@ def test_legacy_schedules_table_upgraded_and_flow_yaml_insert_succeeds():
 
 # ---------------------------------------------------------------------------
 # Regression tests: PATCH validation
-# (Fix 2 — update_schedule() must reject invalid flow_yaml state)
 # ---------------------------------------------------------------------------
 
 
 def test_update_schedule_rejects_patch_to_flow_yaml_without_yaml():
-    """PATCH action_kind=flow_yaml with no action_flow_yaml raises ValueError.
-
-    Uses mock to avoid needing the default-path StateDB; the validation fires
-    before the write so the mock never needs to forward the update call.
-    """
+    """PATCH action_kind=flow_yaml with no action_flow_yaml raises ValueError (before DB write)."""
     import asyncio
     from unittest.mock import AsyncMock, patch
 
@@ -521,10 +494,7 @@ def test_update_schedule_rejects_patch_to_flow_yaml_without_yaml():
 
 
 def test_update_schedule_rejects_patch_with_malformed_yaml():
-    """PATCH action_flow_yaml with malformed YAML raises ValueError.
-
-    Uses mock to avoid needing the default-path StateDB.
-    """
+    """PATCH action_flow_yaml with malformed YAML raises ValueError (before DB write)."""
     import asyncio
     from unittest.mock import AsyncMock, patch
 

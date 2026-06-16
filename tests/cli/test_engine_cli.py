@@ -1,18 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for `li engine run` CLI subcommand (Phase C Move 2).
-
-Coverage targets:
-  - add_engine_subparser wires all expected engine kinds
-  - Missing --test-cmd for 'coding' kind returns exit 1
-  - Valid arg parsing for each kind
-  - Engine execution dispatches to the correct class (mocked)
-  - run_engine returns 0 on success and emits JSON result on stdout
-  - run_engine returns 1 on engine failure
-  - StateDB insert/update called on success and failure paths
-  - --no-persist skips DB writes
-"""
+"""Tests for `li engine run` CLI subcommand: subparser, dispatch, DB persistence, and error paths."""
 
 from __future__ import annotations
 
@@ -212,9 +201,7 @@ async def test_engine_failure_returns_1(monkeypatch):
 
 
 async def test_code_result_recorded_shape_serialized(monkeypatch, capsys):
-    """CodingEngine returns CodeResultRecorded (passed/measurements/caveats/
-    experiment_ref/verdict_ref) — NOT a dict with export_dir.  Verify the CLI
-    serialises that real shape and does NOT crash when export_dir is absent."""
+    """CodingEngine's CodeResultRecorded shape is serialized correctly; no crash when export_dir is absent."""
     import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
 
@@ -264,8 +251,7 @@ async def test_code_result_recorded_shape_serialized(monkeypatch, capsys):
 
 
 async def test_export_dir_persisted_from_args_coding(monkeypatch, capsys):
-    """--export-dir must be written to the DB for 'coding' even though
-    CodeResultRecorded has no export_dir field (confirmed real shape above)."""
+    """--export-dir is written to the DB for 'coding' (CodeResultRecorded has no export_dir field)."""
     import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
@@ -341,8 +327,7 @@ async def test_export_dir_persisted_from_args_coding(monkeypatch, capsys):
 
 
 async def test_export_dir_persisted_from_args_hypothesis(monkeypatch, capsys):
-    """--export-dir must be written to the DB for 'hypothesis'; the hypothesis
-    engine returns a plain string, not a Pydantic model."""
+    """--export-dir is written to the DB for 'hypothesis' (engine returns a plain string)."""
     import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
@@ -801,12 +786,7 @@ def test_run_engine_unknown_subcommand_returns_1(monkeypatch):
 
 
 def test_main_routes_engine_command(monkeypatch):
-    """main() routes 'engine run ...' to run_engine (not run_agent or others).
-
-    Because `lionagi.cli` exports a `main` function that shadows the module
-    name, we retrieve the actual main.py module via importlib and patch
-    run_engine on that module object.
-    """
+    """main() routes 'engine run ...' to run_engine."""
     import lionagi.cli._logging as log_mod
 
     monkeypatch.setattr(log_mod, "configure_cli_logging", lambda *a: None)
@@ -835,13 +815,7 @@ def test_main_routes_engine_command(monkeypatch):
 
 
 async def test_engine_run_signals_land_in_session_signals(tmp_path):
-    """Engine session observer emits signals that land in session_signals.
-
-    Mirrors test_bind_db_persistence_production_path from test_signals_sse.py
-    but exercises the engine-run binding path: create sessions row with
-    run_id, bind persistence, emit signals via the session observer, confirm
-    rows appear in session_signals with correct kinds and monotone seq.
-    """
+    """Signals emitted via the engine session observer land in session_signals with correct kinds and monotone seq."""
     aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")  # noqa: F841
 
     from lionagi.session.session import Session
@@ -890,12 +864,7 @@ async def test_engine_run_signals_land_in_session_signals(tmp_path):
 async def test_engine_run_skips_signal_binding_on_session_id_collision(
     monkeypatch, tmp_path, capsys
 ):
-    """A pre-existing sessions row with the run's id must not be hijacked.
-
-    create_session is INSERT OR IGNORE, so _do_engine_run checks for an
-    existing row first and disables signal binding instead of appending
-    signals to (and terminal-updating) a session this run did not create.
-    """
+    """An existing sessions row under the run's id must not be hijacked; signal binding is disabled."""
     pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
     import functools
