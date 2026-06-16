@@ -9,7 +9,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "aiocache>=0.12.0",
-    "aiohttp>=3.13.0",
+    "aiohttp>=3.14.1",
     "anyio>=4.10.0",
     "backoff>=2.1.0",
     "croniter>=1.4",
@@ -90,6 +90,9 @@ ollama = [
 
 mcp = [
     "fastmcp>=3.2.0",
+    # fastmcp -> mcp pulls Starlette transitively but mcp only pins
+    # starlette>=0.27, so floor the patched version here too (mirrors [studio]).
+    "starlette>=1.3.1",
 ]
 
 rich = [
@@ -145,7 +148,7 @@ studio = [
     "fastapi>=0.115",
     "uvicorn>=0.34",
     "pyyaml>=6.0",
-    "starlette>=1.0.1",
+    "starlette>=1.3.1",
     # F-A4-9 (ADR-0018 §"li studio extras dependency"): aiosqlite is required
     # by the studio services that query state.db directly (sessions, shows, runs,
     # definitions). It is also listed as a core dep but explicit in the extra
@@ -266,13 +269,13 @@ exclude = [
 # Force minimum versions for transitive deps with known vulnerabilities
 constraint-dependencies = [
     "authlib>=1.6.11",      # CVE: CSRF when using cache
-    "python-multipart>=0.0.27",  # CVE: DoS via unbounded multipart part headers
+    "python-multipart>=0.0.31",  # CVE: DoS via unbounded multipart part headers; quadratic querystring parsing; param smuggling
     "pytest>=9.0.3",        # CVE: vulnerable tmpdir handling
     "pillow>=12.2.0",       # CVE: FITS GZIP decompression bomb
-    "pyjwt>=2.12.0",        # CVE: unknown crit header extensions
-    "tornado>=6.5.5",       # CVE: multipart DoS, cookie validation
+    "pyjwt>=2.13.0",        # CVE: PyJWK HMAC/alg-allowlist bypass, PyJWKClient SSRF + DoS
+    "tornado>=6.5.7",       # CVE: gzip bomb, auth-header redirect leak, curl credential leak
     "cairosvg>=2.9.0",      # CVE: recursive <use> exponential DoS
-    "cryptography>=46.0.7", # CVE: buffer overflow on non-contiguous buffers; DNS name constraint enforcement
+    "cryptography>=48.0.1", # CVE: vulnerable OpenSSL bundled in wheels
     "requests>=2.33.0",     # CVE: insecure temp file reuse in extract_zipped_paths
     "pygments>=2.20.0",     # CVE: ReDoS in GUID regex
     "lxml>=6.1.0",          # CVE-2026-41066: XXE via default iterparse / ETCompatXMLParser config
