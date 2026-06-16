@@ -43,13 +43,7 @@ class _BoomAgent:
 
 @pytest.mark.asyncio
 async def test_no_orphaned_tasks_after_dimension_failure():
-    """Attack: a dimension reviewer raises mid-flight.
-
-    Before the fix, verifier tasks spawned just before the failure kept running
-    in the background and mutated shared EngineRun state after _run raised.
-    After the fix, cancel_active() is called and _active must be empty before
-    the exception propagates to the caller.
-    """
+    """Reviewer failure mid-flight must cancel orphaned verifier tasks and drain _active."""
     eng = ReviewEngine(dimensions=("correctness", "security"))
     run = eng.new_run()
 

@@ -329,12 +329,7 @@ class TestAgentSpecYaml:
         assert loaded.model == "openai/gpt-4.1"
 
     def test_lion_system_false_round_trips(self, tmp_path):
-        """lion_system=False must survive a to_yaml/from_yaml round-trip.
-
-        Regression for LIONAGI-AUDIT-005 (agent-standards 2026-06-06): the
-        original from_yaml() never read lion_system, so a saved False was
-        silently reloaded as True (the compose() default).
-        """
+        """lion_system=False must survive a to_yaml/from_yaml round-trip."""
         import yaml
 
         spec = AgentSpec.compose("analyst")

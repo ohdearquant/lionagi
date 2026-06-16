@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for three engine bug fixes.
-
-- #1367: CodingEngine deadline does not bound in-flight worker calls.
-- #1366: CodingEngine normalize-before-gate (ValueError before run state exists).
-- #1363: HypothesisEngine emission repair weak for agentic CLI workers.
-"""
+"""Regression tests: deadline cancellation, normalize-before-gate, CLI emission repair."""
 
 from __future__ import annotations
 
@@ -42,7 +37,7 @@ class _SlowEvent(EngineEvent):
 
 
 # ---------------------------------------------------------------------------
-# #1367 — deadline watchdog cancels in-flight spawned tasks
+# Deadline watchdog cancels in-flight spawned tasks
 # ---------------------------------------------------------------------------
 
 
@@ -133,7 +128,7 @@ async def test_deadline_watchdog_cleans_up_after_fast_run():
 
 
 # ---------------------------------------------------------------------------
-# #1366 — CodingEngine normalize-before-gate
+# CodingEngine normalize-before-gate
 # ---------------------------------------------------------------------------
 
 
@@ -272,7 +267,7 @@ def _coro(value):
 
 
 # ---------------------------------------------------------------------------
-# #1363 — CLI-aware emission repair instruction
+# CLI-aware emission repair instruction
 # ---------------------------------------------------------------------------
 
 
@@ -434,22 +429,13 @@ async def test_operate_with_repair_no_chat_model_falls_back_to_api_template():
 
 
 # ---------------------------------------------------------------------------
-# Codex-confirmed Major 1 — deadline cancels in-flight operate_with_repair
+# Deadline cancels in-flight operate_with_repair
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_deadline_cancels_in_flight_operate_with_repair():
-    """A branch.operate() call that blocks past deadline_s must be cancelled
-    by the watchdog.  Engine.run() must return normally within a reasonable
-    bound — internal deadline cancellation is a normal terminal state (not a
-    propagated CancelledError).  The partial export hook runs (returning None
-    for this stub engine) and budget_exhausted must be emitted.
-
-    This is the codex-confirmed repro: a fake branch whose operate() sleeps
-    past the deadline and the engine calls it directly via operate_with_repair
-    (no run.spawn() — sequential, in-flight work).
-    """
+    """branch.operate() blocked past deadline_s must be cancelled by the watchdog."""
     import time
 
     from lionagi.engines.engine import EngineRun
@@ -498,7 +484,7 @@ async def test_deadline_cancels_in_flight_operate_with_repair():
 
 
 # ---------------------------------------------------------------------------
-# Major 2 — CLI repair example is syntactically valid JSON
+# CLI repair example is syntactically valid JSON
 # ---------------------------------------------------------------------------
 
 
@@ -561,18 +547,13 @@ def test_cli_repair_instruction_fenced_block_validates_against_emission():
 
 
 # ---------------------------------------------------------------------------
-# Major 3 — _active tasks are drained even when _run() raises immediately
+# _active tasks are drained even when _run() raises immediately
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_active_tasks_drained_when_run_raises():
-    """If _run() spawns a long-lived task then raises immediately, the spawned
-    task must be cancelled and _active must be empty after Engine.run() exits.
-
-    Without the fix, Engine.run()'s finally only cleaned up the watchdog —
-    the spawned task would leak.
-    """
+    """_run() raising immediately must cancel spawned tasks and leave _active empty."""
     spawned_cancelled = asyncio.Event()
 
     class _LeakyEngine(Engine):
@@ -599,15 +580,8 @@ async def test_active_tasks_drained_when_run_raises():
 
 
 async def test_external_cancel_during_drain_propagates():
-    """Cancelling Engine.run() while the finalizer is draining _active must
-    raise CancelledError to the caller — not return _run()'s stale result —
-    and only AFTER the drain has fully completed, so no run-owned task
-    outlives run() from the caller's perspective.
-
-    Codex round-2 repro: suppress(CancelledError, Exception) around the drain
-    swallowed the caller's cancellation and returned "ok".  Codex round-3
-    repro: re-raising immediately left the child alive past the caller's
-    observation of cancellation."""
+    """Cancelling Engine.run() mid-drain must propagate CancelledError only after
+    all run-owned tasks complete — no task outlives the caller's cancellation."""
     in_drain = asyncio.Event()
     child_cleanup_done = asyncio.Event()
     captured_runs = []
@@ -651,16 +625,12 @@ async def test_external_cancel_during_drain_propagates():
 
 
 # ---------------------------------------------------------------------------
-# Minor 4 — _normalize_spec called exactly once via run()
+# _normalize_spec called exactly once via run()
 # ---------------------------------------------------------------------------
 
 
 def test_coding_engine_normalizes_spec_exactly_once(monkeypatch):
-    """``_normalize_spec`` must be called exactly once when ``CodingEngine.run()``
-    is invoked — not twice (once in run() and once in _run()).
-
-    The fix: run() stores the normalized result and passes it to _run() via
-    ``_normalized`` kwarg; _run() uses that result directly."""
+    """_normalize_spec must be called exactly once when CodingEngine.run() is invoked."""
     import lionagi.engines.coding as _coding_mod
 
     call_count = 0

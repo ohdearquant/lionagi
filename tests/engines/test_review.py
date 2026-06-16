@@ -21,9 +21,7 @@ class _FakeAgent:
 
 
 class _ProseAgent:
-    """Returns prose until ``emit_on_call``, then emits — the weak-model failure
-    the repair loop recovers (mirrors ``_ProseBranch`` in
-    test_engine_protection.py). ``emit_on_call=0`` never emits (clean reviewer)."""
+    """Returns prose until ``emit_on_call``, then emits — simulates weak-model failure; 0=never emits."""
 
     def __init__(self, run, name: str, emit_on_call: int, event):
         self.name = name

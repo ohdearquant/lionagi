@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""PlanningEngine — plan retry/loud-fail + synthesis wiring + reactive params.
-
-The generic plan→DAG→synthesize engine (ADR-0075 §4). Tested at the seam level
-(plan, synthesize, the _run wiring) with the orchestration glue and run_dag
-faked — no LLM, no real flow.
-"""
+"""PlanningEngine — plan retry/loud-fail, synthesis wiring, reactive params. No LLM."""
 
 from __future__ import annotations
 

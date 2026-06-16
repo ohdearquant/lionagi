@@ -140,14 +140,12 @@ async def test_shell_pre_hook_raises_permission_error_on_nonzero_exit(monkeypatc
 
 
 # ---------------------------------------------------------------------------
-# LIONAGI-AUDIT-004 (agent-standards 2026-06-06): timed-out hook subprocess
-# termination.  The fix kills the process group and awaits cleanup before
-# raising; these tests assert kill/wait are called on timeout.
+# Timed-out hook subprocess termination: kills process group, awaits cleanup
 # ---------------------------------------------------------------------------
 
 
 async def test_pre_hook_timeout_kills_process_group(monkeypatch):
-    """On TimeoutError the pre-hook kills the process group (LIONAGI-AUDIT-004)."""
+    """On TimeoutError the pre-hook must kill the process group."""
     import asyncio
     from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -182,7 +180,7 @@ async def test_pre_hook_timeout_kills_process_group(monkeypatch):
 
 
 async def test_post_hook_timeout_kills_process_group(monkeypatch):
-    """On TimeoutError the post-hook kills the process group (LIONAGI-AUDIT-004)."""
+    """On TimeoutError the post-hook must kill the process group."""
     import asyncio
     from unittest.mock import AsyncMock, MagicMock, patch
 
