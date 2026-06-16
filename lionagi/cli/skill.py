@@ -16,16 +16,7 @@ def _skills_root() -> Path:
 
 
 def resolve_skill_path(name: str) -> tuple[Path | None, str | None]:
-    """Resolve a skill NAME to its SKILL.md path.
-
-    Returns (Path, None) on success, or (None, error_message) on failure.
-
-    Defense-in-depth: the candidate path MUST resolve under the skills
-    root even after symlink traversal. The root itself may be a symlink
-    (users can point `~/.lionagi/skills/` at any directory they manage);
-    comparing resolved paths accepts that while rejecting a hostile
-    per-skill `SKILL.md` symlink pointing at arbitrary files on disk.
-    """
+    """Resolve a skill NAME to (Path, None) or (None, error); blocks symlink escapes outside skills root."""
     if not name or not isinstance(name, str):
         return None, "skill name must be a non-empty string"
     try:
@@ -90,13 +81,7 @@ def read_skill_body(name: str) -> tuple[str | None, str | None]:
 
 
 def run_skill(argv: list[str]) -> int:
-    """Handle `li skill ...` invocation.
-
-    Subcommands:
-      li skill NAME      → print body (post-frontmatter) to stdout
-      li skill list      → print available skill names
-      li skill show NAME → print full file (including frontmatter)
-    """
+    """Handle `li skill NAME|list|show NAME` invocation."""
     if not argv:
         print("Usage: li skill <name>  |  li skill list  |  li skill show <name>")
         return 1

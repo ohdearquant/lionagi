@@ -76,15 +76,6 @@ __all__ = (
 
 
 # --------------------------------------------------------------------------- flag metadata
-#
-# Same declarative pattern as claude_code.py.  Each field with _cli()
-# metadata is automatically assembled into CLI args by
-# _build_declarative_args(), sorted by order.
-#
-# kind semantics:
-#   value      – ``--flag <str(val)>``
-#   bool       – ``--flag`` when truthy, omit otherwise
-#   repeat     – ``--flag a --flag b`` (flag repeated per item)
 
 
 def _cli(
@@ -244,13 +235,7 @@ class CodexCodeRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _clamp_effort(cls, values):
-        """Clamp 'max' → 'xhigh' for both effort fields.
-
-        Agent profiles (critic, orchestrator) use effort: max which is valid
-        for Claude Code but not for the Codex enum. This validator catches
-        any value that slips past the upstream _CODEX_EFFORT_CLAMP in
-        _providers.py (e.g. direct CodexCodeRequest construction).
-        """
+        """Clamp effort 'max' → 'xhigh' for both effort fields (Codex enum does not include 'max')."""
         for key in ("reasoning_effort", "plan_mode_reasoning_effort"):
             if values.get(key) == "max":
                 values[key] = "xhigh"
@@ -521,12 +506,7 @@ async def stream_codex_cli(
     on_tool_result: Callable[[dict[str, Any]], None] | None = None,
     on_final: Callable[[CLISession], None] | None = None,
 ) -> AsyncIterator[StreamChunk | CLISession]:
-    """Consume the JSONL stream from Codex CLI, yield StreamChunks, and
-    populate a CodexSession accumulator.
-
-    Yields ``StreamChunk`` for every content-bearing event so the endpoint
-    can pass them straight through without conversion.
-    """
+    """Consume the JSONL stream from Codex CLI, yield StreamChunks and populate a CodexSession."""
     if session is None:
         session = CLISession()
     theme = request.cli_display_theme or "light"

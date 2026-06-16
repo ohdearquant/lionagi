@@ -29,22 +29,7 @@ async def ndjson_from_cli(
     stdin: Any = asyncio.subprocess.DEVNULL,
     tail_repair: Callable[[str], dict | None] | None = None,
 ) -> AsyncIterator[dict]:
-    """Yield dicts from an NDJSON-emitting CLI subprocess.
-
-    Args:
-        cmd: Command and arguments to execute.
-        cwd: Working directory for the subprocess.
-        env: Environment for the subprocess.
-        stdin: Passed to ``create_subprocess_exec`` unless it is the
-            ``_INHERIT_STDIN`` sentinel, in which case ``stdin`` is omitted so
-            the child inherits the parent's stdin.  Default is DEVNULL (matches
-            old Claude/Codex behaviour).
-        tail_repair: Optional callable invoked on the final buffer when
-            ``raw_decode`` fails.  If it returns a dict that dict is yielded;
-            if it returns ``None`` the tail is logged and dropped.  Only Claude
-            passes a repair callback; all other providers leave this ``None``
-            and get the old drop-on-failure behaviour.
-    """
+    """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles malformed final chunks."""
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
         env=env,

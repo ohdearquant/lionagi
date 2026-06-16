@@ -1,10 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0021 §A: review + gate verdicts.
-
-Produced by codex-pr-review (ReviewOutcome), play-gate (GateVerdict),
-or any skill that issues a binary or graded judgment.
-"""
+"""ADR-0021 §A: review + gate verdict models (ReviewOutcome, GateVerdict, ReviewFinding)."""
 
 from __future__ import annotations
 
@@ -21,11 +17,7 @@ Severity = Literal["critical", "high", "medium", "low", "info"]
 
 
 class ReviewFinding(HashableModel):
-    """One reviewer finding with optional file/line + suggestion.
-
-    Distinct from ``lionagi.casts.emission.Finding`` (reactive-bus base).
-    This is the ops-plane artifact contract (ADR-0021).
-    """
+    """One reviewer finding with optional file/line and suggestion (ADR-0021 ops-plane artifact)."""
 
     severity: Severity = Field(
         description="Operator severity bucket (drives sort + render color).",
@@ -73,15 +65,7 @@ VerdictDecision = Literal[
 
 
 class ReviewOutcome(SkillOutcome):
-    """Reviewer judgment + findings list (ops-plane artifact, ADR-0021 §A).
-
-    The frontend renders this as the ``ReviewVerdictCard`` (ADR-0021 §E)
-    — severity/category breakdown on top, blocking findings expanded,
-    minor suggestions collapsed.
-
-    Distinct from ``lionagi.engines.review.ReviewVerdict`` (reactive-bus
-    emission from the engines layer).
-    """
+    """Reviewer judgment + findings list; ops-plane artifact distinct from the reactive-bus ReviewVerdict."""
 
     outcome_kind: Literal["review_verdict"] = "review_verdict"
     verdict: VerdictDecision = Field(
@@ -127,11 +111,7 @@ class GateVerdict(SkillOutcome):
 
     @model_validator(mode="after")
     def _sync_passed(self) -> GateVerdict:
-        """Keep SkillOutcome.passed consistent with gate_passed.
-
-        - When ``passed`` is omitted (None), default it to ``gate_passed``.
-        - When both are supplied, they must agree (no contradictory state).
-        """
+        """Default ``passed`` from ``gate_passed``; raise if both are supplied but disagree."""
         if self.passed is None:
             self.passed = self.gate_passed
         elif self.passed != self.gate_passed:

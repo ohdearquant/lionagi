@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""OpenAI Images endpoint: generation (DALL-E / gpt-image-1) and editing.
-
-Generation:  POST https://api.openai.com/v1/images/generations
-Edit:        POST https://api.openai.com/v1/images/edits
-"""
+"""OpenAI image endpoints: generation (/v1/images/generations) and editing (/v1/images/edits)."""
 
 from __future__ import annotations
 
@@ -21,14 +17,7 @@ __all__ = ("OpenaiImageGenerationEndpoint", "OpenaiImageEditEndpoint")
 
 @OpenAIConfigs.IMAGE_GENERATION.register
 class OpenaiImageGenerationEndpoint(Endpoint):
-    """DALL-E / gpt-image-1 image generation endpoint.
-
-    Usage::
-
-        endpoint = OpenaiImageGenerationEndpoint()
-        result = await endpoint.call({"prompt": "A sunset over the ocean"})
-        # result["data"][0]["url"]  — or "b64_json" if response_format="b64_json"
-    """
+    """DALL-E / gpt-image-1 image generation endpoint."""
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         if config is None:
@@ -42,21 +31,7 @@ class OpenaiImageGenerationEndpoint(Endpoint):
 
 @OpenAIConfigs.IMAGE_EDIT.register
 class OpenaiImageEditEndpoint(Endpoint):
-    """DALL-E image editing endpoint (inpainting).
-
-    The edit API requires multipart/form-data with the source image and optional
-    mask.  Pass ``image`` (and optionally ``mask``) as bytes via kwargs.
-
-    Usage::
-
-        endpoint = OpenaiImageEditEndpoint()
-        with open("image.png", "rb") as f:
-            result = await endpoint.call(
-                {"prompt": "Add a rainbow"},
-                image=f.read(),
-                image_filename="image.png",
-            )
-    """
+    """DALL-E image editing (inpainting) endpoint; pass image/mask bytes via kwargs as multipart/form-data."""
 
     transport_arg_keys = ("image", "image_filename", "mask", "mask_filename")
 

@@ -1,10 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Ollama raw generate request model.
-
-Docs: https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-completion
-"""
+"""Ollama /api/generate request model (raw completion, non-chat)."""
 
 from pydantic import BaseModel, Field
 

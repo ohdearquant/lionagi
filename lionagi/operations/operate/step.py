@@ -16,11 +16,7 @@ if TYPE_CHECKING:
 
 
 class Step:
-    """Factory methods for common Operative patterns.
-
-    Provides methods to create Operative instances with pre-configured
-    field specifications for common patterns like ReAct, QA, and task execution.
-    """
+    """Factory methods for creating pre-configured Operative instances (ReAct, QA, task execution)."""
 
     @staticmethod
     def request_operative(
@@ -46,31 +42,7 @@ class Step:
         request_params: dict | None = None,
         **kwargs,
     ) -> Operative:
-        """Create request-configured Operative with common field patterns.
-
-        Args:
-            name: Operative name
-            operative_name: (Deprecated) Use 'name' instead
-            adapter: Validation framework
-            reason: Add reasoning trace field
-            actions: Add action request/response fields
-            fields: Additional custom field specs (dict[str, Spec])
-            field_models: (Deprecated) Use 'fields' instead - list of FieldModel/Spec
-            max_retries: Max validation retries
-            auto_retry_parse: Auto-retry on parse failure
-            base_type: Base Pydantic model to extend
-            parse_kwargs: (Deprecated) Ignored - parse config handled internally
-            exclude_fields: (Deprecated) Ignored
-            field_descriptions: (Deprecated) Ignored
-            config_dict: (Deprecated) Ignored
-            doc: (Deprecated) Ignored
-            new_model_name: (Deprecated) Ignored
-            parameter_fields: (Deprecated) Ignored
-            request_params: (Deprecated) Ignored
-
-        Returns:
-            Configured Operative instance
-        """
+        """Build a request-phase Operative with optional reason/action fields; deprecated params are silently ignored."""
         from .._guards import reject_removed_kwargs
 
         reject_removed_kwargs(
@@ -103,28 +75,22 @@ class Step:
         # Handle backward compatibility
         name = name or operative_name
 
-        # Convert field_models list to fields dict if provided
         if field_models and not fields:
             from lionagi.models import FieldModel
 
             fields = {}
             for fm in field_models:
-                # Convert FieldModel to Spec if needed
                 if isinstance(fm, FieldModel):
                     spec = fm.to_spec()
                 elif isinstance(fm, Spec):
                     spec = fm
                 else:
-                    continue  # Skip invalid types
-
-                # Use spec name as key
+                    continue
                 if spec.name:
                     fields[spec.name] = spec
 
-        # Build fields dict to avoid duplicates (dict preserves insertion order in Python 3.7+)
         fields_dict = {}
 
-        # Add common fields (convert FieldModel to Spec)
         if reason:
             reason_spec = get_default_field("reason").to_spec()
             fields_dict["reason"] = reason_spec
@@ -134,12 +100,9 @@ class Step:
             fields_dict["action_requests"] = get_default_field("action_requests").to_spec()
             fields_dict["action_responses"] = get_default_field("action_responses").to_spec()
 
-        # Add custom fields (will override defaults if same name)
         if fields:
             for field_name, spec in fields.items():
-                # Ensure spec has name
                 if not spec.name:
-                    # Update spec with name using Spec metadata update
                     spec = Spec(
                         spec.base_type,
                         name=field_name,
@@ -147,16 +110,14 @@ class Step:
                     )
                 fields_dict[spec.name] = spec
 
-        # Convert to list
         all_fields = list(fields_dict.values())
 
-        # Create Operable with all fields
         operable = Operable(
             tuple(all_fields),
             name=name or (base_type.__name__ if base_type else "Operative"),
         )
 
-        # Request excludes action_responses
+        # action_responses excluded from request schema; included in response schema
         request_exclude = {"action_responses"} if actions else set()
 
         return Operative(
@@ -174,16 +135,7 @@ class Step:
         operative: Operative,
         additional_fields: dict[str, Spec] | None = None,
     ) -> Operative:
-        """Create response type from operative.
-
-        Args:
-            operative: Source operative with all fields
-            additional_fields: Extra fields for response
-
-        Returns:
-            Operative with response type configured
-        """
-        # If additional fields provided, create new Operative
+        """Extend an operative with optional additional response fields and materialize its response model."""
         if additional_fields:
             # Get existing fields
             existing_fields = list(operative.operable.__op_fields__)

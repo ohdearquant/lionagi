@@ -46,20 +46,7 @@ _BASE_SIGNAL_FIELDS: frozenset[str] = frozenset(
 
 
 def _sanitize_signal_payload(sig: Any) -> dict[str, Any]:
-    """Build a JSON-safe, size-bounded payload dict from a Signal instance.
-
-    Serialisation policy:
-    - Non-base fields from ``type(sig).model_fields`` are collected into a
-      raw dict, with ``MessageAdded.data`` replaced by a compact reference
-      to avoid duplicating message content in ``session_signals``.
-    - The raw dict is then serialised to a JSON string using
-      ``safe_fallback=True`` (unknown objects fall back to repr-with-type),
-      and immediately parsed back to a plain Python dict.  This guarantees
-      that every value stored is a JSON-native type — no non-serialisable
-      object can survive into ``_to_json_column(payload)``.
-    - If the resulting JSON exceeds ``_PAYLOAD_BYTE_CAP`` bytes, the payload
-      is replaced by ``{truncated: True, original_bytes: N, data: "<clip>"}``.
-    """
+    """Build a JSON-safe, size-bounded payload dict from a Signal; oversized payloads are truncated."""
     import json as _json  # noqa: PLC0415
 
     from lionagi.ln import json_dumps as _jd  # noqa: PLC0415
@@ -332,25 +319,7 @@ class SessionObserver(Observer):
         session_id: str,
         db: Any = None,
     ) -> None:
-        """Register a subscription that persists every emitted Signal to StateDB.
-
-        Wires an async handler onto self so that each call to :meth:`emit`
-        appends a row to ``session_signals`` via :meth:`StateDB.insert_session_signal`.
-
-        When *db* is supplied (an already-open :class:`~lionagi.state.db.StateDB`
-        instance held by the CLI lifecycle), signals are written through that
-        connection without any extra open/close overhead — one write per signal,
-        the same cost as a message-persistence write.  When *db* is ``None`` (the
-        standalone / unit-test fallback), a fresh connection is opened per signal;
-        this is correct for isolated use but carries per-signal connection overhead
-        so it should not be used on production chatty sessions.
-
-        Calling this more than once for the same session_id is idempotent only
-        if the caller holds a reference and calls :meth:`unbind_db_persistence`
-        first; otherwise a second handler is added and each signal is written twice.
-        The handler is stored on ``self._db_persist_handler`` so the caller can
-        detach it at teardown.
-        """
+        """Register a subscription persisting every Signal to StateDB; pass db to reuse an open connection."""
         import time as _time
 
         # Capture the caller-supplied db reference.  In production CLI paths this

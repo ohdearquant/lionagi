@@ -14,13 +14,7 @@ from .message import Message, MessageContent, MessageRole
 
 @dataclass(slots=True)
 class ActionRequestContent(MessageContent):
-    """Content for action/function call requests.
-
-    Fields:
-        function: Function name to invoke
-        arguments: Arguments for the function call
-        action_response_id: Link to corresponding response (if any)
-    """
+    """Content for LLM-emitted function call requests."""
 
     function: str = ""
     arguments: dict[str, Any] = field(default_factory=dict)
@@ -47,12 +41,11 @@ class ActionRequestContent(MessageContent):
 
     @property
     def role(self) -> MessageRole:
-        """Role for this content type (beta API compat)."""
         return MessageRole.ACTION
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ActionRequestContent":
-        """Construct ActionRequestContent from dictionary."""
+        """Construct ActionRequestContent from a dict; handles legacy nested action_request key."""
         # Handle nested structure from old format
         if "action_request" in data:
             req = data["action_request"]
@@ -109,14 +102,12 @@ class ActionRequest(Message):
 
     @property
     def function(self) -> str:
-        """Access the function name."""
         return self.content.function
 
     @property
     def arguments(self) -> dict[str, Any]:
-        """Access the function arguments."""
         return self.content.arguments
 
     def is_responded(self) -> bool:
-        """Check if this request has been responded to."""
+        """True if a corresponding ActionResponse has been linked."""
         return self.content.action_response_id is not None

@@ -10,11 +10,7 @@ from typing import Any
 
 @dataclass
 class CLISession:
-    """Provider-agnostic accumulator for a CLI agent session.
-
-    Shared by claude_code and codex providers. Collects StreamChunks,
-    materialised tool-use/result views, and final summary stats.
-    """
+    """Provider-agnostic accumulator for a CLI agent session (chunks, tool views, summary stats)."""
 
     session_id: str | None = None
     model: str | None = None

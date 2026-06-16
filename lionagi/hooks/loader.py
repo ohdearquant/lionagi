@@ -1,26 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0023 hook registry + agent-YAML loader.
-
-The loader maintains a name → handler registry so agent profiles can
-reference handlers as strings::
-
-    hooks:
-      session.start:
-        - persist_session_start
-      api.post_call:
-        - log_api_metrics
-
-The registry is pre-populated with the built-ins from
-:mod:`lionagi.hooks.builtins`. User-defined handlers (decorated with
-:func:`lionagi.hooks.bus.hook`) register via :func:`register_handler`.
-
-:func:`build_session_bus` implements the override semantics from the
-ADR: when a profile mentions a hook point, the profile's list REPLACES
-the default for that point (so ``message.add: []`` actually disables
-the built-in persistence). Hook points the profile doesn't mention keep
-their defaults.
-"""
+"""ADR-0023 hook registry + agent-YAML loader; profile overrides replace defaults per point."""
 
 from __future__ import annotations
 
@@ -61,23 +41,12 @@ _REGISTRY: dict[str, HookHandler] = {
 
 
 def register_handler(name: str, handler: Callable[..., Awaitable[Any]]) -> None:
-    """Register a callable under ``name`` for agent-YAML lookup.
-
-    Re-registration overrides — last writer wins. User-defined handlers
-    decorated with :func:`bus.hook` typically come in via
-    :func:`load_user_handlers` (not yet wired; that's the auto-load path
-    deferred to ADR-0023b).
-    """
+    """Register a callable under ``name`` for agent-YAML lookup; last writer wins."""
     _REGISTRY[name] = handler
 
 
 def resolve_handler(name: str) -> HookHandler:
-    """Look up ``name`` in the registry. Raises KeyError if missing.
-
-    The bus catches and logs handler exceptions, but a *missing* handler
-    is a configuration error — failing loudly at session start is the
-    right time.
-    """
+    """Look up ``name`` in the registry; raises KeyError if missing."""
     try:
         return _REGISTRY[name]
     except KeyError as exc:
@@ -92,13 +61,7 @@ def registered_handlers() -> list[str]:
 def load_hooks_for_agent(
     agent_hooks: dict[str, list[str]] | None,
 ) -> dict[HookPoint, list[HookHandler]]:
-    """Resolve an agent profile's ``hooks`` section to a (point → handlers) map.
-
-    Returns the *override* set, NOT merged with defaults — pass through
-    :func:`build_session_bus` to get the merged result. Unknown hook
-    point strings raise ``ValueError`` so typos surface at load time
-    instead of at first emit.
-    """
+    """Resolve agent profile ``hooks`` section to override map; does NOT merge with defaults."""
     if not agent_hooks:
         return {}
     resolved: dict[HookPoint, list[HookHandler]] = {}
@@ -123,18 +86,7 @@ def build_session_bus(
     *,
     observer: Any = None,
 ) -> HookBus:
-    """Construct a per-session bus with defaults + profile overrides.
-
-    Override semantics: if ``agent_hooks`` mentions a point, the profile's
-    list *replaces* the default for that point. Empty list disables the
-    default (e.g., ``message.add: []`` turns off persistence). Points the
-    profile doesn't mention keep the default.
-
-    ADR-0023 §"Bus lifecycle" — one bus per session, created at session
-    init, passed to all branches. Per ADR-0076, ``observer`` binds the bus
-    to the session's :class:`SessionObserver` (the shared event transport)
-    so emissions are recorded there; pass ``session.observer`` at wiring.
-    """
+    """Construct a per-session HookBus with defaults merged with profile overrides (ADR-0023)."""
     bus = HookBus(observer=observer)
     overrides = load_hooks_for_agent(agent_hooks)
 

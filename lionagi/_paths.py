@@ -1,11 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Path constants and directory helpers — stdlib only, no lionagi deps.
-
-Imported by state, studio, cli, and operations modules. Must remain
-dependency-free so it can be the lowest-level shared location for
-filesystem paths used across the ops plane.
-"""
+"""Path constants and directory helpers — stdlib only, no lionagi deps."""
 
 from __future__ import annotations
 
@@ -41,10 +36,7 @@ def _find_git_root(cwd: Path) -> Path | None:
 
 
 def find_lionagi_dirs() -> list[Path]:
-    """Find .lionagi/ directories — project-local first, then global ~/.lionagi/.
-
-    Returns all found directories in priority order (project-local wins).
-    """
+    """Find .lionagi/ directories, project-local first then global ~/.lionagi/."""
     dirs: list[Path] = []
 
     # 1. Git root

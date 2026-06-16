@@ -107,12 +107,7 @@ class CodeCheckResponse(BaseModel):
 def _resolve_check_paths(
     paths: list[str], workspace_root: Path
 ) -> tuple[list[str], CodeCheckResponse | None]:
-    """Resolve each path against workspace_root; return (resolved_strs, None) on success
-    or ([], error_response) on the first violation.
-
-    resolve_workspace_path already handles: expanduser, symlink pre-resolve,
-    containment check, and denied-name check.
-    """
+    """Resolve paths against workspace_root; return (resolved, None) or ([], error_response)."""
     resolved: list[str] = []
     for raw in paths:
         try:
@@ -130,12 +125,7 @@ def _resolve_check_paths(
 def _ruff_check_sync(
     paths: list[str], max_diagnostics: int, cwd: str | None = None
 ) -> CodeCheckResponse:
-    """Run `ruff check --output-format=json` on pre-resolved paths; return a structured CodeCheckResponse.
-
-    ``cwd`` pins the subprocess working directory so ruff's own defaults
-    (scanning the current directory when given no paths) can never reach
-    outside the intended root.
-    """
+    """Run ``ruff check --output-format=json`` on pre-resolved paths; return structured results."""
     ruff_bin = shutil.which("ruff")
     if ruff_bin is None:
         return CodeCheckResponse(

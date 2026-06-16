@@ -1,18 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""WorkForm: structured input/output container for worker tasks.
-
-A WorkForm captures a typed specification (FieldSpec) for every input
-and output slot a worker needs, tracks live values, and records the
-validation status of those values.  The lifecycle is:
-
-    draft → filled → validated  (happy path)
-    draft → filled → error      (validation failed)
-    validated → submitted       (engine accepted it)
-    submitted → completed       (worker finished)
-    error → draft               (allow re-opening for correction)
-"""
+"""WorkForm: typed field container with lifecycle (draft→filled→validated→submitted→completed)."""
 
 from __future__ import annotations
 
@@ -62,22 +51,7 @@ VALID_TRANSITIONS: dict[str, frozenset[str]] = {
 
 
 class FieldSpec(Element):
-    """Declaration of a single field inside a WorkForm.
-
-    FieldSpec is a plain value object (no lifecycle, no graph identity needed),
-    but inherits from Element for UUID tracking and created_at timestamps.
-
-    Attributes:
-        name: Machine-readable field name (alphanumeric + underscores,
-            must start with a letter or underscore).
-        type: Expected Python type expressed as a string literal.
-        required: When True, the form cannot be validated with this
-            field absent or None.
-        default: Value used when the field is absent and not required.
-            Must be compatible with the declared ``type`` at construction
-            time (validated eagerly).
-        description: Human-readable explanation of this field's purpose.
-    """
+    """Declaration of a single typed field inside a WorkForm."""
 
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
@@ -148,27 +122,7 @@ class FieldSpec(Element):
 
 
 class WorkForm(Element):
-    """A structured data container for a single worker invocation.
-
-    WorkForm inherits from :class:`~lionagi.protocols.generic.element.Element`,
-    gaining a UUID ``id``, ``created_at`` timestamp, and ``metadata`` dict
-    consistent with the rest of the lionagi ecosystem.
-
-    The string ``form_id`` property is a convenience alias over ``str(self.id)``
-    for human-readable references.
-
-    WorkForm instances are *immutable by convention* — mutation helpers
-    (:func:`fill_form`, :func:`validate_form`, :meth:`transition_to`)
-    always return a *new* copy via ``model_copy``.
-
-    Attributes:
-        title: Human-readable label shown in UI and logs.
-        fields: Ordered mapping from field name to its :class:`FieldSpec`.
-        values: Mutable mapping from field name to its current value.
-        status: Lifecycle status of this form instance.
-        validation_errors: List of human-readable error messages from the
-            last call to :func:`validate_form`.
-    """
+    """Structured data container for a single worker invocation; immutable by convention."""
 
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
@@ -210,18 +164,7 @@ class WorkForm(Element):
         return self.status in {"validated", "completed"}
 
     def transition_to(self, new_status: FormStatus) -> WorkForm:
-        """Return a *new* WorkForm after validating the status transition.
-
-        Args:
-            new_status: The desired next lifecycle status.
-
-        Returns:
-            A new WorkForm with ``status`` set to *new_status*.
-
-        Raises:
-            ValueError: If the transition from the current status to
-                *new_status* is not permitted by :data:`VALID_TRANSITIONS`.
-        """
+        """Return a new WorkForm at *new_status*; raises ValueError for invalid transitions."""
         allowed = VALID_TRANSITIONS.get(self.status, frozenset())
         if new_status not in allowed:
             raise ValueError(
@@ -243,21 +186,10 @@ def fill_form(
     *,
     ruleset: RuleSet | None = None,
 ) -> WorkForm:
-    """Return a *new* WorkForm with *values* merged into it.
+    """Merge *values* into *form* (applying FieldSpec defaults), then validate.
 
-    Missing fields whose FieldSpec declares a non-None ``default`` are
-    pre-filled with that default.  After merging, :func:`validate_form` is
-    called automatically — the returned form will have status ``validated``
-    or ``error``.
-
-    Args:
-        form: Source form (not mutated).
-        values: Key/value pairs to set on the form.
-        ruleset: Optional :class:`~lionagi.work.rules.RuleSet` to apply as
-            part of validation.  Forwarded to :func:`validate_form`.
-
-    Returns:
-        A new WorkForm instance with merged values and updated status.
+    Returns a new WorkForm with status ``validated`` or ``error``; does not
+    mutate the source.
     """
     merged: dict[str, Any] = {}
     for name, spec in form.fields.items():
@@ -281,30 +213,10 @@ def validate_form(
     *,
     ruleset: RuleSet | None = None,
 ) -> WorkForm:
-    """Validate *form* values against its FieldSpec declarations.
+    """Validate *form* values against FieldSpec declarations (required + type coercion).
 
-    Returns a *new* WorkForm with status ``validated`` when all checks pass,
-    or ``error`` with ``validation_errors`` populated when any check fails.
-
-    Checks performed per declared field:
-
-    1. Required fields must be present (key exists) and not ``None``.
-    2. Present values must be coercible to the declared type; coerced
-       values are stored in the returned form's ``values``.
-
-    When *ruleset* is provided, its rules are evaluated **after** the
-    FieldSpec checks.  Any rule failures prevent ``validated`` status —
-    the form will be ``error`` and rule error messages are appended to
-    ``validation_errors``.
-
-    Args:
-        form: Form to validate (not mutated).
-        ruleset: Optional :class:`~lionagi.work.rules.RuleSet`.  When
-            supplied, rules run as part of this validation pass and
-            failures are treated identically to spec failures.
-
-    Returns:
-        New WorkForm with updated ``status`` and ``validation_errors``.
+    Optional *ruleset* rules run after spec checks; failures are treated
+    identically. Returns a new WorkForm with status ``validated`` or ``error``.
     """
     errors: list[str] = []
     coerced_values: dict[str, Any] = dict(form.values)

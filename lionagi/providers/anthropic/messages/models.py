@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Anthropic API models for request/response validation."""
+"""Anthropic messages API request/response models."""
 
 from __future__ import annotations
 
@@ -36,7 +36,6 @@ class Message(BaseModel):
 
     @field_validator("content", mode="before")
     def validate_content(cls, v):
-        """Convert string content to proper format."""
         if isinstance(v, str):
             return v
         if isinstance(v, list):

@@ -25,15 +25,7 @@ def lcall(
     output_flatten_tuple_set: bool = False,
     **kwargs: Any,
 ) -> list[R]:
-    """Apply function to each element in input list with optional processing.
-
-    Maps a function over input elements and processes results. Can sanitize input
-    and output using various filtering options.
-
-    Raises:
-        ValueError: If func is not callable or unique_output used incorrectly.
-        TypeError: If func or input processing fails.
-    """
+    """Sync map of func over input with optional input/output flatten/dropna/unique transforms."""
     # Validate and extract callable function
     if not callable(func):
         try:

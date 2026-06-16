@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Test-data loaders.
-
-Reads JSON/JSONL fixtures bundled at ``lionagi/testing/data/`` — OpenAI-shaped
-sample responses, error scenarios, and conversation traces. Used by both the
-legacy ``LionAGIMockFactory`` path and the new ``ScriptedEndpoint`` workflow.
-"""
+"""Test-data loaders for JSON/JSONL fixtures bundled at ``lionagi/testing/data/``."""
 
 from __future__ import annotations
 
@@ -26,12 +21,7 @@ class TestDataLoader:
         self.data_dir = Path(data_dir) if data_dir is not None else _DATA_DIR
 
     def load_json(self, filename: str) -> dict[str, Any]:
-        """Load a JSON fixture from within ``self.data_dir``.
-
-        *filename* must be a plain name (no path separators, no ``..``).
-        Absolute paths and traversal sequences are rejected fail-closed before
-        any filesystem access (LIONAGI-AUDIT-002 path-boundary fix).
-        """
+        """Load a JSON fixture from ``self.data_dir``; *filename* must be a plain name (traversal rejected)."""
         import os
 
         # Reject absolute paths and names containing any path separator.

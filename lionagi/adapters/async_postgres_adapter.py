@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Async PostgreSQL adapter for lionagi Nodes.
-
-Requires the ``lionagi[postgres]`` extra (sqlalchemy, asyncpg). Loaded lazily
-via ``_ensure_postgres_adapter()`` in node.py — never at import time, since the
-base ``AsyncPostgresAdapter`` comes from pydapter's postgres extra.
-"""
+"""Async PostgreSQL adapter for lionagi Nodes; requires the ``lionagi[postgres]`` extra, loaded lazily."""
 
 from __future__ import annotations
 

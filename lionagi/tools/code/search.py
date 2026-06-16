@@ -163,17 +163,7 @@ def _find_sync(
 
 
 class SearchTool(LionTool):
-    """Filesystem search tool (grep/find) with optional workspace containment.
-
-    When *workspace_root* is supplied at construction time, every search path
-    is resolved and checked to remain within that root before the subprocess
-    is launched.  Paths that escape the root are rejected with a PermissionError
-    (returned as a SearchResponse with success=False).
-
-    If *workspace_root* is None (the default), no containment is applied —
-    callers should pair this with a :class:`lionagi.agent.permissions.PermissionPolicy`
-    allowlist, or set the root via ``create_agent()`` / ``AgentSpec``.
-    """
+    """Filesystem grep/find tool with optional workspace-root containment."""
 
     is_lion_system_tool = True
     system_tool_name = "search_tool"

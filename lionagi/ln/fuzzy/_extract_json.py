@@ -20,20 +20,7 @@ def extract_json(
     return_one_if_single: bool = True,
     max_size: int = MAX_JSON_INPUT_SIZE,
 ) -> dict[str, Any] | list[dict[str, Any]]:
-    """Extract and parse JSON content from a string or markdown code blocks.
-    Attempts direct JSON parsing first. If that fails, looks for JSON content
-    within markdown code blocks denoted by ```json.
-
-    Args:
-        input_data (str | list[str]): The input string or list of strings to parse.
-        fuzzy_parse (bool): If True, attempts fuzzy JSON parsing on failed attempts.
-        return_one_if_single (bool): If True and only one JSON object is found,
-            returns a dict instead of a list with one dict.
-        max_size (int): Maximum input size in bytes (default: 10MB). DoS protection.
-
-    Raises:
-        ValueError: If input exceeds max_size.
-    """
+    """Parse JSON directly or extract from ```json blocks; fuzzy_parse applies fuzzy_json on failures."""
     if isinstance(input_data, list):
         for item in input_data:
             if len(item) > max_size:

@@ -1,7 +1,7 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Validation helpers for message layer."""
+"""Image URL validation for the message layer."""
 
 from urllib.parse import urlparse
 
@@ -11,22 +11,7 @@ __all__ = ("validate_image_url",)
 
 
 def validate_image_url(url: str) -> None:
-    """Validate image URL to prevent security vulnerabilities.
-
-    Security checks:
-        - Reject null bytes (path truncation attacks)
-        - Reject file:// URLs (local file access)
-        - Reject javascript: URLs (XSS attacks)
-        - Reject data:// URLs (DoS via large embedded images)
-        - Only allow http:// and https:// schemes
-        - Validate URL format
-        - Reject hosts that resolve to private/link-local/loopback ranges
-          (SSRF — e.g. cloud metadata 169.254.169.254, 127.0.0.1, 192.168.x)
-
-    Raises:
-        ValueError: If URL is invalid, uses a disallowed scheme, or its host
-            resolves to a non-public (SSRF-prone) address.
-    """
+    """Validate image URL; raises ValueError for null bytes, non-http(s) schemes, missing netloc, or SSRF-prone hosts."""
     if not url or not isinstance(url, str):
         raise ValueError(f"Image URL must be non-empty string, got: {type(url).__name__}")
 

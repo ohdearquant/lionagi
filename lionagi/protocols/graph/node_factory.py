@@ -16,30 +16,7 @@ __all__ = (
 
 @dataclass(frozen=True, slots=True)
 class NodeConfig:
-    """Immutable configuration for Node persistence and lifecycle behavior.
-
-    Controls DB schema mapping, content handling, embedding support, and
-    audit trail. Set as ``node_config`` ClassVar on Node subclasses or
-    pass to :func:`create_node`.
-
-    When ``node_config`` is None (the default for base Node), all
-    lifecycle methods are no-ops, preserving backwards compatibility.
-
-    Attributes:
-        table_name: DB table name. None means no persistence.
-        schema: DB schema (default "public").
-        soft_delete: Enable soft_delete()/restore() lifecycle.
-        versioning: Track integer version on each touch().
-        content_hashing: Compute SHA-256 hash of content on touch().
-        track_updated_at: Track last modification timestamp.
-        embedding_enabled: Enable embedding configuration.
-        embedding_dim: Dimensionality of the embedding vector.
-        embedding_model: Name of the embedding model to use.
-        content_type: Expected content type (e.g., dict, str, BaseModel).
-        flatten_content: Store content fields as top-level node fields.
-        track_created_by: Track who created the node (via touch).
-        immutable_content: Prevent content modification after creation.
-    """
+    """Frozen config for Node lifecycle and persistence; see docs/reference/protocols-core.md."""
 
     # Persistence
     table_name: str | None = None
@@ -105,57 +82,7 @@ def create_node(
     extra_fields: dict[str, tuple[type, Any]] | None = None,
     doc: str | None = None,
 ) -> type:
-    """Create a Node subclass with configured lifecycle behavior.
-
-    Factory function for creating Node subclasses with declarative
-    configuration. The returned class has a ``node_config`` ClassVar
-    and any extra fields specified.
-
-    When audit features are enabled (versioning, soft_delete, etc.),
-    real Pydantic fields are generated on the subclass instead of
-    relying on metadata dict storage. This provides type safety and
-    IDE autocompletion.
-
-    Args:
-        name: Class name for the new Node subclass.
-        table_name: DB table name (None = no persistence).
-        schema: DB schema (default "public").
-        soft_delete: Enable soft_delete()/restore() methods.
-            Generates ``is_deleted`` and ``deleted_at`` fields.
-        versioning: Track version number on touch().
-            Generates ``version`` field.
-        content_hashing: Compute content hash on touch().
-            Generates ``content_hash`` field.
-        track_updated_at: Track updated_at timestamp.
-            Generates ``updated_at`` field.
-        embedding_enabled: Enable embedding configuration.
-        embedding_dim: Dimensionality of the embedding vector.
-        embedding_model: Name of the embedding model.
-        content_type: Expected content type.
-        flatten_content: Store content fields as top-level node fields.
-        track_created_by: Track who created the node.
-            Generates ``created_by`` field.
-        immutable_content: Prevent content modification after creation
-            (config flag only, not enforced yet).
-        extra_fields: Additional Pydantic fields as ``{name: (type, default)}``.
-        doc: Docstring for the created class.
-
-    Returns:
-        A new Node subclass with the specified configuration.
-
-    Example::
-
-        Job = create_node(
-            "Job",
-            table_name="jobs",
-            soft_delete=True,
-            versioning=True,
-        )
-        job = Job(content={"title": "Engineer"})
-        job.touch()
-        assert job.version == 1
-        assert job.is_deleted is False
-    """
+    """Return a Node subclass with node_config set and Pydantic fields generated for enabled features."""
     from .node import Node
 
     config = NodeConfig(

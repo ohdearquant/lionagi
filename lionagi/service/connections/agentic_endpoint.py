@@ -10,18 +10,7 @@ __all__ = ("AgenticEndpoint",)
 
 
 class AgenticEndpoint(Endpoint):
-    """Base for agentic endpoints (CLI tools, in-process agent runtimes).
-
-    Agentic endpoints (Claude Code, AG2 GroupChat, Codex, Gemini CLI)
-    differ from HTTP API endpoints:
-    - They may spawn subprocesses or run agent loops in-process.
-    - Concurrency must be low (heavy per-invocation).
-    - They may maintain sessions with resumption.
-    - They manage their own context, tools, and actions.
-    - They stream via NDJSON, events, or in-process callbacks.
-
-    Subclasses must implement ``stream()`` yielding ``StreamChunk`` objects.
-    """
+    """Base for CLI/in-process agentic endpoints; subclasses implement ``stream()`` yielding ``StreamChunk``."""
 
     is_cli: ClassVar[bool] = True
 

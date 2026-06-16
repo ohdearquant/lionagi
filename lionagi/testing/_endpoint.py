@@ -1,28 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""``ScriptedEndpoint`` — a registered provider that serves canned responses.
-
-Activation paths:
-
-In-process (unit tests)::
-
-    iModel(provider="scripted", script="path.yaml", model="any")
-    # or
-    iModel(provider="scripted", script=ScriptModel.from_responses([...]))
-
-Subprocess (CLI tests)::
-
-    LIONAGI_TEST_SCRIPT=path.yaml li agent scripted/scripted-test "hi"
-
-The endpoint registers as ``provider="scripted"`` with endpoint ``chat/completions``
-plus aliases ``chat``, ``query_cli``, and ``cli``. It inherits ``is_cli = True`` from
-``AgenticEndpoint`` so the ``li agent`` flow (which routes through ``branch.run`` →
-``endpoint.stream``) works exactly like real CLI providers. ``branch.chat`` /
-``branch.communicate`` still hit the overridden ``_call`` and receive an OpenAI-shaped
-chat-completion dict so ``AssistantResponse.from_response`` parses it through the same
-code path as real API providers.
-"""
+"""``ScriptedEndpoint`` — registered ``provider="scripted"`` that serves canned responses instead of HTTP."""
 
 from __future__ import annotations
 
@@ -72,17 +51,7 @@ ENV_SCRIPT_PATH = "LIONAGI_TEST_SCRIPT"
     auth_type="bearer",
 )
 class ScriptedEndpoint(AgenticEndpoint):
-    """Endpoint that serves responses from a ``ScriptModel`` instead of HTTP.
-
-    Inherits ``is_cli = True`` from :class:`AgenticEndpoint`, so the CLI
-    invocation path (``branch.run()`` / ``branch.operate()`` for CLI providers)
-    routes through ``stream()`` exactly like real CLI providers. Direct
-    ``branch.chat()`` / ``branch.communicate()`` continue to work via the
-    overridden ``_call()``.
-
-    Recorded calls are accessible via ``endpoint.calls`` — tests inspect these
-    to assert on what the agent actually sent.
-    """
+    """Endpoint that serves responses from a ``ScriptModel`` instead of HTTP (calls via ``endpoint.calls``)."""
 
     # Inherits is_cli=True, DEFAULT_QUEUE_CAPACITY=10, DEFAULT_CONCURRENCY_LIMIT=3
     # from AgenticEndpoint. Overriding here only to make them explicit.
@@ -168,7 +137,7 @@ class ScriptedEndpoint(AgenticEndpoint):
         request: Any,
         extra_headers: dict | None = None,
         **kwargs: Any,
-    ) -> AsyncGenerator[StreamChunk, None]:
+    ) -> AsyncGenerator[StreamChunk]:
         """Yield StreamChunk objects from the script (no HTTP, no SSE parsing)."""
         payload, headers = self.create_payload(request, extra_headers=extra_headers, **kwargs)
         entry, matched_by = self._script.next(payload, len(self.calls))

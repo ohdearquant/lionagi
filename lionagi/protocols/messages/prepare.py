@@ -118,18 +118,7 @@ def prepare_messages_for_chat(
     round_notifications: bool = False,
     scratchpad: dict[str, str] | None = None,
 ) -> list[MessageContent] | list[dict[str, Any]]:
-    """Prepare messages for chat API with intelligent content organization.
-
-    Algorithm:
-    1. Auto-detect system message from first message (if SystemContent)
-    1b. Prepend system_prefix if provided (e.g., LNDL format instructions)
-    2. Collect action messages and embed into following instruction's context
-       - aggregate_actions=True: correlate requests/responses, produce compact summaries
-       - aggregate_actions=False: render each ActionResponse individually (legacy)
-    3. Merge consecutive AssistantResponses
-    4. Embed system into first instruction
-    5. Append new_instruction
-    """
+    """Prepare a message Pile for the chat API: embed system, fold action outputs into context, merge consecutive assistant turns, append new_instruction."""
     # Resolve message sequence — apply progression ordering if provided.
     to_use: Pile[Message] = messages if progression is None else messages[progression]
 

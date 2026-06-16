@@ -9,15 +9,7 @@ from .validate_boolean import validate_boolean
 
 
 def validate_boolean_field(cls, value, default=None) -> bool | None:
-    """Validate boolean field value.
-
-    Args:
-        cls: The validator class method.
-        value: The value to validate as boolean.
-
-    Returns:
-        bool | None: The validated boolean value or None if invalid.
-    """
+    """Coerce value to bool via validate_boolean; return default on failure."""
     try:
         return validate_boolean(value)
     except Exception:
@@ -31,19 +23,7 @@ def validate_same_dtype_flat_list(
     default=None,
     dropna: bool = True,
 ) -> list:
-    """Validate list of same data type.
-
-    Args:
-        cls: The validator class method.
-        value: The value to validate as a list.
-        dtype: The data type to validate.
-
-    Returns:
-        list: The validated list of same data type.
-
-    Raises:
-        ValueError: If value is not a list or contains different data types.
-    """
+    """Flatten value to list and verify all items are dtype; raises ValueError on mixed types."""
     if value in [None, UNDEFINED, {}]:
         return default if default is not None else []
 
@@ -61,15 +41,7 @@ def validate_same_dtype_flat_list(
 
 
 def validate_nullable_string_field(cls, value, field_name: str = None, strict=True) -> str | None:
-    """Validate nullable string field.
-
-    Args:
-        cls: The validator class method.
-        value: The value to validate as a string.
-
-    Returns:
-        str | None: The validated string value or None if invalid.
-    """
+    """Return value if non-empty string; None on blank/None; raises ValueError if strict and not a string."""
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
 
@@ -82,15 +54,7 @@ def validate_nullable_string_field(cls, value, field_name: str = None, strict=Tr
 
 
 def validate_nullable_jsonvalue_field(cls, value) -> JsonValue | None:
-    """Validates that the instruction is not empty or None and is in the correct format.
-
-    Args:
-        cls: The validator class method.
-        value (JsonValue | None): The instruction value to validate.
-
-    Returns:
-        JsonValue | None: The validated instruction or None if invalid.
-    """
+    """Return None on empty/None input; otherwise return value unchanged."""
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     return value
@@ -106,18 +70,7 @@ def validate_dict_kwargs_params(cls, value) -> dict:
 
 
 def validate_callable(cls, value, undefind_able: bool = True, check_name: bool = False) -> callable:
-    """Validate strict callable function.
-
-    Args:
-        cls: The validator class method.
-        value: The value to validate as a callable function.
-
-    Returns:
-        callable: The validated callable function.
-
-    Raises:
-        ValueError: If value is not callable.
-    """
+    """Return value if callable (or None/UNDEFINED when undefind_able=True); raises ValueError otherwise."""
     if not callable(value):
         if undefind_able and value in [None, UNDEFINED]:
             pass

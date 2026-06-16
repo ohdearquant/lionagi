@@ -21,29 +21,7 @@ def dir_to_files(
     verbose: bool = False,
     recursive: bool = False,
 ) -> list[Path]:
-    """
-    Recursively process a directory and return a list of file paths.
-
-    This function walks through the given directory and its subdirectories,
-    collecting file paths that match the specified file types (if any).
-
-    Args:
-        directory (Union[str, Path]): The directory to process.
-        file_types (Optional[List[str]]): List of file extensions to include (e.g., ['.txt', '.pdf']).
-                                          If None, include all file types.
-        max_workers (Optional[int]): Maximum number of worker threads for concurrent processing.
-                                     If None, uses the default ThreadPoolExecutor behavior.
-        ignore_errors (bool): If True, log warnings for errors instead of raising exceptions.
-        verbose (bool): If True, print verbose output.
-        recursive (bool): If True, process directories recursively (the default).
-                          If False, only process files in the top-level directory.
-
-    Returns:
-        List[Path]: A list of Path objects representing the files found.
-
-    Raises:
-        ValueError: If the provided directory doesn't exist or isn't a directory.
-    """
+    """Gather files under directory matching file_types; recursive=True descends subdirs; raises ValueError if path invalid."""
     directory_path = Path(directory)
     if not directory_path.is_dir():
         raise ValueError(f"The provided path is not a valid directory: {directory}")

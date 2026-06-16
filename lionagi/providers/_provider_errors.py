@@ -1,13 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Typed provider error hierarchy for CLI worker failures.
-
-All subclasses remain ``RuntimeError``-compatible so existing
-``except RuntimeError`` handlers in callers continue to work without
-modification.  The ``classify_provider_error`` factory returns the most
-specific subclass that matches the error text.
-"""
+"""Typed provider error hierarchy for CLI worker failures; all subclasses remain RuntimeError-compatible."""
 
 from __future__ import annotations
 
@@ -19,12 +13,7 @@ import re
 
 
 class ProviderError(RuntimeError):
-    """A generic error surfaced by a CLI provider subprocess.
-
-    Attributes:
-        stderr_tail: The last N bytes of the subprocess stderr, if available.
-        raw: The raw error string passed to this exception.
-    """
+    """Generic error surfaced by a CLI provider subprocess."""
 
     def __init__(
         self,
@@ -56,13 +45,7 @@ class ProviderContextError(ProviderError):
 
 
 class EmissionError(RuntimeError):
-    """An agent in a multi-agent pipeline failed to emit expected structured output.
-
-    Attributes:
-        agent: Name or id of the agent whose emission was missing.
-        attempts: Total number of operate calls made (initial + repairs).
-        stage: Optional label identifying which pipeline stage the agent belonged to.
-    """
+    """An agent in a multi-agent pipeline failed to emit expected structured output."""
 
     def __init__(
         self,
@@ -105,23 +88,7 @@ def classify_provider_error(
     *,
     stderr_tail: str = "",
 ) -> ProviderError:
-    """Return the most-specific ``ProviderError`` subclass for *content*.
-
-    The full *content* string and any available *stderr_tail* are searched
-    against the quota, auth, and context-length pattern families in that
-    priority order.  An unmatched error becomes the base ``ProviderError``.
-
-    Args:
-        content: The primary error message string (e.g. the chunk content from
-            a CLI provider's ``turn.failed`` or ``error`` event, or the stderr
-            tail raised by ``ndjson_from_cli``).
-        stderr_tail: Additional stderr text to search alongside *content*.
-
-    Returns:
-        A ``ProviderError`` (or subclass) instance.  All returned instances
-        are also ``RuntimeError`` instances so existing ``except RuntimeError``
-        handlers remain unaffected.
-    """
+    """Return the most-specific ProviderError subclass matching content; falls back to base ProviderError."""
     combined = f"{content}\n{stderr_tail}" if stderr_tail else content
 
     for pat in _QUOTA_PATTERNS:

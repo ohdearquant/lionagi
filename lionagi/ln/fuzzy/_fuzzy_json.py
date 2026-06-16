@@ -16,34 +16,7 @@ def fuzzy_json(
     *,
     max_size: int = MAX_JSON_INPUT_SIZE,
 ) -> dict[str, Any] | list:
-    """Parse JSON string with fuzzy error correction (quotes, spacing, brackets).
-
-    Security Note:
-        Input size is limited to prevent memory exhaustion attacks.
-
-    Limitation:
-        This is designed for "nearly-valid" JSON from LLMs (single quotes, trailing
-        commas, unquoted keys). It is NOT a security boundary for adversarial input.
-
-    Steps:
-    1. Parse directly with orjson.
-    2. State-machine cleaning (safe quote/key/comma fixing).
-    3. Regex-based cleaning fallback.
-    4. Attempt to fix unmatched brackets using fix_json_string.
-    5. If all fail, raise ValueError.
-
-    Args:
-        str_to_parse: The JSON string to parse.
-        max_size: Maximum allowed input size in bytes (default: 10MB).
-
-    Returns:
-        A dict or list. Will NOT return bare primitive types
-        (int, float, str, bool, None).
-
-    Raises:
-        TypeError: If input is not a string or parsed JSON is a primitive type.
-        ValueError: If input is empty, exceeds size limit, or parsing fails.
-    """
+    """Parse nearly-valid LLM JSON (single quotes, trailing commas, unquoted keys) via 4-step fallback pipeline; returns dict or list only."""
     _check_valid_str(str_to_parse, max_size=max_size)
 
     # 1. Direct attempt
@@ -76,16 +49,7 @@ def _check_valid_str(
     *,
     max_size: int = MAX_JSON_INPUT_SIZE,
 ) -> None:
-    """Validate input string for JSON parsing.
-
-    Args:
-        str_to_parse: Input string to validate
-        max_size: Maximum allowed size in bytes
-
-    Raises:
-        TypeError: If input is not a string
-        ValueError: If input is empty or exceeds size limit
-    """
+    """Raise TypeError if not a string, ValueError if empty or exceeds max_size."""
     if not isinstance(str_to_parse, str):
         raise TypeError("Input must be a string")
     if not str_to_parse.strip():
@@ -101,20 +65,7 @@ def _check_valid_str(
 def _validate_return_type(
     result: Any,
 ) -> dict[str, Any] | list:
-    """Validate that parsed JSON is a structured type (dict or list).
-
-    Rejects bare primitives (int, float, str, bool, None) since fuzzy_json
-    is intended for structured data parsing.
-
-    Args:
-        result: The result from JSON decoding.
-
-    Returns:
-        The validated result (dict or list).
-
-    Raises:
-        TypeError: If result is a bare primitive type.
-    """
+    """Return result if dict or list; raise TypeError for bare primitives."""
     if isinstance(result, dict | list):
         return result
 
@@ -122,13 +73,7 @@ def _validate_return_type(
 
 
 def _clean_json_string_safe(s: str) -> str:
-    """State-machine JSON cleaner that preserves string content.
-
-    Fixes common LLM output issues without corrupting quoted content:
-    - Single quotes -> double quotes (with escaping)
-    - Trailing commas before ] or }
-    - Unquoted object keys
-    """
+    """State-machine cleaner that converts single-quoted strings, strips trailing commas, and quotes bare keys."""
     result: list[str] = []
     pos = 0
     length = len(s)

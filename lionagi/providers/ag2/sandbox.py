@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Daytona sandbox integration for AG2 endpoints.
-
-Creates sandboxes with NLIP servers inside, returns URLs that can be
-used as nlip_url in AgentSpec. Each sandbox is an isolated agent
-running AG2NlipApplication.
-"""
+"""Daytona sandbox manager for AG2 NLIP agents: creates isolated sandboxes and returns their URLs."""
 
 from __future__ import annotations
 
@@ -50,10 +45,7 @@ class SandboxAgent:
 
 @dataclass
 class SandboxManager:
-    """Manages Daytona sandboxes for AG2 agents.
-
-    Creates sandboxes on demand, tracks them, and cleans up on exit.
-    """
+    """Creates and tracks Daytona sandboxes for AG2 NLIP agents; cleans up on exit."""
 
     api_key: str | None = None
     target: str = "us"
@@ -83,10 +75,7 @@ class SandboxManager:
         extra_env: dict[str, str] | None = None,
         extra_packages: list[str] | None = None,
     ) -> SandboxAgent:
-        """Create a Daytona sandbox running an NLIP agent server.
-
-        Returns a SandboxAgent with the URL ready for nlip_url.
-        """
+        """Create a Daytona sandbox running an NLIP agent server; returns SandboxAgent with URL."""
         from daytona import CreateSandboxFromImageParams, Image, Resources
 
         daytona = self._get_daytona()
@@ -136,11 +125,7 @@ class SandboxManager:
         *,
         model: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Create sandboxed agent configs from simple specs.
-
-        Input:  [{"name": "Expert", "system_message": "You are..."}]
-        Output: [{"name": "Expert", "nlip_url": "https://sandbox-xxx.daytona.io"}]
-        """
+        """Create sandboxed agent configs from name/system_message specs; returns nlip_url configs."""
         configs = []
         for spec in specs:
             agent = await self.create_agent_sandbox(

@@ -13,11 +13,7 @@ CONTEXT_WINDOWS: dict[str, int] = {
 
 @NvidiaNimConfigs.CHAT.register
 class NvidiaNimChatEndpoint(Endpoint):
-    """NVIDIA NIM chat completion endpoint.
-
-    Get your API key from: https://build.nvidia.com/
-    API Documentation: https://docs.nvidia.com/nim/
-    """
+    """NVIDIA NIM chat completion endpoint."""
 
     def __init__(self, config=None, **kwargs):
         if config is None:

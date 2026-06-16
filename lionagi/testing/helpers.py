@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Reusable async-test helpers, validators, and data builders.
-
-Originally lived at ``tests/utils/helpers.py``; promoted to ``lionagi.testing``
-so downstream projects building on lionagi can use the same patterns without
-copying.
-"""
+"""Reusable async-test helpers, structural validators, and test-data builders for lionagi downstream projects."""
 
 from __future__ import annotations
 
@@ -44,7 +39,7 @@ class AsyncTestHelpers:
 
     @staticmethod
     async def collect_async_results(
-        async_gen: AsyncGenerator[T, None],
+        async_gen: AsyncGenerator[T],
         limit: int = 100,
         timeout: float = 10.0,
     ) -> list[T]:
@@ -228,25 +223,7 @@ class TestDataHelpers:
 
 
 class IModelKwargCaptor:
-    """Captor: replaces ``iModel`` to record constructor kwargs without instantiating.
-
-    The 3+ places that ad-hoc'd ``class FakeIModel`` with ``captures.append(kwargs)``
-    can use this directly. Usage::
-
-        import lionagi.cli._providers as pmod
-        from lionagi.testing import IModelKwargCaptor
-
-        captor = IModelKwargCaptor.fresh()  # resets the captures list
-        monkeypatch.setattr(pmod, "iModel", captor)
-        build_imodel_from_spec("codex/gpt-5.5", fast=True)
-        assert captor.captures[0]["fast_mode"] is True
-
-    The class itself is the captor — ``monkeypatch.setattr(module, "iModel",
-    IModelKwargCaptor)`` works because Python calls the class on each construction,
-    which appends to the class-level ``captures``. Use ``.fresh()`` to get a
-    pristine subclass with its own ``captures`` list so multiple tests don't
-    interfere.
-    """
+    """Drop-in ``iModel`` replacement that records constructor kwargs into ``captor.captures``."""
 
     captures: list[dict[str, Any]] = []
 
@@ -278,17 +255,7 @@ def make_mock_element_class() -> type[MockElement]:
 
 
 class MockClaudeCode:
-    """Mock Claude Code model — a callable returning a dict response.
-
-    Mirrors the duplicated ``MockClaudeCode`` from the flow-pattern tests.
-    Returns different shapes based on the last user message:
-
-    - "generate tasks ..." → ``{"content": ..., "instruct_model": [...]}``
-    - "research ..."       → ``{"content": ..., "findings": [...]}``
-    - otherwise            → ``{"content": "Processed: ..."}``
-
-    Subclass to customize the response logic if a test needs different shapes.
-    """
+    """Mock agentic model returning task/research/default dict shapes based on the last user message."""
 
     def __init__(self, name: str = "mock") -> None:
         self.name = name

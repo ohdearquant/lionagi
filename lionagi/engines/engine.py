@@ -65,11 +65,7 @@ def _event_dict(event: Any) -> dict[str, Any]:
 
 
 def _safe_event_dict(event: Any) -> dict[str, Any]:
-    """Like _event_dict but renames keys that clash with notify(kind, **data).
-
-    The ``kind`` parameter name is reserved by ``EngineRun.notify``; any event
-    field named ``kind`` (e.g. ``EvidenceCollected.kind``) must be renamed to
-    avoid a TypeError when the dict is splatted into the call."""
+    """Like _event_dict but renames a 'kind' key to 'event_kind' to avoid clashing with notify(kind, **data)."""
     d = _event_dict(event)
     if "kind" in d:
         d["event_kind"] = d.pop("kind")
@@ -100,12 +96,7 @@ def _repair_instruction(schema_hint: str) -> str:
 
 
 def _minimal_valid_json(m: type) -> dict:
-    """Build a minimal valid serialised dict for a Pydantic model *m*.
-
-    Fills required fields with type-appropriate placeholder values so the
-    returned dict passes ``m.model_validate()``.  Optional fields retain their
-    defaults.  Used to produce a syntactically-valid JSON example in the CLI
-    repair instruction."""
+    """Build a minimal valid serialized dict for Pydantic model *m*, filling required fields with placeholder values."""
     from pydantic import BaseModel
 
     kwargs: dict = {}
@@ -134,18 +125,7 @@ def _minimal_valid_json(m: type) -> dict:
 
 
 def _cli_repair_instruction(schema_hint: str, emits: tuple[type, ...]) -> str:
-    """Repair instruction for CLI workers (claude_code, codex).
-
-    CLI workers stream free-form output — their failure mode is prose with no
-    fenced JSON block, not a malformed schema.  The repair turn supplies a
-    complete syntactically-valid fenced-JSON example so the worker can copy the
-    structure exactly, since CLI endpoints may not receive the Operable schema
-    the same way API workers do.
-
-    The example object uses single braces and real field values so that a
-    worker who copies it literally produces a block that ``json.loads()``
-    accepts without modification.
-    """
+    """Repair instruction for CLI workers; supplies a complete fenced-JSON example because CLI workers emit prose, not a malformed schema."""
     import json as _json
 
     from lionagi.casts.emission import field_name_for
@@ -173,8 +153,7 @@ def emission_keys(emits: tuple[type, ...]) -> str:
 
 
 class EngineRun:
-    """Per-run context: session, dedup set, in-flight tasks, concurrency limiter,
-    and the hard resource budget (agent count + wall-clock deadline)."""
+    """Per-run context: session, dedup set, in-flight tasks, semaphore, and hard budget (agents + deadline)."""
 
     def __init__(
         self,
@@ -210,9 +189,7 @@ class EngineRun:
         return self.session.observer.flow.items
 
     def by_type(self, event_type: type) -> list[Any]:
-        """Stored payloads matching *event_type* — unwraps Signal envelopes AND
-        capability bundles (an agent's emission arrives as a StructuredOutput
-        whose bundle carries the typed event as a field)."""
+        """Return stored payloads matching *event_type*, unwrapping Signal envelopes and capability bundles."""
         obs = self.session.observer
         flt = TypeFilter(event_type)
         out: list[Any] = []
@@ -224,7 +201,7 @@ class EngineRun:
     # -- resource budget --------------------------------------------------------
 
     def budget_left(self) -> bool:
-        """True while the run may still make agents (count + deadline)."""
+        """True while the run is within agent count and deadline bounds."""
         if self.agents_made >= self.engine.max_agents:
             return False
         return not (self._deadline is not None and monotonic() >= self._deadline)
@@ -316,16 +293,7 @@ class EngineRun:
         emits: tuple[type, ...] = (),
         retries: int = 1,
     ) -> Any:
-        """Operate, then re-prompt up to *retries* times while *arrived*() is
-        false — the repair loop that keeps weak models in the pipeline.
-
-        For API workers the repair turn names the expected emission keys so the
-        model can fix fence/field mistakes.  For CLI workers (claude_code, codex)
-        the failure mode is different — the entire turn arrives as prose with no
-        fenced block — so the repair turn supplies a complete fenced-JSON example
-        instead of just key hints.  CLI workers are detected via
-        ``branch.chat_model.is_cli`` so no string-prefix matching is needed.
-        """
+        """Operate then re-prompt up to *retries* times while *arrived*() is false; CLI workers get a full fenced-JSON example, API workers get key hints."""
         res = await branch.operate(instruction=instruction)
         attempt = 0
         # Determine repair template once: CLI workers need the full example form.
@@ -380,7 +348,7 @@ class EngineRun:
             task.add_done_callback(self._active.discard)
 
     async def cancel_active(self) -> None:
-        """Cancel all in-flight spawned tasks and await completion."""
+        """Cancel and await all in-flight spawned tasks."""
         if not self._active:
             return
         for t in list(self._active):
@@ -390,21 +358,7 @@ class EngineRun:
         self._active.clear()
 
     async def _deadline_watchdog(self) -> None:
-        """Sleep until the run deadline, then cancel all in-flight work.
-
-        Cancels both the task wrapping ``_run()`` (``_run_task``) and any
-        spawned background tasks (``_active``).  Cancelling ``_run_task``
-        first propagates ``CancelledError`` into whatever ``_run`` is
-        awaiting — including sequential ``branch.operate()`` calls inside
-        ``operate_with_repair``, ``_plan``, ``_implement``, ``_fix_loop``,
-        and ``_verify`` — so the deadline bounds the *entire* in-flight
-        pipeline, not just background-spawned tasks.  Spawned tasks in
-        ``_active`` are cleaned up by ``Engine.run()``'s finally block.
-
-        The watchdog is scheduled by ``Engine.run()`` around ``_run()`` and
-        is cancelled when ``_run()`` completes (or raises), so the watchdog
-        never outlives the run.
-        """
+        """Sleep until the deadline, then cancel _run_task (and spawned tasks via Engine.run's finally block)."""
         if self._deadline is None:
             return
         delay = self._deadline - monotonic()
@@ -418,7 +372,7 @@ class EngineRun:
             self._run_task.cancel()
 
     async def wait_quiescence(self) -> None:
-        """Block until no spawned task remains; re-raise accumulated failures."""
+        """Block until all spawned tasks settle; re-raise any non-cancellation failures."""
         task_errors: list[BaseException] = []
         while self._active:
             results = await gather(*list(self._active), return_exceptions=True)
@@ -443,7 +397,7 @@ class EngineRun:
         *,
         carry_instruction: bool = False,
     ) -> str:
-        """Run agents in sequence, each building on the prior output."""
+        """Run agents sequentially, each building on the prior agent's output."""
         last = ""
         for i, branch in enumerate(team):
             if i == 0:
@@ -477,7 +431,7 @@ class EngineRun:
         max_concurrent: int = 5,
         verbose: bool = False,
     ) -> dict[str, Any]:
-        """Execute a prebuilt operation DAG on the run's session."""
+        """Execute a prebuilt operation DAG on the run's session and return operation results."""
         emits: list[asyncio.Future] = []
 
         def _on_progress(op_id: str, name: str, status: str, elapsed: float) -> None:
@@ -514,24 +468,7 @@ class EngineRun:
 
 
 class ChainRun(EngineRun):
-    """Intermediate base for chain-style run contexts (CodingRun, HypothesisRun).
-
-    Encapsulates the three pieces of state and four methods that are
-    byte-identical across both engines:
-
-    - ``store`` / ``_eid_counts`` / ``_index`` — the typed event registry.
-    - :meth:`collect` — stamp an eid, store, and fan to ``on_event``.
-    - :meth:`emit` — bus-emit, skipping the duplicate notify for chain events.
-    - :meth:`find` — eid → event lookup.
-    - :meth:`events_of` — typed slice of the store.
-
-    Subclasses MUST set ``_chain_event_cls`` to the sentinel base class whose
-    ``isinstance`` check guards the ``emit`` override (``CodingChainEvent`` for
-    ``CodingRun``, ``ChainEvent`` for ``HypothesisRun``).  They also supply the
-    ``_EVENT_PREFIX`` mapping via ``_event_prefix_map`` — a class attribute
-    pointing to the module-level dict — so ``store`` is initialised with the
-    right keys.
-    """
+    """Shared base for chain-style runs: typed event store, eid stamping, and collect/emit/find helpers."""
 
     #: Set by each subclass: the chain-event base class for this pipeline.
     _chain_event_cls: type = object
@@ -545,13 +482,7 @@ class ChainRun(EngineRun):
         self._index: dict[str, Any] = {}
 
     def collect(self, event: Any) -> Any:
-        """Stamp the engine-assigned eid, store the event, and fan to on_event.
-
-        Every chain event — whether it arrives via run.emit() or directly from
-        an agent on the session bus — is stamped here.  Notifying here is the
-        only path that reaches all agent-emitted kinds.  emit() is overridden
-        below to skip its own notify call for chain events so there is no
-        double-delivery for events that also pass through run.emit()."""
+        """Stamp the engine-assigned eid, store the event, and notify on_event; the single notification path for all chain events."""
         prefix = self._event_prefix_map.get(type(event), "N")
         n = self._eid_counts.get(prefix, 0) + 1
         self._eid_counts[prefix] = n
@@ -562,11 +493,7 @@ class ChainRun(EngineRun):
         return event
 
     async def emit(self, event: Any) -> list[Any]:
-        """Emit onto the session bus; skip the base notify for chain events.
-
-        Chain-event instances are already notified by collect() (triggered by
-        the observer registered in _run).  The base EngineRun.emit() would call
-        notify() a second time — this override suppresses that duplicate."""
+        """Emit onto the session bus; suppresses base notify for chain events to avoid double-delivery."""
         results = await self.session.emit(event)
         if not isinstance(event, self._chain_event_cls):
             self.notify(type(event).__name__, **_event_dict(event))
@@ -580,36 +507,7 @@ class ChainRun(EngineRun):
 
 
 class Engine:
-    """Stateless event-driven engine base; subclasses implement _run().
-
-    Resource protection (per run):
-
-    max_agents
-        Hard cap on agents created — the primary recursion bound. When
-        exhausted, reactions stop spawning (graceful: the run still
-        synthesizes what it has) and ``make_agent`` raises
-        :class:`EngineBudgetError`.
-    deadline_s
-        Optional wall-clock cap; expansion stops once passed.
-    max_depth / dedup
-        Semantic bounds — engines also gate on depth/cycle generation and
-        normalized-topic dedup.
-
-    Quality / direction control:
-
-    judge_model + judge_role
-        When ``judge_model`` is set, :meth:`judge` runs a cheap gate agent at
-        expansion points: it sees the run's root objective and the candidate
-        item, and passes or rejects it (off-topic, duplicative, trivial,
-        unsafe). Fail-open with a ``judge_error`` notify — the hard budget
-        remains the backstop.
-    models
-        Per-stage model overrides (``{"extract": "ollama/qwen3", "conclude":
-        "claude_code/sonnet"}``) — route cheap models to volume stages and
-        capable ones to judgement stages. Any agent process lionagi supports
-        is a valid worker: API chat models, CLI agents (``claude_code/...``,
-        ``codex/...``, ``pi/...``), or local ones.
-    """
+    """Stateless event-driven engine base; subclasses implement ``_run()``. See docs/reference/engines.md for parameter details."""
 
     run_context_cls: type[EngineRun] = EngineRun
 
@@ -638,13 +536,7 @@ class Engine:
         return self.models.get(stage) or self.model
 
     async def judge(self, run: EngineRun, eid: str, subject: str) -> bool:
-        """Quality gate before an expansion point. True = expand.
-
-        No-op (True) when ``judge_model`` is unset. The judge sees the run's
-        root objective (direction control) and emits a ``JudgeVerdict``; a
-        weak judge that cannot emit may answer PASS/REJECT in text. Errors
-        fail open with a ``judge_error`` notify — budget still bounds.
-        """
+        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Errors fail open."""
         if not self.judge_model:
             return True
         try:
@@ -686,19 +578,7 @@ class Engine:
         on_event: EventCallback | None = None,
         **kwargs: Any,
     ) -> Any:
-        """Execute the engine pipeline, returning its result.
-
-        When the engine's own deadline/budget watchdog cancels the run,
-        ``Engine.run()`` treats the cancellation as a normal terminal state:
-        it calls ``_partial_export`` (under ``asyncio.shield``) to synthesize
-        whatever was collected, then returns that result rather than raising.
-        Base ``Engine._partial_export`` returns ``None``; subclasses that
-        maintain event stores (e.g. ``HypothesisEngine``) return a report
-        string and write export files.
-
-        Caller-initiated cancellation (external) still propagates as
-        ``CancelledError`` — asyncio structured-concurrency rules are upheld.
-        """
+        """Execute the engine pipeline; on internal budget cancellation calls _partial_export instead of raising. External cancellation propagates as CancelledError."""
         run = self.new_run(session=session, on_event=on_event)
         # Reset per-run diagnostics on the engine instance so a reused engine
         # never carries emission failures from a previous run into the next one.
@@ -812,18 +692,7 @@ class Engine:
             return partial_result
 
     async def _partial_export(self, run: EngineRun, *args: Any, **kwargs: Any) -> Any:
-        """Called when the engine's own deadline/budget watchdog cancels the run.
-
-        Subclasses that can produce a meaningful partial result (synthesis over
-        whatever events were collected before the deadline) override this method.
-        The default returns None — callers that need a report should use an
-        engine subclass that overrides this hook.
-
-        This coroutine always runs outside the cancelled scope (under
-        asyncio.shield in Engine.run), so awaiting is safe.  Keep it bounded:
-        if synthesis requires a live LLM call, give it a hard deadline so a
-        hung call cannot extend the run indefinitely.
-        """
+        """Called under asyncio.shield after budget cancellation; override in subclasses to return a partial result. Default returns None."""
         return None
 
     async def _run(self, run: EngineRun, *args: Any, **kwargs: Any) -> Any:

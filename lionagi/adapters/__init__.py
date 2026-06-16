@@ -1,22 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-lionagi.adapters — inlined adapter stack (no pydapter runtime dependency).
-
-Core protocols and registries:
-  Adaptable, AsyncAdaptable, Adapter, AsyncAdapter
-  AdapterRegistry, AsyncAdapterRegistry
-
-Built-in adapters:
-  JsonAdapter   — JSON files, strings, bytes
-  CsvAdapter    — CSV files, strings
-  TomlAdapter   — TOML files, strings
-  DataFrameAdapter — pandas DataFrames (optional; requires pandas)
-
-Spec adapters (separate sub-package):
-  lionagi.adapters.spec_adapters
-"""
+"""Inlined adapter stack: protocols, registries, and built-in JSON/CSV/TOML/DataFrame adapters."""
 
 from ._base import (
     Adaptable,

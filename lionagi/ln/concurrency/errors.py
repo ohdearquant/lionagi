@@ -33,14 +33,7 @@ _CANCELLED_EXC_CLASS: tuple[type[BaseException], ...] | None = None
 
 
 def cache_cancelled_exc_class() -> None:
-    """Cache the backend cancellation exception class for safe out-of-loop use.
-
-    Must be called from inside a running event loop (e.g. at the top of an
-    async entry point).  Subsequent calls to :func:`cancelled_exc_classes`
-    will return the cached tuple even after the loop has exited.
-
-    Safe to call multiple times; subsequent calls are no-ops.
-    """
+    """Cache backend cancellation exception class; call once inside a running loop; subsequent calls are no-ops."""
     global _CANCELLED_EXC_CLASS
     if _CANCELLED_EXC_CLASS is not None:
         return
@@ -56,16 +49,7 @@ def cache_cancelled_exc_class() -> None:
 
 
 def cancelled_exc_classes() -> tuple[type[BaseException], ...]:
-    """Return cached cancellation exception types, safe to call after loop exit.
-
-    Returns the tuple populated by :func:`cache_cancelled_exc_class`.  If the
-    cache was never populated (e.g. the function was not called inside a loop),
-    falls back to ``(asyncio.CancelledError,)`` so callers never raise
-    ``NoEventLoopError``.
-
-    Returns:
-        Tuple of exception types that represent cancellation.
-    """
+    """Cached cancellation exception types; falls back to asyncio.CancelledError if never primed."""
     if _CANCELLED_EXC_CLASS is not None:
         return _CANCELLED_EXC_CLASS
     # Graceful degradation: no cache yet → use asyncio baseline.
@@ -73,41 +57,17 @@ def cancelled_exc_classes() -> tuple[type[BaseException], ...]:
 
 
 def get_cancelled_exc_class() -> type[BaseException]:
-    """Return backend-specific cancellation exception type.
-
-    Returns:
-        asyncio.CancelledError for asyncio, trio.Cancelled for trio.
-    """
+    """Backend-specific cancellation exception type (asyncio.CancelledError or trio.Cancelled)."""
     return anyio.get_cancelled_exc_class()
 
 
 def is_cancelled(exc: BaseException) -> bool:
-    """Check if exception is a backend cancellation.
-
-    Args:
-        exc: Exception to check.
-
-    Returns:
-        True if exc is the backend's cancellation exception type.
-    """
+    """True if exc is the backend's cancellation exception type."""
     return isinstance(exc, cancelled_exc_classes())
 
 
 async def shield(func: Callable[P, Awaitable[T]], *args: P.args, **kwargs: P.kwargs) -> T:
-    """Execute async function protected from outer cancellation.
-
-    Args:
-        func: Async callable to shield.
-        *args: Positional arguments for func.
-        **kwargs: Keyword arguments for func.
-
-    Returns:
-        Result of func(*args, **kwargs).
-
-    Note:
-        Use sparingly. Shielded code cannot be cancelled, which may
-        delay shutdown. Prefer short critical sections only.
-    """
+    """Run func inside a shielded cancel scope; use only for short critical sections."""
     with anyio.CancelScope(shield=True):
         result = await func(*args, **kwargs)
     return result  # type: ignore[return-value]
@@ -116,26 +76,11 @@ async def shield(func: Callable[P, Awaitable[T]], *args: P.args, **kwargs: P.kwa
 def split_cancellation(
     eg: BaseExceptionGroup,
 ) -> tuple[BaseExceptionGroup | None, BaseExceptionGroup | None]:
-    """Partition ExceptionGroup into cancellations and other errors.
-
-    Args:
-        eg: ExceptionGroup to split.
-
-    Returns:
-        Tuple of (cancellation_group, other_errors_group).
-        Either may be None if no matching exceptions.
-    """
+    """Split ExceptionGroup into (cancellation_group, other_errors_group); either may be None."""
     return eg.split(anyio.get_cancelled_exc_class())
 
 
 def non_cancel_subgroup(eg: BaseExceptionGroup) -> BaseExceptionGroup | None:
-    """Extract non-cancellation exceptions from ExceptionGroup.
-
-    Args:
-        eg: ExceptionGroup to filter.
-
-    Returns:
-        ExceptionGroup of non-cancellation errors, or None if all were cancellations.
-    """
+    """Non-cancellation sub-group of eg; None if all exceptions were cancellations."""
     _, rest = eg.split(anyio.get_cancelled_exc_class())
     return rest

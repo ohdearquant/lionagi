@@ -16,19 +16,14 @@ from .message import Message, MessageContent, MessageRole
 
 @dataclass(slots=True)
 class SystemContent(MessageContent):
-    """Content for system messages.
-
-    Fields:
-        system_message: Main system instruction text
-        system_datetime: Optional datetime string
-    """
+    """Content for system messages with optional datetime prefix."""
 
     system_message: str = "You are a helpful AI assistant. Let's think step by step."
     system_datetime: str | None = None
 
     @property
     def rendered(self) -> str:
-        """Render system message with optional datetime."""
+        """Render system message, prepending datetime if set."""
         parts = []
         if self.system_datetime:
             parts.append(f"System Time: {self.system_datetime}")
@@ -37,7 +32,7 @@ class SystemContent(MessageContent):
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SystemContent:
-        """Construct SystemContent from dictionary."""
+        """Construct SystemContent from a dict; system_datetime=True generates current UTC time."""
         system_message = data.get(
             "system_message",
             cls.__dataclass_fields__["system_message"].default,

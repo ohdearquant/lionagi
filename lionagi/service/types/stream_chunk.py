@@ -19,11 +19,7 @@ ChunkType = Literal[
 
 @dataclass(slots=True)
 class StreamChunk:
-    """Provider-agnostic streaming chunk.
-
-    Endpoints convert provider-specific formats (ClaudeChunk, etc.)
-    into StreamChunk. Operations consume StreamChunk to build Messages.
-    """
+    """Provider-agnostic streaming chunk; endpoints normalize to this, operations build Messages from it."""
 
     type: ChunkType
     content: str | None = None

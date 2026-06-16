@@ -1,13 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Status reason code namespace (ADR-0028).
-
-Every status transition on a Studio entity carries a structured reason:
-a code (machine-readable, stable), a summary (human-readable, mutable),
-and optional evidence references (typed pointers to related entities).
-
-This module is the single source of truth for the controlled vocabulary.
-"""
+"""ADR-0028: controlled vocabulary for status reason codes on Studio entities."""
 
 from __future__ import annotations
 
@@ -83,12 +76,7 @@ class RunReasons:
 
 
 class SessionReasons:
-    """Health-derived reasons that may be written by admin transitions.
-
-    Per ADR-0024, the doctor classifier surfaces phantom sessions but
-    does NOT auto-transition. The operator initiates the transition;
-    these codes record *why* the operator chose to transition.
-    """
+    """Health-derived reason codes written by operator-initiated transitions (ADR-0024)."""
 
     HEALTH_STALE_NO_HEARTBEAT = "session.stale.no_heartbeat"
     HEALTH_ORPHANED_NO_PROCESS = "session.orphaned.no_process"
@@ -129,12 +117,7 @@ class ScheduleReasons:
 
 
 def _collect(*classes: type) -> frozenset[str]:
-    """Pull str-valued public class attributes off each reason class.
-
-    Filters out dunders, descriptors, and any non-string values so the
-    resulting frozenset is exactly the controlled vocabulary, not
-    whatever Python happens to put in ``__dict__``.
-    """
+    """Collect str-valued public attributes from reason classes into the controlled vocabulary."""
     out: set[str] = set()
     for cls in classes:
         for name, value in vars(cls).items():
@@ -158,11 +141,7 @@ VALID_REASON_CODES: Final[frozenset[str]] = _collect(
 
 
 def validate_reason_code(code: str) -> str:
-    """Return ``code`` if it is a registered reason code, else raise.
-
-    Raises:
-        ValueError: code not in :data:`VALID_REASON_CODES`.
-    """
+    """Return code if registered in VALID_REASON_CODES; raises ValueError otherwise."""
     if code not in VALID_REASON_CODES:
         raise ValueError(
             f"invalid reason_code: {code!r}. Must be one of "
@@ -173,16 +152,7 @@ def validate_reason_code(code: str) -> str:
 
 
 def validate_entity_type(entity_type: str) -> str:
-    """Return canonical entity_type (resolves aliases) or raise.
-
-    Accepts:
-      - canonical names (`session`, `show`, ...)
-      - frontend route aliases (`run` → `session`)
-      - plural table names (`sessions` → `session`)
-
-    Raises:
-        ValueError: entity_type not recognized.
-    """
+    """Return the canonical entity_type (resolving route and table aliases); raises ValueError if unknown."""
     if entity_type in VALID_ENTITY_TYPES:
         return entity_type
     if entity_type in ENTITY_ROUTE_ALIASES:
@@ -210,9 +180,6 @@ ENTITY_TYPE_TO_TABLE: Final[dict[str, str]] = {
 
 
 def entity_table(entity_type: str) -> str:
-    """Resolve a canonical entity_type to its SQLite table name.
-
-    Pre-validates via :func:`validate_entity_type` so aliases also work.
-    """
+    """Resolve entity_type (including aliases) to its SQLite table name."""
     canonical = validate_entity_type(entity_type)
     return ENTITY_TYPE_TO_TABLE[canonical]

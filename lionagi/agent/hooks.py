@@ -1,16 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Built-in hook implementations for coding agents.
-
-Usage::
-
-    from lionagi.agent.hooks import guard_destructive, log_tool_use
-
-    spec = AgentSpec.coding()
-    spec.pre("bash", guard_destructive)
-    spec.post("*", log_tool_use)
-"""
+"""Built-in pre/post hooks for coding agent security and observability."""
 
 from __future__ import annotations
 
@@ -58,13 +49,7 @@ def guard_paths(
     allowed_paths: list[str] | None = None,
     denied_paths: list[str] | None = None,
 ):
-    """Factory: create a pre-hook that restricts file access by path.
-
-    Usage::
-
-        config.pre("reader", guard_paths(allowed_paths=["/Users/me/project/"]))
-        config.pre("editor", guard_paths(denied_paths=[".env", "credentials"]))
-    """
+    """Factory: return a pre-hook that enforces allowed/denied path constraints."""
 
     allowed_roots = [Path(p).expanduser().resolve(strict=False) for p in (allowed_paths or [])]
 

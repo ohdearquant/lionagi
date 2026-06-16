@@ -58,37 +58,7 @@ def to_list(
     use_values: bool = False,
     flatten_tuple_set: bool = False,
 ) -> list:
-    """Convert input to list with optional transformations.
-
-    Type handling:
-        - None/Undefined/Unset: returns []
-        - list: returned as-is (not copied)
-        - Enum class: list of members (or values if use_values=True)
-        - str/bytes/bytearray: wrapped as [input_] unless use_values=True
-        - Mapping: wrapped as [input_] unless use_values=True (extracts values)
-        - BaseModel/Struct: wrapped as [input_]
-        - Other iterables: converted via list()
-        - Non-iterables: wrapped as [input_]
-
-    Args:
-        input_: Value to convert.
-        flatten: Recursively flatten nested iterables.
-        dropna: Remove None and sentinel values (Undefined, Unset).
-        unique: Remove duplicates. Requires flatten=True.
-        use_values: Extract values from Enum classes and Mappings.
-        flatten_tuple_set: When flatten=True, also flatten tuples/sets/frozensets.
-
-    Returns:
-        Processed list.
-
-    Raises:
-        ValueError: unique=True without flatten=True, or unhashable non-mapping item.
-
-    Edge Cases:
-        - Nested lists: preserved unless flatten=True
-        - Unhashable items with unique=True: falls back to hash_dict for mappings
-        - Empty input: returns []
-    """
+    """Convert any input to a list with optional flatten/dropna/unique/use_values transforms; raises ValueError if unique without flatten."""
     _lazy.ensure(_do_init)
 
     def _process_list(

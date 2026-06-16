@@ -28,17 +28,7 @@ class AG2NlipRequest(BaseModel):
 
 
 def _assert_nlip_url_safe(url: str) -> None:
-    """Validate *url* for scheme and SSRF safety before any NLIP connection.
-
-    Shared by :func:`call_nlip_remote` and :func:`build_group_chat` so that
-    every code path that hands a caller-supplied URL to a remote NLIP agent
-    goes through the same guard.
-
-    Raises:
-        PermissionError: If the hostname resolves to a private or reserved IP
-            address (SSRF guard).
-        ValueError: If the URL scheme is not http or https.
-    """
+    """Validate URL scheme (http/https) and SSRF safety; raises PermissionError or ValueError on rejection."""
     _parsed = urlparse(url)
     if _parsed.scheme not in ("http", "https"):
         raise ValueError(
@@ -58,15 +48,7 @@ async def call_nlip_remote(
     timeout: float = 60.0,
     max_retries: int = 3,
 ) -> dict[str, Any]:
-    """Call a remote NLIP endpoint using AG2's NlipRemoteAgent.
-
-    Falls back to direct httpx if nlip_sdk is not installed.
-
-    Raises:
-        PermissionError: If the hostname resolves to a private or reserved IP
-            address (SSRF guard).
-        ValueError: If the URL scheme is not http/https.
-    """
+    """Call a remote NLIP endpoint; applies SSRF guard then falls back to direct httpx if nlip_sdk is absent."""
     # SSRF guard: reject calls to private/reserved IP ranges.
     _assert_nlip_url_safe(url)
     try:
@@ -141,10 +123,7 @@ async def _call_direct(
     timeout: float,
     max_retries: int,
 ) -> dict[str, Any]:
-    """Direct HTTP fallback when nlip_sdk is not installed.
-
-    Sends the last message as plain text to the NLIP endpoint.
-    """
+    """Direct httpx fallback (no nlip_sdk): POSTs the last message as plain text."""
     import httpx
 
     last_content = ""

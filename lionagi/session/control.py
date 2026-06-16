@@ -22,11 +22,7 @@ class LoopControl:
 
 
 class LoopBreak(Exception):  # noqa: N818
-    """Raised inside the run loop when an observer requests a hard stop.
-
-    The exception propagates out of ``run()`` so that ``Branch.operate``
-    can surface it as a ``RunFailed`` event.
-    """
+    """Raised by an observer requesting a hard stop; propagates out of run() as RunFailed."""
 
     def __init__(self, reason: str | None = None) -> None:
         super().__init__(reason or "loop broken by observer")
@@ -35,13 +31,7 @@ class LoopBreak(Exception):  # noqa: N818
 
 @dataclass(frozen=True, slots=True)
 class ToolInvocation:
-    """A proposed tool call presented to the pre-invoke governance gate.
-
-    The session gate (``session.gate(check)``) receives this *before* the tool
-    runs (ADR-0076 Follow-up 1); a falsy or raised verdict blocks execution and
-    the denial is surfaced to the model as a tool-result, not raised. ``branch_id``
-    lets a gate scope policy per branch/agent.
-    """
+    """Proposed tool call passed to the pre-invoke gate; falsy/raised verdict blocks execution."""
 
     function: str
     arguments: dict = field(default_factory=dict)

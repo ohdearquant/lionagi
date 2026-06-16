@@ -51,17 +51,7 @@ class MessengerRequest(BaseModel):
 
 
 class LionMessenger(LionTool):
-    """Exchange-bound messaging tool.
-
-    Bind to an Exchange, then call ``bind(branch_id, roster)`` to produce
-    a branch-scoped Tool that knows its sender identity and valid recipients.
-
-    Usage::
-
-        messenger = LionMessenger(exchange=session.exchange)
-        tool = messenger.bind(branch.id, {"alice": alice_id, "bob": bob_id})
-        branch.register_tools(tool)
-    """
+    """Exchange-bound messaging tool; call bind(branch, roster) to produce a branch-scoped Tool."""
 
     is_lion_system_tool = True
     system_tool_name = "messenger"
@@ -87,17 +77,7 @@ class LionMessenger(LionTool):
         sender_name: str | None = None,
         channel: str = "team",
     ) -> Tool:
-        """Create a branch-scoped Tool bound to a specific sender.
-
-        Args:
-            branch: The Branch that will own this tool.
-            roster: Mapping of teammate names to their branch UUIDs.
-            sender_name: Display name of the sender (for callbacks).
-            channel: Exchange channel name for messages.
-
-        Returns:
-            A Tool instance ready for ``branch.register_tools()``.
-        """
+        """Return a Tool scoped to branch as sender with roster as valid recipients."""
         from lionagi.protocols.messages import Message
 
         exchange = self.exchange

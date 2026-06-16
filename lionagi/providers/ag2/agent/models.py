@@ -130,19 +130,8 @@ async def run_beta_agent(
     llm_config: Any,
     tool_registry: dict[str, Callable] | None = None,
     agent: Any | None = None,
-) -> AsyncGenerator[dict[str, Any], None]:
-    """Run an AG2 beta Agent and yield events from its stream.
-
-    Subscribes to the MemoryStream to yield intermediate events
-    (tool calls, model chunks) as they arrive, then yields the
-    final response with optional typed result from response_schema.
-
-    If ``agent`` is provided it is used directly and ``config`` is ignored
-    (no Agent construction happens).  When both are supplied, ``agent``
-    wins and a log message is emitted noting that ``config`` was skipped.
-    When neither is supplied, ``config`` must be non-None and is used to
-    construct a fresh Agent on every call (original behavior).
-    """
+) -> AsyncGenerator[dict[str, Any]]:
+    """Run an AG2 beta Agent and yield tool/response events; pre-built agent takes precedence over config."""
     tool_registry = tool_registry or {}
 
     if agent is not None:
@@ -281,11 +270,7 @@ async def run_beta_agent(
         stream.unsubscribe(sub_results)
         if not task.done():
             task.cancel()
-            # Await the cancellation so we don't return with a dangling
-            # background task — leaks the event loop close just like the
-            # rate-limit replenisher did pre-R4. Suppress both the
-            # intentional CancelledError and any error from ``agent.ask``
-            # that the consumer no longer wants to see.
+            # Suppress CancelledError and any agent.ask error during teardown.
             try:
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001 — intentional teardown reap

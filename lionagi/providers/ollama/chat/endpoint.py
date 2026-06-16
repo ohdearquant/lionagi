@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Ollama endpoint configuration.
-
-Ollama provides local model hosting with both native and OpenAI-compatible APIs.
-This module configures the OpenAI-compatible endpoint for consistency.
-"""
+"""Ollama chat endpoint using the OpenAI-compatible API."""
 
 import logging
 
@@ -27,9 +22,7 @@ _HAS_OLLAMA = is_import_installed("ollama")
 
 @OllamaConfigs.CHAT.register
 class OllamaChatEndpoint(Endpoint):
-    """
-    Documentation: https://platform.openai.com/docs/api-reference/chat/create
-    """
+    """Ollama chat completion endpoint (OpenAI-compatible); pulls missing models automatically."""
 
     def __init__(self, config=None, **kwargs):
         if not _HAS_OLLAMA:
@@ -56,7 +49,6 @@ class OllamaChatEndpoint(Endpoint):
         extra_headers: dict | None = None,
         **kwargs,
     ):
-        """Override to handle Ollama-specific needs."""
         payload, headers = super().create_payload(request, extra_headers, **kwargs)
 
         # Ollama doesn't support reasoning_effort
@@ -67,13 +59,11 @@ class OllamaChatEndpoint(Endpoint):
     async def call(self, request: dict | BaseModel, cache_control: bool = False, **kwargs):
         payload, headers = self.create_payload(request, **kwargs)
 
-        # Check if model exists and pull if needed (off the event loop to avoid
-        # blocking: both _list() and _pull() are synchronous Ollama SDK calls).
         model = payload.get("model")
         if model:
             await run_sync(self._check_model, model)
 
-        # Pass the already-created payload directly to avoid double create_payload
+        # Skip payload creation — already done above.
         return await super().call(
             payload,
             cache_control=cache_control,

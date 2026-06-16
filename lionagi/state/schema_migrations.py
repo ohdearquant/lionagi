@@ -1,14 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Migration column definitions for StateDB._reconcile_columns.
-
-Each entry is ``(column_name, sqlite_column_def)`` where ``column_def``
-is valid in ``ALTER TABLE … ADD COLUMN``.  SQLite only allows CHECK
-constraints inline if they reference only the new column; we skip CHECKs
-in ALTER and rely on the Python validators in db.py to enforce them on
-old databases.
-"""
+"""ALTER TABLE column definitions consumed by StateDB._reconcile_columns for schema migrations."""
 
 from __future__ import annotations
 

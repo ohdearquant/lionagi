@@ -1,14 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""SSRF guard for outbound HTTP requests (CWE-918).
-
-All outbound requests with caller-controlled hostnames MUST call
-``is_ssrf_safe()`` first. When ``allow_local=True``, only canonical
-loopback literals (localhost, 127.0.0.1, ::1) are accepted -- alternate
-encodings and DNS-rebinding are blocked by gating on the raw hostname
-string before resolution.
-"""
+"""SSRF guard (CWE-918): validate caller-controlled hostnames before outbound HTTP."""
 
 from __future__ import annotations
 
@@ -64,12 +57,7 @@ def _unmap_ip(
 
 
 def is_ssrf_safe(hostname: str, *, allow_local: bool = False) -> bool:
-    """Return True if *hostname* is safe for outbound HTTP.
-
-    Pass the hostname only (not a full URL). Resolves via getaddrinfo and
-    rejects private/reserved ranges. With allow_local=True, only canonical
-    loopback literals are accepted.
-    """
+    """True if hostname (not a full URL) is safe for outbound HTTP; resolves and rejects private/reserved ranges."""
     if not hostname:
         return False
 

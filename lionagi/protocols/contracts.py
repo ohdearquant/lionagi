@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""V1 Observable Protocol for gradual evolution.
-
-This module provides the runtime-checkable ObservableProto for V1 components
-while maintaining compatibility with V0's nominal Observable ABC.
-"""
+"""Runtime-checkable ObservableProto for V1; alias Observable; retains legacy nominal ABC."""
 
 from __future__ import annotations
 
@@ -24,20 +20,11 @@ __all__ = (
 
 @runtime_checkable
 class ObservableProto(Protocol):
-    """Structural Observable Protocol for V1 components.
-
-    This protocol defines the minimal contract for observable objects:
-    they must have an 'id' property. The return type is permissive (Any)
-    to maintain compatibility with V0's UUID wrapper while enabling
-    V1 evolution.
-
-    All V0 Element subclasses automatically satisfy this protocol without
-    any code changes, enabling zero-risk gradual migration.
-    """
+    """Structural protocol: any object with an `id` property is Observable."""
 
     @property
     def id(self) -> object:
-        """Unique identifier. Accepts UUID, UUID, or string."""
+        """Unique identifier."""
         ...
 
 

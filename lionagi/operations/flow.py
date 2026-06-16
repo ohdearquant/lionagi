@@ -98,10 +98,7 @@ class DependencyAwareExecutor:
         if not self.graph.is_acyclic():
             raise ValueError("Graph must be acyclic for flow execution")
 
-        # Validate edge conditions before execution
         self._validate_edge_conditions()
-
-        # Pre-allocate ALL branches upfront to avoid any locking during execution
         await self._preallocate_all_branches()
 
         capacity = self.max_concurrent if self.max_concurrent is not None else UNLIMITED_CONCURRENCY
@@ -163,7 +160,6 @@ class DependencyAwareExecutor:
                 try:
                     if hasattr(branch_clone, "id"):
                         branch_id = branch_clone.id
-                        # Only add to collections if it's a valid ID
                         if isinstance(branch_id, str | UUID) or (
                             hasattr(branch_id, "__str__") and not hasattr(branch_id, "_mock_name")
                         ):
@@ -192,7 +188,6 @@ class DependencyAwareExecutor:
                 )
             if operation.id not in self.results and operation.response is not None:
                 self.results[operation.id] = operation.response
-            # Signal completion for any waiting operations
             self.completion_events[operation.id].set()
             return
 
@@ -246,9 +241,7 @@ class DependencyAwareExecutor:
                 if operation.execution.status == EventStatus.COMPLETED:
                     self.results[operation.id] = operation.response
 
-                    # Merge any context emitted by the operation into the
-                    # flow-level Note workspace using deep merge to preserve
-                    # nested keys rather than overwriting them wholesale.
+                    # Deep-merge operation context into flow workspace to preserve nested keys.
                     if isinstance(operation.response, dict) and "context" in operation.response:
                         from lionagi.libs.nested import deep_update
 
@@ -272,14 +265,11 @@ class DependencyAwareExecutor:
                         )
 
         except (get_cancelled_exc_class(), KeyboardInterrupt, SystemExit):
-            # Event.invoke() already set CANCELLED status — just propagate
             self.completion_events[operation.id].set()
             raise
 
         except Exception as e:
-            # invoke() is total (failures are captured as FAILED status and
-            # handled above); this is a defensive net for an unexpected
-            # flow-level error around the operation, not the operation itself.
+            # Defensive net for unexpected flow-level errors; invoke() already handles FAILED status.
             if operation.id not in self.results:
                 self.results[operation.id] = {"error": str(e)}
 
@@ -287,57 +277,41 @@ class DependencyAwareExecutor:
                 logger.error("Operation %s failed: %s", str(operation.id)[:8], e)
 
         finally:
-            # Signal completion regardless of success/failure/skip
             self.completion_events[operation.id].set()
 
     async def _check_edge_conditions(self, operation: Operation) -> bool:
-        """
-        Check if operation should execute based on edge conditions.
-
-        Returns True if at least one valid path exists to this operation,
-        or if there are no incoming edges (head nodes).
-        Returns False if all incoming edges have failed conditions.
-        """
-        # Get all incoming edges
+        """Return True if at least one valid incoming path exists or no edges; False if all incoming edges failed."""
         incoming_edges = [
             edge for edge in self.graph.internal_edges.values() if edge.tail == operation.id
         ]
 
-        # If no incoming edges, this is a head node - always execute
         if not incoming_edges:
             return True
 
-        # Check each incoming edge
         has_valid_path = False
 
         for edge in incoming_edges:
-            # Wait for the head operation to complete first
             if edge.head in self.completion_events:
                 await self.completion_events[edge.head].wait()
 
-            # Check if the head operation was skipped
             if edge.head in self.skipped_operations:
-                continue  # This path is not valid
+                continue
 
-            # Build context for edge condition evaluation
             result_value = self.results.get(edge.head)
             if result_value is not None and not isinstance(result_value, str | int | float | bool):
                 result_value = to_dict(result_value, recursive=True)
 
-            # Edge condition `apply()` expects a plain dict with dict.get() semantics,
-            # so expose the Note's content rather than the Note itself.
+            # apply() expects a plain dict (dict.get() semantics); pass Note.content not the Note itself.
             ctx = {"result": result_value, "context": self.context.content}
 
-            # Use edge.check_condition() which handles None conditions
             if await edge.check_condition(ctx):
                 has_valid_path = True
-                break  # At least one valid path found
+                break
 
         return has_valid_path
 
     async def _wait_for_dependencies(self, operation: Operation):
         """Wait for all dependencies to complete."""
-        # Special handling for aggregations
         if operation.metadata.get("aggregation"):
             sources = operation.metadata.get("aggregation_sources", [])
             if self.verbose and sources:
@@ -347,16 +321,13 @@ class DependencyAwareExecutor:
                     len(sources),
                 )
 
-            # Wait for ALL sources (sources are now strings from builder.py)
+            # sources are strings from builder.py — convert back to UUID for completion_events lookup
             for source_id_str in sources:
-                # Convert string back to UUID for lookup
-                # Check all operations to find matching ID
                 for op_id in self.completion_events.keys():
                     if str(op_id) == source_id_str:
                         await self.completion_events[op_id].wait()
                         break
 
-        # Regular dependency checking
         predecessors = self.graph.get_predecessors(operation)
         for pred in predecessors:
             if self.verbose:
@@ -369,14 +340,10 @@ class DependencyAwareExecutor:
 
     def _prepare_operation(self, operation: Operation):
         """Prepare operation with context and branch assignment."""
-        # Update operation context with predecessors
         predecessors = self.graph.get_predecessors(operation)
         if predecessors:
-            # Use a Note as a local workspace to accumulate predecessor results
-            # before merging them into the operation's context parameter.
             pred_ctx = Note()
             for pred in predecessors:
-                # Skip if predecessor was skipped
                 if pred.id in self.skipped_operations:
                     continue
 
@@ -390,44 +357,36 @@ class DependencyAwareExecutor:
             if "context" not in operation.parameters:
                 operation.parameters["context"] = pred_context
             else:
-                # Handle case where context might be a string
                 existing_context = operation.parameters["context"]
                 if isinstance(existing_context, dict):
                     existing_context.update(pred_context)
                 else:
-                    # If it's a string or other type, create a new dict
                     operation.parameters["context"] = {
                         "original_context": existing_context,
                         **pred_context,
                     }
 
-        # Add execution context from the flow-level Note workspace
         if self.context:
             if "context" not in operation.parameters:
                 operation.parameters["context"] = self.context.content.copy()
             else:
-                # Handle case where context might be a string
                 existing_context = operation.parameters["context"]
                 if isinstance(existing_context, dict):
                     existing_context.update(self.context.content)
                 else:
-                    # If it's a string or other type, create a new dict
                     operation.parameters["context"] = {
                         "original_context": existing_context,
                         **self.context.content,
                     }
 
-        # Determine and assign branch
         branch = self._resolve_branch_for_operation(operation)
         self.operation_branches[operation.id] = branch
 
     def _resolve_branch_for_operation(self, operation: Operation) -> "Branch":
         """Resolve which branch an operation should use - all branches are pre-allocated."""
-        # All branches should be pre-allocated
         if operation.id in self.operation_branches:
             branch = self.operation_branches[operation.id]
 
-            # Handle deferred context inheritance
             if (
                 hasattr(branch, "metadata")
                 and branch.metadata
@@ -435,14 +394,11 @@ class DependencyAwareExecutor:
             ):
                 primary_dep_id = branch.metadata.get("inherit_from_operation")
                 if primary_dep_id and primary_dep_id in self.results:
-                    # Find the primary dependency's branch
                     primary_branch = self.operation_branches.get(
                         primary_dep_id, self.session.default_branch
                     )
 
-                    # Copy the messages from primary branch to this branch
-                    # This avoids creating a new branch and thus avoids locking
-                    # Access messages through the MessageManager
+                    # Copy messages without creating a new branch to avoid locking.
                     if hasattr(branch, "_message_manager") and hasattr(
                         primary_branch, "_message_manager"
                     ):
@@ -453,7 +409,6 @@ class DependencyAwareExecutor:
                             else:
                                 branch._message_manager.messages.append(msg)
 
-                    # Clear the pending flag
                     branch.metadata["pending_context_inheritance"] = False
 
                     if self.verbose:
@@ -465,7 +420,6 @@ class DependencyAwareExecutor:
 
             return branch
 
-        # Fallback to default branch (should not happen with proper pre-allocation)
         if self.verbose:
             logger.warning(
                 "Operation %s using default branch (not pre-allocated)",
@@ -480,7 +434,6 @@ class DependencyAwareExecutor:
         """Validate that all edge conditions are properly configured."""
         for edge in self.graph.internal_edges.values():
             if edge.condition is not None:
-                # Ensure condition is an EdgeCondition instance
                 from lionagi.protocols.graph.edge import EdgeCondition
 
                 if not isinstance(edge.condition, EdgeCondition):
@@ -489,7 +442,6 @@ class DependencyAwareExecutor:
                         "Must be EdgeCondition or None."
                     )
 
-                # Ensure condition has apply method
                 if not hasattr(edge.condition, "apply"):
                     raise AttributeError(f"Edge {edge.id} condition missing 'apply' method.")
 
@@ -498,7 +450,6 @@ class DependencyAwareExecutor:
         completed = set(results.get("completed_operations", []))
         skipped = set(results.get("skipped_operations", []))
 
-        # Check for operations in both lists
         overlap = completed & skipped
         if overlap:
             raise RuntimeError(
@@ -506,11 +457,9 @@ class DependencyAwareExecutor:
                 "This indicates a bug in edge condition handling."
             )
 
-        # Verify skipped operations have proper status
         for node in self.graph.internal_nodes.values():
             if isinstance(node, Operation) and node.id in skipped:
                 if node.execution.status != EventStatus.SKIPPED:
-                    # Log warning but don't fail - status might not be perfectly synced
                     if self.verbose:
                         logger.warning(
                             "Skipped operation %s has status %s instead of SKIPPED",
@@ -520,12 +469,7 @@ class DependencyAwareExecutor:
 
 
 def _extract_spawn_requests(response: Any, spawn_type: type) -> list[Any]:
-    """Pull SpawnRequest payloads out of an operation's response.
-
-    Handles: the response *is* a spawn_type, a list containing them, or a
-    BaseModel / dict that carries spawn_type-typed field values (the
-    ``operate(response_format=SpawnRequest)`` and capability-bundle shapes).
-    """
+    """Extract SpawnRequest instances from a response (direct, list, or BaseModel/dict field values)."""
     from pydantic import BaseModel
 
     found: list[Any] = []

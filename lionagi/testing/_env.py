@@ -1,19 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Environment-variable activation for the scripted provider.
-
-The contract is intentionally narrow:
-
-- ``LIONAGI_CHAT_PROVIDER=scripted`` selects the scripted endpoint via
-  ``AppSettings`` (already wired in ``lionagi.config``).
-- ``LIONAGI_TEST_SCRIPT=<path>`` is read by ``ScriptedEndpoint.__init__`` when
-  no ``script`` kwarg is provided.
-
-Both apply transparently to subprocess invocations of ``li``, so a CLI test
-can be a plain ``subprocess.run(["li", "agent", "..."])`` with the env vars
-set in the child process — no monkeypatch required.
-"""
+"""Environment-variable helpers for activating the scripted provider in-process and in subprocesses."""
 
 from __future__ import annotations
 

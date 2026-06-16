@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Internal types for ``lionagi.testing`` — response entries, matchers, recorded calls.
-
-These are the parsed shape behind the YAML/dict fixture format documented in
-``ScriptModel``. End users should only need ``lionagi.testing.TestBranch`` /
-``ScriptModel``; everything here is an implementation detail.
-"""
+"""Internal types for ``lionagi.testing``: response entry variants, ``WhenMatcher``, and ``RecordedCall``."""
 
 from __future__ import annotations
 
@@ -21,11 +16,7 @@ ErrorKind = Literal["rate_limit", "timeout", "server_error", "bad_request", "val
 
 
 class WhenMatcher(BaseModel):
-    """Declarative match condition.
-
-    All conditions are AND-ed. An empty matcher (no fields set) matches nothing —
-    callers should treat that as "use positional cursor."
-    """
+    """Declarative AND-composed match condition; empty matcher defers to positional cursor."""
 
     model_config = {"extra": "forbid"}
 
@@ -62,8 +53,7 @@ class ToolCallResponse(_BaseResponse):
 
 
 class StructuredResponse(_BaseResponse):
-    """A structured/JSON response. ``data`` is serialized as the message content
-    so ``branch.parse()`` can validate it against the request's schema."""
+    """Structured/JSON response — ``data`` serialized as message content for ``branch.parse()`` validation."""
 
     type: Literal["structured"] = "structured"
     data: dict[str, Any]
@@ -112,11 +102,7 @@ ResponseEntry = Union[
 
 @dataclass(slots=True)
 class RecordedCall:
-    """One observed call against a ScriptedEndpoint.
-
-    Tests inspect ``endpoint.calls`` to assert on what the agent actually sent —
-    messages, tool definitions, model, system content, etc.
-    """
+    """One observed call against a ``ScriptedEndpoint``; inspect via ``endpoint.calls``."""
 
     index: int
     payload: dict[str, Any]

@@ -1,13 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Async batch processing with retry, timeout, and concurrency control.
-
-Primary exports:
-    alcall: Apply function to list elements concurrently with full control.
-    bcall: Batch processing wrapper yielding results per batch.
-    AlcallParams / BcallParams: Dataclass wrappers for parameter passing.
-"""
+"""Async batch processing with retry, timeout, and concurrency control."""
 
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
@@ -53,17 +47,7 @@ def _do_init() -> None:
 
 
 def _validate_func(func: Any) -> Callable:
-    """Extract and validate a single callable.
-
-    Args:
-        func: Callable or single-element iterable containing a callable.
-
-    Returns:
-        The validated callable.
-
-    Raises:
-        ValueError: If not callable or iterable doesn't contain exactly one callable.
-    """
+    """Return callable from func or raise ValueError."""
     if callable(func):
         return func
 
@@ -86,10 +70,7 @@ def _normalize_input(
     unique: bool,
     flatten_tuple_set: bool,
 ) -> list:
-    """Convert input to a flat list for batch processing.
-
-    Handles iterables, Pydantic/msgspec models (as single items), and scalars.
-    """
+    """Convert input to a flat list, treating model instances as single items."""
     if flatten or dropna:
         return to_list(
             input_,
@@ -203,33 +184,7 @@ async def alcall(
     return_exceptions: bool = False,
     **kwargs: Any,
 ) -> list[T | BaseException]:
-    """Apply function to each list element asynchronously with retry and concurrency control.
-
-    Args:
-        input_: List of items to process (or iterable that will be converted).
-        func: Callable to apply (sync or async).
-        input_flatten: Flatten nested input structures.
-        input_dropna: Remove None/undefined from input.
-        input_unique: Remove duplicate inputs.
-        input_flatten_tuple_set: Include tuples/sets in flattening.
-        output_flatten: Flatten nested output structures.
-        output_dropna: Remove None/undefined from output.
-        output_unique: Remove duplicate outputs.
-        output_flatten_tuple_set: Include tuples/sets in output flattening.
-        delay_before_start: Initial delay before processing (seconds).
-        retry_initial_delay: Initial retry delay (seconds).
-        retry_backoff: Backoff multiplier for retry delays.
-        retry_default: Default value on retry exhaustion (Unset = raise).
-        retry_timeout: Timeout per function call (seconds).
-        retry_attempts: Maximum retry attempts (0 = no retry).
-        max_concurrent: Max concurrent executions (None = unlimited).
-        throttle_period: Delay between starting tasks (seconds).
-        return_exceptions: Return exceptions instead of raising.
-        **kwargs: Additional arguments passed to func.
-
-    Returns:
-        List of results in input order. May include exceptions if return_exceptions=True.
-    """
+    """Apply func to each item concurrently with retry, timeout, and concurrency controls; return ordered results."""
     _lazy.ensure(_do_init)
 
     func = _validate_func(func)
@@ -317,17 +272,7 @@ async def bcall(
     batch_size: int,
     **kwargs: Any,
 ) -> AsyncGenerator[list[T | BaseException], None]:
-    """Process input in batches using alcall. Yields results batch by batch.
-
-    Args:
-        input_: Items to process.
-        func: Callable to apply.
-        batch_size: Number of items per batch.
-        **kwargs: Arguments passed to alcall (see alcall for details).
-
-    Yields:
-        List of results for each batch.
-    """
+    """Process input in fixed-size batches via alcall; yields one result list per batch."""
     input_ = to_list(input_, flatten=True, dropna=True)
 
     for i in range(0, len(input_), batch_size):

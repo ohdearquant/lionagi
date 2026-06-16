@@ -30,15 +30,7 @@ __all__ = [
 
 
 class HandoffCondition(BaseModel):
-    """When to hand off to another agent.
-
-    Maps to AG2 v0.12::
-
-        OnCondition(
-            target=AgentTarget(target_agent),
-            condition=StringLLMCondition(prompt=condition),
-        )
-    """
+    """Condition for handing off to another agent in AG2 GroupChat."""
 
     target: str = Field(description="Target agent name to hand off to")
     condition: str = Field(
@@ -47,15 +39,7 @@ class HandoffCondition(BaseModel):
 
 
 class AgentSpec(BaseModel):
-    """Specification for a single AG2 agent in a GroupChat.
-
-    Maps to AG2 v0.12::
-
-        agent = ConversableAgent(name, system_message, llm_config, ...)
-        register_function(tool_fn, caller=agent, executor=user_proxy)
-        agent.handoffs.add_llm_conditions([OnCondition(...)])
-        # v0.12: update_agent_state_before_reply=[UpdateSystemMessage(...)]
-    """
+    """Specification for a single AG2 ConversableAgent in a GroupChat."""
 
     name: str = Field(description="Agent name (e.g. 'Researcher', 'Analyst')")
     role: str = Field(description="One-line role description")
@@ -251,10 +235,7 @@ def build_group_chat(
                     agent_spec.name,
                 )
 
-        # Mechanical fallback: each non-terminal agent flows to the next agent
-        # in spec order if no LLM-condition handoff fires.  This guarantees the
-        # pipeline reaches the terminal agent rather than ending early when the
-        # group manager's auto-select picks User (terminate).
+        # Fallback: flow to next agent in spec order if no LLM-condition handoff fires.
         if idx < len(spec.agents) - 1:
             next_agent = agents_by_name[spec.agents[idx + 1].name]
             agent.handoffs.set_after_work(AgentTarget(next_agent))
@@ -317,9 +298,6 @@ async def stream_group_chat(
 
     try:
         async for event in a_run_group_chat_iter(**kwargs):
-            # AG2's @wrap_event produces a two-layer structure:
-            #   event.type    — event type string
-            #   event.content — inner event with actual payload data
             inner = getattr(event, "content", None)
 
             if isinstance(event, TextEvent) and on_text:

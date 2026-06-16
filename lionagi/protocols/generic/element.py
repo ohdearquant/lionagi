@@ -26,21 +26,7 @@ __all__ = (
 
 
 class Element(BaseModel, Observable):
-    """Basic identifiable, timestamped element.
-
-    This Pydantic model provides a unique identifier (`id`), an automatically
-    generated creation timestamp (`created_at`), and an optional metadata
-    dictionary.
-
-    Attributes:
-        id (UUID):
-            A unique ID based on UUIDv4 (defaults to a newly generated one).
-        created_at (float):
-            The creation timestamp as a float (Unix epoch). Defaults to
-            the current time.
-        metadata (dict):
-            A dictionary for storing additional information about this Element.
-    """
+    """Pydantic base with UUID id, creation timestamp, and metadata dict."""
 
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
@@ -69,12 +55,7 @@ class Element(BaseModel, Observable):
 
     @field_validator("metadata", mode="before")
     def _validate_meta_integrity(cls, val: dict) -> dict:
-        """Validates that `metadata` is a dictionary and checks class naming.
-
-        If a `lion_class` field is present in `metadata`, it must match the
-        fully qualified name of this class. Converts `metadata` to a dict
-        if needed.
-        """
+        """Coerce to dict; reject lion_class mismatch."""
         if not val:
             return {}
         if not isinstance(val, dict):
@@ -87,7 +68,7 @@ class Element(BaseModel, Observable):
 
     @field_validator("created_at", mode="before")
     def _coerce_created_at(cls, val: float | dt.datetime | str | None) -> float:
-        """Coerces `created_at` to a float-based timestamp."""
+        """Coerce created_at to a UTC float timestamp."""
         if val is None:
             return now_utc().timestamp()
         if isinstance(val, float):
@@ -120,42 +101,38 @@ class Element(BaseModel, Observable):
 
     @field_validator("id", mode="before")
     def _ensure_uuid(cls, val: UUID | str) -> UUID:
-        """Ensures `id` is validated as an UUID."""
+        """Coerce id to UUID."""
         if isinstance(val, UUID):
             return val
         return UUID(str(val))
 
     @field_serializer("id")
     def _serialize_id_type(self, val: UUID) -> str:
-        """Serializes the `id` field to a string."""
+        """Serialize id to string."""
         return str(val)
 
     @property
     def created_datetime(self) -> dt.datetime:
-        """Returns the creation time as a datetime object."""
+        """Creation time as a UTC-aware datetime."""
         return dt.datetime.fromtimestamp(self.created_at, tz=dt.timezone.utc)
 
     def __eq__(self, other: Any) -> bool:
-        """Compares two Element instances by their ID."""
+        """Compare by id."""
         if not isinstance(other, Element):
             return NotImplemented
         return self.id == other.id
 
     def __hash__(self) -> int:
-        """Returns a hash of this element's ID."""
+        """Hash by id."""
         return hash(self.id)
 
     def __bool__(self) -> bool:
-        """Elements are always considered truthy."""
+        """Always True."""
         return True
 
     @classmethod
     def class_name(cls, full: bool = False) -> str:
-        """Returns this class's name.
-
-        full (bool): If True, returns the fully qualified class name; otherwise,
-            returns only the class name.
-        """
+        """Return class name; full=True returns fully qualified name."""
         if full:
             return f"{cls.__module__}.{cls.__qualname__}"
         return cls.__name__
@@ -172,7 +149,7 @@ class Element(BaseModel, Observable):
         db_meta_key: str | None = None,
         **kw,
     ) -> dict:
-        """Converts this Element to a dictionary."""
+        """Serialize to dict; mode='db' renames metadata to db_meta_key."""
         if mode == "python":
             return self._to_dict(**kw)
         if mode == "json":
@@ -185,11 +162,7 @@ class Element(BaseModel, Observable):
 
     @classmethod
     def from_dict(cls, data: dict) -> Element:
-        """Deserializes a dictionary into an Element or subclass of Element.
-
-        If `lion_class` in `metadata` refers to a subclass, this method
-        is polymorphic, it will attempt to create an instance of that subclass.
-        """
+        """Deserialize dict into Element or the subclass named by lion_class in metadata."""
         # Shallow copy to avoid mutating the caller's dict. The nested metadata
         # dict is also copied because we pop from it (lion_class extraction).
         data = dict(data)
@@ -234,14 +207,14 @@ class Element(BaseModel, Observable):
         return cls.model_validate(data)
 
     def to_json(self, decode: bool = True, **kw) -> str:
-        """Converts this Element to a JSON string."""
+        """Serialize to JSON string."""
         kw.pop("mode", None)
         dict_ = self._to_dict(**kw)
         return json_dumps(dict_, default=DEFAULT_ELEMENT_SERIALIZER, decode=decode)
 
     @classmethod
     def from_json(cls, json_str: str) -> Element:
-        """Deserializes a JSON string into an Element or subclass of Element."""
+        """Deserialize JSON string into Element or subclass."""
         return cls.from_dict(orjson.loads(json_str))
 
 
@@ -255,19 +228,7 @@ DEFAULT_ELEMENT_SERIALIZER = get_orjson_default(
 
 
 def validate_order(order: Any) -> list[UUID]:
-    """Validates and flattens an ordering into a list of UUID objects.
-
-    This function accepts a variety of possible representations for ordering
-    (e.g., a single Element, a list of Elements, a dictionary with ID keys,
-    or a nested structure) and returns a flat list of UUID objects.
-
-    Returns:
-        list[UUID]: A flat list of validated UUID objects.
-
-    Raises:
-        ValueError: If an invalid item is encountered or if there's a mixture
-            of types not all convertible to UUID.
-    """
+    """Flatten an ordering (Element, UUID, str, nested list, or dict) into a list of UUIDs."""
     if isinstance(order, Element):
         return [order.id]
     if isinstance(order, Mapping):
@@ -297,12 +258,7 @@ E = TypeVar("E", bound=Element)
 
 
 class ID(Generic[E]):
-    """Utility class for working with UUID objects and Elements.
-
-    This class provides helper methods to extract IDs from Elements, strings,
-    or UUIDs, and to test whether a given object can be interpreted as
-    an ID.
-    """
+    """Type aliases and helpers for extracting UUIDs from Elements, strings, or UUIDs."""
 
     ID: TypeAlias = UUID
     Item: TypeAlias = E | Element  # type: ignore
@@ -313,20 +269,7 @@ class ID(Generic[E]):
 
     @staticmethod
     def get_id(item: E) -> UUID:
-        """Retrieves an UUID from multiple possible item forms.
-
-        Acceptable item types include:
-        - Element: Uses its `id` attribute.
-        - UUID: Returns it directly.
-        - UUID: Validates and wraps it.
-        - str: Interpreted as a UUID if possible.
-
-        Returns:
-            UUID: The validated ID.
-
-        Raises:
-            ValueError: If the item cannot be converted to an UUID.
-        """
+        """Return UUID from an Element, UUID, or str; raises ValueError otherwise."""
         if isinstance(item, UUID):
             return item
         if isinstance(item, Element):
@@ -337,12 +280,7 @@ class ID(Generic[E]):
 
     @staticmethod
     def is_id(item: Any) -> bool:
-        """Checks if an item can be validated as an UUID.
-
-        Returns:
-            bool: True if `item` is or can be validated as an UUID;
-                otherwise, False.
-        """
+        """Return True if item can be converted to a UUID."""
         try:
             ID.get_id(item)  # type: ignore
             return True

@@ -39,14 +39,7 @@ class MessageContent(DataClass):
 
 
 class Message(Node, Sendable):
-    """Base class for all messages.
-
-    Serves both as LLM conversation messages (via subclasses with specific
-    roles and MessageContent) and as inter-entity exchange messages (with
-    arbitrary content and channel routing).
-
-    Subclasses set ``_role`` as a ClassVar to fix their role.
-    """
+    """Base class for all messages; subclasses fix their role via _role ClassVar."""
 
     _role: ClassVar[MessageRole] = MessageRole.UNSET
 
@@ -107,22 +100,13 @@ class Message(Node, Sendable):
 
     @property
     def rendered(self) -> str:
-        """Render the message content as a string.
-
-        Delegates to the content's rendered property if available.
-        """
+        """Render the message content as a string, delegating to content.rendered if available."""
         if hasattr(self.content, "rendered"):
             return self.content.rendered
         return str(self.content) if self.content is not None else ""
 
     def update(self, sender=None, recipient=None, **kw):
-        """Update message fields.
-
-        Args:
-            sender: New sender role or ID.
-            recipient: New recipient role or ID.
-            **kw: Content updates to apply via from_dict() reconstruction.
-        """
+        """Update sender, recipient, and/or content fields in place."""
         if sender:
             self.sender = validate_sender_recipient(sender)
         if recipient:

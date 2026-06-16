@@ -7,11 +7,7 @@ from pydantic import BaseModel, Field
 
 
 class AudioSpeechRequest(BaseModel):
-    """Request body for OpenAI Audio Speech (TTS).
-
-    Endpoint: POST https://api.openai.com/v1/audio/speech
-    Docs: https://platform.openai.com/docs/api-reference/audio/createSpeech
-    """
+    """Request body for OpenAI Audio Speech TTS (POST /v1/audio/speech)."""
 
     model: str = Field(
         default="tts-1",
@@ -38,14 +34,7 @@ class AudioSpeechRequest(BaseModel):
 
 
 class AudioTranscriptionRequest(BaseModel):
-    """Request body for OpenAI Audio Transcription (STT/Whisper).
-
-    Endpoint: POST https://api.openai.com/v1/audio/transcriptions
-    Docs: https://platform.openai.com/docs/api-reference/audio/createTranscription
-
-    Note: The actual API call requires multipart/form-data with the audio file.
-    The 'file' field here represents the path or bytes to be handled by the endpoint.
-    """
+    """Request body for OpenAI Audio Transcription (POST /v1/audio/transcriptions); file sent as multipart/form-data."""
 
     model: str = Field(
         default="whisper-1",

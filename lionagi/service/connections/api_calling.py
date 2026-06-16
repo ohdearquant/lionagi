@@ -17,11 +17,7 @@ __all__ = ("APICalling",)
 
 
 class APICalling(HookedEvent):
-    """Handles asynchronous API calls with automatic token usage tracking.
-
-    This class manages API calls through endpoints, handling both regular
-    and streaming responses with optional token usage tracking.
-    """
+    """Async API call with automatic token usage tracking; supports regular and streaming responses."""
 
     endpoint: Endpoint = Field(
         ...,
@@ -61,9 +57,7 @@ class APICalling(HookedEvent):
         if self.payload.get("stream") is True:
             self.streaming = True
 
-        # Add token usage information to the last message if requested
         if self.include_token_usage_to_model and self.endpoint.config.requires_tokens:
-            # Handle both messages format (chat completions) and input format (responses API)
             if "messages" in self.payload and isinstance(self.payload["messages"][-1], dict):
                 required_tokens = self.required_tokens
                 content = self.payload["messages"][-1]["content"]
@@ -73,7 +67,6 @@ class APICalling(HookedEvent):
                     limit = lookup_context_window(self.payload["model"])
                     token_msg += f"/{limit:,}"
 
-                # Update content based on its type
                 if isinstance(content, str):
                     content += token_msg
                 elif isinstance(content, dict) and "text" in content:
@@ -90,37 +83,31 @@ class APICalling(HookedEvent):
 
     @property
     def required_tokens(self) -> int | None:
-        """Calculate the number of tokens required for this request."""
+        """Estimate token count for this request payload (messages, responses API, or embeddings format)."""
         from lionagi.service.token_calculator import TokenCalculator
 
         if not self.endpoint.config.requires_tokens:
             return None
 
-        # Handle chat completions format
         if "messages" in self.payload:
             return TokenCalculator.calculate_message_tokens(
                 self.payload["messages"], **self.payload
             )
-        # Handle responses API format
         elif "input" in self.payload:
-            # Convert input to messages format for token calculation
             input_val = self.payload["input"]
             if isinstance(input_val, str):
                 messages = [{"role": "user", "content": input_val}]
             elif isinstance(input_val, list):
-                # Handle array input format
                 messages = []
                 for item in input_val:
                     if isinstance(item, str):
                         messages.append({"role": "user", "content": item})
                     elif isinstance(item, dict) and "type" in item:
-                        # Handle structured input items
                         if item["type"] == "message":
                             messages.append(item)
             else:
                 return None
             return TokenCalculator.calculate_message_tokens(messages, **self.payload)
-        # Handle embeddings endpoint
         elif "embed" in self.endpoint.config.endpoint:
             return TokenCalculator.calculate_embed_token(**self.payload)
 
@@ -145,7 +132,7 @@ class APICalling(HookedEvent):
 
     @property
     def request(self) -> dict:
-        """Get request information including token usage."""
+        """Return request metadata dict (currently: required_tokens)."""
         return {
             "required_tokens": self.required_tokens,
         }

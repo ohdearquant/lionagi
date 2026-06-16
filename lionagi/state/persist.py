@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""CLI-layer helper for persisting runtime Session → StateDB.
-
-This module bridges the runtime objects and the database. It is NOT
-part of the runtime — the runtime stays DB-unaware. Call from CLI
-entry points (li agent, li play, etc.) after the session completes.
-"""
+"""CLI-layer helpers for persisting a runtime Session and its branches/messages to StateDB."""
 
 from __future__ import annotations
 
@@ -20,14 +15,7 @@ if TYPE_CHECKING:
 
 
 async def persist_session(db: StateDB, session: Session) -> None:
-    """Persist a runtime Session and all its branches/messages to StateDB.
-
-    Handles both fresh sessions and resumed ones (branch already in DB).
-
-    1. Finds or creates the session row (looks up existing session for this branch).
-    2. For each branch: inserts new messages, updates progression.
-    3. Updates session bookmarks.
-    """
+    """Persist a runtime Session (fresh or resumed) with all branches and messages to StateDB."""
     session_dict = session.to_dict(mode="db")
 
     # Check if any branch already has a session in the DB (resume case)
@@ -87,11 +75,7 @@ async def _persist_branch(
     branch,
     all_message_ids: list[str],
 ) -> None:
-    """Persist a single branch: its messages, progression, and branch row.
-
-    Handles resume: if the branch already exists, reuses its progression
-    and only inserts new messages.
-    """
+    """Persist one branch's messages and progression; reuses existing progression on resume."""
     branch_dict = branch.to_dict(mode="db")
     branch_id = branch_dict["id"]
 

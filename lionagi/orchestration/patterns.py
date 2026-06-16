@@ -1,18 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Orchestration patterns over lionagi primitives.
-
-This is thin glue, not a parallel stack. Roles are casts ``AgentSpec``s wired
-into a ``Session`` as branches; a plan is a list of ``TaskAssignment`` emissions;
-execution is ``session.flow`` (optionally ``reactive=True`` so workers may grow
-the DAG by emitting ``SpawnRequest``). The orchestration layer only supplies:
-
-1. ``role_node_builder`` — maps a SpawnRequest's ``assignee`` to an operate node
-   on that role's branch (the flow-layer executor stays role-agnostic).
-2. ``spawn_roles`` — build role branches from specs and grant spawn rights.
-3. ``fanout`` — wire N assignments + an optional synthesis into a graph and run.
-"""
+"""Orchestration patterns: spawn_roles, plan, fanout, and DAG/fanout graph builders."""
 
 from __future__ import annotations
 
@@ -69,12 +58,7 @@ def grant_spawn(branch: Branch, *, prompt: bool = True) -> None:
 
 
 def role_node_builder(roles: dict[str, Branch]):
-    """Build a ``node_builder`` that routes a SpawnRequest to a role's branch.
-
-    The flow-layer ``ReactiveExecutor`` is role-agnostic; this closure gives it
-    the role→branch map. The executor clones the referenced branch per injected
-    node, so concurrent spawns of the same role do not collide.
-    """
+    """Return a node_builder closure that routes SpawnRequests to role branches."""
 
     def build(req: SpawnRequest, emitter: Operation) -> Operation:
         # Defense-in-depth: validate the operation at the routing boundary even
@@ -114,18 +98,7 @@ async def spawn_roles(
     *,
     spawners: tuple[str, ...] | set[str] = (),
 ) -> dict[str, Branch]:
-    """Create one Branch per role spec and wire them into *session*.
-
-    Args:
-        session: Session the role branches join.
-        specs: ``{role_name: AgentSpec | role_name_str}``. A bare string is
-            composed via ``AgentSpec.compose(name)``.
-        spawners: role names granted the SpawnRequest capability (allowed to
-            grow the DAG mid-run).
-
-    Returns:
-        ``{role_name: Branch}`` — the role templates. Workers run on clones.
-    """
+    """Create one Branch per role spec and wire into session; returns role-name → Branch map."""
     roles: dict[str, Branch] = {}
     spawn_set = set(spawners)
     for name, spec in specs.items():
@@ -150,16 +123,7 @@ async def plan(
     max_tasks: int = 0,
     context: dict | None = None,
 ) -> list[TaskAssignment]:
-    """Have *orchestrator* decompose *prompt* into a list of TaskAssignments.
-
-    The plan is the casts coordination emission — a ``list[TaskAssignment]`` —
-    not a bespoke model. ``assignee`` values outside *roles* are dropped (the
-    orchestrator was told to use only the roster). When ``dag`` the orchestrator
-    is asked to wire ``depends_on`` (1-based step indices); otherwise all
-    assignments are independent (fanout).
-
-    Returns the validated assignments (capped at ``max_tasks`` when > 0).
-    """
+    """Have orchestrator decompose prompt into TaskAssignments; unknown assignees are dropped."""
     instruction = DECOMPOSE_DAG_INSTRUCTION if dag else DECOMPOSE_INSTRUCTION
     res = await orchestrator.operate(
         instruction=instruction,
@@ -183,12 +147,7 @@ async def plan(
 
 
 def _resolve_dep_indices(assignments: list[TaskAssignment]) -> dict[int, list[int]]:
-    """Map each assignment index → list of 0-based predecessor indices.
-
-    ``depends_on`` entries are 1-based step numbers (the orchestrator numbers
-    assignments by list position). Out-of-range, self, and non-integer refs are
-    dropped — the executor re-validates acyclicity as defense in depth.
-    """
+    """Map assignment index → 0-based predecessor indices; drops invalid/self refs."""
     deps: dict[int, list[int]] = {}
     n = len(assignments)
     for i, ta in enumerate(assignments):
@@ -216,14 +175,7 @@ def build_fanout_graph(
     *,
     synthesis_role: str | None = None,
 ) -> tuple[Graph, list[str]]:
-    """Wire assignments into a parallel fanout graph (+ optional synthesis).
-
-    Each assignment becomes an independent ``operate`` node on a *clone* of its
-    assignee's role branch (clone = isolated history, shared model backend). A
-    synthesis node, if requested, aggregates all workers.
-
-    Returns ``(graph, worker_node_ids)``. Pure — does not execute.
-    """
+    """Wire assignments into a parallel fanout graph with optional synthesis; pure, does not execute."""
     graph = Graph()
     worker_ids: list[str] = []
     workers: list[Operation] = []
@@ -272,17 +224,7 @@ def build_dag_graph(
     assignments: list[TaskAssignment],
     roles: dict[str, Branch],
 ) -> tuple[Graph, list[str | None]]:
-    """Wire assignments into a dependency DAG (honours ``depends_on``).
-
-    Like :func:`build_fanout_graph`, each assignment runs on a *clone* of its
-    assignee's role branch. Unlike fanout, ``depends_on`` (1-based step indices)
-    becomes graph edges, so independent assignments parallelize while dependent
-    ones inherit their predecessors' output as upstream context.
-
-    Returns ``(graph, node_ids)`` where ``node_ids[i]`` is the node for
-    ``assignments[i]`` (``None`` for a dropped unknown-assignee step). Pure —
-    does not execute.
-    """
+    """Wire assignments into a dependency DAG honouring depends_on; pure, does not execute."""
     graph = Graph()
     deps = _resolve_dep_indices(assignments)
     nodes: list[Operation | None] = []
@@ -329,15 +271,7 @@ async def fanout(
     max_spawn: int = 50,
     verbose: bool = False,
 ) -> dict[str, Any]:
-    """Run assignments in parallel on their role branches; optionally synthesize.
-
-    When *reactive*, workers granted spawn rights (see :func:`spawn_roles`) may
-    emit a ``SpawnRequest`` to add work to the running DAG without halting.
-
-    Returns the ``session.flow`` result dict (``operation_results``,
-    ``completed_operations``, ``final_context``, and — when reactive —
-    ``spawned_operations``).
-    """
+    """Run assignments in parallel on role branches; reactive=True allows mid-run DAG expansion."""
     graph, worker_ids = build_fanout_graph(
         session, assignments, roles, synthesis_role=synthesis_role
     )

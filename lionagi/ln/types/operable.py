@@ -1,8 +1,4 @@
-"""Operable - Container for Spec collections with model generation.
-
-This module provides the Operable class for managing collections of Spec objects
-and generating framework-specific models via adapters.
-"""
+"""Operable: ordered Spec collection with adapter-based model generation."""
 
 from __future__ import annotations
 
@@ -19,24 +15,7 @@ __all__ = ("Operable",)
 
 @dataclass(frozen=True, slots=True, init=False)
 class Operable:
-    """Collection of Spec objects with model generation capabilities.
-
-    Operable manages an ordered collection of Spec objects and provides
-    methods to generate framework-specific models via adapters.
-
-    Attributes:
-        __op_fields__: Ordered tuple of Spec objects
-        name: Optional name for this operable
-
-    Example:
-        >>> from lionagi.ln.types import Spec, Operable
-        >>> specs = (
-        ...     Spec(str, name="username"),
-        ...     Spec(int, name="age"),
-        ... )
-        >>> operable = Operable(specs, name="User")
-        >>> UserModel = operable.create_model(adapter="pydantic")
-    """
+    """Immutable ordered Spec collection; use create_model() to emit a Pydantic model."""
 
     __op_fields__: tuple[Spec, ...]
     name: str | None
@@ -47,16 +26,7 @@ class Operable:
         *,
         name: str | None = None,
     ):
-        """Initialize Operable with specs.
-
-        Args:
-            specs: Tuple or list of Spec objects
-            name: Optional name for this operable
-
-        Raises:
-            TypeError: If specs contains non-Spec objects
-            ValueError: If specs contains duplicate field names
-        """
+        """Validate and store specs; raises TypeError on non-Spec items or ValueError on duplicate names."""
         # Import here to avoid circular import
         from .spec import Spec
 
@@ -85,26 +55,11 @@ class Operable:
         object.__setattr__(self, "name", name)
 
     def allowed(self) -> set[str]:
-        """Get set of allowed field names.
-
-        Returns:
-            Set of field names from specs
-        """
+        """Return set of field names across all specs."""
         return {i.name for i in self.__op_fields__}
 
     def check_allowed(self, *args, as_boolean: bool = False):
-        """Check if field names are allowed.
-
-        Args:
-            *args: Field names to check
-            as_boolean: If True, return bool instead of raising
-
-        Returns:
-            True if all allowed, False if as_boolean=True and not all allowed
-
-        Raises:
-            ValueError: If as_boolean=False and not all allowed
-        """
+        """Return True if all args are allowed field names; raise ValueError (or return False) otherwise."""
         if not set(args).issubset(self.allowed()):
             if as_boolean:
                 return False
@@ -114,15 +69,7 @@ class Operable:
         return True
 
     def get(self, key: str, /, default=Unset) -> MaybeUnset[Spec]:
-        """Get Spec by field name.
-
-        Args:
-            key: Field name
-            default: Default value if not found
-
-        Returns:
-            Spec object or default
-        """
+        """Return Spec for key, or default if not found."""
         if not self.check_allowed(key, as_boolean=True):
             return default
         for i in self.__op_fields__:
@@ -136,18 +83,7 @@ class Operable:
         include: set[str] | None = None,
         exclude: set[str] | None = None,
     ) -> tuple[Spec, ...]:
-        """Get filtered tuple of Specs.
-
-        Args:
-            include: Only include these field names
-            exclude: Exclude these field names
-
-        Returns:
-            Filtered tuple of Specs
-
-        Raises:
-            ValueError: If both include and exclude specified, or if invalid names
-        """
+        """Return filtered specs; raises ValueError if both include and exclude are given or names are invalid."""
         if include is not None and exclude is not None:
             raise ValueError("Cannot specify both include and exclude")
 
@@ -173,22 +109,7 @@ class Operable:
         exclude: set[str] | None = None,
         **kw,
     ):
-        """Create framework-specific model from specs.
-
-        Args:
-            adapter: Adapter type (currently only "pydantic")
-            model_name: Name for generated model
-            include: Only include these fields
-            exclude: Exclude these fields
-            **kw: Additional adapter-specific kwargs
-
-        Returns:
-            Generated model class
-
-        Raises:
-            ImportError: If adapter not installed
-            ValueError: If adapter not supported
-        """
+        """Build and return a model class from specs via the named adapter (currently only "pydantic")."""
         match adapter:
             case "pydantic":
                 try:

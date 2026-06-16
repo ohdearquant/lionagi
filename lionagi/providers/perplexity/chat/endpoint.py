@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Perplexity AI endpoint configuration.
-
-Perplexity provides real-time web search and Q&A capabilities through their Sonar API.
-This module configures endpoints for different Sonar model tiers.
-"""
+"""Perplexity Sonar chat endpoint (real-time web search via the Sonar API)."""
 
 from lionagi.service.connections.endpoint import Endpoint
 

@@ -1,10 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""`li schedule` — manage lionagi Studio schedules from the CLI.
-
-Talks to the Studio REST API (default http://127.0.0.1:8765).
-Set LIONAGI_STUDIO_URL to override.
-"""
+"""`li schedule` — manage lionagi Studio schedules from the CLI."""
 
 from __future__ import annotations
 

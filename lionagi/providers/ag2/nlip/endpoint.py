@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""AG2 NLIP Remote Agent endpoint for lionagi.
-
-Wraps AG2's NlipRemoteAgent as a lionagi agentic endpoint.
-Connects to a remote NLIP server (e.g. another sandbox running
-AG2NlipApplication) and streams responses as StreamChunks.
-"""
+"""AG2 NLIP Remote Agent endpoint: connects to a remote NLIP server and streams responses."""
 
 from __future__ import annotations
 
@@ -26,12 +21,7 @@ logger = logging.getLogger(__name__)
 
 @AG2Configs.NLIP.register
 class AG2NlipEndpoint(AgenticEndpoint):
-    """Connects to a remote NLIP server via AG2's NlipRemoteAgent.
-
-    Each call sends messages to the remote NLIP endpoint and streams
-    the response back as StreamChunks. The remote server can be another
-    sandbox running AG2NlipApplication, or any NLIP-compliant server.
-    """
+    """Connects to a remote NLIP-compliant server and streams responses as StreamChunks."""
 
     DEFAULT_CONCURRENCY_LIMIT = 3
     DEFAULT_QUEUE_CAPACITY = 10

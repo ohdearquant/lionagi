@@ -67,12 +67,7 @@ class BashResponse(BaseModel):
 
 
 def _command_for_subprocess(request: BashRequest) -> list[str]:
-    """Returns argv list for subprocess; always runs with shell=False.
-
-    Shell control operators are unconditionally rejected — there is no trusted
-    bypass path on the request model.  Shell execution (shell=True) is removed
-    from the public call-path to close CWE-284.
-    """
+    """Return argv list for subprocess; rejects shell control operators (shell=False enforced)."""
     if _SHELL_CONTROL.search(request.command):
         raise PermissionError(
             f"Shell control operators are not supported: {request.command!r}. "

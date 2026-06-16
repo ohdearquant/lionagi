@@ -619,8 +619,7 @@ async def stream_claude_code_cli(  # noqa: C901
     on_tool_result: Callable[[dict[str, Any]], None] | None = None,
     on_final: Callable[[CLISession], None] | None = None,
 ) -> AsyncIterator[StreamChunk | CLISession]:
-    """Consume ND-JSON from the Claude Code CLI, yield StreamChunks,
-    and populate a CLISession accumulator."""
+    """Consume ND-JSON from the Claude Code CLI, yield StreamChunks and populate a CLISession."""
     if session is None:
         session = CLISession()
     theme = request.cli_display_theme or "light"

@@ -1,24 +1,7 @@
 # Copyright (c) 2025-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Lion Async Concurrency Patterns - Structured concurrency coordination utilities.
-
-This module provides async coordination patterns built on AnyIO's structured
-concurrency primitives. All patterns are backend-neutral (asyncio/trio).
-
-Key Features:
-- gather: Concurrent execution with fail-fast or exception collection
-- race: First-to-complete coordination
-- bounded_map: Concurrent mapping with rate limiting
-- CompletionStream: Stream results as they become available
-- retry: Deadline-aware exponential backoff
-
-Note on Structural Concurrency:
-These patterns follow structured concurrency principles where possible. In
-particular, CompletionStream provides an explicit lifecycle to avoid the
-pitfalls of unstructured as_completed-like patterns when breaking early.
-See individual function docstrings for details.
-"""
+"""Async coordination patterns (gather, race, bounded_map, CompletionStream, retry) on AnyIO."""
 
 from __future__ import annotations
 
@@ -50,16 +33,7 @@ __all__ = (
 
 
 async def gather(*aws: Awaitable[T], return_exceptions: bool = False) -> list[T | BaseException]:
-    """Run awaitables concurrently, return list of results.
-
-    Args:
-        *aws: Awaitables to execute concurrently
-        return_exceptions: If True, exceptions are returned as results
-                           If False, first exception cancels all tasks and re-raises
-
-    Returns:
-        List of results in same order as input awaitables
-    """
+    """Run awaitables concurrently; return ordered results or raise on first error (return_exceptions=False)."""
     if not aws:
         return []
 
@@ -90,15 +64,7 @@ async def gather(*aws: Awaitable[T], return_exceptions: bool = False) -> list[T 
 
 
 async def race(*aws: Awaitable[T]) -> T:
-    """Run awaitables concurrently, return result of first completion.
-
-    Returns the first result to complete, whether success or failure.
-    All other tasks are cancelled when first task completes.
-    If first completion is an exception, it's re-raised.
-
-    Note: This returns first *completion*, not first *success*.
-    For first-success semantics, consider implementing a first_success variant.
-    """
+    """First-completion race: return first result (or re-raise first exception); cancel remaining tasks."""
     if not aws:
         raise ValueError("race() requires at least one awaitable")
     send, recv = anyio.create_memory_object_stream(1)
@@ -129,19 +95,7 @@ async def bounded_map(
     limit: int,
     return_exceptions: bool = False,
 ) -> list[R | BaseException]:
-    """Apply async function to items with concurrency limit.
-
-    Args:
-        func: Async function to apply to each item
-        items: Items to process
-        limit: Maximum concurrent operations
-        return_exceptions: If True, exceptions are returned as results.
-                           If False, first exception cancels all tasks and re-raises.
-
-    Returns:
-        List of results in same order as input items.
-        If return_exceptions is True, exceptions are included in results.
-    """
+    """Map async func over items with at most limit concurrent tasks; ordered results (or raise on error)."""
     if limit <= 0:
         raise ValueError("limit must be >= 1")
 
@@ -178,22 +132,7 @@ async def bounded_map(
 
 
 class CompletionStream:
-    """Iterate async results as they complete (first-finished order).
-
-    Provides structured concurrency with optional concurrency limiting.
-    Must be used as an async context manager.
-
-    Args:
-        aws: Sequence of awaitables to execute.
-        limit: Max concurrent executions (None = unlimited).
-        return_exceptions: If True, exceptions are yielded as results.
-            If False (default), exceptions propagate and terminate iteration.
-
-    Example:
-        >>> async with CompletionStream(tasks, limit=5) as stream:
-        ...     async for idx, result in stream:
-        ...         print(f"Task {idx} completed: {result}")
-    """
+    """Async context manager that yields (index, result) pairs in first-finished order."""
 
     def __init__(
         self,
@@ -285,27 +224,7 @@ async def retry(
     retry_on: tuple[type[BaseException], ...] = (Exception,),
     jitter: float = 0.1,
 ) -> T:
-    """Retry async function with exponential backoff and deadline awareness.
-
-    Respects structured concurrency: cancellation is never retried.
-    Automatically caps delays to any ambient deadline from parent scope.
-
-    Args:
-        fn: Zero-argument async callable to retry.
-        attempts: Maximum attempts (>= 1).
-        base_delay: Initial delay in seconds (> 0).
-        max_delay: Maximum delay cap in seconds (>= 0).
-        backoff_factor: Exponential base for delay growth (default 2.0).
-        retry_on: Exception types to retry on (must not include CancelledError).
-        jitter: Random jitter factor (0.1 = up to 10% extra delay).
-
-    Returns:
-        Result of successful fn() call.
-
-    Raises:
-        ValueError: If parameters are invalid or retry_on includes cancellation.
-        BaseException: Last exception after exhausting attempts.
-    """
+    """Retry fn up to attempts times with exponential backoff; deadline-aware, never retries cancellation."""
     if attempts < 1:
         raise ValueError("attempts must be >= 1")
     if base_delay <= 0:

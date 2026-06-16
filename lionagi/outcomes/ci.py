@@ -14,11 +14,7 @@ from ._base import SkillOutcome
 
 
 class CIRunCommand(HashableModel):
-    """One executed CI command with timing.
-
-    The CIResultCard renders these in a "Commands" panel below the
-    pass/fail matrix.
-    """
+    """One executed CI command with wall-clock timing and exit status."""
 
     command: str = Field(description="The shell command as executed.")
     duration_seconds: float = Field(

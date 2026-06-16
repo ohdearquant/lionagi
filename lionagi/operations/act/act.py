@@ -44,10 +44,7 @@ async def _act(
             " and 'arguments', or dict with 'function' and 'arguments'."
         )
 
-    # ADR-0076 Follow-up 1: pre-invoke governance gate. When the session sets
-    # ``session.gate(check)``, a denied tool call is blocked BEFORE execution and
-    # surfaced to the model as a tool result (so a ReAct loop can adapt), never
-    # raised. No gate / standalone branch → always allowed (additive).
+    # ADR-0076: governance gate — denied calls surface as tool results (not exceptions) so ReAct loops can adapt.
     from lionagi.session.control import ToolInvocation
 
     _args = _request["arguments"] if isinstance(_request["arguments"], dict) else {}
@@ -128,7 +125,6 @@ async def _act(
             recipient=func_call.func_tool.id,
         )
 
-    # Add the action request/response to the message manager, if not present
     if action_request not in branch.messages:
         await branch.msgs.a_add_message(action_request=action_request)
 
@@ -155,7 +151,7 @@ def prepare_act_kw(
 ):
     action_param = ActionParam(
         action_call_params=call_params or _get_default_call_params(),
-        tools=None,  # Not used in this context
+        tools=None,
         strategy=strategy,
         suppress_errors=suppress_errors,
         verbose_action=verbose_action,
@@ -205,7 +201,6 @@ async def _concurrent_act(
     async def _wrapper(req):
         return await _act(branch, req, suppress_errors, verbose_action)
 
-    # AlcallParams expects a list as first argument
     action_request_list = action_request if isinstance(action_request, list) else [action_request]
 
     return await call_params(action_request_list, _wrapper)

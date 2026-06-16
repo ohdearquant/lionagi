@@ -18,14 +18,7 @@ __all__ = (
 
 
 class EdgeCondition(BaseModel, Condition):
-    """Represents a condition associated with an edge in the Lion framework.
-
-    This class combines Condition characteristics with Pydantic's
-    BaseModel for robust data validation and serialization.
-
-    Attributes:
-        source (Any): The source for condition evaluation.
-    """
+    """Pydantic-validated condition for edge traversal evaluation."""
 
     source: Any = Field(
         default=None,
@@ -40,11 +33,7 @@ class EdgeCondition(BaseModel, Condition):
 
 
 class Edge(Element):
-    """
-    An edge in a graph, connecting a head Node to a tail Node. Optional
-    EdgeCondition can control traversal. Additional properties like labels,
-    metadata, etc., may be stored in `properties`.
-    """
+    """Directed graph edge from head to tail with optional condition and label in properties."""
 
     head: UUID
     tail: UUID
@@ -62,27 +51,7 @@ class Edge(Element):
         label: list[str] | None = None,
         **kwargs,
     ):
-        """
-        Initialize an Edge.
-
-        This constructor sets up an edge by linking a head node to a tail node,
-        with optional conditions and labels. Additional properties can also be
-        provided via keyword arguments.
-
-        Args:
-            head (Relational | str): The head node or its ID. This is the
-                starting point of the edge.
-            tail (Relational | str): The tail node or its ID. This is the end
-                point of the edge.
-            condition (Condition | None): An optional condition that must
-                be satisfied for the edge to be traversed. Any ``Condition``
-                subclass is accepted — :class:`EdgeCondition` is one such
-                subclass, but custom Conditions work as long as they
-                implement ``async def apply(...)``.
-            label (list[str] | None): An optional list of labels that describe
-                the edge.
-            kwargs: Optional additional properties for the edge.
-        """
+        """Link head to tail with optional condition and labels; extra kwargs go into properties."""
         head = ID.get_id(head)
         tail = ID.get_id(tail)
         if condition:
@@ -141,12 +110,7 @@ class Edge(Element):
         raise ValueError("Label must be a string or a list of strings.")
 
     async def check_condition(self, *args, **kwargs) -> bool:
-        """
-        Check if this edge can be traversed, by evaluating any assigned condition.
-
-        Returns:
-            bool: True if condition is met or if no condition exists.
-        """
+        """Return True if condition passes or no condition is set."""
         if self.condition is not None:
             return await self.condition.apply(*args, **kwargs)
         return True

@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""DeepSeek OpenAI-compatible chat models."""
+"""DeepSeek chat completions models; OpenAI-compatible with thinking-mode extensions."""
 
 from __future__ import annotations
 
@@ -21,12 +21,7 @@ class DeepseekThinking(BaseModel):
 
 
 class DeepseekChatCompletionsRequest(OpenAIChatCompletionsRequest):
-    """Request body for DeepSeek chat completions.
-
-    DeepSeek is OpenAI-compatible for the common chat-completions surface, but
-    supports additional thinking-mode parameters and a different highest
-    reasoning effort value.
-    """
+    """Request body for DeepSeek chat completions; extends OpenAI-compatible surface with thinking-mode params."""
 
     thinking: DeepseekThinking | None = Field(
         default=None,
@@ -49,13 +44,7 @@ class DeepseekChatCompletionsRequest(OpenAIChatCompletionsRequest):
 
 
 def normalize_deepseek_usage(response: Any) -> Any:
-    """Expose DeepSeek reasoning usage as ``thinking_tokens``.
-
-    DeepSeek responses may report reasoning usage under
-    ``usage.completion_tokens_details.reasoning_tokens``. Older review notes and
-    callers refer to this as ``thinking_tokens``; add that alias without
-    discarding the provider-native fields.
-    """
+    """Alias reasoning_tokens as thinking_tokens in DeepSeek usage; preserves provider-native fields."""
     if not isinstance(response, dict):
         return response
 

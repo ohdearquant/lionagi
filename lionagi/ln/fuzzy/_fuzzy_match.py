@@ -34,33 +34,7 @@ def fuzzy_match_keys(
     fill_mapping: dict[str, Any] | None = None,
     strict: bool = False,
 ) -> dict[str, Any]:
-    """
-    Validate and correct dictionary keys based on expected keys using string similarity.
-
-    Args:
-        d_: The dictionary to validate and correct keys for.
-        keys: List of expected keys or dictionary mapping keys to types.
-        similarity_algo: String similarity algorithm to use or custom function.
-        similarity_threshold: Minimum similarity score for fuzzy matching.
-        fuzzy_match: If True, use fuzzy matching for key correction.
-        handle_unmatched: Specifies how to handle unmatched keys:
-            - "ignore": Keep unmatched keys in output.
-            - "raise": Raise ValueError if unmatched keys exist.
-            - "remove": Remove unmatched keys from output.
-            - "fill": Fill unmatched keys with default value/mapping.
-            - "force": Combine "fill" and "remove" behaviors.
-        fill_value: Default value for filling unmatched keys.
-        fill_mapping: Dictionary mapping unmatched keys to default values.
-        strict: If True, raise ValueError if any expected key is missing.
-
-    Returns:
-        A new dictionary with validated and corrected keys.
-
-    Raises:
-        ValueError: If validation fails based on specified parameters.
-        TypeError: If input types are invalid.
-        AttributeError: If key validation fails.
-    """
+    """Remap dict keys to expected keys via exact + fuzzy matching; handle_unmatched controls missing/extra key policy."""
     # Input validation
     if not isinstance(d_, dict):
         raise TypeError("First argument must be a dictionary")

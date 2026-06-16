@@ -38,8 +38,7 @@ class PatternKind(Enum):
 
 @dataclass(init=False, frozen=True, slots=True)
 class Pattern(Params, Composable):
-    """Abstract, composable atom of agent configuration — a frozen (name,
-    description); Role and Mode subclass it and override ``kind``."""
+    """Composable, frozen atom of agent configuration; Role and Mode subclass and override ``kind``."""
 
     _config = ModelConfig(
         none_as_sentinel=True,
@@ -60,13 +59,7 @@ def _module_stem(name: str) -> str:
 
 
 def _load_builtin(pkg: str, name: str, attr: str):
-    """Import a built-in pattern module, returning its ``ROLE``/``MODE``.
-
-    ``None`` if there is no such built-in OR *name* is a non-canonical alias
-    (only the declared canonical name resolves — ``postmortem_lead`` will not
-    stand in for ``postmortem-lead``). A genuine import failure *inside* an
-    existing module propagates rather than being masked as "unknown".
-    """
+    """Import a built-in pattern module and return its ``ROLE``/``MODE``; None if absent or non-canonical."""
     target = f"{pkg}.{_module_stem(name)}"
     try:
         mod = import_module(target)
@@ -112,9 +105,7 @@ class Mode(Pattern):
 
 @dataclass(init=False, frozen=True, slots=True)
 class Role(Pattern):
-    """Behavioral pattern — what an agent does. ``body`` composes into the system
-    prompt; ``description`` is the orchestrator-facing selection signal (not in
-    the prompt); ``emits`` is the role's emission contract (see ``casts.emission``)."""
+    """Behavioral pattern: ``body`` composes into the system prompt; ``emits`` declares the emission contract."""
 
     body: str = ""
     emits: tuple = ()
@@ -133,11 +124,7 @@ class Role(Pattern):
         return d
 
     def emission_operable(self) -> Operable | None:
-        """Build the :class:`Operable` for this role's emission contract.
-
-        ``None`` when the role declares no emissions. Otherwise includes
-        ``EscalationRequest`` (any emitting role may also escalate).
-        """
+        """Build the Operable for this role's emission contract; None if no emits; always includes EscalationRequest."""
         from lionagi.casts.emission import build_emission_operable
         from lionagi.ln.types import is_sentinel
 
@@ -156,22 +143,12 @@ class Role(Pattern):
 
 
 def list_roles() -> list[str]:
-    """Sorted canonical names of all built-in roles.
-
-    Module stems use underscores; canonical names (which may contain dashes)
-    are read from each module's declared ``ROLE.name`` (imported by stem, so
-    the canonical-name guard in ``_load_builtin`` does not apply here).
-    """
+    """Return sorted canonical names of all built-in roles."""
     stems = _list_builtin_modules(_ROLES_PKG)
     return sorted(import_module(f"{_ROLES_PKG}.{s}").ROLE.name for s in stems)
 
 
 def list_modes() -> list[str]:
-    """Sorted canonical names of all built-in modes.
-
-    Module stems use underscores; canonical names (which may contain dashes)
-    are read from each module's declared ``MODE.name`` (imported by stem, so
-    the canonical-name guard in ``_load_builtin`` does not apply here).
-    """
+    """Return sorted canonical names of all built-in modes."""
     stems = _list_builtin_modules(_MODES_PKG)
     return sorted(import_module(f"{_MODES_PKG}.{s}").MODE.name for s in stems)

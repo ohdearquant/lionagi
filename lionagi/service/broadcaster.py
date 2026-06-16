@@ -17,23 +17,7 @@ __all__ = ("Broadcaster",)
 
 
 class Broadcaster:
-    """Singleton pub/sub with weakref-based automatic subscriber cleanup.
-
-    Subclass and set ``_event_type`` to define typed broadcasters.
-    Subscribers are stored as weakrefs (WeakMethod for bound methods)
-    so they are automatically cleaned up when the referenced object
-    is garbage collected.
-
-    Thread-safe: all subscriber mutations are protected by a class-level lock.
-
-    Example::
-
-        class OrderBroadcaster(Broadcaster):
-            _event_type = OrderEvent
-
-        OrderBroadcaster.subscribe(my_handler)
-        await OrderBroadcaster.broadcast(OrderEvent(...))
-    """
+    """Thread-safe singleton pub/sub; subclass and set ``_event_type`` for typed event broadcasting."""
 
     _instance: ClassVar[Broadcaster | None] = None
     _subscribers: ClassVar[list[weakref.ref]] = []
@@ -58,29 +42,14 @@ class Broadcaster:
         cls,
         callback: Callable[[Any], None] | Callable[[Any], Awaitable[None]],
     ) -> None:
-        """Add subscriber callback (idempotent).
-
-        Bound methods are stored as weak references (via ``WeakMethod``)
-        so that the subscriber is automatically removed when the owning
-        object is garbage collected.
-
-        Plain functions, lambdas, and other non-bound callables are stored
-        as **strong** references because they have no associated object
-        whose lifetime should govern the subscription.  To unsubscribe a
-        plain function, call :meth:`unsubscribe` explicitly.
-
-        Args:
-            callback: Sync or async callable receiving the event.
-        """
+        """Add subscriber (idempotent); bound methods stored as WeakMethod, plain functions as strong refs."""
         with cls._lock:
             for ref in cls._subscribers:
                 if ref() is callback:
                     return
             if hasattr(callback, "__self__"):
-                # Bound method — weak reference prevents leaking the object
                 cls._subscribers.append(weakref.WeakMethod(callback))
             else:
-                # Plain function/lambda — strong reference (prevent silent GC)
                 cls._subscribers.append(lambda cb=callback: cb)
 
     @classmethod
@@ -88,11 +57,7 @@ class Broadcaster:
         cls,
         callback: Callable[[Any], None] | Callable[[Any], Awaitable[None]],
     ) -> None:
-        """Remove subscriber callback.
-
-        Args:
-            callback: Previously subscribed callback to remove.
-        """
+        """Remove a previously subscribed callback."""
         with cls._lock:
             for weak_ref in list(cls._subscribers):
                 if weak_ref() is callback:
@@ -114,14 +79,7 @@ class Broadcaster:
 
     @classmethod
     async def broadcast(cls, event: Any) -> None:
-        """Broadcast event to all subscribers sequentially.
-
-        Args:
-            event: Event instance (must match _event_type).
-
-        Raises:
-            ValueError: If event type doesn't match _event_type.
-        """
+        """Dispatch event to all live subscribers sequentially; raises ValueError on type mismatch."""
         if not isinstance(event, cls._event_type):
             raise ValueError(f"Event must be of type {cls._event_type.__name__}")
         with cls._lock:

@@ -15,11 +15,7 @@ _SOURCE_GIT_REMOTE = "git_remote"
 
 
 def detect_project(cwd: Path | None = None) -> tuple[str | None, str | None]:
-    """Detect the current project from cwd context.
-
-    Returns (project_name, project_source) where project_source is one of:
-    ``config_toml``, ``global_override``, ``git_remote``, or ``None``.
-    """
+    """Detect the current project; returns (project_name, source) where source is config_toml/global_override/git_remote/None."""
     cwd = cwd or Path.cwd()
 
     result = _from_config_toml(cwd)

@@ -13,11 +13,7 @@ from .tool import Tool
 
 
 class FunctionCalling(Event):
-    """Handles asynchronous function execution with pre/post processing.
-
-    This class manages function calls with optional preprocessing and
-    postprocessing, handling both synchronous and asynchronous functions.
-    """
+    """Executes a Tool's callable asynchronously with optional pre/postprocessing."""
 
     func_tool: Tool = Field(
         ...,
@@ -55,13 +51,7 @@ class FunctionCalling(Event):
         return self.func_tool.function
 
     async def _invoke(self) -> Any:
-        """Execute the function call with pre/post processing.
-
-        Handles both synchronous and asynchronous functions, including optional
-        preprocessing of arguments and postprocessing of results.
-
-        Called by Event.invoke() which handles state transitions.
-        """
+        """Execute the tool callable with pre/postprocessors; called by Event.invoke()."""
 
         if self.func_tool.preprocessor:
             if is_coro_func(self.func_tool.preprocessor):
@@ -90,11 +80,7 @@ class FunctionCalling(Event):
         return response
 
     def to_dict(self, *args, **kw) -> dict[str, Any]:
-        """Convert instance to dictionary.
-
-        Returns:
-            dict[str, Any]: Dictionary representation of the instance.
-        """
+        """Serialize to dict, adding function name and arguments."""
         dict_ = super().to_dict(*args, **kw)
         dict_["function"] = self.function
         dict_["arguments"] = self.arguments

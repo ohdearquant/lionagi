@@ -27,11 +27,7 @@ MinimalDumper.add_representer(str, _represent_str)
 
 
 def _is_empty(x: Any) -> bool:
-    """
-    Define 'empty' for pruning. Keeps 0 and False.
-    - None or '' (after strip) are empty
-    - Empty containers are empty
-    """
+    """True for None, blank strings, and empty containers; keeps 0 and False."""
     if x is None:
         return True
     if isinstance(x, str):
@@ -73,14 +69,7 @@ def minimal_yaml(
     line_width: int = 2**31 - 1,  # avoid PyYAML inserting line-wraps
     sort_keys: bool = False,
 ) -> str:
-    """
-    Convert any Python value (dict/list/scalars) to a minimal, readable YAML string.
-    - Lists -> YAML sequences with '- '
-    - Dicts -> 'key: value' mappings
-    - Multiline strings -> block scalars (|)
-    - Optional pruning of empty values (keeps 0 and False)
-    - No aliases/anchors
-    """
+    """Serialize Python value to minimal YAML (block style, no aliases, optional empty-pruning)."""
     if isinstance(value, str):
         value = orjson.loads(value)
 

@@ -1,10 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Firecrawl crawl request model.
-
-Docs: https://docs.firecrawl.dev/api-reference/endpoint/crawl-post
-"""
+"""Firecrawl crawl request model."""
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -46,13 +43,7 @@ class CrawlScrapeOptions(BaseModel):
 
 
 class FirecrawlCrawlRequest(BaseModel):
-    """Request body for Firecrawl v1/crawl — asynchronous full-site crawl.
-
-    Endpoint: POST https://api.firecrawl.dev/v1/crawl
-    Docs: https://docs.firecrawl.dev/api-reference/endpoint/crawl-post
-
-    The crawl API returns a ``jobId``; poll v1/crawl/{jobId} for results.
-    """
+    """Request body for Firecrawl /v1/crawl — async full-site crawl; returns jobId."""
 
     model_config = ConfigDict(
         populate_by_name=True,

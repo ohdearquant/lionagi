@@ -67,12 +67,7 @@ def _load_team(team_id: str) -> dict:
 
 
 def _read_by_map(read_by) -> dict[str, str]:
-    """Normalize read_by to dict[name → ISO timestamp].
-
-    Old-format messages stored read_by as a list of names; convert on
-    read so callers always see a dict. Callers writing back should also
-    use the dict form.
-    """
+    """Normalize read_by to dict[name → ISO timestamp]; converts legacy list format."""
     if isinstance(read_by, dict):
         return dict(read_by)
     if isinstance(read_by, list):

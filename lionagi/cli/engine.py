@@ -180,12 +180,10 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     spec = args.spec
     meta = _KIND_META[kind]
 
-    # Validate kind-specific required args.
     if kind == "coding" and not args.test_cmd:
         log_error("the 'coding' engine requires --test-cmd (e.g. --test-cmd 'pytest tests/')")
         return 1
 
-    # Build engine kwargs from CLI flags.
     engine_kwargs: dict[str, Any] = {}
     if args.model:
         engine_kwargs["model"] = args.model
@@ -194,7 +192,6 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     if args.max_agents is not None:
         engine_kwargs["max_agents"] = args.max_agents
 
-    # Build run kwargs (positional input + kind-specific options).
     run_kwargs: dict[str, Any] = {}
     if kind == "coding":
         run_kwargs["test_cmd"] = args.test_cmd
@@ -210,7 +207,6 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     run_id = uuid.uuid4().hex
     started_at = time.time()
 
-    # Open DB for persistence.
     db = None
     # session_id for signal persistence: the engine run creates its own
     # sessions row (run_id) so Studio can stream signals live.  The
@@ -277,7 +273,6 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
             await db.close()
         return 1
 
-    # Build the on_event callback that translates engine events to stderr lines.
     def on_event(event: dict[str, Any]) -> None:
         event_type = event.get("type", "event")
         # Format: "engine[research] phase: <msg>" or "engine[research] done"
@@ -292,8 +287,6 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
             parts.append(f"{key}={val_str}")
         progress("  ".join(parts))
 
-    # Create a Session for signal binding, then bind persistence before running.
-    # This lets Studio poll session_signals live via GET /api/sessions/{run_id}/signals.
     _session = None
     if signal_session_id is not None:
         try:
@@ -305,7 +298,6 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
             warn(f"could not bind signal persistence for engine run: {exc}")
             _session = None
 
-    # Instantiate and run the engine.
     progress(f"engine[{kind}] starting  spec={spec!r}")
     result = None
     ended_at: float | None = None

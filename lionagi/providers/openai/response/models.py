@@ -9,11 +9,7 @@ from pydantic import BaseModel, Field
 
 
 class OpenAIResponsesRequest(BaseModel):
-    """Request body for OpenAI Responses API.
-
-    The endpoint accepts a broad set of structured fields; keep the schema
-    explicit so provider/internal kwargs are filtered before the HTTP call.
-    """
+    """Request body for OpenAI Responses API (POST /v1/responses); explicit schema filters internal kwargs."""
 
     model: str | None = Field(default=None, description="Model name.")
     input: str | list[Any] | None = Field(

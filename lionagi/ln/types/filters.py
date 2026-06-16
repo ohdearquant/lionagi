@@ -1,28 +1,4 @@
-"""Filters — composable predicates that match an emitted payload.
-
-A capability emission is a dynamic model whose fields are named ``Spec``s. A
-``Filter`` decides whether a payload is interesting and yields the matched
-value(s) to hand to a handler. Two kinds, unified under one abstraction:
-
-- ``TypeFilter(T)`` — matches when the payload *is* a ``T``, or carries a field
-  whose value is a ``T``. Hands back the matched instance(s). (A type
-  subscription is just a filter that scans ``model_fields`` for ``isinstance``.)
-- ``SpecFilter`` — matches a named field by value, built via ``Spec.q``::
-
-      flower = Spec(str, name="flower_name")
-      session.observe(flower.q == "rose")   # flower.q → FieldRef("flower_name")
-
-  ``flower.q == "rose"`` is not a bool — it is a ``SpecFilter``, a predicate
-  asking "does the payload carry a ``flower_name`` field equal to ``rose``?".
-
-Filters compose with ``&`` / ``|`` / ``~``. ``observe``/``route``/``gate`` all
-speak Filter — a plain callable predicate is wrapped via :func:`as_filter`.
-
-Named *Filter*, not *Condition*: ``Condition`` is already a protocols concept
-(``await condition.apply``). And the operators live on ``FieldRef`` (handed out
-by ``Spec.q``), not on ``Spec`` itself — ``Spec.__eq__`` is load-bearing for
-the Operable system (sets, dedup, caches).
-"""
+"""Composable payload predicates: TypeFilter (isinstance match) and SpecFilter (field-value match via Spec.q DSL)."""
 
 from __future__ import annotations
 
@@ -59,14 +35,7 @@ _MISSING = object()
 
 
 def resolve_path(payload: Any, dotted: str) -> Any:
-    """Resolve a (possibly dotted) field path on a payload; ``_MISSING`` if absent.
-
-    Reads via attribute access (so properties like ``Event.status`` and nested
-    paths like ``execution.duration`` resolve), falling back to item access for
-    dict payloads. Unlike :func:`field_values`, this is not limited to declared
-    model fields — it is what lets the filter DSL reach an event's execution
-    state, not just its Pydantic fields.
-    """
+    """Walk dotted attribute/item path on payload; return ``_MISSING`` if any segment is absent."""
     cur: Any = payload
     for part in dotted.split("."):
         if isinstance(cur, dict):
@@ -120,17 +89,7 @@ class TypeFilter(Filter):
 
 
 class SpecFilter(Filter):
-    """A predicate filter — matches the whole payload when its check passes.
-
-    Built by ``FieldRef`` comparisons (``spec.q == value``), by composition,
-    and by wrapping a plain callable. Hands back the payload on a match.
-
-    ``safe`` (set by ``FieldRef``) swallows exceptions — a missing or
-    type-incompatible field is just a non-match, by design. Arbitrary user
-    predicates wrapped via :func:`as_filter` are **not** safe: their exceptions
-    are logged with the predicate repr (so a buggy subscription is visible) and
-    then treated as a non-match rather than silently disappearing.
-    """
+    """Predicate filter over an arbitrary callable; safe=True silences exceptions instead of logging."""
 
     __slots__ = ("_fn", "_repr", "safe")
 
@@ -154,13 +113,7 @@ class SpecFilter(Filter):
 
 
 def as_filter(x: Filter | type | Callable) -> Filter:
-    """Coerce a type, ``__as_filter__`` provider, callable, or Filter into a Filter.
-
-    An object exposing ``__as_filter__()`` (e.g. an ``EventStatus`` member) builds
-    its own Filter — the hook that lets a value participate in the DSL without the
-    low-level filter module importing it. Checked before ``callable`` so a Filter
-    that happens to be callable is not mistaken for a bare predicate.
-    """
+    """Coerce a type, __as_filter__ provider, callable, or Filter into a Filter."""
     if isinstance(x, Filter):
         return x
     if isinstance(x, type):
@@ -179,13 +132,7 @@ def as_filter(x: Filter | type | Callable) -> Filter:
 
 
 def all_of(*keys: Filter | type | Callable) -> Filter:
-    """AND-compose one or more keys (each coerced via :func:`as_filter`).
-
-    The compositional core of ``observe(APICalling, EventStatus.FAILED, …)`` —
-    every key must match the same payload. A single key returns its own filter
-    unchanged; zero keys is an error (an empty conjunction matches everything,
-    which is never what a subscription wants).
-    """
+    """AND-compose filters; all must match the same payload. Zero keys raises TypeError."""
     flts = [as_filter(k) for k in keys]
     if not flts:
         raise TypeError("all_of() requires at least one filter")
@@ -196,24 +143,7 @@ def all_of(*keys: Filter | type | Callable) -> Filter:
 
 
 class RoleFilter(Filter):
-    """Matches a Signal whose ``emitter_role`` equals the subscribed role name.
-
-    Unlike ``TypeFilter`` / ``SpecFilter``, which operate on the payload, a
-    ``RoleFilter`` operates on the Signal *envelope* — it lets observers subscribe
-    to "anything emitted by a Researcher" without enumerating each capability type
-    that role can produce.
-
-    Usage::
-
-        session.observe(role="researcher", handler=...)
-
-    The matched value handed to the handler is the Signal's payload (``data``),
-    or the Signal itself when ``data`` is None.
-
-    The filter only matches Signals that carry an ``emitter_role`` attribute set to
-    the subscribed role name; events without that attribute (plain payloads) never
-    match.
-    """
+    """Matches a Signal whose ``emitter_role`` equals the subscribed role; operates on the envelope, not the payload."""
 
     __slots__ = ("role",)
 
@@ -233,11 +163,7 @@ class RoleFilter(Filter):
 
 
 class FieldRef:
-    """A handle to a named field that builds :class:`SpecFilter`s via comparison.
-
-    Obtained from ``Spec.q``. The operators return Filters, not bools, so a
-    FieldRef must not be used as a dict key or set member.
-    """
+    """Handle to a named field that builds SpecFilters via comparison operators (from Spec.q)."""
 
     __slots__ = ("name",)
 

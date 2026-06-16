@@ -1,28 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Daytona sandbox integration — run lionagi agents inside isolated cloud containers.
-
-Why this exists
----------------
-lionagi's coding tools (``CodingToolkit``) execute file edits and shell commands
-on the *host*. For untrusted or destructive work (running a model-written patch,
-executing a project's test suite, SWE-bench), that host is the wrong place. The
-clean model is to run the **entire agent process inside a sandbox** against a
-local checkout, and exchange with it over the reactive bus — emission flows out
-as a signal stream, control flows in as a polled signal file. The container is
-the isolation boundary; the bus is the protocol across it.
-
-This module is the host-side half: a thin async wrapper over Daytona's
-``AsyncSandbox`` covering the lifecycle a lionagi run needs — create (from a
-reusable snapshot), clone a repo at a commit, push/pull files, exec (blocking or
-live-streamed), and tear down. The in-sandbox half (the agent driver that emits
-signals to stdout and polls a control file) is application code; see
-``benchmarks/orchestration/suites/swebench`` for the SWE-bench driver.
-
-``daytona`` is an optional dependency (``pip install lionagi[sandbox]``); the
-import is deferred so importing lionagi never requires it.
-"""
+"""Daytona sandbox integration — host-side async wrapper for isolated cloud agent runs."""
 
 from __future__ import annotations
 
@@ -61,21 +40,7 @@ class ExecResult:
 
 
 class DaytonaSandbox:
-    """Async-context-managed Daytona sandbox tuned for lionagi agent runs.
-
-    Usage::
-
-        async with await DaytonaSandbox.create(snapshot="lionagi-bench") as sb:
-            await sb.clone("https://github.com/django/django.git",
-                           f"{sb.home}/repo", commit="abc1234")
-            await sb.write_text("print('hi')", f"{sb.home}/repo/x.py")
-            r = await sb.exec("python x.py", cwd=f"{sb.home}/repo")
-            print(r.stdout)
-        # sandbox auto-deleted on exit (override with delete_on_exit=False)
-
-    The object is a holder over an ``AsyncSandbox``; all methods are passthroughs
-    that normalize return shapes (``ExecResult``, ``str``, ``bytes``).
-    """
+    """Async-context-managed holder over an ``AsyncSandbox``; auto-deletes on exit by default."""
 
     def __init__(self, client: Any, sandbox: AsyncSandbox, *, delete_on_exit: bool = True):
         self._client = client
@@ -98,16 +63,7 @@ class DaytonaSandbox:
         delete_on_exit: bool = True,
         create_timeout: float = 180.0,
     ) -> DaytonaSandbox:
-        """Create a sandbox and return a ready ``DaytonaSandbox``.
-
-        ``snapshot`` names a prebuilt snapshot (the fast path — instant create).
-        ``image`` is a ``daytona.Image`` for an on-the-fly build (slower; prefer
-        snapshots for repeated runs). Exactly one of snapshot/image is typically
-        set; with neither, Daytona's default image is used.
-
-        ``env`` is injected as sandbox environment (e.g. provider API keys).
-        ``auto_stop_minutes`` auto-stops an idle sandbox as a credit backstop.
-        """
+        """Create and return a ready sandbox; snapshot is fast, image is slower."""
         _require_daytona()
         from daytona import (
             AsyncDaytona,
@@ -179,21 +135,13 @@ class DaytonaSandbox:
         username: str | None = None,
         password: str | None = None,
     ) -> None:
-        """Clone ``url`` into ``path``; optionally check out a specific commit.
-
-        Daytona's git.clone checks out ``commit_id`` directly when given, which is
-        what SWE-bench needs (detached HEAD at the bug's base_commit).
-        """
+        """Clone ``url`` into ``path``; checks out ``commit`` as detached HEAD when given."""
         await self._sb.git.clone(
             url, path, branch=branch, commit_id=commit, username=username, password=password
         )
 
     async def git_diff(self, repo_path: str, *, staged_all: bool = True) -> str:
-        """Unified diff of working tree vs HEAD — the model_patch.
-
-        Stages everything first (``git add -A``) so new files appear in the diff,
-        then ``git diff --cached``.
-        """
+        """Return unified diff of working tree vs HEAD; stages all changes first."""
         if staged_all:
             await self.exec("git add -A", cwd=repo_path)
         r = await self.exec("git diff --cached", cwd=repo_path)
@@ -223,12 +171,7 @@ class DaytonaSandbox:
         on_stderr: Callable[[str], None] | None = None,
         session_id: str | None = None,
     ) -> int:
-        """Run a command async in a session, streaming stdout/stderr live.
-
-        ``on_stdout`` receives output chunks as they arrive — the host's live
-        signal channel (parse ``@@SIG@@`` lines off this). Returns the exit code.
-        A ``cd`` prefix scopes cwd because session commands ignore the cwd arg.
-        """
+        """Run a command in a session streaming stdout/stderr live; returns exit code."""
         from daytona import SessionExecuteRequest
 
         sid = session_id or f"run-{os.urandom(4).hex()}"
@@ -282,12 +225,7 @@ async def ensure_snapshot(
     on_logs: Callable[[str], None] | None = None,
     rebuild: bool = False,
 ) -> str:
-    """Build a named snapshot once; return its name. Reuses an existing one.
-
-    The slow step (installing the dependency tree) happens here, a single time.
-    Sandboxes created from the snapshot start in well under a second. Pass
-    ``rebuild=True`` to force a fresh build (e.g. after changing the dep set).
-    """
+    """Build a named snapshot once and return its name; reuses existing unless rebuild=True."""
     _require_daytona()
     from daytona import AsyncDaytona, CreateSnapshotParams, Resources
 
@@ -317,12 +255,7 @@ def lionagi_image(
     extra_pip: tuple[str, ...] = ("pyyaml", "pytest"),
     apt: tuple[str, ...] = ("git",),
 ):
-    """A declarative ``daytona.Image`` with git + lionagi's dependency tree.
-
-    Built once into a named snapshot, then reused: install lionagi from PyPI here
-    to capture the *dependency* tree, and overlay this-branch's wheel per run with
-    ``pip install --no-deps`` so code iteration doesn't reinstall deps each time.
-    """
+    """Return a declarative ``daytona.Image`` with git + lionagi's dependency tree."""
     _require_daytona()
     from daytona import Image
 

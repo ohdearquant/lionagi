@@ -379,9 +379,7 @@ async def stream_gemini_cli(
     on_tool_result: Callable[[dict[str, Any]], None] | None = None,
     on_final: Callable[[GeminiSession], None] | None = None,
 ) -> AsyncIterator[GeminiChunk | dict | GeminiSession]:
-    """
-    Consume the ND-JSON stream from Gemini CLI and return a populated GeminiSession.
-    """
+    """Consume the ND-JSON stream from Gemini CLI and return a populated GeminiSession."""
     if session is None:
         session = GeminiSession()
     theme = request.cli_display_theme or "light"

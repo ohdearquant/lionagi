@@ -1,50 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-r"""Declarative validation rules for WorkForm fields.
-
-Rules complement FieldSpec by expressing *value-level* or *cross-field*
-constraints that cannot be expressed in a plain type declaration:
-
-- **required**: field must be present and not None.
-- **type**: value must be an instance of the declared type.
-- **range**: numeric value must fall within [min, max].
-- **pattern**: string value must match a regex pattern.
-- **custom**: arbitrary Python callable returning bool.
-
-Usage::
-
-    from lionagi.work.rules import Rule, RuleSet
-    from lionagi.work.form import WorkForm, FieldSpec
-
-    rs = RuleSet()
-    rs.add(Rule(rule_id="r1", field="age", check="range", params={"min": 0, "max": 150}))
-    rs.add(Rule(rule_id="r2", field="email", check="pattern",
-                params={"pattern": r".+@.+\..+"}))
-
-    errors = rs.apply_all(form)
-
-.. warning::
-
-    **Pattern rules are NOT safe for untrusted or adversarial input.**
-
-    The stdlib ``re`` engine uses backtracking and can hold the GIL during
-    catastrophic matches, making any thread-based timeout ineffective.
-    Pattern rules are intended for **trusted patterns only** — for example,
-    validating application-controlled fields (phone formats, zip codes, etc.)
-    where the pattern is authored by the developer, not supplied by users.
-
-    To mitigate worst-case performance: inputs exceeding
-    :data:`REGEX_MAX_INPUT_LENGTH` characters are rejected outright before
-    the regex engine is invoked.  This bounds the *input* dimension; it does
-    not bound the *pattern* dimension.  Nested-quantifier patterns such as
-    ``(a+)+`` remain pathological regardless of input length if that limit
-    is not tight enough.
-
-    If you need safe matching against untrusted patterns or very long
-    inputs, use a non-backtracking engine (e.g., ``google-re2``) and
-    provide a ``custom`` rule backed by that engine instead.
-"""
+"""Declarative validation rules (required/type/range/pattern/custom) for WorkForm fields; see docs/reference/outcomes-work.md for security notes on pattern rules."""
 
 from __future__ import annotations
 
@@ -63,37 +20,14 @@ __all__ = (
     "REGEX_MAX_INPUT_LENGTH",
 )
 
-# Maximum input length for pattern checks.  Inputs longer than this are
-# rejected before regex evaluation.  This limits the *input* dimension of
-# worst-case backtracking but does NOT eliminate the risk for pathological
-# patterns.  See module docstring.
+# Guards the input dimension of worst-case regex backtracking; does not make pathological patterns safe.
 REGEX_MAX_INPUT_LENGTH: int = 4096
 
 CheckKind = Literal["required", "type", "range", "pattern", "custom"]
 
 
 class Rule(BaseModel):
-    """A single declarative validation rule.
-
-    Attributes:
-        rule_id: Unique identifier within a RuleSet.
-        field: Name of the WorkForm field this rule targets.
-        check: Kind of check to perform.
-        params: Check-specific parameters:
-
-            - ``range``: ``{"min": <number>, "max": <number>}`` — either
-              or both bounds are optional.
-            - ``pattern``: ``{"pattern": "<regex>", "flags": <int>}`` —
-              ``flags`` defaults to 0.  See module-level warning about
-              trusted-patterns-only.
-            - ``type``: ``{"type": "<FieldType>"}`` — one of
-              ``str|int|float|bool|list|dict``.
-            - ``custom``: ``{"callable": Callable[[Any], bool],
-              "error": "<msg>"}`` — ``error`` is the fallback message.
-
-        message: Optional override for the generated error message.
-        enabled: When False, this rule is skipped silently.
-    """
+    """A single declarative validation rule targeting one WorkForm field; see docs/reference/outcomes-work.md for params contract."""
 
     rule_id: str = Field(..., description="Unique rule identifier.")
     field: str = Field(..., description="WorkForm field name this rule applies to.")
@@ -183,12 +117,7 @@ class Rule(BaseModel):
         return None
 
     def _check_pattern(self, value: Any) -> str | None:
-        """Check that *value* matches the declared pattern.
-
-        .. warning::
-            Uses the stdlib ``re`` backtracking engine.  Suitable for
-            **trusted patterns only**.  See module docstring for details.
-        """
+        """Check that *value* matches the declared pattern; trusted patterns only (stdlib re backtracking)."""
         if value is None:
             return None
         if not isinstance(value, str):
@@ -196,9 +125,7 @@ class Rule(BaseModel):
                 f"Field {self.field!r}: pattern check requires str, got {type(value).__name__!r}."
             )
 
-        # Reject inputs that exceed the configurable length limit.
-        # This bounds the input dimension of worst-case backtracking; it
-        # does NOT make arbitrary patterns safe (see module docstring).
+        # Bounds input dimension of worst-case backtracking; does NOT make pathological patterns safe.
         if len(value) > REGEX_MAX_INPUT_LENGTH:
             return self.message or (
                 f"Field {self.field!r}: input length {len(value)} exceeds "
@@ -236,31 +163,13 @@ class Rule(BaseModel):
 
 
 class RuleSet:
-    """An ordered collection of :class:`Rule` objects.
-
-    Rules are applied in insertion order.  All rules are evaluated
-    (no short-circuit), so the caller receives a complete list of errors.
-
-    Each rule must have a unique ``rule_id`` within this set — :meth:`add`
-    raises ``ValueError`` if a duplicate ``rule_id`` is supplied.
-
-    Usage::
-
-        rs = RuleSet()
-        rs.add(Rule(...))
-        errors = rs.apply_all(form)
-    """
+    """Ordered collection of Rules applied in insertion order; all enabled rules run (no short-circuit)."""
 
     def __init__(self) -> None:
         self._rules: list[Rule] = []
 
     def add(self, rule: Rule) -> RuleSet:
-        """Append *rule* and return ``self`` for chaining.
-
-        Raises:
-            ValueError: If a rule with the same ``rule_id`` already exists
-                in this set.
-        """
+        """Append *rule* and return ``self`` for chaining; raises ValueError on duplicate rule_id."""
         if any(r.rule_id == rule.rule_id for r in self._rules):
             raise ValueError(
                 f"RuleSet already contains a rule with rule_id={rule.rule_id!r}. "
@@ -287,11 +196,7 @@ class RuleSet:
         return list(self._rules)
 
     def apply_all(self, form: WorkForm) -> list[str]:
-        """Apply every enabled rule to *form*.
-
-        Returns a list of error messages.  An empty list means all rules
-        passed (or all were disabled).
-        """
+        """Apply every enabled rule to *form*; return list of error strings (empty = all pass)."""
         errors: list[str] = []
         for rule in self._rules:
             err = rule.apply(form)

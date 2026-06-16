@@ -82,24 +82,7 @@ def warn_unknown_artifact_keys(
     source: str = "playbook",
     emit: Any = None,
 ) -> list[str]:
-    """Warn about unknown subfields under each `expected[]` entry.
-
-    ADR-0029 §2 declares v1 fields as `id, path, required, description`
-    (plus `source` added by the resolver). `kind`, `min_size`,
-    `mime_type` are reserved for v1.1. Silently accepting them in v1
-    lets contract files look stricter than the executor actually is —
-    warn so the author sees what was ignored.
-
-    Both `li play check` (pre-flight) and the real `li play` execution
-    path call this so the warning fires in both surfaces.
-
-    ``emit`` defaults to printing to stdout (for the CLI pre-flight).
-    The runtime path passes a logger so warnings land in the structured
-    log, not the console.
-
-    Returns the list of warning messages emitted (so tests can assert
-    without capturing the side channel).
-    """
+    """Warn about unrecognized subfields in expected[] entries (ADR-0029 v1.1-reserved fields); returns messages."""
     if contract is None:
         return []
     expected = contract.get("expected") or []

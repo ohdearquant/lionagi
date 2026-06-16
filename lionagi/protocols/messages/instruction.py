@@ -24,7 +24,7 @@ _INSTRUCTION_SERIALIZE_EXCLUDE: frozenset[str] = frozenset(
 
 @dataclass(slots=True)
 class InstructionContent(MessageContent):
-    """Structured content for user instructions."""
+    """Structured content for user-turn instructions with images, tool schemas, and response format."""
 
     _config: ClassVar[ModelConfig] = ModelConfig(
         none_as_sentinel=True,
@@ -197,20 +197,7 @@ class InstructionContent(MessageContent):
 
     @staticmethod
     def _format_image_item(idx: str, detail: str) -> dict[str, Any]:
-        """Format a single image entry for a provider payload.
-
-        Validation (fail-closed):
-        - http:// and https:// URLs are passed through ``validate_image_url``,
-          which rejects null bytes, non-rooted URLs, and disallowed schemes.
-        - data: URIs are accepted only when they match the ``data:image/*``
-          base64 pattern — other data: payloads (HTML, SVG, JS) are rejected
-          to limit DoS and XSS vectors.
-        - Anything else is treated as raw base64 and wrapped into a
-          ``data:image/jpeg;base64,`` URI (pre-existing behaviour).
-
-        Raises:
-            ValueError: If the URL fails validation.
-        """
+        """Format a single image entry for a provider payload; raises ValueError for disallowed schemes or malformed data URIs."""
         if idx.startswith("http://") or idx.startswith("https://"):
             # Delegates null-byte, scheme, and missing-netloc checks.
             validate_image_url(idx)

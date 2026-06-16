@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ID bridge utilities for V0/V1 compatibility.
-
-This module provides utilities to convert between V0's UUID and V1's
-canonical UUID representation, enabling seamless interoperability during
-the gradual evolution process.
-"""
+"""ID bridge utilities: convert UUID/str/Element to canonical UUID."""
 
 from __future__ import annotations
 

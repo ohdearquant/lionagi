@@ -76,12 +76,7 @@ def function_to_schema(
     parametert_description: dict[str, str] = None,
     return_obj: bool = False,
 ) -> dict:
-    """
-    Generate a schema description for a given function. in openai format
-
-    This function generates a schema description for the given function
-    using typing hints and docstrings. The schema includes the function's
-    name, description, and parameter details.
+    """Generate an OpenAI-format function schema from type hints and docstrings.
 
     Args:
         func (Callable): The function to generate a schema for.
@@ -112,16 +107,13 @@ def function_to_schema(
         >>> schema['function']['name']
         'example_func'
     """
-    # Extract function name
     func_name = f_.__name__
 
-    # Extract function description and parameter descriptions
     if not func_description or not parametert_description:
         func_desc, params_desc = extract_docstring(f_, style)
         func_description = func_description or func_desc
         parametert_description = parametert_description or params_desc
 
-    # Extract parameter details using typing hints
     sig = inspect.signature(f_)
     parameters: dict[str, Any] = {
         "type": "object",
@@ -131,11 +123,9 @@ def function_to_schema(
 
     if not request_options:
         for name, param in sig.parameters.items():
-            # Default type to string and update if type hint is available
             param_type = "string"
             if param.annotation is not inspect.Parameter.empty:
                 param_type = py_json_msp.get(param.annotation.__name__, param.annotation.__name__)
-            # Extract parameter description from docstring, if available
             param_description = parametert_description.get(name)
 
             # Assuming all parameters are required for simplicity

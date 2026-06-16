@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""AG2 (AutoGen) GroupChat endpoint for lionagi.
-
-Thin adapter: delegates to build_group_chat() + stream_group_chat()
-from models.py, converts AG2 events to StreamChunk.
-"""
+"""AG2 GroupChat endpoint: delegates to build_group_chat/stream_group_chat and converts events to StreamChunk."""
 
 from __future__ import annotations
 
@@ -26,11 +22,7 @@ logger = logging.getLogger(__name__)
 
 @AG2Configs.GROUP_CHAT.register
 class AG2GroupChatEndpoint(AgenticEndpoint):
-    """Wraps AG2 v0.12 GroupChat as a lionagi endpoint.
-
-    Delegates to ``build_group_chat()`` and ``stream_group_chat()``
-    for all AG2 logic. Config auto-created from ``_ENDPOINT_META``.
-    """
+    """Wraps AG2 v0.12 GroupChat as a lionagi agentic endpoint; stream-only."""
 
     DEFAULT_CONCURRENCY_LIMIT = 1
     DEFAULT_QUEUE_CAPACITY = 3
@@ -137,14 +129,7 @@ class AG2GroupChatEndpoint(AgenticEndpoint):
 
 
 def _event_to_chunk(event) -> StreamChunk | None:
-    """Convert an AG2 wrapped event to a StreamChunk.
-
-    AG2's @wrap_event decorator produces a two-layer structure:
-      event.type    — the event type string
-      event.content — the inner event with actual data
-
-    All attribute access for payload data must go through event.content.
-    """
+    """Convert an AG2 wrapped event to a StreamChunk; returns None for unrecognized event types."""
     from autogen.events.agent_events import (
         GroupChatRunChatEvent,
         SelectSpeakerEvent,

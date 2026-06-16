@@ -1,20 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Context tool — let a model engineer its own inference context.
-
-Design principle: **NON-DESTRUCTIVE**. The full conversation lives forever in
-the branch's message Pile (the durable record). What the model curates is the
-*active progression* — the ordered subset actually fed to the chat-completion
-call (lionagi passes ``progression=branch.progression`` into the request, and
-``branch.progression`` returns ``metadata["current_progression"]`` when set).
-
-So "evict" / "compact" only remove messages from the **view** the model is
-inferenced over; nothing is deleted. The model can ``get_messages(scope="all")``
-to see everything (including evicted), and ``restore`` to pull anything back
-into its active context. It is engineering the context window it pays for and
-reasons over, while the entire history remains available on demand.
-"""
+"""Context tool — non-destructive active-progression management for a branch."""
 
 from __future__ import annotations
 
