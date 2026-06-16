@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0019 teams + team_messages schema tests.
-
-The runtime still writes JSON; this PR adds the DB shape and the
-``li state import-teams`` backfill. Tests cover schema constraints,
-FK cascade behavior, and the import path.
-"""
+"""ADR-0019 teams + team_messages schema tests — schema constraints, FK cascade, and import-teams backfill path."""
 
 from __future__ import annotations
 

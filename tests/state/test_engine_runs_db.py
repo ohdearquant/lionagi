@@ -1,15 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the engine_runs StateDB methods (Phase C Move 2).
-
-Coverage targets:
-  - StateDB.insert_engine_run  (round-trip, fields stored correctly)
-  - StateDB.update_engine_run  (status, ended_at, export_dir, error)
-  - StateDB.get_engine_run     (single-row lookup, None on miss)
-  - StateDB.list_engine_runs   (ordering, filters, offset/limit)
-  - _write_lock discipline: concurrent inserts must not drop rows
-"""
+"""Tests for StateDB engine_runs CRUD: insert/get/update/list and concurrent write-lock discipline."""
 
 from __future__ import annotations
 
@@ -24,18 +16,9 @@ aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
 from lionagi.state.db import StateDB  # noqa: E402
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _run_id() -> str:
     return uuid.uuid4().hex
-
-
-# ---------------------------------------------------------------------------
-# insert_engine_run + get_engine_run
-# ---------------------------------------------------------------------------
 
 
 async def test_insert_and_get_engine_run(tmp_path: Path) -> None:
@@ -116,11 +99,6 @@ async def test_insert_engine_run_session_id_column_present(tmp_path: Path) -> No
     assert row2["session_id"] == "test-sess-xyz"
 
 
-# ---------------------------------------------------------------------------
-# update_engine_run
-# ---------------------------------------------------------------------------
-
-
 async def test_update_engine_run_completed(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"
     rid = _run_id()
@@ -194,11 +172,6 @@ async def test_update_engine_run_with_export_dir(tmp_path: Path) -> None:
     assert row["status"] == "completed"
 
 
-# ---------------------------------------------------------------------------
-# list_engine_runs
-# ---------------------------------------------------------------------------
-
-
 async def test_list_engine_runs_ordering_newest_first(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"
     ids = [_run_id() for _ in range(3)]
@@ -215,7 +188,6 @@ async def test_list_engine_runs_ordering_newest_first(tmp_path: Path) -> None:
 
     assert len(rows) >= 3
     returned_ids = [r["id"] for r in rows]
-    # The newest (started_at=1002) should appear first.
     assert returned_ids.index(ids[2]) < returned_ids.index(ids[0])
 
 
@@ -288,7 +260,6 @@ async def test_list_engine_runs_limit_and_offset(tmp_path: Path) -> None:
 
     assert len(page1) == 3
     assert len(page2) == 2
-    # No overlap between pages.
     p1_ids = {r["id"] for r in page1}
     p2_ids = {r["id"] for r in page2}
     assert p1_ids.isdisjoint(p2_ids)
@@ -299,11 +270,6 @@ async def test_list_engine_runs_empty(tmp_path: Path) -> None:
     async with StateDB(db_path) as db:
         rows = await db.list_engine_runs()
     assert rows == []
-
-
-# ---------------------------------------------------------------------------
-# spec_json round-trip: JSON string stored in DB must be deserialized back
-# ---------------------------------------------------------------------------
 
 
 async def test_spec_json_round_trips_complex(tmp_path: Path) -> None:
@@ -329,17 +295,8 @@ async def test_spec_json_round_trips_complex(tmp_path: Path) -> None:
     assert row["spec_json"] == spec
 
 
-# ---------------------------------------------------------------------------
-# _write_lock discipline: concurrent inserts must not drop rows or raise
-# ---------------------------------------------------------------------------
-
-
 async def test_concurrent_inserts_no_rows_dropped(tmp_path: Path) -> None:
-    """50 concurrent insert_engine_run calls on the same DB must all succeed.
-
-    Before the _write_lock pattern, concurrent coroutines on a shared
-    aiosqlite connection raced on BEGIN IMMEDIATE and silently dropped writes.
-    """
+    """50 concurrent insert_engine_run calls must all succeed; without _write_lock they would race on BEGIN IMMEDIATE and silently drop writes."""
     db_path = tmp_path / "state.db"
     n = 50
     ids = [_run_id() for _ in range(n)]
@@ -372,7 +329,6 @@ async def test_concurrent_insert_and_update_no_errors(tmp_path: Path) -> None:
     errors: list[Exception] = []
 
     async with StateDB(db_path) as db:
-        # Pre-seed rows for updates.
         for i in range(n):
             await db.insert_engine_run(
                 run_id=ids[i],
@@ -391,7 +347,6 @@ async def test_concurrent_insert_and_update_no_errors(tmp_path: Path) -> None:
             except Exception as exc:  # noqa: BLE001
                 errors.append(exc)
 
-        # New inserts + updates running concurrently on the same connection.
         new_ids = [_run_id() for _ in range(n)]
 
         async def _insert(i: int) -> None:

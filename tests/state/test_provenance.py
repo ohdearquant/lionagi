@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0022 provenance tests.
-
-Covers: agent_definition_hash() lookup + hashing, resolve_model_spec()
-canonicalization, and the DB write path (model/provider/effort/agent_hash
-columns on sessions, model/provider/agent_name on branches).
-"""
+"""ADR-0022 provenance tests — agent_definition_hash(), resolve_model_spec(), and the DB write path for provenance columns."""
 
 from __future__ import annotations
 

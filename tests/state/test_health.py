@@ -1,11 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0024 session health classifier tests.
-
-Pure-function classifier — caller passes process / artifact / lock
-signals so tests don't need real PIDs or filesystems.
-"""
+"""ADR-0024 session health classifier tests — pure-function; caller passes process/artifact/lock signals."""
 
 from __future__ import annotations
 
