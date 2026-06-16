@@ -243,7 +243,7 @@ class TestRevalidateWithActionResults:
 
 
 class TestLNDLOutputGetAttrRaisesAttributeError:
-    """LIONAGI-AUDIT-001 (lndl): missing dynamic attrs must raise AttributeError."""
+    """Missing dynamic attrs on LNDLOutput must raise AttributeError, not KeyError."""
 
     def make_empty_output(self):
         return LNDLOutput(fields={}, lvars={}, lacts={}, actions={}, raw_out_block="")
@@ -296,7 +296,7 @@ class TestLNDLOutputGetAttrRaisesAttributeError:
 
 
 class TestCoerceResultOptionalScalar:
-    """LIONAGI-AUDIT-002 (lndl): optional scalar fields must coerce like required ones."""
+    """Optional scalar fields (e.g. str | None) must coerce the same way as required scalars."""
 
     def test_optional_str_dict_result(self):
         """str | None target: dict result must be JSON-serialised to str."""
@@ -343,7 +343,7 @@ class TestCoerceResultOptionalScalar:
         parsed = json.loads(result)
         assert parsed == {"a": 1}
 
-    # --- None preservation (Codex #1281 regression) ---
+    # --- Regression: None result for optional fields must stay None, not become 'None' ---
 
     def test_none_result_optional_str_preserved(self):
         """A legitimately-None result for `str | None` must stay None, not become

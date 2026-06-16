@@ -18,7 +18,6 @@ from lionagi.tools.communication.messenger import (
 
 
 def _make_branch(exchange: Exchange):
-    """Minimal Branch stub with id + msgs.messages.include()."""
     included = []
     messages = SimpleNamespace(
         include=lambda msg: included.append(msg),

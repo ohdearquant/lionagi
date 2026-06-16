@@ -1,13 +1,9 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for _coerce_result bool-handling correctness.
+"""Tests for _coerce_result bool-handling: 'false'/'0'/'no' must coerce to False.
 
-Python's bool() constructor uses truthiness: bool('false') is True because every
-non-empty string is truthy.  When a tool returns the string 'false', 'False', '0',
-or 'no' for a field typed as bool or bool|None, the result must be the Python bool
-False — not True.  These tests verify that coercion for bool targets goes through
-validate_boolean semantics rather than raw bool().
+bool('false') is True (truthiness) — coercion must use validate_boolean semantics instead.
 """
 
 from __future__ import annotations
@@ -36,11 +32,9 @@ def make_action_call(name: str = "act") -> ActionCall:
 
 
 class TestBoolCoercionAttackCases:
-    """Stringy falsy values must never be coerced to True for a bool field.
+    """Stringy falsy values ('false', '0', 'no') must coerce to False, not True.
 
-    The attack: a tool returns the string 'false' (or '0', 'no', 'False').
-    Before the fix, bool('false') == True would silently corrupt the field.
-    After the fix, validate_boolean semantics apply: 'false' → False.
+    Before the fix, bool('false') == True silently corrupted bool fields.
     """
 
     @pytest.mark.parametrize("raw", ["false", "False", "FALSE", "0", "no", "No", "NO"])

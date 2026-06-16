@@ -270,7 +270,7 @@ async def test_pipe_operator_does_not_execute():
 
 
 # ---------------------------------------------------------------------------
-# C1: malformed command returns permission error response
+# Malformed command returns permission error response
 # ---------------------------------------------------------------------------
 
 
@@ -282,7 +282,7 @@ async def test_bash_tool_malformed_command_returns_permission_error_response():
 
 
 # ---------------------------------------------------------------------------
-# C2: Popen failure returns execution error response
+# Popen failure returns execution error response
 # ---------------------------------------------------------------------------
 
 
@@ -303,7 +303,7 @@ async def test_bash_tool_popen_failure_returns_execution_error(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# C3: MagicMock pid guard — os.killpg must not be called with non-int pid
+# MagicMock pid guard — os.killpg must not be called with non-int pid
 # ---------------------------------------------------------------------------
 
 

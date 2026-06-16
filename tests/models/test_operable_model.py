@@ -9,10 +9,7 @@ from lionagi.models import FieldModel, OperableModel, SchemaModel
 
 
 class TestOperableModel:
-    """Test suite for OperableModel class."""
-
     def test_basic_model_creation(self):
-        """Test basic model creation with default fields."""
 
         class TestModel(OperableModel):
             field1: str = "test"
@@ -25,7 +22,6 @@ class TestOperableModel:
         assert len(model.extra_fields) == 0
 
     def test_extra_fields_serialization(self):
-        """Test serialization of extra fields."""
 
         class TestModel(OperableModel):
             base_field: str = "base"
@@ -39,7 +35,6 @@ class TestOperableModel:
         assert result["extra_field"] == "extra"
 
     def test_nested_model_serialization(self):
-        """Test serialization with nested models."""
 
         class NestedModel(SchemaModel):
             nested_field: str = "nested"
@@ -58,7 +53,6 @@ class TestOperableModel:
         assert result["nested"]["nested_field"] == "nested"
 
     def test_add_field_basic(self):
-        """Test basic field addition."""
         model = OperableModel()
         model.extra_fields["new_field"] = Field()
         object.__setattr__(model, "new_field", "test")
@@ -67,7 +61,6 @@ class TestOperableModel:
         assert model.new_field == "test"
 
     def test_add_field_with_annotation(self):
-        """Test field addition with type annotation."""
         model = OperableModel()
         model.add_field("int_field", value=42, annotation=int)
 
@@ -75,7 +68,6 @@ class TestOperableModel:
         assert model.int_field == 42
 
     def test_add_field_with_field_info(self):
-        """Test field addition with FieldInfo object."""
         model = OperableModel()
         field_obj = Field(default="test", description="Test field")
         model.extra_fields["field_info_test"] = field_obj
@@ -85,7 +77,6 @@ class TestOperableModel:
         assert model.extra_fields["field_info_test"].description == "Test field"
 
     def test_add_duplicate_field(self):
-        """Test adding duplicate field raises error."""
         model = OperableModel()
         model.extra_fields["test_field"] = Field()
         object.__setattr__(model, "test_field", "test")
@@ -94,7 +85,6 @@ class TestOperableModel:
             model.add_field("test_field", value="duplicate")
 
     def test_update_field(self):
-        """Test field update functionality."""
         model = OperableModel()
         model.extra_fields["test_field"] = Field()
         object.__setattr__(model, "test_field", "initial")
@@ -103,7 +93,6 @@ class TestOperableModel:
         assert model.test_field == "updated"
 
     def test_update_field_attributes(self):
-        """Test updating field attributes."""
         model = OperableModel()
         model.extra_fields["test_field"] = Field()
         object.__setattr__(model, "test_field", "test")
@@ -112,7 +101,6 @@ class TestOperableModel:
         assert model.extra_fields["test_field"].description == "Updated description"
 
     def test_field_setattr(self):
-        """Test setting field attributes."""
         model = OperableModel()
         model.extra_fields["test_field"] = Field()
         object.__setattr__(model, "test_field", "test")
@@ -121,7 +109,6 @@ class TestOperableModel:
         assert model.extra_fields["test_field"].description == "New description"
 
     def test_field_getattr(self):
-        """Test getting field attributes."""
         model = OperableModel()
         field_info = Field(description="Test description")
         model.extra_fields["test_field"] = field_info
@@ -133,7 +120,6 @@ class TestOperableModel:
         assert model.field_getattr("test_field", "nonexistent", "default") == "default"
 
     def test_field_hasattr(self):
-        """Test checking field attributes."""
         model = OperableModel()
         field_info = Field(description="Test description")
         model.extra_fields["test_field"] = field_info
@@ -143,7 +129,6 @@ class TestOperableModel:
         assert not model.field_hasattr("test_field", "nonexistent")
 
     def test_all_fields_property(self):
-        """Test all_fields property."""
 
         class TestModel(OperableModel):
             base_field: str = "base"
@@ -158,7 +143,6 @@ class TestOperableModel:
         assert "extra_fields" not in all_fields  # Should be excluded
 
     def test_complex_field_operations(self):
-        """Test complex field operations."""
         model = OperableModel()
 
         # Add field with validator
@@ -174,7 +158,6 @@ class TestOperableModel:
         assert model.validated_field == 10
 
     def test_field_default_factory(self):
-        """Test field with default_factory."""
         model = OperableModel()
         field_info = Field(default_factory=list)
         model.extra_fields["list_field"] = field_info
@@ -184,7 +167,6 @@ class TestOperableModel:
         assert len(model.list_field) == 0
 
     def test_invalid_field_operations(self):
-        """Test invalid field operations."""
         model = OperableModel()
 
         # Test accessing non-existent field
@@ -200,7 +182,6 @@ class TestOperableModel:
             model.add_field("invalid_field", default="value", default_factory=list)
 
     def test_nested_field_updates(self):
-        """Test updating nested model fields."""
 
         class NestedModel(SchemaModel):
             nested_field: str = "nested"
@@ -220,10 +201,7 @@ class TestOperableModel:
 
 
 def test_override_builtin_attribute():
-    """
-    Attempt to add a field that has the same name as a built-in Python attribute,
-    like `__dict__`. We expect it to fail or raise an error, depending on design.
-    """
+    """Adding a field named __dict__ must fail (dunder attribute guard)."""
     model = OperableModel()
 
     # Some internal/built-in attribute name to test
@@ -236,10 +214,7 @@ def test_override_builtin_attribute():
 
 
 def test_update_field_multiple_times():
-    """
-    Test updating the same field multiple times with different configs.
-    Ensures that the last update takes effect.
-    """
+    """Multiple sequential updates to the same field must all take effect."""
     model = OperableModel()
 
     # First addition
@@ -257,10 +232,7 @@ def test_update_field_multiple_times():
 
 
 def test_redefine_field_via_add_field():
-    """
-    Trying to call add_field() again for an existing field should fail,
-    because add_field() doesn't allow duplicates.
-    """
+    """add_field() on an existing field must raise ValueError (no duplicates)."""
     model = OperableModel()
     model.add_field("my_field", value="initial")
 
@@ -269,10 +241,6 @@ def test_redefine_field_via_add_field():
 
 
 def test_remove_field_not_implemented():
-    """
-    Demonstrates that removing a field might not be supported by default.
-    Attempt to delete a field from extra_fields and see if it's reflected.
-    """
     model = OperableModel()
     model.add_field("temp_field", value=42)
     assert model.temp_field == 42
@@ -286,9 +254,7 @@ def test_remove_field_not_implemented():
 
 
 def test_add_field_with_field_model():
-    """
-    Test passing a FieldModel directly to add_field() via the `field_model` param.
-    """
+    """FieldModel passed via field_model param wires annotation and validator."""
 
     def validate_positive(cls, value: int) -> int:
         if value < 0:
@@ -307,9 +273,7 @@ def test_add_field_with_field_model():
 
 
 def test_update_field_with_new_default_factory():
-    """
-    Test that we can update an existing field by assigning a new default_factory.
-    """
+    """update_field can replace the default_factory of an existing field."""
     model = OperableModel()
     model.add_field("dynamic_list", value=[1, 2, 3])
 
@@ -325,10 +289,7 @@ def test_update_field_with_new_default_factory():
 
 
 def test_update_non_existent_field_creates_new():
-    """
-    If we call update_field() on a field that doesn't exist,
-    it should behave like add_field (by default).
-    """
+    """update_field on a missing field behaves like add_field."""
     model = OperableModel()
 
     model.update_field("newly_created", value="hello", annotation=str)
@@ -337,9 +298,6 @@ def test_update_non_existent_field_creates_new():
 
 
 def test_subclass_inheritance():
-    """
-    Create a subclass of OperableModel, override a method, and ensure it still works.
-    """
 
     class SubOperable(OperableModel):
         def add_special_field(self, name: str, value: Any):
@@ -352,10 +310,7 @@ def test_subclass_inheritance():
 
 
 def test_to_dict_with_unset_field():
-    """
-    Test that if we have a field in extra_fields but never set its value,
-    it doesn't appear in the final to_dict() output (assuming `UNDEFINED`).
-    """
+    """Field added without value (stays UNDEFINED) must not appear in to_dict()."""
     model = OperableModel()
     model.add_field("unassigned_field")  # No 'value' => remains UNDEFINED
 
@@ -366,10 +321,7 @@ def test_to_dict_with_unset_field():
 
 
 def test_field_getattr_looks_in_json_schema_extra():
-    """
-    Confirm that if the attribute isn't on the Field itself,
-    we also look in `json_schema_extra`.
-    """
+    """field_getattr must also search json_schema_extra for stored metadata."""
     model = OperableModel()
     model.add_field("custom_meta_field", value="meta")
 

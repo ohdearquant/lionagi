@@ -17,22 +17,18 @@ _EXPECTED_SHA256 = "3a2020594e14e21de470e90403c3fe63ec4352f74dcb44ad82b7eb082cd2
 
 class TestGetLndlSystemPrompt:
     def test_returns_string(self):
-        """Line 87: get_lndl_system_prompt() returns a string."""
         result = get_lndl_system_prompt()
         assert isinstance(result, str)
 
     def test_not_empty(self):
-        """Returned prompt has content."""
         result = get_lndl_system_prompt()
         assert len(result) > 0
 
     def test_stripped(self):
-        """Result is stripped (no leading/trailing whitespace)."""
         result = get_lndl_system_prompt()
         assert result == result.strip()
 
     def test_consistent_on_repeated_calls(self):
-        """Repeated calls return the same value."""
         r1 = get_lndl_system_prompt()
         r2 = get_lndl_system_prompt()
         assert r1 == r2
@@ -82,11 +78,7 @@ class TestGetLndlSystemPrompt:
     def test_prompt_snapshot(self):
         """SHA-256 snapshot guard: any accidental edit trips this test.
 
-        To intentionally update the prompt, recalculate the hash with:
-            python -c "import hashlib; from lionagi.lndl.prompt import \
-get_lndl_system_prompt; p = get_lndl_system_prompt(); \
-print(hashlib.sha256(p.encode()).hexdigest())"
-        and update _EXPECTED_SHA256 above.
+        To update: python -c "import hashlib; from lionagi.lndl.prompt import get_lndl_system_prompt; print(hashlib.sha256(get_lndl_system_prompt().encode()).hexdigest())"
         """
         prompt = get_lndl_system_prompt()
         actual = hashlib.sha256(prompt.encode()).hexdigest()
