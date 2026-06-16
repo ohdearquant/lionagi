@@ -8,7 +8,7 @@ from lionagi.operations.types import ChatParam
 from lionagi.session.branch import Branch
 
 # ---------------------------------------------------------------------------
-# D10 – _prepare_run_kwargs merges consecutive AssistantResponse messages
+# _prepare_run_kwargs merges consecutive AssistantResponse messages
 # ---------------------------------------------------------------------------
 
 

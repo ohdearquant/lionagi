@@ -1,12 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Reactive (self-expanding) flow executor — exercised without any LLM.
-
-Operations are plain registered coroutines on the Session's operation
-manager. A "spawner" op returns a SpawnRequest; the ReactiveExecutor must
-inject the resulting node into the *running* graph, run it, and terminate.
-"""
+"""Reactive flow executor tests — exercised without LLM using registered coroutine operations."""
 
 from __future__ import annotations
 

@@ -248,11 +248,7 @@ async def test_run_stream_persist_writes_final_state_and_removes_buffer(tmp_path
 async def test_run_stream_persist_snapshot_dir_routes_snapshot_separately(
     tmp_path,
 ):
-    """R5-A HIGH-1: snapshot_dir routes the branch snapshot JSON to a
-    different directory than the streaming buffer. Used by the CLI so
-    the snapshot lands in branches_dir (where find_branch looks) while
-    the .buffer.jsonl stays in stream_dir.
-    """
+    """snapshot_dir routes branch snapshot to a separate dir from the streaming buffer; find_branch looks in snapshot_dir."""
     stream_dir = tmp_path / "stream"
     branches_dir = tmp_path / "branches"
     stream_dir.mkdir()

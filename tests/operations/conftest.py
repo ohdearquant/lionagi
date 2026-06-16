@@ -1,13 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fixtures for ``tests/operations/``.
-
-The ``make_mocked_branch`` factory comes from
-``lionagi.testing.pytest_plugin`` (loaded in ``tests/conftest.py``). This file
-adds the legacy single-instance ``branch_with_mock_imodel`` alias so existing
-tests don't break.
-"""
+"""Fixtures for tests/operations/; adds legacy branch_with_mock_imodel alias over make_mocked_branch."""
 
 import pytest
 

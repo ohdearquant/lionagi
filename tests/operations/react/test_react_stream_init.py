@@ -1,15 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Extended test coverage for ReAct operations.
-
-Tests cover:
-1. Tool execution flows (single, multiple, error handling)
-2. Multi-step reasoning (context accumulation, max extensions)
-3. Integration scenarios (real tools, branch state, message history)
-4. Edge cases (tool not found, invalid responses, concurrent execution)
-"""
+"""Tests for ReAct tool execution flows and initial invocation."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -60,9 +52,6 @@ async def async_search(query: str) -> str:
 # ============================================================================
 # 1. Tool Execution Flows
 # ============================================================================
-
-
-"""Tests for ReAct tool execution flows and initial invocation."""
 
 
 @pytest.mark.asyncio
