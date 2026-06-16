@@ -5,6 +5,8 @@
 
 import asyncio
 
+import pytest
+
 from lionagi.protocols.action.tool import Tool
 from lionagi.tools.file.editor import (
     EditorAction,
@@ -320,56 +322,22 @@ async def test_edit_symlink_rejected(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-async def test_write_denied_env_file(tmp_path):
+@pytest.mark.parametrize(
+    "filename,content",
+    [
+        (".env", "SECRET=123\n"),
+        ("id_rsa", "-----BEGIN RSA PRIVATE KEY-----\n"),
+        (".netrc", "machine example.com\n"),
+        (".htpasswd", "user:hash\n"),
+    ],
+)
+async def test_write_denied_protected_filenames(tmp_path, filename, content):
     tool = EditorTool(workspace_root=str(tmp_path))
     resp = await tool.handle_request(
-        EditorRequest(
-            action="write",
-            file_path=str(tmp_path / ".env"),
-            content="SECRET=123\n",
-        )
+        EditorRequest(action="write", file_path=str(tmp_path / filename), content=content)
     )
     assert resp.success is False
-    assert "protected" in resp.error.lower() or ".env" in resp.error
-
-
-async def test_write_denied_id_rsa(tmp_path):
-    tool = EditorTool(workspace_root=str(tmp_path))
-    resp = await tool.handle_request(
-        EditorRequest(
-            action="write",
-            file_path=str(tmp_path / "id_rsa"),
-            content="-----BEGIN RSA PRIVATE KEY-----\n",
-        )
-    )
-    assert resp.success is False
-    assert "protected" in resp.error.lower() or "id_rsa" in resp.error
-
-
-async def test_write_denied_netrc(tmp_path):
-    tool = EditorTool(workspace_root=str(tmp_path))
-    resp = await tool.handle_request(
-        EditorRequest(
-            action="write",
-            file_path=str(tmp_path / ".netrc"),
-            content="machine example.com\n",
-        )
-    )
-    assert resp.success is False
-    assert "protected" in resp.error.lower() or ".netrc" in resp.error
-
-
-async def test_write_denied_htpasswd(tmp_path):
-    tool = EditorTool(workspace_root=str(tmp_path))
-    resp = await tool.handle_request(
-        EditorRequest(
-            action="write",
-            file_path=str(tmp_path / ".htpasswd"),
-            content="user:hash\n",
-        )
-    )
-    assert resp.success is False
-    assert "protected" in resp.error.lower() or ".htpasswd" in resp.error
+    assert "protected" in resp.error.lower() or filename in resp.error
 
 
 async def test_edit_denied_filename_blocked(tmp_path):
@@ -420,7 +388,7 @@ async def test_to_tool_callable_executes(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# C3: edit requires both old_string and new_string
+# Edit requires both old_string and new_string
 # ---------------------------------------------------------------------------
 
 

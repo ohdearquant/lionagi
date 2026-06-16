@@ -22,7 +22,7 @@ def test_resource_category_values():
 
 
 # ---------------------------------------------------------------------------
-# A14: Resource serializes category and rejects invalid category
+# Resource serializes category and rejects invalid category
 # ---------------------------------------------------------------------------
 
 

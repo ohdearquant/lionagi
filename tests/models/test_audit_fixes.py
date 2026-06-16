@@ -1,11 +1,9 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for audit-identified model bugs.
+"""Regression tests for model bugs.
 
-Covers:
-- LIONAGI-AUDIT-004: HashableModel.from_json(bytes) round-trip
-- LIONAGI-AUDIT-005: OperableModel.field_hasattr attr vs field_name lookup
+Covers HashableModel.from_json(bytes) round-trip and OperableModel.field_hasattr attr lookup.
 """
 
 from __future__ import annotations
@@ -31,7 +29,7 @@ class _OpSample(OperableModel):
 
 
 # ---------------------------------------------------------------------------
-# LIONAGI-AUDIT-004: HashableModel.from_json bytes round-trip
+# HashableModel.from_json bytes round-trip
 # ---------------------------------------------------------------------------
 
 
@@ -65,7 +63,7 @@ class TestHashableModelFromJsonBytes:
 
 
 # ---------------------------------------------------------------------------
-# LIONAGI-AUDIT-005: OperableModel.field_hasattr — attr vs field_name
+# OperableModel.field_hasattr — attr vs field_name
 # ---------------------------------------------------------------------------
 
 
