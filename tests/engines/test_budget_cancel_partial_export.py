@@ -1,14 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for budget/deadline cancellation exporting partial results.
-
-Acceptance criteria:
-- A run that exhausts its budget with >=1 conclusion-equivalent collected exits
-  normally (no CancelledError raised), writes report.md + chains.json, and the
-  report states it was budget-bounded.
-- External cancellation (caller-initiated) still propagates as CancelledError.
-"""
+"""Regression tests: budget/deadline cancellation must export partial results and return normally."""
 
 from __future__ import annotations
 
@@ -63,12 +56,7 @@ class _StubEngine(Engine):
 
 @pytest.mark.asyncio
 async def test_budget_cancel_produces_partial_report_and_returns(tmp_path: Path) -> None:
-    """When the engine's own deadline watchdog cancels the run after >=1
-    ConclusionDrawn has been collected, Engine.run() must return normally
-    (not raise CancelledError) and write report.md + chains.json.
-
-    The report must carry the 'budget_exhausted' status marker.
-    """
+    """Budget-cancelled run with >=1 ConclusionDrawn must return normally and write partial output."""
     eng = HypothesisEngine(repair_retries=0)
     run_holder: list[HypothesisRun] = []
 
@@ -161,9 +149,7 @@ async def test_budget_cancel_produces_partial_report_and_returns(tmp_path: Path)
 
 @pytest.mark.asyncio
 async def test_budget_cancel_with_no_conclusions_returns_without_crash() -> None:
-    """When the watchdog cancels a run that collected NO events, Engine.run()
-    must return cleanly (no crash, no CancelledError) with an empty/None result.
-    """
+    """Budget-cancelled run with no events collected must return cleanly without crash."""
     eng = HypothesisEngine(repair_retries=0)
 
     async def simulated_run(
@@ -197,10 +183,7 @@ async def test_budget_cancel_with_no_conclusions_returns_without_crash() -> None
 
 @pytest.mark.asyncio
 async def test_external_cancellation_propagates_as_cancelled_error() -> None:
-    """When the *caller* cancels Engine.run() (not the engine's own watchdog),
-    CancelledError must propagate to the caller — the engine must not treat
-    external cancellation as budget exhaustion and swallow it.
-    """
+    """Caller-initiated cancellation must propagate as CancelledError, not be swallowed."""
     eng = HypothesisEngine(repair_retries=0)
     started = asyncio.Event()
 
@@ -228,13 +211,7 @@ async def test_external_cancellation_propagates_as_cancelled_error() -> None:
 
 @pytest.mark.asyncio
 async def test_external_cancel_during_partial_export_propagates() -> None:
-    """Regression: if the caller cancels Engine.run() while it is executing the
-    shielded partial export phase, CancelledError must still propagate to the
-    caller — the engine must not swallow it and return a result.
-
-    Repro: a _partial_export override that signals when it has started, then
-    sleeps; the caller cancels after the signal; Engine.run() must raise.
-    """
+    """Cancellation during the shielded partial export phase must still propagate to the caller."""
     eng = _StubEngine()
     partial_entered = asyncio.Event()
 
@@ -265,15 +242,7 @@ async def test_external_cancel_during_partial_export_propagates() -> None:
 
 @pytest.mark.asyncio
 async def test_active_tasks_cancelled_before_partial_export() -> None:
-    """Regression: spawned background tasks (run._active) must be cancelled
-    BEFORE _partial_export starts so synthesis sees a stable snapshot and no
-    tokens are burned past budget exhaustion.
-
-    The test plants a spawned task that appends to a list if it survives past
-    the budget cancel, and a _partial_export override that records whether any
-    active tasks remain on entry.  After the fix, _active must be empty when
-    _partial_export is called.
-    """
+    """Spawned tasks must be cancelled before _partial_export runs; _active must be empty on entry."""
     eng = _StubEngine()
     active_on_entry: list[int] = []  # count of _active tasks when partial export started
     survived_appends: list[str] = []  # appended if a spawned task ran past cancel
@@ -314,9 +283,7 @@ async def test_active_tasks_cancelled_before_partial_export() -> None:
 
 @pytest.mark.asyncio
 async def test_budget_cancel_without_export_dir_does_not_crash() -> None:
-    """Budget cancellation without an export_dir still returns the partial
-    report string and does not crash.
-    """
+    """Budget cancellation without export_dir must return the partial report string without crashing."""
     eng = HypothesisEngine(repair_retries=0)
 
     async def fake_extract(run: HypothesisRun, f: FindingPosted) -> None:

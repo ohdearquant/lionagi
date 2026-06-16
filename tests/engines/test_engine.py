@@ -166,11 +166,7 @@ async def test_make_agent_builds_casts_branch_with_emissions():
 
 @pytest.mark.asyncio
 async def test_make_agent_grants_emits_exactly_once(monkeypatch):
-    """Single-grant regression: emits is threaded through AgentSpec, so
-    create_agent grants once — the engine no longer re-grants afterward.
-    The branch's capabilities must match the stage emits exactly (the field
-    set is the override plus the always-appended escalation_request), and
-    grant_capabilities must fire exactly once."""
+    """emits is threaded through AgentSpec so grant_capabilities fires exactly once."""
     from lionagi.session.branch import Branch
 
     calls: list[object] = []
@@ -204,9 +200,7 @@ async def test_make_agent_no_emits_uses_role_contract():
 
 @pytest.mark.asyncio
 async def test_run_dag_emits_node_lifecycle_signals():
-    """run_dag executes a prebuilt DAG and tees NodeStarted/NodeCompleted onto
-    the bus — the seam persistence/Studio observe instead of an on_progress
-    callback. Exercised with a registered coroutine op (no LLM)."""
+    """run_dag executes a DAG and tees NodeStarted/NodeCompleted onto the bus."""
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.branch import Branch
     from lionagi.session.session import Session
@@ -238,16 +232,12 @@ async def test_run_dag_emits_node_lifecycle_signals():
     assert len(completed) == 1  # NodeCompleted carried the op id
 
 
-# ── LIONAGI-AUDIT-001: spawned task failures surface to caller ─────────────────
+# -- spawned task failures surface to caller ----------------------------------
 
 
 @pytest.mark.asyncio
 async def test_spawned_task_failure_is_reported():
-    """Regression: wait_quiescence() must not silently swallow task exceptions.
-
-    A spawned coroutine that raises RuntimeError must cause wait_quiescence
-    to propagate that exception rather than returning successfully.
-    """
+    """wait_quiescence() must propagate RuntimeError from spawned tasks, not swallow it."""
     run = _run()
 
     async def boom():
@@ -290,10 +280,7 @@ async def test_spawned_task_cancellation_is_not_surfaced():
 
 @pytest.mark.asyncio
 async def test_failed_parent_still_drains_spawned_child():
-    """A parent that spawns a child and then fails must NOT short-circuit the
-    wait. wait_quiescence must drain the child to completion (genuine
-    quiescence — no background work left running) before surfacing the failure.
-    """
+    """A failing parent must drain its spawned child before surfacing the error."""
     run = _run()
     child_ran = asyncio.Event()
 

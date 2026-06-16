@@ -1,14 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Coding engine unit tests — the gated implement/test/fix loop.
-
-These exercise the engine's own logic with direct event emission and a REAL
-subprocess test runner (the ground-truth stage is the point). The fix loop is
-driven with a ``test_cmd`` that flips from failing to passing via a tmp_path
-flag file — deterministic, no time/random dependence. The scripted-provider
-e2e (the live emission path) lives in test_engines_scripted_e2e.py.
-"""
+"""Coding engine unit tests — gated implement/test/fix loop with a real subprocess test runner."""
 
 from __future__ import annotations
 
@@ -382,7 +375,7 @@ async def test_fix_loop_stops_when_implementer_repeats_change(tmp_path, monkeypa
 async def test_no_change_proposed_concludes_failed(tmp_path, monkeypatch):
     # A git workspace is required so workspace-check succeeds and the delta is
     # provably empty — the no-change verdict is only valid when the check itself
-    # did not fail (finding 3: check failure → fail open, not no-change).
+    # did not fail (check failure must fail open, not collapse to no-change).
     _make_git_workspace(tmp_path)
     eng = CodingEngine(repair_retries=0)
     run = eng.new_run()
@@ -407,7 +400,7 @@ async def test_no_change_proposed_concludes_failed(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Regression: #1364 — workspace is ground truth when emission fails
+# Workspace is ground truth when emission fails
 # ---------------------------------------------------------------------------
 
 
@@ -440,14 +433,7 @@ def _make_git_workspace(path) -> None:
 
 @pytest.mark.asyncio
 async def test_emission_failure_with_workspace_changes_runs_test_gate(tmp_path, monkeypatch):
-    """Regression for #1364: when the implementer emits no ChangeProposed but
-    the workspace shows file changes, the engine MUST run the test gate and
-    reflect its outcome — not record a no-change failure.
-
-    Setup: a git workspace with a new file written by the ``implement`` agent
-    (simulated by a side-effect in the branch's operate, standing in for the
-    worker writing real files).  The test command verifies the file exists, so
-    ground truth governs passed/failed, not the emission."""
+    """No ChangeProposed but workspace has changes: engine must run test gate, not record no-change."""
     _make_git_workspace(tmp_path)
 
     eng = CodingEngine(repair_retries=0)
@@ -518,9 +504,7 @@ async def test_emission_failure_with_workspace_changes_runs_test_gate(tmp_path, 
 async def test_emission_failure_no_workspace_changes_preserves_no_change_verdict(
     tmp_path, monkeypatch
 ):
-    """Regression for #1364 (inverse case): when the implementer emits nothing
-    AND the workspace shows no changes, the original no-change failure is
-    preserved — we do not proceed to the test gate with an empty workspace."""
+    """No emission and no workspace changes must preserve the no-change failure verdict."""
     _make_git_workspace(tmp_path)
 
     eng = CodingEngine(repair_retries=0)
@@ -554,14 +538,7 @@ async def test_emission_failure_no_workspace_changes_preserves_no_change_verdict
 
 @pytest.mark.asyncio
 async def test_pre_dirty_workspace_no_worker_output_preserves_no_change(tmp_path, monkeypatch):
-    """False-positive regression (#1364 finding 1): files that exist in the
-    workspace BEFORE the implement stage must not be attributed to the worker.
-
-    Setup: a git workspace with a _staging/ directory and an untracked fixture
-    file present from BEFORE the run.  The implementer emits nothing and writes
-    nothing.  The delta must be empty → no-change verdict preserved, gate does
-    not run.  Without the baseline, the pre-existing dirty state would have
-    triggered metadata_missing and sent the run to the test gate."""
+    """Pre-existing dirty workspace files before implement must not be attributed to the worker."""
     _make_git_workspace(tmp_path)
     # Pre-existing dirty state: a staged file and an untracked file, both
     # created before the engine starts — not worker output.
@@ -604,9 +581,7 @@ async def test_pre_dirty_workspace_no_worker_output_preserves_no_change(tmp_path
 
 @pytest.mark.asyncio
 async def test_untracked_only_work_verify_diff_contains_file_content(tmp_path, monkeypatch):
-    """Finding 2: when the implementer writes an untracked file and the test
-    gate passes, the verify stage must receive a diff that contains the file's
-    actual content — not an empty diff."""
+    """Untracked file written by implementer must appear in verify stage diff, not as empty diff."""
     _make_git_workspace(tmp_path)
 
     eng = CodingEngine(repair_retries=0)
@@ -666,9 +641,7 @@ async def test_untracked_only_work_verify_diff_contains_file_content(tmp_path, m
 
 @pytest.mark.asyncio
 async def test_workspace_check_failure_fails_open_to_test_gate(tmp_path, monkeypatch):
-    """Finding 3: when git status itself fails (non-git workspace here), the
-    engine must NOT conclude no-change.  It must emit workspace_check_failed
-    and fail open — the test gate runs and its exit code is authoritative."""
+    """git status failure must emit workspace_check_failed and fail open to the test gate."""
     # tmp_path is NOT a git repo → git status will fail → check_failed=True.
     eng = CodingEngine(repair_retries=0)
     run = eng.new_run()
@@ -722,16 +695,7 @@ async def test_workspace_check_failure_fails_open_to_test_gate(tmp_path, monkeyp
 async def test_baseline_capture_failure_triggers_workspace_check_failed_not_no_change(
     tmp_path, monkeypatch
 ):
-    """Regression for codex r2 finding 1: when the PRE-implement status fails
-    (run._ws_baseline is None), _workspace_changed must return check_failed=True
-    immediately — the engine must emit workspace_check_failed and fail open, NOT
-    take the no-change conclusion.
-
-    Setup: git workspace for the test, but _capture_ws_baseline is patched to
-    return None (simulating a spawn failure or timeout on the first git call).
-    The implementer emits nothing and writes nothing.  Without the fix, the None
-    baseline collapsed to {} and the clean post-status produced an empty delta →
-    wrong no-change conclusion."""
+    """Baseline capture failure must set check_failed=True and fail open, not collapse to no-change."""
     _make_git_workspace(tmp_path)
 
     eng = CodingEngine(repair_retries=0)
@@ -779,17 +743,7 @@ async def test_baseline_capture_failure_triggers_workspace_check_failed_not_no_c
 
 @pytest.mark.asyncio
 async def test_fix_round_untracked_file_reaches_verify_diff(tmp_path, monkeypatch):
-    """Regression for codex r2 finding 2: an untracked file created during a
-    FIX ROUND (not the initial implement stage) must appear in the verify diff.
-
-    Setup: initial implement emits a ChangeProposed with test_cmd that fails
-    (exit 1), fix round 1 writes a new untracked file and emits a new
-    ChangeProposed, test now passes (exit 0).  The verify diff must contain
-    the fix-round file's content.
-
-    Without the fix, _capture_diff only consulted run._ws_delta (set once in
-    the initial emission-failure branch), so fix-round-created untracked files
-    were silently omitted."""
+    """Untracked file created during a fix round must appear in the verify diff."""
     _make_git_workspace(tmp_path)
 
     fix_file = tmp_path / "fix_output.py"
@@ -864,12 +818,7 @@ async def test_fix_round_untracked_file_reaches_verify_diff(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_absolute_files_touched_reaches_verify_diff(tmp_path, monkeypatch):
-    """Regression for codex r3: when ChangeProposed.files_touched carries an
-    ABSOLUTE path (as the coding tool emits), the verify diff must still contain
-    the file's content.
-
-    Without the normalization fix, the absolute path was intersected directly
-    with the repo-relative git ls-files output → empty intersection → no diff."""
+    """Absolute path in ChangeProposed.files_touched must still produce content in the verify diff."""
     _make_git_workspace(tmp_path)
 
     eng = CodingEngine(repair_retries=0)
@@ -1062,15 +1011,12 @@ async def test_judge_can_stop_fix_loop_early(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Regression: #1361 — chain events must reach on_event exactly once
+# Chain events must reach on_event exactly once
 # ---------------------------------------------------------------------------
 
 
 class _BusBranch:
-    """Emits events via the raw session bus only (no run.emit()) — the exact
-    path a real LLM agent uses.  This is the path that was broken before the
-    fix: collect() was triggered by the observer but notify() was never called,
-    so WorkPlanned/ChangeProposed/VerifyResult never reached on_event."""
+    """Emits events via the raw session bus only (no run.emit()) — the path a real LLM agent uses."""
 
     def __init__(self, run, events: list, *, name: str = "agent"):
         self._run = run
@@ -1085,10 +1031,7 @@ class _BusBranch:
 
 @pytest.mark.asyncio
 async def test_chain_events_reach_on_event_exactly_once_bus_path(tmp_path, monkeypatch):
-    """Regression for #1361: WorkPlanned, ChangeProposed, and VerifyResult that
-    arrive via the session bus (the real agent path, not run.emit()) must reach
-    on_event exactly once each.  The contract: set of eids delivered to on_event
-    equals set of eids in the run store, and no eid is delivered twice."""
+    """Chain events via the session bus must reach on_event exactly once each."""
     eng = CodingEngine(repair_retries=0)
     run = eng.new_run()
 
@@ -1146,10 +1089,7 @@ async def test_chain_events_reach_on_event_exactly_once_bus_path(tmp_path, monke
 
 @pytest.mark.asyncio
 async def test_chain_events_reach_on_event_exactly_once_emit_path(tmp_path, monkeypatch):
-    """Same contract as above but events arrive via run.emit() (the _ScriptedBranch
-    path).  Verifies the emit() override does not suppress delivery for chain events
-    that go through run.emit() (TestsRan, CodeResultRecorded) and that the agent-emit
-    path does not double-deliver WorkPlanned/ChangeProposed/VerifyResult."""
+    """Chain events via run.emit() must also reach on_event exactly once each."""
     eng = CodingEngine(repair_retries=0)
     run = eng.new_run()
 

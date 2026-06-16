@@ -1,19 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Attack-driven regression tests for the coding preset security gate.
-
-The AgentSpec.coding() preset advertises "guard hooks + strict path policy"
-but previously wired NO default security hook. An agent using the coding preset
-could execute destructive shell commands (rm -rf, git reset --hard, etc.)
-without any barrier.
-
-These tests prove that:
-1. The preset's default bash preprocessor blocks known-destructive commands.
-2. A benign command passes through the guard unchanged.
-3. Callers who opt out via secure=False receive no preprocessor from the preset.
-4. The path policy contains file access to the configured workspace root.
-"""
+"""Attack-driven regression tests for the coding preset security gate."""
 
 from __future__ import annotations
 
@@ -38,12 +26,7 @@ async def _make_branch(spec: AgentSpec):
 
 
 async def test_coding_preset_blocks_rm_rf():
-    """Destructive 'rm -rf' must be refused by the default coding preset.
-
-    A coding agent should never silently execute a recursive forced removal
-    command without explicit human confirmation; the guard must intercept it
-    before the bash tool executes.
-    """
+    """The default coding preset must block 'rm -rf'."""
     spec = AgentSpec.coding()
     branch = await _make_branch(spec)
     bash_tool = branch.acts.registry["bash"]
@@ -97,11 +80,7 @@ async def test_coding_preset_allows_uv_run():
 
 
 async def test_coding_preset_secure_false_has_no_default_guard():
-    """secure=False must disable the default guard hook wired by the preset.
-
-    Callers who opt out must be able to manage hooks themselves without the
-    preset silently injecting a guard they did not request.
-    """
+    """secure=False must disable the default guard hook wired by the preset."""
     spec = AgentSpec.coding(secure=False)
     branch = await _make_branch(spec)
     bash_tool = branch.acts.registry["bash"]
@@ -135,12 +114,7 @@ async def _invoke_pre_hooks(branch, tool_name: str, args: dict) -> None:
 
 
 async def test_coding_preset_reader_blocks_outside_workspace(tmp_path):
-    """reader called with a path OUTSIDE the workspace root must be BLOCKED.
-
-    An agent with the default coding preset must not be able to exfiltrate
-    secrets from outside its workspace (e.g. /etc/passwd, ~/.ssh/id_rsa,
-    or a parent-directory traversal).
-    """
+    """reader with a path outside the workspace root must be blocked."""
     spec = AgentSpec.coding(cwd=str(tmp_path))
     branch = await _make_branch(spec)
 
@@ -149,11 +123,7 @@ async def test_coding_preset_reader_blocks_outside_workspace(tmp_path):
 
 
 async def test_coding_preset_editor_blocks_outside_workspace(tmp_path):
-    """editor called with a file_path OUTSIDE the workspace root must be BLOCKED.
-
-    Writing to arbitrary paths would let an agent corrupt system files or
-    overwrite SSH keys; the preset path guard must refuse it.
-    """
+    """editor with a file_path outside the workspace root must be blocked."""
     spec = AgentSpec.coding(cwd=str(tmp_path))
     branch = await _make_branch(spec)
 
@@ -229,20 +199,12 @@ async def test_coding_preset_secure_false_no_path_guard():
 
 
 # ---------------------------------------------------------------------------
-# Relative-path regression tests (guard_paths must resolve against workspace)
+# Relative-path tests (guard_paths resolves against workspace root, not cwd)
 # ---------------------------------------------------------------------------
-# These guard against a regression where relative paths like "src/foo.py" were
-# resolved against the process cwd instead of the configured workspace root,
-# causing valid in-workspace relative paths to be wrongly blocked.
 
 
 async def test_coding_preset_reader_allows_relative_in_workspace(tmp_path):
-    """A workspace-relative reader path ("src/foo.py") must be allowed.
-
-    The guard must resolve the relative path against the workspace root, not
-    the process cwd, so agents can use natural relative paths inside their
-    workspace.
-    """
+    """A workspace-relative reader path ("src/foo.py") must be allowed."""
     spec = AgentSpec.coding(cwd=str(tmp_path))
     branch = await _make_branch(spec)
 
@@ -264,12 +226,7 @@ async def test_coding_preset_editor_allows_relative_in_workspace(tmp_path):
 
 
 async def test_coding_preset_reader_blocks_relative_traversal(tmp_path):
-    """A relative traversal ("../../etc/passwd") must be blocked.
-
-    Even with a relative path, a ../ escape that lands outside the workspace
-    root must be rejected — resolving relative against the workspace root
-    must not weaken the escape check.
-    """
+    """A relative traversal ("../../etc/passwd") must be blocked even when resolved against workspace."""
     spec = AgentSpec.coding(cwd=str(tmp_path))
     branch = await _make_branch(spec)
 

@@ -87,11 +87,7 @@ async def test_depth_requested_spawns():
 
 @pytest.mark.asyncio
 async def test_explore_dedups_normalized_topics():
-    """_explore must deduplicate topics that are identical after normalisation.
-
-    The dedup lives in _explore (seen() check), not in _drive_node.  Track via
-    _drive_node rather than run_team because _drive_node now drives stages
-    directly via operate_with_repair instead of delegating to run_team."""
+    """_explore must deduplicate topics that are identical after normalisation."""
     eng = ResearchEngine()
     run = eng.new_run()
     nodes_driven: list[str] = []
@@ -141,15 +137,7 @@ async def test_synthesis_reads_findings_from_store():
 
 
 class _ProseTeamMember:
-    """A node's team member that returns prose until ``emit_on_call``, then
-    emits — the weak-model failure the per-stage repair loop recovers (mirrors
-    the ``_ProseBranch`` in test_engine_protection.py).
-
-    Faithful to the real arrival contract: the member carries the same
-    emission ``Operable`` a real research agent gets, and an "emission" is a
-    fenced-JSON capability block recorded in the member's own message log (the
-    surface ``_branch_emitted`` inspects) — plus the bus event, matching what
-    ``_observe`` produces for a real agent."""
+    """Returns prose until ``emit_on_call``, then emits — simulates weak-model failure the repair loop recovers."""
 
     name = "researcher-d0"
     chat_model = None  # no is_cli → falls back to API repair template
