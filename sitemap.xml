@@ -2,490 +2,490 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://lionagi.ai/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/cli-reference/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/code-of-conduct/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/concepts/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/contributing/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0001-lion-studio-internal-app/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0002-studio-tech-stack/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0003-claude-code-marketplace/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0004-filesystem-data-layer/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0005-workers-playbooks-rename/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0006-sse-live-streaming/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0007-plugin-auto-discovery/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0008-studio-v1-scope/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0009-sqlite-state-layer/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0010-plugin-aware-studio/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0011-shows-data-model/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0012-studio-execution-lineage/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0013-zero-dependency-ui/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0014-cli-primary-studio-secondary/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0015-runs-list-design/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0016-definitions-write-path/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0017-session-lifecycle-status/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0018-studio-distribution/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0019-teams-db-and-run-lifecycle/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0020-skill-invocations/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0021-skill-artifacts-and-reactive-chaining/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0022-run-step-provenance/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0023-unified-hook-system/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0024-session-health-and-admin-surface/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0025-session-status-vocabulary/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0026-project-detection/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0027-scheduled-runs/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0028-status-reason-model/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0029-artifact-contract/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0030-attention-queue/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0031-entity-header-pattern/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0032-navigation-reorganization/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0033-unified-entity-state-model/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0034-frontend-data-and-state-architecture/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0035-design-system-and-component-library/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0039-knowledge-substrate-minimal-interface/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0041-immutable-evidence-nodes/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0042-task-certificate/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0043-governed-tool-declaration/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0044-tool-gates/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0045-break-glass-protocol/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0046-jit-tool-grant/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0047-agent-charter/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0048-agent-segregation-of-duties/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0049-log-tier-governance/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0050-operation-context/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0051-tool-registry-allowlists/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0052-policy-resolution/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0053-artifact-persistence/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0054-local-state-cleanup/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0055-studio-artifact-viewer/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0056-play-control-api/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0057-remote-sandbox-execution/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0058-play-cost-tracking/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0059-postgres-state-backend/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0060-unified-config-resolution/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0061-universal-scheduler/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0062-state-machine-spec/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0063-task-board-work-center/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0064-work-system-integration/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0065-task-board-schema/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0066-unified-execution-viewer/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0067-studio-command-chat/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0068-governed-adapter-protocol/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0069-tenant-scope-boundary/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0070-governance-tracing/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0071-cognitive-mode-model/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0072-reactive-capability-bus/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0074-role-composition-and-pack-config/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0075-domain-specific-engines/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0076-observer-as-hook-transport/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0077-engine-autonomy-protections/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0078-casts-conceptual-model-and-module-coherence/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0079-substrate-executor-provider-interface/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0080-remote-sandbox-substrate-execution/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0081-configurable-flow-planning/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0082-role-substrate-routing-policy/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/ADR-0083-lifecycle-signal-contract/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/DECISION_LOG/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/TEMPLATE/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/glossary/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/adrs/reader%27s-guide/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/api/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/api/agent-config/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/api/branch/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/api/flow/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/api/imodel/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/api/note/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/api/operations/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/api/sandbox/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/api/session/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/api/team/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/cookbook/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/cookbook/codebase-audit/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/cookbook/multi-model-pipeline/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/cookbook/research-synthesis/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/cookbook/resumable-background/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/cookbook/team-coordination/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/getting-started/first-flow/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/getting-started/install/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/governance/adr-cross-reference/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/governance/charter-dsl-v0/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/governance/direction/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/governance/standards/adr-style/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/governance/standards/commit-and-pr-style/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/governance/standards/dsl-style/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/governance/standards/error-messages/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/governance/standards/test-style/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/governance/standards/trace-naming/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/migration/0.22.5-to-0.22.6/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/migration/0.22.9-to-0.23.0/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/migration/0.23.0-to-0.23.1/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/reference/advanced/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/reference/migrate-logs/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/reference/providers/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
     <url>
          <loc>https://lionagi.ai/reference/troubleshooting/</loc>
-         <lastmod>2026-06-11</lastmod>
+         <lastmod>2026-06-16</lastmod>
     </url>
 </urlset>
