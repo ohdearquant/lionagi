@@ -4,15 +4,48 @@
 All notable changes to lionagi are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.27.1] - 2026-06-16
+
+The studio desktop substrate (Vite SPA + Tauri 2 macOS shell), custom engine
+definitions driven from the frontend, a hardened launch API, and the
+`AgentConfig` removal — fourteen commits since v0.27.0.
+
+### Added
+
+- **Studio desktop substrate** — Vite SPA migration with single-process serving
+  (#1430) and a Tauri 2 desktop shell for macOS (#1431).
+- **Studio custom engines** — create, save, and launch custom engine definitions
+  from the frontend (#1441).
+- **Studio launch API** — `POST /api/launches` fires runs through the
+  scheduler's hardened spawn path (#1434).
+- **Casts catalog** — read-only catalog API and CLI (#1433).
+- **Live run streaming** — persist engine-run signals for live Studio streaming
+  (#1432).
+
+### Changed
+
+- **Python 3.14 compat** — bump pyupgrade to v3.21.2 (#1442).
+
+### Fixed
+
+- **CI diagnostics** — fail fast with the crashed test's name when an xdist
+  worker dies (#1437).
+- **Studio frontend** — restore Tailwind content paths after the Vite migration
+  (#1435).
 
 ### Removed
 
-- **`AgentConfig`** — the deprecated `lionagi.agent.config` module is removed.
-  Use `AgentSpec` (`lionagi.agent.spec`) instead: `AgentSpec.compose(role, ...)`
-  for the general case and `AgentSpec.coding(...)` for the coding preset.
-  `create_agent()` now takes an `AgentSpec`. The `HooksMixin` and secure-guard
-  wiring previously in `config.py` now live in `spec.py`.
+- **`AgentConfig`** — the deprecated `lionagi.agent.config` module is removed
+  (#1449). Use `AgentSpec` (`lionagi.agent.spec`) instead:
+  `AgentSpec.compose(role, ...)` for the general case and
+  `AgentSpec.coding(...)` for the coding preset. `create_agent()` now takes an
+  `AgentSpec`. The `HooksMixin` and secure-guard wiring previously in
+  `config.py` now live in `spec.py`.
+
+### Docs
+
+- Trim verbose docstrings and comments across the codebase and relocate
+  load-bearing reference material to `docs/` (#1450, #1451, #1452).
 
 ## [0.27.0] - 2026-06-11
 
