@@ -126,7 +126,7 @@ def test_sigint_runs_shielded_teardown():
         assert os.path.exists(sentinel), (
             "Sentinel file was NOT written — shielded teardown did not run.  "
             "The inner coroutine's finally block was skipped, indicating the child "
-            "thread was orphaned by SIGINT (phantom-session regression, issue #1055)."
+            "thread was orphaned by SIGINT (phantom-session regression)."
         )
         with open(sentinel) as fh:
             content = fh.read()

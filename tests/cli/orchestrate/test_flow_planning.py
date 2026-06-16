@@ -72,7 +72,7 @@ async def test_no_plan_recovers_via_reinforced_retry(tmp_path):
 
 @pytest.mark.asyncio
 async def test_no_plan_after_retry_raises_flow_plan_error(tmp_path):
-    """Both attempts empty → fail loud, never exit 0 (#1236)."""
+    """Both attempts empty → fail loud, never exit 0."""
     orc = _FakeOrcBranch([SimpleNamespace(assignments=[]), SimpleNamespace(assignments=[])])
     with pytest.raises(FlowPlanError, match="no usable plan"):
         await _run_flow_inner("codex/gpt-5.5", "task", env=_env(tmp_path, orc), dry_run=True)
@@ -210,7 +210,7 @@ async def test_workers_override_keeps_role_modes(tmp_path):
     assert "adversarial" in out  # role behaviour preserved, not stripped like --bare
 
 
-# ── #1210 pack routing ────────────────────────────────────────────────────
+# ── pack routing ─────────────────────────────────────────────────────────
 
 
 def _pack_env(tmp_path, orc, pack_yaml: str) -> SimpleNamespace:

@@ -492,7 +492,7 @@ class TestSessionFlowAsyncEdgeCases:
         branch.id = "test-branch-id"
 
         async def very_slow_chat(**kwargs):
-            await asyncio.sleep(10)
+            await asyncio.sleep(10)  # sleep longer than the timeout so the timeout fires
             return "mocked_response"
 
         branch.chat = AsyncMock(side_effect=very_slow_chat)

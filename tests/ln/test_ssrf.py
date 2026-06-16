@@ -124,7 +124,7 @@ def test_ipv4_mapped_public_safe():
 
 
 # ---------------------------------------------------------------------------
-# 4b. IPv4-compatible IPv6 (::a.b.c.d) — must return False (#1125, CWE-918)
+# 4b. IPv4-compatible IPv6 (::a.b.c.d) — must return False (CWE-918)
 # ---------------------------------------------------------------------------
 # Deprecated form without the 0xffff marker; ipv4_mapped returns None so the
 # ::ffff: unmap path does NOT catch it — separate fix required.
@@ -133,7 +133,7 @@ def test_ipv4_mapped_public_safe():
 @pytest.mark.parametrize(
     "ipv4_compat",
     [
-        "::169.254.169.254",  # AWS/GCP IMDS — the live IMDS bypass (issue #1125)
+        "::169.254.169.254",  # AWS/GCP IMDS — the live IMDS bypass
         "::10.0.0.1",  # RFC 1918 private via IPv4-compat
         "::192.168.1.1",  # RFC 1918 private via IPv4-compat
         "::127.0.0.1",  # Loopback via IPv4-compat

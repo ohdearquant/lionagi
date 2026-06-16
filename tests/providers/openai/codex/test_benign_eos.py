@@ -195,7 +195,7 @@ async def test_turn_failed_with_nested_message_still_preferred_over_toplevel():
 
 # ---------------------------------------------------------------------------
 # Round-3 regression: "error": null must NOT be treated as benign EOS
-# (fix/cli-worker-error-surfacing codex round-2 finding)
+# (fix/cli-worker-error-surfacing regression)
 # ---------------------------------------------------------------------------
 
 

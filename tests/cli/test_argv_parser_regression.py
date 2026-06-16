@@ -454,7 +454,7 @@ class TestSentinelPlacement:
 
 
 # ---------------------------------------------------------------------------
-# Regression pin: '-- --' and '-- trailing' pass through (codex round 2)
+# Regression pin: '-- --' and '-- trailing' pass through
 # ---------------------------------------------------------------------------
 
 
@@ -534,7 +534,7 @@ class TestDoubleDashSentinelEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# Parser-level: template-rendered sentinel rejection (codex round 3)
+# Parser-level: template-rendered sentinel rejection
 # ---------------------------------------------------------------------------
 
 

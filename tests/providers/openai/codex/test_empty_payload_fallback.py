@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the empty-payload fallback in stream_codex_cli (issue #1397).
+"""Tests for the empty-payload fallback in stream_codex_cli.
 
 turn.failed with err={} must produce a self-describing string, not the useless str({})=='{}'; populated-message path must remain unchanged.
 """

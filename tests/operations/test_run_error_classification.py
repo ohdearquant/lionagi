@@ -144,7 +144,7 @@ async def test_run_empty_error_chunk_uses_fallback_string():
 
 
 # ---------------------------------------------------------------------------
-# Finding #3: subprocess RuntimeError path → classified ProviderError
+# subprocess RuntimeError path → classified ProviderError
 # ---------------------------------------------------------------------------
 
 

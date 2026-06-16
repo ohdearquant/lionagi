@@ -235,7 +235,7 @@ def test_finding_accepts_positive_line():
 
 
 def test_gate_verdict_defaults_passed_to_gate_passed_true():
-    """When passed is omitted, it defaults to gate_passed (LIONAGI-AUDIT-003)."""
+    """When passed is omitted, it defaults to gate_passed."""
     g = GateVerdict(gate_passed=True, summary="ok")
     assert g.passed is True
 

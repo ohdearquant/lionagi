@@ -214,5 +214,5 @@ class TestRunAgentCancelledExcPath:
             for call_text in calls_in_handler:
                 assert "get_cancelled_exc_class" not in call_text, (
                     f"run_agent() BaseException handler still calls get_cancelled_exc_class: "
-                    f"{call_text!r} — this triggers NoEventLoopError after loop exit (#1082)"
+                    f"{call_text!r} — this triggers NoEventLoopError after loop exit"
                 )

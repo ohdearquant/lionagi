@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 # ---------------------------------------------------------------------------
-# Finding 1 – Claude EOF JSON repair
+# Claude EOF JSON repair
 # ---------------------------------------------------------------------------
 
 
@@ -120,7 +120,7 @@ async def test_claude_ndjson_uses_repair_callback():
 
 
 # ---------------------------------------------------------------------------
-# Finding 2 – Codex does not double-apply workspace
+# Codex does not double-apply workspace
 # ---------------------------------------------------------------------------
 
 
@@ -168,7 +168,7 @@ def test_codex_as_cmd_args_contains_dash_c_flag():
 
 
 # ---------------------------------------------------------------------------
-# Finding 3 – Gemini and Pi inherit stdin (not DEVNULL)
+# Gemini and Pi inherit stdin (not DEVNULL)
 # ---------------------------------------------------------------------------
 
 

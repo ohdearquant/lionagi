@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for AG2 GroupChat nlip_url SSRF bypass (issue #985 round 3).
+"""Regression tests for AG2 GroupChat nlip_url SSRF bypass.
 
 Asserts that a private nlip_url is rejected with PermissionError before NlipRemoteAgent is ever constructed.
 """
@@ -163,7 +163,7 @@ class TestAG2GroupChatEndpointNlipUrlSSRF:
 
     @pytest.mark.asyncio
     async def test_nlip_url_ssrf_blocked_in_stream(self):
-        """Caller-supplied nlip_url must be SSRF-checked in stream() (regression: issue #985 round 3)."""
+        """Caller-supplied nlip_url must be SSRF-checked in stream() (regression)."""
         endpoint = self._make_endpoint()
         agent_configs = [
             {

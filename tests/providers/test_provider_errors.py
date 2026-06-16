@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for lionagi/providers/_provider_errors.py (issue #1397).
+"""Unit tests for lionagi/providers/_provider_errors.py.
 
 classify_provider_error matches quota/auth/context patterns case-insensitively; unmatched text returns base ProviderError; all subclasses are RuntimeError; EmissionError attrs preserved.
 """

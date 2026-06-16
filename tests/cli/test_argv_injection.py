@@ -537,7 +537,7 @@ class TestUpdateScheduleInjectionRejection:
 
 
 # ---------------------------------------------------------------------------
-# action_prompt == '--' sentinel rejection (codex round 2)
+# action_prompt == '--' sentinel rejection
 # ---------------------------------------------------------------------------
 
 
@@ -650,7 +650,7 @@ class TestBuildArgvPromptSentinelRejection:
 
 
 # ---------------------------------------------------------------------------
-# cli/main.py — pre-parse verbose scan must be sentinel-aware (codex round 2)
+# cli/main.py — pre-parse verbose scan must be sentinel-aware
 # ---------------------------------------------------------------------------
 
 
@@ -764,7 +764,7 @@ class TestMainVerboseScanSentinelAware:
 
 # ---------------------------------------------------------------------------
 # build_argv — template injection: rendered prompt must be validated post-render
-# (codex round 3 — order-of-operations bypass)
+# (order-of-operations bypass)
 # ---------------------------------------------------------------------------
 
 
@@ -843,7 +843,7 @@ class TestBuildArgvTemplateInjection:
 
 
 # ---------------------------------------------------------------------------
-# CWE-918 github_repo path manipulation — validator unit tests (closes #1413)
+# CWE-918 github_repo path manipulation — validator unit tests
 # ---------------------------------------------------------------------------
 
 
@@ -975,7 +975,7 @@ class TestGithubRepoValidatorUnit:
 
 
 # ---------------------------------------------------------------------------
-# CWE-918 github_repo — service boundary (create and update) (closes #1413)
+# CWE-918 github_repo — service boundary (create and update)
 # ---------------------------------------------------------------------------
 
 

@@ -3,7 +3,7 @@
 
 """Phase 1 tests for lionagi.lndl.fuzzy (normalize_lndl_text only).
 
-# TODO(lndl-phase-2): add TestParseLndlFuzzy once Phase 2 lands (see issue #966).
+# TODO(lndl-phase-2): add TestParseLndlFuzzy once Phase 2 lands.
 """
 
 import pytest

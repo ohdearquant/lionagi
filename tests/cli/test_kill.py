@@ -186,7 +186,7 @@ def test_terminate_pid_escalates_to_sigkill(monkeypatch: pytest.MonkeyPatch):
     assert _signal.SIGKILL in sigs_sent
 
 
-# ── _terminate_pid identity checks (issue #1126) ──────────────────────────────
+# ── _terminate_pid identity checks ───────────────────────────────────────────
 
 
 def test_terminate_pid_identity_mismatch_no_signal_sent(
@@ -863,13 +863,13 @@ def test_kill_all_stale_subparser_flags():
         Path(tmp_path).unlink(missing_ok=True)
 
 
-# ── issue #1117 / PR #1140 codex round-2: plays and shows excluded from sweep ──
+# ── plays and shows excluded from sweep ──────────────────────────────────────
 
 
 async def test_do_kill_all_stale_does_NOT_touch_show_at_all(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Shows are skipped entirely in the all-stale sweep (codex P1, PR #1140).
+    """Shows are skipped entirely in the all-stale sweep.
 
     Shows have no direct PID; treating pid=None as 'stale' would abort
     long-running shows whose child plays/sessions are still alive.
@@ -913,7 +913,7 @@ async def test_do_kill_all_stale_does_NOT_touch_show_at_all(
 async def test_do_kill_all_stale_does_NOT_touch_play_at_all(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Plays are skipped entirely in the all-stale sweep (codex round-2 P1).
+    """Plays are skipped entirely in the all-stale sweep.
 
     Plays are orchestrators with no direct PID; their child sessions carry
     the actual OS process. Sweeping by PID-absence would silently abort

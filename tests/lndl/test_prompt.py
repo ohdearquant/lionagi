@@ -34,7 +34,7 @@ class TestGetLndlSystemPrompt:
         assert r1 == r2
 
     # ------------------------------------------------------------------
-    # Regression guard for #1124: DSL marker presence
+    # Regression guard: DSL marker presence
     # ------------------------------------------------------------------
 
     def test_prompt_contains_lvar_marker(self):

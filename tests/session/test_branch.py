@@ -32,6 +32,7 @@ def branch_with_mock_imodel() -> Branch:
         if "messages" not in kwargs:
             kwargs["messages"] = []
         a = mock_model.create_api_calling(**kwargs)
+        # real Execution (not MagicMock) avoids serialization warnings
         a.execution = Execution(
             status=EventStatus.COMPLETED,
             response="""{"foo": "mocked_response", "bar": 123}""",

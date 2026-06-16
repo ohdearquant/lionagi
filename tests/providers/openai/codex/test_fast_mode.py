@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Smoke tests for CodexCodeRequest.fast_mode (issue #964).
+"""Smoke tests for CodexCodeRequest.fast_mode.
 
 Verifies: default emits no service_tier; fast_mode=True emits -c service_tier=fast; reasoning_effort is unaffected; profile frontmatter propagates; --fast CLI flag is registered.
 """
