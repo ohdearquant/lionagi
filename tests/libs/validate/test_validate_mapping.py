@@ -18,17 +18,14 @@ class TestValidateMapping:
 
     def test_string_inputs(self):
         """Test string input parsing."""
-        # JSON string
         json_input = '{"name": "John", "age": 30}'
         result = fuzzy_validate_mapping(json_input, ["name", "age"])
         assert result == {"name": "John", "age": 30}
 
-        # JSON with single quotes
         single_quote = "{'name': 'John', 'age': 30}"
         result = fuzzy_validate_mapping(single_quote, ["name", "age"])
         assert result == {"name": "John", "age": 30}
 
-        # JSON in code block
         code_block = """```json
         {"name": "John", "age": 30}
         ```"""
@@ -115,11 +112,9 @@ class TestValidateMapping:
     def test_error_cases(self):
         """Test error handling."""
 
-        # None input
         with pytest.raises(TypeError):
             fuzzy_validate_mapping(None, ["key"])
 
-        # Empty input with strict mode
         with pytest.raises(ValueError):
             fuzzy_validate_mapping({}, ["required_key"], strict=True)
 
@@ -144,7 +139,6 @@ class TestValidateMapping:
 
     def test_suppress_conversion_errors(self):
         """Test error suppression."""
-        # Should return empty dict with suppress_conversion_errors
         result = fuzzy_validate_mapping(
             object(),
             ["key"],

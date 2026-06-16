@@ -1,8 +1,4 @@
-"""Comprehensive tests for lionagi/ln/fuzzy/_to_dict.py
-
-Target: 90%+ coverage (currently 70.73%, 36 missing lines)
-Missing lines: 30-33, 50-52, 91, 127, 134-138, 164-182, 186-200, 208, 245, 276, 285-290, 305, 345, 349
-"""
+"""Tests for lionagi/ln/fuzzy/_to_dict.py"""
 
 import dataclasses
 from enum import Enum
@@ -12,10 +8,6 @@ import pytest
 from lionagi.ln.fuzzy._to_dict import (
     to_dict,
 )
-
-# ============================================================================
-# Mock Classes for Testing
-# ============================================================================
 
 
 class Color(Enum):
@@ -111,11 +103,6 @@ class IterableObject:
 
     def __iter__(self):
         return iter([1, 2, 3])
-
-
-# ============================================================================
-# Test _is_na
-# ============================================================================
 
 
 # ============================================================================

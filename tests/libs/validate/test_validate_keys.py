@@ -18,7 +18,6 @@ class TestValidateKeys:
         expected = ["username", "email_address"]
 
         result = fuzzy_match_keys(test_dict, expected)
-        # With default settings, original keys should be preserved
         assert "username" in result
         assert "email_address" in result
 
@@ -34,10 +33,8 @@ class TestValidateKeys:
 
     def test_empty_inputs(self):
         """Test empty input scenarios."""
-        # Empty dictionary
         assert fuzzy_match_keys({}, []) == {}
 
-        # Empty expected keys
         result = fuzzy_match_keys({"a": 1}, [])
         assert result == {"a": 1}
 
@@ -46,7 +43,6 @@ class TestValidateKeys:
         test_dict = {"user_name": "John", "emailAddress": "john@example.com"}
         expected = ["username", "email_address"]
 
-        # Test with fuzzy matching enabled and remove unmatched
         result = fuzzy_match_keys(
             test_dict,
             expected,
@@ -59,7 +55,6 @@ class TestValidateKeys:
         assert "user_name" not in result
         assert "emailAddress" not in result
 
-        # Test with fuzzy matching disabled
         result_no_fuzzy = fuzzy_match_keys(test_dict, expected, fuzzy_match=False)
         assert "user_name" in result_no_fuzzy
         assert "emailAddress" in result_no_fuzzy
@@ -69,22 +64,18 @@ class TestValidateKeys:
         test_dict = {"user_name": "John", "extra": "value"}
         expected = ["username"]
 
-        # Test raise mode
         with pytest.raises(ValueError):
             fuzzy_match_keys(test_dict, expected, handle_unmatched="raise")
 
-        # Test remove mode
         result_remove = fuzzy_match_keys(test_dict, expected, handle_unmatched="remove")
         assert "extra" not in result_remove
 
-        # Test fill mode
         result_fill = fuzzy_match_keys(
             test_dict, expected, handle_unmatched="fill", fill_value="default"
         )
         assert "extra" in result_fill
         assert "username" in result_fill
 
-        # Test force mode
         result_force = fuzzy_match_keys(
             test_dict, expected, handle_unmatched="force", fill_value="default"
         )
@@ -107,19 +98,15 @@ class TestValidateKeys:
         valid_dict = {"key": "value"}
         valid_keys = ["key"]
 
-        # Invalid similarity threshold
         with pytest.raises(ValueError):
             fuzzy_match_keys(valid_dict, valid_keys, similarity_threshold=1.5)
 
-        # None input dictionary
         with pytest.raises(TypeError):
             fuzzy_match_keys(None, valid_keys)
 
-        # None keys
         with pytest.raises(TypeError):
             fuzzy_match_keys(valid_dict, None)
 
-        # Invalid similarity algorithm
         with pytest.raises(ValueError):
             fuzzy_match_keys(valid_dict, valid_keys, similarity_algo="invalid")
 

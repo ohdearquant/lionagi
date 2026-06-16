@@ -1,7 +1,4 @@
-"""Tests for lionagi/ln/types.py
-
-Target: Cover easy missing lines (154, 188, 197, 214, etc.)
-"""
+"""Tests for lionagi/ln/types.py"""
 
 from dataclasses import dataclass, field
 from typing import ClassVar

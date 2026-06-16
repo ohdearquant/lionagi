@@ -55,12 +55,10 @@ class TestValidateBoolean:
 
     def test_complex_numbers(self):
         """Test complex number handling specifically."""
-        # Zero complex numbers should be False
         assert validate_boolean(0j) is False
         assert validate_boolean(complex(0)) is False
         assert validate_boolean(complex(0, 0)) is False
 
-        # Non-zero complex numbers should be True
         assert validate_boolean(1j) is True
         assert validate_boolean(complex(1, 1)) is True
         assert validate_boolean(complex(0, 1)) is True
@@ -68,17 +66,14 @@ class TestValidateBoolean:
 
     def test_error_cases(self):
         """Test cases that should raise errors."""
-        # Test None
         with pytest.raises(TypeError, match="Cannot convert None to boolean"):
             validate_boolean(None)
 
-        # Test empty string
         with pytest.raises(ValueError, match="Cannot convert empty string to boolean"):
             validate_boolean("")
         with pytest.raises(ValueError, match="Cannot convert empty string to boolean"):
             validate_boolean("   ")
 
-        # Test invalid strings
         with pytest.raises(ValueError):
             validate_boolean("invalid")
         with pytest.raises(ValueError):
@@ -89,22 +84,18 @@ class TestValidateBoolean:
     @pytest.mark.parametrize(
         "value,expected",
         [
-            # Test various number-like strings
             ("1.0", True),
             ("-1", True),
             ("0.0", False),
             ("0j", False),  # Complex number strings
             ("1j", True),
             ("1+1j", True),
-            # Test various casings
             ("TRUE", True),
             ("False", False),
             ("YeS", True),
             ("nO", False),
-            # Test with whitespace
             ("  true  ", True),
             ("  false  ", False),
-            # Test alternative representations
             ("enable", True),
             ("disable", False),
             ("activated", True),

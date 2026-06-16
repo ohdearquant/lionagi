@@ -16,7 +16,6 @@ class TestGenerateHashableRepresentation:
         assert hash_utils._generate_hashable_representation(12.34) == 12.34
 
     def test_list(self):
-        # Covers L45
         rep = hash_utils._generate_hashable_representation([1, "a", True])
         assert rep == (hash_utils._TYPE_MARKER_LIST, (1, "a", True))
         rep_empty = hash_utils._generate_hashable_representation([])
@@ -29,7 +28,6 @@ class TestGenerateHashableRepresentation:
         )
 
     def test_tuple(self):
-        # Covers L51
         rep = hash_utils._generate_hashable_representation((1, "a", True))
         assert rep == (hash_utils._TYPE_MARKER_TUPLE, (1, "a", True))
         rep_empty = hash_utils._generate_hashable_representation(tuple())
@@ -51,34 +49,19 @@ class TestGenerateHashableRepresentation:
         assert rep == (hash_utils._TYPE_MARKER_SET, (1, 2, 3))
 
     def test_set_uncomparable_elements_fallback_sort(self):
-        # Covers L70-L71 (TypeError in sort, fallback sort)
-        # Create a set with types that would normally cause TypeError on direct sort
-        # For example, int and str.
-        # The lambda key sorts by (str(type(x)), str(x))
-        # str(type(1)) -> "<class 'int'>", str(1) -> "1"
-        # str(type("a")) -> "<class 'str'>", str("a") -> "a"
-        # "<class 'int'>" sorts before "<class 'str'>"
         mixed_set = {1, "a"}
         rep = hash_utils._generate_hashable_representation(mixed_set)
-        # Expected order: 1 (as int), then "a" (as str)
         assert rep == (hash_utils._TYPE_MARKER_SET, (1, "a"))
 
-        mixed_set_2 = {
-            "b",
-            2,
-            True,
-        }  # True will be 1 for sorting purposes with int
-        # Order: True (bool, treated like int 1), 2 (int), "b" (str)
+        mixed_set_2 = {"b", 2, True}
         rep2 = hash_utils._generate_hashable_representation(mixed_set_2)
         assert rep2 == (hash_utils._TYPE_MARKER_SET, (True, 2, "b"))
 
     def test_frozenset_comparable_elements(self):
-        # Covers L59
         rep = hash_utils._generate_hashable_representation(frozenset({3, 1, 2}))
         assert rep == (hash_utils._TYPE_MARKER_FROZENSET, (1, 2, 3))
 
     def test_frozenset_uncomparable_elements_fallback_sort(self):
-        # Covers L60-L61 (TypeError in sort, fallback sort)
         mixed_frozenset = frozenset({1, "a"})
         rep = hash_utils._generate_hashable_representation(mixed_frozenset)
         assert rep == (hash_utils._TYPE_MARKER_FROZENSET, (1, "a"))
@@ -101,12 +84,10 @@ class TestGenerateHashableRepresentation:
             return f"CustomRepr({self.value})"
 
     def test_other_types_str_fallback(self):
-        # Covers L79
         obj = TestGenerateHashableRepresentation.CustomObjectStr("data")
         assert hash_utils._generate_hashable_representation(obj) == "CustomStr(data)"
 
     def test_other_types_repr_fallback(self):
-        # Covers L80-L81
         obj = TestGenerateHashableRepresentation.CustomObjectRepr("data")
         assert hash_utils._generate_hashable_representation(obj) == "CustomRepr(data)"
 
@@ -123,7 +104,6 @@ class TestGenerateHashableRepresentation:
             raise RuntimeError("repr failed")
 
     def test_other_types_both_str_and_repr_fail(self):
-        # Covers L117-119 (fallback when both str() and repr() fail)
         obj = TestGenerateHashableRepresentation.CustomObjectBothFail("data")
         result = hash_utils._generate_hashable_representation(obj)
         # Should return fallback format: "<unhashable:ClassName:id>"
@@ -132,7 +112,6 @@ class TestGenerateHashableRepresentation:
         assert "CustomObjectBothFail" in result
 
     def test_msgspec_struct_representation(self):
-        # Covers L36-39 (msgspec.Struct handling)
         import msgspec
 
         class MyStruct(msgspec.Struct):
@@ -140,11 +119,6 @@ class TestGenerateHashableRepresentation:
             y: str
 
         struct_instance = MyStruct(x=1, y="test")
-        # msgspec.to_builtins converts to dict: {"x": 1, "y": "test"}
-        # _generate_hashable_representation of this dict:
-        # (_TYPE_MARKER_DICT, (("x",1), ("y","test")))
-        # Final result: (_TYPE_MARKER_MSGSPEC, above_dict_rep)
-
         expected_inner_dict_rep = (
             hash_utils._TYPE_MARKER_DICT,
             (("x", 1), ("y", "test")),  # Keys sorted
@@ -167,11 +141,6 @@ class TestGenerateHashableRepresentation:
             y: str
 
         model_instance = MyPydanticModel(x=1, y="test")
-        # model_dump() -> {"x": 1, "y": "test"}
-        # _generate_hashable_representation of this dict:
-        # (_TYPE_MARKER_DICT, (("x",1), ("y","test")))
-        # Final result: (_TYPE_MARKER_PYDANTIC, above_dict_rep)
-
         expected_inner_dict_rep = (
             hash_utils._TYPE_MARKER_DICT,
             (("x", 1), ("y", "test")),  # Keys sorted
@@ -240,7 +209,6 @@ class TestHashDict:
         assert hash_utils.hash_dict(m1) != hash_utils.hash_dict(m3)
 
     def test_hash_dict_strict_mode(self):
-        # Covers L110
         # Create a mutable object (list) inside a dict
         data_copy_for_hash = {"a": [1, 2]}  # Ensure we hash a copy for comparison
 
@@ -280,7 +248,6 @@ class TestHashDict:
         )
 
     def test_unhashable_representation_raises_typeerror(self):
-        # Covers L116-L117
         # This requires _generate_hashable_representation to return something unhashable.
         # The current _generate_hashable_representation is designed to always return hashable tuples/primitives.
         # To test this, we would need to mock _generate_hashable_representation or make it return an unhashable type.
@@ -309,6 +276,3 @@ class TestHashDict:
         finally:
             # Restore original function
             hash_utils._generate_hashable_representation = original_generator
-
-
-# Add more specific test classes or functions below as needed.

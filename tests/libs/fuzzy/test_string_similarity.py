@@ -1,7 +1,4 @@
-"""Tests for lionagi/ln/fuzzy/_string_similarity.py
-
-Target: Cover line 32 (cosine_similarity edge case)
-"""
+"""Tests for lionagi/ln/fuzzy/_string_similarity.py"""
 
 import pytest
 
@@ -15,10 +12,6 @@ from lionagi.ln.fuzzy._string_similarity import (
     sequence_matcher_similarity,
     string_similarity,
 )
-
-# ============================================================================
-# Test cosine_similarity - Line 32
-# ============================================================================
 
 
 def test_cosine_similarity_basic():
@@ -37,11 +30,6 @@ def test_cosine_similarity_empty():
 def test_cosine_similarity_no_overlap():
     """Test cosine similarity with no character overlap"""
     assert cosine_similarity("abc", "def") == 0.0
-
-
-# ============================================================================
-# Test string_similarity function
-# ============================================================================
 
 
 def test_string_similarity_jaro_winkler():
@@ -108,16 +96,11 @@ def test_string_similarity_no_matches():
     assert result is None
 
 
-# ============================================================================
-# Test other similarity algorithms
-# ============================================================================
-
-
 def test_hamming_similarity():
     """Test hamming similarity"""
     assert hamming_similarity("hello", "hello") == 1.0
     assert hamming_similarity("hello", "hallo") == 0.8
-    assert hamming_similarity("hello", "help") == 0.0  # Different lengths
+    assert hamming_similarity("hello", "help") == 0.0
 
 
 def test_jaro_distance():
