@@ -9,6 +9,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
+from lionagi.libs.path_safety import safe_join
 from lionagi.state.db import DEFAULT_DB_PATH
 
 from ..config import SHOWS_ROOT
@@ -539,7 +540,11 @@ async def watch_show(topic: str) -> AsyncGenerator[str]:
     terminal (completed or aborted) AND no file has changed for 60 seconds.
     Emits done immediately when the show directory does not exist (Docker deployments).
     """
-    topic_dir = safe_path_join(SHOWS_ROOT, topic)
+    try:
+        topic_dir = safe_join(SHOWS_ROOT, topic)
+    except ValueError:
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        return
     if not topic_dir.is_dir():
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
         return

@@ -143,6 +143,24 @@ def test_path_traversal_double_dotdot_shows(patched_app):
     assert r.status_code == 404
 
 
+async def test_watch_show_invalid_topic_yields_done(tmp_path, monkeypatch):
+    """An invalid topic must yield a single `done` event, not raise.
+
+    watch_show() runs inside an SSE stream, so a rejected topic must follow
+    the same yield-done contract as a missing directory rather than raise.
+    """
+    import lionagi.studio.services.shows as shows_mod
+
+    shows_root = tmp_path / "shows"
+    shows_root.mkdir()
+    monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
+
+    events = [event async for event in shows_mod.watch_show("../etc")]
+
+    assert len(events) == 1
+    assert json.loads(events[0].removeprefix("data: ").strip()) == {"type": "done"}
+
+
 # ---------------------------------------------------------------------------
 # strict status_source provenance
 # ---------------------------------------------------------------------------

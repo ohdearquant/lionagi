@@ -83,3 +83,24 @@ def test_team_detail_missing_returns_404(tmp_path, monkeypatch):
 
     r = client.get("/api/teams/missing")
     assert r.status_code == 404
+
+
+def test_team_detail_traversal_returns_404(tmp_path, monkeypatch):
+    """A team_id with a path separator is rejected as 404, never 500."""
+    teams_root = tmp_path / "teams"
+    teams_root.mkdir()
+    client = _make_client(monkeypatch, teams_root)
+
+    r = client.get("/api/teams/aaa%2Fbbb")
+    assert r.status_code == 404
+
+
+def test_get_team_invalid_component_returns_none(tmp_path, monkeypatch):
+    """get_team() catches the path-safety ValueError and returns None."""
+    import lionagi.studio.services.teams as teams_mod
+
+    teams_root = tmp_path / "teams"
+    teams_root.mkdir()
+    monkeypatch.setattr(teams_mod, "_TEAMS_ROOT", teams_root)
+
+    assert teams_mod.get_team("../secrets") is None
