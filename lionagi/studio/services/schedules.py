@@ -8,11 +8,9 @@ import time
 import uuid
 from typing import Any
 
+from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
 from lionagi.state.db import DEFAULT_DB_PATH, StateDB
 
-_VALID_EFFORT_LEVELS: frozenset[str] = frozenset(
-    {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
-)
 _PRESERVE_DASHED: frozenset[str] = frozenset({"argument-hint"})
 
 

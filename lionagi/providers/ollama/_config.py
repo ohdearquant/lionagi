@@ -37,4 +37,16 @@ class OllamaConfigs(ProviderConfig, Enum):
 OllamaConfigs._PROVIDER = "ollama"
 OllamaConfigs._PROVIDER_ALIASES = []
 
-__all__ = ("OllamaConfigs",)
+
+def _setup_ollama_endpoint(has_ollama: bool, kwargs: dict) -> None:
+    """Shared init guard for all Ollama endpoints: require the ollama package,
+    drop any api_key, and allow loopback addresses in the SSRF guard."""
+    if not has_ollama:
+        raise ModuleNotFoundError(
+            "ollama is not installed, please install it with `pip install lionagi[ollama]`"
+        )
+    kwargs.pop("api_key", None)
+    kwargs.setdefault("allow_local_network", True)
+
+
+__all__ = ("OllamaConfigs", "_setup_ollama_endpoint")

@@ -3,12 +3,11 @@
 
 from __future__ import annotations
 
-import contextlib
-import os
 import re
-import signal
 import subprocess
 import threading
+
+from lionagi.ln._proc import terminate_process_group
 
 _SHELL_CONTROL = re.compile(r"(;|&&|\|\||\||`|\$\(|[<>]|\n)")
 
@@ -79,12 +78,7 @@ def _subprocess_sync(
     try:
         proc.wait(timeout=timeout_sec)
     except subprocess.TimeoutExpired:
-        # os.killpg is POSIX-only; on Windows fall through to proc.kill().
-        if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1:
-            with contextlib.suppress(ProcessLookupError, OSError):
-                os.killpg(proc.pid, signal.SIGKILL)
-        else:
-            proc.kill()
+        terminate_process_group(proc, grace=None)
         proc.wait()
         t_out.join(timeout=1)
         t_err.join(timeout=1)

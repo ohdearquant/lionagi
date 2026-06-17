@@ -327,7 +327,9 @@ async def test_bash_tool_timeout_mock_pid_calls_kill_not_killpg(monkeypatch):
         return mock_proc
 
     monkeypatch.setattr(subprocess_mod.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(subprocess_mod.os, "killpg", lambda *a: killpg_calls.append(a))
+    import lionagi.ln._proc as proc_mod
+
+    monkeypatch.setattr(proc_mod.os, "killpg", lambda *a: killpg_calls.append(a))
 
     tool = BashTool()
     resp = await tool.handle_request(BashRequest(command="sleep 60", timeout=10))
@@ -360,7 +362,9 @@ async def test_bash_tool_timeout_invalid_pid_calls_kill_not_killpg(monkeypatch, 
         return mock_proc
 
     monkeypatch.setattr(subprocess_mod.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(subprocess_mod.os, "killpg", lambda *a: killpg_calls.append(a))
+    import lionagi.ln._proc as proc_mod
+
+    monkeypatch.setattr(proc_mod.os, "killpg", lambda *a: killpg_calls.append(a))
 
     tool = BashTool()
     resp = await tool.handle_request(BashRequest(command="sleep 60", timeout=10))

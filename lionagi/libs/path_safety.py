@@ -92,6 +92,20 @@ def check_paths_safe(
     return values
 
 
+def contain_and_resolve(path: str | Path, root: Path) -> Path:
+    """Resolve path under root; raise ValueError if it escapes."""
+    root_resolved = root.resolve()
+    resolved = (root / path).resolve()
+    try:
+        resolved.relative_to(root_resolved)
+    except ValueError:
+        raise ValueError(
+            f"Workspace path escapes repository bounds. "
+            f"Repository: {root_resolved}, Workspace: {resolved}"
+        ) from None
+    return resolved
+
+
 def contain_path_in_root(
     value: str | Path,
     root: Path,

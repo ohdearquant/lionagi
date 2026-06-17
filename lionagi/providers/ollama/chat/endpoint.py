@@ -11,7 +11,7 @@ from lionagi.ln.concurrency import run_sync
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.utils import is_import_installed
 
-from .._config import OllamaConfigs
+from .._config import OllamaConfigs, _setup_ollama_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -25,16 +25,7 @@ class OllamaChatEndpoint(Endpoint):
     """Ollama chat completion endpoint (OpenAI-compatible); pulls missing models automatically."""
 
     def __init__(self, config=None, **kwargs):
-        if not _HAS_OLLAMA:
-            raise ModuleNotFoundError(
-                "ollama is not installed, please install it with `pip install lionagi[ollama]`"
-            )
-
-        # Ollama does not need an API key
-        kwargs.pop("api_key", None)
-        # Ollama runs on the local machine; allow loopback addresses in the SSRF
-        # guard while keeping all other blocked ranges (IMDS etc.) enforced.
-        kwargs.setdefault("allow_local_network", True)
+        _setup_ollama_endpoint(_HAS_OLLAMA, kwargs)
         super().__init__(config, **kwargs)
 
         from ollama import list as ollama_list  # type: ignore[import]

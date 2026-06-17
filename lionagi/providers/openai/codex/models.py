@@ -17,20 +17,24 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from lionagi import ln
 from lionagi.libs.path_safety import (
     check_add_dirs_safe as check_add_dir_entries_safe,
 )
 from lionagi.libs.path_safety import (
     check_path_safe,
     check_paths_safe,
+    contain_and_resolve,
 )
 from lionagi.libs.path_safety import (
     contain_paths_in_root as contain_paths_in_repo,
 )
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln.concurrency.utils import maybe_await
-from lionagi.providers._cli_subprocess import build_declarative_cli_args, ndjson_from_cli
+from lionagi.providers._cli_subprocess import (
+    build_declarative_cli_args,
+    ndjson_from_cli,
+    validate_message_prompt,
+)
 from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 
@@ -298,25 +302,7 @@ class CodexCodeRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _validate_message_prompt(cls, data):
-        if data.get("prompt"):
-            return data
-
-        if not (msg := data.get("messages")):
-            raise ValueError("messages or prompt required")
-
-        prompts = []
-        for message in msg:
-            if message["role"] != "system":
-                content = message["content"]
-                if isinstance(content, dict | list):
-                    prompts.append(ln.json_dumps(content))
-                else:
-                    prompts.append(content)
-            elif message["role"] == "system" and not data.get("system_prompt"):
-                data["system_prompt"] = message["content"]
-
-        data["prompt"] = "\n".join(prompts)
-        return data
+        return validate_message_prompt(data)
 
     @model_validator(mode="after")
     def _warn_dangerous_settings(self):
@@ -344,18 +330,7 @@ class CodexCodeRequest(BaseModel):
         if ".." in ws_path.parts:
             raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
 
-        repo_resolved = self.repo.resolve()
-        result = (self.repo / ws_path).resolve()
-
-        try:
-            result.relative_to(repo_resolved)
-        except ValueError:
-            raise ValueError(
-                f"Workspace path escapes repository bounds. "
-                f"Repository: {repo_resolved}, Workspace: {result}"
-            ) from None
-
-        return result
+        return contain_and_resolve(ws_path, self.repo)
 
     # ── CLI command builder ───────────────────────────────────────
 

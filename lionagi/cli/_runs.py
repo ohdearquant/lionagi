@@ -7,12 +7,12 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from lionagi._paths import RUNS_ROOT
 from lionagi.libs.path_safety import validate_path_component
+from lionagi.ln._utils import now_utc
 from lionagi.utils import LIONAGI_HOME
 
 __all__ = (
@@ -32,7 +32,7 @@ _RUN_ID_ENV_VAR = "LIONAGI_RUN_ID"
 
 
 def _new_run_id() -> str:
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    ts = now_utc().strftime("%Y%m%dT%H%M%S")
     return f"{ts}-{uuid4().hex[:6]}"
 
 

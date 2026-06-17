@@ -267,15 +267,9 @@ class EngineRun:
             cwd=cwd,
         )
         if secure and tools:
-            from pathlib import Path
+            from lionagi.agent.spec import _wire_secure_guards
 
-            from lionagi.agent.hooks import guard_destructive, guard_paths
-
-            spec.pre("bash", guard_destructive)
-            workspace_root = str(Path(cwd) if cwd else Path.cwd())
-            path_guard = guard_paths(allowed_paths=[workspace_root])
-            spec.pre("reader", path_guard)
-            spec.pre("editor", path_guard)
+            _wire_secure_guards(spec, cwd)
         # create_agent is the single grant site: emits is threaded through the
         # spec above, so capabilities are granted once during construction.
         branch = await create_agent(spec, load_settings=False)

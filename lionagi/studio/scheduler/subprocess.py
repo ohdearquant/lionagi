@@ -9,8 +9,9 @@ import contextlib
 import logging
 import os
 import re
-import signal
 import tempfile
+
+from lionagi.ln._proc import aterminate_process_group
 
 _log = logging.getLogger(__name__)
 
@@ -333,16 +334,8 @@ async def spawn_and_wait(
         # grandchildren survive scheduler shutdown as orphans.
         start_new_session=True,
     )
-    # Capture the pgid NOW — once the child exits and is reaped,
-    # os.getpgid(proc.pid) raises ProcessLookupError and we'd skip the group
-    # kill. start_new_session=True makes pgid == proc.pid. Guard mocked pids
-    # in tests: a MagicMock.pid coerces to 1, and killpg(1, …) hits init.
-    # os.killpg is POSIX-only: on Windows leave _pgid None so the group-kill
-    # path is skipped and cleanup falls through to proc.terminate()/kill()
-    # instead of raising AttributeError.
-    _pgid: int | None = (
-        proc.pid if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1 else None
-    )
+    # Pgid == proc.pid (start_new_session=True). The pid-guard and platform
+    # check live in aterminate_process_group.
 
     try:
         _, stderr = await proc.communicate()
@@ -352,21 +345,7 @@ async def spawn_and_wait(
         # to exit, then SIGKILL the group, before re-raising so the caller can
         # record the cancel.
         _log.warning("spawn_and_wait cancelled; terminating child for %s", invocation_id)
-        if _pgid is not None:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(_pgid, signal.SIGTERM)
-        with contextlib.suppress(ProcessLookupError):
-            proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5)
-        except (TimeoutError, asyncio.TimeoutError):
-            if _pgid is not None:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(_pgid, signal.SIGKILL)
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
+        await aterminate_process_group(proc, grace=5.0)
         raise
     finally:
         if tmp_path is not None:

@@ -17,6 +17,7 @@ from ._json_dump import (
     make_options,
 )
 from ._list_call import lcall
+from ._proc import aterminate_process_group, terminate_process_group
 from ._to_list import ToListParams, to_list
 from ._utils import (
     acreate_path,
@@ -115,4 +116,6 @@ __all__ = (
     "BcallParams",
     "ToListParams",
     "MAX_JSON_INPUT_SIZE",
+    "terminate_process_group",
+    "aterminate_process_group",
 )

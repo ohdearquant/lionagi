@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 from importlib import reload
 from pathlib import Path
 from unittest.mock import patch
@@ -355,7 +356,7 @@ class TestSpawnAndWaitCancellation:
 
         assert proc.terminated is True, "direct child must be terminated"
         assert killpg_calls, "the process GROUP must be signalled, not just the child"
-        assert killpg_calls[0] == (proc.pid, sp.signal.SIGTERM)
+        assert killpg_calls[0] == (proc.pid, signal.SIGTERM)
 
     async def test_cancel_no_killpg_platform(self, monkeypatch):
         """os.killpg is POSIX-only: on Windows cancellation must still terminate

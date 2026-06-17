@@ -5,14 +5,14 @@ from __future__ import annotations
 
 import asyncio
 import codecs
-import contextlib
 import json
 import logging
-import os
-import signal
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
+
+from lionagi.libs.path_safety import contain_and_resolve
+from lionagi.ln._proc import aterminate_process_group
 
 log = logging.getLogger(__name__)
 
@@ -43,14 +43,7 @@ async def ndjson_from_cli(
     # Capture PGID immediately — if we wait until teardown, the child may have
     # exited and been reaped, and os.getpgid(proc.pid) would raise
     # ProcessLookupError. start_new_session=True makes pgid == proc.pid.
-    # Guard against mocked subprocesses in tests where proc.pid may not be a
-    # real int: a MagicMock.pid coerces to 1 via __int__, and
-    # os.killpg(1, SIGTERM) signals init/the CI runner.
-    # os.killpg is POSIX-only: on Windows leave _pgid None so the group-kill
-    # path is skipped and cleanup falls through to proc.terminate()/kill().
-    _pgid: int | None = (
-        proc.pid if hasattr(os, "killpg") and isinstance(proc.pid, int) and proc.pid > 1 else None
-    )
+    # The pid-guard and platform check live in aterminate_process_group.
 
     decoder = codecs.getincrementaldecoder("utf-8")()
     json_decoder = json.JSONDecoder()
@@ -138,22 +131,7 @@ async def ndjson_from_cli(
             raise RuntimeError(err or f"CLI subprocess exited with code {rc}")
 
     finally:
-        pgid = _pgid
-        if pgid is not None:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(pgid, signal.SIGTERM)
-        with contextlib.suppress(ProcessLookupError):
-            proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            if pgid is not None:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(pgid, signal.SIGKILL)
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
+        await aterminate_process_group(proc, grace=5.0)
 
         # Reap the stderr drain task — contextlib.suppress(Exception) does NOT
         # catch CancelledError (BaseException), so we suppress it explicitly.
@@ -178,18 +156,36 @@ def resolve_cli_workspace(repo: Path | None, workspace: str | None) -> Path:
     if ".." in ws_path.parts:
         raise ValueError(f"Directory traversal detected in workspace path: {workspace}")
 
-    repo_resolved = repo.resolve()
-    result = (repo / ws_path).resolve()
+    return contain_and_resolve(ws_path, repo)
 
-    try:
-        result.relative_to(repo_resolved)
-    except ValueError:
-        raise ValueError(
-            f"Workspace path escapes repository bounds. "
-            f"Repository: {repo_resolved}, Workspace: {result}"
-        ) from None
 
-    return result
+def validate_message_prompt(data: dict) -> dict:
+    """Extract prompt from a messages list when prompt is not already set.
+
+    Shared by Gemini, Pi, and Codex request models. Extracts non-system message
+    content into prompt; hoists the first system message into system_prompt.
+    """
+    from lionagi import ln
+
+    if data.get("prompt"):
+        return data
+
+    if not (msg := data.get("messages")):
+        raise ValueError("messages or prompt required")
+
+    prompts = []
+    for message in msg:
+        if message["role"] != "system":
+            content = message["content"]
+            if isinstance(content, dict | list):
+                prompts.append(ln.json_dumps(content))
+            else:
+                prompts.append(content)
+        elif message["role"] == "system" and not data.get("system_prompt"):
+            data["system_prompt"] = message["content"]
+
+    data["prompt"] = "\n".join(prompts)
+    return data
 
 
 def build_declarative_cli_args(model_instance: Any) -> list[str]:

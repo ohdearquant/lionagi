@@ -19,12 +19,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from lionagi import ln
-from lionagi.libs.path_safety import check_paths_safe
+from lionagi.libs.path_safety import check_paths_safe, contain_and_resolve
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln.concurrency.utils import maybe_await
-from lionagi.providers._cli_subprocess import _INHERIT_STDIN, ndjson_from_cli
+from lionagi.providers._cli_subprocess import (
+    _INHERIT_STDIN,
+    ndjson_from_cli,
+    validate_message_prompt,
+)
 
 HAS_GEMINI_CLI = False
 GEMINI_CLI = None
@@ -89,25 +92,7 @@ class GeminiCodeRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _validate_message_prompt(cls, data):
-        if data.get("prompt"):
-            return data
-
-        if not (msg := data.get("messages")):
-            raise ValueError("messages or prompt required")
-
-        prompts = []
-        for message in msg:
-            if message["role"] != "system":
-                content = message["content"]
-                if isinstance(content, dict | list):
-                    prompts.append(ln.json_dumps(content))
-                else:
-                    prompts.append(content)
-            elif message["role"] == "system" and not data.get("system_prompt"):
-                data["system_prompt"] = message["content"]
-
-        data["prompt"] = "\n".join(prompts)
-        return data
+        return validate_message_prompt(data)
 
     @field_validator("include_directories", mode="after")
     @classmethod
@@ -157,18 +142,7 @@ class GeminiCodeRequest(BaseModel):
         if ".." in ws_path.parts:
             raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
 
-        repo_resolved = self.repo.resolve()
-        result = (self.repo / ws_path).resolve()
-
-        try:
-            result.relative_to(repo_resolved)
-        except ValueError:
-            raise ValueError(
-                f"Workspace path escapes repository bounds. "
-                f"Repository: {repo_resolved}, Workspace: {result}"
-            ) from None
-
-        return result
+        return contain_and_resolve(ws_path, self.repo)
 
     def as_cmd_args(self) -> list[str]:
         args: list[str] = ["-p", self.prompt, "--output-format", "stream-json"]

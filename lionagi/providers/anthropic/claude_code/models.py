@@ -8,7 +8,6 @@ import json
 import logging
 import shutil
 from collections.abc import AsyncIterator, Callable
-from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 from textwrap import shorten
@@ -22,6 +21,7 @@ from lionagi.libs.path_safety import (
 )
 from lionagi.libs.path_safety import (
     check_path_safe,
+    contain_and_resolve,
 )
 from lionagi.libs.path_safety import (
     contain_paths_in_root as contain_paths_in_repo,
@@ -445,18 +445,7 @@ class ClaudeCodeRequest(BaseModel):
         if ".." in ws_path.parts:
             raise ValueError(f"Directory traversal detected in workspace path: {self.ws}")
 
-        repo_resolved = self.repo.resolve()
-        result = (self.repo / ws_path).resolve()
-
-        try:
-            result.relative_to(repo_resolved)
-        except ValueError:
-            raise ValueError(
-                f"Workspace path escapes repository bounds. "
-                f"Repository: {repo_resolved}, Workspace: {result}"
-            ) from None
-
-        return result
+        return contain_and_resolve(ws_path, self.repo)
 
     # ── CLI command builder ───────────────────────────────────────
 
@@ -597,7 +586,7 @@ def _pp_final(sess: CLISession, theme) -> None:
     usage = sess.usage or {}
     cost_str = f"${sess.total_cost_usd:.4f}" if sess.total_cost_usd is not None else "N/A"
     txt = (
-        f"### ✅ Session complete - {datetime.now(timezone.utc).isoformat(timespec='seconds')} UTC\n"
+        f"### ✅ Session complete - {ln.now_utc().isoformat(timespec='seconds')} UTC\n"
         f"**Result:**\n\n{sess.result or ''}\n\n"
         f"- cost: **{cost_str}**  \n"
         f"- turns: **{sess.num_turns}**  \n"

@@ -19,7 +19,10 @@ from lionagi.protocols.action.tool import Tool
 
 from ._subprocess import _SHELL_CONTROL, _subprocess_sync
 from .base import LionTool
+from .code.bash import BashRequest
 from .code.check import CodeCheckRequest, _resolve_check_paths, _ruff_check_sync
+from .code.search import SearchAction as SearchAction  # re-export: preserves the public API
+from .code.search import SearchRequest
 from .context.context import ContextRequest, ContextTool
 from .file.editor import EditorRequest, _write_text_no_follow
 from .file.reader import ReaderRequest, _evict_expired, _open_sync, _read_cached
@@ -34,61 +37,10 @@ if TYPE_CHECKING:
 # Request models (LLM-facing schemas)
 # ---------------------------------------------------------------------------
 # ReaderRequest and EditorRequest are imported from file/reader.py and
-# file/editor.py — those are the canonical definitions. BashRequest,
-# SearchRequest, SandboxRequest, and SubagentRequest have no standalone
-# equivalent and are defined here.
-
-
-class BashRequest(BaseModel):
-    command: str = Field(
-        ...,
-        description=(
-            "A single shell command to execute. Shell control operators are NOT "
-            "supported and will be rejected — no `&&`, `||`, `|`, `;`, redirects "
-            "(`<`/`>`), backticks, or `$(...)`. Run one command per call; to work in "
-            "a directory pass cwd= instead of `cd x && ...`."
-        ),
-    )
-    timeout: int | None = Field(
-        None,
-        description="Timeout in milliseconds. Default 30000, max 300000.",
-    )
-    cwd: str | None = Field(
-        None,
-        description="Working directory. Defaults to current directory.",
-    )
-
-
-class SearchAction(str, Enum):
-    grep = "grep"
-    find = "find"
-
-
-class SearchRequest(BaseModel):
-    action: SearchAction = Field(
-        ...,
-        description=(
-            "Action to perform. One of:\n"
-            "- 'grep': Search file contents with regex pattern.\n"
-            "- 'find': Find files by name pattern."
-        ),
-    )
-    pattern: str = Field(
-        ...,
-        description="Regex pattern (for 'grep') or glob pattern (for 'find').",
-    )
-    path: str | None = Field(
-        None,
-        description="File or directory to search in. Defaults to current directory.",
-    )
-    include: str | None = Field(
-        None,
-        description="Glob filter for grep, e.g. '*.py'. Only for 'grep'.",
-    )
-    max_results: int | None = Field(
-        None,
-        description="Max results to return. Default 50 for grep, 100 for find.",
-    )
+# file/editor.py. BashRequest, SearchAction, and SearchRequest are imported
+# from code/bash.py and code/search.py — those are the canonical definitions.
+# SandboxRequest and SubagentRequest have no standalone equivalent and are
+# defined here.
 
 
 class SandboxAction(str, Enum):
