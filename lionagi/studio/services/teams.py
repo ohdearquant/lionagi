@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from lionagi.libs.path_safety import safe_join
 from lionagi.utils import LIONAGI_HOME
 
 from ._io import read_json_file as _read_json
-from ._path_safety import safe_path_join
 
 _TEAMS_ROOT = LIONAGI_HOME / "teams"
 
@@ -43,8 +43,8 @@ def get_team(team_id: str) -> dict[str, Any] | None:
     if ".json" in team_id:
         team_id = team_id.replace(".json", "")
     try:
-        safe_path_join(_TEAMS_ROOT, f"{team_id}.json")
-    except Exception:
+        safe_join(_TEAMS_ROOT, f"{team_id}.json")
+    except ValueError:
         return None
     path = _TEAMS_ROOT / f"{team_id}.json"
     return _read_json(path)
